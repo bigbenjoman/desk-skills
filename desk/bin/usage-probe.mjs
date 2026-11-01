@@ -20,7 +20,7 @@ export { usageDir, probeLog };
 
 // The newest reading of both windows: every repo's worker logs and the last probe's output, the same
 // sources a pass's newestUsage reads.
-//   -> { five_hour, seven_day, at }
+//   -> { five_hour, seven_day, at, none }
 export const readUsage = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), now = Date.now() } = {}) =>
   newestReading({ dirs, files: [probeLog(dir)], now });
 

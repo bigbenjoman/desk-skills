@@ -1533,7 +1533,8 @@ export function usageOf(repos, now, shown = repos) {
 
 // The usage line: a bar for the 5-hour and the 7-day window, each with its reset time; green under
 // 60%, amber to 84% or for a 7-day window while weekly pace holds new workers, red from 85%. A window
-// whose reset has passed reads 0% without a call. With no worker running, a reading over
+// whose reset has passed reads 0% without a call. A window the subscription in use does not have is
+// left out. With no worker running, a reading over
 // PROBE_EVERY_MS old carries its time. On screen the bars are solid, the unused part in TRACK; in plain
 // text and under NO_COLOR it is ·.
 const USAGE_BAR = 10;
@@ -1555,7 +1556,8 @@ function windowSegs(label, w, now, held, solid) {
 }
 export function usageLine({ reading, running, held, heldBy }, { now, solid = false }) {
   if (reading.at == null) return segLine([['Claude usage  no reading yet', GREY]]);
-  const segs = [['Claude usage  ', GREY], ...windowSegs('5h', reading.five_hour, now, false, solid), [' · ', GREY], ...windowSegs('7d', reading.seven_day, now, held, solid)];
+  const shown = [['5h', 'five_hour', false], ['7d', 'seven_day', held]].filter(([, k]) => !reading.none?.includes(k));
+  const segs = [['Claude usage  ', GREY], ...shown.flatMap(([label, k, h], i) => [...(i ? [[' · ', GREY]] : []), ...windowSegs(label, reading[k], now, h, solid)])];
   if (running === 0 && now - reading.at > PROBE_EVERY_MS) segs.push([`  as of ${clock(reading.at)}`, GREY]);
   if (held) segs.push([`  ${paceNote(heldBy)}`, WARN]);
   return segLine(segs.filter(([s]) => s));

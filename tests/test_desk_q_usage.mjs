@@ -244,6 +244,26 @@ const usedT = [...new Set([0.17, 0.6, 0.88].flatMap((u) => QT.usageLine({ readin
 t('DS-277 AC3 with truecolor each bar\'s used colour is One Dark\'s, 3:1 or more on the window, the selected row and the unused part',
   `${usedT.sort().join(' ')} ${usedT.filter((k) => [windowBg, selected, grey('38;5;239')].some((b) => contrast(fg(k), b) < 3)).join()}`, '38;2;152;195;121 38;2;229;192;123 38;2;240;124;132 ');
 
+// ---- DS-409: a switch to a subscription with no 5-hour window, whose events list seven_day alone
+// The one worker log holding `lines`, written a minute before FIXED.
+function logOf(lines) {
+  const logs = join(env.HOME, '.desk-autopilot', 'acme__solo', 'logs');
+  rmSync(logs, { recursive: true, force: true });
+  mkdirSync(logs, { recursive: true });
+  const path = join(logs, `S-${++n}.log`);
+  writeFileSync(path, `${lines.join('\n')}\n`);
+  utimesSync(path, (FIXED - MIN) / 1000, (FIXED - MIN) / 1000);
+}
+const only = (windows) => JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: windows } });
+const sevenOnly = only({ seven_day: { utilization: 0.54, resetsAt: at(29, 18, 0), status: 'allowed' } });
+logOf([event([0.97, at(24, 11, 20)], [0.54, at(26, 6, 0)]), sevenOnly]);
+t('DS-409 AC1 the newest event lists seven_day alone: no 5h figure or reset time from the older event, and 7d is the newest event\'s',
+  `${home().startsWith('7d █████····· 54% Thu 18:00')} ${/5h|97%|11:20/.test(home())}`, 'true false');
+logOf([event([0.97, at(24, 8, 20)], [0.54, at(26, 6, 0)]), sevenOnly]);
+t('DS-409 AC2 after the old 5-hour reset has passed, still no 5h figure and no reset', `${home().startsWith('7d █████····· 54% Thu 18:00')} ${/5h|reset|08:20/.test(home())}`, 'true false');
+logOf([sevenOnly, event([0.17, at(24, 11, 20)], [0.6, at(25, 15, 0)])]);
+t('DS-409 AC4 a newest event listing both windows shows both bars as before', home(), LINE);
+
 // ---- DS-215 AC21 (DS-357 AC6): on screen the line is labelled and pinned at the bottom: a blank line,
 // usage, then the keys. Plain output keeps it in its header.
 reading([0.17, at(24, 11, 20)], [0.6, at(25, 15, 0)]);

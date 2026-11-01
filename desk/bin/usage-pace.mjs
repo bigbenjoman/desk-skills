@@ -32,9 +32,10 @@ export function pacingSetting(raw = E.configValue('usage-pacing')) {
   return { bad: `config §3b "${ROW()}" is "${raw}" — want a number of percentage points, or \`off\`` };
 }
 
-// Both windows in one log's text: each top-level rate_limit_event as { five_hour, seven_day }, each
-// window { utilization, resetsAt } or null when the event lacks it. The same text inside a tool call
-// or its result is not this worker's usage.
+// Both windows in one log's text: each top-level rate_limit_event as { five_hour, seven_day, named },
+// each window { utilization, resetsAt } or null when the event lacks it or cannot be read, and `named`
+// the windows its unifiedWindows lists, which are all the windows its subscription has. The same text
+// inside a tool call or its result is not this worker's usage.
 export const WINDOWS = ['five_hour', 'seven_day'];
 export function windowEvents(text) {
   const out = [];
@@ -46,6 +47,7 @@ export function windowEvents(text) {
       const w = u?.[k];
       return [k, Number.isFinite(w?.utilization) && Number.isFinite(w?.resetsAt) && w.resetsAt > 0 ? { utilization: w.utilization, resetsAt: w.resetsAt } : null];
     }));
+    e.named = WINDOWS.filter((k) => u?.[k] != null);
     if (e.five_hour || e.seven_day) out.push(e);
   }
   return out;
@@ -74,10 +76,13 @@ export const newestUsage = ({ dirs = stateDirs(), files = [probeLog()], now = Da
 // `files` named (the usage probe's output). Events carry no time of their own, so the newest is the
 // last event holding that window in the most recently written file. Never the latest `resetsAt`:
 // after a switch of subscription, the one left behind can reset later. `at` is when the newest file
-// holding a chosen event was last written, or null with no reading.
-//   -> { five_hour, seven_day, at }
+// holding a chosen event was last written, or null with no reading. A window the newest event's
+// unifiedWindows leaves out is in `none`, its subscription having no such window, and is null rather
+// than an older event's reading; one it lists but cannot be read comes from the newest event that has it.
+//   -> { five_hour, seven_day, at, none: [window] }
 export function newestReading({ dirs = stateDirs(), files = [], now = Date.now() } = {}) {
   const best = { five_hour: null, seven_day: null }, from = {};
+  let newest = null, newestAt = -Infinity;
   const paths = [...files];
   for (const dir of dirs) {
     const logs = join(dir, 'logs');
@@ -88,6 +93,7 @@ export function newestReading({ dirs = stateDirs(), files = [], now = Date.now()
     try { st = statSync(path); } catch { continue; }
     if (!st.isFile() || now - st.mtimeMs > RECENT_MS) continue;
     for (const e of eventsOf(path, st)) {
+      if (st.mtimeMs >= newestAt) { newest = e; newestAt = st.mtimeMs; }
       for (const k of WINDOWS) {
         const w = e[k];
         if (w && (from[k] === undefined || st.mtimeMs >= from[k])) {
@@ -97,8 +103,10 @@ export function newestReading({ dirs = stateDirs(), files = [], now = Date.now()
       }
     }
   }
+  const none = newest ? WINDOWS.filter((k) => !newest.named.includes(k)) : [];
+  for (const k of none) { best[k] = null; delete from[k]; }
   const at = Object.values(from);
-  return { ...best, at: at.length ? Math.max(...at) : null };
+  return { ...best, at: at.length ? Math.max(...at) : null, none };
 }
 
 // A log's events, kept while its size and modified time hold: an open desk-q rereads every two seconds.
