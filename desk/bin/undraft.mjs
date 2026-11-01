@@ -232,6 +232,12 @@ function buildCall(gate, cfg, n, head) {
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
 }
 
+// The words a park's not-reached tail may hold after its marker: the steps the worker contract has it
+// name (PR, review comment, Jira comment, transition, tracker state) and their glue.
+const TAIL_WORDS = new Set(['the', 'a', 'its', 'and', 'or', 'then', 'to', 'on', 'of', 'in', 'is', 'are', 'yet', 'stage', 'stages',
+  'pr', 'draft', 'body', 'self-review', 'review', 'reviews', 'desk-review', 'comment', 'comments', 'post', 'posting', 'posted',
+  'jira', 'tracker', 'ticket', 'transition', 'transitions', 'state', 'status', 'progress', 'done', 'screenshots', 'images', 'upload']);
+
 // A worker's park whose only blocker is a red check §4 Check builds names: every clause of the park
 // names one of those checks or its command, or lists the steps it did not reach (the tail the worker
 // contract has every park name), so a park that asks anything else beside the build stays a park, and
@@ -245,7 +251,13 @@ export function buildPark(question, readPr, cfg) {
   const namesBuild = (s) => builds.some((b) => s.includes(b.name.toLowerCase()) || s.includes(b.command.toLowerCase()));
   // Clauses end at . ? ! ; followed by a space, or a line break, so a command's own dots stay whole.
   const clauses = String(question ?? '').toLowerCase().split(/[.?!;]+(?:\s+|$)|\n+/).map((s) => s.trim()).filter(Boolean);
-  const tail = (s) => /\bnot (?:yet )?reached\b|\bremaining steps?\b|\bsteps? remaining\b/.test(s);
+  // A tail clause starts with its marker and holds nothing but the tail's own steps after it, so a
+  // question that only mentions the tail ("before the remaining steps, should we…", "not reached: the
+  // Jira comment, so confirm the fee") still parks.
+  const tail = (s) => {
+    const m = /^(?:steps? )?(?:not (?:yet )?reached|remaining steps?|steps? remaining)\b(.*)$/.exec(s);
+    return !!m && m[1].split(/[\s,:()\-–—]+/).filter(Boolean).every((w) => TAIL_WORDS.has(w) || /^#?\d+$/.test(w));
+  };
   if (cfg.rerun !== 'yes' || !clauses.some(namesBuild) || !clauses.every((s) => namesBuild(s) || tail(s))) return null;
   const pr = readPr();
   if (pr?.state !== 'OPEN' || pr.isDraft !== true) return null;
