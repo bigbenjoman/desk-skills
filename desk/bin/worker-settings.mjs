@@ -125,14 +125,6 @@ const cfgList = (id) => {
 };
 const isNone = (v) => v != null && /^none\b/i.test(String(v).trim());
 const BIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
-// Never allowed even as the exact configured command: a prefix rule for `rm -rf build` also matches
-// `rm -rf build /`, and a shell, fetcher or privilege tool is an allow-everything. git, gh and docker
-// have their own rules.
-const NO_EXACT = new Set(['rm', 'sudo', 'doas', 'curl', 'wget', 'eval', 'exec', 'xargs', 'env', 'git', 'gh', 'docker',
-  'cd', 'source', '.', 'sh', 'bash', 'zsh', 'dash', 'fish', 'nohup', 'time', 'timeout', 'npx', 'pnpx', 'bunx', 'uvx']);
-// The one shell form a toolchain item may take: `bash|sh <repo-relative .sh path>`, no flags. It runs a
-// file in the worktree, the same exposure as `pnpm test`; a flag or command string (`bash -c`) never matches.
-const SHELL_SCRIPT = /^(bash|sh) (?![-/])(?!(.*\/)?\.\.(\/|$))[A-Za-z0-9._/-]+\.sh$/;
 // Words never probed with `--version` (not toolchain binaries).
 const NOT_A_TOOL = new Set(['cd', 'source', '.', 'env', 'exec', 'time', 'nohup']);
 // Porting check: `bun` below is one entry in a generic list of package managers §4 may name as
@@ -159,19 +151,15 @@ const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? ''
 // The §4 command rows a worker may run; the lock each takes when wrapped by with-lock.sh is E.lockFor.
 // desk-pr runs each PR-description check with the body file appended, so its prefix rule fits as is.
 // §4 Codegen (e.g. `pnpm prisma generate`) takes no lock: it is short and writes only the worktree.
-const TOOL_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'related-test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
-  'pr-description-checks', ...(HAS_TICKET_DB ? ['db-migrate-cmd', 'seed-cmd'] : [])];
+const TOOL_IDS = E.WORKER_COMMAND_IDS.filter((id) => HAS_TICKET_DB || !['db-migrate-cmd', 'seed-cmd'].includes(id));
 const warns = [];
 const items = [];
 for (const id of TOOL_IDS) {
   for (const raw of cfgList(id)) {
     const { dir, cmd } = E.parseCommandItem(raw);
-    if (/&&|\|\||[;|<>`]|\$\(/.test(cmd) || /^\s*\w+=/.test(cmd)) {
-      warns.push(`§4 ${E.CONFIG_ROWS[id].row} item "${raw}" is a compound or env-prefixed shell command — not allow-listed; write it as \`<dir>: <command>\``);
-      continue;
-    }
+    const why = E.commandItemProblem(cmd);
+    if (why) { warns.push(`§4 ${E.CONFIG_ROWS[id].row} item "${raw}" ${why}`); continue; }
     const bin = cmd.split(/\s+/)[0];
-    if (NO_EXACT.has(bin) && !SHELL_SCRIPT.test(cmd)) { warns.push(`§4 ${E.CONFIG_ROWS[id].row} item "${raw}" starts with ${bin}, which is never allow-listed`); continue; }
     items.push({ id, dir, cmd, bin });
   }
 }

@@ -79,6 +79,14 @@ check "PR-description check: allowed with a body file"    'allows "Bash(node scr
 settings '`bash tests/run.sh`' '| Pre-push checks | `none` |'
 check "pre-push none: no pre-push rule"                   '[ $rc -eq 0 ] && ! allows "Bash(bash scripts/desk/pre-push.sh --head)"'
 
+# A Related tests row that is one script is allowed bare and under the test lock; the compound it replaced is not.
+settings '`bash tests/run.sh`' '| Related tests | `bash tests/related.sh` |'
+check "DS-395 AC1 related.sh row: allowed bare and under the test lock" \
+  '[ $rc -eq 0 ] && allows "Bash(bash tests/related.sh:*)" && allows "Bash($B/with-lock.sh test bash tests/related.sh:*)" && allows "Bash($B/with-lock.sh test --cwd . -- bash tests/related.sh:*)"'
+check "DS-395 AC1 related.sh row: no CONFIG_WARN"           '[[ "$out" != *CONFIG_WARN* ]]'
+settings '`bash tests/run.sh`' "| Related tests | \`bash -c 'bash tests/run.sh \$(node tests/scope_sections.mjs --json)'\` |"
+check "DS-395 the compound row warns and is not allowed"   '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Related tests item \"bash -c"*"is a compound or env-prefixed shell command"* ]] && ! jq -e ".permissions.allow[] | select(test(\"scope_sections\"))" "$T/ws.json" >/dev/null'
+
 # git rm and git mv inside the worktree; -C and --work-tree, which would reach outside it, stay denied
 denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
 settings '`bash tests/run.sh`'

@@ -557,6 +557,26 @@ export function parseCommandItem(item) {
   return { dir: '.', cmd: String(item).trim() };
 }
 
+// The §4 command rows a worker may run (migrate and seed only against a per-ticket database). Its
+// settings allow each item as the exact configured command, so an item must be one plain command.
+export const WORKER_COMMAND_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'related-test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
+  'pr-description-checks', 'db-migrate-cmd', 'seed-cmd'];
+// Never allowed even as the exact configured command: a prefix rule for `rm -rf build` also matches
+// `rm -rf build /`, and a shell, fetcher or privilege tool is an allow-everything. git, gh and docker
+// have their own rules.
+export const NO_EXACT = new Set(['rm', 'sudo', 'doas', 'curl', 'wget', 'eval', 'exec', 'xargs', 'env', 'git', 'gh', 'docker',
+  'cd', 'source', '.', 'sh', 'bash', 'zsh', 'dash', 'fish', 'nohup', 'time', 'timeout', 'npx', 'pnpx', 'bunx', 'uvx']);
+// The one shell form a toolchain item may take: `bash|sh <repo-relative .sh path>`, no flags. It runs a
+// file in the worktree, the same exposure as `pnpm test`; a flag or command string (`bash -c`) never matches.
+export const SHELL_SCRIPT = /^(bash|sh) (?![-/])(?!(.*\/)?\.\.(\/|$))[A-Za-z0-9._/-]+\.sh$/;
+// Why a command item's command (parseCommandItem's cmd) can never be allow-listed, or null when it can.
+export function commandItemProblem(cmd) {
+  if (/&&|\|\||[;|<>`]|\$\(/.test(cmd) || /^\s*\w+=/.test(cmd)) return 'is a compound or env-prefixed shell command — not allow-listed; write it as `<dir>: <command>`, or put it in a script run as `bash <path>.sh`';
+  const bin = cmd.split(/\s+/)[0];
+  if (NO_EXACT.has(bin) && !SHELL_SCRIPT.test(cmd)) return `starts with ${bin}, which is never allow-listed`;
+  return null;
+}
+
 // env -> config -> fallback. Identity-shaped values have no fallback and fail loudly.
 export function resolve({ env, id, fallback, identity = false }) {
   const fromEnv = env ? process.env[env] : undefined;
@@ -1173,13 +1193,24 @@ export function configDrift({ config, template = templatePath(), root = null, ho
     }
   }
   const { mode, file } = defaultModeIn(root, home);
-  return { missing, stalls, dontAsk: mode === 'dontAsk' ? file : null };
+  // Command items a worker's settings cannot allow: every worker is refused them.
+  const unlisted = [];
+  for (const id of WORKER_COMMAND_IDS) {
+    const values = configValuesIn(parsed, id);
+    if (!values || isNone(values)) continue;
+    for (const item of values) {
+      const why = commandItemProblem(parseCommandItem(item).cmd);
+      if (why) unlisted.push({ row: CONFIG_ROWS[id].row, item, why });
+    }
+  }
+  return { missing, stalls, unlisted, dontAsk: mode === 'dontAsk' ? file : null };
 }
 
-export function driftLines({ missing, stalls, dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
+    ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
   return lines.length ? lines : ['no drift'];
