@@ -105,9 +105,10 @@ export const needsPersonLane = (r) => r?.lane === 'C' || (r?.lane === 'D' && des
 //     `gh api`, a write under `.claude/`) is a session's: a requeue only parks it again (sessionPark).
 const SHA = /^[0-9a-f]{40}$/;
 // Each needs a word saying the worker could not do it, so a park mentioning the tool in passing is not caught.
+// "needs" counts only right before the tool ("needs curl"): most questions say need somewhere.
 const NEVER = [['aws', /\baws\b/i], ['ssm', /\bssm\b/i], ['curl', /\bcurl\b/], ['wget', /\bwget\b/], ['gh api', /\bgh api\b/],
-  ['.claude/ write', /(?:^|[\s`'"(])\.claude\//]];
-const REFUSED = /\b(?:refus\w*|denied|den(?:y|ies)|not (?:allowed|granted|permitted)|blocked|need(?:s|ed)?|can(?:not|'t) (?:run|use|reach|write|call))\b/i;
+  ['.claude/ write', /(?:^|[^\w.])\.claude\//]];
+const REFUSED = /\b(?:refus\w*|denied|den(?:y|ies)|not (?:allowed|granted|permitted)|blocked|can(?:not|'t) (?:run|use|reach|write|call))\b|\bneed(?:s|ed)? (?:the |to (?:run|use) )?(?:aws|ssm|curl|wget|gh api)\b/i;
 const FORCE_PUSH = /\bforce[- ]?push\w*|\bforce-with-lease\b/i;
 
 // The step a park's question says its worker was refused, { step, grantable }, or null. A step no
@@ -119,10 +120,11 @@ export function refusedStep(question) {
 }
 export const neverStep = (question) => { const s = refusedStep(question); return s && !s.grantable ? s.step : null; };
 
-// An answer approves the step it answers when it opens with a yes and says no no, not or wait anywhere.
-const YES = /^\s*(?:yes|yep|y|approved?|ok(?:ay)?|go(?: ahead)?|do it|push it|force[- ]?push it|confirmed?|granted|fine|sure)\b/i;
-const NO = /\b(?:no|not|don'?t|never|wait|hold|stop|cancel)\b/i;
-export const approves = (text) => YES.test(String(text ?? '')) && !NO.test(String(text ?? ''));
+// An answer approves the step it answers only when it is nothing but a yes ("yes", "approved", "Yes,
+// force-push it"): "Sure, merge instead" opens with one and approves nothing. Anything else takes --approve.
+const YES_WORD = String.raw`(?:yes|yep|y|approved?|ok(?:ay)?|go ahead|do it|push it|force[- ]?push(?: it)?|confirmed?|granted|sure|please)`;
+const YES = new RegExp(String.raw`^\s*${YES_WORD}(?:[\s,.!:;-]+${YES_WORD})*[\s.!]*$`, 'i');
+export const approves = (text) => YES.test(String(text ?? ''));
 
 // The grant an answer records on a parked ticket, { grant }, or { why } when it records none. The lease
 // is the SHA the push may overwrite: the park inputs' `lease`, else `remoteSha(branch)`, origin's

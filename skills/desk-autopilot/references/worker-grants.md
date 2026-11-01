@@ -22,8 +22,8 @@ a worker cannot:
 - push anything but the exact commands `git push [-u|--set-upstream] origin <its branch>` (and
   `git push --force-with-lease origin <its branch>` where §3 `git-force-with-lease` is `yes`); bare
   `git push` is refused;
-- rebase onto the base a branch already on origin, unless it may force-push it afterwards: it takes
-  `git merge origin/<base>` instead;
+- rebase onto the base a branch already on origin, unless §3 `git-force-with-lease` is `yes`: it
+  takes `git merge origin/<base>` instead;
 - run `git config`, `git -c …`, `git -C` on anything but its own worktree (and there only the
   reads), git aliases or `git stash`;
 - run `gh api` in any form, `gh alias`, `gh pr merge`, `gh pr ready`, or approve or request changes;
@@ -47,8 +47,8 @@ It may also write its resume file, `$DESK_STATE/resume/<TICKET>.json`: the harne
 worktree's `.claude/`, where `desk-ticket` keeps one interactively.
 
 **An approved force-push is a one-off grant.** Where §3 `git-force-with-lease` is not `yes` and a
-worker parks asking to force-push its branch, an answer that approves it (one opening with a yes and
-saying no no, not or wait, or `answer.mjs <TICKET> --approve "…"`) is recorded as the ticket's
+worker parks asking to force-push its branch, an answer that approves it (one that is nothing but a
+yes, such as `yes` or `Yes, force-push it`, or `answer.mjs <TICKET> --approve "…"`) is recorded as the ticket's
 `grant`: its branch and the SHA origin held, from the park's `lease` input or the worktree's
 `origin/<branch>`. The requeued worker's settings then allow exactly
 `git push --force-with-lease=<branch>:<sha> origin <branch>`, and its prompt names it. Once origin's

@@ -700,6 +700,11 @@ t('DS-390 the KAN-636 round 6 park names a force-push a grant covers', JSON.stri
 t('DS-390 a park needing curl and aws ssm names a step no worker is allowed', BS.neverStep('needs curl + aws ssm to read the parameter'), 'aws');
 t('DS-390 a park that only mentions aws in passing is not a session park', BS.neverStep('Should the copy say AWS or Amazon Web Services?'), null);
 t('DS-390 approvals: a yes approves, a no, not or wait does not', ['Yes, force-push it', 'approved', 'no, merge instead', 'yes but wait for CI', 'Use the short copy'].map(BS.approves).join(), 'true,true,false,false,false');
+t('DS-390 approvals: an answer that opens with a yes and asks for something else approves nothing',
+  ['Sure, merge origin/main instead', 'OK, merge instead', 'Go with a merge instead.', 'Fine, use merge', 'Yes, read it yourself'].map(BS.approves).join(), 'false,false,false,false,false');
+t('DS-390 approvals: a bare yes, with or without naming the push', ['ok', 'Yes.', 'Approved, go ahead!', 'yes please', 'Force-push it'].map(BS.approves).join(), 'true,true,true,true,true');
+t('DS-390 a question that only says need near aws is not a session park', [BS.neverStep('Which AWS region does the new bucket need: eu-west-1 or eu-west-2?'), BS.neverStep('The env var needs reading from SSM in prod; what is the parameter name?')].join(), ',');
+t('DS-390 a refused write under an absolute .claude/ path is a session park', [BS.neverStep('Writing /repo/.claude/desk-ticket-X.json was denied'), BS.neverStep('Writing ~/.claude/rules/x.md is refused')].join(), '.claude/ write,.claude/ write');
 const gr1 = N.record({ word: 'grantee', ticket: 'GR-1', action: 'resume', text: 'Yes, force-push it' });
 const grT1 = queueOf('grantee').tickets['GR-1'];
 t('DS-390 AC1 an approving answer records a grant for that branch and lease SHA, and requeues it',

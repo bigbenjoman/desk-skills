@@ -369,9 +369,9 @@ settings '`bash tests/run.sh`' '' "$PUSH3"
 check "DS-390 AC1 the grant allows exactly that push, for that branch and lease SHA" '[ $rc -eq 0 ] && ok "$LEASE" && [[ "$out" == *"CONFIG_GRANT: $LEASE"* ]] && ! denied_line git-force-with-lease ask'
 check "DS-390 AC1 and nothing wider" 'no "git push --force-with-lease origin fix/fix-thing" "git push --force-with-lease=fix/fix-thing:$(printf b%.0s {1..40}) origin fix/fix-thing" \
   "git push --force-with-lease=main:$SHA origin main" "git push --force origin fix/fix-thing" "git push -f origin fix/fix-thing" "git push origin +fix/fix-thing" "$LEASE --force" "git -C $W ${LEASE#git }"'
-check "DS-390 AC1 with the grant the pushed branch may be rebased again" 'ok "git rebase origin/main"'
-check "DS-390 AC1 the only allow rules added are the push and the rebase, in each spelling of git" \
-  '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-nogrant.json") | map(select(test(\"git (push --force-with-lease=fix/fix-thing:$SHA origin fix/fix-thing|rebase origin/main)\\\\)$\") | not))" "$T/ws.json")" = "[]" ] && allows "Bash($LEASE)"'
+check "DS-390 AC4 with the grant the pushed branch is still not rebased onto the base" 'no "git rebase origin/main" && ok "git merge origin/main"'
+check "DS-390 AC1 the only allow rule added is the push, in each spelling of git" \
+  '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-nogrant.json") | map(select(test(\"git push --force-with-lease=fix/fix-thing:$SHA origin fix/fix-thing\\\\)$\") | not))" "$T/ws.json")" = "[]" ] && allows "Bash($LEASE)"'
 # Spent: origin's branch moved off the lease, so the next settings leave the grant out.
 git -C "$T/repo" commit -q --allow-empty -m pushed; git -C "$T/repo" update-ref refs/remotes/origin/fix/fix-thing HEAD
 settings '`bash tests/run.sh`' '' "$PUSH3"

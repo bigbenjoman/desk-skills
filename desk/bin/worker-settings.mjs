@@ -285,8 +285,9 @@ if (mode === 'triage') {
   const ticketGrant = (() => { try { return JSON.parse(readFileSync(E.queueFile(), 'utf8')).tickets?.[T]?.grant ?? null; } catch { return null; } })();
   const ONE_PUSH = baseFix ? null : grantPush(ticketGrant, { branch: BRANCH, remote: REMOTE_SHA });
   // A rebased branch that is already on origin can only go back by force-push, so it is rebased only
-  // where one is allowed; otherwise it takes `git merge origin/<base>`.
-  const leaseOk = E.permission('git-push') === 'yes' && (E.permission('git-force-with-lease') === 'yes' || !!ONE_PUSH);
+  // where §3 allows that; otherwise it takes `git merge origin/<base>`. A one-off grant adds no rebase:
+  // the branch it pushes was rebased before its park.
+  const leaseOk = E.permission('git-push') === 'yes' && E.permission('git-force-with-lease') === 'yes';
   const REBASE = !REMOTE_SHA || leaseOk ? GIT_REBASE : GIT_REBASE.filter((s) => !s.startsWith(' rebase origin/'));
   // §3 worker-workflow-dispatch: only the exact `gh workflow run` commands §4 Worker workflows names,
   // each on this ticket's own branch, never the default branch or the batch base. An exact rule takes
