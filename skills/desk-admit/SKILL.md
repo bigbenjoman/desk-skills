@@ -58,7 +58,14 @@ It triages each ticket afresh, which takes a minute or two each, and admits none
 is done: give the call your longest foreground timeout, and if it moves to the background, wait for
 its notification rather than running it again. Exit 0: every ticket was admitted
 or was already in the batch, any epic had its feature batch started, and any other epic is one to
-plan (step 1b). Print its lines, and stop unless there is an epic to plan.
+plan (step 1b). Print its lines, and stop unless there is an epic to plan or a blocker to admit next.
+
+A ticket blocked by one in no batch is admitted held by it (`waiting for <B>, outside the batch, until
+it is Done and on <base>`), and one blocked by a ticket in another live batch joins that batch. **An
+`admit next: <B>...` line** names the open blockers in no batch of what was just admitted: run step 1
+again for exactly those, at once, with no question, since the user naming what they block is the
+approval. Do the same for any `admit next:` line that run prints, and handle its refusals as step 2
+says.
 
 Where config §3 `autopilot-workers` is `yes`, an epic gets its own feature batch, beside the standing
 batch, with no session: `started feature batch <E> on <branch>` (its branch pushed to origin under
@@ -92,7 +99,7 @@ below as `(Recommended)`, with its reason as the description:
 | `lint (blocking): …` | Fix the ticket as the finding says (`desk-jira`) | Run step 1 again for it |
 | `design not snapshotted: <URL>…` | Snapshot it as step 0 says, or, where it will not read, have it shared with this subscription | Run step 1 again for it |
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
-| `blocked by <B>, which is not done and not in the batch` | Admit `<B>` with it | Run step 1 with both |
+| `blocked by <B>, which failed in the batch` | Requeue `<B>` (`queue.mjs requeue <B>`), or drop it if it will not be done | Run step 1 again for it |
 | `an epic, and its feature batch <B> is already running` | Admit the epic's children instead: they join `<B>` | Run step 1 for the children |
 | `an epic, and its feature batch was not started: …` | Settle what follows the colon (the line names the push or fix), as the rows here say for it; nothing was left behind | Run step 1 again for it, or plan it in a session: `/desk-autopilot <EPIC>` |
 | `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most | Admit nothing for it |
@@ -107,6 +114,6 @@ line in the same output is not refused: run step 1b for it once these are settle
 
 ## 3. End
 
-Print one line per ticket: admitted (and into which batch, and held behind what, if held), already
+Print one line per ticket: admitted (and into which batch, and held behind or waiting for what, if held), already
 in the batch, an epic whose feature batch was started (its plan waiting in `/desk-needs-you`), an
 epic being planned as a feature batch, or left out and why.

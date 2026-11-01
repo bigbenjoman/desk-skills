@@ -218,20 +218,14 @@ GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 # The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
 # A recorded branch is matched exactly; only an id with none falls back to the bounded regex.
 ticket_map(){   # ticket_map <key>...
-  node - "$DESK_QUEUE" "$@" <<'NODE'
-const fs = require('fs');
-const [qf, ...keys] = process.argv.slice(2);
+  node --input-type=module - "$DESK_BIN/batch-state.mjs" "$DESK_QUEUE" "$@" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [mod, qf, ...keys] = process.argv.slice(2);
+const { keyPattern } = await import(pathToFileURL(mod).href);
 let q = {};
-try { q = JSON.parse(fs.readFileSync(qf, 'utf8')).tickets || {}; } catch { /* no queue: regex only */ }
-const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-const re = (k) => {
-  const n = /^issue-([0-9]+)$/.exec(k)?.[1];
-  if (n) return `(^|[^A-Za-z0-9-])issue-${n}([^0-9]|$)|#${n}([^0-9]|$)`;
-  // Right edge: end, a character that cannot continue an id, or `-` followed by a non-digit — so the
-  // slug after a key (`fix/BUG-119-login`) matches and a longer id (`BUG-119-5`, `BUG-1190`) does not.
-  return `(^|[^A-Za-z0-9-])${esc(k)}($|[^A-Za-z0-9-]|-[^0-9])`;
-};
-console.log(JSON.stringify(keys.map((k) => ({ key: k, branch: (q[k] && q[k].branch) || '', re: re(k) }))));
+try { q = JSON.parse(readFileSync(qf, 'utf8')).tickets || {}; } catch { /* no queue: regex only */ }
+console.log(JSON.stringify(keys.map((k) => ({ key: k, branch: (q[k] && q[k].branch) || '', re: keyPattern(k) }))));
 NODE
 }
 # prs <state> [<key>...] -> lines `<number>\t<isDraft>\t<key>\t<base>` for the batch's PRs (or those
@@ -327,7 +321,8 @@ for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(
 // Only an approval from the person releases what a feature spine holds: a spine PR merged without it does not.
 // No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
 const unapproved = (p) => p === spine && q[p]?.approved !== true;
-for (const [s, ps] of Object.entries(m)) if (held(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
+// A blocker in no batch (held_outside) waits on Jira as well as a merge: pass.mjs lifts it, not this.
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0

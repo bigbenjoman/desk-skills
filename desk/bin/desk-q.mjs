@@ -186,6 +186,7 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
 function blockerHold(q, key, b, ctx, seen) {
   const bt = q.tickets?.[b];
+  if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) return { k: 'waiting', name: b, text: `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
   if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {
@@ -2204,9 +2205,15 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const rows = [], out = [];
   // Blockers, by who has to act: merged ones counted green, then each still open in the batch, then
   // each open in Jira outside it, grey with its status.
-  const held = keysOf(t.held_by), outside = outsideOf(t);
+  // A blocker it was admitted behind in no batch (held_outside) is in held_by too: it is listed once,
+  // outside, with its Jira status, or as Done and not yet on the base.
+  const away = keysOf(t.held_outside).filter((b) => !r.q.tickets[b]);
+  const held = keysOf(t.held_by).filter((b) => !away.includes(b));
+  const jiraCat = (b) => (triageOf(r.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === b)?.category;
+  const outside = [...outsideOf(t), ...away.filter((b) => !outsideOf(t).some((o) => o.key === b))
+    .map((b) => ({ key: b, category: jiraCat(b) === 'done' ? `Done, not yet on ${r.ctx.base}` : jiraCat(b) ?? 'outside this batch' }))];
   if (held.length || outside.length) {
-    const unmerged = unmergedBlockers(r.q, t);
+    const unmerged = unmergedBlockers(r.q, t).filter((b) => !away.includes(b));
     const merged = held.filter((b) => !unmerged.includes(b));
     const kw = Math.max(8, ...[...held, ...outside.map((o) => o.key)].map((s) => s.length));
     const total = held.length + outside.length;

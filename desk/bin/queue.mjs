@@ -263,9 +263,11 @@ function requeue(q, key) {
   // A ticket admitted parked on its design kept its blockers in held_by (admit): it goes back behind the
   // ones not yet merged, never straight to a worker. A released hold clears held_by, so nothing else
   // leaves one on a ticket that is not held.
-  const pending = String(t.held_by ?? '').split('|').filter((p) => p && q.tickets[p] && !q.tickets[p].merged_at);
+  // Blockers in no batch (held_outside) stay until pass.mjs lifts them.
+  const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
+  const pending = String(t.held_by ?? '').split('|').filter((p) => p && (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null,
+  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null,
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
@@ -283,8 +285,9 @@ const spineHolds = (q, key) => [
 // Put triaged ticket `key` into queue `q` from its triage record `r`, the way plan-batch seeds one, and
 // say how it stands. `state` holds the triage records of q's tickets. `holds` (its blockers in q) gains
 // q's spine and plan holds when `holdSpine` is set, and every unfinished ticket it collides with when
-// `holdCollisions` is.
-function admitInto(q, key, r, { state, by = null, holds = [], holdSpine = false, holdCollisions = false }) {
+// `holdCollisions` is. `outside`, its blockers in no batch, are held too and recorded as held_outside:
+// pass.mjs lifts each once it is Done and on the batch's base.
+function admitInto(q, key, r, { state, by = null, holds = [], outside = [], holdSpine = false, holdCollisions = false }) {
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   const park = lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
@@ -303,6 +306,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], holdSpine = false,
     }
   }
   if (holdCollisions) for (const k of collides) if (!holds.includes(k)) holds.push(k);
+  for (const k of outside) if (!holds.includes(k)) holds.push(k);
   // A hold would let a release send a ticket parked for its own reason to a worker (hold, above). A
   // design park keeps its holds in held_by instead, unreleased, and requeue holds it behind the open
   // ones once the design is snapshotted.
@@ -314,6 +318,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], holdSpine = false,
     session_id: null, pid: null, base_sha: null, stage: null,
     park: park ? { question: park, since: new Date().toISOString() } : holds.length ? heldPark(holds) : null, log: null, result: null,
     collides_with: collides.join('|') || null, open_questions: unknowns, held_by: holds.join('|') || null,
+    ...(outside.length ? { held_outside: outside.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
     added_at: new Date().toISOString(),
   };
@@ -522,21 +527,29 @@ switch (cmd) {
     // --hold holds it behind blockers in this batch in the same write, so no pass sees it runnable first.
     // --hold-collisions holds it behind every unfinished ticket it collides with too, so it waits for
     // their PRs to merge rather than only for them to stop running. --hold-spine holds it behind this
-    // feature batch's spine until done, and its epic while that waits on its plan.
+    // feature batch's spine until done, and its epic while that waits on its plan. --hold-outside holds
+    // it behind blockers in no batch, which pass.mjs lifts once each is Done and on the batch's base.
     const [key] = args;
     const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
-    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-spine] [--hold-collisions]   (after triage.sh <TICKET>)');
-    const holds = args.includes('--hold') ? String(args[args.indexOf('--hold') + 1] ?? '').split(/[,|]/).filter(Boolean) : [];
+    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-outside <BLOCKER>[,<BLOCKER>...]] [--hold-spine] [--hold-collisions]   (after triage.sh <TICKET>)');
+    const listArg = (flag) => (args.includes(flag) ? String(args[args.indexOf(flag) + 1] ?? '').split(/[,|]/).filter(Boolean) : []);
+    const holds = listArg('--hold');
     if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
     for (const p of holds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
+    const outside = listArg('--hold-outside');
+    if (args.includes('--hold-outside') && !outside.length) throw new Error('admit --hold-outside wants the blockers, comma-separated');
+    for (const p of outside) {
+      if (!SAFE_ID.test(p) || p === key) throw new Error(`admit --hold-outside: ${p} is not a blocker of ${key}`);
+      if (q.tickets[p]) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
+    }
     if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);
     if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
     const r = readTriage(stateDir(), key);
     const elsewhere = belongsElsewhere(key, r, QUEUE);
     if (elsewhere) throw new Error(elsewhere.why);
-    const asked = holds.length;
-    const said = admitInto(q, key, r, { state: stateDir(), by, holds, holdSpine: args.includes('--hold-spine'), holdCollisions: args.includes('--hold-collisions') });
+    const asked = holds.length + outside.length;
+    const said = admitInto(q, key, r, { state: stateDir(), by, holds, outside, holdSpine: args.includes('--hold-spine'), holdCollisions: args.includes('--hold-collisions') });
     save(q);
     console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !asked ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
     break;

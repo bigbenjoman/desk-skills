@@ -1552,6 +1552,13 @@ t('DS-218 AC1 (DS-279 AC6, DS-280 AC9) the rail is in the state\'s colour: held 
 const p168 = lines(page218('DS-168'));
 t('DS-218 AC2 the blockers: merged as one green count, the one needing you with its action, those outside with their Jira status',
   ['Blockers  31 · 4 in this batch, 27 open outside it', '  ✓ 3 in this batch merged', '  ◆ DS-150    #175: draft · undraft it once it is reviewed', '  ◌ OUT-1     To Do'].filter((s) => !p168.includes(s)).join(' | '), '');
+dated('s391', 5391, { hours: twelveHours, tickets: { 'DS-150': prAt(175, { isDraft: true }),
+  'DS-391': { ...heldBy('DS-150|OUT-1|OUT-2'), held_outside: 'OUT-1|OUT-2', outside_blockers: [{ key: 'OUT-1', category: 'new' }] } } });
+writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__s391', 'triage', 'DS-391.json'), JSON.stringify({ ticket: 'DS-391', summary: 'held outside', size: 'M',
+  blockers: [{ key: 'DS-150', category: 'indeterminate' }, { key: 'OUT-1', category: 'new' }, { key: 'OUT-2', category: 'done' }] }));
+const p391 = lines(Q.ticketScreen(Q.loadRepos(FIXED).find((r) => r.name === 's391'), 'DS-391', { now: FIXED, width: 120 }));
+t('DS-391 AC1 a blocker the ticket is held behind outside the batch is listed once, outside, with its Jira status, and never as one to let start',
+  `${['Blockers  3 · 1 in this batch, 2 open outside it', '  ◌ OUT-1     To Do', '  ◌ OUT-2     Done, not yet on main'].filter((s) => !p391.includes(s)).join(' | ')}|${p391.filter((l) => /^ {2}\S OUT-\d/.test(l)).length}|${p391.some((l) => l.includes('not in this queue'))}`, '|2|false');
 const f168 = lastFrame(S168);
 t('DS-218 AC2 on screen: the count green, the one needing you magenta with the action bold, the outside ones grey',
   [f168.some((l) => l.includes('\x1b[38;5;108m  ✓ 3\x1b[39m')), f168.some((l) => l.includes('◆ DS-150    \x1b[22;39m#175: \x1b[1mdraft · undraft it once it is reviewed\x1b[22m')), f168.some((l) => l.startsWith(`${G}  ◌ OUT-1     To Do\x1b[39m`))].join(), 'true,true,true');

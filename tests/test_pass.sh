@@ -1068,6 +1068,37 @@ q set J-4 merged_at=2099-01-01T00:00:00.000Z; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC6 a ticket merged since the last pass is progress" '[ "$(pass_rec progress_at)" = "$(pass_rec at)" ] && [ "$(pass_rec merged_tickets | jq -c .)" = "[\"J-4\"]" ]'
 PROGRESS=$(pass_rec progress_at); out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC6 a merge already counted is not progress again, however late its merge time" '[ "$(pass_rec progress_at)" = "$PROGRESS" ] && [ "$(pass_rec at)" != "$PROGRESS" ]'
+# A ticket admitted behind a blocker in no batch is lifted only once the blocker is Done and its PR has
+# merged to the base, or once its link is removed.
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+case "\$*" in
+  "pr view 600 "*) echo '{"state":"OPEN","url":"https://github.com/acme/widgets/pull/600","isDraft":true,"reviewDecision":"REVIEW_REQUIRED","mergeable":"MERGEABLE","statusCheckRollup":[]}' ;;
+  *"--search X-7 "*) cat "$T/prs-x7.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+x7(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"X-7","fields":{"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-7.json"
+  printf '[{"number":70,"state":"%s","title":"fix(x): X-7 a thing","headRefName":"fix/X-7-thing","baseRefName":"main","mergeCommit":null}]\n' "$2" > "$T/prs-x7.json"
+  q set J-7 outside_blockers_read=null; }
+q add J-7; q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"new"}]}' > "$T/state-j/triage/J-7.json"
+x7 new MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-391 AC1 a blocker in no batch whose PR merged but is not Done keeps the ticket held, and not STUCK" \
+  '[ "$(field J-7 state)" = "\"parked\"" ] && [ "$(field J-7 held_outside)" = "\"X-7\"" ] && ! echo "$out" | grep -q "J-7: STUCK"'
+x7 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-391 AC4 a blocker Done in Jira whose PR has not merged to the base keeps the ticket held" \
+  '[ "$(field J-7 state)" = "\"parked\"" ] && [ "$(field J-7 held_by)" = "\"X-7\"" ] && ! echo "$out" | grep -q "J-7: STUCK"'
+x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-391 AC1 once the blocker is Done and its PR merged to the base, the pass releases the ticket" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_by)" = null ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
+q set J-7 state=parked held_by=X-8 held_outside=X-8 'park={"question":"held by orchestrator: blocked by X-8 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":null,"blockers":[]}' > "$T/state-j/triage/J-7.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-391 AC1 a blocker in no batch whose link was removed no longer holds the ticket" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-8 no longer linked as a blocker; RELEASED"'
+q drop J-7
 # AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
 out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'

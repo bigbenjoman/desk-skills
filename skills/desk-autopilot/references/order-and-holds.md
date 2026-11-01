@@ -55,7 +55,9 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   finished with no PR, or its PR was closed unmerged). The user decides: re-run or finish the
   blocker, release the ticket anyway, or drop it. Of those blockers, a failed or parked one is
   already that question, so what is held behind it is not STUCK (below): only a blocker that
-  finished with no PR, closed its PR unmerged or is not in the batch comes to you as STUCK.
+  finished with no PR, closed its PR unmerged or is not in the batch comes to you as STUCK. A
+  blocker in no batch that the ticket was admitted behind (`held_outside`) is not STUCK: the pass
+  lifts it once it is Done in Jira and its PR has merged to the batch's base.
 
 **Behind a failed or parked blocker, a held ticket is not a question of its own.** That blocker is
 already in front of the person (its `FAILED` line, or its park), so what is held behind it, at any
