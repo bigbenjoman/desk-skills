@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -127,7 +127,7 @@ const p0At = (head) => ({ pr: 348, head, verdict: { p0: '1', p1: '0' }, body: re
 const a1 = reviewFix(tk({ fix_tries: ds379 }), p0At(ds379[1].head));
 t('DS-384 AC1 after a conflict try and a rereview try, a P0 at the head goes to a review fix worker, as its last try', `${a1?.call} ${a1?.fix.kind} ${a1?.fix.try}/${a1?.fix.of}`, 'requeue review 1/1');
 t('DS-384 AC1 the try quotes the P0', a1?.fix.findings.map((x) => x.text).join('|'), '- **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
-t('DS-384 AC1 its brief says the PR goes to the person after this try, as the overall cap has it', fixBrief(tk({ fix: a1.fix })).includes('This is try 1 of 1. A PR still with a P0 or P1 in its review after try 1 goes to the person.'), true);
+t('DS-384 AC1 its brief says a finding it quotes that the next review still lists goes to the person', fixBrief(tk({ fix: a1.fix })).includes('This is try 1 of 1. A finding quoted here that the review of your new head still lists goes to the person.'), true);
 const reviewTries = (n, from = 3) => Array.from({ length: n }, (_, i) => ({ try: i + 1, head: `${from + i}`.repeat(40), kind: 'review' }));
 const afterOne = reviewFix(tk({ fix_tries: [ds379[0]] }), p0At(HEAD));
 t('DS-384 one conflict try leaves a review fix both its tries', `${afterOne?.fix.try}/${afterOne?.fix.of}`, `1/${FIX_TRIES_MAX}`);
@@ -139,6 +139,29 @@ const ex = reviewFix(tk({ fix_tries: [ds379[0], { try: 1, head: 'e'.repeat(40), 
 t('DS-384 AC3 an extra review try a base merge earned counts toward neither cap', `${ex?.call} ${ex?.fix?.try}/${ex?.fix?.of}`, 'requeue 2/2');
 const cap = reviewFix(tk({ fix_tries: [{ try: 1, head: 'f'.repeat(40), kind: 'capture' }, ...ds379, ...reviewTries(1)] }), p0At(HEAD));
 t('DS-384 a capture try is not counted or named among the tries by kind', cap?.why.split(':')[0], 'review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review)');
+
+// ---- a review fix try that cleared what it quoted does not use up the tries; one that did not, ends them
+// PR #367's three rounds (DS-414): try 1 closed round 1's findings, try 2 the gap round 2 raised, and the
+// round 3 review at 84b7205 found a new P0 in try 2's fix. Heads and the earlier rounds' texts stand in
+// for the real ones, which the queue no longer holds.
+const H367 = ['1'.repeat(40), 'df514a5' + '0'.repeat(33)], AT367 = '84b7205' + '0'.repeat(33);
+const ds367 = [{ try: 1, head: H367[0], kind: 'review', findings: [{ sev: 'P1', text: '- **P1** `desk/bin/undraft.mjs:120` reads the review of an older head' }] },
+  { try: 2, head: H367[1], kind: 'review', gaps: ['**AC3**, "a park naming a check build is done at harvest." Not covered for a red draft.'] }];
+const p0_367 = '- **P0** `desk/bin/undraft.mjs:248` unanchored tail regex matches a longer check name';
+const round3 = { pr: 367, head: AT367, verdict: { p0: '1', p1: '0' }, body: reviewBody('p0=1 p1=0 p2=0', [p0_367]) };
+const b1 = reviewFix(tk({ fix_tries: ds367 }), round3);
+t('DS-414 AC1 AC4 after two tries that each cleared their findings, a new P0 goes to a fix worker, quoting it', `${b1?.call} ${b1?.fix?.try}/${b1?.fix?.of} ${b1?.fix?.findings?.map((x) => x.text).join('|')}`, `requeue 3/${REVIEW_TRIES_CEILING} ${p0_367}`);
+const kept = { ...ds367[1], findings: [{ sev: 'P0', text: 'desk/bin/undraft.mjs:248 tail regex is not anchored' }] };
+const b2 = reviewFix(tk({ fix_tries: [ds367[0], kept] }), round3);
+t('DS-414 AC2 a P0 at the file:line the previous try quoted survived it: stuck, naming it', `${b2?.call} | ${b2?.why}`,
+  `stuck | review not clean after 2 fix tries (2 review): 1 P0 — still open after the fix try that quoted it: P0: ${p0_367}`);
+t('DS-414 AC2 so is one an earlier try quoted with the same text at another line', reviewFix(tk({ fix_tries: [{ ...ds367[0], findings: [{ sev: 'P0', text: 'desk/bin/undraft.mjs:240 unanchored tail regex matches a longer check name' }] }] }), round3)?.call, 'stuck');
+const ceiling = Array.from({ length: REVIEW_TRIES_CEILING }, (_, i) => ({ try: i + 1, head: `${i + 3}`.repeat(40), kind: 'review', findings: [{ sev: 'P1', text: `src/r${i}.ts:${i + 1} round ${i + 1}` }] }));
+const b3 = reviewFix(tk({ fix_tries: ceiling }), round3);
+t('DS-414 AC3 at the ceiling of review fix tries a review still not clean goes to the person, naming the ceiling', `${b3?.call} | ${b3?.why}`,
+  `stuck | review not clean after ${REVIEW_TRIES_CEILING} review fix tries, the most a PR may make: 1 P0 — P0: ${p0_367}`);
+t('DS-414 one below the ceiling is the last try', `${reviewFix(tk({ fix_tries: ceiling.slice(1) }), round3)?.fix?.try}/${reviewFix(tk({ fix_tries: ceiling.slice(1) }), round3)?.fix?.of}`, `4/${REVIEW_TRIES_CEILING}`);
+t('DS-414 a cleared review try leaves room under the overall cap after a conflict and a rereview try', `${reviewFix(tk({ fix_tries: [...ds379, ds367[0]] }), round3)?.fix?.try}`, '2');
 
 // ---- a review whose P0s and P1s are posted inline goes to a fix worker too
 const inlineBody = reviewBody('p0=0 p1=1 p2=0', ['P2 (0)']);
@@ -187,6 +210,8 @@ t('DS-319 AC4 nor under ask', undraftCall(tk(), draft(g1Body), { ...ucfg, judgem
 const tried = [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }];
 const rg5 = reviewFix(tk({ fix_tries: tried }), { pr: 702, head: HEAD, verdict: g1.verdict, body: g1Body }, { judgement: 'yes' });
 t('DS-319 AC5 after 2 tries it is stuck, with the gap the last try\'s review gives', `${rg5?.call} | ${rg5?.why}`, `stuck | review not clean after 2 fix tries (2 review): 1 gap — ${AC2}`);
+t('DS-414 AC2 a gap the previous try quoted that the review still lists survived it', reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [AC2] }] }), { pr: 702, head: HEAD, verdict: g1.verdict, body: g1Body }, { judgement: 'yes' })?.why,
+  `review not clean after 1 fix try (1 review): 1 gap — still open after the fix try that quoted it: ${AC2}`);
 t('DS-319 a review counting a gap it does not list is left for the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: gapBody('p0=0 p1=0 p2=0', 1, ['### Requirement gaps', 'None.']) }, { judgement: 'yes' }), null);
 const p1g = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: p1Body }, { judgement: 'yes' });
 t('DS-319 a P1 and a gap go in one try, both quoted', `${p1g?.fix.what} | ${p1g?.fix.findings.length} | ${p1g?.fix.gaps}`, 'review not clean: 1 P1, 1 gap | 1 | AC3: src/csv.ts:4 no VAT column');
