@@ -143,6 +143,16 @@ t('AC5 and exits 1', d.code, 1);
 writeFileSync(join(repoDir, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { defaultMode: 'acceptEdits' } }));
 t('another defaultMode is not drift', drift(conf()).out, 'no drift');
 
+// A §4 command item a worker's settings can never allow is a blocking line naming its row.
+const compound = `bash -c 'bash tests/run.sh $(node tests/scope_sections.mjs --json)'`;
+d = drift(`${conf()}| Related tests | \`${compound}\` |\n| Lint | \`pnpm lint\` \`rm -rf dist\` |\n`);
+t('DS-395 AC4 a compound command item is named with its row', d.out.split('\n')[0],
+  `UNLISTED §4 Lint item "rm -rf dist" starts with rm, which is never allow-listed: every worker is refused it`);
+t('DS-395 AC4 and so is a compound one', d.out.split('\n')[1].startsWith(`UNLISTED §4 Related tests item "${compound}" is a compound or env-prefixed shell command`), true);
+t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n').length, 2);
+t('DS-395 AC4 and exits 1', d.code, 1);
+t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
+
 // --all: every repo under DESK_CONFIG_ROOT, by slug.
 const croot = join(T, 'cfgroot');
 for (const [slug, body] of [['acme__clean', conf()], ['acme__stale', conf({ omit: ['git-push'] })]]) {

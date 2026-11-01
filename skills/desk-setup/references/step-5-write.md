@@ -58,6 +58,10 @@ still TODO: <rows>
 Every row appears, including the `no`s. Then say how to change it: re-run `/desk-setup` in this
 repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other repos are untouched.
 
+Then run `desk-env drift` on the file just written. Any `UNLISTED` line blocks: that §4 command item
+can never be allow-listed for a worker, so fix the row with the user (one plain command, or a repo
+script run as `bash <path>.sh`) and write it again before going on.
+
 **Then offer the instruction-file audit**, `/desk-cleanup instructions`: it measures everything a
 session in this repo loads at launch (the `CLAUDE.md` and `AGENTS.md` chain, rules, `MEMORY.md`,
 skill and agent descriptions) and proposes where each oversized part could move. It writes nothing

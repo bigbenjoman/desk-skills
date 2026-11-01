@@ -171,6 +171,10 @@ location: a path only, never the token.
   can only park on while `autopilot-workers` is `yes` (`STALLS`), and a settings file that starts
   sessions in `dontAsk` (`DONTASK`). Exit 0 prints `no drift`. It changes nothing: the report is
   what the user decides from.
+- **An `UNLISTED` line from `desk-env drift` is blocking.** It names a §4 command item a worker's
+  allow-list cannot hold (a `$(…)`, a pipe, `&&`, an env prefix, a bare shell), so every worker is
+  refused it. Propose one plain command in its place, usually the logic moved into a repo script run
+  as `bash <path>.sh`, and do not finish setup until the row has none.
 - Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.
