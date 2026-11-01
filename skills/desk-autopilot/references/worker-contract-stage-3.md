@@ -90,8 +90,9 @@ Your settings are an **allow-list**: anything not named here is refused.
   and answer a review thread with a `gh pr comment` naming it (§3 `pr-reply`); resolving threads is
   the orchestrator's. A read those do not cover (a GraphQL query, a REST GET) goes through
   `desk-gh read <endpoint> [gh api flags]`, e.g. `desk-gh read graphql -f query='{ viewer { login } }'`:
-  it refuses a mutation, any method but GET, `--input`, a field read from a file and any unknown flag
-  (exit 1). A REST field needs `-X GET`.
+  it refuses a query holding the word `mutation` or `subscription` anywhere (a string included), any
+  method but GET, `--input`, a field read from a file and any unknown flag (exit 1). A REST field
+  needs `-X GET`.
 - **`gh workflow run`**, only where §3 `worker-workflow-dispatch` is `yes`, and only exactly as
   §4 Worker workflows (`desk-env list worker-workflows`) lists each entry: `gh workflow run <file>.yml --ref <your branch> -f …` (or
   with `--repo <§0 GitHub repo>` after the file), no input added or changed. Any other workflow, ref

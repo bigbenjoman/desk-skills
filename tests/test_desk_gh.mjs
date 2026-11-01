@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { operations } from '../desk/bin/desk-gh.mjs';
+import { writeKeyword } from '../desk/bin/desk-gh.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(ROOT, 'desk', 'bin', 'desk-gh.mjs');
@@ -52,10 +52,14 @@ refused('graphql by a URL', 'https://api.github.com/graphql', '-f', 'query={ vie
 refused('graphql with no query', 'graphql');
 t('usage: anything but read is exit 2', run('graphql', '-f', 'query=x').status, 2);
 
-// The parser: keywords inside strings, comments and selections are not operations.
-t('a "mutation" string argument is not an operation', operations('{ search(query: "mutation {") { issueCount } }'), []);
-t('a field named mutation is not an operation', operations('query { mutation { id } }'), ['query']);
-t('a block string is skipped', operations('query { a(b: """ } mutation { """) { c } }'), ['query']);
+// The keyword is refused wherever it stands: a comment or string GitHub's parser ends earlier than a
+// scanner would cannot hide it.
+refused('a mutation after a comment ended by a carriage return', 'graphql', '-f', 'query=# read\rmutation B { addStar(input: {}) { clientMutationId } }');
+refused('a mutation after an escaped block-string quote', 'graphql', '-f',
+  'query=query Q { node(id: """x\\""" y""") { id } } mutation M { deleteIssue(input: {}) { clientMutationId } }', '-f', 'operationName=M');
+refused('the word inside a string argument', 'graphql', '-f', 'query={ search(query: "mutation {", type: ISSUE, first: 1) { issueCount } }');
+t('a longer name holding the word is not the keyword', writeKeyword('{ viewer { mutationsAllowed: login } }'), null);
+t('a subscription is found by name', writeKeyword('subscription { x }'), 'subscription');
 
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'desk-gh: all checks passed');

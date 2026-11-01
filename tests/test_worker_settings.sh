@@ -82,6 +82,10 @@ PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `pnpm format:
 check "DS-398 AC3 each pre-push item allowed exactly as written" \
   '[ $rc -eq 0 ] && allows "Bash(pnpm format:check:*)" && allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:*)" && ! allows "Bash(pnpm typecheck:*)"'
 check "DS-398 AC2 a root Lint item also runs under nolock"  'allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)" && allows "Bash(pnpm lint:*)"'
+PMROW='`pnpm`' settings '`bash tests/run.sh` `api: pnpm test`' '| Pre-push checks | `web: pnpm typecheck` `api: pnpm test` |' '| Typecheck | `web: pnpm typecheck` |'
+check "DS-398 AC3 a pre-push item another row lists runs only under that row's lock" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:*)" && allows "Bash($B/with-lock.sh test --cwd api -- pnpm test:*)" \
+     && ! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd api -- pnpm test:*)"'
 
 # A Related tests row that is one script is allowed bare and under the test lock; the compound it replaced is not.
 settings '`bash tests/run.sh`' '| Related tests | `bash tests/related.sh` |'
@@ -228,7 +232,7 @@ ln -s "$T/repo" "$T/link"
 out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/link" --branch fix/fix-thing --out "$T/ws.json" 2>&1); rc=$?
 check "DS-398 AC4 a symlinked --wt: git -C by the link or the real path" '[ $rc -eq 0 ] && ok "git -C $T/link status" "git -C $T/link commit -m x" "git -C $R status" "git -C $R add -A" && no "git -C $T/other status"'
 triage
-check "DS-398 AC1 triage: echo, printf and true allowed"   'okc "git status --porcelain; echo \"exit=\$?\"" "printf %s x" "true"'
+check "triage's allow-list is unchanged: no echo, printf or true" 'no "echo x" "printf %s x" "true"'
 check "AC10 triage: the token is not readable either"      '[ $rc -eq 0 ] && no "cat $CREDS/atlassian-token" "cat \${HOME}/.config/desk/repos/acme__widgets/x" && [ "$(readable "$CREDS/atlassian-token")" = refused ]'
 settings '`bash tests/run.sh`' '' "$(perm3 yes)"
 check "AC6 jira-transition yes: both allowed"             'ok "desk-jira transitions DS-1" "desk-jira transition DS-1 Done"'

@@ -4,9 +4,9 @@
 // cannot write:
 //
 //   desk-gh read <endpoint> [flags]            a REST GET; fields only with `-X GET` (else gh POSTs)
-//   desk-gh read graphql -f query='<query>'    a GraphQL query; a mutation or subscription is refused
+//   desk-gh read graphql -f query='<query>'    a GraphQL query; one naming mutation or subscription is refused
 //
-// Refused with exit 1: any method but GET, a mutation or subscription, `--input`, a field read from a
+// Refused with exit 1: any method but GET, a query holding the word mutation or subscription, `--input`, a field read from a
 // file (`-F k=@path`), a method-override header, and any flag not listed in FLAGS. Usage is exit 2;
 // otherwise gh's own exit status.
 import { spawnSync } from 'node:child_process';
@@ -22,18 +22,12 @@ const FLAGS = {
 };
 const FIELD = new Set(['-f', '--raw-field', '-F', '--field']);
 
-// The top-level operation keywords of a GraphQL document, strings and comments aside.
-export function operations(query) {
-  const text = String(query).replace(/"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|#[^\n]*/g, ' ');
-  const ops = [];
-  let depth = 0;
-  for (const m of text.matchAll(/[{}()]|[_A-Za-z][_0-9A-Za-z]*/g)) {
-    const w = m[0];
-    if (w === '{' || w === '(') depth++;
-    else if (w === '}' || w === ')') depth--;
-    else if (depth === 0 && ['query', 'mutation', 'subscription'].includes(w)) ops.push(w);
-  }
-  return ops;
+// A GraphQL write is only ever spelled with the keyword `mutation` or `subscription`, so a query that
+// holds either word anywhere is refused, inside a string or a comment too. No lexing: a scanner that
+// ends a comment or a string where GitHub's parser does not would let a write through.
+// -> the keyword, or null.
+export function writeKeyword(query) {
+  return /(?<![_A-Za-z])(mutation|subscription)(?![_0-9A-Za-z])/.exec(String(query))?.[1] ?? null;
 }
 
 // -> null when `gh api <args>` only reads, else why not.
@@ -70,10 +64,8 @@ export function refusal(args) {
     if (method) return 'a method for graphql';
     const query = fields.filter(([k]) => k === 'query');
     if (query.length !== 1) return 'graphql needs exactly one query field';
-    const ops = operations(query[0][1]);
-    const write = ops.find((o) => o !== 'query');
-    if (write) return `a GraphQL ${write}`;
-    return null;
+    const write = writeKeyword(query[0][1]);
+    return write ? `the word "${write}" (a GraphQL write)` : null;
   }
   if (fields.length && method !== 'GET') return 'fields without -X GET (gh would POST them)';
   return null;

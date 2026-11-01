@@ -157,12 +157,15 @@ const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? ''
 // desk-pr runs each PR-description check with the body file appended, so its prefix rule fits as is.
 // §4 Codegen (e.g. `pnpm prisma generate`) takes no lock: it is short and writes only the worktree.
 // Each §4 Pre-push checks item is allowed on its own too, beside the pre-push script that runs them all.
+// One that another row already lists (a Typecheck or Unit tests item, say) is left to that row, so it
+// runs only under that row's lock, as pre-push.sh runs it; the rest take `nolock`, as there.
 const TOOL_IDS = [...E.WORKER_COMMAND_IDS, 'pre-push-checks'].filter((id) => HAS_TICKET_DB || !['db-migrate-cmd', 'seed-cmd'].includes(id));
 const warns = [];
 const items = [];
 for (const id of TOOL_IDS) {
   for (const raw of cfgList(id)) {
     const { dir, cmd } = E.parseCommandItem(raw);
+    if (id === 'pre-push-checks' && items.some((x) => x.dir === dir && x.cmd === cmd)) continue;
     const why = E.commandItemProblem(cmd);
     if (why) { warns.push(`§4 ${E.CONFIG_ROWS[id].row} item "${raw}" ${why}`); continue; }
     const bin = cmd.split(/\s+/)[0];
@@ -198,10 +201,11 @@ const granted = [];
 
 // Read-only commands, each with the forms that would make it write or execute denied. Deliberately
 // absent: sed and awk (both can execute: GNU sed `e`, awk `system()`), cp and mv (they write anywhere,
-// past the Write rules), sort and uniq (`--compress-program`, output files), xargs, tee. echo, printf
-// and true write only to stdout; a redirect after one is a file write, which the harness polices.
-const READS = ['rg', 'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc', 'diff', 'jq', 'pwd', 'basename', 'dirname', 'realpath', 'stat', 'du', 'file', 'tr', 'cut',
-  'echo', 'printf', 'true'];
+// past the Write rules), sort and uniq (`--compress-program`, output files), xargs, tee.
+const READS = ['rg', 'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc', 'diff', 'jq', 'pwd', 'basename', 'dirname', 'realpath', 'stat', 'du', 'file', 'tr', 'cut'];
+// A worker's (not triage's): echo, printf and true write only to stdout; a redirect after one is a
+// file write, which the harness polices.
+const STDOUT = ['echo', 'printf', 'true'];
 const READ_DENY = [
   ...bash('rg', ' *--pre*'),
   ...bash('find', ' *-exec*', ' *-execdir*', ' *-ok *', ' *-okdir*', ' *-delete*', ' *-fprint*', ' *-fls*'),
@@ -344,7 +348,7 @@ if (mode === 'triage') {
 
   // ---- reads, desk-env, git, gh, desk-jira -----------------------------------------------------
   allow.push(
-    ...READS.flatMap((b) => bash(b)),
+    ...[...READS, ...STDOUT].flatMap((b) => bash(b)),
     'Bash(mkdir:*)', 'Bash(ps:*)', 'Bash(pgrep:*)',
     ...bash('git', ...GIT_READ, ...GIT_LOCAL), ...[...GIT_READ_EXACT, ...REBASE].flatMap((t) => exact('git', t)),
     // The same reads and local writes aimed at this worktree by path: `-C <worktree>` is where the
