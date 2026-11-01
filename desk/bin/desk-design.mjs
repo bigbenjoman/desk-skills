@@ -397,20 +397,44 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
 
 // ---- import (a design's HTML export) -----------------------------------------------------------
 
-// Every URL a page loads: a src, a stylesheet, icon, preload or manifest <link>'s href, CSS url() and
-// @import, in the order the page names them. An <a>'s href, or a canonical <link>, is a link rather
-// than a load.
+// Every URL a page loads: a src or poster, each srcset candidate, a stylesheet, icon, preload or
+// manifest <link>'s href, CSS url() and @import, in the order the page names them. An <a>'s href, or
+// a canonical <link>, is a link rather than a load. A template binding names no file, unless it sits
+// in a URL to another host. Only tags are read for attributes, and a script's body or a comment is
+// not read at all: an inline runtime's `img.src = u` is code, not a load.
+const TAG = /<[a-z](?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+// A srcset's URLs: each candidate's URL is its run of non-space characters, so a data: URL's comma
+// stays in it; a trailing comma ends the candidate, else its descriptors run to the next comma.
+function candidates(set) {
+  const out = [];
+  let rest = set;
+  while ((rest = rest.replace(/^[\s,]+/, ''))) {
+    const word = /^\S+/.exec(rest)[0];
+    const url = word.replace(/,+$/, '');
+    out.push(url);
+    rest = rest.slice(word.length);
+    if (url === word) rest = rest.replace(/^[^,]*/, '');
+  }
+  return out;
+}
+const attr = (names) =>new RegExp(`\\s(?:${names})\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>"']+))`, 'gi');
 export function loads(text) {
   const found = [];
-  const add = (at, r) => { const v = String(r ?? '').trim(); if (v && !v.includes('{{')) found.push({ at, v }); };
-  for (const m of text.matchAll(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/gi)) add(m.index, m[1] ?? m[2] ?? m[3]);
-  for (const t of text.matchAll(/<link\b[^>]*>/gi)) {
-    if (!/\brel\s*=\s*["']?[^"'>]*\b(?:stylesheet|icon|preload|modulepreload|manifest)\b/i.test(t[0])) continue;
-    const m = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/i.exec(t[0]);
-    if (m) add(t.index, m[1] ?? m[2] ?? m[3]);
+  const add = (at, r) => { const v = String(r ?? '').trim(); if (v && (!v.includes('{{') || isRemote(v))) found.push({ at, v }); };
+  const blank = (s) => s.replace(/[^\n]/g, ' ');
+  const markup = text.replace(/<!--[\s\S]*?(?:-->|$)/g, blank)
+    .replace(/(<script\b(?:"[^"]*"|'[^']*'|[^'">])*>)([\s\S]*?)(?=<\/script\s*>|$)/gi, (_, open, body) => open + blank(body));
+  for (const t of markup.matchAll(TAG)) {
+    for (const m of t[0].matchAll(attr('src|poster'))) add(t.index + m.index, m[1] ?? m[2] ?? m[3]);
+    for (const m of t[0].matchAll(attr('srcset|imagesrcset'))) {
+      for (const u of candidates(m[1] ?? m[2] ?? m[3])) add(t.index + m.index, u);
+    }
+    if (!/^<link\b/i.test(t[0]) || !/\srel\s*=\s*["']?[^"'>]*\b(?:stylesheet|icon|preload|modulepreload|manifest)\b/i.test(t[0])) continue;
+    const m = attr('href').exec(t[0]);
+    if (m) add(t.index + m.index, m[1] ?? m[2] ?? m[3]);
   }
-  for (const m of text.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/gi)) add(m.index, m[1] ?? m[2] ?? m[3]);
-  for (const m of text.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) add(m.index, m[1] ?? m[2]);
+  for (const m of markup.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/gi)) add(m.index, m[1] ?? m[2] ?? m[3]);
+  for (const m of markup.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) add(m.index, m[1] ?? m[2]);
   return [...new Set(found.sort((a, b) => a.at - b.at).map((f) => f.v))];
 }
 
@@ -437,7 +461,7 @@ export function importExport(file, { state, url, tickets, epic, now = new Date()
   if (prev?.url && canonicalUrl(prev.url) !== canonicalUrl(url)) fail(`${dest} already holds ${prev.url}: pass --epic to import this design elsewhere`);
   const mtime = statSync(file).mtime.toISOString();
   const version = prev?.sha256 === sha256 ? String(prev.version)
-    : prev && String(prev.version) === mtime ? `${mtime}+${sha256.slice(0, 12)}` : mtime;
+    : prev && String(prev.version).split('+')[0] === mtime ? `${mtime}+${sha256.slice(0, 12)}` : mtime;
   // The export is the whole design: whatever an earlier snapshot held beside it goes.
   if (existsSync(dest)) for (const f of readdirSync(dest)) if (f !== 'source.json') rmSync(join(dest, f), { recursive: true, force: true });
   mkdirSync(join(dest, 'project'), { recursive: true });
