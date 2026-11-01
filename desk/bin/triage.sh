@@ -403,7 +403,7 @@ const fs = require('fs');
 const out = process.argv[2];
 const d = JSON.parse(fs.readFileSync(out, 'utf8'));
 const canvases = d.design?.canvases ?? [];
-const SNAP_ASK = /\bnot\s+(?:yet\s+|been\s+)*snapshotted\b|\bunsnapshotted\b|\b(?:export|snapshot)(?:\s+(?:or|and)\s+(?:export|snapshot))?\s+(?:the\s+|its\s+)?boards?\b/i;
+const SNAP_ASK = /\bnot\s+(?:yet\s+|been\s+)*snapshotted\b|\bunsnapshotted\b|\b(?:export\s+(?:or|and)\s+)?snapshot(?:\s+(?:or|and)\s+export)?\s+(?:the\s+|its\s+)?boards?\b/i;
 if (canvases.length && canvases.every((c) => c.snapshot || c.saved) && Array.isArray(d.unknowns)) {
   const dropped = d.unknowns.filter((u) => SNAP_ASK.test(String(u)));
   if (dropped.length) {

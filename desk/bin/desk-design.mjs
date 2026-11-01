@@ -554,13 +554,6 @@ export function snapshotOf(state, url) {
   return null;
 }
 
-// Each Claude Design artifact the ticket's Design section links, with its snapshot folder (or null):
-// [{url, snapshot}]. `issue` is as checkTicket takes it.
-export function snapshotsOf(issue, state) {
-  const text = String(issue.text ?? issue.fields?.description ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1');
-  return claudeDesignLinks(designSection(text)).map((url) => ({ url, snapshot: snapshotOf(state, url) }));
-}
-
 // Every saved canvas under <dir> as committed at <ref>: [{path, url}].
 export function savedAt(root, dir, ref) {
   const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 });
@@ -684,7 +677,8 @@ if (isMain) {
       process.exit(findings.some((f) => f.severity === 'blocking') ? 1 : 0);
     } else if (cmd === 'snapshots') {
       if (!target) fail('usage: desk-design snapshots <KEY | ticket file> [--key <K>]');
-      for (const s of snapshotsOf(loadIssue(target, opt(rest, '--key')), E.stateDir())) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
+      const issue = loadIssue(target, opt(rest, '--key'));
+      for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir() }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
     } else if (cmd === 'render') {
       if (!target) fail('usage: desk-design render <saved dir>');
       const { findPlaywright, importPlaywright } = await import('./find-playwright.mjs');
