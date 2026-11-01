@@ -10,7 +10,8 @@
 //     with no answer since (queue.mjs requeue keeps that park as `prev_park`);
 //   - the rest go to the session, unless already handed and not answered since (an answer through
 //     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
-//   - what the session does not report settled is handed on with its reason.
+//   - what the session does not report settled is handed on with its reason, unless the usage limit
+//     refused the session, which keeps every item for the next one.
 // Handed items live in <state>/handed.json, which the digest lists; one the pass no longer lists is dropped.
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -20,6 +21,7 @@ import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS } from './clears-when.mjs';
 import { needsSession, planPark } from './batch-state.mjs';
 import { questionKey } from './not-now.mjs';
+import { usageLimit } from './usage-limit.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -266,19 +268,22 @@ export function markedResult(text, mark) {
 }
 
 // The session's answer from its JSON result: {cost, settled: {id: did}, handed: {id: why}} or
-// {cost, error} when there is no result line to read.
+// {cost, error} when there is no result line to read, with `limit: true` when the usage limit refused it.
 export function readResult(out) {
   let text = '';
   try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'no output' }; }
   const { cost, error, payload: r } = markedResult(text, RESULT_MARK);
+  if (error && usageLimit(text).last?.kind === 'limit') return { cost, error: 'stopped at the usage limit', limit: true };
   if (error) return { cost, error };
   const pairs = (xs, k) => Object.fromEntries((Array.isArray(xs) ? xs : []).filter((x) => x?.id).map((x) => [x.id, String(x[k] ?? '')]));
   return { cost, settled: pairs(r.settled, 'did'), handed: pairs(r.handed, 'why') };
 }
 
 // What a finished session settled and handed on. A park it says it settled that is still parked with
-// the same question was not settled. `q` is the queue as it stands now.
+// the same question was not settled. `q` is the queue as it stands now. A session the usage limit
+// refused settled and handed on nothing: its items are kept for the next one.
 export function outcome(rec, result, q = {}) {
+  if (result.limit) return { settled: [], handed: [], kept: rec.items, cost: result.cost ?? null };
   const settled = [];
   const handed = [];
   for (const item of rec.items) {
@@ -297,6 +302,7 @@ const costText = (cost) => (cost == null ? 'cost unknown' : `$${cost.toFixed(2)}
 
 // One line for the batch report: the session's cost and what it settled or handed on.
 export function reportLine(rec, o) {
+  if (o.kept) return `decider ${rec.id}: ${costText(o.cost)}; stopped at the usage limit, so it settled nothing and handed nothing on; ${o.kept.map((i) => i.ticket).join(', ') || 'nothing'} kept for the next decider`;
   const s = o.settled.map((x) => `${x.item.ticket} (${x.did})`).join(', ') || 'nothing';
   const hd = o.handed.map((x) => `${x.item.ticket} (${x.why})`).join(', ') || 'nothing';
   return `decider ${rec.id}: ${costText(o.cost)}; settled ${s}; handed to the digest ${hd}`;
@@ -304,6 +310,7 @@ export function reportLine(rec, o) {
 
 // What it did and cost, for the workers and the orchestrator who read the batch notes.
 export function noteOutcome(state, o, now = new Date()) {
+  if (o.kept) return;
   const at = now.toISOString();
   const lines = [
     `- [decider] ${at} a session ran: ${costText(o.cost)}\n`,

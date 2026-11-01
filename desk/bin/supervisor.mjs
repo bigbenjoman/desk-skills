@@ -68,6 +68,7 @@ import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { readInstalled, oldCode } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
+import { limitName, resetText } from './usage-limit.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -631,6 +632,9 @@ function decide(state, s, v, q, now = new Date()) {
   const fresh = freshItems(state, ask.filter((i) => !again.includes(i)));
   if (!fresh.length) return lines;
   if (s.decider) return [...lines, `decider: one is still running (pid ${s.decider.pid}, since ${s.decider.started}), so none starts for ${fresh.map((i) => i.ticket).join(', ')}`];
+  // A session started at the limit fails at once; its items wait for the pass that finds it lifted.
+  const hold = q.usage_hold;
+  if (hold) return [...lines, `decider: not started, the batch is held on ${limitName(hold.type)}${hold.resets_at != null ? ` until ${resetText(hold.resets_at)}` : ''} (usage_hold); ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once it lifts`];
   const rules = recoveryRules();
   if (!existsSync(rules)) {
     handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
