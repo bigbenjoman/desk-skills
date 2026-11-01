@@ -12,8 +12,8 @@ argument-hint: "[<repo>]"
 # desk-needs-you
 
 One script gives every item and records every answer. **Read nothing else**: no queue, worker log,
-briefing or digest page, and do not load `desk-autopilot` or its references. The script already
-reads them the way desk-q does.
+briefing or digest page, and do not load `desk-autopilot` or its references. The script reads
+them as desk-q does.
 
 ## 1. Collect
 
@@ -45,7 +45,7 @@ for start, discard or an edit, and its children wait behind it. The supervisor a
 at its next tick: start starts the feature batch, an edit is applied as it stands and the batch
 starts, and discard removes the batch and releases the children. An edit it cannot apply cleanly
 comes back as a new `plan` item naming why), `triage`
-(open triage questions), `held` (a hold only you can let start, or `admit` its blocker in no batch), `stopped` (a worker gave up), `pr`
+(open triage questions), `held` (a hold only you can let start, or `admit` a blocker in no batch), `stopped` (a worker gave up), `pr`
 (an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
 `worktree` (no worker spawns into its worktree until it is clean) or `usage` (the batch is held on a usage limit:
 one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
@@ -81,18 +81,18 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for `start`, `requeue`, `drop`, `approve`, `not-now`, `open`, `admit` and `done`. Each run prints one
-line saying what it recorded. Keep it for the end.
+Leave `"<text>"` off for `start`, `requeue`, `drop`, `approve`, `not-now`, `open`, `admit` and `done`. Each prints one
+line on what it recorded. Keep it for the end.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
   answered but not requeued, and desk-q shows it waiting on that session. `SendMessage` that text to the session named `<name>`. If that name is
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
 - **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).
-- **`open`** (lane C or D) and **`admit`**: records nothing. Show its line: it names the
+- **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the
   `/desk-ticket` or `/desk-admit` to run.
-- **`not-now`**: puts it in the not-now register. `list` and `left` leave it out until its
-  question, blocker or PR head changes, or, put off here, it gains an action. Do not ask it again this run.
+- **`not-now`**: puts it in the not-now register; `list` and `left` hide it until its
+  question, blocker or PR head changes or, put off here, it gains an action. Not asked again this run.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 
 Where the supervisor runs the batch, nothing more is needed: its next pass picks the answer up.
@@ -103,7 +103,7 @@ them against the right repo.
 ## 4. Until nothing is left
 
 Once every listed item has been asked, run `list` again (with the same repo, if one was named). Ask
-only about tickets not already asked in this run. Stop when none are left.
+only tickets not asked yet this run. Stop when none are left.
 
 ## 5. End
 
