@@ -186,6 +186,7 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
 function blockerHold(q, key, b, ctx, seen) {
   const bt = q.tickets?.[b];
+  if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) return { k: 'waiting', name: b, text: `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
   if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {

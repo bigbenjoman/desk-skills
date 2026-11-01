@@ -76,7 +76,8 @@ EOF
 printf "import { appendFileSync } from 'node:fs';\nappendFileSync('%s/digest.calls', 'checkin\\\\n');\nconsole.log(JSON.stringify({ status: 'not_due', push: null }));\n" "$T" > "$T/bin/digest.mjs"
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
 printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
-printf '#!/bin/sh\necho OPEN\n' > "$T/fakes/gh"
+# A PR list is whatever $T/prs.json holds (none by default); any other call reads OPEN.
+printf '#!/bin/sh\ncase "$*" in "pr list "*) cat "%s/prs.json" 2>/dev/null || echo "[]" ;; *) echo OPEN ;; esac\n' "$T" > "$T/fakes/gh"
 printf '#!/bin/sh\nexit 1\n' > "$T/fakes/launchctl"
 printf '#!/bin/sh\nexit 0\n' > "$T/fakes/osascript"
 chmod +x "$T/fakes/"* "$T/bin/triage.sh" "$T/bin/merge-driver.sh"
@@ -178,9 +179,15 @@ check "AC7: the report says it is held" 'grep -q "admitted B-2 by intake into ba
 rec B-4 A '"blockers":[{"key":"B-3","category":"new"}]'; rec B-3 A
 search B-4 B-3; out=$(intake)
 check "AC7: a blocker found in the same search is admitted first and the other held behind it" '[ "$(qget tickets.B-3.state)" = triaged ] && [ "$(qget tickets.B-4.held_by)" = B-3 ]'
-rec B-5 A '"blockers":[{"key":"OUT-9","category":"new"},{"key":"DONE-1","category":"done"}]'
+# DS-391: a blocker in no batch holds the ticket rather than keeping it out. DONE-2 is Done with its PR
+# still open, DONE-3 Done with its PR merged to main; DONE-1 is Done with no PR.
+printf '%s\n' '[{"number":5,"state":"OPEN","title":"fix: DONE-2 x","headRefName":"fix/DONE-2-x","baseRefName":"main"},{"number":6,"state":"MERGED","title":"fix: DONE-3 y","headRefName":"fix/DONE-3-y","baseRefName":"main"},{"number":7,"state":"OPEN","title":"fix: DONE-33 z","headRefName":"fix/DONE-33","baseRefName":"main"}]' > "$T/prs.json"
+rec B-5 A '"blockers":[{"key":"OUT-9","category":"new"},{"key":"DONE-1","category":"done"},{"key":"DONE-2","category":"done"},{"key":"DONE-3","category":"done"}]'
 search B-5; out=$(intake)
-check "a blocker outside the batch that is not done goes to the digest" '[ "$(qget tickets.B-5)" = undefined ] && [ "$(handed B-5)" = "handed: blocked by OUT-9, which is not done and not in the batch: add it to the batch, or settle the link" ]'
+check "DS-391 AC1: a ticket blocked by an open ticket in no batch is admitted held by it" '[ "$(qget tickets.B-5.state)" = parked ] && [ "$(qget tickets.B-5.held_by)" = "OUT-9|DONE-2" ] && [ "$(qget tickets.B-5.held_outside)" = "OUT-9|DONE-2" ] && [ "$(handed B-5)" != none ] && ! grep -q "^handed" <<< "$(handed B-5)"'
+check "DS-391 AC4: a blocker Done in Jira whose PR has not merged to the base holds it; one merged, or with no PR, does not" '! grep -q "DONE-1\|DONE-3" <<< "$(qget tickets.B-5.held_by)"'
+check "DS-391 AC1: the report says what it waits for and until when" 'grep -q "admitted B-5 by intake into batch b1 (lane A, size S), waiting for OUT-9, DONE-2, outside the batch, until each is Done and on main" <<< "$out"'
+rm -f "$T/prs.json"
 
 # ---- the triage cap, and a triage that fails ------------------------------------------------------
 for k in M-1 M-2 M-3 M-4; do rec "$k" A; done
@@ -215,12 +222,12 @@ check "AC2: the same tick runs a pass for it, reporting the start" '[ "$(count "
 i=0; while ! grep -q -- "--tickets A-9 --log" "$T/driver.calls" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 check "AC2: the merge driver picks it up" 'grep -q -- "--tickets A-9 --log" "$T/driver.calls"'
 # A finished batch is not live either: the next ticket starts a new one. A blocker in it is outside the
-# new one, so a ticket it blocks is handed on rather than started.
+# new one, so a ticket it blocks is held by it there.
 printf '{"version":1,"batch":"old","supervised":true,"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":null}}}}\n' > "$DESK_QUEUE"
 rec A-7 A '"blockers":[{"key":"Z","category":"indeterminate"}]'
 rec A-8 A; search A-8 A-7; out=$(intake)
 check "AC2: a finished batch gets a new standing batch" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-8.state)" = triaged ] && [ "$(qget tickets.Z)" = undefined ]'
-check "a blocker left in the finished batch hands its ticket on" '[ "$(qget tickets.A-7)" = undefined ] && grep -q "^handed: blocked by Z" <<< "$(handed A-7)"'
+check "a blocker left in the finished batch holds its ticket in the new one" '[ "$(qget tickets.A-7.held_outside)" = Z ] && grep -q "^admitted: lane A, size S, waiting for Z, outside the batch" <<< "$(handed A-7)"'
 # Not finished: a failed ticket waits on the person, and a batch on a base has its gate to come.
 printf '{"version":1,"batch":"f1","supervised":false,"tickets":{"Z":{"key":"Z","state":"failed"}}}\n' > "$DESK_QUEUE"
 rec A-6 A; search A-6; out=$(intake)
@@ -281,6 +288,19 @@ check "admit: a refused ticket is not queued or handed to the digest" '[ "$(qget
 rec H-5 A '"blockers":[{"key":"H-4","category":"new"}]'; rec H-4 A
 out=$(admit H-5 H-4 --front)
 check "admit: a blocker named in the same call goes first, and the other is held behind it" '[ "$(qget tickets.H-4.state)" = triaged ] && [ "$(qget tickets.H-5.held_by)" = H-4 ]'
+# DS-391 AC2: K-1 is refused (lane C); K-2 behind it and K-3 behind K-2 are not refused for it.
+rec K-1 C; rec K-2 A '"blockers":[{"key":"K-1","category":"new"}]'; rec K-3 A '"blockers":[{"key":"K-2","category":"new"}]'
+out2=$(admit K-3 K-2 K-1); rc=$?
+check "DS-391 AC2: a dependant of a blocker refused in the call waits for it, and none is refused for not being in the batch" \
+  '[ $rc -eq 11 ] && grep -q "^not admitted K-1: lane C" <<< "$out2" && ! grep -q "not in the batch" <<< "$out2" && [ "$(qget tickets.K-2.held_outside)" = K-1 ] && [ "$(qget tickets.K-3.held_by)" = K-2 ]'
+check "DS-391 AC2: the line names the blocker as waited for and not admitted in this call, and admits nothing more for it" \
+  'grep -q "^admitted K-2 by hand into batch b1 (lane A, size S), waiting for K-1 (not admitted in this call), outside the batch, until it is Done and on main$" <<< "$out2" && ! grep -q "^admit next" <<< "$out2"'
+# The KAN-1292 shape: N-1 is blocked by NX, open and in no batch; N-2 and N-3 are blocked by N-1.
+rec N-1 A '"blockers":[{"key":"NX","category":"new"}]'; rec N-2 A '"blockers":[{"key":"N-1","category":"new"}]'; rec N-3 A '"blockers":[{"key":"N-1","category":"indeterminate"}]'
+out2=$(admit N-3 N-2 N-1); rc=$?
+check "DS-391: the KAN-1292 cascade is admitted whole, the root held by its blocker in no batch and the rest behind the root" \
+  '[ $rc -eq 0 ] && [ "$(qget tickets.N-1.held_outside)" = NX ] && [ "$(qget tickets.N-2.held_by)" = N-1 ] && [ "$(qget tickets.N-3.held_by)" = N-1 ] && ! grep -q "^not admitted" <<< "$out2"'
+check "DS-391 AC5: an open blocker in no batch is named for /desk-admit to admit next" 'grep -qx "admit next: NX (open blockers in no batch)" <<< "$out2"'
 check "admit: --front moves each admitted ticket to the front" 'grep -q "H-4 moved to the front of the spawn order" <<< "$out" && [ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets)[0])" "$DESK_QUEUE")" = H-5 ]'
 rec H-9 A "$(design https://claude.ai/artifact/H9 null)"; rec H-10 A "$(design https://claude.ai/artifact/H10 '"/snap/H-10"')"
 out=$(admit H-9 H-10 --by ben); rc=$?
@@ -297,6 +317,8 @@ check "DS-300 AC2: an epic and a ticket in one call: the ticket is admitted, the
 config yes '`none`'
 SK="$S/../skills/desk-admit/SKILL.md"
 check "DS-300: the desk-admit skill routes a plan line to the /desk-autopilot epic flow" 'grep -q "^Each \`plan <EPIC> as a feature batch beside the standing batch: /desk-autopilot <EPIC>\` line means" "$SK" && grep -q "Load \`desk-autopilot\` and run its epic flow" "$SK" && ! grep -q "| \`an epic\` | Plan it as a feature batch" "$SK"'
+check "DS-391 AC5: the desk-admit skill admits an open blocker named by admit next with no question, and no longer asks to" \
+  'grep -q "^\`admit next: <B>...\` line\*\* names the open blockers in no batch" "$SK" && grep -q "^again for exactly those, at once, with no question" "$SK" && ! grep -q "which is not done and not in the batch" "$SK"'
 printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","state":"running"}}}\n' > "$DESK_QUEUE"
 rec H-7 A; n=$(count "$T/triage.calls")
 out=$(admit H-7); rc=$?
@@ -340,6 +362,11 @@ node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"
 rec X-6 A '"epic":{"key":"X-1","summary":"a feature"}'
 out=$(admit X-6); rc=$?
 check "DS-300 AC4: in feature mode a child is held behind the unfinished spine, as plan-batch holds every child" '[ $rc -eq 0 ] && [ "$(nget tickets.X-6.held_by)" = X-2 ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-2$" <<< "$out"'
+# DS-391 AC3: Y-1 is in no epic, but its blocker X-4 is in feature batch X-1: it joins X-1, not b1.
+rec Y-1 A '"blockers":[{"key":"X-4","category":"indeterminate"}]'
+out=$(admit Y-1); rc=$?
+check "DS-391 AC3: a ticket whose blocker is in another live batch is placed in that batch, held behind it there" \
+  '[ $rc -eq 0 ] && [ "$(qget tickets.Y-1)" = undefined ] && [ "$(nget tickets.Y-1.held_by)" = "X-2|X-4" ] && [ "$(nget tickets.Y-1.held_outside)" = undefined ] && grep -q "^admitted Y-1 by hand into feature batch X-1 (lane A, size S), held behind X-2, X-4$" <<< "$out"'
 rec E-2 A '"type":"Epic"'
 config ask; out=$(admit E-2); rc=$?; config yes
 check "DS-352 AC1: with a feature batch live, another epic is planned as its own feature batch, not refused" '[ $rc -eq 0 ] && grep -q "^plan E-2 as a feature batch beside the standing batch" <<< "$out" && ! grep -q "^not admitted E-2" <<< "$out"'

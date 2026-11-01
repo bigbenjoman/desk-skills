@@ -340,13 +340,15 @@ pass of its own, and starts no loop or driver, while the batch stays handed over
 a Jira query and §3 `autopilot-workers` is `yes`, each tick runs `intake.mjs` first, which searches
 at most every 15 minutes. Each new ticket the query finds is triaged once (`triage.sh`, three a
 run, the rest the next) and admitted (`queue.mjs admit <KEY> --by intake`) with no Stage 3 plan
-approval. The ticket is held behind any blocker in the batch, and the tick's report in
+approval. The ticket is held behind any open blocker in the batch, and behind any blocker in no
+batch until it is Done in Jira and its PR has merged to the batch's base (the pass lifts that hold);
+one blocked by a ticket in another live batch joins that batch. The tick's report in
 `<state>/supervisor.log` says `admitted <KEY> by intake`. With no batch, or one whose tickets are
 all done with no PR open, it starts one (`standing-<time>`), already handed over. A batch with a
 failed ticket, or on a base, is left alone. The search reads one page of
 100, and a full page is reported every time. A lane C or D ticket goes to the check-in digest instead,
-as does a blocking lint finding, open triage questions, size L or XL, or a blocker that is not done
-and not in the batch: each is listed with the reason, never asked. Once the ticket is fixed,
+as does a blocking lint finding, open triage questions, size L or XL, or a blocker that failed in
+the batch: each is listed with the reason, never asked. Once the ticket is fixed,
 `intake.mjs forget <KEY>` lets the next intake try it again. A batch still being planned in a
 session, an empty one just made by `queue.mjs init` included, gets nothing until it is handed over. With the row unset or `none`, no intake runs. The
 register is `<state>/intake.json`. Feature-mode epics are never taken in this way: they keep their

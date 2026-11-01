@@ -123,10 +123,11 @@ export function lanePark(r) {
 }
 
 // Where a held ticket's hold leads: the parked or failed tickets it waits on, an empty list when every
-// predecessor is progressing (running, waiting to spawn, done with a PR that is open, or itself held
-// and going somewhere) or merged (done with a merged PR: the release is due), or null when one
-// predecessor can never get there and nobody is already being asked about it (finished with no PR, a
-// PR closed unmerged, never admitted, dropped or missing), and for a hold with no recorded blocker.
+// predecessor is progressing (running, waiting to spawn, done with a PR that is open, itself held
+// and going somewhere, or a blocker in no batch it was admitted behind, held_outside) or merged (done
+// with a merged PR: the release is due), or null when one predecessor can never get there and nobody
+// is already being asked about it (finished with no PR, a PR closed unmerged, never admitted, dropped
+// or missing), and for a hold with no recorded blocker.
 // A predecessor failed or parked for a reason of its own is already a question for the person, so the
 // tickets behind it wait on that answer. `prState(n)` gives a PR's state when the caller looked it up
 // ('OPEN' | 'MERGED' | 'CLOSED'); unknown counts as open.
@@ -136,10 +137,11 @@ function holdLeadsTo(q, t, prState, seen) {
   if (!isHeld(t) || seen.has(t)) return null;
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
+  const outside = String(t.held_outside ?? '').split('|');
   let parks = preds.length > 0 ? [] : null;
   for (const p of preds) {
     const pt = q.tickets?.[p];
-    if (!pt) parks = null;
+    if (!pt) { if (!outside.includes(p)) parks = null; }
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
     else if (pt.state === 'done') { if (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED') parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
