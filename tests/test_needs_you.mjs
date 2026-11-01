@@ -570,10 +570,13 @@ put('psi', { port: 5100, beat: 1, supervised: true, merge: 'yes', tickets: {
   'Q-4': withHead(stuckPr(144, passed, { why: `no review verdict readable at its head after 2 fix tries: the verdict is at ${sha(1)}, not ${sha(144)}` })),
   'Q-5': withHead(draftPr(145, passed, { call: 'findings', why: `its review verdict at ${sha(145)} is not clean (p1=2)`, action: 'settle the findings on #145' })),
   'Q-6': withHead(stuckPr(146, passed, { why: 'still in conflict after 2 fix tries; the last try parked: which side wins?' })),
+  'Q-7': withHead(stuckPr(147, passed, { why: 'review not clean after 4 fix tries (1 conflict, 1 rereview, 2 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell' })),
 } });
 const psi = () => Object.fromEntries(N.collect({ word: 'psi' }).items.map((i) => [i.t.key, i]));
 const p0 = psi();
-t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,Q-4,Q-5,Q-6');
+t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,Q-4,Q-5,Q-6,Q-7');
+t('DS-384 AC3 a review stuck after its tries names how many repairs of which kind desk made', p0['Q-7']?.need,
+  'PR #147\'s code review still has findings after desk\'s 4 repairs (1 conflict fix, 1 re-review, 2 review fixes). Fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
 t('DS-378 AC4 a merge hold says what holds it and what happens once it is merged', p0['Q-1']?.need,
   'PR #141 touches files under a merge hold (touches billing — src/billing/**), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.');
 t('DS-378 AC4 a PR with no readable review says what to do and what follows', p0['Q-4']?.need,

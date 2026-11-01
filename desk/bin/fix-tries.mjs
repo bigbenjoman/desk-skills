@@ -1,7 +1,8 @@
 // A ready batch PR the merge driver cannot merge goes back to a worker on its own branch, at most
 // FIX_TRIES_MAX times: one still red after the driver's two reruns, or one in conflict with its base.
 // So does a draft whose posted review at its head found a P0 or a P1, or under §3 autopilot-judgement
-// yes a requirement gap (reviewFix), within the same tries, and one whose review gaps the person
+// yes a requirement gap (reviewFix), FIX_TRIES_MAX review fix tries of its own within FIX_TRIES_TOTAL
+// tries in all, and one whose review gaps the person
 // ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
 // (reviewTry) to a review worker, both within the same tries, and so does a draft in conflict with
@@ -103,6 +104,17 @@ const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: triesMa
 // No try is left at this head: FIX_TRIES_MAX made, or a fix try made at it whose worker finished
 // without moving it. Base conflict fix tries (base-fix.mjs) count the same way.
 export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
+// A review fix has FIX_TRIES_MAX of its own, counted over review fix tries only, so the conflict,
+// red-check and re-review tries before it leave it its own. FIX_TRIES_TOTAL caps every try that
+// counts, of any kind, so a PR that keeps getting new findings still reaches the person.
+export const FIX_TRIES_TOTAL = 2 * FIX_TRIES_MAX;
+const reviewTriesMade = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'review').length;
+// The tries that count, by kind in the order first made, as `1 conflict, 1 rereview, 2 review`.
+export function triesByKind(done) {
+  const n = new Map();
+  for (const x of done ?? []) if (!x.extra) n.set(x.kind ?? 'fix', (n.get(x.kind ?? 'fix') ?? 0) + 1);
+  return [...n].map(([k, c]) => `${c} ${k}`).join(', ');
+}
 
 // A conflict with the base, out of draft (fixCall) or in it (conflictFix), and its stuck reason. The
 // reason ends with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as
@@ -212,7 +224,8 @@ export function reviewGaps(body) {
 const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 
 // A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
-// found a P0 or a P1, under the same tries as fixCall (one per head, FIX_TRIES_MAX per PR). Where
+// found a P0 or a P1: one try per head, FIX_TRIES_MAX review fix tries per PR, and none once the PR
+// has made FIX_TRIES_TOTAL tries of every kind. Stuck, its reason names the tries made by kind. Where
 // config §3 autopilot-judgement is yes (opts.judgement), so do its requirement gaps: closing one is a
 // call the worker may make and record, or park when it needs a product or another person's ruling.
 // P2s are left as they are (null), and so is a review that counts a P0 or P1 but lists none with its
@@ -228,11 +241,13 @@ export function reviewFix(t, review, opts = {}) {
   const what = [counts, gapsOpen ? gapCount(gapsOpen) : ''].filter(Boolean).join(', ');
   if (!what || !review.head) return null;
   const done = t.fix_tries ?? [];
-  if (spent(done, fixedAt(done, review.head))) {
+  const made = reviewTriesMade(done);
+  if (made >= FIX_TRIES_MAX || triesMade(done) >= FIX_TRIES_TOTAL || fixedAt(done, review.head)) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
     const left = [...(counts ? reviewFindings(review.body).map((x) => `${x.sev}: ${x.text}`) : []), ...(gapsOpen ? reviewGaps(review.body) : [])];
-    return { call: 'stuck', why: `review not clean after ${tries(done.length)}: ${what}${left.length ? ` — ${left.join('; ')}` : ''}` };
+    const byKind = triesByKind(done);
+    return { call: 'stuck', why: `review not clean after ${tries(triesMade(done))}${byKind ? ` (${byKind})` : ''}: ${what}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
   const listed = counts ? reviewFindings(review.body) : [];
   const comments = !counts ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
@@ -241,7 +256,7 @@ export function reviewFix(t, review, opts = {}) {
   const gaps = gapsOpen ? reviewGaps(review.body) : [];
   if (counts ? !findings.length : !gaps.length) return null;
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
-  return nextTry(done, review.pr, review.head, { kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) });
+  return { call: 'requeue', fix: { try: made + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) } };
 }
 
 // The person's call on a draft's review gaps (desk-needs-you), as the fix it sends back: not one of

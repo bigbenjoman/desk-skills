@@ -102,22 +102,38 @@ t('DS-281 AC2 the task reviews the new head and posts it on the PR', task281.inc
 t('DS-281 AC2 and leaves the PR in draft', task281.includes('leave the PR in draft'), true);
 const clean281 = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=0')), ucfg);
 t('DS-281 AC3 a clean re-review at the new head is undrafted with its verdict', `${clean281?.call} ${clean281?.verdict?.sha === HEAD}`, 'ready true');
-t('DS-281 AC4 a try already made for this head is not made again', reviewFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' } })?.why, 'review not clean after 1 fix try: 1 P1');
+t('DS-281 AC4 a try already made for this head is not made again', reviewFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' } })?.why, 'review not clean after 1 fix try (1 review): 1 P1');
 const r5 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' } });
-t('DS-281 AC5 after 2 tries it is stuck, with the P1 count', `${r5?.call} | ${r5?.why}`, 'stuck | review not clean after 2 fix tries: 1 P1');
+t('DS-281 AC5 after 2 tries it is stuck, with the P1 count', `${r5?.call} | ${r5?.why}`, 'stuck | review not clean after 2 fix tries (2 review): 1 P1');
 const r3Body = ['<!-- desk-review:local -->', `<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=3 -->`,
   `**desk-review, round 3 (fix range ddddddd..aaaaaaa): 1 P1 at \`aaaaaaa\`** · codex read the diff cold`, `<!-- desk-review:carried v=1 p2=1 since=${'d'.repeat(40)} -->`, '', '- **P1** `src/b.ts:3` second formatter'].join('\n');
 const u335 = undraftCall(tk(), draft(r3Body), ucfg);
 const f335 = reviewFix(tk(), { pr: 702, head: HEAD, verdict: u335?.verdict, body: u335?.review });
 t('DS-335 AC1 a worker\'s round-3 review with a P1 at the head goes to a fix try with that finding', `${u335?.call} ${f335?.call} ${f335?.fix.try}/${f335?.fix.of} ${JSON.stringify(f335?.fix.findings)}`, 'findings requeue 1/2 [{"sev":"P1","text":"- **P1** `src/b.ts:3` second formatter"}]');
 const r335 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' }, body: p1Body });
-t('DS-335 AC2 once the tries are spent, the stuck text names each finding with its file:line', r335?.why, 'review not clean after 2 fix tries: 1 P1 — P1: packages/core/src/money.ts:12         second currency formatter — packages/core/src/format.ts:8 is the original');
+t('DS-335 AC2 once the tries are spent, the stuck text names each finding with its file:line', r335?.why, 'review not clean after 2 fix tries (2 review): 1 P1 — P1: packages/core/src/money.ts:12         second currency formatter — packages/core/src/format.ts:8 is the original');
 const p2only = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=2')), ucfg);
 t('DS-281 AC6 only P2s: not a findings call, the person settles them as today', `${p2only?.call} ${p2only?.action}`, 'person settle the findings or gaps on #702');
 t('DS-281 AC6 and reviewFix leaves it alone', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '0', p2: '2' } }), null);
 const mixedTries = [{ try: 1, head: 'b'.repeat(40), kind: 'checks', what: 'red: Lint' }];
-t('DS-281 AC7 a checks try counts: the review try is try 2', reviewFix(tk({ fix_tries: mixedTries }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: p1Body })?.fix.try, 2);
+t('DS-384 a checks try leaves a review fix its own tries: the review try is try 1', reviewFix(tk({ fix_tries: mixedTries }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: p1Body })?.fix.try, 1);
 t('DS-281 AC7 and a review try counts toward a checks try', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), both, ctx())?.why, 'still red after 2 fix tries: Backend tests, Lint');
+
+// ---- a review fix has tries of its own: a conflict try and a re-review try before it leave them
+// DS-379's fix_tries as the queue recorded them on PR #348.
+const ds379 = [{ try: 1, head: 'f73edbe' + '0'.repeat(33), kind: 'conflict', what: 'draft conflicts with main' },
+  { try: 2, head: '597a520' + '0'.repeat(33), kind: 'rereview', what: 'review its head: its review verdict is for fdcfe56, not the head 597a520' }];
+const p0At = (head) => ({ pr: 348, head, verdict: { p0: '1', p1: '0' }, body: reviewBody('p0=1 p1=0 p2=0', ['- **P0** `desk/bin/evidence.mjs:40` a code span splits the cell']) });
+const a1 = reviewFix(tk({ fix_tries: ds379 }), p0At(ds379[1].head));
+t('DS-384 AC1 after a conflict try and a rereview try, a P0 at the head goes to a review fix worker', `${a1?.call} ${a1?.fix.kind} ${a1?.fix.try}/${a1?.fix.of}`, `requeue review 1/${FIX_TRIES_MAX}`);
+t('DS-384 AC1 the try quotes the P0', a1?.fix.findings.map((x) => x.text).join('|'), '- **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
+const reviewTries = (n, from = 3) => Array.from({ length: n }, (_, i) => ({ try: i + 1, head: `${from + i}`.repeat(40), kind: 'review' }));
+const a2 = reviewFix(tk({ fix_tries: [...ds379, ...reviewTries(FIX_TRIES_MAX)] }), p0At(HEAD));
+t('DS-384 AC2 once its review fix tries are spent, findings at the head go to the person', `${a2?.call} | ${a2?.why}`, 'stuck | review not clean after 4 fix tries (1 conflict, 1 rereview, 2 review): 1 P0 — P0: - **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
+const capped = [...ds379, { try: 3, head: 'd'.repeat(40), kind: 'checks' }, ...reviewTries(1)];
+const a3 = reviewFix(tk({ fix_tries: capped }), p0At(HEAD));
+t('DS-384 AC3 with a review try left but the overall cap reached, it goes to the person, naming the tries by kind', `${a3?.call} | ${a3?.why.split(':')[0]}`, 'stuck | review not clean after 4 fix tries (1 conflict, 1 rereview, 1 checks, 1 review)');
+t('DS-384 AC3 an extra review try a base merge earned counts toward neither cap', reviewFix(tk({ fix_tries: [...ds379, { try: 2, head: 'e'.repeat(40), kind: 'rereview', extra: true }, ...reviewTries(1)] }), p0At(HEAD))?.fix.try, 2);
 
 // ---- a review whose P0s and P1s are posted inline goes to a fix worker too
 const inlineBody = reviewBody('p0=0 p1=1 p2=0', ['P2 (0)']);
@@ -165,7 +181,7 @@ t('DS-319 AC4 without autopilot-judgement yes, gaps stay for the person', `${und
 t('DS-319 AC4 nor under ask', undraftCall(tk(), draft(g1Body), { ...ucfg, judgement: 'ask' })?.call, 'person');
 const tried = [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }];
 const rg5 = reviewFix(tk({ fix_tries: tried }), { pr: 702, head: HEAD, verdict: g1.verdict, body: g1Body }, { judgement: 'yes' });
-t('DS-319 AC5 after 2 tries it is stuck, with the gap the last try\'s review gives', `${rg5?.call} | ${rg5?.why}`, `stuck | review not clean after 2 fix tries: 1 gap — ${AC2}`);
+t('DS-319 AC5 after 2 tries it is stuck, with the gap the last try\'s review gives', `${rg5?.call} | ${rg5?.why}`, `stuck | review not clean after 2 fix tries (2 review): 1 gap — ${AC2}`);
 t('DS-319 a review counting a gap it does not list is left for the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: gapBody('p0=0 p1=0 p2=0', 1, ['### Requirement gaps', 'None.']) }, { judgement: 'yes' }), null);
 const p1g = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: p1Body }, { judgement: 'yes' });
 t('DS-319 a P1 and a gap go in one try, both quoted', `${p1g?.fix.what} | ${p1g?.fix.findings.length} | ${p1g?.fix.gaps}`, 'review not clean: 1 P1, 1 gap | 1 | AC3: src/csv.ts:4 no VAT column');
@@ -253,10 +269,10 @@ const stale318 = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=0'), { head: '
 t('DS-318 AC4 the new head\'s old review is stale, so it goes to a review worker (DS-316), never undrafted on it', `${stale318?.call} ${stale318?.why.includes('not the head')}`, 'review true');
 t('DS-318 a review try at this head does not count as a conflict fix try, as it does not for a red check', conflictFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, base: 'main' })?.call, 'requeue');
 t('DS-318 the brief of a draft\'s last conflict try says it goes to the person still in conflict', brief318.includes('A PR still in conflict after try 2 goes to the person.'), true);
-// One pool of tries per PR, as reviewFix and fixCall count it, so every counter and desk-q agree.
+// Every try counts towards a conflict try, while a review fix counts only review fix tries (DS-384).
 t('DS-318 a review try counts towards the conflict tries', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, base: 'main' })?.fix.try, 2);
 t('DS-318 two review tries leave no conflict try', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 2 fix tries');
-t('DS-318 and a conflict try counts towards the review tries', reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'conflict' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: () => [inlineP1] })?.fix.try, 2);
+t('DS-384 a conflict try leaves a review fix its own tries', reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'conflict' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: () => [inlineP1] })?.fix.try, 1);
 t('DS-318 a try already made for this head is not made again', conflictFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'conflict' }] }), { pr: 702, head: HEAD, base: 'main', files: null })?.why, 'still in conflict with main after 1 fix try');
 const c318 = conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'conflict' }, { try: 2, head: 'c'.repeat(40), kind: 'conflict' }] }), { pr: 702, head: HEAD, base: 'main', files: ['src/a.ts', 'src/b.ts'] });
 t('DS-318 AC5 after 2 conflict tries it is stuck, naming the files still in conflict', `${c318?.call} | ${c318?.why}`, 'stuck | still in conflict with main after 2 fix tries: src/a.ts, src/b.ts');
