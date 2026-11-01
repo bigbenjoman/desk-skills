@@ -221,7 +221,7 @@ verdict "$(parked H "h?")"; echo "none" > "$T/claude.mode"
 out=$(tick); settle; out=$(tick)
 check "a session with no result line hands its items on" 'handed | grep -q "^H|decider no DECIDER_RESULT: line$"'
 
-# ---- DS-387: the decider at a usage limit hands nothing on, and none starts while the batch is held ----
+# ---- the decider at a usage limit hands nothing on, and none starts while the batch is held ----
 out=$(node --input-type=module -e "
 import { readResult, outcome } from '$B/decider.mjs';
 const rec = { items: [{ id: 'park-1', ticket: 'L', kind: 'parked', text: 'l?' }] };
