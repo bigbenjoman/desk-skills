@@ -91,8 +91,8 @@ line saying what it recorded. Keep it for the end.
 - **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).
 - **`open`** (lane C or D) and **`admit`**: records nothing. Show its line: it names the
   `/desk-ticket` or `/desk-admit` to run.
-- **`not-now`**: puts the item in the not-now register. `list` and `left` leave it out until its
-  question, blocker or PR head changes, or it gains an action. Do not ask about it again in this run.
+- **`not-now`**: puts it in the not-now register. `list` and `left` leave it out until its
+  question, blocker or PR head changes, or, put off here, it gains an action. Do not ask it again this run.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 
 Where the supervisor runs the batch, nothing more is needed: its next pass picks the answer up.

@@ -38,8 +38,9 @@
 // `templates`, the repo's committed copies of desk's templates the supervisor found behind (done
 // checks them again).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
-// first, then the longest waiting, less any put off with not-now whose inputs are unchanged and that
-// offers no action it did not offer then. Exits 0, or 11 (show the person) on anything it refuses.
+// first, then the longest waiting, less any put off with not-now whose inputs are unchanged and, where
+// its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
+// (show the person) on anything it refuses.
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -208,7 +209,7 @@ function outsideHolds(r, t) {
     return { key: b.key, category: b.category ?? 'new', batch: at ? (at.name ?? 'standing') : null };
   });
 }
-const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()},${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
+const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}, ${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
 // Every blocker a ticket names, in its batch or outside it, with its state: a put-off item's input, so a
 // blocker that moves brings it back.
 function blockerStates(r, t) {
