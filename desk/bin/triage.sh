@@ -396,20 +396,35 @@ CLAUDE_DIR_END
 node "$DESK_BIN/ticket-facts.mjs" "$TICKET" \
   || { echo "FAIL: could not record $TICKET's Jira facts in $OUT" >&2; exit 1; }
 
-# With every canvas snapshotted or saved on the base, an unknown asking for boards to be snapshotted or
-# exported is false, and would only park the ticket for the user.
+# With every canvas snapshotted or saved on the base, an unknown or a lane (park) reason asking for
+# boards to be snapshotted or exported is false, and would only park the ticket for the user. The lane
+# stays: only the false clause goes from its reason.
 node - "$OUT" <<'SNAPPED_END'
 const fs = require('fs');
 const out = process.argv[2];
 const d = JSON.parse(fs.readFileSync(out, 'utf8'));
 const canvases = d.design?.canvases ?? [];
-const SNAP_ASK = /\bnot\s+(?:yet\s+|been\s+)*snapshotted\b|\bunsnapshotted\b|\b(?:export\s+(?:or|and)\s+)?snapshot(?:\s+(?:or|and)\s+export)?\s+(?:the\s+|its\s+)?boards?\b/i;
-if (canvases.length && canvases.every((c) => c.snapshot || c.saved) && Array.isArray(d.unknowns)) {
-  const dropped = d.unknowns.filter((u) => SNAP_ASK.test(String(u)));
-  if (dropped.length) {
-    d.unknowns = d.unknowns.filter((u) => !SNAP_ASK.test(String(u)));
+const UNTIL = /,?\s*\b(?:(?:held|parked|blocked|waiting)\s+)?until\b[^.;]*?\b(?:are|is|been)\s+snapshotted\b/gi;
+const SNAP_ASK = /\bnot\s+(?:yet\s+|been\s+)*snapshotted\b|\bunsnapshotted\b|\buntil\b[^.;]*?\b(?:are|is|been)\s+snapshotted\b|\b(?:export\s+(?:or|and)\s+)?snapshot(?:\s+(?:or|and)\s+export)?\s+(?:the\s+|its\s+)?boards?\b/i;
+if (canvases.length && canvases.every((c) => c.snapshot || c.saved)) {
+  const said = [];
+  if (Array.isArray(d.unknowns)) {
+    const dropped = d.unknowns.filter((u) => SNAP_ASK.test(String(u)));
+    if (dropped.length) {
+      d.unknowns = d.unknowns.filter((u) => !SNAP_ASK.test(String(u)));
+      said.push(`dropped ${dropped.length} unknown(s) asking for a snapshot`);
+    }
+  }
+  if (typeof d.lane_reason === 'string' && SNAP_ASK.test(d.lane_reason)) {
+    const kept = d.lane_reason.split(/\s*;\s*|(?<=\.)\s+/)
+      .map((c) => c.replace(UNTIL, '').trim())
+      .filter((c) => c && !SNAP_ASK.test(c));
+    d.lane_reason = [...kept, 'every linked canvas is snapshotted or saved on the base'].join('; ');
+    said.push(`dropped the lane ${d.lane} reason's ask for a snapshot`);
+  }
+  if (said.length) {
     fs.writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
-    console.log(`[triage] ${d.ticket}  dropped ${dropped.length} unknown(s) asking for a snapshot: every canvas is snapshotted or saved`);
+    console.log(`[triage] ${d.ticket}  ${said.join(', ')}: every canvas is snapshotted or saved`);
   }
 }
 SNAPPED_END

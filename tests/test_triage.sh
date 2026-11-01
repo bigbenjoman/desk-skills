@@ -283,6 +283,11 @@ check "DS-393 AC2: the record keeps no unknown asking for the boards to be snaps
   '[ "$(jq -c .unknowns "$BS/triage/fix-thing.json")" = "[\"which empty-state copy?\",\"Should users be able to export boards as PDF?\"]" ] && [[ "$out" == *"dropped 2 unknown(s) asking for a snapshot"* ]]'
 check "DS-393 AC2: the prompt says a snapshotted canvas raises no such unknown" \
   'P0 | grep -qF "raise no" && P0 | grep -qF "unknown, park or lane reason saying its boards are not snapshotted or need exporting."'
+SNAP_REASON=',"lane_reason":"a new screen the canvas specifies, parked until boards 3 and 5 are snapshotted; Design board 2 is not snapshotted; size M"'
+rm -f "$STUB_LOG".* "$BS/triage/fix-thing.json"
+out=$(DESK_AUTOPILOT_STATE="$BS" DESK_STATE="$BS" STUB_LANE=D STUB_EXTRA="$SNAP_REASON" STUB_CHAL='{"verdict":"CONFIRM","lane":"D","reason":"stub"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-393 AC2: a lane D record's park reason loses its ask for a snapshot, and keeps its lane and other signals" \
+  '[ $rc -eq 0 ] && [ "$(jq -r .lane "$BS/triage/fix-thing.json")" = D ] && [ "$(jq -r .lane_reason "$BS/triage/fix-thing.json")" = "a new screen the canvas specifies; size M; every linked canvas is snapshotted or saved on the base" ] && [[ "$out" == *"dropped the lane D reason'"'"'s ask for a snapshot"* ]]'
 design_ticket "$T/state" "$OWN_URL"
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
@@ -294,6 +299,10 @@ out=$(STUB_LANE=A STUB_EXTRA="$SNAP_UNKNOWNS" bash "$B/triage.sh" fix-thing 2>&1
 check "DS-393 AC4: with no snapshot the prompt says the design is unread" \
   '[ $rc -eq 0 ] && P0 | grep -qF "  - $NONE_URL: no snapshot." && P0 | grep -qF "otherwise it is unread, so say so in \`unknowns\`." && ! P0 | grep -qF "snapshotted, its boards"'
 check "DS-393 AC4: and its unknowns about the snapshot are kept" '[ "$(jq ".unknowns | length" "$T/state/triage/fix-thing.json")" = 4 ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=D STUB_EXTRA="$SNAP_REASON" STUB_CHAL='{"verdict":"CONFIRM","lane":"D","reason":"stub"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-393 AC4: and a lane D reason waiting on the snapshot is kept" \
+  '[ $rc -eq 0 ] && [ "$(jq -r .lane_reason "$T/state/triage/fix-thing.json")" = "a new screen the canvas specifies, parked until boards 3 and 5 are snapshotted; Design board 2 is not snapshotted; size M" ]'
 printf '# fix-thing\n\nSource: the user\n\nFix the thing.\n' > "$T/state/tickets/fix-thing.md"
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
