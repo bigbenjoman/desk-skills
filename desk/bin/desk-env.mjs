@@ -58,6 +58,9 @@
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run (UNLISTED), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
+//   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
+//                                             add one row drift names MISSING, from the template, with that
+//                                             value; prints ADDED, and a §3 row's perm read back
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
 //   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
@@ -357,30 +360,40 @@ function parseConfig() {
   return cache;
 }
 
-// Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
-function parseConfigFile(path) {
-  // `rows`: every row of a Key, Field or Role table, in order, for `drift`. The rule ledger (§3c) and
-  // the review asks (§4) hold the user's own rows, so they are not declared rows.
-  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [] };
-  if (!parsed.exists) return parsed;
-  let section = null;
-  let header = null;
-  for (const raw of readFileSync(path, 'utf8').split('\n')) {
+// Every table row of a config file's text, in order: the line it is on, its section, its table's
+// header (normalised) and the header's line, its cells and its label. `declared` marks a row of a
+// Key, Field or Role table: the rule ledger (§3c) and the review asks (§4) hold the user's own rows,
+// so they are not declared rows. parseConfigFile reads values from it; addTemplateRow places rows by it.
+function tableLines(text) {
+  const out = { sections: [], rows: [] };
+  let section = null, header = null, table = null;
+  text.split('\n').forEach((raw, i) => {
     const line = raw.trim();
     const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
-    if (h) { section = h[1].toLowerCase(); header = null; parsed.sections[section] ??= { byKey: {}, byName: {} }; continue; }
-    if (!section) continue;
-    if (!line.startsWith('|')) { header = null; continue; }
+    if (h) { section = h[1].toLowerCase(); header = null; out.sections.push(section); return; }
+    if (!section || !line.startsWith('|')) { header = null; return; }
     const cells = splitRow(line);
-    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) continue; // separator row
-    if (!header) { header = cells.map(norm); continue; }
-    let col = ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? -1;
-    if (col < 0) col = 1;
-    const keyCol = header.indexOf('key');
-    const items = cellItems(cells[col] ?? '');
-    const s = parsed.sections[section];
+    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) return; // separator row
+    if (!header) { header = cells.map(norm); table = i; return; }
     const label = (cells[0] ?? '').replace(/`/g, '').trim();
-    if (label && ['key', 'field', 'role'].includes(header[0])) parsed.rows.push({ section, byKey: header[0] === 'key', id: norm(label), label });
+    out.rows.push({ i, section, table, header, cells, label, declared: !!label && ['key', 'field', 'role'].includes(header[0]) });
+  });
+  return out;
+}
+const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
+
+// Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
+function parseConfigFile(path) {
+  // `rows`: every declared row, in order, for `drift`.
+  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [] };
+  if (!parsed.exists) return parsed;
+  const table = tableLines(readFileSync(path, 'utf8'));
+  for (const section of table.sections) parsed.sections[section] ??= { byKey: {}, byName: {} };
+  for (const { section, header, cells, label, declared } of table.rows) {
+    const keyCol = header.indexOf('key');
+    const items = cellItems(cells[settingCol(header)] ?? '');
+    const s = parsed.sections[section];
+    if (declared) parsed.rows.push({ section, byKey: header[0] === 'key', id: norm(label), label });
     // `value` is the first item (what every single-valued row means); `items` is every backtick span.
     const entry = { value: items[0], items };
     if (keyCol >= 0) { const k = norm(cells[keyCol] ?? ''); if (k) s.byKey[k] = entry; }
@@ -605,6 +618,12 @@ export function permission(id) {
 }
 // Another repo's §3 row, by slug, read as permission() reads this repo's: no config is a `no`.
 export const repoPermission = (slug, id, root = deskConfigRoot()) => permissionIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
+// Whether a §3 row is absent from a config that exists: never asked, so it reads as `no`, and
+// /desk-update asks it (drift names it MISSING). A blank or TODO row is present: /desk-setup's to set.
+const rowMissing = (parsed, id) => parsed.exists && !parsed.sections?.['3']?.byKey[norm(PERMISSION_KEYS[id] ?? id)];
+export const permissionMissing = (id) => rowMissing(parseConfig(), id);
+// Another repo's, by slug; false with no config.
+export const repoPermissionUnset = (slug, id, root = deskConfigRoot()) => rowMissing(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
 function permissionIn(parsed, id) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
@@ -1217,6 +1236,56 @@ export function driftLines({ missing, stalls, unlisted = [], dontAsk }) {
   return lines.length ? lines : ['no drift'];
 }
 
+// ---- a missing row, added from the template ------------------------------------------------
+// The declared rows of a file, each with its id.
+const tableRows = (text) => tableLines(text).rows.filter((r) => r.declared).map((r) => ({ ...r, id: norm(r.label) }));
+// A row's cells as a table line: a `|` outside backticks is escaped, as splitRow reads it back.
+function joinRow(cells) {
+  const esc = (c) => { let tick = false; return [...c].map((ch) => { if (ch === '`') tick = !tick; return ch === '|' && !tick ? '\\|' : ch; }).join(''); };
+  return `| ${cells.map(esc).join(' | ')} |`;
+}
+
+// Adds §<section> <row> (a §3 key, else the row's name) to the config as the template has it, with
+// `value` in its setting column and `note` after it, placed after the nearest row above it in the
+// template's table that the config has (else before the nearest below). Only a row `drift` names as
+// MISSING: one the config has is refused, never overwritten. -> { section, label, line }
+export function addTemplateRow({ config, section, row, value, note = '', template = templatePath() }) {
+  const sec = String(section).replace(/^§/, '').toLowerCase();
+  const id = norm(String(row).replace(/^"(.*)"$/, '$1'));
+  const v = String(value ?? '').trim();
+  if (!v || v.includes('`') || /\n/.test(v)) throw new DeskConfigError('desk-env add-row: the value must be one line with no backticks');
+  if (!existsSync(template)) throw new DeskConfigError(`desk-env add-row: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
+  if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env add-row: no config at ${config ?? configPathHint()}: run /desk-setup`);
+  const tRows = tableRows(readFileSync(template, 'utf8'));
+  const t = tRows.find((r) => r.section === sec && r.id === id);
+  if (!t) throw new DeskConfigError(`desk-env add-row: the template has no §${sec} row "${row}"`);
+  const text = readFileSync(config, 'utf8');
+  const cRows = tableRows(text);
+  const at = (r) => cRows.find((c) => c.section === r.section && c.id === r.id);
+  if (at(t)) throw new DeskConfigError(`desk-env add-row: the config already has §${sec} ${t.label}; change it with /desk-setup`);
+  const col = settingCol(t.header);
+  // A §3 row whose Recommended value is a permission takes a permission: a typo would read as `no`.
+  if (sec === '3' && t.header[0] === 'key') {
+    const rec = cellItems(t.cells[t.header.indexOf('recommended')] ?? '')[0] ?? '';
+    if (/^(yes|ask|no)\b/i.test(rec) && !/^(yes|ask|no)\b/.test(v)) throw new DeskConfigError(`desk-env add-row: §3 ${t.label} takes yes, ask or no, not "${v}"`);
+  }
+  const cells = t.cells.slice();
+  cells[col] = `\`${v}\`${note.trim() ? ` (${note.trim().replace(/\n/g, ' ')})` : ''}`;
+  const line = joinRow(cells);
+  const peers = tRows.filter((r) => r.table === t.table);
+  const k = peers.indexOf(t);
+  const above = peers.slice(0, k).reverse().map(at).find(Boolean);
+  const below = above ? null : peers.slice(k + 1).map(at).find(Boolean);
+  if (!above && !below) throw new DeskConfigError(`desk-env add-row: the config has no row of the template's table for §${sec} ${t.label} to sit beside: run /desk-setup`);
+  const lines = text.split('\n');
+  lines.splice(above ? above.i + 1 : below.i, 0, line);
+  const tmp = `${config}.tmp-${process.pid}`;
+  writeFileSync(tmp, lines.join('\n'));
+  renameSync(tmp, config);
+  cache = null;
+  return { section: sec, label: t.label, line };
+}
+
 // What `paths` and `identity` print, in that order. Most of it belongs to one repo; a child started
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
@@ -1449,6 +1518,16 @@ if (isMain) {
         process.exitCode = drift ? 1 : 0;
         break;
       }
+      case 'add-row': {
+        const i = args.indexOf('--note');
+        const note = i >= 0 ? args[i + 1] ?? '' : '';
+        const pos = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
+        if (pos.length !== 3) throw new Error('usage: desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]');
+        const r = addTemplateRow({ config: configPathOrNull(), section: pos[0], row: pos[1], value: pos[2], note });
+        console.log(`ADDED §${r.section} ${r.label}: ${r.line}`);
+        if (r.section === '3' && PERMISSION_KEYS[norm(r.label)]) console.log(`perm ${norm(r.label)} = ${permission(norm(r.label))}`);
+        break;
+      }
       case 'port-in-use':
         process.exit((await portInUse(Number(args[0]))) ? 0 : 1);
         break;
@@ -1550,7 +1629,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|machine|costs');
+        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs');
         process.exit(2);
     }
   } catch (e) {

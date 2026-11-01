@@ -49,7 +49,7 @@ comes back as a new `plan` item naming why), `triage`
 (an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
 `worktree` (no worker spawns into its worktree until its changes are committed, pushed or discarded) or `usage` (the batch is held on a usage limit:
 one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
-switch). Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
+switch); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
 outside GitHub (a build, a staging migration) has none: its need names the step, and it leaves the
 list once its check is green.
 

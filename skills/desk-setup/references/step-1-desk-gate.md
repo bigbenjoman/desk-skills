@@ -26,7 +26,9 @@ script, so it can blank `PROTECTED` or rewrite a job and the check still passes 
 the branch ruleset closes that, with required reviewers (or CODEOWNERS review) over `.github/**` and
 `scripts/desk/**`, and that is the user's change to make. Say that a solo repo cannot meet this job's approval (the author's
 own never counts), so it should stay unrequired there. If the repo already has both files and they
-match, say so and skip; if they differ, show the diff and ask. On a yes, on a new branch off
+match, say so and skip; if they differ, update them as the pre-push hook's step says
+(`repo-templates.mjs status`, then `/desk-update`'s repo-drift reference for a `BEHIND` one),
+never by copying over them. For a repo with neither, on a yes, on a new branch off
 `<default>` named per §5 Branch names:
 
 ```bash

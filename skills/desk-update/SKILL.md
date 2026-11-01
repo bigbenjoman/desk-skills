@@ -7,8 +7,9 @@ description: >-
   desk-skills itself (no separate ./install.sh), checks every pinned third-party skill against where
   it came from (GitHub, Google Drive), checks Claude Code plugins and their marketplaces, offers any
   new desk setting (skills listed by name only) and, inside a configured repo, the plugins that repo
-  does not need; upgrades and changes only what the user picks, after showing what changed. Runs
-  from anywhere.
+  does not need, each permission row its config lacks, and a PR for any desk template it committed
+  that has fallen behind; upgrades and changes only what the user picks, after showing what changed.
+  Runs from anywhere.
 argument-hint: "[outdated | <skill>... | --all]"
 ---
 
@@ -97,7 +98,16 @@ python3 ~/.agents/skills/desk-setup/bin/repo-plugins.py --root "$(git rev-parse 
                                                     # counts; exit 1, no plugin choice to offer here
 python3 ~/.claude/hooks/desk-handoff.py offer-1m    # only when EXISTS=yes: exit 0 prints the 1M handoff
                                                     # SETTING line; exit 1, nothing to offer here
+desk-env drift                                      # only when EXISTS=yes: each MISSING line is a row the
+                                                    # template has and this repo's config lacks
+node ~/.claude/desk/bin/repo-templates.mjs status   # only when EXISTS=yes: exit 1, a desk template this repo
+                                                    # committed (pre-push hook, desk gate) is BEHIND
 ```
+
+**Inside a configured repo, read `references/repo-drift.md` now**: it says how the `MISSING` §3 rows
+are asked and written (each once, this run), and how a `BEHIND` template becomes one PR on this repo.
+A missing row reads as `no`, so every worker is refused it until it is asked: this is how a row
+shipped after the repo was set up reaches it.
 
 The 1M handoff offer is made once per repo: `offer-1m` prints its line only while this repo hands
 off at 45% of a 1M window (its §2 "Handoff at context % on a 1M window" row at `45`, or unset under
@@ -150,6 +160,10 @@ SETTING       <the line `desk-handoff.py offer-1m` printed, verbatim>
 SETTING       skipped by install.sh: <question>
               apply: <the apply line install.sh printed under it, verbatim>
 PLUGINS       <repo>: no plugin choice made here; switching off <n> plugins (<ids>) removes <m> skills from every turn
+ROW           §3 <key>: not in <repo>'s config, so it reads as no (asked below, once)
+ROW           <n> §2–§5 rows not in <repo>'s config (<names>): /desk-setup detects them
+TEMPLATE      <path>: behind desk's template since <base> (<date>); <one line on what the template changed>
+TEMPLATE      <path>: <EDITED or UNKNOWN line, verbatim>: nothing to apply
 ```
 
 One `skipped by install.sh` row per `SKIP` line in §1's block, none dropped. Where a skipped prompt is
@@ -164,8 +178,9 @@ release notes).
 
 ## 3. Ask, then upgrade
 
-One `AskUserQuestion` (multi-select): which to upgrade, plus one option per SETTING, STATUSLINE and PLUGINS line
-(so a run that finds nothing outdated can still offer them). First option "All outdated (Recommended)"
+One `AskUserQuestion` (multi-select): which to upgrade, plus one option per SETTING, STATUSLINE and PLUGINS line,
+and one per BEHIND TEMPLATE line (so a run that finds nothing outdated can still offer them). The §3
+ROW lines are not options here: each is its own question, after this one (`references/repo-drift.md`). First option "All outdated (Recommended)"
 only when every change reads as routine; otherwise recommend the specific ones and say why a
 particular upgrade deserves a look first (a rewritten SKILL.md, a new tool it asks to use, a
 licence change).

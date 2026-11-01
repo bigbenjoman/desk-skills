@@ -11,7 +11,10 @@ Once §4 Pre-push checks is confirmed and is not `none`, make two offers, each i
 **1. Commit the hook and the script.** The templates are in the desk-skills checkout that ran
 `install.sh`: `$(cat ~/.claude/desk/source-checkout)/desk/templates/`, holding `.githooks/pre-push`
 and `scripts/desk/pre-push.sh`. If the repo already has both and they match, say so and skip. If they
-differ, show the diff and ask whether to update them. On a yes, on a new branch off `<default>` named
+differ, the copy is updated, never replaced: run `node ~/.claude/desk/bin/repo-templates.mjs status`
+and, for a `BEHIND` file, follow `/desk-update`'s repo-drift reference (a three-way update
+that keeps the repo's own edits); an `EDITED` one is the repo's own change, left alone. The copy
+below is for a repo that has neither file yet. On a yes, on a new branch off `<default>` named
 per §5 Branch names, never on `<default>` itself:
 
 ```bash

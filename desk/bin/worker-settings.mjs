@@ -441,11 +441,13 @@ if (mode === 'triage') {
 
   // ---- config §3 -> allow, or a deny plus a CONFIG_DENIED line -----------------------------------
   // A headless worker cannot ask, so anything short of `yes` is denied and the worker parks with
-  // the exact payload. Enforcement is the rule, not the wording.
+  // the exact payload. Enforcement is the rule, not the wording. A row the config lacks reads as
+  // `no` but is named `unset`: it was never asked, and /desk-update asks it.
+  const setting = (id) => (E.permissionMissing(id) ? 'unset' : E.permission(id));
   const grant = (id, rules, denyRules = rules) => {
     const p = E.permission(id);
     if (p === 'yes') allow.push(...rules);
-    else { deny.push(...denyRules); denied.push(`${E.permissionKey(id)} (${p})`); }
+    else { deny.push(...denyRules); denied.push(`${E.permissionKey(id)} (${setting(id)})`); }
     return p === 'yes';
   };
 
@@ -471,7 +473,7 @@ if (mode === 'triage') {
         allow.push(...exact('git', ONE_PUSH));
         FORCE.push(' push *--force-with-lease', ' push *--force-with-lease *');
         granted.push(`git${ONE_PUSH}`);
-      } else { FORCE.push(' push *--force-with-lease*'); denied.push(`${E.permissionKey('git-force-with-lease')} (${lease})`); }
+      } else { FORCE.push(' push *--force-with-lease*'); denied.push(`${E.permissionKey('git-force-with-lease')} (${setting('git-force-with-lease')})`); }
     }
   }
   deny.push(...bash('git', ...FORCE));
@@ -485,7 +487,7 @@ if (mode === 'triage') {
   if (!grant('pr-reply', bash('gh', ' pr comment'), []) && !selfReview) deny.push(...bash('gh', ' pr comment', ' issue comment'));
   grant('pr-update-branch', bash('gh', ' pr update-branch'));
   grant('ci-rerun', bash('gh', ' run rerun'));
-  if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${DISPATCH})`);
+  if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${setting('worker-workflow-dispatch')})`);
   else if (!DISPATCH_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
   allow.push(...DISPATCH_RULES);
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
@@ -504,7 +506,7 @@ if (mode === 'triage') {
   if (codexPerm === 'yes') {
     allow.push(...bash('codex', ' exec --sandbox read-only'), ...exact('codex', ' --version'));
     deny.push(...bash('codex', ' *danger*', ' *--full-auto*', ' *--yolo*', ' *--config*', ' * -c *', ' *--sandbox=*', ' * -s *', ' *workspace-write*'));
-  } else { deny.push(...bash('codex')); denied.push(`${E.permissionKey('codex-review')} (${codexPerm})`); }
+  } else { deny.push(...bash('codex')); denied.push(`${E.permissionKey('codex-review')} (${setting('codex-review')})`); }
 
   // A new or synced dependency: the package manager's add and sync forms, with arguments. Never
   // global, never another directory or project, never a `..` path. Bare `<pm> install` is allowed
@@ -580,7 +582,7 @@ if (mode === 'triage') {
     'send_code_connect_mappings', 'weave_run_tool', 'weave_upload_asset'];
   const figmaPerm = E.permission('read-figma');
   if (figmaPerm === 'yes') allow.push(...figmaRead.map((t) => `mcp__claude_ai_Figma__${t}`));
-  else denied.push(`${E.permissionKey('read-figma')} (${figmaPerm})`);
+  else denied.push(`${E.permissionKey('read-figma')} (${setting('read-figma')})`);
   deny.push(...figmaWrite.map((t) => `mcp__claude_ai_Figma__${t}`));
 
   if (opt.dry) {
