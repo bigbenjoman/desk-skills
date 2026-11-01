@@ -646,7 +646,7 @@ const q3 = N.record({ word: 'psi', ticket: 'Q-3', action: 'done' });
 t('DS-378 AC5 an unreadable PR says its state could not be read, and is not marked done',
   `${q3.ok} ${/could not read PR #143's state from GitHub \(GraphQL: Could not resolve to a PullRequest \(143\)\), so it is not marked done and stays on your list\./.test(q3.line)} ${queueOf('psi').tickets['Q-3'].done_check} ${'Q-3' in psi()}`, 'false true undefined true');
 
-// ---- DS-386 AC3: a review stuck recorded at a head the PR has since left (DS-379's, on PR #348) is gone
+// ---- A review stuck recorded at a head the PR has since left is gone
 // before the next pass: the draft's undraft reason at its head is what the person sees.
 const undraft386 = { call: 'person', why: 'its body has a `_drag` cell with no screenshot', action: 'take it or take the cell out of #348' };
 const stale386 = { why: 'review not clean after 2 fix tries (2 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell', pr: 348, head: '597a520', at: minsAgo(60) };

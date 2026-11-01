@@ -1959,7 +1959,7 @@ t('DS-357 AC2 one unreadable batch: home counts the readable one, names the repo
 t('DS-357 AC2b one unreadable batch: the repo\'s place lists the readable batch\'s tickets and says which queue it could not read',
   `${['TB-1', 'TB-2', 'TB-3'].every((k) => p357u.some((l) => l.includes(`  ${k} `)))} ${p357u.some((l) => l.includes(said357))}`, 'true true');
 
-// DS-386: a stuck that names no checks holds only at the PR head it was recorded at (DS-379's, on PR #348).
+// A stuck that names no checks holds only at the PR head it was recorded at.
 const why386 = 'review not clean after 2 fix tries (2 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell';
 const t386 = (stuckHead, prHead) => ({ state: 'done', result: { pr: 348 }, stuck: { why: why386, pr: 348, ...(stuckHead ? { head: stuckHead } : {}) },
   pr_status: { pr: 348, state: 'OPEN', isDraft: true, head: prHead, checks: [] } });
