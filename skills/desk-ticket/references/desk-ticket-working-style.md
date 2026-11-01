@@ -3,8 +3,8 @@
 The standing conventions for ticket work. Every rule here came from a real review comment or
 correction. Where a rule depends on a fact about this repo, it names the config row (this repo's
 config, resolved with `desk-env where`) or the §5 Repo instructions files that carry it; those files
-win on anything they cover. `<TICKET>` is the ticket key: a tracker key, an §4 Other work id patterns id, or with §4 Tracker
-`none` the `issue-<n>` or slug `desk-ticket` settled at Stage 0. `<default>` is §0 Default branch.
+win on anything they cover. `<TICKET>` is the ticket key: a tracker key, an §4 Other work id patterns id (`desk-env list work-id-patterns`), or with §4 Tracker
+(`desk-env get tracker`) `none` the `issue-<n>` or slug `desk-ticket` settled at Stage 0. `<default>` is §0 Default branch.
 
 ## Working style
 
@@ -48,7 +48,7 @@ win on anything they cover. `<TICKET>` is the ticket key: a tracker key, an §4 
   features, tasks and stories, `chore/` for lane E data work. Use the prefix the row gives exactly
   (`fix/`, not `bugfix/`, where the row says `fix/`). Old branches still on the remote under another
   scheme are legacy and not a counter-example.
-- **Use the key exactly as §4 Ticket key pattern writes it, in the branch name.** Jira matches the
+- **Use the key exactly as §4 Ticket key pattern (`desk-env get ticket-pattern`) writes it, in the branch name.** Jira matches the
   key only in its canonical case (`ABC-123`, never `abc-123`), and a commit-message hook or GitHub's
   PR-title prefill may read it from there. A branch with no key at all (`worktree-*`, `agent-*`)
   gives the hook and the title nothing to work with. A work id (§4 Other work id patterns) goes in
@@ -60,9 +60,9 @@ win on anything they cover. `<TICKET>` is the ticket key: a tracker key, an §4 
   attribution: where it is `forbidden`, no `Co-Authored-By` trailer, "Generated with" line or robot
   emoji anywhere.
 - Commit subjects take the same shape as the PR title (§5 PR title), with the key where that
-  convention puts it. Where §4 Merge method is `squash`, only the PR title reaches `<default>`, so the
+  convention puts it. Where §4 Merge method (`desk-env get merge-method`) is `squash`, only the PR title reaches `<default>`, so the
   commit subject is assistive rather than gated; a repo hook may splice the branch's key in for you
-  once §4 Install has installed its hooks. See `desk-pr` for the full rule and the type list.
+  once §4 Install (`desk-env cmds install-cmd`) has installed its hooks. See `desk-pr` for the full rule and the type list.
 - Commit when it makes sense; push the branch when the work is done and the diff has been shown.
 
 ## Worktrees
@@ -96,14 +96,14 @@ worktree and re-run.
   <path>`. Never `git stash` after committing: it no-ops (and wrappers may still print "stashed"),
   and stashes are shared across every worktree. Grep the file for the changed value between shots
   rather than trusting either command's output.
-- **Don't mutate a shared local database for evidence.** Where §4 Local database is set and config §3
+- **Don't mutate a shared local database for evidence.** Where §4 Local database (`desk-env get local-db`) is set and config §3
   `db-per-ticket` allows, create a throwaway per-ticket database the way that row describes, point
   this worktree's database URL at it (same credentials, different database name), run the repo's
   migrations and seed, then toggle rows to stage "before". Running the migration's own SQL for
   "after" doubles as proof it does what it claims. Leave these databases in place; cleanup reports
   them rather than dropping them. With §4 Local database `none`, there is no per-ticket database:
   stage the "before" from code alone, or say what could not be staged.
-- **Start the dev server on a free port** (config §3b "Preferred dev-server port" if it is free, or
+- **Start the dev server on a free port** (config §3b "Preferred dev-server port", `desk-env get dev-port`, if it is free, or
   pick one), never assuming the default: capturing someone else's server captures another branch's
   code.
 - Dismiss consent banners and hide framework dev overlays before the first capture, or both overlay
@@ -124,9 +124,9 @@ Every one of these has been a real review comment or correction:
 - No `.playwright-mcp/`, screenshots, restamped generated pages, or other artefacts. `git status`
   clean.
 - No secret-shaped literal (a JWT's `eyJ…` base64url segments, a key-shaped string) in a spec, where
-  CI runs secret or static-analysis scanning (§4 Required checks and Advisory checks name them):
+  CI runs secret or static-analysis scanning (§4 Required checks and Advisory checks name them: `desk-env list required-checks`, `desk-env list advisory-checks`):
   scanners flag the shape and usually nothing local runs them. Build fixtures by concatenation.
-- Would this survive review? §4 What review here consistently asks for is the house bar, and §4
+- Would this survive review? §4 What review here consistently asks for (`desk-env get review-asks`) is the house bar, and §4
   People names who reviews.
 
 ## Keep them posted while you work

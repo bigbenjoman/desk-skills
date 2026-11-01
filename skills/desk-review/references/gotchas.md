@@ -119,7 +119,7 @@ def MED:  "(^|/)(server|lib|libs|services?|hooks|api|core|domain|backend|models?
       else                                                           "LOW" end ) })
 ```
 
-Then add §4 Infra and security owner paths and §4 Merge holds globs: any production path matching
+Then add §4 Infra and security owner paths and §4 Merge holds globs (`desk-env list merge-holds`): any production path matching
 one raises the PR to HIGH. They are globs, so test them with the shell's matcher or `git ls-files`,
 not the regexes above.
 

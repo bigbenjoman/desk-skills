@@ -6,7 +6,7 @@ a "below" here that this file does not hold points there.
 
 | # | Stage | What happens |
 |---|---|---|
-| 1 | Branch | Off up-to-date `<default>`, named per §5 Branch names with `<TICKET>` in it, prefix from the issue type. Record the exact branch in the resume file: the PR is opened from it and is found by it (the autopilot merge driver matches a ticket's PR by its exact head branch and base `<default>`), so never rename it later. Worktree if another session is live, or lane C/D. **A new worktree then runs §4 Project subagents sync**, see below. |
+| 1 | Branch | Off up-to-date `<default>`, named per §5 Branch names with `<TICKET>` in it, prefix from the issue type. Record the exact branch in the resume file: the PR is opened from it and is found by it (the autopilot merge driver matches a ticket's PR by its exact head branch and base `<default>`), so never rename it later. Worktree if another session is live, or lane C/D. **A new worktree then runs §4 Project subagents sync** (`desk-env cmds agents-sync`), see below. |
 
 **Where the ticket links a Claude Design artifact and no saved copy is committed on this branch
 yet**, the canvas is saved here once the branch exists: read `design-canvas.md` (beside this file)
@@ -19,8 +19,8 @@ review falls back to when codex is unavailable. Nothing warns you. First command
 
 ```bash
 <§4 Project subagents sync>          # skip when it is `none`; then `ls .claude/agents/` is not empty
-~/.claude/desk/bin/copy-env.sh       # §4 Env files from the main checkout; skip when that row is `none`
+~/.claude/desk/bin/copy-env.sh       # §4 Env files (desk-env list env-files) from the main checkout; skip when that row is `none`
 ```
 
-Env files go in before §4 Install, which can fail without them. If a review did run without the
+Env files go in before §4 Install (`desk-env cmds install-cmd`), which can fail without them. If a review did run without the
 agents, say so in the report header rather than letting it pass as a full fleet run.

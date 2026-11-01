@@ -139,6 +139,16 @@ const REWRITTEN = [
   ['DS-368', 'round 3 reads **only the fix range**', 1],
   ['DS-368', '**Round 3, only P2s**', 1],
   ['DS-368', 'it exists only from round 3', 1],
+  // each §3b and §4 row a worker reads is named with its desk-env call
+  ...[
+    'a tracker key (§4 Ticket key pattern)', 'with §4 Command prefix in front unless', '§4 Priorities only you set.**',
+    'With §4 Tracker `none` there are none', '§4 Review state (skip if it is `none`) works', 'with no preview deployments, §4 Staging)',
+    'The cap is config §3b', 'Spawn gate (available memory)"; by default', 'where §4 Pre-push checks is set', 'runs §4 Related tests through',
+    'in place of §4 Typecheck and Lint', '§4 Required checks (and Advisory checks) for what CI', '**Structural tests a new or changed entry point trips.**',
+    '**Your database variables.**', 'Run §4 Local review command on your branch', 'runs §4 Project subagents sync and hard-fails',
+    'reading as §4 Clean review verdict', '§4 Local database says how', 'it opens the PR and leaves the ticket', '§4 Codegen (e.g.',
+    '**The package manager**: only', 'for a service §4 Local services names', 'a review from §4 Local review command, carrying',
+  ].map((s) => ['DS-405', s, 1]),
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

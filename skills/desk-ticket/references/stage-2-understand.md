@@ -6,7 +6,7 @@ a "below" here that this file does not hold points there.
 
 | # | Stage | What happens |
 |---|---|---|
-| 2 | Understand | Read the code paths, and **what the repo's own documentation says about them** before writing any code (below). Reproduce the bug. **Commit the lane now**: this is the first point it is knowable. Transition to §4 In-progress state (Jira only). Flag anything wrong in the ticket. |
+| 2 | Understand | Read the code paths, and **what the repo's own documentation says about them** before writing any code (below). Reproduce the bug. **Commit the lane now**: this is the first point it is knowable. Transition to §4 In-progress state (`desk-env get in-progress-state`; Jira only). Flag anything wrong in the ticket. |
 
 **Read what the repo documents before writing code (Stage 2).** The files §5 Repo instructions names
 are the repo's own rules, and Stage 4b's review reads the same material, so a documented rule

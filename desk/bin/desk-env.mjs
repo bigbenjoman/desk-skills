@@ -19,7 +19,8 @@
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
-//                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH)
+//                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
+//                                             review-asks prints every ask, one per line
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs list <config id>        print every item of a list row, one per line, exit 3 if unset
 //   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
@@ -300,6 +301,8 @@ export const CONFIG_ROWS = Object.freeze({
   vercel: { section: '4', row: 'Vercel' },
   'staging-bypass': { section: '4', row: 'Staging bypass token location' },
   'slack-channels': { section: '4', row: 'Slack channels' },
+  // A `###` table of the user's own rows rather than one row: every Ask, with its Detail.
+  'review-asks': { section: '4', row: 'What review here consistently asks for', table: true },
   'repo-instructions': { section: '5', row: 'Repo instructions' },
   'subagents-without-asking': { section: '3b', row: 'Subagents that may run without asking' },
   'test-cap': { section: '3b', row: 'Test worker cap under the test lock' },
@@ -351,6 +354,8 @@ export class NoRepoConfigError extends DeskConfigError {}
 // where the table has one, otherwise the first column.
 let cache = null;
 const norm = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+// `<section>/<heading>` of every table id, as tableLines normalises a `###` heading.
+const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map((r) => `${r.section}/${norm(r.row)}`));
 
 const { splitRow } = M;
 
@@ -366,17 +371,19 @@ function parseConfig() {
 // so they are not declared rows. parseConfigFile reads values from it; addTemplateRow places rows by it.
 function tableLines(text) {
   const out = { sections: [], rows: [] };
-  let section = null, header = null, table = null;
+  let section = null, sub = null, header = null, table = null;
   text.split('\n').forEach((raw, i) => {
     const line = raw.trim();
     const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
-    if (h) { section = h[1].toLowerCase(); header = null; out.sections.push(section); return; }
+    if (h) { section = h[1].toLowerCase(); sub = null; header = null; out.sections.push(section); return; }
+    const s = /^###\s+(.+)$/.exec(line);
+    if (s) sub = norm(s[1]);
     if (!section || !line.startsWith('|')) { header = null; return; }
     const cells = splitRow(line);
     if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) return; // separator row
     if (!header) { header = cells.map(norm); table = i; return; }
     const label = (cells[0] ?? '').replace(/`/g, '').trim();
-    out.rows.push({ i, section, table, header, cells, label, declared: !!label && ['key', 'field', 'role'].includes(header[0]) });
+    out.rows.push({ i, section, sub, table, header, cells, label, declared: !!label && ['key', 'field', 'role'].includes(header[0]) });
   });
   return out;
 }
@@ -385,11 +392,13 @@ const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => h
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
 function parseConfigFile(path) {
   // `rows`: every declared row, in order, for `drift`.
-  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [] };
+  // `tables`: the cells of every row of a table id's `###` table (TABLE_IDS), by section and heading.
+  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [], tables: {} };
   if (!parsed.exists) return parsed;
   const table = tableLines(readFileSync(path, 'utf8'));
   for (const section of table.sections) parsed.sections[section] ??= { byKey: {}, byName: {} };
-  for (const { section, header, cells, label, declared } of table.rows) {
+  for (const { section, sub, header, cells, label, declared } of table.rows) {
+    if (TABLE_IDS.has(`${section}/${sub}`)) { (parsed.tables[`${section}/${sub}`] ??= []).push(cells); continue; }
     const keyCol = header.indexOf('key');
     const items = cellItems(cells[settingCol(header)] ?? '');
     const s = parsed.sections[section];
@@ -504,7 +513,8 @@ function configValueIn(parsed, id) {
 }
 // The repo's own row, with no machine fallback. Unset is null.
 function repoValueIn(parsed, id) {
-  const { section, row } = rowFor(id);
+  const { section, row, table } = rowFor(id);
+  if (table) return tableItemsIn(parsed, id)?.join('\n') ?? null;
   const e = parsed.sections[section]?.byName[norm(row)];
   if (unset(e?.value)) return null;
   return NO_SLUG_EXPANSION.has(id) ? e.value : expandSlug(e.value);
@@ -540,8 +550,23 @@ export function configValues(id) {
   return configValuesIn(parseConfig(), id);
 }
 
-function configValuesIn(parsed, id) {
+// A table id's rows as `<first cell>: <second cell>`, or the first cell alone when the second is
+// blank, a dash or a placeholder. A first cell that is TODO or the "Not mined" placeholder setup
+// writes is no row; with no rows left the table is unset (null).
+const tableCell = (c) => { const v = (c ?? '').trim(); const m = /^`([^`]*)`$/.exec(v); return (m ? m[1] : v).trim(); };
+const placeholder = (v) => unset(v) || /^not mined\b/i.test(v) || /^[-—–]$/.test(v);
+function tableItemsIn(parsed, id) {
   const { section, row } = rowFor(id);
+  const items = (parsed.tables?.[`${section}/${norm(row)}`] ?? [])
+    .map((cells) => [tableCell(cells[0]), tableCell(cells[1])])
+    .filter(([a]) => !placeholder(a))
+    .map(([a, d]) => (placeholder(d) ? a : `${a}: ${d}`));
+  return items.length ? items : null;
+}
+
+function configValuesIn(parsed, id) {
+  const { section, row, table } = rowFor(id);
+  if (table) return tableItemsIn(parsed, id);
   const e = parsed.sections[section]?.byName[norm(row)];
   if (!e || unset(e.value)) return null;
   const items = e.items.filter((x) => !unset(x)).map(expandSlug);
@@ -1392,7 +1417,7 @@ if (isMain) {
       }
       case 'ids':
         for (const [id, key] of Object.entries(PERMISSION_KEYS)) console.log(`perm ${id} -> §3 ${key} = ${permission(id)}`);
-        for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id) ?? '(unset)'}`);
+        for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
         break;
       case 'paths': {
         const lines = Object.entries(PATHS).map(([k, f]) => [k, f()]);

@@ -18,14 +18,14 @@ title:
 git branch --show-current
 ```
 
-Match §4 Ticket key pattern against that and the PR title with `grep -oiE`, and upper-case the
+Match §4 Ticket key pattern (`desk-env get ticket-pattern`) against that and the PR title with `grep -oiE`, and upper-case the
 result: branches are often lowercase (`fix/abc-123-…`) while keys are not, so a case-sensitive match
 silently never fires on a branch. Then fetch:
 
 | What matched | Where the ticket text comes from |
 | --- | --- |
 | §4 Ticket key pattern, Tracker `jira` | `desk-jira get <KEY>` (needs §3 `read-own-work`, or `read-others` for someone else's ticket) |
-| §4 Other work id patterns | `$DESK_STATE/tickets/<KEY>.md` (`desk-env paths` prints `DESK_STATE`) |
+| §4 Other work id patterns (`desk-env list work-id-patterns`) | `$DESK_STATE/tickets/<KEY>.md` (`desk-env paths` prints `DESK_STATE`) |
 | Tracker `none` | the PR's `closingIssuesReferences` (Phase 1), each read with `gh issue view <issue number> --repo <owner>/<repo>`; never the PR's own number |
 
 If nothing matches, or the ticket cannot be read, say so in one line and continue: Direction 1 is

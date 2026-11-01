@@ -1,7 +1,7 @@
 # Review bar (desk default)
 
-The bar `desk-review` hands every finder **verbatim**, unless this repo's config §4 Review bar names
-its own file. It overrides any severity scale an agent carries in its own definition, so everything
+The bar `desk-review` hands every finder **verbatim**, unless this repo's config §4 Review bar
+(`desk-env get review-bar`) names its own file. It overrides any severity scale an agent carries in its own definition, so everything
 that reads it reviews at one bar.
 
 Four priorities, of which three are reported. A finding is P0, P1 or P2, or it is not reported. The
@@ -121,7 +121,7 @@ and *Out of scope*.
 Nadia's P3 hardening notes are not reported, and her *Verdict* line is ignored: findings here never
 approve or block anything.
 
-A domain-expert finder (§4 Review domain experts) reports in this scale too. A domain error that
+A domain-expert finder (§4 Review domain experts, `desk-env list review-experts`) reports in this scale too. A domain error that
 moves money, a trade, a valuation or a regulated decision is P0 under **Money** or **Contract**; the
 expert's own vocabulary is not a severity.
 
