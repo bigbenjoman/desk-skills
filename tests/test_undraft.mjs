@@ -207,7 +207,7 @@ rmSync(cbDir, { recursive: true, force: true });
   t('DS-381 AC1 nor asks the person for screenshots', /screenshot/.test(named?.why ?? ''), false);
   t('DS-381 AC2 a real cell beside prose is still a cell', dragCells(`${prose}\n| _drag after.png_ |`), 1);
   t('DS-381 AC3 a cell in a fenced block is not listed; the real one is', dragFiles('| _drag before.png_ |\n```md\n| _drag example.png_ |\n```\n').join(','), 'before.png');
-  // #348 round 7: an unbalanced backtick above the table paired with one below it and hid the real cell.
+  // An unbalanced backtick above the table must not pair with one below it and hide the real cell.
   const tail = '\n| _drag after.png_ |\n\nthen ``code`` below';
   t('DS-379 a lone backtick in prose does not hide a real cell', dragCells('a stray ` here' + tail), 1);
   t('DS-379 nor does the four-backtick form around three backticks', dragCells('write it as ```` ``` ```` here' + tail), 1);
