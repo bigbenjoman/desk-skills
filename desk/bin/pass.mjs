@@ -1761,11 +1761,7 @@ function busyWorktree(t) {
     return `its worktree ${wt} is the working directory of ${users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ')}, which the pass did not start`;
   }
   if (!(t.fix && !t.fix.finished) || resumed) return null;
-  return leftovers(wt);
-}
-// Uncommitted tracked changes, staged or not, or commits not on origin, in a worktree, or null. A
-// worktree git cannot read: setup-worktree.sh says so.
-function leftovers(wt) {
+  // Tracked paths changed against HEAD, staged or not. A worktree git cannot read: setup-worktree.sh says so.
   const diff = shOut('git', ['-C', wt, 'diff', '--name-only', 'HEAD']);
   const dirty = diff.ok ? diff.out.split('\n').filter(Boolean) : [];
   if (dirty.length) return `its worktree ${wt} has uncommitted changes (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''})`;
@@ -1774,34 +1770,6 @@ function leftovers(wt) {
   const ahead = shOut('git', ['-C', wt, 'rev-list', '--count', `origin/${branch.out}..HEAD`]);
   if (ahead.ok && Number(ahead.out) > 0) return `its branch ${branch.out} is ${ahead.out} commit(s) ahead of origin/${branch.out}, not pushed`;
   return null;
-}
-// The session Claude Code last wrote a transcript for in a worktree (its project directory under
-// ~/.claude/projects), or null.
-function lastSession(wt) {
-  let real = wt;
-  try { real = realpathSync(wt); } catch { /* as recorded */ }
-  let best = null;
-  for (const p of new Set([wt, real])) {
-    const dir = join(E.HOME, '.claude', 'projects', p.replace(/[^A-Za-z0-9]/g, '-'));
-    let names = [];
-    try { names = readdirSync(dir).filter((f) => f.endsWith('.jsonl')); } catch { continue; }
-    for (const f of names) {
-      let mtimeMs;
-      try { ({ mtimeMs } = statSync(join(dir, f))); } catch { continue; }
-      if (!best || mtimeMs > best.mtimeMs) best = { session: f.slice(0, -'.jsonl'.length), mtimeMs };
-    }
-  }
-  return best?.session ?? null;
-}
-// A fix try whose worktree holds what its own worker left when it stopped part way (the last session
-// there is the ticket's session_id): why that session should be resumed, or null. Anyone else's
-// leftovers are a person's, and busyWorktree holds the ticket for them.
-function ownLeftovers(t) {
-  if (t.location === 'cloud' || toResume(t) || toHandoff(t) || !(t.fix && !t.fix.finished) || !t.session_id) return null;
-  if (!t.worktree || !existsSync(t.worktree)) return null;
-  const left = leftovers(t.worktree);
-  if (!left || lastSession(t.worktree) !== t.session_id) return null;
-  return `its own worker stopped part way, leaving work in its worktree (${left})`;
 }
 
 // A worktree held is kept on the ticket (`worktree_busy`), so desk-q and desk-needs-you show it as
@@ -1812,12 +1780,6 @@ for (const t of spawnable) {
   if (baseHold || usageStop || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
-  // The ticket's own worker's unfinished work is not a person's: that worker's session is resumed.
-  const own = ownLeftovers(t);
-  if (own) {
-    if (!DRY) q('set', t.key, 'resume=pending', `resume_why=${own}`);
-    Object.assign(t, { resume: 'pending', resume_why: own });
-  }
   // Held without taking a slot: another ticket may spawn in its place.
   const busy = busyWorktree(t);
   if (busy) {
