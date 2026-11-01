@@ -45,7 +45,7 @@ config yes yes
 
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs usage-limit.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs usage-limit.mjs borrow.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
@@ -270,9 +270,19 @@ check "an idle batch whose notification failed is not recorded idle" '! grep -q 
 out=$(tick)
 check "the idle pass is logged and the batch recorded idle" '[ "$(count "$T/pass.calls")" = 2 ] && grep -q "batch b1 is idle" "$LOG"'
 check "DS-140: a finished batch pushes only its push entries" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -q "|Check-in 08:00|$"'
+# The last pass's heartbeat, 20 minutes old, with the next tick it planned long past.
+BEAT=$(node -e 'import(process.argv[1]).then((m) => console.log(m.beatFile(process.argv[2], process.argv[3])))' "$B/borrow.mjs" "$T/state" "$DESK_QUEUE")
+mkdir -p "$T/state/orchestrators"
+node -e 'const t = Date.now() - 20 * 60000; require("fs").writeFileSync(process.argv[1], JSON.stringify({ queue: process.argv[2], batch: "b1", pid: 1, at: new Date(t).toISOString(), next: new Date(t + 180000).toISOString() }))' "$BEAT" "$DESK_QUEUE"
+t0=$(node -e 'console.log(Date.now())')
 out=$(tick); out=$(tick)
 check "AC9: no pass once the batch is idle" '[ "$(count "$T/pass.calls")" = 2 ]'
 check "AC9: no merge driver once the batch is idle" '[ "$(started)" = "$n" ]'
+# DS-396 AC2: the idle tick runs no pass, so it refreshes the heartbeat itself: `at` the tick's time,
+# `next` the agent's next tick, and desk-q's liveBeat reads the batch as live again.
+every=$(grep -A1 '<key>StartInterval</key>' "$PL" | grep -oE '[0-9]+')
+check "DS-396 AC2: an idle tick's heartbeat is at the tick's time, its next one interval on, and live" \
+  '[ "$(node -e "import(process.argv[1]).then((m) => { const b = JSON.parse(require(\"fs\").readFileSync(process.argv[2], \"utf8\")); const at = Date.parse(b.at), t0 = Number(process.argv[3]); console.log([at >= t0 && at <= Date.now(), Date.parse(b.next) - at === Number(process.argv[4]) * 1000, b.queue === process.argv[5] && b.batch === \"b1\", m.liveBeat(m.lastBeat(process.argv[6], process.argv[5]))].join(\" \")); })" "$B/borrow.mjs" "$BEAT" "$t0" "$every" "$DESK_QUEUE" "$T/state")" = "true true true true" ]'
 notified=$(count "$T/notify.calls")
 echo '{"status":"sent","push":{"key":"digest:2026-10-23T17:00","text":"Check-in 17:00: 1 question(s)"}}' > "$T/checkin.json"
 out=$(tick); out=$(tick)
