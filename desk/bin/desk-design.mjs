@@ -407,7 +407,9 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
 const PART = /<!--[\s\S]*?(?:-->|$)|(<script\b(?:"[^"]*"|'[^']*'|[^'">])*>)([\s\S]*?)(?:<\/script\s*>|$)|<style\b(?:"[^"]*"|'[^']*'|[^'">])*>[\s\S]*?(?:<\/style\s*>|$)|<[a-z](?:"[^"]*"|'[^']*'|[^'">])*>/gi;
 const TAG = /<([a-z][^\s/>]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/gi;
 const ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+)))?/g;
-const IMPORT = /(?<![\w$.'"`-])import\s*(?:\(\s*|[\w$*{}\s,]+?\sfrom\s*|(?=["']))(["'])([^"'\n]+)\1/g;
+// A static import or a re-export names its URL after `from`, which a minifier runs up against the
+// clause (`import{a}from"u"`, `export*from"u"`); a side-effect import and import() name it straight away.
+const IMPORT = /(?<![\w$.'"`-])(?:import\s*(?:\(\s*|(?=["']))|(?:import|export)\s*[\w$*{}\s,]*?(?<=[\s}*])from\s*)(["'])([^"'\n]+)\1/g;
 const SVG_HREF = new Set(['image', 'use', 'feimage']);
 // A srcset's URLs: each candidate's URL is its run of non-space characters, so a data: URL's comma
 // stays in it; a trailing comma ends the candidate, else its descriptors run to the next comma.

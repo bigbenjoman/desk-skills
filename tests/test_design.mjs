@@ -266,6 +266,7 @@ t('loads: an inline script\'s code and a comment are not loads', loads('<!-- <im
 t('loads: a <!-- in a script or a stylesheet hides nothing after it', loads('<script>var s="<!--"</script><img src="https://x/a.png"><style><!-- b { background: url(https://x/b.png) } --></style><p title="<!--">t</p><img src="c.png">').join(' '), 'https://x/a.png https://x/b.png c.png');
 t('loads: an attribute named inside another\'s value is not read', loads('<div title="see src=x.png">t</div>').length, 0);
 t('loads: an SVG image or use, an object, and a module\'s imports', loads('<svg><image href="https://x/i.png"/><use xlink:href="u.svg#a"/></svg><object data="o.pdf"></object><script type="module">import { a } from "https://x/m.js"; import("./d.js"); x.import("no"); e==="import"; f("x-import")</script><script type="application/json">{"import": "no"}</script>').join(' '), 'https://x/i.png u.svg#a o.pdf https://x/m.js ./d.js');
+t('loads: a minified import, and every re-export', loads('<script type="module">import{a}from"https://x/m.js";import*as b from\'https://x/n.js\';import c,{d}from"./c.js";import"./s.js";export*from"https://x/o.js";export { a } from "https://x/p.js";export{e as f}from"./q.js";export const g="from";var h={from:"no"}</script>').join(' '), 'https://x/m.js https://x/n.js ./c.js ./s.js https://x/o.js https://x/p.js ./q.js');
 t('loads: the design runtime inlined as a script is no load', loads(`<script>${read(join(dirname(BIN), '..', '..', 'docs/design/DS-215/support.js'))}</script>`).join(' '), '');
 const imp = importExport(exportFile, { state: IST, url: XURL, epic: 'KAN-727', tickets: keys('KAN-746', 'KAN-747', 'KAN-749'), now: '2026-11-01T09:00:00.000Z' });
 const impSrc = json(join(IST, 'designs/KAN-727/source.json'));
@@ -358,6 +359,9 @@ t('cli import: exit 0, naming the snapshot', `${cliImp.status} ${cliImp.stdout.s
 put(join(T, 'downloads', 'cli-linked.html'), '<img src="https://cdn.example.com/a.png">');
 const cliBad = runState('import', join(T, 'downloads', 'cli-linked.html'), '--url', 'https://claude.ai/artifact/CLI2', '--key', 'KAN-3');
 t('cli import: a page that loads a URL exits 4, naming it', `${cliBad.status} ${cliBad.stderr.includes('it loads https://cdn.example.com/a.png')}`, '4 true');
+put(join(T, 'downloads', 'cli-min.html'), '<script type="module">import{a}from"https://x/m.js";export*from"https://x/o.js"</script>');
+const cliMin = runState('import', join(T, 'downloads', 'cli-min.html'), '--url', 'https://claude.ai/artifact/CLI3', '--key', 'KAN-4');
+t('cli import: a minified module import is a load, so the page is refused', `${cliMin.status} ${cliMin.stderr.includes('it loads https://x/m.js')}`, '4 true');
 t('cli import: no --key is a usage error', runState('import', join(T, 'downloads', 'cli.html'), '--url', 'https://claude.ai/artifact/CLI1').status, 2);
 
 // ---- render: the plan, the README and config §5 Breakpoints ----
