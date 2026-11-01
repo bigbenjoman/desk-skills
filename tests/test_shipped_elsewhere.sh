@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: pass (a ticket shipped outside its worker is recorded done, not spawned)
 # Before a spawn, resume or handoff the pass looks for a PR merged since the ticket joined the queue
-# whose title or branch names its key, and for the ticket done in Jira with no PR of its own. Either is
+# whose branch names its key, and for the ticket done in Jira with no PR of its own. Either is
 # recorded done and spawns nothing; a ticket with neither, or whose reads fail, spawns as before. Runs
 # the real pass.mjs with stub claude, gh, desk-jira, setup-worktree and spawn-worker. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -83,8 +83,10 @@ q init se
 mkdir -p "$T/wt/DS-371" "$T/wt/DS-376"
 queued DS-371 fix/DS-371-own handoff=pending handoff_stage=7 "worktree=$T/wt/DS-371" draft_pr=336
 queued DS-376 fix/DS-376-own resume=pending "worktree=$T/wt/DS-376" session_id=s-376
-# A PR whose title names the key, from a branch that does not.
+# A PR whose title names the key, from a branch that does not: another ticket's PR often names it.
 queued DS-377 fix/DS-377-own
+# Done once, its own PR #341 merged at 10:20, then requeued for more work: its own merge is not news.
+queued DS-378 fix/DS-378-own result.pr=341 merged_at=2026-10-31T10:20:00Z
 # AC2: done in Jira, no PR anywhere.
 queued DS-373 fix/DS-373-x; jira DS-373 Done "done"
 # AC3: neither. DS-40's key is only a prefix of DS-404's branch; DS-372's PR merged before it was
@@ -93,8 +95,9 @@ queued DS-40 fix/DS-40-x
 queued DS-372 fix/DS-372-x; jira DS-372 "To Do" new
 queued DS-374 fix/DS-374-x draft_pr=900; jira DS-374 Done "done"
 cat > "$T/merged.json" <<'EOF'
-[{"number":337,"headRefName":"fix/DS-371-evidence-workflow","mergedAt":"2026-10-31T11:49:54Z"},
- {"number":330,"headRefName":"fix/DS-371-first-go","mergedAt":"2026-10-31T10:30:00Z"},
+[{"number":330,"headRefName":"fix/DS-371-first-go","mergedAt":"2026-10-31T10:30:00Z"},
+ {"number":337,"headRefName":"fix/DS-371-evidence-workflow","mergedAt":"2026-10-31T11:49:54Z"},
+ {"number":341,"headRefName":"fix/DS-378-own","mergedAt":"2026-10-31T10:20:00Z"},
  {"number":338,"headRefName":"fix/DS-404-something","mergedAt":"2026-10-31T12:00:00Z"},
  {"number":301,"headRefName":"feat/DS-372-part-one","mergedAt":"2026-10-30T09:00:00Z"},
  {"number":339,"headRefName":"chore/DS-376-by-hand","mergedAt":"2026-10-31T13:00:00Z"},
@@ -109,19 +112,25 @@ check "DS-404 AC1 DS-371: no Stage 7 session is spawned, and the report says why
   '! spawned DS-371 && grep -q "DS-371: PR #337 merged from fix/DS-371-evidence-workflow, outside its worker: recorded done, no worker spawned" <<< "$out"'
 check "DS-404 AC1 a killed worker whose key a merged branch carries is not resumed" \
   '[ "$(field DS-376 state)" = "\"done\"" ] && [ "$(field DS-376 result.pr)" = 339 ] && [ "$(field DS-376 resume)" = null ] && ! spawned DS-376'
-check "DS-404 AC1 a merged PR whose title names the key counts too" '[ "$(field DS-377 state)" = "\"done\"" ] && [ "$(field DS-377 result.pr)" = 340 ] && ! spawned DS-377'
 check "DS-404 AC2 done in Jira with no PR: recorded done, nothing spawned, no PR recorded" \
-  '[ "$(field DS-373 state)" = "\"done\"" ] && [ "$(field DS-373 result.pr)" = null ] && ! spawned DS-373 && grep -q "DS-373: done in Jira (Done) with no PR, outside its worker: recorded done, no worker spawned" <<< "$out"'
-check "DS-404 AC3 a key that is only a prefix of a merged branch's spawns as today" '[ "$(field DS-40 state)" = "\"running\"" ] && spawned DS-40'
-check "DS-404 AC3 a PR merged before the ticket was queued does not count" '[ "$(field DS-372 state)" = "\"running\"" ] && spawned DS-372'
-check "DS-404 AC3 done in Jira with an open PR of its own spawns as today" '[ "$(field DS-374 state)" = "\"running\"" ] && spawned DS-374'
-check "DS-404 tickets recorded done take no slot: all three of the rest spawned" '[ "$(wc -l < "$T/spawned" | tr -d " ")" = 3 ]'
+  '[ "$(field DS-373 state)" = "\"done\"" ] && [ "$(field DS-373 result.pr)" = null ] && ! spawned DS-373 && grep -q "DS-373: done in Jira with no PR, outside its worker: recorded done, no worker spawned" <<< "$out"'
+# The machine caps this batch at 3 workers, and five tickets remain: the three shipped took no slot.
+check "DS-404 tickets recorded done take no slot: the cap's three workers spawned" '[ "$(wc -l < "$T/spawned" | tr -d " ")" = 3 ]'
 check "DS-404 the search asks GitHub only for PRs merged since the ticket was queued" 'grep -qx "merged:>=2026-10-31" "$T/searches"'
+# Those three finish, and a second pass spawns the other two.
+while read -r k; do q set "$k" state=done; done < "$T/spawned"
+out=$(node "$B/pass.mjs" 2>&1)
+unshipped(){ spawned "$1" && [ "$(field "$1" result.summary)" = null ]; }
+check "DS-404 AC3 a merged PR that names the key only in its title does not count" 'unshipped DS-377'
+check "DS-404 AC3 a ticket requeued after its own PR merged spawns, its own merge not counted" 'unshipped DS-378'
+check "DS-404 AC3 a key that is only a prefix of a merged branch's spawns as today" 'unshipped DS-40'
+check "DS-404 AC3 a PR merged before the ticket was queued does not count" 'unshipped DS-372'
+check "DS-404 AC3 done in Jira with an open PR of its own spawns as today" 'unshipped DS-374'
 
 # A failed GitHub read spawns as before.
 q add DS-380 Bug A; q set DS-380 state=triaged branch=fix/DS-380-x added_at=2026-10-31T10:00:00Z
 printf '#!/bin/sh\necho "gh: HTTP 502" >&2; exit 1\n' > "$T/stub/gh"
-for k in DS-40 DS-372 DS-374; do q set "$k" state=done; done
+for k in DS-40 DS-372 DS-374 DS-377 DS-378; do q set "$k" state=done; done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-404 a merged-PR search that fails spawns as before" '[ "$(field DS-380 state)" = "\"running\"" ] && spawned DS-380'
 

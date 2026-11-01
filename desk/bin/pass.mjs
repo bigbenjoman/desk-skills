@@ -9,7 +9,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -788,26 +788,32 @@ function ownMergedPr(t) {
 }
 // A queued ticket shipped outside its worker: a session may merge a PR for the same key from a branch
 // of its own, or move the ticket to Done. Before a spawn, resume or handoff: { pr, branch } for the
-// newest PR merged since the ticket joined the queue whose title or branch names its key, else { jira } when
-// its tracker status category is done and it records no PR of its own, else null. A read that fails is
-// null, and the ticket spawns as it would have.
+// newest PR merged since the ticket joined the queue whose branch names its key, else { jira: true } when
+// its tracker status category is done and it records no PR of its own, else null. A title is not
+// enough: another ticket's PR often names this key in its title. A ticket whose own PR merged and was
+// requeued for more work counts only PRs merged after that merge. A read that fails is null, and the
+// ticket spawns as it would have.
 function shippedElsewhere(t) {
   try {
-    const since = Date.parse(t.added_at);
-    const search = Number.isNaN(since) ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
+    const own = Date.parse(t.merged_at);
+    const since = Math.max(...[Date.parse(t.added_at), own].filter((n) => !Number.isNaN(n)), -Infinity);
+    const search = since === -Infinity ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
+    // 1000 is the most a GitHub search returns.
     const prs = cached(`merged:${search}`, () => JSON.parse(readOrThrow(`gh pr list --search ${search}`, 'gh',
-      ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '200', '--json', 'number,title,headRefName,mergedAt'])));
-    const hit = mergedNaming(t.key, (Array.isArray(prs) ? prs : [])
-      .filter((p) => Number.isFinite(Number(p?.number)) && (Number.isNaN(since) || Date.parse(p.mergedAt) >= since))
-      .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt)));
+      ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt'])));
+    const re = new RegExp(keyPattern(t.key));
+    const hit = (Array.isArray(prs) ? prs : [])
+      .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? ''))
+        && (since === -Infinity || Date.parse(p.mergedAt) >= since)
+        && (Number.isNaN(own) || (Date.parse(p.mergedAt) > own && Number(p.number) !== Number(t.result?.pr))))
+      .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
     if (hit) return { pr: Number(hit.number), branch: hit.headRefName };
   } catch { /* unread: spawn as before */ }
   if (t.result?.pr != null || t.draft_pr != null) return null;
   const k = E.ticketKind(t.key);
   if (!k.ok || k.kind !== 'tracker') return null;
   try {
-    const status = cached(`status:${t.key}`, () => JSON.parse(readOrThrow(`desk-jira get ${t.key}`, 'desk-jira', ['get', t.key, '--json']))?.fields?.status);
-    if (status?.statusCategory?.key === 'done') return { jira: String(status.name || 'Done') };
+    if (clearsRead.ticket(t.key) === 'done') return { jira: true };
   } catch { /* unread: spawn as before */ }
   return null;
 }
@@ -1990,7 +1996,7 @@ for (const t of spawnable) {
   // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.
   const shipped = rerunAllowed.has(t.key) ? null : shippedElsewhere(t);
   if (shipped) {
-    const how = shipped.pr != null ? `PR #${shipped.pr} merged from ${shipped.branch}` : `done in Jira (${shipped.jira}) with no PR`;
+    const how = shipped.pr != null ? `PR #${shipped.pr} merged from ${shipped.branch}` : 'done in Jira with no PR';
     const before = report.failed.length;
     if (!DRY) q('set', t.key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', `result.summary=shipped outside its worker: ${how}`, ...(shipped.pr != null ? [`result.pr=${shipped.pr}`] : []));
     if (report.failed.length === before) report.done.push(`${t.key}: ${how}, outside its worker: recorded done, no worker spawned`);
