@@ -122,15 +122,19 @@ function reviewTriesLeft(done) {
   const counted = (done ?? []).filter((x) => !(isReviewTry(x) && quoted(x)));
   return Math.min(REVIEW_TRIES_CEILING - reviewTriesMade(done), FIX_TRIES_MAX - reviewTriesMade(counted), FIX_TRIES_TOTAL - triesMade(counted));
 }
-// A finding or gap as compared across heads: its first file:line, and its text with the markup,
-// severity, that file:line and spacing taken out, so a finding that moved lines still matches.
-const firstAt = (text) => /[\w./-]+:\d+/.exec(text)?.[0] ?? null;
-const plain = (text) => String(text).replace(/[`*]/g, '').replace(/[\w./-]+:\d+/, '').replace(/^[\s>-]*(P[0-3]\b[:\s—-]*)?/, '').replace(/\s+/g, ' ').trim().toLowerCase();
-// The findings and gaps at the head that an earlier review fix try quoted: the same file:line, or the
-// same text. Each survived the try aimed at it.
+// A finding or gap as compared across heads: its first file:line, the path whole, so one holding
+// `[id]` or `(shop)` is not another file's, and its text with the markup, `F1 ·` label, severity,
+// that file:line, the seat in brackets after it and spacing taken out, so a finding that moved lines
+// still matches.
+const AT = /[\w./\-[\]()]+:\d+/;
+const firstAt = (text) => AT.exec(text)?.[0].replace(/^\((?![^)]*\))/, '') ?? null;
+const plain = (text) => String(text).replace(/[`*]/g, '').replace(AT, '').replace(/^[\s>-]*(F\d+\s*·\s*)?(P[0-3]\b[:\s·—-]*)?(\([^)]*\)\s*)?/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+// The findings and gaps at the head that an earlier review fix try quoted, so survived the try aimed
+// at them: the same file:line as the last try that quoted any (an older try's lines have since moved),
+// or the same text as any try's.
 function survivors(done, findings, gaps) {
   const before = (done ?? []).filter(isReviewTry);
-  const atBefore = new Set(before.flatMap((x) => (x.findings ?? []).map((f) => firstAt(f.text)).filter(Boolean)));
+  const atBefore = new Set((before.filter(quoted).at(-1)?.findings ?? []).map((f) => firstAt(f.text)).filter(Boolean));
   const textBefore = new Set(before.flatMap((x) => [...(x.findings ?? []).map((f) => f.text), ...(x.gaps ?? [])].map(plain).filter(Boolean)));
   return [...findings.filter((f) => atBefore.has(firstAt(f.text)) || textBefore.has(plain(f.text))).map((f) => `${f.sev}: ${f.text}`),
     ...gaps.filter((g) => textBefore.has(plain(g)))];
@@ -196,7 +200,7 @@ export function reviewFindings(body) {
   let sev = null;
   for (const line of String(body ?? '').split(/\r?\n/)) {
     const text = line.trim();
-    const own = /^[#>*_\s-]*(P[0-3])\b/.exec(line);
+    const own = /^[#>*_\s-]*(?:F\d+\s*·\s*)?(P[0-3])\b/.exec(line);
     if (own) sev = own[1];
     else if (isHeading(text)) sev = null;
     if (sev !== 'P0' && sev !== 'P1') continue;
@@ -279,7 +283,7 @@ export function reviewFix(t, review, opts = {}) {
     // Only the body's: its inline comments are not read once no try is left.
     const left = [...(counts ? reviewFindings(review.body).map((x) => `${x.sev}: ${x.text}`) : []), ...(gapsOpen ? reviewGaps(review.body) : [])];
     const lead = made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
-      ? `review not clean after ${made} review fix tries, the most a PR may make: ${what}` : after;
+      ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
     return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
   const listed = counts ? reviewFindings(review.body) : [];

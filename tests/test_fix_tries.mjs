@@ -141,25 +141,45 @@ const cap = reviewFix(tk({ fix_tries: [{ try: 1, head: 'f'.repeat(40), kind: 'ca
 t('DS-384 a capture try is not counted or named among the tries by kind', cap?.why.split(':')[0], 'review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review)');
 
 // ---- a review fix try that cleared what it quoted does not use up the tries; one that did not, ends them
-// PR #367's three rounds (DS-414): try 1 closed round 1's findings, try 2 the gap round 2 raised, and the
-// round 3 review at 84b7205 found a new P0 in try 2's fix. Heads and the earlier rounds' texts stand in
-// for the real ones, which the queue no longer holds.
-const H367 = ['1'.repeat(40), 'df514a5' + '0'.repeat(33)], AT367 = '84b7205' + '0'.repeat(33);
-const ds367 = [{ try: 1, head: H367[0], kind: 'review', findings: [{ sev: 'P1', text: '- **P1** `desk/bin/undraft.mjs:120` reads the review of an older head' }] },
-  { try: 2, head: H367[1], kind: 'review', gaps: ['**AC3**, "a park naming a check build is done at harvest." Not covered for a red draft.'] }];
-const p0_367 = '- **P0** `desk/bin/undraft.mjs:248` unanchored tail regex matches a longer check name';
-const round3 = { pr: 367, head: AT367, verdict: { p0: '1', p1: '0' }, body: reviewBody('p0=1 p1=0 p2=0', [p0_367]) };
+// PR #367's three rounds: try 1 quoted round 1's finding at pass.mjs:617, try 2 round 2's gap, and the
+// round 3 review at 84b7205, below as posted, found a new P0 in try 2's fix. The tries quote the lines
+// round 3's "Earlier rounds" gives for them.
+const H367 = ['914abdf' + '0'.repeat(33), 'df514a5' + '0'.repeat(33)], AT367 = '84b7205801472d6c86411ec57f439a8616fefd1b';
+const ds367 = [{ try: 1, head: H367[0], kind: 'review', findings: [{ sev: 'P1', text: '- a park that names a Check builds check but also asks something else was recorded done (`desk/bin/pass.mjs:617`)' }] },
+  { try: 2, head: H367[1], kind: 'review', gaps: ['every park names the steps it did not reach, so a realistic build-only park stayed parked'] }];
+const p0_367 = '**F1 · P0 · `desk/bin/undraft.mjs:248`** (codex; CONFIRMED by ada-devils-advocate)';
+const body367 = ['<!-- desk-review:local -->',
+  `<!-- desk-review:verdict v=1 sha=${AT367} p0=1 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=3 -->`,
+  '**desk-review, round 3, fix range df514a5..84b7205: not clean: 1 P0 outstanding at `84b7205`** · codex read the diff cold · refuted cross-vendor',
+  '<!-- desk-review:carried v=1 p2=0 since=df514a54fbfe14fd684fb30049d884b9e6898def -->', '<!-- desk-review:method v=1 fallback=0 -->', '',
+  'Bar: default@84b7205 (`skills/desk-review/references/review-bar.md`). Review experts: none.', '',
+  '## Outstanding', '', p0_367, '',
+  '`buildPark`\'s test for the steps a park did not reach has no anchor. Two examples:', '',
+  '- `Before the remaining steps, should we delete the existing customer records or preserve them?`', '',
+  '## Earlier rounds', '',
+  '- **Round 1 at `914abdf`** (lena, mira, bea, general-purpose simplicity, codex cold). Four P2s, all fixed in `df514a5`:',
+  '  - a park that names a Check builds check but also asks something else was recorded done (`desk/bin/pass.mjs:617`)',
+  '  - ticket IDs in code comments (`desk/bin/pass.mjs:616`, `desk/bin/undraft.mjs:235`)',
+  '- **Round 2 at `df514a5`** (lena, bea, codex). Bea raised a requirement gap. Fixed in `84b7205`.'].join('\n');
+const round3 = { pr: 367, head: AT367, verdict: { p0: '1', p1: '0' }, body: body367 };
+t('DS-414 AC4 round 3\'s P0 as posted, under its F1 label, is read, and the earlier rounds\' lines are not', reviewFindings(body367).map((x) => `${x.sev} ${x.text}`).join('|'), `P0 ${p0_367}`);
 const b1 = reviewFix(tk({ fix_tries: ds367 }), round3);
 t('DS-414 AC1 AC4 after two tries that each cleared their findings, a new P0 goes to a fix worker, quoting it', `${b1?.call} ${b1?.fix?.try}/${b1?.fix?.of} ${b1?.fix?.findings?.map((x) => x.text).join('|')}`, `requeue 3/${REVIEW_TRIES_CEILING} ${p0_367}`);
+const route = (at) => ({ pr: 702, head: HEAD, verdict: { p1: '1' }, body: reviewBody('p0=0 p1=1 p2=0', [`- **P1** \`${at}\` cart total unrounded`]) });
+t('DS-414 a path holding brackets is matched whole: a finding at another route\'s same line did not survive', reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review', findings: [{ sev: 'P1', text: 'app/[account]/page.tsx:12 stale balance' }] }] }), route('app/[product]/page.tsx:12'))?.call, 'requeue');
+t('DS-414 and one at the same route and line did', reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review', findings: [{ sev: 'P1', text: '- **P1** `app/[id]/(shop)/page.tsx:12` stale balance' }] }] }), route('app/[id]/(shop)/page.tsx:12'))?.call, 'stuck');
+t('DS-414 a file:line an older try quoted, whose next review cleared it, is not a survivor at a later head', reviewFix(tk({ fix_tries: [{ ...ds367[0], findings: [{ sev: 'P1', text: 'desk/bin/undraft.mjs:248 reads the review of an older head' }] }, ds367[1]] }), round3)?.call, 'requeue');
+t('DS-414 two findings sharing only their seat\'s attribution are not the same text', reviewFix(tk({ fix_tries: [ds367[1], { try: 2, head: 'c'.repeat(40), kind: 'review', findings: [{ sev: 'P0', text: '**F1 · P0 · `src/a.ts:3`** (codex; CONFIRMED by ada-devils-advocate)' }] }] }), round3)?.call, 'requeue');
 const kept = { ...ds367[1], findings: [{ sev: 'P0', text: 'desk/bin/undraft.mjs:248 tail regex is not anchored' }] };
 const b2 = reviewFix(tk({ fix_tries: [ds367[0], kept] }), round3);
 t('DS-414 AC2 a P0 at the file:line the previous try quoted survived it: stuck, naming it', `${b2?.call} | ${b2?.why}`,
   `stuck | review not clean after 2 fix tries (2 review): 1 P0 — still open after the fix try that quoted it: P0: ${p0_367}`);
-t('DS-414 AC2 so is one an earlier try quoted with the same text at another line', reviewFix(tk({ fix_tries: [{ ...ds367[0], findings: [{ sev: 'P0', text: 'desk/bin/undraft.mjs:240 unanchored tail regex matches a longer check name' }] }] }), round3)?.call, 'stuck');
+const said3 = { ...round3, body: reviewBody('p0=1 p1=0 p2=0', ['- **P0** `desk/bin/undraft.mjs:248` unanchored tail regex matches a longer check name']) };
+t('DS-414 AC2 so is one an earlier try quoted with the same text at another line', reviewFix(tk({ fix_tries: [{ ...ds367[0], findings: [{ sev: 'P0', text: 'desk/bin/undraft.mjs:240 unanchored tail regex matches a longer check name' }] }, ds367[1]] }), said3)?.call, 'stuck');
 const ceiling = Array.from({ length: REVIEW_TRIES_CEILING }, (_, i) => ({ try: i + 1, head: `${i + 3}`.repeat(40), kind: 'review', findings: [{ sev: 'P1', text: `src/r${i}.ts:${i + 1} round ${i + 1}` }] }));
 const b3 = reviewFix(tk({ fix_tries: ceiling }), round3);
 t('DS-414 AC3 at the ceiling of review fix tries a review still not clean goes to the person, naming the ceiling', `${b3?.call} | ${b3?.why}`,
-  `stuck | review not clean after ${REVIEW_TRIES_CEILING} review fix tries, the most a PR may make: 1 P0 — P0: ${p0_367}`);
+  `stuck | review not clean after ${REVIEW_TRIES_CEILING} fix tries (${REVIEW_TRIES_CEILING} review), the most review fix tries a PR may make: 1 P0 — P0: ${p0_367}`);
 t('DS-414 one below the ceiling is the last try', `${reviewFix(tk({ fix_tries: ceiling.slice(1) }), round3)?.fix?.try}/${reviewFix(tk({ fix_tries: ceiling.slice(1) }), round3)?.fix?.of}`, `4/${REVIEW_TRIES_CEILING}`);
 t('DS-414 a cleared review try leaves room under the overall cap after a conflict and a rereview try', `${reviewFix(tk({ fix_tries: [...ds379, ds367[0]] }), round3)?.fix?.try}`, '2');
 
