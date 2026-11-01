@@ -152,6 +152,9 @@ if (isMain) {
     try { by = configValue('name') ?? null; } catch { /* outside a repo */ }
     const e = addPutOff(putOffEntry({ question: q.join(' '), ticket, inputs: inputs(), by }));
     console.log(`put off: ${e.key} in ${notNowPath()}`);
+    // With the actions the ticket's needs-you item offers, where this is that item's question.
+    try { (await import('./needs-you.mjs')).stampActions({ stateDir: stateDir(), ticket, question: e.question }); }
+    catch (err) { console.error(`put off, but without its actions, so a new one will not bring it back: ${err.message}`); }
     process.exit(0);
   }
   if (cmd === 'clear' && rest[0]) {

@@ -709,7 +709,7 @@ t('DS-380 a worktree holding untracked files is never removed, and nothing moves
 // ---- A put-off item comes back once it offers an action it did not offer when put off.
 const omegaState = join(env.HOME, '.desk-autopilot', 'acme__omega');
 // M-3 put off offering resume and not-now; M-2 by answer.mjs before entries recorded actions, so with
-// none; M-5 by answer.mjs since, with none either.
+// none; M-5 since, with none either, as an entry whose item no batch listed when it was put off.
 NN.addPutOff(NN.putOffEntry({ question: 'this one too', ticket: 'M-3', inputs: {}, actions: ['resume', 'not-now'] }), omegaState);
 NN.addPutOff(NN.putOffEntry({ question: 'the file is on the feature branch', ticket: 'M-2', inputs: {}, at: '2026-10-31T16:54:00.000Z' }), omegaState);
 NN.addPutOff(NN.putOffEntry({ question: 'and this one', ticket: 'M-5', inputs: {} }), omegaState);
@@ -719,7 +719,7 @@ t('DS-401 AC1 an item put off offering resume and not-now is listed again once i
 t('DS-401 AC1 a put-off from before entries recorded actions (KAN-1291) is listed again once, saying so',
   /\(Changed since it was put off on \d{4}-\d\d-\d\d: actions \(not recorded\) → resume, not-now, move\.\)$/.test(omega()['M-2']?.need ?? ''), true);
 t('DS-401 AC1 desk-q counts them as needing you', N.needsCount(loadRepos().find((r) => r.name === 'omega')).rows.some((x) => x.t.key === 'M-3'), true);
-t('DS-401 AC4 a park put off since by answer.mjs, recording no actions, stays put off in the list and in desk-q\'s count',
+t('DS-401 AC4 a put-off written since with no actions stays put off in the list and in desk-q\'s count',
   `${'M-5' in omega()} ${N.needsCount(loadRepos().find((r) => r.name === 'omega')).rows.some((x) => x.t.key === 'M-5')}`, 'false false');
 N.record({ word: 'omega', ticket: 'M-3', action: 'not-now' });
 N.record({ word: 'omega', ticket: 'M-2', action: 'not-now' });
@@ -728,6 +728,23 @@ t('DS-401 a park put off again records the actions it offers', m3Entry?.actions?
 t('DS-401 the actions are no input: the pass and the digest read the park as put off', NN.lookup(NN.readRegister(omegaState), { question: 'this one too', inputs: {} }).status, 'put_off');
 t('DS-401 AC4 with its question, inputs and actions unchanged, it stays put off, on this run and a later one',
   `${'M-3' in omega()} ${'M-2' in omega()} ${N.collect({ word: 'omega', repos: loadRepos(NOW + 86400000) }).items.some((i) => ['M-2', 'M-3'].includes(i.t.key))}`, 'false false false');
+// A park put off straight through answer.mjs (the orchestrator, the digest) or not-now.mjs add records
+// its item's actions too, so one it gains brings it back as M-3 came back.
+const omegaQ = join(env.DESK_HOME, 'repos', 'acme__omega', 'queue.json');
+const oq = queueOf('omega');
+oq.tickets['M-6'] = { key: 'M-6', ...parked('A', 7, 'which copy for M-6?') };
+oq.tickets['M-7'] = { key: 'M-7', ...parked('A', 6, 'which copy for M-7?') };
+writeFileSync(omegaQ, JSON.stringify(oq));
+const runIn = (script, ...args) => spawnSync(process.execPath, [join(REAL_BIN, script), ...args], { encoding: 'utf8', cwd: T, env: { ...process.env, DESK_AUTOPILOT_STATE: omegaState, DESK_QUEUE: omegaQ } });
+const ans6 = runIn('answer.mjs', 'M-6', 'not now');
+const entryOf = (q) => NN.readRegister(omegaState).entries.get(NN.questionKey(q));
+t('DS-401 AC1 a park put off through answer.mjs records the actions it offers', `${ans6.status} ${entryOf('which copy for M-6?')?.actions?.join()}`, '0 resume,not-now,move');
+const add7 = runIn('not-now.mjs', 'add', 'M-7', 'which copy for M-7?');
+t('DS-401 AC1 a park put off through not-now.mjs add records them too', `${add7.status} ${entryOf('which copy for M-7?')?.actions?.join()}`, '0 resume,not-now,move');
+t('DS-401 AC4 and both stay put off', `${'M-6' in omega()} ${'M-7' in omega()}`, 'false false');
+NN.addPutOff(NN.putOffEntry({ question: 'this one too', ticket: 'M-3', inputs: {}, actions: ['resume', 'not-now'] }), omegaState);
+runIn('not-now.mjs', 'add', 'M-3', 'some other question');
+t('DS-401 a put-off of another question never stamps the item\'s own older entry, which still comes back', `${entryOf('this one too')?.actions?.join()} ${'M-3' in omega()}`, 'resume,not-now true');
 // ---- DS-390: an approved force-push becomes a one-off grant on the ticket; a step no worker is ever
 // allowed is a session item, never a requeue.
 const grWt = join(T, 'grantee-wt');

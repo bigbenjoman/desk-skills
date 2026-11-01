@@ -42,6 +42,7 @@
 // its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
 // (show the person) on anything it refuses.
 import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
@@ -50,7 +51,7 @@ import { readRecord as templatesRecord, check as templatesCheck } from './repo-t
 import { isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
-import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine } from './not-now.mjs';
+import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding } from './batches.mjs';
 
 // A question longer than this is cut on its line: the session asks it, not reads it in full.
@@ -349,8 +350,8 @@ function putOffKey(r, t, item) {
 // A needs row as an item, and what the not-now register says of it: the one rule desk-q's count and
 // this list both go by. An item put off with unchanged inputs is asked again once it offers an action
 // it did not offer then. An entry from before entries recorded actions is asked again once, and
-// records them; one written since without them (answer.mjs and not-now.mjs add, which do not know an
-// item's actions) stays put off on its inputs alone.
+// records them. Every way of putting an item off records them since (stampActions), so one written
+// since without them is an item no batch listed when it was put off: it stays put off on its inputs.
 const ACTIONS_SINCE = Date.parse('2026-11-01T15:00:00Z');
 const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
 function judged(r, x, register) {
@@ -360,6 +361,26 @@ function judged(r, x, register) {
   const was = Array.isArray(l.entry.actions) ? l.entry.actions : null, now = verbsOf(item);
   if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return { item, l };
   return { item, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
+}
+
+// Records on a ticket's put-off entry the actions its item offers now, so one it gains later brings it
+// back (judged). answer.mjs and not-now.mjs add call it once they have put a question off, as this
+// file's not-now does: neither knows an item's actions. The batch is the one whose state directory is
+// `stateDir`. Returns the actions recorded, or null where that batch lists no item for the ticket or
+// the item is keyed to another question than the one put off: an older entry of the item's own is
+// never stamped, or the actions it gained since would hide it again.
+export function stampActions({ stateDir, ticket, question, now = Date.now(), repos = loadRepos(now) }) {
+  const r = repos.find((b) => b.q && resolve(b.stateDir) === resolve(stateDir));
+  const x = r && needsRows(r).find((y) => y.t.key === ticket);
+  const item = x && itemOf(r, x);
+  return item && questionKey(putOffKey(r, x.t, item).question) === questionKey(question) ? stampItem(r, x, item) : null;
+}
+function stampItem(r, x, item) {
+  const l = lookup(readRegister(r.stateDir), putOffKey(r, x.t, item));
+  if (l.status !== 'put_off') return null;
+  const actions = verbsOf(item);
+  if (l.entry.actions?.join() !== actions.join()) addPutOff({ ...l.entry, actions }, r.stateDir);
+  return actions;
 }
 
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
@@ -580,8 +601,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
         if (!a.ok) return say(false, a.why);
-        const l = lookup(readRegister(r.stateDir), putOffKey(r, x.t, item));
-        if (l.entry) addPutOff({ ...l.entry, actions: verbsOf(item) }, r.stateDir);
+        stampItem(r, x, item);
         return say(true, 'put off (not-now register).');
       }
       addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
