@@ -209,11 +209,15 @@ function blockerHold(q, key, b, ctx, seen) {
 // { why, checks, outside }: `checks` the recorded checks still red, `outside` those of them a person
 // clears off GitHub ({ name, command }). A check named in the record that is no longer red is dropped,
 // and once none is left it is null. A record that names no checks (a conflict, a review) holds as it
-// was written.
+// was written while the PR is at the head it was written at; at another head it is gone, and the next
+// pass says what holds the PR there.
 export function stuckOf(t, ctx = NOBODY) {
   const s = t?.stuck;
   if (!s) return null;
-  if (!Array.isArray(s.checks)) return { why: s.why, checks: [], outside: [] };
+  if (!Array.isArray(s.checks)) {
+    const head = prStatusOf(t)?.head;
+    return s.head && head && s.head !== head ? null : { why: s.why, checks: [], outside: [] };
+  }
   const gate = evaluateGate(prStatusOf(t)?.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   const red = new Set(gate.failing.map((f) => f.name));
   const left = s.checks.filter((c) => red.has(c.name));

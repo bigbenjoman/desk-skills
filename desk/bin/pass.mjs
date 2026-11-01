@@ -2238,10 +2238,13 @@ if (drafts.length) {
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) })
             // Screenshots nobody took go to a capture worker, once per PR.
             : c.call === 'capture' ? captureTry(t, { pr: n, head: v.headRefOid, files: c.files }) : null;
-    // A conflict the person resolved after its tries ran out is no longer what the PR is stuck on, nor
-    // are screenshots they have since put in.
-    if (c.call !== 'conflict' && /^still in conflict/.test(t.stuck?.why ?? '') && !DRY) q('set', t.key, 'stuck=null');
-    if (c.call !== 'capture' && /still not taken after a capture try/.test(t.stuck?.why ?? '') && !DRY) q('set', t.key, 'stuck=null');
+    // A stuck reason holds only while the call at this head still gives one: with no fix answer here,
+    // whatever it was stuck on was fixed by hand, and the undraft call says what holds it now (red
+    // checks unread for a config error are not that). Held by a person, only a conflict they resolved
+    // or screenshots they put in are known to be gone.
+    const stale = hold ? (c.call !== 'conflict' && /^still in conflict/.test(t.stuck?.why ?? '')) || (c.call !== 'capture' && /still not taken after a capture try/.test(t.stuck?.why ?? ''))
+      : !rf && !(c.call === 'checks' && fixRowErrors.length);
+    if (t.stuck && stale && !DRY) q('set', t.key, 'stuck=null');
     const carried = c.carried ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since` : '';
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) applyFix(t, n, v.headRefOid, rf);
