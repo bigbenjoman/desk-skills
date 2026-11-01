@@ -97,11 +97,11 @@ desk_tool_args triage || { echo "FAIL: could not read the tool list (worker-tool
 
 # What is already settled for this ticket: the user's answers in its briefing (answer.mjs) and the
 # calls logged for it (decisions.mjs), so a re-triage does not ask them again.
-RECORDED="$(node --input-type=module - "$STATE" "$TICKET" "$DESK_BIN" <<'RECORDED_END' 2>/dev/null || true
+read -r -d '' RECORDED_JS <<'RECORDED_END' || true
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const [state, ticket, bin] = process.argv.slice(2);
+const [state, ticket, bin] = process.argv.slice(-3);
 const { collectAnswers, capBriefing } = await import(pathToFileURL(join(bin, 'briefing.mjs')).href);
 const brief = join(state, 'briefings', `${ticket}.md`);
 const answers = existsSync(brief) ? collectAnswers(readFileSync(brief, 'utf8')) : '';
@@ -112,7 +112,7 @@ const calls = (existsSync(log) ? readFileSync(log, 'utf8').split('\n') : []).fla
 const out = [answers, calls.length ? `Calls already taken or checked for ${ticket}:\n${[...new Set(calls)].join('\n')}` : ''].filter(Boolean).join('\n\n');
 if (out) process.stdout.write(capBriefing(out, 12000));
 RECORDED_END
-)"
+RECORDED="$(node --input-type=module -e "$RECORDED_JS" "$STATE" "$TICKET" "$DESK_BIN" 2>/dev/null || true)"
 
 read -r -d '' PROMPT <<PROMPT_END || true
 Triage ticket $TICKET in $DESK_GH_REPO${REPO_DESC:+ ($REPO_DESC)}. Read-only: change nothing, create

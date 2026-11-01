@@ -15,7 +15,7 @@ import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_B
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
-import { parseDecision, parseCheck, decisionEntry, appendDecisions } from './decisions.mjs';
+import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
@@ -1353,20 +1353,29 @@ const baselineBrief = () => {
     '',
   ].join('\n');
 };
-// A ticket whose every criterion triage found already met is a verify-only task.
-const verifyBrief = (t) => {
+// What triage settled for the worker: the calls it took on their recommendation (logged as decisions
+// when the ticket was admitted), and, where it found every criterion already met, a verify-only task.
+const triageBrief = (t) => {
   let r = null;
   try { r = JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8')); } catch { return ''; }
-  if (r?.verify_only !== true) return '';
-  const met = (Array.isArray(r.already_met) ? r.already_met : []).map((m) => `- ${m}`);
+  const { taken } = triageCalls(r);
   return [
-    '## Verify-only',
-    '',
-    'Triage found every acceptance criterion already met on the base:',
-    ...met,
-    '',
-    'Prove each criterion with a test that exercises it. Change code only where a test shows a criterion is not met, and say in the PR which criteria were already met and where.',
-    '',
+    ...(taken.length ? [
+      '## Calls triage took',
+      '',
+      'Build these as chosen: each is logged as a decision. List them under `Decisions taken` in the PR.',
+      ...taken.map((d) => `- ${d.question}: "${d.chose}" (${d.category}; the other options: ${d.options.filter((o) => o !== d.chose).join(', ')})`),
+      '',
+    ] : []),
+    ...(r?.verify_only === true ? [
+      '## Verify-only',
+      '',
+      'Triage found every acceptance criterion already met on the base:',
+      ...(Array.isArray(r.already_met) ? r.already_met : []).map((m) => `- ${m}`),
+      '',
+      'Prove each criterion with a test that exercises it. Change code only where a test shows a criterion is not met, and say in the PR which criteria were already met and where.',
+      '',
+    ] : []),
   ].join('\n');
 };
 
@@ -1526,7 +1535,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
     ownedBrief(t, wt),
     fixBrief(t),
     baselineBrief(),
-    verifyBrief(t),
+    triageBrief(t),
     t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,

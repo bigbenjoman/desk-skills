@@ -702,8 +702,11 @@ brief(){ cat "$T/state-h/briefings/$1.md"; }
 q init h
 printf '# Batch notes\n\nSIBLING-NOTE about a helper\n' > "$T/state-h/batch-notes.md"
 handing H-1; hfile H-1 4b "typecheck: pass"; echo "use the blue widget" > "$T/state-h/answers/H-1.txt"
+mkdir -p "$T/state-h/triage"
+printf '%s\n' '{"ticket":"H-1","lane":"A","unknowns":[],"decided":[{"question":"which retry backoff?","options":["fixed","exponential"],"chose":"exponential","category":"engineering"}],"verify_only":true,"already_met":["AC1: src/a.js:12"]}' > "$T/state-h/triage/H-1.json"
 hlog H-1 "$(printf 'AUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b')"
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-394 AC2/AC4 the briefing carries the calls triage took and the verify-only task" 'brief H-1 | grep -qxF -- "- which retry backoff?: \"exponential\" (engineering; the other options: fixed)" && brief H-1 | grep -qF "## Verify-only" && brief H-1 | grep -qxF -- "- AC1: src/a.js:12" && brief H-1 | grep -qF "Prove each criterion with a test"'
 check "DS-155 AC1 a session that prints AUTOPILOT_HANDOFF: 4b is not done, parked or failed, and the report says it handed off" 'echo "$out" | grep -q "H-1 handed off at the end of Stage 4: queued for a fresh session from Stage 4b"'
 check "DS-155 AC2 the pass spawns a new session for the ticket, on its branch, starting at Stage 4b" 'spawned_for H-1 | grep -q "^H-1 [0-9a-f-]* stage=4b branch=fix/H-1 brief=$T/state-h/briefings/H-1.md$" && [ "$(field H-1 state)" = "\"running\"" ] && [ "$(field H-1 stage)" = "\"4b\"" ] && echo "$out" | grep -q "spawned: H-1 fresh session from Stage 4b (handed off)"'
 check "DS-155 AC2 with a new session id, the same worktree, and the handed-off session's log kept as its own round" '[ "$(field H-1 session_id)" != "\"old-H-1\"" ] && [ "$(field H-1 worktree)" = "\"$T/wt/H-1\"" ] && gzip -dc "$T/state-h/logs/H-1.log.round1.gz" | grep -q "AUTOPILOT_HANDOFF: 4b" && ! grep -q "AUTOPILOT_HANDOFF" "$T/state-h/logs/H-1.log"'
