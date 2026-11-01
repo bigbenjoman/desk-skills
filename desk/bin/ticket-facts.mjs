@@ -29,9 +29,9 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { batchBase, defaultBranch, ghRepo, stateDir, ticketKind } from './desk-env.mjs';
+import { ghRepo, stateDir, ticketKind } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
-import { designFact } from './desk-design.mjs';
+import { baseRef, designFact } from './desk-design.mjs';
 import { SIZES, epicFact } from './desk-q-eta.mjs';
 
 const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').pop();
@@ -103,10 +103,7 @@ for (const f of ['blockers', 'other_links', 'size', 'labels', 'epic', 'epic_erro
 // The design fact, read against the base a worker branches from, as origin has it where fetched.
 function design(text) {
   try {
-    const { root = process.cwd(), dir = null } = designRoot();
-    const base = batchBase() ?? defaultBranch();
-    let ref = base;
-    try { execFileSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `origin/${base}`], { stdio: 'ignore' }); ref = `origin/${base}`; } catch { /* no remote copy */ }
+    const { root = process.cwd(), dir = null, ref = baseRef(root) } = designRoot();
     rec.design = designFact(text, { root, dir, ref, state: stateDir() });
   } catch (e) { rec.design_error = lastLine(e) || 'design not read'; }
 }

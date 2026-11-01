@@ -9,7 +9,8 @@ SRC="$(cd "$S/.." && pwd)"
 J="$SRC/bin/desk-jira"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/repos" "$T/state"
 export HOME="$T/home" DESK_CONFIG_ROOT="$T/home/.config/desk" DESK_ENV_MJS="$SRC/desk/bin/desk-env.mjs"
-unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR DESK_AUTOPILOT_WORKER
+unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR DESK_AUTOPILOT_WORKER \
+  DESK_DEFAULT_BRANCH DESK_BATCH DESK_QUEUE DESK_AUTOPILOT_STATE
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); printf 'ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf 'FAIL %s\n' "$1"; }
@@ -644,6 +645,9 @@ mkdir -p "$T/state/designs/KAN-47"; printf '{"url":"https://claude.ai/design/p/a
 out=$(cd "$A" && DESK_AUTOPILOT_STATE="$T/state" JIRA_SITE="http://127.0.0.1:$LPORT" "$J" lint KAN-47 2>&1); rc=$?
 check "lint KEY: a snapshotted canvas is advisory, the worker saves it from the snapshot" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*no copy is saved.*it is snapshotted at .*/state/designs/KAN-47, so the worker saves it from there"'
 mkdir -p "$A/docs/design/KAN-47"; printf '{"url":"https://claude.ai/design/p/abc123","version":"1","tickets":[{"key":"KAN-47","boards":[]}]}' > "$A/docs/design/KAN-47/source.json"
+klint KAN-47
+check "lint KEY: a canvas in the working tree only, not on the base, is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: design: .*no copy is saved under docs/design/ on main"'
+git -C "$A" add docs/design && git -C "$A" -c user.name=t -c user.email=t@example.com commit -q -m canvas && git -C "$A" branch -M main
 klint KAN-47
 check "lint KEY: a saved canvas not named beside the link is desk-design's advisory" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*not its saved copy docs/design/KAN-47/"'
 klint KAN-46 Story

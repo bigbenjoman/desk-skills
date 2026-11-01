@@ -162,8 +162,15 @@ t('re-save: a file the new version dropped is removed', existsSync(join(r1, DIR,
 t('re-save: other tickets kept', c.source.tickets.map((x) => x.key).join(' '), 'DS-51 DS-53');
 
 // ---- check (the lint finding) ----
+// checkTicket reads the base from the environment, so pin it: a runner inside a feature batch
+// exports another default branch and batch, which these fixture repos do not have.
+process.env.DESK_DEFAULT_BRANCH = 'main';
+process.env.DESK_QUEUE = join(T, 'no-queue.json');
+delete process.env.DESK_BATCH;
 const issue = (desc, parent = { key: 'DS-50', fields: { issuetype: { name: 'Epic', hierarchyLevel: 1 } } }) => ({ key: 'DS-70', fields: { description: desc, parent } });
 const r5 = repo('r5');
+const git = (r, ...a) => execFileSync('git', ['-C', r, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+git(r1, 'add', '-A'); git(r1, 'commit', '-q', '-m', 'canvas');
 const unsaved = checkTicket(issue(`h2. Outcome\nx\nh2. Design\n* [Admin|${URL1}]\nh2. Out of scope\n* https://claude.ai/design/p/later`), { root: r5, dir: DIR });
 t('check: an unsaved link is one blocking finding', unsaved.map((f) => f.severity).join(' '), 'blocking');
 t('check: it names the URL and the epic path', unsaved[0].message.includes(URL1) && unsaved[0].message.includes('docs/design/DS-50/'), true);
@@ -186,6 +193,41 @@ const snapped = checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, 
 t('check: a snapshotted link is advisory, naming the snapshot', `${snapped.map((f) => f.severity).join(' ')} ${snapped[0]?.message.includes(`snapshotted at ${join(st, 'designs/DS-70')}`)}`, 'advisory true');
 t('check: a feature batch reads the repo state\'s snapshot', checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, state: join(st, 'batches/DS-50') })[0].severity, 'advisory');
 t('check: another artifact is still blocking', checkTicket(issue('h2. Design\nhttps://claude.ai/design/p/other'), { root: r5, dir: DIR, state: st })[0].severity, 'blocking');
+
+// ---- check reads the base on origin, not a checkout's working tree ----
+// A main checkout behind origin/main: the canvas is merged on origin only, and another sits in the
+// checkout's working tree only.
+const origin = join(T, 'origin.git');
+execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+const ahead = join(T, 'ahead');
+execFileSync('git', ['clone', '-q', origin, ahead], { stdio: 'ignore' });
+put(join(ahead, 'README.md'), 'x'); git(ahead, 'add', '-A'); git(ahead, 'commit', '-q', '-m', 'init'); git(ahead, 'push', '-q', 'origin', 'main');
+const behind = join(T, 'behind');
+execFileSync('git', ['clone', '-q', origin, behind], { stdio: 'ignore' });
+put(join(ahead, DIR, 'DS-90/source.json'), JSON.stringify({ url: URL1, version: '1' }));
+git(ahead, 'add', '-A'); git(ahead, 'commit', '-q', '-m', 'canvas'); git(ahead, 'push', '-q', 'origin', 'main');
+git(behind, 'fetch', '-q', 'origin');
+const LOCAL = 'https://claude.ai/design/p/local-only';
+put(join(behind, DIR, 'DS-91/source.json'), JSON.stringify({ url: LOCAL, version: '1' }));
+t('base: the behind checkout\'s working tree lacks the merged canvas', existsSync(join(behind, DIR, 'DS-90')), false);
+const onOrigin = checkTicket(issue(`h2. Design\n${URL1} · docs/design/DS-90/`), { root: behind, dir: DIR, ref: 'origin/main' });
+t('AC1: a canvas saved on origin/<base> is found, though the working tree lacks it', onOrigin.length, 0);
+const localOnly = checkTicket(issue(`h2. Design\n${LOCAL} · docs/design/DS-91/`), { root: behind, dir: DIR, ref: 'origin/main' });
+t('AC2: a canvas only in the working tree is blocking', localOnly.map((f) => f.severity).join(' '), 'blocking');
+t('AC2: the finding names the ref it read', localOnly[0]?.message.includes(`no copy is saved under ${DIR}/ on origin/main`), true);
+t('check: a ref that does not resolve is blocking, not a crash', checkTicket(issue(`h2. Design\n${URL1}`), { root: behind, dir: DIR, ref: 'origin/nope' })[0]?.severity, 'blocking');
+// The command line reads origin/<default branch> from whichever directory it runs in.
+put(join(T, 'base.md'), '## 0. Repo\n| Field | Value |\n|---|---|\n| Default branch | `main` |\n\n## 2. Paths\n| Field | Value |\n|---|---|\n| Design canvases directory | `docs/design/` |\n');
+const baseEnv = { ...process.env, DESK_CONFIG: join(T, 'base.md'), DESK_QUEUE: join(T, 'no-queue.json'), DESK_AUTOPILOT_STATE: join(T, 'base-state') };
+for (const k of ['DESK_DESIGN_DIR', 'DESK_DEFAULT_BRANCH', 'DESK_BATCH']) delete baseEnv[k];
+put(join(T, 'DS-92.md'), `# DS-92\n\n## Design\n${URL1} · docs/design/DS-90/\n`);
+put(join(T, 'DS-93.md'), `# DS-93\n\n## Design\n${LOCAL} · docs/design/DS-91/\n`);
+for (const [cwd, where] of [[behind, 'the behind checkout'], [join(behind, DIR), 'a subdirectory of it']]) {
+  const found = spawnSync('node', [BIN, 'check', join(T, 'DS-92.md')], { cwd, env: baseEnv, encoding: 'utf8' });
+  t(`AC3: check run in ${where} finds the canvas on origin/main`, `${found.status} ${found.stdout.trim()}`, '0 ok: no unsaved Claude Design canvas');
+  const missing = spawnSync('node', [BIN, 'check', join(T, 'DS-93.md')], { cwd, env: baseEnv, encoding: 'utf8' });
+  t(`AC3: check run in ${where} refuses the working-tree-only canvas`, missing.status === 1 && missing.stdout.includes('on origin/main'), true);
+}
 
 // ---- a single-page artifact: no canvas.json, one page and the files it loads ----
 const page = join(T, 'page');

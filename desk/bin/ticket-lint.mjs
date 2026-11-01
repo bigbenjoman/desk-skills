@@ -16,7 +16,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { checkTicket, designDir, sections } from './desk-design.mjs';
+import { baseRef, checkTicket, designDir, sections } from './desk-design.mjs';
 import { configValue, isNone, stateDir } from './desk-env.mjs';
 
 // The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
@@ -59,7 +59,7 @@ function keyRegex() {
   return project ? `${project}-[0-9]+` : null;
 }
 
-export function lintTicket(t, { root, dir } = {}) {
+export function lintTicket(t, { root, dir, ref } = {}) {
   const findings = [];
   const add = (severity, rule, message) => findings.push({ severity, rule, message });
   const lines = blankCode(t.text);
@@ -148,18 +148,19 @@ export function lintTicket(t, { root, dir } = {}) {
 
   if (root && dir) {
     const issue = { key: t.key, text: t.text, fields: { parent: t.parent ?? undefined } };
-    for (const f of checkTicket(issue, { root, dir, state: stateDir() })) add(f.severity, 'design', f.message);
+    for (const f of checkTicket(issue, { root, dir, ref, state: stateDir() })) add(f.severity, 'design', f.message);
   }
   return findings;
 }
 
-// Where saved design canvases live, for checkTicket: none when the repo saves none.
+// Where saved design canvases live, for checkTicket: the repo, its design dir and the base ref they
+// are read on; none when the repo saves none.
 export function designRoot() {
   let dir = null;
   try { dir = designDir(); } catch { return {}; }
   let root;
   try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { root = process.cwd(); }
-  return { root, dir };
+  return { root, dir, ref: baseRef(root) };
 }
 
 const isMain = (() => {
