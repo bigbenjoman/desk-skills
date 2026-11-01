@@ -2447,7 +2447,9 @@ function applyFix(t, n, head, c) {
     report.waiting.push(`${t.key}: STUCK — PR #${n} ${f.what}, and its fix try could not be requeued (${rq.out.split('\n').pop()})`);
     return;
   }
-  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...(f.extra ? { extra: true } : {}), at: PASS_AT }])}`, 'stuck=null');
+  // A review try keeps what it quoted, so a later review can tell a finding it cleared from one that survived it.
+  const quoted = f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) } : {};
+  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), at: PASS_AT }])}`, 'stuck=null');
   out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? 'extra review try' : `${f.kind === 'rereview' ? 'review' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.

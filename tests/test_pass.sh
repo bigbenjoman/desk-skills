@@ -1496,6 +1496,8 @@ frx 726 "$H1" "$H1" 'p0=1 p1=0 p2=0'
 : > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-281 AC1 a draft whose review at its head has 1 P1 is requeued once for a fix worker" \
   '[ "$(field R-1 state)" = "\"triaged\"" ] && [ "$(field R-1 fix.kind)" = "\"review\"" ] && [ "$(field R-1 fix.try)" = 1 ] && [ "$(field R-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: R-1 requeued for PR #721 — review not clean: 1 P1"'
+check "DS-414 the review try keeps the findings it quoted, so a later review can tell one that survived it" \
+  '[ "$(field R-1 fix_tries | jq -r ".[0].findings[0].text" | cut -c1-15)" = "src/money.ts:12" ]'
 check "DS-281 AC1 and it is not undrafted" '! grep -q "^pr ready 721" "$T/gh-calls"'
 check "DS-281 AC6 a review with only P2s is not requeued and stays draft for the person, as today" \
   '[ "$(field R-2 state)" = "\"done\"" ] && [ "$(field R-2 fix)" = null ] && [ "$(field R-2 undraft.call)" = "\"person\"" ] && echo "$out" | grep -q "R-2: DRAFT — PR #722 stays draft: its review verdict at 111111111 is not clean (p2=1)"'
