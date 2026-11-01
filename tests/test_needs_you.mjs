@@ -709,6 +709,9 @@ const gr1 = N.record({ word: 'grantee', ticket: 'GR-1', action: 'resume', text: 
 const grT1 = queueOf('grantee').tickets['GR-1'];
 t('DS-390 AC1 an approving answer records a grant for that branch and lease SHA, and requeues it',
   `${gr1.ok} ${grT1.state} ${grT1.grant?.step} ${grT1.grant?.branch} ${grT1.grant?.lease === leaseSha}`, 'true triaged force-push fix/GR-1 true');
+const grEnv = { ...process.env, DESK_AUTOPILOT_STATE: join(env.HOME, '.desk-autopilot', 'acme__grantee'), DESK_QUEUE: join(env.DESK_HOME, 'repos', 'acme__grantee', 'queue.json') };
+const grLater = spawnSync(process.execPath, [join(REAL_BIN, 'answer.mjs'), 'GR-1', 'Sure, merge origin/main instead'], { encoding: 'utf8', env: grEnv });
+t('DS-390 AC5 a later answer that approves nothing withdraws an earlier grant', `${grLater.status} ${queueOf('grantee').tickets['GR-1'].grant ?? null} ${/grant is withdrawn/.test(grLater.stdout)}`, '0 null true');
 const gr2 = N.record({ word: 'grantee', ticket: 'GR-2', action: 'resume', text: 'Use the short copy instead' });
 const grT2 = queueOf('grantee').tickets['GR-2'];
 t('DS-390 AC5 an answer that approves nothing records no grant', `${gr2.ok} ${grT2.state} ${grT2.grant ?? null}`, 'true triaged null');

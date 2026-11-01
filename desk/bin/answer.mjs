@@ -117,9 +117,11 @@ try {
 
 // An answer approving the step a park was refused records it as the ticket's one-off grant, which the
 // next worker's settings allow as that exact command (worker-settings.mjs). A step no worker is ever
-// allowed gets no grant: a requeue would only park it again, so it is a session's.
+// allowed gets no grant: a requeue would only park it again, so it is a session's. A grant is the latest
+// answer's: any later answer that records none takes an earlier one away.
 try {
   const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
+  let granted = false;
   if (t?.state === 'parked' && !isHeld(t) && !putOffAnswer && refusedStep(t.park?.question)) {
     const remoteSha = (branch) => {
       if (!t.worktree) return null;
@@ -129,12 +131,17 @@ try {
     const g = grantFor({ t, text, approve: approveFlag, remoteSha });
     if (g.grant) {
       execFileSync('node', [QUEUE, 'set', ticket, `grant=${JSON.stringify(g.grant)}`], { stdio: 'ignore' });
+      granted = true;
       console.log(`${ticket}: approved once: its next worker may run \`git push --force-with-lease=${g.grant.branch}:${g.grant.lease} origin ${g.grant.branch}\`, and nothing wider.`);
     } else if (neverStep(t.park?.question)) {
       console.log(`${ticket}: ${g.why}: do not requeue it for a worker. Open an interactive session and run /desk-ticket ${ticket}.`);
     } else {
       console.log(`${ticket}: no grant recorded (${g.why}).`);
     }
+  }
+  if (!granted && t?.grant) {
+    execFileSync('node', [QUEUE, 'set', ticket, 'grant=null'], { stdio: 'ignore' });
+    console.log(`${ticket}: its earlier one-off force-push grant is withdrawn: this answer approves none.`);
   }
 } catch (e) {
   console.error(`${ticket}: answer recorded in the briefing, but its grant was not: ${e.message}`);
