@@ -761,12 +761,12 @@
         "path": "plugins/python-development/skills/python-observability/"
       },
       "pin": {
-        "commit": "be57c0b2e",
-        "date": "2026-05-22"
+        "commit": "0f73766f8",
+        "date": "2026-10-30"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-02-13 (~/.agents/.skill-lock.json). Whole folder git tree at match == lock skillFolderHash; SKILL.md changed upstream since (1 newer commit(s) on the folder) - local is behind.",
-      "tree_sha256": "833457fab4629005d7bdf14342f555b96c2d11766ca12a1a3980a76dadc2ac7e"
+      "tree_sha256": "48f4b2dc4ebe427d750589bedb65ba9d7231b375a71c96e4490a81ad11032120"
     },
     "react-state-management": {
       "source": {
