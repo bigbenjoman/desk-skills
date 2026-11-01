@@ -87,4 +87,9 @@ call, and yours.
   the exact command that failed. A pushed
   branch with no PR is invisible to `desk-clearance` and to every reviewer. Name every step you did
   not reach, as the core's section 1 says.
+- **A red check §4 Check builds names** (`desk-env list check-builds`, `<check>: <command>`) is not a
+  park, at Stage 6 or 7. The pass runs that build on the host for a draft red only on such checks,
+  then re-runs them: never ask anyone to run it, and never run it yourself. Finish your remaining
+  steps and print `AUTOPILOT_DONE`, naming the check and saying the pass builds it. A red check it
+  does not name is handled as before.
 - **Merging.** Never. Your terminal state is a draft PR with its review posted.

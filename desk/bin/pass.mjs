@@ -34,7 +34,7 @@ import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ } from './gate.mjs';
-import { undraftCall, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
@@ -446,6 +446,26 @@ function advanceCloud(t) {
   report.done.push(`${t.key}: PR #${pr.number} from cloud session ${c.url} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
 }
 
+// §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
+const buildRow = parseOperatorChecks(E.configValues('check-builds'));
+// What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
+const gateLists = () => {
+  const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
+  return { required: list('required-checks'), advisory: list('advisory-checks') };
+};
+// A park whose only blocker is a red check §4 Check builds names (undraft.mjs buildPark): the ticket's
+// open draft PR on its branch, read from GitHub only once the park names a build. Null when none.
+function buildParkOf(t, question) {
+  if (!t.branch || isSpine(t) || buildRow.errors.length) return null;
+  let pr = null;
+  const readPr = () => {
+    try { pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'open', '--json', 'number,isDraft,headRefOid,statusCheckRollup', '-q', '.[0]'], { tolerant: true }) || 'null'); } catch { pr = null; }
+    return pr ? { state: 'OPEN', isDraft: pr.isDraft, checks: latestPerCheck(normaliseRollup(pr.statusCheckRollup)) } : null;
+  };
+  const b = buildPark(question, readPr, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), ...gateLists() });
+  return b ? { ...b, pr: pr.number, head: pr.headRefOid } : null;
+}
+
 // ---- advance running tickets --------------------------------------------
 for (const t of rows.filter((r) => r.state === 'running')) {
   if (t.location === 'cloud' && t.cloud) { advanceCloud(t); continue; }
@@ -593,7 +613,18 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   if (!registryOk) continue; // cannot tell — leave it alone rather than guess
 
   // Exited, or finished and stopped above. Decide what it was, from the markers read above.
-  if (park) {
+  // A park waiting only on a check §4 Check builds names is done: the undraft step builds it (DS-402).
+  const built = park ? buildParkOf(t, park.trim()) : null;
+  if (built) {
+    const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
+    if (cost) q('set', t.key, `cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`);
+    logDecisions(t, log, String(built.pr));
+    const checks = built.checks.map((x) => `"${x}"`).join(', ');
+    q('set', t.key, 'state=done', 'handoff_stage=null', `result.pr=${built.pr}`, `result.summary=${`parked only on ${checks}, which §4 Check builds clears: recorded done`.slice(0, 200)}`);
+    report.done.push(`${t.key}: PR #${built.pr} recorded done, not parked: its park waited only on ${checks} red at ${String(built.head).slice(0, 9)}, which §4 Check builds clears, so the undraft step runs \`${built.command}\`. Steps its park named as not reached (a tracker comment or transition) are left undone. The park: ${park.trim()}${stopped}`);
+    recordScope(t);
+    if (ownsSpecs(t)) checkOwned(t, built.pr);
+  } else if (park) {
     q('park', t.key, park.trim());
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
@@ -2101,7 +2132,6 @@ function readPrStatus(n) {
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const BUILD_DIR = join(STATE, 'check-builds');
-const buildRow = parseOperatorChecks(E.configValues('check-builds'));
 const EVIDENCE_DIR = join(STATE, 'evidence-runs');
 const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
 // A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
@@ -2176,11 +2206,6 @@ const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run
 const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
-// What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
-const gateLists = () => {
-  const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
-  return { required: list('required-checks'), advisory: list('advisory-checks') };
-};
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
 const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt', 'evidence', 'capture'];
