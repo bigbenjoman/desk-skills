@@ -786,6 +786,31 @@ function ownMergedPr(t) {
   const n = readOrThrow(`gh pr list --head ${t.branch}`, 'gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'merged', '--json', 'number', '-q', '.[0].number']);
   return /^\d+$/.test(n) ? Number(n) : null;
 }
+// A queued ticket shipped outside its worker: a session may merge a PR for the same key from a branch
+// of its own, or move the ticket to Done. Before a spawn, resume or handoff: { pr, branch } for the
+// newest PR merged since the ticket joined the queue whose title or branch names its key, else { jira } when
+// its tracker status category is done and it records no PR of its own, else null. A read that fails is
+// null, and the ticket spawns as it would have.
+function shippedElsewhere(t) {
+  try {
+    const since = Date.parse(t.added_at);
+    const search = Number.isNaN(since) ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
+    const prs = cached(`merged:${search}`, () => JSON.parse(readOrThrow(`gh pr list --search ${search}`, 'gh',
+      ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '200', '--json', 'number,title,headRefName,mergedAt'])));
+    const hit = mergedNaming(t.key, (Array.isArray(prs) ? prs : [])
+      .filter((p) => Number.isFinite(Number(p?.number)) && (Number.isNaN(since) || Date.parse(p.mergedAt) >= since))
+      .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt)));
+    if (hit) return { pr: Number(hit.number), branch: hit.headRefName };
+  } catch { /* unread: spawn as before */ }
+  if (t.result?.pr != null || t.draft_pr != null) return null;
+  const k = E.ticketKind(t.key);
+  if (!k.ok || k.kind !== 'tracker') return null;
+  try {
+    const status = cached(`status:${t.key}`, () => JSON.parse(readOrThrow(`desk-jira get ${t.key}`, 'desk-jira', ['get', t.key, '--json']))?.fields?.status);
+    if (status?.statusCategory?.key === 'done') return { jira: String(status.name || 'Done') };
+  } catch { /* unread: spawn as before */ }
+  return null;
+}
 for (const t of Object.values(queue().tickets)) {
   const c = t.park?.clears_when;
   // A claimed ticket is released only by the claims loop below, once its session is idle and its
@@ -1962,6 +1987,15 @@ for (const t of spawnable) {
   if (baseHold || usageStop || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
+  // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.
+  const shipped = rerunAllowed.has(t.key) ? null : shippedElsewhere(t);
+  if (shipped) {
+    const how = shipped.pr != null ? `PR #${shipped.pr} merged from ${shipped.branch}` : `done in Jira (${shipped.jira}) with no PR`;
+    const before = report.failed.length;
+    if (!DRY) q('set', t.key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', `result.summary=shipped outside its worker: ${how}`, ...(shipped.pr != null ? [`result.pr=${shipped.pr}`] : []));
+    if (report.failed.length === before) report.done.push(`${t.key}: ${how}, outside its worker: recorded done, no worker spawned`);
+    continue;
+  }
   // Held without taking a slot: another ticket may spawn in its place.
   const busy = busyWorktree(t);
   if (busy) {
