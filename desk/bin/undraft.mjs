@@ -250,13 +250,15 @@ export function buildPark(question, readPr, cfg) {
   const builds = cfg.builds ?? [];
   const namesBuild = (s) => builds.some((b) => s.includes(b.name.toLowerCase()) || s.includes(b.command.toLowerCase()));
   // Clauses end at . ? ! ; followed by a space, or a line break, so a command's own dots stay whole.
-  const clauses = String(question ?? '').toLowerCase().split(/[.?!;]+(?:\s+|$)|\n+/).map((s) => s.trim()).filter(Boolean);
-  // A tail clause starts with its marker and holds nothing but the tail's own steps after it, so a
-  // question that only mentions the tail ("before the remaining steps, should we…", "not reached: the
-  // Jira comment, so confirm the fee") still parks.
+  // Each keeps its own end mark, so a tail clause can tell a question from a list.
+  const clauses = String(question ?? '').toLowerCase().split(/(?<=[.?!;])(?:\s+|$)|\n+/).map((s) => s.trim()).filter(Boolean);
+  // A tail clause starts with its marker, is no question, and holds nothing but the tail's own steps
+  // after it, so a question that only mentions the tail ("before the remaining steps, should we…",
+  // "not reached: the Jira comment, so confirm the fee") still parks.
   const tail = (s) => {
-    const m = /^(?:steps? )?(?:not (?:yet )?reached|remaining steps?|steps? remaining)\b(.*)$/.exec(s);
-    return !!m && m[1].split(/[\s,:()\-–—]+/).filter(Boolean).every((w) => TAIL_WORDS.has(w) || /^#?\d+$/.test(w));
+    if (s.includes('?')) return false;
+    const m = /^(?:steps? )?(?:not (?:yet )?reached|remaining steps?|steps? remaining)\b(.*?)[.!;]*$/.exec(s);
+    return !!m && m[1].split(/[\s,:()]+/).map((w) => w.replace(/^[-–—]+|[-–—]+$/g, '')).filter(Boolean).every((w) => TAIL_WORDS.has(w) || /^#?\d+$/.test(w));
   };
   if (cfg.rerun !== 'yes' || !clauses.some(namesBuild) || !clauses.every((s) => namesBuild(s) || tail(s))) return null;
   const pr = readPr();

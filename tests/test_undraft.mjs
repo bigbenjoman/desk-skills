@@ -190,6 +190,12 @@ t('DS-402 AC3 a not-reached tail that also asks something: parked as today',
   bp(`${P603}. Not reached: the Jira comment, so confirm the fee`, prOf([FLOWS])).r, null);
 t('DS-402 AC2 a "Steps not reached" tail with the PR number and stage counts too',
   bp(`${P603}. Steps not reached: the review comment on PR #744 (stage 7), the Jira comment and transition`, prOf([FLOWS])).r?.checks?.join(), 'Flows image');
+t('DS-402 AC3 a tail of only step words that is a question: parked as today',
+  bp(`${P603}. Remaining steps: post the review or the transition?`, prOf([FLOWS])).r, null);
+t('DS-402 AC2 a tail ending in a full stop counts too',
+  bp(`${P603}. Not reached: the Jira comment and the transition.`, prOf([FLOWS])).r?.checks?.join(), 'Flows image');
+t('DS-402 AC2 a tail naming self-review and desk-review, hyphens kept, counts too',
+  bp(`${P603}. Not reached: self-review — the desk-review comment, the Jira comment and transition`, prOf([FLOWS])).r?.checks?.join(), 'Flows image');
 t('DS-402 AC3 a park of only its not-reached steps, naming no build: parked as today',
   bp('Not reached: the Jira comment and the transition', prOf([FLOWS])).r, null);
 t('DS-402 AC3 a park naming the build and asking something else beside it: parked as today',
