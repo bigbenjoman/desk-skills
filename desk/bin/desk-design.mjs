@@ -17,6 +17,9 @@
 //       exit 0 when the saved copy is that version, 3 when the artifact has moved on
 //   node desk-design.mjs check  <KEY | ticket file> [--key <K>]
 //       exit 1 when the ticket's Design section links a Claude Design artifact with no saved copy
+//   node desk-design.mjs snapshots <KEY | ticket file> [--key <K>]
+//       one `<url>\t<snapshot folder, or ->` line per Claude Design artifact the Design section links,
+//       found by URL in this state's designs/ and, in a named batch, the repo state's
 //   node desk-design.mjs render <saved dir>
 //       renders every board at config §5 Breakpoints (default 390 768 1024 1280 1440) and at its own
 //       width into <dir>/screens/<board>@<width>.png, and lists them in the README; exit 4 (nothing
@@ -551,6 +554,13 @@ export function snapshotOf(state, url) {
   return null;
 }
 
+// Each Claude Design artifact the ticket's Design section links, with its snapshot folder (or null):
+// [{url, snapshot}]. `issue` is as checkTicket takes it.
+export function snapshotsOf(issue, state) {
+  const text = String(issue.text ?? issue.fields?.description ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1');
+  return claudeDesignLinks(designSection(text)).map((url) => ({ url, snapshot: snapshotOf(state, url) }));
+}
+
 // Every saved canvas under <dir> as committed at <ref>: [{path, url}].
 export function savedAt(root, dir, ref) {
   const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 });
@@ -672,6 +682,9 @@ if (isMain) {
       for (const f of findings) console.log(`${f.severity}: ${f.message}`);
       if (!findings.length) console.log('ok: no unsaved Claude Design canvas');
       process.exit(findings.some((f) => f.severity === 'blocking') ? 1 : 0);
+    } else if (cmd === 'snapshots') {
+      if (!target) fail('usage: desk-design snapshots <KEY | ticket file> [--key <K>]');
+      for (const s of snapshotsOf(loadIssue(target, opt(rest, '--key')), E.stateDir())) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
     } else if (cmd === 'render') {
       if (!target) fail('usage: desk-design render <saved dir>');
       const { findPlaywright, importPlaywright } = await import('./find-playwright.mjs');
@@ -686,7 +699,7 @@ if (isMain) {
         console.log(`  ${w.width}px ${w.label}${w.breakpoint ? '' : ' (not a breakpoint)'}${w.boards.length ? `: ${w.boards.join(', ')}` : ''}`);
       }
     } else {
-      fail('usage: desk-design.mjs write|save|status|check|render ... (see the top of the file)');
+      fail('usage: desk-design.mjs write|save|status|check|snapshots|render ... (see the top of the file)');
     }
   } catch (e) {
     console.error(`desk-design: ${e.message}`);
