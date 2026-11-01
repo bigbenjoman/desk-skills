@@ -1087,10 +1087,10 @@ printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"new"}]}' > "$T/
 x7 new MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-391 AC1 a blocker in no batch whose PR merged but is not Done keeps the ticket held, and not STUCK" \
   '[ "$(field J-7 state)" = "\"parked\"" ] && [ "$(field J-7 held_outside)" = "\"X-7\"" ] && ! echo "$out" | grep -q "J-7: STUCK"'
-x7 done OPEN; out=$(node "$B/pass.mjs" 2>&1)
+x7 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-391 AC4 a blocker Done in Jira whose PR has not merged to the base keeps the ticket held" \
   '[ "$(field J-7 state)" = "\"parked\"" ] && [ "$(field J-7 held_by)" = "\"X-7\"" ] && ! echo "$out" | grep -q "J-7: STUCK"'
-x7 done MERGED; out=$(node "$B/pass.mjs" 2>&1)
+x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-391 AC1 once the blocker is Done and its PR merged to the base, the pass releases the ticket" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_by)" = null ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
 q set J-7 state=parked held_by=X-8 held_outside=X-8 'park={"question":"held by orchestrator: blocked by X-8 — starts once their PRs merge"}'
