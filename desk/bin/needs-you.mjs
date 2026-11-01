@@ -17,6 +17,8 @@
 //       start               let a held ticket start where nothing else will (desk-q's "let it start" command)
 //       requeue             send a ticket whose worker stopped, or whose PR was closed unmerged, back to
 //                           a worker (queue.mjs requeue)
+//       fix                 send a PR whose review findings outlasted desk's fix tries back to a worker
+//                           on the PR, for one more try at the findings its stuck reason quotes
 //       drop                take a ticket whose PR was closed unmerged out of the batch (queue.mjs drop)
 //       move "<batch>"      a parked or stopped ticket out of its batch and into another running batch of
 //                           the repo (queue.mjs transfer), its next worker on that batch's base; a batch
@@ -45,7 +47,7 @@ import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { gapsFix } from './fix-tries.mjs';
+import { gapsFix, personReviewFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
@@ -119,7 +121,7 @@ function stuckPlain(r, n, s) {
     return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}. Take ${k === 1 ? 'it' : 'them'} and upload ${k === 1 ? 'it' : 'them'} to the PR; the next pass then takes it out of draft.`;
   }
   // Before the conflict test: a review reason names the conflict tries it was made after.
-  if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}. Fix them on its branch and post a fresh review; ${thenMerge(r)}.`;
+  if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}. ${personReviewFix({}, { why }) ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.`;
   if (/conflict/.test(why)) return `${n} is in conflict with ${r.ctx?.base ?? 'its base'}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
   if (/^no review verdict/.test(why)) return `${n} has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.`;
   const red = /^still red[^:]*:\s*(.+)$/.exec(why);
@@ -283,6 +285,10 @@ function itemOf(r, x) {
     if (outside.length) {
       const checks = `${stuck.checks.map((c) => `"${c.name}"`).join(', ')} ${stuck.checks.length === 1 ? 'is' : 'are'} green`;
       return { kind: 'pr', need, note, actions: [['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`], ['not-now']] };
+    }
+    // Review findings in the code are a worker's to fix, so one more try goes to a worker on the PR.
+    if (stuck && personReviewFix(t, { why: stuck.why })) {
+      return { kind: 'pr', need, note, actions: [['fix', "its findings are in the code, which a worker can fix: fix sends it to a worker on the PR for one more try, and the review of its new head says whether they are gone"], ['done'], ['not-now']] };
     }
     return { kind: 'pr', need, note, actions: [['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then'], ['not-now']] };
   }
@@ -506,6 +512,15 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
   if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
+  // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
+  // reads it, and taken back if the requeue is refused. null once both are made, else what refused.
+  const sendFix = (fix) => {
+    const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify({ ...fix, at: new Date(now).toISOString() })}`]);
+    if (!f.ok) return `its fix was refused: ${f.out}`;
+    const q = queueCmd(r, ['requeue', ticket]);
+    if (!q.ok) { queueCmd(r, ['set', ticket, 'fix=null']); return `the requeue was refused: ${q.out}`; }
+    return null;
+  };
   // The person's call on a draft's review gaps: posted on the PR, kept in the briefing and as the fix
   // its next worker starts on, then requeued. Requeued whoever runs the batch: the next pass closes a
   // fix on a ticket still done, so one left for a session to requeue would be lost.
@@ -516,11 +531,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     catch (e) { return say(false, `not posted on PR #${pr} (${one(e.stderr || e.message)}), so nothing was recorded.`); }
     const a = ans();
     if (!a.ok) return say(false, `posted on PR #${pr}, but not recorded: ${a.why}`);
-    const fix = { ...gapsFix({ pr, head: x.t.pr_status?.head, answer: text }), at: new Date(now).toISOString() };
-    const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify(fix)}`]);
-    if (!f.ok) return say(false, `posted on PR #${pr} and in its briefing, but its fix was refused: ${f.out}`);
-    const q = queueCmd(r, ['requeue', ticket]);
-    if (!q.ok) { queueCmd(r, ['set', ticket, 'fix=null']); return say(false, `posted on PR #${pr} and in its briefing, but the requeue was refused: ${q.out}`); }
+    const no = sendFix(gapsFix({ pr, head: x.t.pr_status?.head, answer: text }));
+    if (no) return say(false, `posted on PR #${pr} and in its briefing, but ${no}`);
     return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
   };
   // Done on a PR: read it from GitHub now. Merged is recorded (the next pass records the merge in full,
@@ -617,6 +629,15 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       if (!dest) return say(false, `${to} is not a batch running in ${r.repo} beside this one, so nothing was moved. ${ts.length ? `The batches running are ${targetsText(ts)}.` : 'No other batch is running there.'}`);
       const q = queueCmd(r, ['transfer', ticket, dest.word]);
       return q.ok ? say(true, `${q.out} (queue.mjs transfer); the next pass there can spawn it.`) : say(false, `move refused: ${q.out}`);
+    }
+    // One more review fix try, as the pass sends one. Requeued whoever runs the batch, as a gaps answer is.
+    case 'fix': {
+      const pr = x.t.result.pr;
+      const fix = personReviewFix(x.t, { pr, head: x.t.pr_status?.head, why: stuckOf(x.t, r.ctx)?.why });
+      if (!fix) return say(false, `PR #${pr}'s stuck reason quotes no review finding, so nothing was sent.`);
+      const no = sendFix(fix);
+      if (no) return say(false, no);
+      return say(true, `sent back to a worker on PR #${pr} for one more try at its findings; the review of its new head says whether they are gone.`);
     }
     // Nothing spawns from a drop, so it is made here whoever runs the batch.
     case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, 'dropped from the batch (queue.mjs drop).') : say(false, `drop refused: ${q.out}`); }

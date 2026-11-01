@@ -81,7 +81,7 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for `start`, `requeue`, `drop`, `approve`, `not-now`, `open`, `admit` and `done`. Each prints one
+Leave `"<text>"` off for `start`, `requeue`, `fix`, `drop`, `approve`, `not-now`, `open`, `admit` and `done`. Each prints one
 line on what it recorded. Keep it for the end.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
