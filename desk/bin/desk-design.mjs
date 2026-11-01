@@ -398,11 +398,17 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
 // ---- import (a design's HTML export) -----------------------------------------------------------
 
 // Every URL a page loads: a src or poster, each srcset candidate, a stylesheet, icon, preload or
-// manifest <link>'s href, CSS url() and @import, in the order the page names them. An <a>'s href, or
-// a canonical <link>, is a link rather than a load. A template binding names no file, unless it sits
-// in a URL to another host. Only tags are read for attributes, and a script's body or a comment is
-// not read at all: an inline runtime's `img.src = u` is code, not a load.
-const TAG = /<[a-z](?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+// manifest <link>'s href, an SVG <image> or <use>'s href, an <object>'s data, CSS url() and @import,
+// and a script's import of a quoted URL, in the order the page names them. An <a>'s href, or a
+// canonical <link>, is a link rather than a load. A template binding names no file, unless it sits
+// in a URL to another host. Attributes are read only in tags, and a script's body only for its
+// imports: an inline runtime's `img.src = u` is code, not a load. The page is read once, left to
+// right, so a `<!--` in a script, a stylesheet or an attribute's value never hides what follows it.
+const PART = /<!--[\s\S]*?(?:-->|$)|(<script\b(?:"[^"]*"|'[^']*'|[^'">])*>)([\s\S]*?)(?:<\/script\s*>|$)|<style\b(?:"[^"]*"|'[^']*'|[^'">])*>[\s\S]*?(?:<\/style\s*>|$)|<[a-z](?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+const TAG = /<([a-z][^\s/>]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/gi;
+const ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+)))?/g;
+const IMPORT = /(?<![\w$.'"`-])import\s*(?:\(\s*|[\w$*{}\s,]+?\sfrom\s*|(?=["']))(["'])([^"'\n]+)\1/g;
+const SVG_HREF = new Set(['image', 'use', 'feimage']);
 // A srcset's URLs: each candidate's URL is its run of non-space characters, so a data: URL's comma
 // stays in it; a trailing comma ends the candidate, else its descriptors run to the next comma.
 function candidates(set) {
@@ -417,21 +423,31 @@ function candidates(set) {
   }
   return out;
 }
-const attr = (names) =>new RegExp(`\\s(?:${names})\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>"']+))`, 'gi');
 export function loads(text) {
   const found = [];
   const add = (at, r) => { const v = String(r ?? '').trim(); if (v && (!v.includes('{{') || isRemote(v))) found.push({ at, v }); };
   const blank = (s) => s.replace(/[^\n]/g, ' ');
-  const markup = text.replace(/<!--[\s\S]*?(?:-->|$)/g, blank)
-    .replace(/(<script\b(?:"[^"]*"|'[^']*'|[^'">])*>)([\s\S]*?)(?=<\/script\s*>|$)/gi, (_, open, body) => open + blank(body));
+  const scripts = [];
+  const markup = text.replace(PART, (m, open, body, at) => {
+    if (m.startsWith('<!--')) return blank(m);
+    if (open === undefined) return m;
+    scripts.push({ open, body, at: at + open.length });
+    return open + blank(body) + m.slice(open.length + body.length);
+  });
   for (const t of markup.matchAll(TAG)) {
-    for (const m of t[0].matchAll(attr('src|poster'))) add(t.index + m.index, m[1] ?? m[2] ?? m[3]);
-    for (const m of t[0].matchAll(attr('srcset|imagesrcset'))) {
-      for (const u of candidates(m[1] ?? m[2] ?? m[3])) add(t.index + m.index, u);
-    }
-    if (!/^<link\b/i.test(t[0]) || !/\srel\s*=\s*["']?[^"'>]*\b(?:stylesheet|icon|preload|modulepreload|manifest)\b/i.test(t[0])) continue;
-    const m = attr('href').exec(t[0]);
-    if (m) add(t.index + m.index, m[1] ?? m[2] ?? m[3]);
+    const tag = t[1].toLowerCase();
+    const attrs = new Map([...t[2].matchAll(ATTR)].map((m) => [m[1].toLowerCase(), m[2] ?? m[3] ?? m[4] ?? '']));
+    const at = t.index;
+    for (const a of ['src', 'poster']) if (attrs.has(a)) add(at, attrs.get(a));
+    for (const a of ['srcset', 'imagesrcset']) if (attrs.has(a)) for (const u of candidates(attrs.get(a))) add(at, u);
+    if (tag === 'link' && /\b(?:stylesheet|icon|preload|modulepreload|manifest)\b/i.test(attrs.get('rel') ?? '')) add(at, attrs.get('href'));
+    if (SVG_HREF.has(tag)) add(at, attrs.get('href') ?? attrs.get('xlink:href'));
+    if (tag === 'object') add(at, attrs.get('data'));
+  }
+  for (const s of scripts) {
+    const type = /\stype\s*=\s*["']?([^"'\s>]*)/i.exec(s.open)?.[1].toLowerCase() ?? '';
+    if (type && type !== 'module' && !/javascript|ecmascript/.test(type)) continue;
+    for (const m of s.body.matchAll(IMPORT)) add(s.at + m.index, m[2]);
   }
   for (const m of markup.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/gi)) add(m.index, m[1] ?? m[2] ?? m[3]);
   for (const m of markup.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) add(m.index, m[1] ?? m[2]);
