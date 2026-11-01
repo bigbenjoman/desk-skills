@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { undraftCall, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -163,6 +163,39 @@ const cbList = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mj
   { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(cbDir, 'config.md'), DESK_MACHINE: join(cbDir, 'none.md'), HOME: cbDir } });
 t('DS-327 AC5 desk-env reads the row as check-builds', `${cbList.status} ${cbList.stdout.trim()}`, '0 Flows image: ./scripts/ensure-flows-image.sh');
 rmSync(cbDir, { recursive: true, force: true });
+
+// DS-402: a worker's park whose only blocker is a red §4 Check builds check is recorded done, so the pass builds it.
+const s5 = doc('../skills/desk-autopilot/references/worker-contract-stage-5.md');
+t('DS-402 AC1 the Stage 5 to 7 contract says a red Check builds check is finished DONE, not parked',
+  /\*\*A red check §4 Check builds names\*\*[^]*?is not a\s+park, at Stage 6 or 7[^]*?print `AUTOPILOT_DONE`/.test(s5), true);
+// VPL-603's park, as its worker printed it.
+const P603 = 'PR #744 is open as a draft, but its Flows image check fails because ECR has no voicepa/flows-lambda:staging-tree-6bf03fb. Can someone run ./scripts/ensure-flows-image.sh';
+const TESTS_OK = { name: 'tests', status: 'completed', conclusion: 'success' };
+const prOf = (checks, more = {}) => ({ state: 'OPEN', isDraft: true, checks: [TESTS_OK, ...checks], ...more });
+const bp = (question, pr, more = {}) => {
+  let read = 0;
+  const r = buildPark(question, () => { read++; return pr; }, { builds, rerun: 'yes', required: ['tests'], ...more });
+  return { r, read };
+};
+const p603 = bp(P603, prOf([FLOWS]));
+t('DS-402 AC2 VPL-603\'s park, its draft red only on "Flows image": recorded done with the build', `${p603.r?.checks} | ${p603.r?.command}`, 'Flows image | ./scripts/ensure-flows-image.sh');
+t('DS-402 AC2 a park naming only the command counts too', bp('Can someone run ./scripts/ensure-flows-image.sh at the head?', prOf([FLOWS])).r?.checks?.join(), 'Flows image');
+const LINT = { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 };
+t('DS-402 AC3 a red check the row does not name beside it: parked as today', bp(P603, prOf([FLOWS, LINT])).r, null);
+t('DS-402 AC2 a build-only park that names the steps it did not reach, as every park must, counts too',
+  bp(`${P603}. Not reached: the review comment, the Jira comment and the transition to In Review`, prOf([FLOWS])).r?.checks?.join(), 'Flows image');
+t('DS-402 AC3 a park of only its not-reached steps, naming no build: parked as today',
+  bp('Not reached: the Jira comment and the transition', prOf([FLOWS])).r, null);
+t('DS-402 AC3 a park naming the build and asking something else beside it: parked as today',
+  bp('Flows image is red, run ./scripts/ensure-flows-image.sh; also confirm whether the fee should be £5 or £10', prOf([FLOWS])).r, null);
+t('DS-402 AC3 a park naming the build, then a question on its own line: parked as today',
+  bp(`${P603}\nShould the copy say "Sign in" or "Log in"`, prOf([FLOWS])).r, null);
+t('DS-402 AC3 a park naming no build check: the PR is never read', JSON.stringify(bp('Should the copy say "Sign in" or "Log in"?', prOf([FLOWS]))), '{"r":null,"read":0}');
+t('DS-402 AC3 a PR out of draft: parked as today', bp(P603, prOf([FLOWS], { isDraft: false })).r, null);
+t('DS-402 AC3 no open PR: parked as today', bp(P603, null).r, null);
+t('DS-402 AC3 a check still running: parked as today', bp(P603, prOf([FLOWS, { name: 'lint', status: 'in_progress', conclusion: null }])).r, null);
+t('DS-402 AC3 nothing red: parked as today', bp(P603, prOf([])).r, null);
+for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass builds nothing: parked as today`, bp(P603, prOf([FLOWS]), { rerun }).r, null);
 
 // Evidence workflow: screenshot cells a repo's own workflow fills are started there, not put to the person.
 {

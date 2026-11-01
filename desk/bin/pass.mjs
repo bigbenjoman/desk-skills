@@ -34,7 +34,7 @@ import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ } from './gate.mjs';
-import { undraftCall, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
@@ -375,6 +375,18 @@ function handoffRefusal(t, stage) {
   const r = readHandoff(STATE, t.key);
   return r.ok ? null : `handoff to Stage ${stage}: ${r.why}, so no session was spawned. ${FROM_ZERO(t)}`;
 }
+// A finished ticket recorded done: its cost (a ticket whose sessions handed off spent what each of them
+// did), its decisions, the done record with `sets` beside it, the report line, and its scope and specs.
+function recordDone(t, { log, h, pr, summary, line, sets = [] }) {
+  const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
+  if (cost) q('set', t.key, `cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`);
+  logDecisions(t, log, pr);
+  q('set', t.key, 'state=done', 'handoff_stage=null', `result.summary=${summary.slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []), ...sets);
+  report.done.push(`${t.key}: ${line}`);
+  recordScope(t);
+  if (isSpine(t)) parkSpine(t, pr);
+  else if (ownsSpecs(t)) checkOwned(t, pr);
+}
 function handedOff(t, said, { log, h, imgs, stopped }) {
   logDecisions(t, log, null);
   const stage = handoffStage(said);
@@ -440,6 +452,26 @@ function advanceCloud(t) {
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`);
   report.done.push(`${t.key}: PR #${pr.number} from cloud session ${c.url} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
+}
+
+// §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
+const buildRow = parseOperatorChecks(E.configValues('check-builds'));
+// What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
+const gateLists = () => {
+  const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
+  return { required: list('required-checks'), advisory: list('advisory-checks') };
+};
+// A park whose only blocker is a red check §4 Check builds names (undraft.mjs buildPark): the ticket's
+// open draft PR on its branch, read from GitHub only once the park names a build. Null when none.
+function buildParkOf(t, question) {
+  if (!t.branch || isSpine(t) || buildRow.errors.length) return null;
+  let pr = null;
+  const readPr = () => {
+    try { pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'open', '--json', 'number,isDraft,headRefOid,statusCheckRollup', '-q', '.[0]'], { tolerant: true }) || 'null'); } catch { pr = null; }
+    return pr ? { state: 'OPEN', isDraft: pr.isDraft, checks: latestPerCheck(normaliseRollup(pr.statusCheckRollup)) } : null;
+  };
+  const b = buildPark(question, readPr, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), ...gateLists() });
+  return b ? { ...b, pr: pr.number, head: pr.headRefOid } : null;
 }
 
 // ---- advance running tickets --------------------------------------------
@@ -532,15 +564,18 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // directory that session printed is kept on the ticket (images_dir) when it hands off.
   const logImgDir = [...h.matchAll(/AUTOPILOT_IMAGES:\s*(\S+)/g)].pop()?.[1];
   const imgDir = E.expandHome(logImgDir ?? t.images_dir ?? undefined);
+  // A park that waits only on a check §4 Check builds names, once its worker has exited (buildParkOf):
+  // recorded done below, so its screenshots go to its PR here as a DONE worker's do.
+  const built = park && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id)) ? buildParkOf(t, park.trim()) : null;
   // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
-  const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? t.result?.pr;
+  const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? (built ? String(built.pr) : null) ?? t.result?.pr;
   if (imgDir && prNo && !t.images_uploaded) {
     // A directory that is missing or holds no screenshot means no images, not a failed upload. A
     // running worker may still capture into it, so only a finished one is recorded as having none.
     let shots = [];
     try { shots = readdirSync(imgDir).filter((f) => E.SCREENSHOT_FILE.test(f)); } catch { /* missing */ }
     if (!shots.length) {
-      if (done) q('set', t.key, 'images_uploaded=none');
+      if (done || built) q('set', t.key, 'images_uploaded=none');
     } else if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
       const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(prNo), imgDir]);
       const up = run.out;
@@ -589,7 +624,16 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   if (!registryOk) continue; // cannot tell — leave it alone rather than guess
 
   // Exited, or finished and stopped above. Decide what it was, from the markers read above.
-  if (park) {
+  // A park waiting only on a check §4 Check builds names (built, read above) is done: the undraft step builds it.
+  if (built) {
+    const checks = built.checks.map((x) => `"${x}"`).join(', ');
+    recordDone(t, {
+      log, h, pr: String(built.pr), summary: `parked only on ${checks}, which §4 Check builds clears: recorded done`,
+      line: `PR #${built.pr} recorded done, not parked: its park waited only on ${checks} red at ${String(built.head).slice(0, 9)}, which §4 Check builds clears, so the undraft step runs \`${built.command}\`. Steps its park named as not reached (a tracker comment or transition) are left undone. The park: ${park.trim()}${stopped}`,
+      // The screenshot directory the worker printed, for the undraft step's missing-shot check (shotsOf).
+      sets: logImgDir ? [`images_dir=${logImgDir}`] : [],
+    });
+  } else if (park) {
     q('park', t.key, park.trim());
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
@@ -603,22 +647,14 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   }
   else if (handoff) handedOff(t, handoff, { log, h, imgs: logImgDir, stopped });
   else if (done) {
-    // A ticket whose sessions handed off spent what each of them did.
-    const cost = /notional=\$([\d.]+)/.exec(h)?.[1];
-    if (cost) q('set', t.key, `cost=${(Number(cost) + (Number(t.handoff_cost) || 0)).toFixed(2)}`);
     const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;
-    logDecisions(t, log, pr);
     // A finished ticket sent back later (a spec check, a spine rejected) is rework: from Stage 0, not
     // the stage its last handoff named.
     // A capture try's said= names each screen it could not take and why: kept whole (result.done.said), as
     // the summary's 200 characters cut all but the first few (fix-tries.mjs captureTry). Written as JSON,
     // so a said= opening with a bracket is never parsed by queue.mjs as JSON and refused.
     const said = /\bsaid=(.*)$/.exec(done.trim())?.[1]?.trim();
-    q('set', t.key, 'state=done', 'handoff_stage=null', `result.summary=${done.trim().slice(0, 200)}`, ...(pr ? [`result.pr=${pr}`] : []), ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []));
-    report.done.push(`${t.key}: ${done.trim()}${stopped}`);
-    recordScope(t);
-    if (isSpine(t)) parkSpine(t, pr);
-    else if (ownsSpecs(t)) checkOwned(t, pr);
+    recordDone(t, { log, h, pr, summary: done.trim(), line: `${done.trim()}${stopped}`, sets: said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : [] });
   } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
     // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
     // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,
@@ -2097,7 +2133,6 @@ function readPrStatus(n) {
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const BUILD_DIR = join(STATE, 'check-builds');
-const buildRow = parseOperatorChecks(E.configValues('check-builds'));
 const EVIDENCE_DIR = join(STATE, 'evidence-runs');
 const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
 // A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
@@ -2172,11 +2207,6 @@ const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run
 const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
-// What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
-const gateLists = () => {
-  const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
-  return { required: list('required-checks'), advisory: list('advisory-checks') };
-};
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
 const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt', 'evidence', 'capture'];
