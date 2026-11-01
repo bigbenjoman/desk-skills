@@ -275,6 +275,8 @@ function logTaken(key, rec, state) {
   return `, took ${taken.length} call(s) on triage's recommendation (logged)`;
 }
 
+// An issue (a search result or a get) whose status category is done: its status name, or null.
+const doneInSearch = (issue) => (issue?.fields?.status?.statusCategory?.key === 'done' ? String(issue.fields.status.name || 'Done') : null);
 // The ticket's Jira status name when its status category is done, else null. Only a tracker key is
 // read, and a read that fails is not done here: triage reads the ticket and reports it.
 function doneInJira(key) {
@@ -282,13 +284,8 @@ function doneInJira(key) {
   if (!k.ok || k.kind !== 'tracker') return null;
   const r = spawnSync('desk-jira', ['get', key, '--json'], { encoding: 'utf8', env: process.env, maxBuffer: 64 << 20 });
   if (r.status !== 0) return null;
-  try {
-    const s = JSON.parse(r.stdout)?.fields?.status;
-    return s?.statusCategory?.key === 'done' ? String(s.name || 'Done') : null;
-  } catch { return null; }
+  try { return doneInSearch(JSON.parse(r.stdout)); } catch { return null; }
 }
-// A search result whose status category is done: its status name, or null.
-const doneInSearch = (issue) => (issue?.fields?.status?.statusCategory?.key === 'done' ? String(issue.fields.status.name || 'Done') : null);
 
 // Whether `path` is on origin's `base`, as the passes fetch it.
 const onBase = (base, path) => spawnSync('git', ['-C', E.repoRoot(), 'cat-file', '-e', `origin/${base}:${path}`], { stdio: 'ignore' }).status === 0;
@@ -411,9 +408,20 @@ function intake({ state, query, reg, now }) {
   // A feature batch whose start was cut off is discarded, and its epic handed on rather than started
   // again into the same timeout.
   for (const a of clearAbandoned()) hand(a.batch, `an epic, and ${a.text}`);
+  // A ticket the search shows done, an epic included, is neither triaged nor admitted, and is said
+  // once; one reopened since is taken as any other.
+  const open = [];
+  for (const i of found.filter((x) => isNew(x.key))) {
+    if (!doneInSearch(i)) { open.push(i); continue; }
+    if (reg.tickets[i.key]?.outcome === 'done') continue;
+    const text = `already done in Jira (${doneInSearch(i)}): nothing triaged or admitted`;
+    reg.tickets[i.key] = { at: now.toISOString(), outcome: 'done', text };
+    writeIntake(state, reg);
+    lines.push(`intake: ${i.key} ${text}`);
+  }
   // An epic is a feature batch's, never a worker's: one a run has its batch started, and its plan
   // drafted and left for the person, beside the standing batch and any other epic's.
-  const epicKeys = found.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key).filter(isNew);
+  const epicKeys = open.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key);
   for (const [n, key] of epicKeys.entries()) {
     if (liveFeatureBatches().some((b) => b.name === key)) {
       const text = `an epic, and its feature batch ${key} is already running: its children join that batch`;
@@ -431,16 +439,8 @@ function intake({ state, query, reg, now }) {
     writeIntake(state, reg);
     lines.push(...s.lines.map((l) => `intake: ${l}`));
   }
-  // A ticket the search shows done is neither triaged nor admitted, and is said once; one reopened
-  // since is taken as any other.
-  const candidates = found.filter((i) => !epicKeys.includes(i.key) && isNew(i.key));
-  for (const i of candidates.filter((x) => doneInSearch(x) && reg.tickets[x.key]?.outcome !== 'done')) {
-    const text = `already done in Jira (${doneInSearch(i)}): nothing triaged or admitted`;
-    reg.tickets[i.key] = { at: now.toISOString(), outcome: 'done', text };
-    writeIntake(state, reg);
-    lines.push(`intake: ${i.key} ${text}`);
-  }
-  const fresh = candidates.filter((i) => !doneInSearch(i)).map((i) => i.key);
+  // Asked again: a child of an epic started above now belongs to that epic's feature batch.
+  const fresh = open.filter((i) => !epicKeys.includes(i.key) && isNew(i.key)).map((i) => i.key);
   for (const why of unchecked.values()) lines.push(`intake: not admitted: ${why}; the next intake tries again`);
   if (!fresh.length) return done();
   const triageNow = fresh.slice(0, MAX_TRIAGE);

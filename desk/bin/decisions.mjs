@@ -67,6 +67,20 @@ export function triageCalls(rec) {
   return { ask, taken };
 }
 
+// One ticket's calls and checks from a decision log as digest.mjs readDecisions splits it, each taken
+// call with the person's override applied: `chose` is the override's, `was` the call triage or a worker
+// took, `by` who overrode it.
+export function ticketCalls({ taken = [], checks = [], overrides = [] } = {}, ticket) {
+  const over = new Map(overrides.filter((o) => o.ticket === ticket).map((o) => [o.override_of, o]));
+  return {
+    taken: taken.filter((d) => d.ticket === ticket).map((d) => {
+      const o = over.get(d.id);
+      return o ? { ...d, chose: o.chose, was: d.chose, by: o.by ?? null } : d;
+    }),
+    checks: checks.filter((c) => c.ticket === ticket),
+  };
+}
+
 // A question a session settled by checking rather than asking: {"question", "checked", "showed"}.
 // {ok: true, check} or {ok: false, why}.
 export function parseCheck(raw) {

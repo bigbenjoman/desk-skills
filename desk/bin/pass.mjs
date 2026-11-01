@@ -15,7 +15,7 @@ import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_B
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally } from './harvest.mjs';
-import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls } from './decisions.mjs';
+import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
@@ -1354,17 +1354,22 @@ const baselineBrief = () => {
   ].join('\n');
 };
 // What triage settled for the worker: the calls it took on their recommendation (logged as decisions
-// when the ticket was admitted), and, where it found every criterion already met, a verify-only task.
+// when the ticket was admitted, and overridden since where the person did so in the digest), and, where
+// it found every criterion already met, a verify-only task.
 const triageBrief = (t) => {
   let r = null;
   try { r = JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8')); } catch { return ''; }
-  const { taken } = triageCalls(r);
+  const overridden = ticketCalls(readDecisions(STATE), t.key).taken.filter((d) => d.was !== undefined);
+  const taken = triageCalls(r).taken.map((d) => {
+    const o = overridden.find((x) => x.question === d.question && x.was === d.chose);
+    return o ? { ...d, chose: o.chose, was: o.was } : d;
+  });
   return [
     ...(taken.length ? [
       '## Calls triage took',
       '',
       'Build these as chosen: each is logged as a decision. List them under `Decisions taken` in the PR.',
-      ...taken.map((d) => `- ${d.question}: "${d.chose}" (${d.category}; the other options: ${d.options.filter((o) => o !== d.chose).join(', ')})`),
+      ...taken.map((d) => `- ${d.question}: "${d.chose}"${d.was !== undefined ? ` (the person overrode triage's "${d.was}")` : ''} (${d.category}; the other options: ${d.options.filter((o) => o !== d.chose).join(', ')})`),
       '',
     ] : []),
     ...(r?.verify_only === true ? [

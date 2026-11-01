@@ -338,6 +338,11 @@ out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-394 AC5: a re-triage prompt carries the recorded answer and calls, and binds them" \
   '[ $rc -eq 0 ] && P0 | grep -qF "**Already settled for fix-thing.** These bind: raise no unknown they answer, on the same acceptance" && P0 | grep -qxF "AC2 holds already: build AC1 only." && P0 | grep -qxF -- "- which retry backoff?: took \"exponential\" (engineering)"'
 check "DS-394 AC5: another ticket's calls are left out" '! P0 | grep -qF "not this ticket"'
+printf '%s\n' '{"id":"o","override_of":"a","ticket":"fix-thing","question":"which retry backoff?","was":"exponential","chose":"fixed","by":"ben"}' >> "$T/state/decisions.jsonl"
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-394 AC5: a call the person overrode binds as overridden, and the overridden choice is not listed" \
+  '[ $rc -eq 0 ] && P0 | grep -qxF -- "- which retry backoff?: took \"fixed\", overriding \"exponential\" (ben) (engineering)" && ! P0 | grep -qF "took \"exponential\""'
 rm -rf "$T/state/briefings" "$T/state/decisions.jsonl"
 
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \

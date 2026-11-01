@@ -623,8 +623,12 @@ out=$(intake)
 check "DS-394 AC1: intake says it once" '[ "$out" = "intake: nothing new" ] && [ "$(count "$T/triage.calls")" = "$n" ]'
 echo '{"issues":[{"key":"DN-3","fields":{"status":{"name":"To Do","statusCategory":{"key":"new"}}}}]}' > "$T/search.json"; out=$(intake)
 check "DS-394: once reopened, intake takes it as any other" '[ "$(qget tickets.DN-3.state)" = triaged ]'
+rec DN-4 A '"type":"Epic"'; n=$(count "$T/triage.calls")
+echo '{"issues":[{"key":"DN-4","fields":{"issuetype":{"name":"Epic"},"status":{"name":"Done","statusCategory":{"key":"done"}}}}]}' > "$T/search.json"; out=$(intake)
+check "DS-394 AC1: intake says an epic the search shows done is already done, and starts nothing for it" 'grep -q "^intake: DN-4 already done in Jira (Done): nothing triaged or admitted$" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ ! -e "$EB/DN-4" ]'
 tracker
-rec TK-1 A "\"unknowns\":[$(call 'which retry backoff?' engineering fixed exponential '"exponential"'),$(call 'name the flag?' wording on enabled '"enabled"')]"
+# The record as triage.sh writes it: unknowns left to the person, the calls it took in decided.
+rec TK-1 A "\"decided\":[{\"question\":\"which retry backoff?\",\"options\":[\"fixed\",\"exponential\"],\"chose\":\"exponential\",\"category\":\"engineering\"},{\"question\":\"name the flag?\",\"options\":[\"on\",\"enabled\"],\"chose\":\"enabled\",\"category\":\"wording\"}]"
 out=$(admit TK-1 --by ben); rc=$?
 check "DS-394 AC2: a ticket whose only unknowns are calls with a recommendation is admitted, saying so" '[ $rc -eq 0 ] && [ "$(qget tickets.TK-1.state)" = triaged ] && grep -q "^admitted TK-1 by ben into batch b1 (lane A, size S), took 2 call(s) on triage.s recommendation (logged)$" <<< "$out"'
 check "DS-394 AC2: each call is logged as a decision" '[ "$(logged TK-1)" = "[[\"which retry backoff?\",\"exponential\",\"engineering\",\"triage\"],[\"name the flag?\",\"enabled\",\"wording\",\"triage\"]]" ]'

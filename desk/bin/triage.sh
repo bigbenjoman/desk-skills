@@ -102,13 +102,17 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const [state, ticket, bin] = process.argv.slice(-3);
-const { collectAnswers, capBriefing } = await import(pathToFileURL(join(bin, 'briefing.mjs')).href);
+const load = (f) => import(pathToFileURL(join(bin, f)).href);
+const { collectAnswers, capBriefing } = await load('briefing.mjs');
+const { readDecisions } = await load('digest.mjs');
+const { ticketCalls } = await load('decisions.mjs');
 const brief = join(state, 'briefings', `${ticket}.md`);
 const answers = existsSync(brief) ? collectAnswers(readFileSync(brief, 'utf8')) : '';
-const log = join(state, 'decisions.jsonl');
-const calls = (existsSync(log) ? readFileSync(log, 'utf8').split('\n') : []).flatMap((l) => {
-  try { const e = JSON.parse(l); return e?.ticket === ticket ? [e] : []; } catch { return []; }
-}).map((e) => (e.kind === 'check' ? `- ${e.question}: checked ${e.checked}, which showed ${e.showed}` : `- ${e.question}: took "${e.chose}" (${e.category})`));
+const { taken, checks } = ticketCalls(readDecisions(state), ticket);
+const calls = [
+  ...taken.map((d) => `- ${d.question}: took "${d.chose}"${d.was !== undefined ? `, overriding "${d.was}"${d.by ? ` (${d.by})` : ''}` : ''} (${d.category})`),
+  ...checks.map((c) => `- ${c.question}: checked ${c.checked}, which showed ${c.showed}`),
+];
 const out = [answers, calls.length ? `Calls already taken or checked for ${ticket}:\n${[...new Set(calls)].join('\n')}` : ''].filter(Boolean).join('\n\n');
 if (out) process.stdout.write(capBriefing(out, 12000));
 RECORDED_END
