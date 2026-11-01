@@ -59,8 +59,9 @@ This is the one place you differ hardest from Suki. Suki's job is to architect s
 design is files. Read them from the copy saved in the repo under config §2 Design canvases directory
 (`<dir>/<EPIC or KEY>/project/`; its `source.json` names the artifact and version), or, before it
 is saved, with the Artifact tool (`action:list scope:files`, then `project/canvas.json` and every
-`project/*.dc.html`) or, in an autopilot batch, from the snapshot in
-`$DESK_STATE/designs/<TICKET>/project/`. `canvas.json` names each board, its title and its width (the
+`project/*.dc.html`) or, in an autopilot batch, from the `project/` folder of the snapshot that
+`desk-design.mjs check <TICKET>` names (`it is snapshotted at <path>`; an epic's child shares the
+epic's). `canvas.json` names each board, its title and its width (the
 breakpoints the designer drew); each board's HTML states the exact copy, colours, sizes, radii and
 aria-labels inline, and composes shared parts with `dc-import`. An artifact the user does not own
 reads as a summary, not the files: that is FAILED, not a design to build from. Everything else in

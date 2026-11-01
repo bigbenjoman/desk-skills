@@ -70,6 +70,26 @@ SETTINGS="$STATE/workers/$TICKET.triage.settings.json"   # per repo, like the wo
 mkdir -p "$STATE/triage" "$STATE/workers"
 
 [ -f "$ROUTING" ] || { echo "FAIL: routing file missing at $ROUTING — is desk-ticket installed?" >&2; exit 1; }
+# Where each Claude Design artifact the ticket links is snapshotted, found by URL: an epic's child
+# reads the epic's snapshot, which is under the repo state and the epic's key, not its own. A lookup
+# that cannot run (a GitHub issue, an unread ticket) leaves the general rule in the prompt.
+DESIGN_READ="A Claude Design artifact's boards are saved under $STATE/designs/$TICKET/project/ when the orchestrator could read
+  it, or in the repo under the Design canvases directory once a ticket has committed them
+  (\`canvas.json\` lists the boards and their widths); read them there, never guess a design."
+if [ "$KIND" != issue ] && SNAPS="$(node "$DESK_BIN/desk-design.mjs" snapshots "$TICKET" 2>/dev/null)" && [ -n "$SNAPS" ]; then
+  DESIGN_READ="This ticket's Design section links these Claude Design artifacts; read each where it says, never guess a design
+  (\`canvas.json\` lists the boards and their widths):"
+  while IFS=$'\t' read -r url snap; do
+    if [ "$snap" = - ]; then
+      DESIGN_READ+=$'\n'"  - $url: no snapshot. Read it in the repo under the Design canvases directory if a ticket has
+    committed it; otherwise it is unread, so say so in \`unknowns\`."
+    else
+      DESIGN_READ+=$'\n'"  - $url: snapshotted, its boards under $snap/project/. Every board is there: raise no
+    unknown, park or lane reason saying its boards are not snapshotted or need exporting."
+    fi
+  done <<< "$SNAPS"
+fi
+
 node "$DESK_BIN/worker-settings.mjs" triage --ticket "$TICKET" --out "$SETTINGS" >/dev/null \
   || { echo "FAIL: could not generate triage settings" >&2; exit 1; }
 # Both passes are offered only the tools they use (worker-tools.mjs).
@@ -116,10 +136,8 @@ Things that are not in that file and matter here:
 - **A design attached to a ticket is not by itself lane D.** Where UI tickets routinely carry a
   design (a Figma frame, or a Claude Design artifact), treating one as sufficient on its own parks
   most of the board. D is for a new screen, section or component the design specifies; a change to
-  an existing screen that links a design, implemented across a handful of files, is lane A. A Claude
-  Design artifact's boards are saved under $STATE/designs/$TICKET/project/ when the orchestrator could read
-  it, or in the repo under the Design canvases directory once a ticket has committed them
-  (\`canvas.json\` lists the boards and their widths); read them there, never guess a design.
+  an existing screen that links a design, implemented across a handful of files, is lane A.
+  $DESIGN_READ
 - **Labels are a hint, not a verdict.** An effort label encodes the estimate made when the ticket was
   written, and a waiting-on-design label means just that. Read the body anyway: a ticket labelled
   small can really be a redesign, or not a code fix at all.
@@ -377,5 +395,38 @@ CLAUDE_DIR_END
 # question.
 node "$DESK_BIN/ticket-facts.mjs" "$TICKET" \
   || { echo "FAIL: could not record $TICKET's Jira facts in $OUT" >&2; exit 1; }
+
+# With every canvas snapshotted or saved on the base, an unknown or a lane (park) reason asking for
+# boards to be snapshotted or exported is false, and would only park the ticket for the user. The lane
+# stays: only the false clause goes from its reason.
+node - "$OUT" <<'SNAPPED_END'
+const fs = require('fs');
+const out = process.argv[2];
+const d = JSON.parse(fs.readFileSync(out, 'utf8'));
+const canvases = d.design?.canvases ?? [];
+const UNTIL = /,?\s*\b(?:(?:held|parked|blocked|waiting)\s+)?until\b[^.;]*?\b(?:are|is|been)\s+snapshotted\b/gi;
+const SNAP_ASK = /\bnot\s+(?:yet\s+|been\s+)*snapshotted\b|\bunsnapshotted\b|\buntil\b[^.;]*?\b(?:are|is|been)\s+snapshotted\b|\b(?:export\s+(?:or|and)\s+)?snapshot(?:\s+(?:or|and)\s+export)?\s+(?:the\s+|its\s+)?boards?\b/i;
+if (canvases.length && canvases.every((c) => c.snapshot || c.saved)) {
+  const said = [];
+  if (Array.isArray(d.unknowns)) {
+    const dropped = d.unknowns.filter((u) => SNAP_ASK.test(String(u)));
+    if (dropped.length) {
+      d.unknowns = d.unknowns.filter((u) => !SNAP_ASK.test(String(u)));
+      said.push(`dropped ${dropped.length} unknown(s) asking for a snapshot`);
+    }
+  }
+  if (typeof d.lane_reason === 'string' && SNAP_ASK.test(d.lane_reason)) {
+    const kept = d.lane_reason.split(/\s*;\s*|(?<=\.)\s+/)
+      .map((c) => c.replace(UNTIL, '').trim())
+      .filter((c) => c && !SNAP_ASK.test(c));
+    d.lane_reason = [...kept, 'every linked canvas is snapshotted or saved on the base'].join('; ');
+    said.push(`dropped the lane ${d.lane} reason's ask for a snapshot`);
+  }
+  if (said.length) {
+    fs.writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
+    console.log(`[triage] ${d.ticket}  ${said.join(', ')}: every canvas is snapshotted or saved`);
+  }
+}
+SNAPPED_END
 
 node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(`[triage] ${d.ticket}  lane ${d.lane}  ${(d.files_in_scope??[]).length} files  ${(d.unknowns??[]).length} unknowns`)' "$OUT"

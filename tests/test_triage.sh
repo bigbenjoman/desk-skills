@@ -265,6 +265,50 @@ out=$(STUB_LANE=B STUB_EXTRA=',"lane_reason":"size S","files_in_scope":["docs/cl
 check "DS-374 AC1: a path that only looks like .claude/ keeps its lane" \
   '[ $rc -eq 0 ] && lc_ok B && [ "$(lc .lane_reason)" = "size S" ]'
 
+# The prompt names each linked canvas's snapshot, found by URL, so an epic's child in its
+# feature batch reads the epic's snapshot under the repo state.
+EPIC_URL=https://claude.ai/design/p/epic-boards; OWN_URL=https://claude.ai/design/p/own-boards; NONE_URL=https://claude.ai/design/p/no-snap
+mkdir -p "$T/state/designs/EPIC-1/project" "$T/state/designs/fix-thing/project" "$T/state/batches/EPIC-1/tickets"
+printf '{"url": "%s#board", "version": "3"}\n' "$EPIC_URL" > "$T/state/designs/EPIC-1/source.json"
+printf '{"url": "%s", "version": "1"}\n' "$OWN_URL" > "$T/state/designs/fix-thing/source.json"
+design_ticket(){ printf '# fix-thing\n\nSource: the user\n\n## Outcome\nFix the thing.\n\n## Design\nBuild it from %s\n' "$2" > "$1/tickets/fix-thing.md"; }
+SNAP_UNKNOWNS=',"unknowns":["Ben: export or snapshot boards 4 and 5","Design board 2 is not snapshotted","which empty-state copy?","Should users be able to export boards as PDF?"]'
+BS="$T/state/batches/EPIC-1"
+design_ticket "$BS" "$EPIC_URL"
+rm -f "$STUB_LOG".*
+out=$(DESK_AUTOPILOT_STATE="$BS" DESK_STATE="$BS" STUB_LANE=A STUB_EXTRA="$SNAP_UNKNOWNS" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-393 AC1: an epic child's prompt names the epic's snapshot under the repo state" \
+  '[ $rc -eq 0 ] && P0 | grep -qF "  - $EPIC_URL: snapshotted, its boards under $T/state/designs/EPIC-1/project/." && ! P0 | grep -qF "$BS/designs/fix-thing"'
+check "DS-393 AC2: the record keeps no unknown asking for the boards to be snapshotted, and keeps one about exporting boards as a feature" \
+  '[ "$(jq -c .unknowns "$BS/triage/fix-thing.json")" = "[\"which empty-state copy?\",\"Should users be able to export boards as PDF?\"]" ] && [[ "$out" == *"dropped 2 unknown(s) asking for a snapshot"* ]]'
+check "DS-393 AC2: the prompt says a snapshotted canvas raises no such unknown" \
+  'P0 | grep -qF "raise no" && P0 | grep -qF "unknown, park or lane reason saying its boards are not snapshotted or need exporting."'
+SNAP_REASON=',"lane_reason":"a new screen the canvas specifies, parked until boards 3 and 5 are snapshotted; Design board 2 is not snapshotted; size M"'
+rm -f "$STUB_LOG".* "$BS/triage/fix-thing.json"
+out=$(DESK_AUTOPILOT_STATE="$BS" DESK_STATE="$BS" STUB_LANE=D STUB_EXTRA="$SNAP_REASON" STUB_CHAL='{"verdict":"CONFIRM","lane":"D","reason":"stub"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-393 AC2: a lane D record's park reason loses its ask for a snapshot, and keeps its lane and other signals" \
+  '[ $rc -eq 0 ] && [ "$(jq -r .lane "$BS/triage/fix-thing.json")" = D ] && [ "$(jq -r .lane_reason "$BS/triage/fix-thing.json")" = "a new screen the canvas specifies; size M; every linked canvas is snapshotted or saved on the base" ] && [[ "$out" == *"dropped the lane D reason'"'"'s ask for a snapshot"* ]]'
+design_ticket "$T/state" "$OWN_URL"
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-393 AC3: a single ticket's prompt names the snapshot under its own key" \
+  '[ $rc -eq 0 ] && P0 | grep -qF "  - $OWN_URL: snapshotted, its boards under $T/state/designs/fix-thing/project/."'
+design_ticket "$T/state" "$NONE_URL"
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_EXTRA="$SNAP_UNKNOWNS" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-393 AC4: with no snapshot the prompt says the design is unread" \
+  '[ $rc -eq 0 ] && P0 | grep -qF "  - $NONE_URL: no snapshot." && P0 | grep -qF "otherwise it is unread, so say so in \`unknowns\`." && ! P0 | grep -qF "snapshotted, its boards"'
+check "DS-393 AC4: and its unknowns about the snapshot are kept" '[ "$(jq ".unknowns | length" "$T/state/triage/fix-thing.json")" = 4 ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=D STUB_EXTRA="$SNAP_REASON" STUB_CHAL='{"verdict":"CONFIRM","lane":"D","reason":"stub"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-393 AC4: and a lane D reason waiting on the snapshot is kept" \
+  '[ $rc -eq 0 ] && [ "$(jq -r .lane_reason "$T/state/triage/fix-thing.json")" = "a new screen the canvas specifies, parked until boards 3 and 5 are snapshotted; Design board 2 is not snapshotted; size M" ]'
+printf '# fix-thing\n\nSource: the user\n\nFix the thing.\n' > "$T/state/tickets/fix-thing.md"
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-393: a ticket linking no canvas keeps the general rule" \
+  '[ $rc -eq 0 ] && P0 | grep -qF "saved under $T/state/designs/fix-thing/project/ when the orchestrator could read"'
+
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'
 
