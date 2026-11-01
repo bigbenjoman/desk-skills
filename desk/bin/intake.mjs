@@ -298,6 +298,18 @@ function blockerRoute(key, rec) {
   return h ? { route: h.name, batch: h.name, supervised: h.supervised, why: `${key} is blocked by ${h.on.join(', ')}, in batch ${h.name}: it joins that batch` } : null;
 }
 
+// Whether the other named batch holding `key` (belongsElsewhere's `held`) is where an admit would place
+// it, as its triage record there says: its epic's feature batch, or the batch its files or blockers
+// route it to from the standing queue `own`.
+function placedThere(key, held, own) {
+  if (!held.name) return false;
+  const rec = readJson(join(held.state, 'triage', `${key}.json`), null);
+  if (!rec) return false;
+  if (rec.epic?.key === held.name) return true;
+  const base = own?.base ?? (E.configValue('default-branch') || 'main');
+  return (baseRoute(key, rec, base) ?? blockerRoute(key, rec))?.route === held.name;
+}
+
 // One triaged ticket into the batch, both paths: the queue read again whole (triage took minutes, and a
 // session may have started its own batch meanwhile), the batch gate, the ticket's checks, a standing
 // batch started where none is live, then the admit. Returns the one thing that happened:
@@ -543,6 +555,7 @@ function byHand(keys, { state, by, front, now }) {
     if (!E.SAFE_ID.test(key)) { refuse(key, 'not a ticket id'); continue; }
     if (q?.tickets?.[key]) { lines.push(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`); continue; }
     const away = belongsElsewhere(key, null, E.queueFile());
+    if (away?.held && placedThere(key, away.held, q)) { lines.push(`${key} is already in batch ${away.batch} (${away.held.ticket})`); continue; }
     if (away) { refuse(key, away.why); continue; }
     const t = triage(key, state);
     if (!t.rec) { refuse(key, `${t.why}: fix it and run /desk-admit ${key} again`); continue; }
