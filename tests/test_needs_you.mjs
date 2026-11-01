@@ -726,6 +726,40 @@ t('DS-390 a lease the park names wins over the worktree read', BSg.grant?.lease,
 t('DS-390 --approve grants with an answer that does not open with a yes', BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'Push it over abc', approve: true, remoteSha: () => 'b'.repeat(40) }).grant?.lease, 'b'.repeat(40));
 t('DS-390 no lease to read: no grant, saying why', /no lease SHA/.test(BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes' }).why), true);
 
+// ---- DS-389 AC3: tickets parked on one §3 row the config lacks are one repo item; done requeues them once it is set
+put('nu', { port: 5300, beat: 1, supervised: true, tickets: {
+  'N-1': parked('A', 40, 'CONFIG_DENIED: worker-web-read (unset): the ticket needs the published rate; look it up for me'),
+  'N-2': parked('A', 30, 'needs worker-web-read to read the vendor terms page'),
+  'N-3': parked('A', 20, 'Which copy?'),
+  'N-4': parked('A', 10, 'pr-ready is set, so this is an ordinary park'),
+} });
+const nu = () => N.collect({ word: 'nu' }).items;
+t('DS-389 AC3 two parks on one unset row are one item for the repo; the others stay their own', nu().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'N-3 parked,N-4 parked,unset:worker-web-read config');
+const nuRow = nu().find((i) => i.kind === 'config');
+t('DS-389 AC3 its need names the row and both tickets, and recommends done', `${nuRow?.need.startsWith("§3 worker-web-read is not set in nu's config, so desk reads it as no, and 2 tickets parked on it (N-1 and N-2). Answer it once with /desk-update in ")} ${nuRow?.actions.map((x) => x[0]).join()}`, 'true done,not-now');
+t('DS-389 AC3 the list shows it as one line', cli('list', 'nu').out.split('\n').filter((l) => l.startsWith('nu unset:worker-web-read config')).length, 1);
+const stillUnset = N.record({ word: 'nu', ticket: 'unset:worker-web-read', action: 'done' });
+t('DS-389 AC3 done while the row is still unset requeues nothing', `${stillUnset.ok} ${queueOf('nu').tickets['N-1'].state} ${/still not set/.test(stillUnset.line)}`, 'false parked true');
+const nuConfig = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__nu', 'config.md');
+writeFileSync(nuConfig, readFileSync(nuConfig, 'utf8').replace(/(\| `pr-merge-green` [^\n]*\n)/, '$1| `worker-web-read` | Read the web | `ask` | `yes` |\n'));
+const setNow = N.record({ word: 'nu', ticket: 'unset:worker-web-read', action: 'done' });
+t('DS-389 AC3 once it is set, done requeues every ticket parked on it, and only those', `${setNow.ok} ${['N-1', 'N-2', 'N-3'].map((k) => queueOf('nu').tickets[k].state).join()}`, 'true triaged,triaged,parked');
+t('DS-389 AC3 and the item leaves the list', nu().some((i) => i.kind === 'config'), false);
+
+// ---- DS-389 AC7: committed copies of desk's templates the supervisor found behind are one repo item
+const nuTemplates = join(env.HOME, '.desk-autopilot', 'acme__nu', 'templates.json');
+writeFileSync(nuTemplates, JSON.stringify({ at: minsAgo(5), installed: null, ref: 'origin/main', root: join(T, 'repos', 'nu'), files: [
+  { path: '.githooks/pre-push', status: 'CURRENT' },
+  { path: 'scripts/desk/pre-push.sh', status: 'BEHIND', base: '4050984aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', base_date: '2026-10-17T10:00:00Z', since: minsAgo(50) },
+  { path: '.github/workflows/desk-gate.yml', status: 'EDITED' },
+] }));
+const nuT = nu().filter((i) => i.kind === 'templates');
+t('DS-389 AC7 one item for the repo, naming the behind file and the PR desk-update opens', `${nuT.length} ${nuT[0]?.t.key} ${nuT[0]?.need.startsWith("nu's committed scripts/desk/pre-push.sh is behind desk's template")} ${/opens one PR, off main, that applies the template's changes and keeps this repo's own edits/.test(nuT[0]?.need)}`, '1 templates true true');
+t('DS-389 AC7 it has waited since the copy was first found behind', Math.round((NOW - nuT[0]?.since) / 60000), 50);
+// done checks again, here with no committed copy left behind (the fixture repo has none): off the list.
+const tDone = N.record({ word: 'nu', ticket: 'templates', action: 'done' });
+t('DS-389 AC7 done checks the copies again, and clears once none is behind', `${tDone.ok} ${tDone.line} ${nu().some((i) => i.kind === 'templates')}`, 'true nu templates: no copy is behind on origin/main now, so it is off your list. false');
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

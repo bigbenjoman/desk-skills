@@ -31,13 +31,18 @@
 //                           item until its head moves
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
 //
+// Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
+// ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
+// `templates`, the repo's committed copies of desk's templates the supervisor found behind (done
+// checks them again).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then the longest waiting, less any put off with not-now whose inputs are unchanged. Exits 0, or 11 (show the person) on anything it refuses.
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gapsFix } from './fix-tries.mjs';
-import { repoConfigValue, releaseCommand } from './desk-env.mjs';
+import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
+import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
@@ -194,6 +199,41 @@ const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['mov
 const USAGE_ITEM = 'usage-limit';
 const usageRow = (r) => (usageHoldOf(r) ? { t: { key: USAGE_ITEM }, usage: true } : null);
 
+// ---- repo-level items: one for the repo, not one per ticket ------------------------------------
+// A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
+// on it. The row is answered once (/desk-update asks each row the config lacks), so the tickets parked
+// naming it are one item, `unset:<key>`, and its done requeues them all.
+const UNSET = 'unset:';
+const FIXED_ROWS = new Set(['slack-send', 'merge-bypass', 'others-prs', 'product-calls', 'legal-content']);
+const ROW_KEYS = Object.keys(PERMISSION_KEYS).filter((k) => !FIXED_ROWS.has(k));
+const namesRow = (text, key) => new RegExp(`(^|[^a-z0-9-])${key}([^a-z0-9-]|$)`).test(text);
+const rootOf = (r) => repoConfigValue(r.slug, 'repo-root') ?? r.repo;
+const finite = (n) => (Number.isFinite(n) ? n : null);
+function unsetRowOf(r, t, unsetIn) {
+  const q = String(t.park?.question ?? '');
+  return ROW_KEYS.find((k) => namesRow(q, k) && unsetIn(r.slug, k)) ?? null;
+}
+function unsetItem(g) {
+  const keys = g.parked.map((p) => p.t.key);
+  const n = keys.length;
+  return { kind: 'config', repoLevel: true, parked: g.parked,
+    need: `§3 ${g.key} is not set in ${g.r.repo}'s config, so desk reads it as no, and ${n === 1 ? 'a ticket' : `${n} tickets`} parked on it (${andList(keys)}). Answer it once with /desk-update in ${rootOf(g.r)}, which asks every row the config lacks; then say done, and ${n === 1 ? 'it is' : 'each is'} requeued`,
+    actions: [['done', `once the row is set, done requeues ${n === 1 ? 'the ticket' : `all ${n} tickets`} parked on it`], ['not-now']] };
+}
+// A committed copy of a desk template (the pre-push hook, the desk gate) the template has moved on
+// from, as the supervisor's last template check found it (repo-templates.mjs): one item for the repo.
+const TEMPLATES = 'templates';
+function templatesItem(r, rec) {
+  const behind = (rec?.files ?? []).filter((f) => f.status === 'BEHIND');
+  if (!behind.length) return null;
+  const paths = behind.map((f) => f.path);
+  return { kind: 'templates', repoLevel: true,
+    need: `${r.repo}'s committed ${andList(paths)} ${paths.length === 1 ? 'is' : 'are'} behind desk's template, which changed since ${paths.length === 1 ? 'its copy was' : 'the copies were'} made. Run /desk-update in ${rootOf(r)}: it shows what changed and opens one PR, off ${String(rec.ref ?? 'the default branch').replace(/^origin\//, '')}, that applies the template's changes and keeps this repo's own edits. Merge it, then say done`,
+    actions: [['done', 'once that PR has merged, done checks the copies again and the item leaves the list'], ['not-now']],
+    since: finite(Math.min(...behind.map((f) => timeOf(f.since) ?? timeOf(rec.at) ?? Infinity))) };
+}
+const standingOf = (repos, r) => repos.find((x) => x.slug === r.slug && x.batch == null) ?? r;
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 function itemOf(r, x) {
   const t = x.t;
@@ -302,16 +342,41 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
   const { named, scope } = scopeOf(repos, word);
   const items = [];
   let putOff = 0;
+  const seen = new Map();
+  const unsetIn = (slug, k) => { const id = `${slug}\t${k}`; if (!seen.has(id)) seen.set(id, repoPermissionUnset(slug, k)); return seen.get(id); };
+  const groups = new Map();
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
     const hold = usageRow(r);
     for (const x of [...(hold ? [hold] : []), ...needsRows(r)]) {
       const { item, l } = judged(r, x, register);
       if (l.status === 'put_off') { putOff++; continue; }
-      if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
       const since = x.usage ? timeOf(r.q.usage_hold.since) : timeOf(x.t.park?.since ?? x.t.added_at);
+      const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
+      if (row) {
+        const id = `${r.slug}\t${row}`;
+        if (!groups.has(id)) groups.set(id, { r: standingOf(repos, r), key: row, parked: [] });
+        groups.get(id).parked.push({ r, t: x.t, since });
+        continue;
+      }
+      if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
       items.push({ r, t: x.t, ...item, since, broken: PRODUCTION_BROKEN.test(x.t.park?.question ?? '') });
     }
+  }
+  // The repo-level items, put off under their own key as any other item is.
+  const repoItem = (r, t, item, since) => {
+    const key = putOffKey(r, t, item);
+    const l = lookup(readRegister(r.stateDir), key);
+    if (l.status === 'put_off') { putOff++; return; }
+    if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
+    items.push({ r, t, ...item, putOffKey: key, since, broken: false });
+  };
+  for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))));
+  const slugs = new Set((word ? scope : repos).map((x) => x.slug));
+  for (const slug of slugs) {
+    const r = repos.find((x) => x.slug === slug && x.batch == null);
+    const item = r && !r.error ? templatesItem(r, templatesRecord(slug)) : null;
+    if (item) repoItem(r, { key: TEMPLATES }, item, item.since);
   }
   items.sort((a, b) => (b.broken - a.broken) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   return { repos, scope, items, named, putOff };
@@ -330,8 +395,9 @@ const putOffLine = (c) => (c.putOff ? ` ${c.putOff} put off with not-now, left o
 
 export function listText(c, now = Date.now()) {
   if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.${putOffLine(c)}`;
+  // A repo-level item is the person's own step, so who runs the batch says nothing about it.
+  const lines = [...new Set(c.items.filter((i) => !i.repoLevel).map((i) => i.r))].map(runLine);
   const repos = [...new Set(c.items.map((i) => i.r))];
-  const lines = repos.map(runLine);
   for (const i of c.items) {
     const waited = i.since == null ? '' : ` ${since(now - i.since)}`;
     // A done note follows the need whole: it is what GitHub showed when the person last said done.
@@ -356,6 +422,7 @@ function queueCmd(r, args) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now) }) {
+  if (ticket.startsWith(UNSET) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -496,6 +563,57 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     }
     default: return say(false, `unknown action ${verb}.`);
   }
+}
+
+// A repo-level item's answer. Done on an unset row requeues every ticket parked on it once the row is
+// set, each in its own batch (or names the live session to message); done on behind templates checks
+// the copies again now.
+function recordRepoItem({ word, ticket, action, now, repos }) {
+  const c = collect({ word, now, repos });
+  let i = c.items.find((y) => y.repoLevel && y.t.key === ticket);
+  // A row set since the list was shown no longer groups its parks there; done still finds them.
+  if (!i && ticket.startsWith(UNSET) && c.named) {
+    const key = ticket.slice(UNSET.length);
+    const parked = repos.filter((b) => b.slug === c.named.slug && !b.error && b.q)
+      .flatMap((b) => needsRows(b).filter((x) => x.t.state === 'parked' && namesRow(String(x.t.park?.question ?? ''), key)).map((x) => ({ r: b, t: x.t })));
+    if (parked.length) {
+      const g = { r: standingOf(repos, c.named), key, parked };
+      i = { r: g.r, t: { key: ticket }, ...unsetItem(g) };
+      i.putOffKey = putOffKey(i.r, i.t, i);
+    }
+  }
+  if (!i) return { ok: false, line: `${c.named?.name ?? word} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
+  const [verb] = action.split(/\s+/);
+  const say = (ok, line, message = null) => ({ ok, line: `${i.r.repo} ${ticket}: ${line}`, message });
+  if (!i.actions.some(([a]) => a === verb)) return say(false, `${verb} is not an action for a ${i.kind} item (${i.actions.map(([a]) => a).join(', ')}).`);
+  if (verb === 'not-now') {
+    addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString() }), i.r.stateDir);
+    return say(true, `put off (${notNowPath(i.r.stateDir)}).`);
+  }
+  if (i.kind === TEMPLATES) {
+    let rec;
+    try { rec = templatesCheck({ slug: i.r.slug, force: true, now }).record; } catch (e) { return say(false, `could not check the copies again (${one(e.message)}), so it stays on your list.`); }
+    const still = rec.files.filter((f) => f.status === 'BEHIND').map((f) => f.path);
+    return still.length
+      ? say(false, `${andList(still)} ${still.length === 1 ? 'is' : 'are'} still behind on ${rec.ref}, so it stays on your list. Merge the PR /desk-update opened first.`)
+      : say(true, `no copy is behind on ${rec.ref} now, so it is off your list.`);
+  }
+  const key = ticket.slice(UNSET.length);
+  if (repoPermissionUnset(i.r.slug, key)) return say(false, `§3 ${key} is still not set in ${i.r.repo}'s config, so nothing was requeued. Answer it with /desk-update in ${rootOf(i.r)} first.`);
+  const requeued = [], refused = [], bySession = new Map();
+  for (const p of i.parked) {
+    const w = runner(p.r);
+    if (w.by === 'session') { const s = w.name ?? '(no batch name recorded)'; bySession.set(s, [...(bySession.get(s) ?? []), p.t.key]); continue; }
+    const q = queueCmd(p.r, ['requeue', p.t.key]);
+    if (q.ok) requeued.push(p.t.key); else refused.push(`${p.t.key} (${q.out})`);
+  }
+  const them = (ks) => (ks.length === 1 ? 'it' : 'them');
+  const parts = [...(requeued.length ? [`requeued ${andList(requeued)}; the next pass can spawn ${them(requeued)}`] : []),
+    ...(refused.length ? [`the requeue was refused for ${andList(refused)}`] : []),
+    ...[...bySession].map(([s, ks]) => `a live session (${s}) runs ${andList(ks)}: message it to requeue ${them(ks)}`)];
+  const [first] = bySession;
+  return say(!refused.length, `§3 ${key} is set now: ${parts.join('; ')}.`,
+    first ? { to: first[0], text: `${andList(first[1])} parked on §3 ${key}, which is now set: requeue ${them(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
 }
 
 // What is left: desk-q's NEEDS YOU count in scope (needsCount's rule), then a line for each unfinished batch there whose passes are

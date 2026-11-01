@@ -446,7 +446,10 @@ Once §4 Pre-push checks is confirmed and is not `none`, make two offers, each i
 **1. Commit the hook and the script.** The templates are in the desk-skills checkout that ran
 `install.sh`: `$(cat ~/.claude/desk/source-checkout)/desk/templates/`, holding `.githooks/pre-push`
 and `scripts/desk/pre-push.sh`. If the repo already has both and they match, say so and skip. If they
-differ, show the diff and ask whether to update them. On a yes, on a new branch off `<default>` named
+differ, the copy is updated, never replaced: run `node ~/.claude/desk/bin/repo-templates.mjs status`
+and, for a `BEHIND` file, follow `/desk-update`'s repo-drift reference (a three-way update
+that keeps the repo's own edits); an `EDITED` one is the repo's own change, left alone. The copy
+below is for a repo that has neither file yet. On a yes, on a new branch off `<default>` named
 per §5 Branch names, never on `<default>` itself:
 
 ```bash
@@ -504,7 +507,9 @@ script, so it can blank `PROTECTED` or rewrite a job and the check still passes 
 the branch ruleset closes that, with required reviewers (or CODEOWNERS review) over `.github/**` and
 `scripts/desk/**`, and that is the user's change to make. Say that a solo repo cannot meet this job's approval (the author's
 own never counts), so it should stay unrequired there. If the repo already has both files and they
-match, say so and skip; if they differ, show the diff and ask. On a yes, on a new branch off
+match, say so and skip; if they differ, update them as the pre-push hook's step says
+(`repo-templates.mjs status`, then `/desk-update`'s repo-drift reference for a `BEHIND` one),
+never by copying over them. For a repo with neither, on a yes, on a new branch off
 `<default>` named per §5 Branch names:
 
 ```bash

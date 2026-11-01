@@ -169,6 +169,34 @@ t('AC7 any drift exits 1', d.code, 1);
 rmSync(join(croot, 'repos', 'acme__stale'), { recursive: true });
 t('AC7 no drift anywhere exits 0', all().code, 0);
 
+// `desk-env add-row`: a row drift names MISSING, copied from the template with the person's answer.
+const added = join(T, 'add.md');
+const addRow = (body, ...args) => {
+  if (body != null) writeFileSync(added, body);
+  try { return { code: 0, out: execFileSync('node', [BIN, 'add-row', ...args], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: added }), stdio: 'pipe' }).trim(), file: readFileSync(added, 'utf8') }; }
+  catch (e) { return { code: e.status, out: String(e.stdout).trim(), err: String(e.stderr).trim(), file: readFileSync(added, 'utf8') }; }
+};
+const permOf = (id) => execFileSync('node', [BIN, 'perm', id], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: added }) }).trim();
+const lineOf = (file, key) => file.split('\n').findIndex((l) => l.includes(`\`${key}\``));
+let a = addRow(conf({ omit: ['pr-ready', 'batch-base-push'] }), '3', 'pr-ready', 'yes', '--note', 'set 2026-11-01 by you in /desk-update');
+t('DS-389 AC2 the answer is written as the template row, its note after it', a.out.split('\n')[0], 'ADDED §3 pr-ready: | `pr-ready` | cap | `yes` | `yes` (set 2026-11-01 by you in /desk-update) |');
+t('DS-389 AC2 and desk-env perm reads it back', `${a.out.split('\n')[1]} | ${permOf('pr-ready')}`, 'perm pr-ready = yes | yes');
+t('DS-389 AC2 it sits where the template has it, after git-push', lineOf(a.file, 'pr-ready'), lineOf(a.file, 'git-push') + 1);
+a = addRow(null, '3', 'batch-base-push', 'no');
+t('DS-389 AC2 the last row of its table goes after the nearest row above it', `${a.code} ${lineOf(a.file, 'batch-base-push')}`, `0 ${lineOf(a.file, 'pr-merge-green') + 1}`);
+t('DS-389 AC4 with every template row, drift names none, so nothing is asked', drift(a.file).out, 'no drift');
+const before = a.file;
+a = addRow(null, '3', 'git-push', 'no');
+t('DS-389 a row the config has is refused, never overwritten', `${a.code} ${/already has §3 git-push/.test(a.err)} ${a.file === before}`, '4 true true');
+a = addRow(conf({ omit: ['pr-ready'] }), '3', 'pr-ready', 'yse');
+t('DS-389 a §3 answer that is not yes, ask or no is refused', `${a.code} ${/takes yes, ask or no/.test(a.err)} ${lineOf(a.file, 'pr-ready')}`, '4 true -1');
+a = addRow(null, '3', 'no-such-row', 'yes');
+t('DS-389 a row the template does not have is refused', `${a.code} ${/no §3 row "no-such-row"/.test(a.err)}`, '4 true');
+a = addRow(conf({ b3: false }), '3b', 'Worker models', 'default');
+t('DS-389 a §3b row is added by its name, before the row below it', `${a.code} ${a.file.split('\n').findIndex((l) => l.startsWith('| Worker models'))} ${a.file.split('\n').findIndex((l) => l.startsWith('| Check-in times'))}`,
+  `0 ${a.file.split('\n').findIndex((l) => l.startsWith('| Check-in times')) - 1} ${a.file.split('\n').findIndex((l) => l.startsWith('| Check-in times'))}`);
+t('DS-389 and drift no longer names it', drift(a.file).out, 'no drift');
+
 // The shipped template compared with itself: every row it declares is found, the ledger is not a row.
 const self = execFileSync('node', [BIN, 'drift'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG_TEMPLATE: join(ROOT, 'desk-config.md'), DESK_CONFIG: join(ROOT, 'desk-config.md') }) }).trim();
 t('the template has no drift against itself', self, 'no drift');

@@ -44,6 +44,8 @@
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
 // this agent and the running merge driver started at an older one (`old_code`).
 //
+// After intake, each tick runs repo-templates.mjs check, which at most hourly records in the standing
+// batch's templates.json which of the repo's committed copies of desk's templates are behind them.
 // A tick runs intake once, then every batch the repo holds (batches.mjs listBatches), one after another:
 // the standing batch, then each named batch. Each runs as above in its own state folder, with its own
 // merge driver and notifications titled with the repo and the batch, and with DESK_BATCH naming it and
@@ -278,6 +280,7 @@ function interval() {
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
   if (!named) enterBatch(null);
   const intake = runIntake();
+  templateCheck(batches[0].state);
   batches.forEach((b, i) => {
     if (!named) enterBatch(b.name);
     try {
@@ -291,6 +294,17 @@ function interval() {
       } catch { /* nowhere to say it */ }
     }
   });
+}
+
+// Whether this repo's committed copies of desk's templates are behind them (repo-templates.mjs check,
+// at most hourly), recorded for needs-you as one repo-level item. Only a failure is logged.
+const TEMPLATE_CHECK_MS = 60 * 1000;
+function templateCheck(standing) {
+  const script = join(HERE, 'repo-templates.mjs');
+  if (!existsSync(script) || !existsSync(join(E.deskHome(), 'templates'))) return;
+  const r = spawnSync(process.execPath, [script, 'check'], { encoding: 'utf8', env: process.env, timeout: TEMPLATE_CHECK_MS });
+  if (r.status === 0) return;
+  try { mkdirSync(standing, { recursive: true }); logTo(standing)([`== ${stamp()} template check failed: ${String(r.stderr || r.error?.message || `exit ${r.status}`).trim().split('\n')[0]}`]); } catch { /* nowhere to say it */ }
 }
 
 // A named batch's archive check (batch.mjs): what it says goes in the batch's own log, and an archive in

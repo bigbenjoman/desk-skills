@@ -271,14 +271,14 @@ PMROW='`uv`' settings '`bash tests/run.sh`' '' "$(rows3 worker-dependency-instal
 check "AC2 uv: sync refused when the row is not yes"       'no "uv sync" "uv add httpx" && denied_line worker-dependency-install no'
 
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
-check "AC8 none of the three rows: each treated as no"     '[ $rc -eq 0 ] && denied_line worker-dependency-install no && denied_line worker-screenshots no && denied_line worker-local-services no'
+check "AC8 none of the three rows: each treated as no, named unset" '[ $rc -eq 0 ] && denied_line worker-dependency-install unset && denied_line worker-screenshots unset && denied_line worker-local-services unset'
 check "AC8 none of the three rows: all three refused"      'no "pnpm add zod" "$L browser node ./shot.mjs" "$UP typesense"'
 check "AC6 git reset does not depend on any row"           'ok "git reset --soft HEAD~1" && no "git reset --hard"'
 
 # ---- §3 worker-web-read: WebSearch and WebFetch, and nothing else new ----
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC"
 cp "$T/ws.json" "$T/ws-off.json"
-check "web-read unset: neither tool allowed, both denied, named" '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch && denies WebSearch && denies WebFetch && denied_line worker-web-read no'
+check "web-read unset: neither tool allowed, both denied, named" '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch && denies WebSearch && denies WebFetch && denied_line worker-web-read unset'
 for v in ask no; do
   PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=$v)"
   check "web-read $v: neither tool allowed, named"         '! allows WebSearch && ! allows WebFetch && denies WebSearch && denied_line worker-web-read $v'
@@ -332,7 +332,7 @@ for v in ask no; do
   check "DS-349 AC6 dispatch $v: no rule, gh workflow denied, named" '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)" && no "$RUN" && denied_line worker-workflow-dispatch $v'
 done
 settings '`bash tests/run.sh`' "$WF"
-check "DS-349 AC6 dispatch unset: treated as no"           '[ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)" && denied_line worker-workflow-dispatch no'
+check "DS-349 AC6 dispatch unset: treated as no, named unset" '[ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)" && denied_line worker-workflow-dispatch unset'
 settings '`bash tests/run.sh`' '| Worker workflows | `e2e-manual.yml -f environment=staging` `deploy.yml --ref main` `smoke.yml -f url=$(id)` `nightly.yml` |' "$(rows3 worker-workflow-dispatch=yes)"
 check "DS-349 AC7 a malformed span warns by name and is skipped" \
   '[ $rc -eq 0 ] && [[ "$out" == *"Worker workflows item \"deploy.yml --ref main\" is not"* ]] && [[ "$out" == *"Worker workflows item \"smoke.yml -f url=\$(id)\" is not"* ]] && ! jq -e ".permissions.allow[] | select(test(\"deploy.yml|smoke.yml\"))" "$T/ws.json" >/dev/null'

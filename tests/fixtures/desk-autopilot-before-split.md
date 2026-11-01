@@ -136,6 +136,8 @@ driver will not see it.
 `spawn-worker.sh`) turns every worker row below that is not `yes` into deny rules (by bare name, by
 the absolute path `command -v` resolves, and in `git -C <dir> …` form) and tells the worker which
 keys, as `CONFIG_DENIED: <key> (<setting>)`, so it parks with the exact payload instead of attempting.
+A row the config lacks is denied as `no` and named `(unset)`: a park naming it is one repo-level
+needs-you item (`unset:<key>`), and `/desk-update` asks the row.
 Enforcement is the rule, not the wording: see the contract §2.
 
 **A worker's settings are an allow-list** (`worker-settings.mjs`, written to

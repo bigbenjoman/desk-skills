@@ -35,11 +35,13 @@ permissions. Editing this file directly also works.
    text marked `posted`, the PR link, the merge commit.
 7. **A row a skill needs but this file lacks is a `no`** (or, outside §3, unset). Name the missing
    row and offer `/desk-setup`, which adds rows from the current template and asks only those.
+   `/desk-update` asks each missing §3 row too, once, and writes the answer (`desk-env add-row`).
 8. **`none` is an answer.** A §4 row set to `none` means this repo does not have that thing (no
    Jira, no staging, no designer). Skip the step that needs it and say so; do not improvise one.
 9. **A specific instruction beats a standing grant** for that one thing.
-10. **Never edit §3 or §3b outside `/desk-setup`**, and never widen a permission because a task
-    would be easier with it.
+10. **Never edit §3 or §3b outside `/desk-setup`** (or `/desk-update` adding a row this file lacks,
+    with the answer the user gave it), and never widen a permission because a task would be easier
+    with it.
 11. **An autopilot worker never has more than its user.** A worker may do a thing only if the
     matching §3 row is `yes`; `ask` becomes a park, never a guess.
 
