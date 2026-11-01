@@ -141,7 +141,7 @@ const REWRITTEN = [
   ['DS-368', 'it exists only from round 3', 1],
   // each §3b and §4 row a worker reads is named with its desk-env call
   ...[
-    'a tracker key (§4 Ticket key pattern)', 'with §4 Command prefix in front unless', '§4 Priorities only you set.**',
+    'a tracker key (§4 Ticket key pattern)', 'The config file itself is readable','with §4 Command prefix in front unless', '§4 Priorities only you set.**',
     'With §4 Tracker `none` there are none', '§4 Review state (skip if it is `none`) works', 'with no preview deployments, §4 Staging)',
     'The cap is config §3b', 'Spawn gate (available memory)"; by default', 'where §4 Pre-push checks is set', 'runs §4 Related tests through',
     'in place of §4 Typecheck and Lint', '§4 Required checks (and Advisory checks) for what CI', '**Structural tests a new or changed entry point trips.**',

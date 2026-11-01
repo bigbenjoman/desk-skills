@@ -19,9 +19,7 @@ available, follow its brief yourself and say so in the report, never skip the st
 
 **Read config values with `desk-env`, not by reading the config file.** `desk-env where` (slug,
 `EXISTS`), `desk-env get <id>`, `desk-env list <id>`, `desk-env cmds <id>` and `desk-env perm <key>`
-are your config. The config file itself is readable, but the credentials beside it are not, and
-`desk-env` resolves each row the way the scripts do. `desk-env ids` prints every id it knows. Every
-"§" below is a row read that way.
+are your config: the config file sits beside the credentials, so reading it is refused. `desk-env ids` prints every id. Every "§" below is a row read that way.
 `EXISTS=no` is a park: print `AUTOPILOT_PARK: no desk config for <slug>: run /desk-setup` and end
 your turn. For Jira, use `desk-jira get <KEY>` (`view` is the same) and `desk-jira comments <KEY>`;
 `desk-jira --help` lists the rest.
@@ -30,12 +28,11 @@ your turn. For Jira, use `desk-jira get <KEY>` (`view` is the same) and `desk-ji
 it: a tracker key (§4 Ticket key pattern, `desk-env get ticket-pattern`), an id matching §4 Other
 work id patterns (`desk-env list work-id-patterns`), or with §4 Tracker (`desk-env get tracker`)
 `none` `issue-<n>` or a slug. **For every key that is not a tracker key, the ticket is the
-file `$DESK_STATE/tickets/<TICKET>.md`** the orchestrator wrote before triage (its `Source:` line
-says whether it came from the user, a GitHub issue or a planning file); read it at Stage 0 and skip
+file `$DESK_STATE/tickets/<TICKET>.md`** the orchestrator wrote before triage; read it at Stage 0 and skip
 every Jira step below. Your branch is the one your worktree was created on, recorded in the queue:
 never rename it and never open your PR from another branch, or the merge driver cannot find it.
-`<default>` is what `desk-env get default-branch` prints: §0 Default branch, unless your batch
-targets another base, in which case your system prompt names it and that branch wins. `<repo>` is §0 GitHub repo, and a §4 Toolchain row means that command
+`<default>` is what `desk-env get default-branch` prints: §0 Default branch, or the base your
+system prompt names. `<repo>` is §0 GitHub repo, and a §4 Toolchain row means that command
 with §4 Command prefix (`desk-env get command-prefix`) in front unless the prefix is `none`. List rows hold one backtick span per
 item, and a command item may name its directory (`` `apps/api: uv run pytest` ``): read them with
 `desk-env cmds <id>`, which prints `DIR<TAB>CMD` per item.
