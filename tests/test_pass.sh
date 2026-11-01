@@ -2054,6 +2054,7 @@ cat > "$T/stub/gh" <<EOF
 echo "\$*" >> "$T/rc-gh.log"
 case "\$*" in
   *"--state merged --search D-1 in:title"*) echo '[{"number":8,"title":"fix(x): D-10 other","headRefName":"fix/D-10"},{"number":88,"title":"fix(x): D-1 add x","headRefName":"fix/D-1-again"}]' ;;
+  *"--state merged --search D-2 in:title"*) echo '[{"number":89,"title":"fix(x): D-2 add x","headRefName":"fix/D-2-again"}]' ;;
   *"--state merged --search"*) echo '[]' ;;
   "pr create"*) echo "https://github.com/acme/widgets/pull/91" ;;
 esac
@@ -2064,12 +2065,19 @@ git init -q --bare -b main "$T/rc-origin.git"
 git -C "$T/repo" remote add origin "$T/rc-origin.git"; git -C "$T/repo" push -q origin main:main 2>/dev/null
 git -C "$T/repo" worktree add -q -b fix/D-1 "$T/wt/D-1" main
 echo x > "$T/wt/D-1/x.txt"; git -C "$T/wt/D-1" add x.txt; git -C "$T/wt/D-1" commit -q -m "fix(x): D-1 add x"
+# D-2's local branch adds nothing either, but its copy on origin carries a commit the local one lacks.
+git -C "$T/repo" worktree add -q -b fix/D-2 "$T/wt/D-2" main
+echo x > "$T/wt/D-2/x.txt"; git -C "$T/wt/D-2" add x.txt; git -C "$T/wt/D-2" commit -q -m "fix(x): D-2 add x"
+echo y > "$T/wt/D-2/y.txt"; git -C "$T/wt/D-2" add y.txt; git -C "$T/wt/D-2" commit -q -m "fix(y): D-2 add y"
+git -C "$T/wt/D-2" push -q origin fix/D-2 2>/dev/null; D2_REMOTE=$(git -C "$T/wt/D-2" rev-parse HEAD)
+git -C "$T/wt/D-2" reset -q --hard HEAD~1; git -C "$T/repo" update-ref -d refs/remotes/origin/fix/D-2
 git -C "$T/repo" worktree add -q -b fix/P-2 "$T/wt/P-2" main
 echo p > "$T/wt/P-2/p.txt"; git -C "$T/wt/P-2" add p.txt; git -C "$T/wt/P-2" commit -q -m "fix(p): P-2 make p"
 git clone -q -b main "$T/rc-origin.git" "$T/rc-other" 2>/dev/null
 echo x > "$T/rc-other/x.txt"; git -C "$T/rc-other" add x.txt; git -C "$T/rc-other" commit -q -m "fix(x): D-1 add x, again"; git -C "$T/rc-other" push -q origin HEAD:main 2>/dev/null
 q init rc; q set-batch concurrency=4
 q add D-1; q set D-1 lane=A branch=fix/D-1 "worktree=$T/wt/D-1"; q park D-1 "D-1: which of the two x files should win?"
+q add D-2; q set D-2 lane=A branch=fix/D-2 "worktree=$T/wt/D-2"; q park D-2 "D-2: which of the two x files should win?"
 PQ='git push origin fix/P-2 was refused: push it and open the draft (gh pr create --repo acme/widgets --draft --base main --head fix/P-2 --title "fix(p): P-2 make p" --body-file pr-body.md), then post the review and the Jira comment'
 q add P-2; q set P-2 lane=A branch=fix/P-2 "worktree=$T/wt/P-2"; q park P-2 "$PQ"
 say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes p." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: $PQ" > "$T/state-rc/logs/P-2.log"
@@ -2082,6 +2090,8 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-397 AC6 a branch adding nothing beyond a merged PR for its key is recorded done on that PR" \
   '[ "$(field D-1 state)" = "\"done\"" ] && [ "$(field D-1 result.pr)" = 88 ] && [ "$(field D-1 park)" = null ] && echo "$out" | grep -qF "D-1: its branch fix/D-1 adds nothing to main, and merged PR #88 (fix(x): D-1 add x) names it: recorded done on that PR, worktree and branch dropped"'
 check "DS-397 AC6 its worktree and branch are dropped" '[ ! -e "$T/wt/D-1" ] && ! git -C "$T/repo" rev-parse --verify -q refs/heads/fix/D-1 >/dev/null'
+check "DS-397 AC6 a branch whose copy on origin adds a commit is kept, local and remote" \
+  '[ "$(field D-2 state)" = "\"parked\"" ] && [ -e "$T/wt/D-2" ] && git -C "$T/repo" rev-parse --verify -q refs/heads/fix/D-2 >/dev/null && [ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/D-2)" = "$D2_REMOTE" ]'
 check "DS-397 AC5 a refused push with its PR body in the log is pushed" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-2)" = "$(git -C "$T/wt/P-2" rev-parse HEAD)" ]'
 check "DS-397 AC5 and its draft opened from that body, with the title its worker gave" \
   'grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/P-2 --title fix\(p\): P-2 make p --body-file .*/state-rc/pr-bodies/P-2.md$" "$T/rc-gh.log" && [ "$(cat "$T/state-rc/pr-bodies/P-2.md")" = "$(printf "## Summary\nMakes p.")" ]'

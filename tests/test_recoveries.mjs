@@ -27,6 +27,8 @@ t('AC5 no --title is null', prTitleIn('gh pr create --draft'), null);
 const prs = [{ number: 1, title: 'fix: DS-3970 other', headRefName: 'fix/DS-3970' }, { number: 2, title: 'chore: tidy', headRefName: 'fix/DS-397-again' }];
 t('AC6 a merged PR names the key by its head branch', mergedNaming('DS-397', prs)?.number, 2);
 t('AC6 a longer key is not the key', mergedNaming('DS-39', [{ number: 3, title: 'fix: DS-397 x', headRefName: 'fix/DS-397' }]), null);
+t('AC6 a longer id after the key is not the key', mergedNaming('DS-397', [{ number: 4, title: 'fix: DS-397-5 x', headRefName: 'fix/DS-397-5-x' }]), null);
+t('AC6 an issue key matches its #N', mergedNaming('issue-12', [{ number: 5, title: 'fix: closes #12', headRefName: 'fix/thing' }])?.number, 5);
 t('AC6 nothing listed is null', mergedNaming('DS-397', null), null);
 
 console.log(fails ? `${fails} failed` : 'all passed');

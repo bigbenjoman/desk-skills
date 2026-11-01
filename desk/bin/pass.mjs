@@ -833,21 +833,36 @@ const lastLine = (s) => String(s ?? '').trim().split('\n').pop();
 const shortQ = (s) => (String(s).length > 160 ? `${String(s).slice(0, 159)}…` : String(s));
 let baseFetched = false;
 // A branch with commits of its own that adds nothing to the base, where a merged PR names the ticket.
+// Both copies must add nothing, the local branch and origin's as fetched now, so neither drops work
+// the other lacks, and origin's is deleted only at the head checked.
 function dropDuplicate(t) {
   const root = E.repoRoot();
   const git = (...a) => shOut('git', ['-C', root, ...a]);
   if (!baseFetched) { baseFetched = true; git('fetch', '-q', 'origin', DEFAULT_BRANCH); }
   const base = git('rev-parse', '--verify', '-q', `origin/${DEFAULT_BRANCH}`);
-  const ref = [`refs/heads/${t.branch}`, `refs/remotes/origin/${t.branch}`].find((r) => git('rev-parse', '--verify', '-q', r).ok);
-  if (!base.ok || !ref) return false;
-  const head = git('rev-parse', ref).out;
-  const mark = `${base.out}:${head}`;
+  if (!base.ok) return false;
+  const baseTree = git('rev-parse', `${base.out}^{tree}`);
+  const addsNothing = (head) => {
+    const own = git('rev-list', '--count', `${base.out}..${head}`);
+    const tree = git('merge-tree', '--write-tree', base.out, head);
+    return Number(own.out) > 0 && tree.ok && baseTree.ok && tree.out.split('\n')[0] === baseTree.out;
+  };
+  // Checked once per base and local head. The local branch goes first, with no network, so one that
+  // adds something is never fetched for.
+  const local = git('rev-parse', '--verify', '-q', `refs/heads/${t.branch}`);
+  const mark = `${base.out}:${local.ok ? local.out : ''}`;
   if (t.park?.dup_checked === mark) return false;
   const checked = () => { q('set', t.key, `park.dup_checked=${mark}`); return false; };
-  const own = git('rev-list', '--count', `${base.out}..${head}`);
-  const tree = git('merge-tree', '--write-tree', base.out, head);
-  const baseTree = git('rev-parse', `${base.out}^{tree}`);
-  if (!(Number(own.out) > 0) || !tree.ok || tree.out.split('\n')[0] !== baseTree.out) return checked();
+  if (local.ok && !addsNothing(local.out)) return checked();
+  const remoteRef = `refs/remotes/origin/${t.branch}`;
+  const fetched = git('fetch', '-q', 'origin', `+refs/heads/${t.branch}:${remoteRef}`);
+  // Gone from origin: drop the stale tracking ref, so a deleted branch is not taken as still there.
+  if (!fetched.ok && /couldn't find remote ref/i.test(fetched.out)) git('update-ref', '-d', remoteRef);
+  else if (!fetched.ok) return false;
+  const onOrigin = git('rev-parse', '--verify', '-q', remoteRef);
+  const remoteHead = onOrigin.ok ? onOrigin.out : null;
+  if (!local.ok && !remoteHead) return checked();
+  if (remoteHead && !addsNothing(remoteHead)) return checked();
   const found = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', `${t.key} in:title`, '--json', 'number,title,headRefName', '--limit', '20']);
   if (!found.ok) { report.recovered.push(`${t.key}: its branch ${t.branch} adds nothing to ${DEFAULT_BRANCH}, but merged PRs could not be listed (${lastLine(found.out)}): left parked`); return false; }
   let prs = [];
@@ -865,10 +880,13 @@ function dropDuplicate(t) {
   }
   git('branch', '-D', t.branch);
   let remote = '';
-  if (git('rev-parse', '--verify', '-q', `refs/remotes/origin/${t.branch}`).ok) {
+  if (remoteHead) {
     const del = E.permission('branch-delete');
     if (del !== 'yes') remote = `; ${t.branch} on origin is left, since config §3 branch-delete is "${del}"`;
-    else { const d = git('push', 'origin', '--delete', t.branch); remote = d.ok ? `; ${t.branch} deleted on origin` : `; deleting ${t.branch} on origin failed (${lastLine(d.out)})`; }
+    else {
+      const d = git('push', `--force-with-lease=refs/heads/${t.branch}:${remoteHead}`, 'origin', '--delete', t.branch);
+      remote = d.ok ? `; ${t.branch} deleted on origin` : `; deleting ${t.branch} on origin failed (${lastLine(d.out)})`;
+    }
   }
   q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr.number}`, `result.summary=its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}`);
   report.recovered.push(`${t.key}: its branch ${t.branch} adds nothing to ${DEFAULT_BRANCH}, and merged PR #${pr.number} (${pr.title}) names it: recorded done on that PR, worktree and branch dropped${remote}`);
@@ -2659,8 +2677,9 @@ for (const t of releaseDue) {
   if (driverLive) out.push(`release due: ${t.key} (every blocker merged; the merge driver releases it on its next loop)`);
   else if (DRY) out.push(`release due (dry run): ${t.key} would be released, every blocker merged (${predsOf(t).join(', ')})`);
   else {
-    const set = shOut('node', [join(BIN, 'queue.mjs'), 'set', t.key, 'state=triaged', 'park=null', 'held_by=null']);
-    const front = set.ok ? shOut('node', [join(BIN, 'queue.mjs'), 'front', t.key]) : null;
+    const [setArgs, frontArgs] = E.releaseCommand(t.key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
+    const set = shOut('node', [join(BIN, 'queue.mjs'), ...setArgs]);
+    const front = set.ok ? shOut('node', [join(BIN, 'queue.mjs'), ...frontArgs]) : null;
     if (set.ok) {
       releasedNow.push(t);
       out.push(`released: ${t.key}, every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);

@@ -7,7 +7,7 @@
 //   - a park whose branch adds nothing to the base while a merged PR names the ticket is recorded done
 //     on that PR, and its worktree and branch are dropped.
 import { parseDecision } from './decisions.mjs';
-import { refusedStep } from './batch-state.mjs';
+import { refusedStep, keyPattern } from './batch-state.mjs';
 
 export const RECOMMENDS_MARK = 'AUTOPILOT_PARK_RECOMMENDS';
 
@@ -49,7 +49,6 @@ export function prTitleIn(text) {
 
 // The merged PR whose title or head branch names `key` exactly (`DS-39` is not `DS-397`), or null.
 export function mergedNaming(key, prs) {
-  const k = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(^|[^A-Za-z0-9])${k}($|[^0-9])`);
+  const re = new RegExp(keyPattern(String(key)));
   return (Array.isArray(prs) ? prs : []).find((p) => re.test(String(p?.title ?? '')) || re.test(String(p?.headRefName ?? ''))) ?? null;
 }
