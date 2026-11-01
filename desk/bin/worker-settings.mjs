@@ -443,7 +443,7 @@ if (mode === 'triage') {
   // A headless worker cannot ask, so anything short of `yes` is denied and the worker parks with
   // the exact payload. Enforcement is the rule, not the wording. A row the config lacks reads as
   // `no` but is named `unset`: it was never asked, and /desk-update asks it.
-  const setting = (id) => E.permissionOrUnset(id) ?? 'unset';
+  const setting = (id) => (E.permissionMissing(id) ? 'unset' : E.permission(id));
   const grant = (id, rules, denyRules = rules) => {
     const p = E.permission(id);
     if (p === 'yes') allow.push(...rules);

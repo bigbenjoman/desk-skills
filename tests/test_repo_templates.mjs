@@ -30,21 +30,24 @@ const GATE = `name: desk gate\nenv:\n  PROTECTED: ''\n${lines(10, (i) => `step $
 const HOOK = '#!/bin/sh\nexec bash scripts/desk/pre-push.sh "$@"\n';
 const RG1 = `a\nb\n${lines(8)}\nz\n`;
 const RG2 = RG1.replace('\nb\n', '\nB from the template\n').replace(/z\n$/, 'z\nadded by the template\n');
+// A template whose one change is to the line this repo also changed: nothing for apply to bring in.
+const SK1 = `#!/bin/sh\n${lines(5)}\nonly line\n${lines(5, (i) => `tail ${i}`)}\n`;
+const SK2 = SK1.replace('only line', 'only line, as the template has it now');
 
 const SRC = env.DESK_SOURCE_CHECKOUT;
 mkdirSync(SRC, { recursive: true });
 git(SRC, 'init', '-q', '-b', 'main');
 const tpl = (rel, text) => put(SRC, join('desk', 'templates', rel), text);
-tpl('scripts/desk/pre-push.sh', PP1); tpl('.github/workflows/desk-gate.yml', GATE); tpl('.githooks/pre-push', HOOK); tpl('scripts/desk/review-gate.mjs', RG1);
+tpl('scripts/desk/pre-push.sh', PP1); tpl('.github/workflows/desk-gate.yml', GATE); tpl('.githooks/pre-push', HOOK); tpl('scripts/desk/review-gate.mjs', RG1); tpl('scripts/desk/skip.sh', SK1);
 git(SRC, 'add', '-A'); git(SRC, 'commit', '-q', '-m', 'templates');
 const BASE = git(SRC, 'rev-parse', 'HEAD').stdout.trim();
 const BASE_DAY = git(SRC, 'log', '-1', '--format=%cI', BASE).stdout.trim().slice(0, 10);
-tpl('scripts/desk/pre-push.sh', PP2); tpl('scripts/desk/review-gate.mjs', RG2);
+tpl('scripts/desk/pre-push.sh', PP2); tpl('scripts/desk/review-gate.mjs', RG2); tpl('scripts/desk/skip.sh', SK2);
 git(SRC, 'commit', '-q', '-am', 'fix the templates');
 
 // Installed: the newer versions, as install.sh copies them.
 const INST = join(env.DESK_HOME, 'templates');
-for (const [rel, text] of [['scripts/desk/pre-push.sh', PP2], ['.github/workflows/desk-gate.yml', GATE], ['.githooks/pre-push', HOOK], ['scripts/desk/review-gate.mjs', RG2]]) put(INST, rel, text);
+for (const [rel, text] of [['scripts/desk/pre-push.sh', PP2], ['.github/workflows/desk-gate.yml', GATE], ['.githooks/pre-push', HOOK], ['scripts/desk/review-gate.mjs', RG2], ['scripts/desk/skip.sh', SK2]]) put(INST, rel, text);
 put(INST, 'scripts/desk/pre-push.sh.bak-desk-2026', 'an old backup install.sh left: not a template\n');
 
 // The repo, committed on origin/main.
@@ -57,6 +60,9 @@ put(REPO, 'scripts/desk/pre-push.sh', PP1.replace('line 3', LOCAL_EDIT));
 put(REPO, '.github/workflows/desk-gate.yml', GATE.replace("PROTECTED: ''", "PROTECTED: '^(\\.github|scripts/desk)/'"));
 put(REPO, '.githooks/pre-push', HOOK); chmodSync(join(REPO, '.githooks/pre-push'), 0o755);
 put(REPO, 'scripts/desk/review-gate.mjs', RG1.replace('\nb\n', '\nB from this repo\n'));
+// A committed file at the backup's path, so a backup read as a template would show in status.
+put(REPO, 'scripts/desk/pre-push.sh.bak-desk-2026', 'this repo\'s own file\n');
+put(REPO, 'scripts/desk/skip.sh', SK1.replace('only line', 'only line, as this repo has it'));
 git(REPO, 'add', '-A'); git(REPO, 'commit', '-q', '-m', 'desk'); git(REPO, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
 const SLUG = 'acme__app';
 mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', SLUG), { recursive: true });
@@ -71,10 +77,11 @@ t('DS-389 AC5 the hook is current', st.out.split('\n').includes('CURRENT  .githo
 t('DS-389 AC5 a copy only this repo changed (setup\'s PROTECTED edit) is not behind', st.out.split('\n').some((l) => l.startsWith('EDITED   .github/workflows/desk-gate.yml')), true);
 t('DS-389 AC5 a copy made from the older template, with an edit of its own, is behind, naming its base', st.out.split('\n').includes(`BEHIND   scripts/desk/pre-push.sh: the template changed since the version this copy was made from (${BASE.slice(0, 7)}, ${BASE_DAY})`), true);
 t('DS-389 AC5 a backup beside the templates is not one', /\.bak/.test(st.out), false);
+t('DS-389 AC5 a copy whose only template change is a line this repo also changed is not behind: apply would change nothing', st.out.split('\n').some((l) => l.startsWith('EDITED   scripts/desk/skip.sh')), true);
 t('DS-389 AC5 any copy behind exits 1', st.code, 1);
 const json = JSON.parse(cli(REPO, 'status', '--json').out);
 t('DS-389 AC5 --json gives each file\'s status and base', json.map((f) => `${f.path} ${f.status} ${f.base ? f.base.slice(0, 7) : '-'}`).join('; '),
-  `.githooks/pre-push CURRENT -; .github/workflows/desk-gate.yml EDITED -; scripts/desk/pre-push.sh BEHIND ${BASE.slice(0, 7)}; scripts/desk/review-gate.mjs BEHIND ${BASE.slice(0, 7)}`);
+  `.githooks/pre-push CURRENT -; .github/workflows/desk-gate.yml EDITED -; scripts/desk/pre-push.sh BEHIND ${BASE.slice(0, 7)}; scripts/desk/review-gate.mjs BEHIND ${BASE.slice(0, 7)}; scripts/desk/skip.sh EDITED -`);
 const diff = cli(REPO, 'diff', 'scripts/desk/pre-push.sh').out;
 t('DS-389 AC5 the diff is what the template changed since that base, not the repo\'s edit', `${diff.includes('+skip_known_refs')} ${diff.includes('this repo checks untracked')}`, 'true false');
 t('DS-389 AC5 a file that is not behind says so instead of a diff', cli(REPO, 'diff', '.githooks/pre-push').out, 'CURRENT  .githooks/pre-push');

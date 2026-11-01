@@ -732,9 +732,11 @@ put('nu', { port: 5300, beat: 1, supervised: true, tickets: {
   'N-2': parked('A', 30, 'needs worker-web-read to read the vendor terms page'),
   'N-3': parked('A', 20, 'Which copy?'),
   'N-4': parked('A', 10, 'pr-ready is set, so this is an ordinary park'),
+  'N-5': parked('A', 5, 'CONFIG_DENIED: ci-rerun (no): the row is TODO, which /desk-update cannot ask'),
 } });
+{ const c = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__nu', 'config.md'); writeFileSync(c, readFileSync(c, 'utf8').replace(/(\| `pr-merge-green` [^\n]*\n)/, '$1| `ci-rerun` | Re-run CI | `yes` | TODO |\n')); }
 const nu = () => N.collect({ word: 'nu' }).items;
-t('DS-389 AC3 two parks on one unset row are one item for the repo; the others stay their own', nu().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'N-3 parked,N-4 parked,unset:worker-web-read config');
+t('DS-389 AC3 two parks on one unset row are one item for the repo; the others stay their own', nu().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'N-3 parked,N-4 parked,N-5 parked,unset:worker-web-read config');
 const nuRow = nu().find((i) => i.kind === 'config');
 t('DS-389 AC3 its need names the row and both tickets, and recommends done', `${nuRow?.need.startsWith("§3 worker-web-read is not set in nu's config, so desk reads it as no, and 2 tickets parked on it (N-1 and N-2). Answer it once with /desk-update in ")} ${nuRow?.actions.map((x) => x[0]).join()}`, 'true done,not-now');
 t('DS-389 AC3 the list shows it as one line', cli('list', 'nu').out.split('\n').filter((l) => l.startsWith('nu unset:worker-web-read config')).length, 1);

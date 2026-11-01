@@ -6,7 +6,8 @@
 // copied from: of the template's versions in the desk-skills checkout's history, the one nearest it.
 //   node repo-templates.mjs status [--root <dir>] [--json]
 //       one line per committed copy: CURRENT (it is the template), BEHIND (the template changed since
-//       its base; apply keeps the repo's own edits), EDITED (only the repo changed it), UNKNOWN (it
+//       its base; apply keeps the repo's own edits), EDITED (only the repo changed it, or the template
+//       changed only lines the repo changed too, so apply would change nothing), UNKNOWN (it
 //       differs, and no desk-skills history was found to tell which). Exit 1 when any is BEHIND
 //   node repo-templates.mjs diff <path> [--root <dir>]
 //       what the template changed since that copy's base, as a unified diff
@@ -99,7 +100,10 @@ export function fileStatus(rel, { root, ref = defaultRef(), dir = templatesDir()
   // changes the copy already has, which merge-file takes cleanly, while a base too new hides a fix.
   for (const v of versions.slice(1)) { const e = lineDistance(copy, v.text); if (e <= d) { best = v; d = e; } }
   if (best.sha === 'installed') return { path: rel, status: 'EDITED', copy, template };
-  return { path: rel, status: 'BEHIND', base: best.sha, base_date: best.date, copy, template, baseText: best.text };
+  const behind = { path: rel, status: 'BEHIND', base: best.sha, base_date: best.date, copy, template, baseText: best.text };
+  // Every template change since that base on a line this repo also changed: apply keeps the repo's
+  // lines and changes nothing, so there is nothing to bring in, and BEHIND would never clear.
+  return mergeCopy(behind).text === copy ? { path: rel, status: 'EDITED', copy, template } : behind;
 }
 
 export function repoStatus({ root, ref = defaultRef(), dir = templatesDir(), src } = {}) {

@@ -283,6 +283,8 @@ for v in ask no; do
   PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=$v)"
   check "web-read $v: neither tool allowed, named"         '! allows WebSearch && ! allows WebFetch && denies WebSearch && denied_line worker-web-read $v'
 done
+PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=TODO)"
+check "web-read TODO: the row is there, so it is no, not unset" '! allows WebSearch && denies WebSearch && denied_line worker-web-read no'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=yes)"
 check "web-read yes: WebSearch and WebFetch allowed, not denied" '[ $rc -eq 0 ] && allows WebSearch && allows WebFetch && ! denies WebSearch && ! denies WebFetch && [[ "$out" != *worker-web-read* ]]'
 check "web-read yes: the only allow rules added are the two tools" '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-off.json")" "$T/ws.json")" = "[\"WebSearch\",\"WebFetch\"]" ]'

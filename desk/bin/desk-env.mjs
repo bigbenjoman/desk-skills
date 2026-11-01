@@ -360,30 +360,40 @@ function parseConfig() {
   return cache;
 }
 
-// Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
-function parseConfigFile(path) {
-  // `rows`: every row of a Key, Field or Role table, in order, for `drift`. The rule ledger (§3c) and
-  // the review asks (§4) hold the user's own rows, so they are not declared rows.
-  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [] };
-  if (!parsed.exists) return parsed;
-  let section = null;
-  let header = null;
-  for (const raw of readFileSync(path, 'utf8').split('\n')) {
+// Every table row of a config file's text, in order: the line it is on, its section, its table's
+// header (normalised) and the header's line, its cells and its label. `declared` marks a row of a
+// Key, Field or Role table: the rule ledger (§3c) and the review asks (§4) hold the user's own rows,
+// so they are not declared rows. parseConfigFile reads values from it; addTemplateRow places rows by it.
+function tableLines(text) {
+  const out = { sections: [], rows: [] };
+  let section = null, header = null, table = null;
+  text.split('\n').forEach((raw, i) => {
     const line = raw.trim();
     const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
-    if (h) { section = h[1].toLowerCase(); header = null; parsed.sections[section] ??= { byKey: {}, byName: {} }; continue; }
-    if (!section) continue;
-    if (!line.startsWith('|')) { header = null; continue; }
+    if (h) { section = h[1].toLowerCase(); header = null; out.sections.push(section); return; }
+    if (!section || !line.startsWith('|')) { header = null; return; }
     const cells = splitRow(line);
-    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) continue; // separator row
-    if (!header) { header = cells.map(norm); continue; }
-    let col = ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? -1;
-    if (col < 0) col = 1;
-    const keyCol = header.indexOf('key');
-    const items = cellItems(cells[col] ?? '');
-    const s = parsed.sections[section];
+    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) return; // separator row
+    if (!header) { header = cells.map(norm); table = i; return; }
     const label = (cells[0] ?? '').replace(/`/g, '').trim();
-    if (label && ['key', 'field', 'role'].includes(header[0])) parsed.rows.push({ section, byKey: header[0] === 'key', id: norm(label), label });
+    out.rows.push({ i, section, table, header, cells, label, declared: !!label && ['key', 'field', 'role'].includes(header[0]) });
+  });
+  return out;
+}
+const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
+
+// Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
+function parseConfigFile(path) {
+  // `rows`: every declared row, in order, for `drift`.
+  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [] };
+  if (!parsed.exists) return parsed;
+  const table = tableLines(readFileSync(path, 'utf8'));
+  for (const section of table.sections) parsed.sections[section] ??= { byKey: {}, byName: {} };
+  for (const { section, header, cells, label, declared } of table.rows) {
+    const keyCol = header.indexOf('key');
+    const items = cellItems(cells[settingCol(header)] ?? '');
+    const s = parsed.sections[section];
+    if (declared) parsed.rows.push({ section, byKey: header[0] === 'key', id: norm(label), label });
     // `value` is the first item (what every single-valued row means); `items` is every backtick span.
     const entry = { value: items[0], items };
     if (keyCol >= 0) { const k = norm(cells[keyCol] ?? ''); if (k) s.byKey[k] = entry; }
@@ -608,11 +618,12 @@ export function permission(id) {
 }
 // Another repo's §3 row, by slug, read as permission() reads this repo's: no config is a `no`.
 export const repoPermission = (slug, id, root = deskConfigRoot()) => permissionIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
-// Whether another repo's §3 row is unset (missing, blank or TODO), which reads as `no`; false with no config.
-export const repoPermissionUnset = (slug, id, root = deskConfigRoot()) => {
-  const p = parseConfigFile(join(root, 'repos', slug, 'config.md'));
-  return p.exists && unset(p.sections?.['3']?.byKey[norm(PERMISSION_KEYS[id] ?? id)]?.value);
-};
+// Whether a §3 row is absent from a config that exists: never asked, so it reads as `no`, and
+// /desk-update asks it (drift names it MISSING). A blank or TODO row is present: /desk-setup's to set.
+const rowMissing = (parsed, id) => parsed.exists && !parsed.sections?.['3']?.byKey[norm(PERMISSION_KEYS[id] ?? id)];
+export const permissionMissing = (id) => rowMissing(parseConfig(), id);
+// Another repo's, by slug; false with no config.
+export const repoPermissionUnset = (slug, id, root = deskConfigRoot()) => rowMissing(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
 function permissionIn(parsed, id) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
@@ -1226,30 +1237,13 @@ export function driftLines({ missing, stalls, unlisted = [], dontAsk }) {
 }
 
 // ---- a missing row, added from the template ------------------------------------------------
-// Every row of a Key, Field or Role table in a file, with the line it is on and the table it is in
-// (the line of its header), as parseConfigFile reads them.
-function tableRows(text) {
-  const rows = [];
-  let section = null, header = null, table = null;
-  text.split('\n').forEach((raw, i) => {
-    const line = raw.trim();
-    const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
-    if (h) { section = h[1].toLowerCase(); header = null; return; }
-    if (!section || !line.startsWith('|')) { header = null; return; }
-    const cells = splitRow(line);
-    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) return;
-    if (!header) { header = cells.map(norm); table = i; return; }
-    const label = (cells[0] ?? '').replace(/`/g, '').trim();
-    if (label && ['key', 'field', 'role'].includes(header[0])) rows.push({ i, section, table, header, cells, id: norm(label), label });
-  });
-  return rows;
-}
+// The declared rows of a file, each with its id.
+const tableRows = (text) => tableLines(text).rows.filter((r) => r.declared).map((r) => ({ ...r, id: norm(r.label) }));
 // A row's cells as a table line: a `|` outside backticks is escaped, as splitRow reads it back.
 function joinRow(cells) {
   const esc = (c) => { let tick = false; return [...c].map((ch) => { if (ch === '`') tick = !tick; return ch === '|' && !tick ? '\\|' : ch; }).join(''); };
   return `| ${cells.map(esc).join(' | ')} |`;
 }
-const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 
 // Adds §<section> <row> (a §3 key, else the row's name) to the config as the template has it, with
 // `value` in its setting column and `note` after it, placed after the nearest row above it in the

@@ -50,7 +50,7 @@ Its base is the template version, in the desk-skills checkout's history, nearest
 |---|---|---|
 | `CURRENT` | the copy is the template | nothing |
 | `BEHIND` | the template changed since the version the copy was made from | a PR (below) |
-| `EDITED` | only this repo changed its copy (setup's own edit, such as the gate's `PROTECTED`, included) | nothing: report it |
+| `EDITED` | only this repo changed its copy (setup's own edit, such as the gate's `PROTECTED`, included), or the template changed only lines the repo changed too, so applying would change nothing | nothing: report it |
 | `UNKNOWN` | it differs, and there is no desk-skills history to tell which | nothing: report it, and the diff on request |
 
 For each `BEHIND` file, show what the template changed since the copy's base before offering it:
