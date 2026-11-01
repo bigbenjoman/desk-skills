@@ -16,7 +16,8 @@
 //   node desk-design.mjs status <saved dir | artifact URL> --version <v>
 //       exit 0 when the saved copy is that version, 3 when the artifact has moved on
 //   node desk-design.mjs check  <KEY | ticket file> [--key <K>]
-//       exit 1 when the ticket's Design section links a Claude Design artifact with no saved copy
+//       exit 1 when the ticket's Design section links a Claude Design artifact with no copy saved on
+//       the batch's base (origin/<base> where fetched), whatever the working tree holds
 //   node desk-design.mjs snapshots <KEY | ticket file> [--key <K>]
 //       one `<url>\t<snapshot folder, or ->` line per Claude Design artifact the Design section links,
 //       found by URL in this state's designs/ and, in a named batch, the repo state's
@@ -563,6 +564,12 @@ export function savedAt(root, dir, ref) {
     .filter((c) => c.url);
 }
 
+// The base a batch's workers branch from, as origin has it where fetched: origin/<base>, else <base>.
+export function baseRef(root) {
+  const base = E.batchBase() ?? E.defaultBranch();
+  try { execFileSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `origin/${base}`], { stdio: 'ignore' }); return `origin/${base}`; } catch { return base; }
+}
+
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
 // readable when it is saved under <dir> on <ref> (the batch's base) or snapshotted under <state>;
 // with no <dir> (the repo saves none) only a snapshot is.
@@ -581,10 +588,11 @@ export function designFact(text, { root, dir, ref, state }) {
 }
 
 // Findings for one ticket: {severity: 'blocking'|'advisory', message}. `issue` is desk-jira's
-// --json issue, or {key, text} for a ticket file. The canvas belongs under the ticket's epic when it
-// has one, else under the ticket itself. One with a snapshot under <state> is advisory: the worker
-// saves it from there.
-export function checkTicket(issue, { root, dir, state }) {
+// --json issue, or {key, text} for a ticket file. A canvas is saved when it is committed under <dir>
+// on <ref> (the batch's base), whatever the working tree holds. It belongs under the ticket's epic
+// when it has one, else under the ticket itself. One with a snapshot under <state> is advisory: the
+// worker saves it from there.
+export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const key = issue.key;
   // A Jira description is wiki markup, where desk-jira's markdown conversion escapes `-` and `_` in
   // a code span ({{…/p/1a2b\-3c4d}}); unescaped, the link and the repo path read as written.
@@ -593,10 +601,14 @@ export function checkTicket(issue, { root, dir, state }) {
   const epic = parent && isEpic(parent.fields?.issuetype) ? parent.key : null;
   const section = designSection(text);
   const findings = [];
-  for (const url of claudeDesignLinks(section)) {
-    const saved = findSaved(root, dir, url);
+  const links = claudeDesignLinks(section);
+  let onBase = [];
+  // A base that does not resolve has nothing saved on it; the finding names the ref it read.
+  if (links.length) { try { onBase = savedAt(root, dir, ref); } catch { /* no such ref */ } }
+  for (const url of links) {
+    const saved = onBase.find((c) => canonicalUrl(c.url) === canonicalUrl(url));
     if (!saved) {
-      const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
+      const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/ on ${ref}: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
       const snap = state ? snapshotOf(state, url) : null;
       findings.push(snap ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` } : { severity: 'blocking', message });
     } else if (!section.includes(saved.path.replace(/\/$/, ''))) {

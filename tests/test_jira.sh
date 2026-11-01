@@ -645,6 +645,9 @@ out=$(cd "$A" && DESK_AUTOPILOT_STATE="$T/state" JIRA_SITE="http://127.0.0.1:$LP
 check "lint KEY: a snapshotted canvas is advisory, the worker saves it from the snapshot" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*no copy is saved.*it is snapshotted at .*/state/designs/KAN-47, so the worker saves it from there"'
 mkdir -p "$A/docs/design/KAN-47"; printf '{"url":"https://claude.ai/design/p/abc123","version":"1","tickets":[{"key":"KAN-47","boards":[]}]}' > "$A/docs/design/KAN-47/source.json"
 klint KAN-47
+check "lint KEY: a canvas in the working tree only, not on the base, is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: design: .*no copy is saved under docs/design/ on main"'
+git -C "$A" add docs/design && git -C "$A" -c user.name=t -c user.email=t@example.com commit -q -m canvas && git -C "$A" branch -M main
+klint KAN-47
 check "lint KEY: a saved canvas not named beside the link is desk-design's advisory" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*not its saved copy docs/design/KAN-47/"'
 klint KAN-46 Story
 check "lint KEY takes no type or fields" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "pass no type or fields"'
