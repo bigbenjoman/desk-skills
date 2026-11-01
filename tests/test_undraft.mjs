@@ -182,6 +182,10 @@ t('DS-402 AC2 VPL-603\'s park, its draft red only on "Flows image": recorded don
 t('DS-402 AC2 a park naming only the command counts too', bp('Can someone run ./scripts/ensure-flows-image.sh at the head?', prOf([FLOWS])).r?.checks?.join(), 'Flows image');
 const LINT = { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 };
 t('DS-402 AC3 a red check the row does not name beside it: parked as today', bp(P603, prOf([FLOWS, LINT])).r, null);
+t('DS-402 AC2 a build-only park that names the steps it did not reach, as every park must, counts too',
+  bp(`${P603}. Not reached: the review comment, the Jira comment and the transition to In Review`, prOf([FLOWS])).r?.checks?.join(), 'Flows image');
+t('DS-402 AC3 a park of only its not-reached steps, naming no build: parked as today',
+  bp('Not reached: the Jira comment and the transition', prOf([FLOWS])).r, null);
 t('DS-402 AC3 a park naming the build and asking something else beside it: parked as today',
   bp('Flows image is red, run ./scripts/ensure-flows-image.sh; also confirm whether the fee should be £5 or £10', prOf([FLOWS])).r, null);
 t('DS-402 AC3 a park naming the build, then a question on its own line: parked as today',
