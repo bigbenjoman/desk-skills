@@ -143,7 +143,7 @@ Each one stops and waits for the user unless config §3 grants it. Silence is no
    (§3 `jira-close`; that move is `jira-close-own-merged`), anything **routed to another person**
    (§3 `jira-route`), and anything asserting a **product or catalog fact** gate 1 covers, which waits
    whatever §3 says. Read every write back afterwards: `desk-jira edit` can report the ticket
-   `updated` even when it wrote nothing useful, and a select custom field (§4 Priority, `desk-env get jira-priority`, or §4
+   `updated` even when it wrote nothing useful, and a select custom field (§4 Priority, `desk-env list jira-priority`, or §4
    Other fields, `desk-env list jira-other-fields`, name any) passed as a bare string 400s where `'{"value":"<option>"}'` succeeds.
 3. **Show the diff before pushing.** At config §3 `git-push` `yes`, print the `DIFF REVIEW`
    block as a record and push; at `ask`, print it and wait. The stray-commit check below hard-stops

@@ -30,8 +30,8 @@ dev-server port `desk-env get dev-port`; §4 Package manager `desk-env get packa
 prefix `desk-env get command-prefix`, Install `desk-env cmds install-cmd`, Dev server
 `desk-env cmds dev-cmd`, Env files `desk-env list env-files`, Database URL variable
 `desk-env list db-url-var`, Local database `desk-env get local-db`, Local services
-`desk-env get local-services`, Staging `desk-env get staging`, Staging bypass token location
-`desk-env get staging-bypass` and Vercel `desk-env get vercel`.
+`desk-env list local-services`, Staging `desk-env list staging`, Staging bypass token location
+`desk-env get staging-bypass` and Vercel `desk-env list vercel`.
 
 | Config | Used for |
 |---|---|

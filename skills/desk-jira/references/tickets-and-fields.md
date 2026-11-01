@@ -1,13 +1,13 @@
 # desk-jira: writing a ticket, and its fields
 
 Read before creating a ticket (one, or a set with `create-batch`), or editing a ticket's fields:
-priority, size, labels, assignee, sprint or any §4 Other fields value (`desk-env get
+priority, size, labels, assignee, sprint or any §4 Other fields value (`desk-env list
 jira-other-fields`). The step table in `../SKILL.md` names this file for those steps. The config, the
 gate, *Epics* and *Transitions* are in `../SKILL.md`, already loaded; how a body is written and sent
 is in `cli-and-markup.md`, beside this file. The other rows this file names, each a `desk-env` read:
-§4 Jira project `desk-env get jira-project`, Priority `desk-env get jira-priority`, Required fields
-`desk-env get jira-required-fields`, Size field `desk-env get jira-size-field`, Priorities only you
-set `desk-env get jira-priority-user-only` and Labels `desk-env list labels`.
+§4 Jira project `desk-env list jira-project`, Priority `desk-env list jira-priority`, Required fields
+`desk-env list jira-required-fields`, Size field `desk-env get jira-size-field`, Priorities only you
+set `desk-env list jira-priority-user-only` and Labels `desk-env list labels`.
 
 ## House ticket format
 

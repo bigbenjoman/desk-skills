@@ -22,8 +22,8 @@ A `TODO` in any row this skill needs is not a gap to guess: stop, ask, and offer
 
 An autopilot worker cannot read that file, so each row below is a `desk-env` read: §4 Tracker
 `desk-env get tracker`, Jira site `desk-env get jira-site`, Jira cloudId `desk-env get jira-cloudid`,
-Jira project `desk-env get jira-project`, Ticket key pattern `desk-env get ticket-pattern`, Priority
-`desk-env get jira-priority`, Other fields `desk-env get jira-other-fields`, Labels
+Jira project `desk-env list jira-project`, Ticket key pattern `desk-env get ticket-pattern`, Priority
+`desk-env list jira-priority`, Other fields `desk-env list jira-other-fields`, Labels
 `desk-env list labels`, In-progress state `desk-env get in-progress-state`, Review state
 `desk-env get review-state` and Done state `desk-env get done-state`.
 

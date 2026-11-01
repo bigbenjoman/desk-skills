@@ -3,7 +3,7 @@
 Makes a **local copy** of the staging database, so the app shows real data while nothing touches
 real staging. Everything here is driven by this repo's config (`desk-env where`, then Read it; a
 worker reads each row with `desk-env`): §4 Local database `desk-env get local-db`, Staging
-`desk-env get staging`, Env files `desk-env list env-files`, Command prefix
+`desk-env list staging`, Env files `desk-env list env-files`, Command prefix
 `desk-env get command-prefix`, Dev server `desk-env cmds dev-cmd` and Typecheck
 `desk-env cmds typecheck-cmd`, and §3b Preferred dev-server port `desk-env get dev-port`.
 

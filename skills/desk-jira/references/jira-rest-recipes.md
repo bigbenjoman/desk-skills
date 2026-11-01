@@ -5,7 +5,7 @@ and never shows the token: `desk-jira api <path>` for a read, and `desk-jira res
 <path> [<body file>]` for a write. The path is everything after `/rest/`. Every recipe here is a
 **write** unless marked otherwise, so the gate in SKILL.md applies exactly as it does to any other
 CLI call. §4 Tracker (`desk-env get tracker`) `none` means none of this applies; §4 Jira project
-below is `desk-env get jira-project`.
+below is `desk-env list jira-project`.
 
 ```bash
 desk-jira api 'api/3/issue/ABC-123?fields=summary'                 # read: raw JSON
