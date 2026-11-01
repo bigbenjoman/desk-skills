@@ -182,6 +182,10 @@ t('DS-402 AC2 VPL-603\'s park, its draft red only on "Flows image": recorded don
 t('DS-402 AC2 a park naming only the command counts too', bp('Can someone run ./scripts/ensure-flows-image.sh at the head?', prOf([FLOWS])).r?.checks?.join(), 'Flows image');
 const LINT = { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 };
 t('DS-402 AC3 a red check the row does not name beside it: parked as today', bp(P603, prOf([FLOWS, LINT])).r, null);
+t('DS-402 AC3 a park naming the build and asking something else beside it: parked as today',
+  bp('Flows image is red, run ./scripts/ensure-flows-image.sh; also confirm whether the fee should be £5 or £10', prOf([FLOWS])).r, null);
+t('DS-402 AC3 a park naming the build, then a question on its own line: parked as today',
+  bp(`${P603}\nShould the copy say "Sign in" or "Log in"`, prOf([FLOWS])).r, null);
 t('DS-402 AC3 a park naming no build check: the PR is never read', JSON.stringify(bp('Should the copy say "Sign in" or "Log in"?', prOf([FLOWS]))), '{"r":null,"read":0}');
 t('DS-402 AC3 a PR out of draft: parked as today', bp(P603, prOf([FLOWS], { isDraft: false })).r, null);
 t('DS-402 AC3 no open PR: parked as today', bp(P603, null).r, null);

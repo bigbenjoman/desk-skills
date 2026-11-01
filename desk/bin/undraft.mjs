@@ -232,16 +232,19 @@ function buildCall(gate, cfg, n, head) {
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
 }
 
-// A worker's park whose only blocker is a red check §4 Check builds names (DS-402): the park names one
-// of those checks or its command, and the ticket's open draft PR is red on such checks and nothing
-// else, with nothing still running. buildCall then runs the build once the ticket is done, so the pass
-// records it done rather than parked. readPr() -> { state, isDraft, checks } is read only once the
-// park names a build. cfg: { builds, rerun (§3 ci-rerun), required, advisory }. Returns
-// { checks: [name], command } or null, and null leaves the park as it is.
+// A worker's park whose only blocker is a red check §4 Check builds names: every clause of the park
+// names one of those checks or its command, so a park that asks anything else beside the build stays a
+// park, and the ticket's open draft PR is red on such checks and nothing else, with nothing still
+// running. buildCall then runs the build once the ticket is done, so the pass records it done rather
+// than parked. readPr() -> { state, isDraft, checks } is read only once the park names a build. cfg:
+// { builds, rerun (§3 ci-rerun), required, advisory }. Returns { checks: [name], command } or null, and
+// null leaves the park as it is.
 export function buildPark(question, readPr, cfg) {
   const builds = cfg.builds ?? [];
-  const q = String(question ?? '').toLowerCase();
-  if (cfg.rerun !== 'yes' || !builds.some((b) => q.includes(b.name.toLowerCase()) || q.includes(b.command.toLowerCase()))) return null;
+  const namesBuild = (s) => builds.some((b) => s.includes(b.name.toLowerCase()) || s.includes(b.command.toLowerCase()));
+  // Clauses end at . ? ! ; followed by a space, or a line break, so a command's own dots stay whole.
+  const clauses = String(question ?? '').toLowerCase().split(/[.?!;]+(?:\s+|$)|\n+/).map((s) => s.trim()).filter(Boolean);
+  if (cfg.rerun !== 'yes' || !clauses.length || !clauses.every(namesBuild)) return null;
   const pr = readPr();
   if (pr?.state !== 'OPEN' || pr.isDraft !== true) return null;
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });

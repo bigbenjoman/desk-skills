@@ -1850,7 +1850,7 @@ check "DS-327 AC3 and the PR is put to the person, naming the check" \
   'echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Flows image\" is still red at ${HB1:0:9} after its check build \`sh $T/build-ok.sh\` ran and the check was re-run. Fix \"Flows image\" on #761"'
 
 # ---- DS-402: a worker that parks only on a red check §4 Check builds names is recorded done, and built
-# V-4 parks as VPL-603's worker did, its draft red only on "Flows image"; V-5 parks the same way on a
+# V-4 parks as VPL-603's worker did (asking for this config's command), its draft red only on "Flows image"; V-5 parks the same way on a
 # draft red on "lint" too. The fake gh answers pr list for a branch from $T/fb/list-<branch>.json.
 cat > "$T/stub/gh" <<EOF
 #!$NODE
@@ -1869,13 +1869,15 @@ HB4=$(git -C "$T/wt/V-4" rev-parse HEAD); HB5=$(git -C "$T/wt/V-5" rev-parse HEA
 fbx 764 "$HB4" tests:SUCCESS "Flows image:FAILURE:9004"
 fbx 765 "$HB5" tests:SUCCESS "lint:FAILURE:9005" "Flows image:FAILURE:9005"
 node -e 'const fs = require("fs"); for (const n of [764, 765]) { const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/${n}.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-V-${n - 760}.json`, JSON.stringify({ number: n, ...v })); }' "$T/fb"
-P603="PR is open as a draft, but its Flows image check fails because ECR has no voicepa/flows-lambda:staging-tree-6bf03fb. Can someone run ./scripts/ensure-flows-image.sh"
-for k in 4 5; do say "AUTOPILOT_PARK: $P603" > "$T/state-b/logs/V-$k.log"; q add "V-$k"; q set "V-$k" state=running lane=A "branch=fix/V-$k" "worktree=$T/wt/V-$k" "session_id=run-V-$k"; done
+P603="PR is open as a draft, but its Flows image check fails because ECR has no voicepa/flows-lambda:staging-tree-6bf03fb. Can someone run sh $T/build-ok.sh"
+for k in 4 5; do say "AUTOPILOT_PARK: $P603" "AUTOPILOT_IMAGES: $T/imgs-V-$k" > "$T/state-b/logs/V-$k.log"; q add "V-$k"; q set "V-$k" state=running lane=A "branch=fix/V-$k" "worktree=$T/wt/V-$k" "session_id=run-V-$k"; done
 : > "$T/built"; out=$(node "$B/pass.mjs" 2>&1); built 764 "$HB4"
 check "DS-402 AC2 a park only on a red Check builds check is recorded done on its PR" \
   '[ "$(field V-4 state)" = "\"done\"" ] && [ "$(field V-4 result.pr)" = 764 ] && [ "$(field V-4 park)" = null ] && echo "$out" | grep -qF "V-4: PR #764 recorded done, not parked: its park waited only on \"Flows image\" red at ${HB4:0:9}"'
 check "DS-402 AC2 and the same pass runs its build at the head" \
   '[ "$(cat "$T/built")" = "$(cd "$T/wt/V-4" && pwd -P) $HB4" ] && [ "$(field V-4 undraft.call)" = "\"build\"" ]'
+check "DS-402 AC2 its screenshots are read as a DONE worker's: the directory it printed is kept, and none there is recorded" \
+  '[ "$(field V-4 images_dir)" = "\"$T/imgs-V-4\"" ] && [ "$(field V-4 images_uploaded)" = "\"none\"" ]'
 check "DS-402 AC3 a park whose draft is red on a check the row does not name is parked as today" \
   '[ "$(field V-5 state)" = "\"parked\"" ] && [ ! -e "$T/state-b/check-builds/765-$HB5.json" ]'
 
