@@ -78,6 +78,10 @@ check "pre-push rule is exact, not a prefix"              '! allows "Bash(bash s
 check "PR-description check: allowed with a body file"    'allows "Bash(node scripts/check-pr-body.mjs:*)"'
 settings '`bash tests/run.sh`' '| Pre-push checks | `none` |'
 check "pre-push none: no pre-push rule"                   '[ $rc -eq 0 ] && ! allows "Bash(bash scripts/desk/pre-push.sh --head)"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `pnpm format:check` `web: pnpm typecheck` |' '| Lint | `pnpm lint` |'
+check "DS-398 AC3 each pre-push item allowed exactly as written" \
+  '[ $rc -eq 0 ] && allows "Bash(pnpm format:check:*)" && allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:*)" && ! allows "Bash(pnpm typecheck:*)"'
+check "DS-398 AC2 a root Lint item also runs under nolock"  'allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)" && allows "Bash(pnpm lint:*)"'
 
 # A Related tests row that is one script is allowed bare and under the test lock; the compound it replaced is not.
 settings '`bash tests/run.sh`' '| Related tests | `bash tests/related.sh` |'
@@ -208,7 +212,23 @@ check "AC12 no migrate or seed through node_modules"       'no "./node_modules/.
 check "tsx scripts still run from the worktree"            'ok "node $W/node_modules/tsx/dist/cli.mjs scratch.ts" && no "node $W/node_modules/tsx/../vitest/vitest.mjs"'
 check "AC12 the same with .. refused"                      'no "./node_modules/.bin/../../x" "./node_modules/.bin/eslint ../x" "$W/node_modules/.bin/../../../bin/sh"'
 check "AC13 git check-ignore and range-diff allowed"       'ok "git check-ignore -v .claude/x.json" "git range-diff origin/main...HEAD"'
+# okc <command>: every piece of a `;` / `&&` / `||` / `|` compound allowed, as the harness splits one.
+okc(){ local c p; for c in "$@"; do while IFS= read -r p; do [ -z "$p" ] || ok "$p" || return 1; done < <(printf '%s\n' "$c" | perl -pe 's/\s*(;|&&|\|\||\|)\s*/\n/g'); done; }
+check "DS-398 AC1 a status check echoed after desk-env is allowed" 'okc "desk-env model finder; echo \"exit=\$?\"" "printf %s\\\\n x" "true" "git status && echo done"'
+check "DS-398 AC1 a refused piece still sinks the compound" '! okc "echo x; rm -rf build" && no "rm -rf build"'
+R=$(cd "$W" && pwd -P)
+check "DS-398 AC4 git -C <own worktree> local writes allowed, by its real path too" \
+  'ok "git -C $W add -A" "git -C $W commit -m x" "git -C $W restore a.txt" "git -C $W reset --soft HEAD~1" "git -C $R status" "git -C $R add a.txt" "git -C $R commit -m x"'
+check "DS-398 AC4 git -C <another worktree> local writes refused" 'no "git -C $T/other add -A" "git -C $T/other commit -m x" "git -C ../other add ." "git -C $W/../other commit -m x"'
+check "DS-398 AC4 git -C <own worktree> keeps every deny, by either spelling" \
+  'no "git -C $W reset --hard" "git -C $R reset --hard" "git -C $R push origin fix/fix-thing" "git -C $R config user.name x" "git -C $R stash" "git -C $R -c core.hooksPath=x commit -m x"'
+check "DS-398 AC5 desk-gh read allowed, gh api still refused" \
+  'ok "desk-gh read graphql -f query=x" "$B/desk-gh.mjs read repos/acme/widgets" "node $B/desk-gh.mjs read graphql -f query=x" && no "desk-gh graphql" "gh api graphql -f query=x" "gh api repos/acme/widgets"'
+ln -s "$T/repo" "$T/link"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/link" --branch fix/fix-thing --out "$T/ws.json" 2>&1); rc=$?
+check "DS-398 AC4 a symlinked --wt: git -C by the link or the real path" '[ $rc -eq 0 ] && ok "git -C $T/link status" "git -C $T/link commit -m x" "git -C $R status" "git -C $R add -A" && no "git -C $T/other status"'
 triage
+check "DS-398 AC1 triage: echo, printf and true allowed"   'okc "git status --porcelain; echo \"exit=\$?\"" "printf %s x" "true"'
 check "AC10 triage: the token is not readable either"      '[ $rc -eq 0 ] && no "cat $CREDS/atlassian-token" "cat \${HOME}/.config/desk/repos/acme__widgets/x" && [ "$(readable "$CREDS/atlassian-token")" = refused ]'
 settings '`bash tests/run.sh`' '' "$(perm3 yes)"
 check "AC6 jira-transition yes: both allowed"             'ok "desk-jira transitions DS-1" "desk-jira transition DS-1 Done"'

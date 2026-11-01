@@ -31,7 +31,7 @@ Your settings are an **allow-list**: anything not named here is refused.
 
 - `desk-jira …`, `desk-env …`: plain names; no `VAR=value` prefix on anything.
 - **The §4 toolchain rows, exactly as configured.** An item at the root (`DIR` `.`) runs bare, with
-  your own arguments after it. An item with a directory has no bare form (you cannot `cd`), so it
+  your own arguments after it, or through with-lock.sh with `--cwd .`. An item with a directory has no bare form (you cannot `cd`), so it
   runs as `~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD> [args]`, where `<lock>` is
   `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck, `browser` for §4 E2E
   tests, and `nolock` for everything else (lint, build, codegen, dev server), which only changes
@@ -39,7 +39,8 @@ Your settings are an **allow-list**: anything not named here is refused.
   a ticket that needs a regeneration parks naming the command. Each row's items come from
   `desk-env cmds test-cmd`, `desk-env cmds integration-cmd`, `desk-env cmds typecheck-cmd`,
   `desk-env cmds e2e-cmd`, `desk-env cmds lint-cmd`, `desk-env cmds build-cmd`,
-  `desk-env cmds codegen-cmd` and `desk-env cmds dev-cmd`.
+  `desk-env cmds codegen-cmd` and `desk-env cmds dev-cmd`. Each §4 Pre-push checks item
+  (`desk-env cmds pre-push-checks`) runs the same way, one at a time, as well as through the pre-push script.
   An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass the port as an argument in
   whatever form the §4 Dev server row gives (e.g. `-- --port 3008`).
 - **The package manager** (`desk-env get package-manager`): only `<§4 Package manager> install` with no arguments, `<bin> --version`,
@@ -71,7 +72,8 @@ Your settings are an **allow-list**: anything not named here is refused.
   `git-force-with-lease` is `yes`, `git push --force-with-lease origin <branch>`. Bare `git push`,
   `git push origin HEAD` and any other ref are refused. `git config`, `git -c …`, `git -C` with
   any path but your own worktree's, aliases and `git stash` are refused; `git -C <your worktree>`
-  takes the read subcommands only. `git rm` and `git mv` are allowed for tracked files in your
+  (as given, or its real path) takes the read and local-write subcommands (`add`, `commit`,
+  `restore`, …) under the same refusals, and never `push`. `git rm` and `git mv` are allowed for tracked files in your
   worktree. A lint or format tool (eslint, prettier, biome, oxlint, stylelint, tsx, `prisma generate`)
   runs as `./node_modules/.bin/<tool>`, never with `..`; suites, typechecks and migrations run only
   as their §4 rows.
@@ -86,7 +88,10 @@ Your settings are an **allow-list**: anything not named here is refused.
   `pr review` (commented only), `pr comment`, `pr update-branch`, `run rerun`. **`gh api` is refused
   in every form**, and `gh alias` too: read reviews with `gh pr view <n> --json reviews,comments`,
   and answer a review thread with a `gh pr comment` naming it (§3 `pr-reply`); resolving threads is
-  the orchestrator's.
+  the orchestrator's. A read those do not cover (a GraphQL query, a REST GET) goes through
+  `desk-gh read <endpoint> [gh api flags]`, e.g. `desk-gh read graphql -f query='{ viewer { login } }'`:
+  it refuses a mutation, any method but GET, `--input`, a field read from a file and any unknown flag
+  (exit 1). A REST field needs `-X GET`.
 - **`gh workflow run`**, only where §3 `worker-workflow-dispatch` is `yes`, and only exactly as
   §4 Worker workflows (`desk-env list worker-workflows`) lists each entry: `gh workflow run <file>.yml --ref <your branch> -f …` (or
   with `--repo <§0 GitHub repo>` after the file), no input added or changed. Any other workflow, ref
@@ -99,7 +104,8 @@ Your settings are an **allow-list**: anything not named here is refused.
 - **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
   is `yes`.
 - **Reading tools**: `rg`, `grep`, `find` (without `-exec`/`-delete`), `ls`, `cat`, `head`, `tail`,
-  `wc`, `diff`, `jq`, `tr`, `cut`, `stat`, `du`, `file`, `mkdir`, `ps`, `pgrep`. **Not** `sed`,
+  `wc`, `diff`, `jq`, `tr`, `cut`, `stat`, `du`, `file`, `mkdir`, `ps`, `pgrep`, and `echo`,
+  `printf` and `true` to stdout. **Not** `sed`,
   `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`: edit files with Edit/Write.
 - **psql**, only where you have a per-ticket database, only as
   `docker exec [-i] <container> psql [-U postgres] -d <your database>`.
@@ -126,7 +132,7 @@ allow rule or a settings change says:
   though your settings allow edits across the worktree;
 - a write granted only by a `Write(...)` rule: the harness ignores those and reads `Edit(...)` rules;
 - anything in the user's own settings: you are launched with `--setting-sources ""`, so none reach you;
-- `gh api`, in any form.
+- `gh api`, in any form (`desk-gh read` is the read-only way in).
 
 When your ticket needs one of these, park with a question that starts `lane C: `, names the step and
 says no setting unlocks it, and recommend opening an interactive `/desk-ticket` session. Never offer

@@ -18,16 +18,19 @@
 // own configuration:
 //   - git: named read and local-write subcommands only (status, diff, log, show, add, commit, restore,
 //     checkout/switch, rebase, merge, fetch, clean, rm, mv, ...). `git push` exists only as exact rules for the
-//     ticket's own branch (--branch). The reads are also allowed as `git -C <this worktree> <read>`.
+//     ticket's own branch (--branch). The reads and local writes are also allowed as
+//     `git -C <this worktree> <subcommand>`, by the path given or its real path.
 //     `git config`, `git -c`, `git -C` anywhere else, aliases (any unknown subcommand), `git stash`,
 //     `rebase --exec` and `--upload-pack` are refused.
 //   - gh: named read subcommands, plus `pr create --draft`, `pr edit`, `pr comment`, `pr review`,
 //     `pr update-branch`, `run rerun` each only where its §3 row is `yes`, and `workflow run` only as
 //     the exact §4 Worker workflows commands on the ticket's own branch. `gh api` (any method) and
-//     `gh alias` are denied: a GET cannot be told from a write by prefix.
+//     `gh alias` are denied: a GET cannot be told from a write by prefix. `desk-gh read` is the
+//     read-only `gh api`: it parses its arguments and refuses a mutation or a non-GET method itself.
 //   - the toolchain: the exact §4 command items (and their `<pm> run <script>` twins), behind §4
 //     Command prefix where there is one; never the package manager, the prefix binary, node or python
-//     by name. A command item with a directory runs through `with-lock.sh <lock> --cwd <dir> -- <cmd>`.
+//     by name. Each item also runs as `with-lock.sh <lock> [--cwd <dir>] -- <cmd>` (`nolock` for a
+//     row with no lock); an item with a directory runs only that way.
 //   - database migrate and seed only where setup-worktree provisioned a per-ticket database.
 //
 // WHAT PREFIX RULES CANNOT STOP, said plainly: a worker edits code and then runs the repo's own test,
@@ -153,7 +156,8 @@ const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? ''
 // The §4 command rows a worker may run; the lock each takes when wrapped by with-lock.sh is E.lockFor.
 // desk-pr runs each PR-description check with the body file appended, so its prefix rule fits as is.
 // §4 Codegen (e.g. `pnpm prisma generate`) takes no lock: it is short and writes only the worktree.
-const TOOL_IDS = E.WORKER_COMMAND_IDS.filter((id) => HAS_TICKET_DB || !['db-migrate-cmd', 'seed-cmd'].includes(id));
+// Each §4 Pre-push checks item is allowed on its own too, beside the pre-push script that runs them all.
+const TOOL_IDS = [...E.WORKER_COMMAND_IDS, 'pre-push-checks'].filter((id) => HAS_TICKET_DB || !['db-migrate-cmd', 'seed-cmd'].includes(id));
 const warns = [];
 const items = [];
 for (const id of TOOL_IDS) {
@@ -194,8 +198,10 @@ const granted = [];
 
 // Read-only commands, each with the forms that would make it write or execute denied. Deliberately
 // absent: sed and awk (both can execute: GNU sed `e`, awk `system()`), cp and mv (they write anywhere,
-// past the Write rules), sort and uniq (`--compress-program`, output files), xargs, tee.
-const READS = ['rg', 'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc', 'diff', 'jq', 'pwd', 'basename', 'dirname', 'realpath', 'stat', 'du', 'file', 'tr', 'cut'];
+// past the Write rules), sort and uniq (`--compress-program`, output files), xargs, tee. echo, printf
+// and true write only to stdout; a redirect after one is a file write, which the harness polices.
+const READS = ['rg', 'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc', 'diff', 'jq', 'pwd', 'basename', 'dirname', 'realpath', 'stat', 'du', 'file', 'tr', 'cut',
+  'echo', 'printf', 'true'];
 const READ_DENY = [
   ...bash('rg', ' *--pre*'),
   ...bash('find', ' *-exec*', ' *-execdir*', ' *-ok *', ' *-okdir*', ' *-delete*', ' *-fprint*', ' *-fls*'),
@@ -303,12 +309,14 @@ if (mode === 'triage') {
       for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) DISPATCH_RULES.push(...exact('gh', ` workflow run ${m[1]}${r} --ref ${BRANCH}${m[2]}`));
     }
   }
-  const OWN_C = ` -C ${WT}`;
-  // `git -C <this worktree>` is allowed for the reads, so the blanket `-C*` deny gives way to every
-  // other deny repeated after `-C <this worktree>`. Any other `-C` (another worktree, a relative or
-  // `..` path) matches no allow rule, since each needs this worktree's path then a space; other
-  // worktrees are denied by name below as well.
-  const GIT_DENY_WT = [...GIT_DENY.filter((s) => s !== ' -C*').flatMap((s) => [s, `${OWN_C}${s}`]), `${OWN_C} push`];
+  // This worktree as given and as its real path (a symlinked --wt, or macOS's /tmp and /var).
+  const WTS = [...new Set([WT, (() => { try { return realpathSync(WT); } catch { return WT; } })()])];
+  const OWN_CS = WTS.map((w) => ` -C ${w}`);
+  // `git -C <this worktree>` is allowed for the reads and local writes, so the blanket `-C*` deny
+  // gives way to every other deny repeated after `-C <this worktree>`. Any other `-C` (another
+  // worktree, a relative or `..` path) matches no allow rule, since each needs this worktree's path
+  // then a space; other worktrees are denied by name below as well.
+  const GIT_DENY_WT = [...GIT_DENY.filter((s) => s !== ' -C*').flatMap((s) => [s, ...OWN_CS.map((c) => `${c}${s}`)]), ...OWN_CS.map((c) => `${c} push`)];
   // An installed package binary, run from the worktree by relative or absolute path: named tools that
   // take no lock and write no database, never a wildcard, which would let a suite, a typecheck or a
   // migration skip with-lock.sh or the per-ticket database by any spelling of its path. A `..` is denied.
@@ -339,14 +347,18 @@ if (mode === 'triage') {
     ...READS.flatMap((b) => bash(b)),
     'Bash(mkdir:*)', 'Bash(ps:*)', 'Bash(pgrep:*)',
     ...bash('git', ...GIT_READ, ...GIT_LOCAL), ...[...GIT_READ_EXACT, ...REBASE].flatMap((t) => exact('git', t)),
-    // The same reads aimed at this worktree by path: `-C <worktree>` is where the command runs anyway.
-    ...bash('git', ...GIT_READ.map((s) => `${OWN_C}${s}`)), ...GIT_READ_EXACT.flatMap((t) => exact('git', `${OWN_C}${t}`)),
+    // The same reads and local writes aimed at this worktree by path: `-C <worktree>` is where the
+    // command runs anyway.
+    ...OWN_CS.flatMap((c) => [...bash('git', ...[...GIT_READ, ...GIT_LOCAL].map((s) => `${c}${s}`)), ...GIT_READ_EXACT.flatMap((t) => exact('git', `${c}${t}`))]),
     ...bash('gh', ...GH_READ),
     ...bash('desk-jira', ...JIRA_READ),
     // desk-env is read-only (where, get, list, perm, mem, heavy, port-in-use): the shim on PATH, its
     // installed path, and the module behind it.
     'Bash(desk-env:*)', `Bash(${E.HOME}/.local/bin/desk-env:*)`, 'Bash(~/.local/bin/desk-env:*)',
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs:*)`, `Bash(node ${b}/desk-env.mjs:*)`]),
+    // desk-gh read: `gh api` that refuses a mutation, a non-GET method and any flag it does not know.
+    'Bash(desk-gh read:*)', `Bash(${E.HOME}/.local/bin/desk-gh read:*)`, 'Bash(~/.local/bin/desk-gh read:*)',
+    ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-gh.mjs read:*)`, `Bash(node ${b}/desk-gh.mjs read:*)`]),
     // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
     // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
     ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
@@ -399,10 +411,9 @@ if (mode === 'triage') {
     const form = (wrapped) => (c) => (it.id === 'install-cmd' && (wrapped || !depsOk) ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {
       if (it.dir === '.') allow.push(...withPrefix(cmd).map(form(false)));
-      // A directory item has no bare form (the worker cannot `cd`), so it runs through with-lock.sh:
-      // under its lock where it has one, else `nolock`, which only changes directory.
-      const lock = E.lockFor(it.id);
-      if (lock !== 'nolock' || it.dir !== '.') allow.push(...lockForms(lock, it.dir, cmd).map(form(true)));
+      // Every item also runs through with-lock.sh: under its lock where it has one, else `nolock`,
+      // which only changes directory. A directory item has no bare form (the worker cannot `cd`).
+      allow.push(...lockForms(E.lockFor(it.id), it.dir, cmd).map(form(true)));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
   }
@@ -598,7 +609,7 @@ if (mode === 'triage') {
   try { list = execFileSync('git', ['-C', WT, 'worktree', 'list', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch { /* no git yet */ }
   for (const line of list.split('\n')) {
     const other = /^worktree (.+)$/.exec(line)?.[1];
-    if (other && other !== WT) deny.push(`Edit(${abs(other)}/**)`, `Edit(${abs(other)}/**)`, ...bash('git', ` -C ${other} *`, ` -C ${other}/*`));
+    if (other && !WTS.includes(other)) deny.push(`Edit(${abs(other)}/**)`, `Edit(${abs(other)}/**)`, ...bash('git', ` -C ${other} *`, ` -C ${other}/*`));
   }
 
   // This repo's desk config.md, by itself and only through the Read tool. The credentials beside it
