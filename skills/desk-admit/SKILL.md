@@ -39,9 +39,22 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>    # now an advisory nami
 
 The snapshot holds every file the boards need, so the worker builds from it even once the artifact
 can no longer be read. **An artifact that returns a summary, or an error, rather than its files** is
-not one this subscription can read: never admit that ticket on a summary. Leave it out of step 1, and
-ask the user in step 2's round, header the ticket key: share the artifact `<URL>` with this
-subscription, or give its files (Recommended: share it, then run /desk-admit for it again).
+not one this subscription can read (one holding a brand font is never shared): never admit that
+ticket on a summary. Ask the user now, before step 1, in one `AskUserQuestion` (header the ticket
+key): give the design's HTML export, the self-contained HTML file Claude Design downloads, by its
+path (Recommended: it needs no sharing), or share the artifact `<URL>` with this subscription and
+run /desk-admit for it again. Never search their folders for the file. Given a path, import it once
+for every ticket in this call whose `check` names that URL, into the folder the `blocking` line
+names (`<design dir>/<FOLDER>/`), then check each:
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs import <path> --url <artifact URL> --epic <FOLDER> \
+  --key <TICKET> --key <TICKET2> …
+node ~/.claude/desk/bin/desk-design.mjs check <TICKET>    # now an advisory naming the snapshot
+```
+
+and admit them in step 1. Exit 4 names the first file the page loads from elsewhere: it is not a
+self-contained export, so ask once more for one that is, or for the artifact to be shared.
 
 ## 1. Admit
 
@@ -77,6 +90,25 @@ pass, loop or driver for them. A child of an epic whose feature batch is running
 that batch (`into feature batch <E>`), held behind its spine, its blockers there and the children it
 shares files with: the user naming it is the approval.
 
+## 1a. Put each new design in the repo
+
+A design snapshotted in step 0, from the Artifact tool or an export, goes into the repo now, before
+any worker builds from it, once per artifact. For each ticket admitted that uses one, from the main
+checkout (prefix `DESK_BATCH=<B>` when it went into feature batch `<B>`, so the branch comes off
+that batch's base):
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs propose $DESK_STATE/designs/<FOLDER>
+```
+
+- `saved: … no PR needed`: the base already holds it.
+- `committed: <path> on <branch> in <worktree> (…, base <base>)`: render it there (desk-ticket
+  `design-canvas.md`: `with-lock.sh browser … render <worktree>/<path>`), commit the screens in that
+  worktree, then open its PR with `desk-pr` against `<base>`, title `docs(design): <FOLDER> design
+  canvas`. It goes through the normal review and is never merged on its own. Until it merges, the
+  tickets run from the snapshot; once it has, every later ticket on the canvas reads the committed copy.
+- `unchanged: …`: its branch already holds this version, so its PR needs nothing more.
+
 ## 1b. An epic to plan
 
 This line comes only where config §3 `autopilot-workers` is not `yes`.
@@ -98,7 +130,7 @@ below as `(Recommended)`, with its reason as the description:
 | `lane C` or `lane D` | Work it in its own session: `/desk-ticket <TICKET>` (a worker would only park on it) | Leave it out of the batch |
 | `open question(s): …` | Answer each one now; record the answers on the ticket (`desk-jira`) | Run step 1 again for it |
 | `lint (blocking): …` | Fix the ticket as the finding says (`desk-jira`) | Run step 1 again for it |
-| `design not snapshotted: <URL>…` | Snapshot it as step 0 says, or, where it will not read, have it shared with this subscription | Run step 1 again for it |
+| `design not snapshotted: <URL>…` | Snapshot it as step 0 says, or, where it will not read, import its HTML export (step 0) | Run step 1 again for it |
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
 | `blocked by <B>, which failed in the batch` | Requeue `<B>` (`queue.mjs requeue <B>`), or drop it if it will not be done | Run step 1 again for it |
 | `an epic, and its feature batch <B> is already running` | Admit the epic's children instead: they join `<B>` | Run step 1 for the children |

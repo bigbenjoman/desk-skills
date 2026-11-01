@@ -37,8 +37,16 @@ or an `advisory`), read the artifact's current version (`Artifact action:list`) 
 question, and on a yes you snapshot it as above.
 An artifact the user does not own returns a summary, not the files: that, or one that will not
 read, is asked at Stage 1, before any ticket is spawned, never left for Stage 3: name the artifact
-and ask the user to share it with this subscription or give its files. A worker never builds from a
-summary or a guess.
+and ask the user for its HTML export by path (Recommended), or to share it with this subscription.
+`desk-design.mjs import <path> --url <URL> --epic <EPIC, or the first ticket> --key <KEY> …` takes
+the export as a single-page snapshot, its sha256 and modified time recorded as the version, and
+refuses (exit 4) one that loads any file from elsewhere. A worker never builds from a summary or a
+guess.
+
+**The snapshot reaches the repo at admission.** `/desk-admit` commits it on its own branch off the
+batch's base and opens that PR (`desk-design.mjs propose`, its step 1a), so the repo holds the
+design's source even if the ticket that would have saved it is dropped. Until it merges, workers
+save from the snapshot as above.
 
 **A single-page artifact** (no `project/canvas.json`, no boards) is snapshotted the same way: its
 page (`project/index.html` or whatever HTML it publishes) and every file and `/_blob/<id>` asset the

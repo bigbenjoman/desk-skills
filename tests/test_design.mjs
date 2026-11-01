@@ -4,11 +4,12 @@
 // the Design canvases directory, once per artifact; status sees a newer version; check reports a
 // Claude Design link with no saved copy. Scratch git repos only.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
@@ -247,6 +248,70 @@ put(join(nested, 'project/about/team.html'), '<h1>team</h1>');
 t('collect: a page\'s home is its shallowest HTML, not the first alphabetically', collect(nested).home, 'project');
 t('collect: neither a canvas nor a page is refused', throws(() => collect(join(T, 'state/designs'))).startsWith('2:no canvas.json or page'), true);
 
+// ---- import: a design's self-contained HTML export ----
+const IST = join(T, 'import-state');
+const XURL = 'https://claude.ai/artifact/EXPORT1';
+const exportFile = join(T, 'downloads', 'Billing go-live — Design.html');
+const exportPage = (h) => `<html><head><style>@font-face { font-family: Brand; src: url("data:font/woff2;base64,AA") }</style>
+<link rel="canonical" href="https://example.com/billing"></head><body><img src="data:image/png;base64,AA"><a href="https://example.com/">site</a><h1>${h}</h1></body></html>`;
+const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
+const at = (p, iso) => utimesSync(p, new Date(iso), new Date(iso));
+const keys = (...k) => k.map((key) => ({ key, boards: [] }));
+put(exportFile, exportPage('v1'));
+at(exportFile, '2026-11-01T08:59:00.000Z');
+t('loads: a page\'s srcs, stylesheets and CSS urls in page order, not its links',loads('<a href="https://x/">x</a><link rel="canonical" href="https://x/c"><link rel="stylesheet" href="s.css"><img src="i.png"><style>@import "f.css"; b { background: url(b.png) }</style>').join(' '), 's.css i.png f.css b.png');
+const imp = importExport(exportFile, { state: IST, url: XURL, epic: 'KAN-727', tickets: keys('KAN-746', 'KAN-747', 'KAN-749'), now: '2026-11-01T09:00:00.000Z' });
+const impSrc = json(join(IST, 'designs/KAN-727/source.json'));
+t('AC1 import: the page lands under <state>/designs/<E>/project/', `${imp.path === join(IST, 'designs/KAN-727')} ${read(join(IST, 'designs/KAN-727/project/index.html')) === exportPage('v1')}`, 'true true');
+t('AC1 import: source.json records the export, its hash and its modified time', `${impSrc.from} | ${impSrc.file} | ${impSrc.sha256 === sha(exportFile)} | ${impSrc.version}`, 'export | Billing go-live — Design.html | true | 2026-11-01T08:59:00.000Z');
+t('AC1 import: every key is recorded', impSrc.tickets.map((x) => x.key).join(' '), 'KAN-746 KAN-747 KAN-749');
+t('AC1 import: it is a single-page snapshot', `${collect(imp.path).canvas} ${collect(imp.path).files.join(' ')}`, 'null project/index.html');
+t('AC1 import: check is advisory for every key given', ['KAN-746', 'KAN-747', 'KAN-749'].map((key) => checkTicket({ key, text: `## Design\n${XURL}\n` }, { root: r5, dir: DIR, state: IST }).map((f) => f.severity).join(',')).join(' '), 'advisory advisory advisory');
+const rX = repo('rX');
+const savedX = save(imp.path, { root: rX, dir: DIR, tickets: [] });
+t('import then save: the repo copy keeps the export\'s record', `${savedX.path} ${savedX.source.from} ${savedX.source.sha256 === impSrc.sha256} ${savedX.source.version}`, 'docs/design/KAN-727/ export true 2026-11-01T08:59:00.000Z');
+t('import then save: the README names the export', read(join(rX, DIR, 'KAN-727/README.md')).includes('from Billing go-live — Design.html, an HTML export of <https://claude.ai/artifact/EXPORT1>'), true);
+t('status: the saved export is current at its version', status(join(rX, DIR, 'KAN-727'), impSrc.version).state, 'current');
+t('AC5: the same export again keeps its version', importExport(exportFile, { state: IST, url: XURL, tickets: keys('KAN-746') }).source.version, '2026-11-01T08:59:00.000Z');
+put(exportFile, exportPage('v2'));
+at(exportFile, '2026-11-02T10:00:00.000Z');
+const imp2 = importExport(exportFile, { state: IST, url: XURL, tickets: keys('KAN-746') });
+t('AC5: a later export replaces the snapshot, in the folder holding the artifact', `${imp2.path === imp.path} ${imp2.previous}->${imp2.source.version} ${read(join(imp.path, 'project/index.html')).includes('v2')}`, 'true 2026-11-01T08:59:00.000Z->2026-11-02T10:00:00.000Z true');
+t('AC5: status reports the saved copy as moved on', status(join(rX, DIR, 'KAN-727'), imp2.source.version).state, 'newer');
+put(exportFile, exportPage('v3'));
+at(exportFile, '2026-11-02T10:00:00.000Z');
+const imp3 = importExport(exportFile, { state: IST, url: XURL, tickets: keys('KAN-746') });
+t('AC5: a different export with the same modified time is still a new version', imp3.source.version, `2026-11-02T10:00:00.000Z+${sha(exportFile).slice(0, 12)}`);
+const linked = join(T, 'downloads', 'linked.html');
+put(linked, '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Brand"><script src="app.js"></script><h1>x</h1>');
+const IST4 = join(T, 'import-state-4');
+t('AC4: an export that loads a URL is refused, naming the first one', throws(() => importExport(linked, { state: IST4, url: 'https://claude.ai/artifact/X4', tickets: keys('KAN-9') })), '4:not imported: linked.html is not a self-contained page: it loads https://fonts.googleapis.com/css2?family=Brand. Export the design again as one HTML file, or snapshot the artifact');
+put(linked, '<script src="app.js"></script>');
+t('AC4: a relative file is a load too', throws(() => importExport(linked, { state: IST4, url: 'https://claude.ai/artifact/X4', tickets: keys('KAN-9') })).includes('it loads app.js.'), true);
+t('AC4: nothing is recorded', existsSync(join(IST4, 'designs')), false);
+t('import: another artifact in the folder is refused', throws(() => importExport(exportFile, { state: IST, url: 'https://claude.ai/artifact/OTHER', epic: 'KAN-727', tickets: keys('KAN-1') })).startsWith('2:'), true);
+
+// ---- propose: the snapshot committed on a branch off the base, for the admission PR ----
+for (const [k, v] of Object.entries({ GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' })) process.env[k] = v;
+const pOrigin = join(T, 'propose-origin.git');
+execFileSync('git', ['init', '-q', '--bare', '-b', 'main', pOrigin]);
+const pRoot = join(T, 'propose-root');
+execFileSync('git', ['clone', '-q', pOrigin, pRoot], { stdio: 'ignore' });
+put(join(pRoot, 'README.md'), 'x'); git(pRoot, 'add', '-A'); git(pRoot, 'commit', '-q', '-m', 'init'); git(pRoot, 'push', '-q', 'origin', 'main');
+const WTS = join(T, 'propose-worktrees');
+const proposed = propose(imp.path, { root: pRoot, dir: DIR, ref: 'origin/main', worktrees: WTS });
+t('AC3 propose: commits the snapshot on its own branch, in its own worktree', `${proposed.state} ${proposed.branch} ${proposed.worktree === join(WTS, 'design-KAN-727')}`, 'committed docs/design-KAN-727 true');
+t('AC3 propose: the branch holds the design under the canvases directory', git(proposed.worktree, 'show', '--name-only', '--format=%s', 'HEAD').trim().split('\n').filter(Boolean).join(' '),
+  `docs(design): save the KAN-727 design canvas, version ${imp3.source.version} docs/design/KAN-727/README.md docs/design/KAN-727/project/index.html docs/design/KAN-727/source.json`);
+t('AC3 propose: off the base', git(proposed.worktree, 'rev-parse', 'HEAD~1').trim() === git(pRoot, 'rev-parse', 'origin/main').trim(), true);
+t('AC3 propose: the main checkout is untouched', `${git(pRoot, 'status', '--porcelain').trim()}|${git(pRoot, 'rev-parse', '--abbrev-ref', 'HEAD').trim()}`, '|main');
+t('AC3 propose: again with nothing new commits nothing', propose(imp.path, { root: pRoot, dir: DIR, ref: 'origin/main', worktrees: WTS }).state, 'unchanged');
+git(proposed.worktree, 'push', '-q', 'origin', 'docs/design-KAN-727:main');
+git(pRoot, 'fetch', '-q', 'origin');
+t('AC3 propose: once the base holds that version, nothing to do', propose(imp.path, { root: pRoot, dir: DIR, ref: 'origin/main', worktrees: WTS }).state, 'saved');
+t('AC3: a later ticket on the canvas reads the committed copy', checkTicket({ key: 'KAN-750', text: `## Design\n${XURL} · docs/design/KAN-727/\n` }, { root: pRoot, dir: DIR, ref: 'origin/main', state: IST }).length, 0);
+t('propose: no snapshot record is refused', throws(() => propose(join(T, 'downloads'), { root: pRoot, dir: DIR, ref: 'origin/main', worktrees: WTS })).startsWith('2:no snapshot at'), true);
+
 // ---- the command line, reading config §2 Design canvases directory ----
 const r6 = repo('r6');
 put(join(T, 'config.md'), '## 2. Paths\n| Field | Value |\n|---|---|\n| Design canvases directory | `design/canvases/` |\n');
@@ -273,6 +338,14 @@ const nofile = runNone('check', 'no-such-ticket');
 t('cli check: a slug with no ticket file says so', nofile.status === 2 && nofile.stderr.includes('no ticket file'), true);
 t('cli save: a key with .. is refused', run('save', s1, '--key', 'a..b').status, 2);
 t('cli save: --boards before --key is a usage error', run('save', s1, '--boards', 'x', '--key', 'DS-82').status, 2);
+const runState = (...args) => spawnSync('node', [BIN, ...args], { cwd: r6, env: { ...env, DESK_AUTOPILOT_STATE: join(T, 'cli-import-state') }, encoding: 'utf8' });
+put(join(T, 'downloads', 'cli.html'), '<h1>cli</h1>');
+const cliImp = runState('import', join(T, 'downloads', 'cli.html'), '--url', 'https://claude.ai/artifact/CLI1', '--epic', 'KAN-1', '--key', 'KAN-2');
+t('cli import: exit 0, naming the snapshot', `${cliImp.status} ${cliImp.stdout.startsWith(`imported: ${join(T, 'cli-import-state/designs/KAN-1')} (version `)}`, '0 true');
+put(join(T, 'downloads', 'cli-linked.html'), '<img src="https://cdn.example.com/a.png">');
+const cliBad = runState('import', join(T, 'downloads', 'cli-linked.html'), '--url', 'https://claude.ai/artifact/CLI2', '--key', 'KAN-3');
+t('cli import: a page that loads a URL exits 4, naming it', `${cliBad.status} ${cliBad.stderr.includes('it loads https://cdn.example.com/a.png')}`, '4 true');
+t('cli import: no --key is a usage error', runState('import', join(T, 'downloads', 'cli.html'), '--url', 'https://claude.ai/artifact/CLI1').status, 2);
 
 // ---- render: the plan, the README and config §5 Breakpoints ----
 const BPS = [390, 768, 1024, 1280, 1440];

@@ -37,6 +37,7 @@ const REWRITTEN = [
   ['DS-361', 'the handoff briefing in its system prompt in place of the sibling notes', 1], // the briefing moved to the first message
   ['DS-397', '(under `waiting` too when no merge driver is running)', 1], // the pass releases a due hold itself
   ['DS-397', '(no merge grants), you release it:', 1],
+  ['DS-385', 'and ask the user to share it with this subscription or give its files', 1], // an export is imported
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));
