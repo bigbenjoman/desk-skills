@@ -602,7 +602,20 @@ const psi = () => Object.fromEntries(N.collect({ word: 'psi' }).items.map((i) =>
 const p0 = psi();
 t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,Q-4,Q-5,Q-6,Q-7');
 t('DS-384 AC3 a review stuck after its tries names how many repairs of which kind desk made', p0['Q-7']?.need,
-  'PR #147\'s code review still has findings after desk\'s 3 repairs (1 conflict fix, 1 re-review, 1 review fix). Fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
+  'PR #147\'s code review still has findings after desk\'s 3 repairs (1 conflict fix, 1 re-review, 1 review fix). Send it back to a worker for one more try, or fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
+t('DS-406 AC3 a review stuck on findings in the code recommends a fix worker, never that only the person can do it',
+  `${p0['Q-7']?.actions.map(([a]) => a).join()} ${/worker/.test(p0['Q-7']?.actions[0][1] ?? '')} ${p0['Q-7']?.actions.some(([, why]) => /only you/.test(why ?? ''))}`, 'fix,done,not-now true false');
+t('DS-406 AC4 a step outside the code is still worded as only the person\'s', p0['Q-6']?.actions[0][1], 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then');
+t('DS-406 AC4 so is a review stuck reason that quotes no finding', (() => { const q = queueOf('psi'); const was = q.tickets['Q-7'].stuck.why; q.tickets['Q-7'].stuck.why = 'review not clean after 2 fix tries (2 review): 1 P0';
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); const a = psi()['Q-7']?.actions.map(([v]) => v).join(); q.tickets['Q-7'].stuck.why = was;
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); return a; })(), 'done,not-now');
+t('DS-375 AC4 the outside-GitHub step is unchanged by DS-406', sg['S-2']?.actions.map(([a]) => a).join(), 'done,not-now');
+const q7 = N.record({ word: 'psi', ticket: 'Q-7', action: 'fix' });
+const q7t = queueOf('psi').tickets['Q-7'];
+t('DS-406 AC3 fix sends it to a worker on the PR with its finding quoted, outside desk\'s tries',
+  `${q7.ok} ${q7t.state} ${q7t.fix?.kind} ${q7t.fix?.person} ${q7t.fix?.pr} ${q7t.fix?.head === sha(147)} ${JSON.stringify(q7t.fix?.findings)}`,
+  'true triaged review true 147 true [{"sev":"P0","text":"desk/bin/evidence.mjs:40 a code span splits the cell"}]');
+t('DS-406 AC3 its line says what follows', q7.line, 'psi Q-7: sent back to a worker on PR #147 for one more try at its findings; the review of its new head says whether they are gone.');
 t('DS-378 AC4 a merge hold says what holds it and what happens once it is merged', p0['Q-1']?.need,
   'PR #141 touches files under a merge hold (touches billing — src/billing/**), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.');
 t('DS-378 AC4 a PR with no readable review says what to do and what follows', p0['Q-4']?.need,

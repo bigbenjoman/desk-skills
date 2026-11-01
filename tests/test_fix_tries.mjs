@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, personReviewFix, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -385,5 +385,36 @@ t('DS-379 AC3 every screen\'s reason comes from result.done.said, which the 200-
 t('DS-379 AC3 with nothing said, it still names the screen', captureTry(tk({ fix_tries: capDone }), { pr: 761, head: HEAD, files: ['a-after.png'] })?.why, '1 screenshot(s) still not taken after a capture try: a-after.png');
 t('DS-379 the capture try is not one of the fix tries', draftChecksFix(tk({ fix_tries: [...capDone, { try: 1, head: 'b'.repeat(40), kind: 'checks' }] }), { pr: 761, head: HEAD, failing: [{ name: 'tests', runId: '9' }] }, { repo: 'acme/widgets' })?.fix?.try, 2);
 t('DS-379 nor does it spend the head for a fix try', draftChecksFix(tk({ fix_tries: capDone }), { pr: 761, head: HEAD, failing: [{ name: 'tests', runId: '9' }] }, { repo: 'acme/widgets' })?.call, 'requeue');
+
+// ---- DS-406: PR #348's round-7 review as posted. Its one P0's indented sub-bullets are part of it,
+// and a `P1: None` line citing a file:line is no finding.
+const BT = '`';
+const p0_348 = `**${BT}desk/bin/evidence.mjs:37${BT}: the code-span strip runs across lines. One unbalanced backtick hides real ${BT}_drag${BT} cells, so a draft with placeholders still in it can leave draft.**`;
+const subs348 = [`  - the four-backtick form around three backticks, as ${BT}desk-config.md:338${BT} writes it.`,
+  `  - ${BT}undraft.mjs:354${BT} makes no evidence call. ${BT}missingShots${BT} at ${BT}:357${BT} finds nothing, because ${BT}dragFiles${BT} uses the same matcher.`,
+  `  - ${BT}upload-images.mjs:153${BT} counts 0 left and never sets exit code 4. So ${BT}pass.mjs:551-554${BT} records ${BT}images_uploaded=true${BT} while cells are still in the body.`];
+const body348 = ['<!-- desk-review:local -->',
+  '<!-- desk-review:verdict v=1 sha=597a520e300d9bb1a00b462583a43f3fcafe8676 p0=1 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex-cross round=7 -->',
+  `**desk-review, round 7, fix range fdcfe56..597a520: not clean: 1 P0 outstanding at ${BT}597a520${BT}** · codex read the diff cold · refuted cross-vendor`, '',
+  '## P0 (1)', '', p0_348, '',
+  `- **The cause.** ${BT}outsideCode${BT} strips code spans, and three things in that pattern go wrong:`,
+  '  - A backtick run with no partner is not left as literal text.',
+  '- **What it does to a body.** Any of these is enough:', '  - a typo;', subs348[0],
+  `- **What breaks.**`, subs348[1], subs348[2],
+  '- **Suggested fix.**', `  - Add checks next to the DS-381 AC2 test in ${BT}tests/test_undraft.mjs${BT}.`, '',
+  '## P1 / P2', '',
+  `None. Round 7 raises no new P2s. Simplicity noted two narrative comments, at ${BT}evidence.mjs:35-36${BT} ("(DS-381)") and ${BT}test_undraft.mjs:200${BT}, but the round-7 rule left them out.`, '',
+  '## Requirements', '', 'DS-379 AC1–AC4 are unchanged since round 6.'].join('\n');
+const f348 = reviewFindings(body348);
+t('DS-406 AC1 round 7 of PR #348 is one finding, a P0', f348.map((x) => x.sev).join(','), 'P0');
+t('DS-406 AC1 its text holds its three sub-bullets', subs348.every((s) => f348[0]?.text.includes(s.trim())), true);
+t('DS-406 AC2 its "None" line under P1 / P2 is no P1', f348.some((x) => x.sev === 'P1'), false);
+t('DS-406 AC2 nor is a "P1: None" line of its own', reviewFindings(`P0 (1)\n- src/a.ts:4 off by one\nP1: None. ${BT}evidence.mjs:35-36${BT} was left out.`).map((x) => `${x.sev} ${x.text}`).join('|'), 'P0 - src/a.ts:4 off by one');
+const pf = personReviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 348, head: HEAD, why: `review not clean after 2 fix tries (2 review): 2 P0 — P0: ${p0_348}; P0: src/a.ts:4 off; by one` });
+t('DS-406 AC3 a review stuck reason gives the person one more try, its findings split by severity', `${pf?.person} ${pf?.try}/${pf?.of} ${pf?.findings.map((x) => x.text).join('|')}`, `true 3/3 ${p0_348}|src/a.ts:4 off; by one`);
+t('DS-406 AC3 its brief and task say the person sent it, quoting each finding', [fixBrief(tk({ fix: pf })).includes('## Fix try the person sent: PR #348'), fixBrief(tk({ fix: pf })).includes(`- P0: ${p0_348}`), fixTask(tk({ fix: pf })).includes('Your task is the fix try the person sent on PR #348')].join(), 'true,true,true');
+t('DS-406 a reason that quotes no finding gives no try', personReviewFix(tk(), { why: 'review not clean after 2 fix tries (2 review): 1 P0' }), null);
+t('DS-406 findings listed at the same depth are each their own', reviewFindings('### P1\n  - src/a.ts:1 one\n  - src/b.ts:2 two').length, 2);
+t('DS-406 a deeper bullet under the next severity heading is not joined to the finding above it', reviewFindings('P0 (1)\n- src/a.ts:1 one\nP1 (1)\n  - src/b.ts:2 two').map((x) => x.sev).join(','), 'P0,P1');
 
 process.exit(fails ? 1 : 0);
