@@ -92,7 +92,7 @@ line on what it recorded. Keep it for the end.
 - **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the
   `/desk-ticket` or `/desk-admit` to run.
 - **`not-now`**: puts it in the not-now register; `list` and `left` hide it until its
-  question, blocker or PR head changes or, put off here, it gains an action. Not asked again this run.
+  question, blocker or PR head changes or it gains an action. Not asked again this run.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 
 Where the supervisor runs the batch, nothing more is needed: its next pass picks the answer up.
