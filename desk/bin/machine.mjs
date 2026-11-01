@@ -20,13 +20,13 @@ export const HARDWARE_KEYS = Object.freeze([
 ]);
 export const SIZING_KEYS = Object.freeze([
   'autopilot-concurrency',
-  'memory-ceiling-gb', 'test-cap', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
+  'memory-ceiling-gb', 'test-cap', 'test-lock-slots', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
 ]);
 
 // The thresholds and ratios the proposal uses. Changing one changes every new proposal, never a
 // profile already written.
 export const RULES = Object.freeze({
-  osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3,
+  osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3, testWorkersPerSuite: 4, memoryPerLockSlotGB: 16,
   typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
 });
 
@@ -196,6 +196,14 @@ export function propose(hw, r = RULES) {
   add('autopilot-concurrency', `${def} / ${cap}`, `cap floor(${ceiling} GB / ${r.workerHeavyGB} GB per worker in its heavy stage), default half the cap`);
   add('memory-ceiling-gb', ceiling, ceilingWhy);
   add('test-cap', known(perf) ? Math.max(1, perf) : 4, known(perf) ? `the ${perf} performance cores` : 'core count unknown: 4');
+  // with-lock.sh lets this many suites or typechecks hold the test lock at once. Each runs 4 test
+  // workers, so the P-cores bound it; each slot also needs room beside the workers in their own heavy
+  // stage, so the memory ceiling does too.
+  const testCap = known(perf) ? Math.max(1, perf) : 4;
+  const byCores = Math.floor(testCap / r.testWorkersPerSuite);
+  const byMemory = Math.floor(ceiling / r.memoryPerLockSlotGB);
+  add('test-lock-slots', Math.max(1, Math.min(byCores, byMemory)),
+    `min(floor(${testCap} P-cores / ${r.testWorkersPerSuite} test workers per suite), floor(${ceiling} GB / ${r.memoryPerLockSlotGB} GB per slot)), at least 1: suites and typechecks that hold the test lock at once`);
   add('typecheck-lock-timeout-min', r.typecheckLockTimeoutMin,
     `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,

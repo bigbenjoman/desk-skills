@@ -57,6 +57,7 @@ t('desktop: sizes nothing for a CI runner', Object.keys(mini).filter((k) => k.st
 t('desktop: ceiling is memory less the OS', `${mini['memory-ceiling-gb'].value} ${mini['memory-ceiling-gb'].why}`, '56 64 GB - 8 for the OS');
 t('desktop: workers at 3 GB each', mini['autopilot-concurrency'].value, '9 / 18');
 t('desktop: test cap = performance cores', mini['test-cap'].value, '8');
+t('desktop: 2 test lock slots (8 P-cores / 4, 56 GB / 16 = 3)', mini['test-lock-slots'].value, '2');
 t('desktop: typecheck lock timeout', mini['typecheck-lock-timeout-min'].value, '20');
 t('desktop: pre-push lock timeout', mini['pre-push-lock-timeout-s'].value, '60');
 
@@ -103,6 +104,7 @@ t('linux not wsl', small.wsl, 'no');
 const sm = sized(small);
 t('16 GB: ceiling', sm['memory-ceiling-gb'].value, '8');
 t('16 GB: workers', sm['autopilot-concurrency'].value, '1 / 2');
+t('16 GB: one test lock slot (8 GB / 16 rounds down, at least 1)', sm['test-lock-slots'].value, '1');
 
 // ---- WSL: hybrid Intel P/E cores, and the 16 GB ceiling whatever the guest grant
 const wsl = parseLinux({
@@ -118,6 +120,7 @@ t('hybrid P/E split', `${wsl['performance-cores']} ${wsl['efficiency-cores']}`, 
 const ws = sized(wsl);
 t('wsl: ceiling 16', ws['memory-ceiling-gb'].value, '16');
 t('wsl: test cap = P-cores', ws['test-cap'].value, '16');
+t('wsl: test lock slots bound by the 16 GB ceiling', ws['test-lock-slots'].value, '1');
 t('cpu list', countCpuList('0-7,16-23'), 16);
 
 // ---- the file round-trips, and detect reports only real hardware changes
