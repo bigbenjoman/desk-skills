@@ -6,4 +6,4 @@ the `JIRA` block), "Ask or take", the resume file and the red flags every stage 
 
 | # | Stage | What happens |
 |---|---|---|
-| 8 | Jira | A non-tracker ticket (a work id, or Tracker `none`): skip, and say so. Otherwise invoke `desk-jira`. Comment per §5 Ticket comment: root cause in one sentence, fix in one sentence, PR link. Nothing else; see "Jira comments" in the working-style reference. Transition to §4 Review state (skip if it is `none`) by reading the available transitions, never a hardcoded name. |
+| 8 | Jira | A non-tracker ticket (a work id, or Tracker `none`): skip, and say so. Otherwise invoke `desk-jira`. Comment per §5 Ticket comment: root cause in one sentence, fix in one sentence, PR link. Nothing else; see "Jira comments" in the working-style reference. Transition to §4 Review state (`desk-env get review-state`; skip if it is `none`) by reading the available transitions, never a hardcoded name. |

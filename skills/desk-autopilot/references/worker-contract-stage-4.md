@@ -17,8 +17,8 @@ starting the same run a second later. One uncapped run can take the machine from
 **Cap it and lock it every time. Never the bare §4 Unit tests command.** Each item of
 `desk-env cmds test-cmd` (and `typecheck-cmd`, `integration-cmd`) is a `DIR<TAB>CMD` pair; run it
 under the lock **in its directory with `--cwd`**, never as `cd <dir> && …` (a compound command is
-refused and would run unlocked). The cap is config §3b "Test worker cap under the test lock",
-appended as `--maxWorkers=<cap>` **only when the command is Jest or Vitest**, in the form §4 Unit
+refused and would run unlocked). The cap is config §3b "Test worker cap under the test lock"
+(`desk-env get test-cap`), appended as `--maxWorkers=<cap>` **only when the command is Jest or Vitest**, in the form §4 Unit
 tests gives for passing arguments. Never append it to pytest or any other runner: pytest rejects it
 and the suite fails before running (pytest is single-process unless the repo configures otherwise).
 
@@ -35,7 +35,7 @@ exactly as the row gives it, then your arguments: the allow rule matches that pr
 else.
 
 Use the lower cap §3b gives (by default half) while `desk-env mem status` shows `avail=` in the hold
-band (config §3b "Spawn gate (available memory)"; by default 4–8 GiB), and `1` for a database-backed
+band (config §3b "Spawn gate (available memory)", `desk-env get spawn-gate`; by default 4–8 GiB), and `1` for a database-backed
 integration suite in that band. The lock is what stops two suites landing in the same minute, which
 is the case that actually kills the machine. It blocks until it frees and releases on exit,
 including on a crash: **do not add a timeout and do not work around a wait; waiting is the
@@ -66,7 +66,7 @@ kill a server you did not start, it is likely another session's.
 
 **Before you push, run the pre-push checks and the tests related to your change, not the full
 suites.** CI runs the full suites on every push regardless. The pre-push checks are `desk-pr`'s
-"Before every push" (`bash scripts/desk/pre-push.sh --head` where §4 Pre-push checks is set). Which
+"Before every push" (`bash scripts/desk/pre-push.sh --head` where §4 Pre-push checks, `desk-env list pre-push-checks`, is set). Which
 tests to run, `desk-env test-scope` decides from your branch's changes against the merge base with
 `origin/<default>`, untracked files included:
 
@@ -76,7 +76,7 @@ desk-env test-scope   # scope=related|full|none, reason=, changed=, then DIR<TAB
 
 Run each suite line it prints under the lock exactly as above, with its FILES (if any) after the cap:
 `with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap> <FILES>` for Vitest or Jest, `<CMD>` alone
-for anything else. `scope=related` runs §4 Related tests through the import graph, plus in full the
+for anything else. `scope=related` runs §4 Related tests (`desk-env cmds related-test-cmd`) through the import graph, plus in full the
 §4 Unit tests of any directory holding a changed file that has fewer Related tests items than Unit
 tests items; `scope=full` runs
 §4 Unit tests, because the change touches a lockfile, a root or test config, a shared workspace
@@ -85,7 +85,7 @@ Never narrow a `full` to the files you think matter, and say the scope and reaso
 
 **Where your briefing has a `Baseline checks` section**, the batch base already has typecheck or
 lint errors, recorded by the orchestrator. Run `desk-env baseline typecheck` and `desk-env baseline
-lint` from your worktree in place of §4 Typecheck and Lint: each runs the same items under the same
+lint` from your worktree in place of §4 Typecheck and Lint (`desk-env cmds typecheck-cmd`, `desk-env cmds lint-cmd`): each runs the same items under the same
 locks and fails only on errors your branch adds, in any file, naming each (`FAIL`, then
 `file:line  rule  message`). Errors are counted per file, rule and message, so a second copy of a
 recorded error is new. A `FULL` line means the output could not be read and that check ran in full:
@@ -93,14 +93,14 @@ say so in the PR's Testing. Never fix a recorded error your ticket does not need
 file outside your ticket to clear one. With no such section, check as above.
 
 `desk-ticket` Stage 4's typecheck + lint + unit tests is **not necessarily** the whole gate. Read
-§4 Required checks (and Advisory checks) for what CI runs; where it runs suites that the local
+§4 Required checks (and Advisory checks; `desk-env list required-checks`, `desk-env list advisory-checks`) for what CI runs; where it runs suites that the local
 commands do not (an integration suite, a separate test project, structural or registry tests), those
 are yours to run too, capped and locked:
 
 - **Structural tests a new or changed entry point trips.** Many repos keep a test that every new
   endpoint, route, procedure or migration must be registered with (a policy classification, an
   allow-list, a permissions map). §5 Repo instructions and §4 What review here consistently asks for
-  usually name them. Adding or changing one of those entry points means running that test, and
+  (`desk-env get review-asks`) usually name them. Adding or changing one of those entry points means running that test, and
   choosing its bucket from the guidance the repo gives beside it; anything touching money, outbound
   communication, or another account's sensitive data takes the stricter bucket, not the permissive
   one.
@@ -115,12 +115,12 @@ are yours to run too, capped and locked:
   still exercises its own subject. Never weaken an assertion, skip a test, or relax your change to
   get green**: if a test genuinely asserts behaviour your change made obsolete, park and say which
   test and why.
-- **Your database variables.** Every §4 Database URL variable in your worktree's env files points at
-  your own per-ticket database when one was made (your briefing names it), and is **blank**
-  otherwise (§4 Local database `none`, or §3 `db-per-ticket` not `yes`). Blank is deliberate: it is
+- **Your database variables.** Every §4 Database URL variable (`desk-env list db-url-var`) in your
+  worktree's env files points at your own per-ticket database when one was made (your briefing names
+  it), and is **blank** otherwise (§4 Local database, `desk-env get local-db`, `none`, or §3 `db-per-ticket` not `yes`). Blank is deliberate: it is
   what stands between you and a shared, staging or production database. Never fill it in, never
   copy a URL from another env file or the primary checkout, and never run §4 Database migrate
-  without a per-ticket database (it is denied). With your own database, database-backed suites are
+  (`desk-env cmds db-migrate-cmd`) without a per-ticket database (it is denied). With your own database, database-backed suites are
   safe to run against it; two integration runs in different worktrees still collide on their
   per-worker schemas, so check nobody else is in one first (the batch notes carry the command) and
   follow §3 `tests-shared-db`. With a blank database, a suite that needs one is a park naming the
@@ -133,7 +133,8 @@ a spec file, a test project) and gives one line on why that covers the change: w
 the code you touched. Find them before you ask: `rg -l` the changed component, route or symbol across
 the end-to-end directory, then read the tags on the specs it names. For a run you start, you cannot
 add or change an input, so narrowest means choosing among the §4 Worker workflows entries as
-listed, and the line on why goes in the park on its run id, after the run id.
+listed, and the line on why goes in the park on its run id, after the run id
+(`desk-env list worker-workflows` prints the entries).
 
 - **Every test is the exception.** A request for everything (`all`, or no filter) states why nothing
   narrower covers the change, such as a shared layout or config every journey loads. "To be safe" is
@@ -147,7 +148,7 @@ listed, and the line on why goes in the park on its run id, after the run id.
 
 ### Self-review — `desk-ticket` Stage 4b
 
-Run §4 Local review command on your branch once the change is verified and **before you capture any
+Run §4 Local review command (`desk-env get local-review`) on your branch once the change is verified and **before you capture any
 screenshot**. A confirmed finding means a code change, and every shot taken before it is of the old
 build. With `none`, Stage 4b is a stated skip: say `review=SKIPPED (none configured)` in
 `AUTOPILOT_DONE`, and nothing below about findings or posting applies.
@@ -164,7 +165,7 @@ finders read-only, and when and how to call `codex`. Read that section before th
 
 - **P0, P1 or P2 on round 1**: fix it, and say in `AUTOPILOT_DONE` what it was and what you did.
 - **Then run it again.** Your fix is itself unreviewed code, so only a round that finds nothing
-  has reviewed everything. Keep going until a round comes back reading as §4 Clean review verdict
+  has reviewed everything. Keep going until a round comes back reading as §4 Clean review verdict (`desk-env get clean-verdict`)
   (**no P0, no P1 and no P2**, where the review grades that way). Three rounds is the ceiling, and
   from round 2 a round reads **only the fix range**, the commits since the previous round's reviewed
   SHA (`since` in its results; `desk-review`'s fix-range rules). With no PR yet the review counts

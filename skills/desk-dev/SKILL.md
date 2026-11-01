@@ -25,6 +25,14 @@ desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
 Running the app is **entirely per repo**; nothing below assumes a toolchain, a database or a host.
 
+An autopilot worker cannot read that file, so each row below is a `desk-env` read: §3b Preferred
+dev-server port `desk-env get dev-port`; §4 Package manager `desk-env get package-manager`, Command
+prefix `desk-env get command-prefix`, Install `desk-env cmds install-cmd`, Dev server
+`desk-env cmds dev-cmd`, Env files `desk-env list env-files`, Database URL variable
+`desk-env list db-url-var`, Local database `desk-env get local-db`, Local services
+`desk-env list local-services`, Staging `desk-env list staging`, Staging bypass token location
+`desk-env get staging-bypass` and Vercel `desk-env list vercel`.
+
 | Config | Used for |
 |---|---|
 | §2 Primary repo root | the main checkout; env files are copied from it |

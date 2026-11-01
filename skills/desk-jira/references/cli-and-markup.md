@@ -3,7 +3,7 @@
 Read before writing a body (a ticket, a comment or a description), setting a field with the CLI, or
 acting on a priority `search` shows: the step table in `../SKILL.md` names this file for those steps.
 The config, the gate and the rest of *Transport* (the transport check, the credentials, the reads)
-are in `../SKILL.md`, already loaded.
+are in `../SKILL.md`, already loaded. §4 Priority below is `desk-env list jira-priority`.
 
 ## What the CLI does on a write, and the traps it still has
 

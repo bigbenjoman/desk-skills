@@ -6,6 +6,10 @@ draft, undrafting and merging, and editing the body once the PR is open. The ste
 of §4, the pre-push checks, are in `../SKILL.md`, already loaded; the body itself is in
 `the-body.md`, beside this file, and the screenshots in `screenshots.md`.
 
+The §4 rows this file names are read with `desk-env get repo-merge-settings`,
+`desk-env get merge-method`, `desk-env list required-checks`, `desk-env list advisory-checks`,
+`desk-env list merge-holds`, `desk-env get ticket-pattern` and `desk-env get tracker`.
+
 ### Before `gh pr create` or `gh pr edit`: the PR-description checks
 
 Where `desk-env cmds pr-description-checks` prints items, CI checks the PR's description, and a

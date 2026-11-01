@@ -1528,6 +1528,13 @@ q set R-1 state=done session_id=null result.pr=721; frx 721 "$H2" "$H2" 'p0=0 p1
 check "DS-281 AC3 a clean re-review on the new head undrafts it" '[ "$(grep -c "^pr ready 721 --repo acme/widgets" "$T/gh-calls")" = 1 ]'
 check "DS-281 AC3 with one comment saying its review on that head was clean, quoting the verdict" \
   '[ "$(grep -c "^pr comment 721 --repo acme/widgets --body Out of draft: the desk-review verdict posted on this head (.222222222222.) is clean" "$T/gh-calls")" = 1 ] && grep -q "^> .sha=$H2 p0=0 p1=0 p2=0 deferred=0" "$T/gh-calls"'
+# R-4, stuck on its P1 at H2, was fixed by hand at H3, whose review has only a P2; R-5 is still at H1.
+frx 724 "$H3" "$H3" 'p0=0 p1=0 p2=1'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-386 AC1 a review-stuck draft fixed by hand at a new head is no longer stuck, and says what holds it there" \
+  '[ "$(field R-4 stuck)" = null ] && [ "$(field R-4 undraft.call)" = "\"person\"" ] && ! echo "$out" | grep -q "R-4: STUCK" && echo "$out" | grep -q "R-4: DRAFT — PR #724 stays draft: its review verdict at 333333333 is not clean (p2=1)"'
+check "DS-386 AC2 a review-stuck draft still at the head of its findings stays stuck" \
+  '[ "$(field R-5 stuck.head)" = "\"$H1\"" ] && echo "$out" | grep -qF "R-5: STUCK — PR #725: review not clean after 1 fix try"'
 
 # ---- DS-379: a clean, green draft whose body has `_drag <file>_` cells with no screenshot file goes to a
 # capture worker, once; still missing after it, the person gets the screens and why. dragbody <n> <body>.

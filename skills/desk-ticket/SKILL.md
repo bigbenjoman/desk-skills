@@ -49,7 +49,7 @@ Placeholders used below:
 | `<TICKET>` | the ticket's key (examples use `ABC-123`): a tracker key, a work id, or with no tracker `issue-<n>` or a slug (below) |
 | `<default>` | `desk-env get default-branch`: §0 Default branch, or the batch's base when an autopilot batch sets one |
 | `<repo>` | §0 GitHub repo (`owner/name`) |
-| a §4 Toolchain row, e.g. "§4 Typecheck" | that command, with §4 Command prefix in front unless the prefix is `none` |
+| a §4 Toolchain row, e.g. "§4 Typecheck" (`desk-env cmds typecheck-cmd`) | that command, with §4 Command prefix (`desk-env get command-prefix`) in front unless the prefix is `none` |
 
 Then read `references/desk-ticket-working-style.md` before writing code. It carries the
 standing conventions on minimal changes, comments, branch naming, diff hygiene, generated files
@@ -139,12 +139,12 @@ Each one stops and waits for the user unless config §3 grants it. Silence is no
    §3 `jira-comment`, `jira-create` and `jira-edit`: at `yes`, comments, new tickets and description
    edits post without blocking, provided the exact text is printed as it goes, so the user reads
    what *was* posted; at `ask`, print it and wait. Three are decisions rather than records, and wait:
-   **closing a ticket** any way other than the §4 Done state after the user's own last PR merges
+   **closing a ticket** any way other than the §4 Done state (`desk-env get done-state`) after the user's own last PR merges
    (§3 `jira-close`; that move is `jira-close-own-merged`), anything **routed to another person**
    (§3 `jira-route`), and anything asserting a **product or catalog fact** gate 1 covers, which waits
    whatever §3 says. Read every write back afterwards: `desk-jira edit` can report the ticket
-   `updated` even when it wrote nothing useful, and a select custom field (§4 Priority or §4 Other
-   fields name any) passed as a bare string 400s where `'{"value":"<option>"}'` succeeds.
+   `updated` even when it wrote nothing useful, and a select custom field (§4 Priority, `desk-env list jira-priority`, or §4
+   Other fields, `desk-env list jira-other-fields`, name any) passed as a bare string 400s where `'{"value":"<option>"}'` succeeds.
 3. **Show the diff before pushing.** At config §3 `git-push` `yes`, print the `DIFF REVIEW`
    block as a record and push; at `ask`, print it and wait. The stray-commit check below hard-stops
    either way, and so does a failing pre-push check: every push, fix-ups included, runs
@@ -154,7 +154,7 @@ Each one stops and waits for the user unless config §3 grants it. Silence is no
 5. **A reviewer's comment gets validated before any code changes.** Say whether it's correct
    and why, first, via `desk-review-response`, loaded rather than approximated.
 6. **Any shared-state mutation stops first**: rebuilding a shared local index or cache (§4 Local
-   services, §3 `local-reindex`), a concurrent database-backed test run another session may collide
+   services, `desk-env list local-services`; §3 `local-reindex`), a concurrent database-backed test run another session may collide
    with (§3 `tests-shared-db`), or any write to real staging (§3 `staging-write`).
 7. **Self-review findings are acted on before the PR exists.** Stage 4b fixes what it
    confirms rather than asking permission per finding, and its block reports the outcome
@@ -174,7 +174,7 @@ Produce these blocks. A stage that should have one and doesn't is incomplete:
 
 ```
 JIRA <TICKET | COMMENT | EDIT | TRANSITION> — <posted | awaiting approval>
-target : <ABC-123, or "new ticket in <§4 Jira project>">
+target : <ABC-123, or "new ticket in <§4 Jira project: desk-env get jira-project>">
 fields : type · assignee · labels · priority (§4 Priority) · any §4 Other fields set
 ---
 <the exact body, verbatim>
@@ -252,7 +252,7 @@ closed). If it is done, say the file is spent, offer to delete it, and start fre
 replaying finished work.
 
 The file is removed when the ticket reaches §4 Done state (for a non-tracker ticket, when the PR merges), not
-when the PR opens: `--tail` still needs it while the ticket sits in §4 Review state.
+when the PR opens: `--tail` still needs it while the ticket sits in §4 Review state (`desk-env get review-state`).
 
 Records: ticket and type (or, for a non-tracker ticket, the key, its ticket file and what it was made from) · provisional vs committed lane,
 with the Stage-2 evidence · worktree path · branch · base `<default>` SHA · dev-server port · locks
@@ -262,7 +262,7 @@ reviewed, its findings, the outcome and fixing commit against each, and the re-r
 number and merge state · screenshot directory state.
 
 On invocation, if the file exists, resume from it, and re-verify external state before trusting
-it: does the branch still exist, is the ticket still in §4 In-progress state, are there new
+it: does the branch still exist, is the ticket still in §4 In-progress state (`desk-env get in-progress-state`), are there new
 comments, has the PR merged?
 
 Jira writes must be idempotent across a resume. Put a stable `<TICKET>/desk-ticket` marker in

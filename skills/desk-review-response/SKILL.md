@@ -23,8 +23,10 @@ Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and
 A `TODO` in a row this skill needs is not a gap to guess: stop, ask, and offer `/desk-setup`. Then:
 §0 for the GitHub repo, §1 for the user's GitHub handle, §3 for whether you may push (`git-push`),
 post replies and resolve threads (`pr-reply`), §4 People for who the code reviewer and product owner
-are (name and GitHub handle), §4 Local review command and Clean review verdict for the fix review,
-§4 What review here consistently asks for, and §5 for the written register (Messages to colleagues)
+are (name and GitHub handle), §4 Local review command and Clean review verdict for the fix review
+(`desk-env get local-review`, `desk-env get clean-verdict`), §4 What review here consistently asks
+for (`desk-env get review-asks`), §4 Typecheck and Lint (`desk-env cmds typecheck-cmd`,
+`desk-env cmds lint-cmd`), and §5 for the written register (Messages to colleagues)
 and AI attribution.
 
 The order the skill's author asked for, repeatedly: *"Don't change the code yet, let's talk before
