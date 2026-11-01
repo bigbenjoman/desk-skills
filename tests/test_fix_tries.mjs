@@ -386,8 +386,9 @@ t('DS-379 AC3 with nothing said, it still names the screen', captureTry(tk({ fix
 t('DS-379 the capture try is not one of the fix tries', draftChecksFix(tk({ fix_tries: [...capDone, { try: 1, head: 'b'.repeat(40), kind: 'checks' }] }), { pr: 761, head: HEAD, failing: [{ name: 'tests', runId: '9' }] }, { repo: 'acme/widgets' })?.fix?.try, 2);
 t('DS-379 nor does it spend the head for a fix try', draftChecksFix(tk({ fix_tries: capDone }), { pr: 761, head: HEAD, failing: [{ name: 'tests', runId: '9' }] }, { repo: 'acme/widgets' })?.call, 'requeue');
 
-// ---- DS-406: PR #348's round-7 review as posted. Its one P0's indented sub-bullets are part of it,
-// and a `P1: None` line citing a file:line is no finding.
+// ---- DS-406: PR #348's round-7 review, abridged: its P0 and its P1 / P2 lines verbatim, a few of its
+// sub-bullets. The one P0's indented sub-bullets are part of it, and a `P1: None` line citing a
+// file:line is no finding.
 const BT = '`';
 const p0_348 = `**${BT}desk/bin/evidence.mjs:37${BT}: the code-span strip runs across lines. One unbalanced backtick hides real ${BT}_drag${BT} cells, so a draft with placeholders still in it can leave draft.**`;
 const subs348 = [`  - the four-backtick form around three backticks, as ${BT}desk-config.md:338${BT} writes it.`,
@@ -408,6 +409,8 @@ const body348 = ['<!-- desk-review:local -->',
 const f348 = reviewFindings(body348);
 t('DS-406 AC1 round 7 of PR #348 is one finding, a P0', f348.map((x) => x.sev).join(','), 'P0');
 t('DS-406 AC1 its text holds its three sub-bullets', subs348.every((s) => f348[0]?.text.includes(s.trim())), true);
+t('DS-406 AC1 and its sub-bullets that cite no file:line', ['- A backtick run with no partner', '- a typo;', '- Add checks next to'].every((s) => f348[0]?.text.includes(s)), true);
+t('DS-406 AC2 a finding that opens with the word None is still one', reviewFindings(`## P0 (1)\n- None of the three callers guard a null session, ${BT}src/auth.ts:12${BT}`).map((x) => x.sev).join(), 'P0');
 t('DS-406 AC2 its "None" line under P1 / P2 is no P1', f348.some((x) => x.sev === 'P1'), false);
 t('DS-406 AC2 nor is a "P1: None" line of its own', reviewFindings(`P0 (1)\n- src/a.ts:4 off by one\nP1: None. ${BT}evidence.mjs:35-36${BT} was left out.`).map((x) => `${x.sev} ${x.text}`).join('|'), 'P0 - src/a.ts:4 off by one');
 const pf = personReviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 348, head: HEAD, why: `review not clean after 2 fix tries (2 review): 2 P0 — P0: ${p0_348}; P0: src/a.ts:4 off; by one` });

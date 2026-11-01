@@ -512,6 +512,15 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
   if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
+  // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
+  // reads it, and taken back if the requeue is refused. null once both are made, else what refused.
+  const sendFix = (fix) => {
+    const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify({ ...fix, at: new Date(now).toISOString() })}`]);
+    if (!f.ok) return `its fix was refused: ${f.out}`;
+    const q = queueCmd(r, ['requeue', ticket]);
+    if (!q.ok) { queueCmd(r, ['set', ticket, 'fix=null']); return `the requeue was refused: ${q.out}`; }
+    return null;
+  };
   // The person's call on a draft's review gaps: posted on the PR, kept in the briefing and as the fix
   // its next worker starts on, then requeued. Requeued whoever runs the batch: the next pass closes a
   // fix on a ticket still done, so one left for a session to requeue would be lost.
@@ -522,11 +531,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     catch (e) { return say(false, `not posted on PR #${pr} (${one(e.stderr || e.message)}), so nothing was recorded.`); }
     const a = ans();
     if (!a.ok) return say(false, `posted on PR #${pr}, but not recorded: ${a.why}`);
-    const fix = { ...gapsFix({ pr, head: x.t.pr_status?.head, answer: text }), at: new Date(now).toISOString() };
-    const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify(fix)}`]);
-    if (!f.ok) return say(false, `posted on PR #${pr} and in its briefing, but its fix was refused: ${f.out}`);
-    const q = queueCmd(r, ['requeue', ticket]);
-    if (!q.ok) { queueCmd(r, ['set', ticket, 'fix=null']); return say(false, `posted on PR #${pr} and in its briefing, but the requeue was refused: ${q.out}`); }
+    const no = sendFix(gapsFix({ pr, head: x.t.pr_status?.head, answer: text }));
+    if (no) return say(false, `posted on PR #${pr} and in its briefing, but ${no}`);
     return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
   };
   // Done on a PR: read it from GitHub now. Merged is recorded (the next pass records the merge in full,
@@ -624,16 +630,13 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const q = queueCmd(r, ['transfer', ticket, dest.word]);
       return q.ok ? say(true, `${q.out} (queue.mjs transfer); the next pass there can spawn it.`) : say(false, `move refused: ${q.out}`);
     }
-    // One more review fix try, as the pass sends one: written first so the spawn reads it, and taken back
-    // if the requeue is refused. Requeued whoever runs the batch, as a gaps answer is.
+    // One more review fix try, as the pass sends one. Requeued whoever runs the batch, as a gaps answer is.
     case 'fix': {
       const pr = x.t.result.pr;
       const fix = personReviewFix(x.t, { pr, head: x.t.pr_status?.head, why: stuckOf(x.t, r.ctx)?.why });
       if (!fix) return say(false, `PR #${pr}'s stuck reason quotes no review finding, so nothing was sent.`);
-      const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify({ ...fix, at: new Date(now).toISOString() })}`]);
-      if (!f.ok) return say(false, `its fix was refused: ${f.out}`);
-      const q = queueCmd(r, ['requeue', ticket]);
-      if (!q.ok) { queueCmd(r, ['set', ticket, 'fix=null']); return say(false, `the requeue was refused: ${q.out}`); }
+      const no = sendFix(fix);
+      if (no) return say(false, no);
       return say(true, `sent back to a worker on PR #${pr} for one more try at its findings; the review of its new head says whether they are gone.`);
     }
     // Nothing spawns from a drop, so it is made here whoever runs the batch.

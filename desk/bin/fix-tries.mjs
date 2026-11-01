@@ -195,7 +195,7 @@ export function reviewCounts(v) {
 // { sev, text }. A finding sits under a `P0 (n)` or `P1 (n)` heading, or opens with its own
 // severity; a heading of anything else (P2, REQUIREMENT GAPS, a `###` section) ends that run. A line
 // opening with an em dash, or a bullet indented deeper than the finding's own line, continues the
-// finding above it, and a line saying `None` is no finding.
+// finding above it, and a line saying `None` (`None.`, `P1: None`) is no finding.
 export function reviewFindings(body) {
   const found = [];
   // open: the indent of the finding a deeper bullet continues, null when none is open.
@@ -207,11 +207,8 @@ export function reviewFindings(body) {
     if (sev !== 'P0' && sev !== 'P1') continue;
     if (text.startsWith('—') && found.length) { found[found.length - 1].text += ` ${text}`; continue; }
     const indent = /^\s*/.exec(line)[0].length;
-    if (open != null && indent > open && /^[-*]\s/.test(text)) {
-      if (/[\w./-]+:\d+/.test(text)) found[found.length - 1].text += ` ${text}`;
-      continue;
-    }
-    if (/^[#>*_\s-]*(?:F\d+\s*·\s*)?(?:P[0-3]\b[^A-Za-z]*)?none\b/i.test(text)) continue;
+    if (open != null && indent > open && /^[-*]\s/.test(text)) { found[found.length - 1].text += ` ${text}`; continue; }
+    if (/^[#>*_\s-]*(?:F\d+\s*·\s*)?(?:P[0-3]\b[^A-Za-z]*)?none\b(?=[\s*_]*(?:[.:;,)—-]|$))/i.test(text)) continue;
     if (/[\w./-]+:\d+/.test(text)) { found.push({ sev, text }); open = indent; }
   }
   return found;
