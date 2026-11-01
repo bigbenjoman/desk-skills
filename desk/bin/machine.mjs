@@ -26,7 +26,7 @@ export const SIZING_KEYS = Object.freeze([
 // The thresholds and ratios the proposal uses. Changing one changes every new proposal, never a
 // profile already written.
 export const RULES = Object.freeze({
-  osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3, testWorkersPerSuite: 4, memoryPerLockSlotGB: 16,
+  osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3, minTestWorkers: 4, memoryPerLockSlotGB: 16,
   typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
 });
 
@@ -195,15 +195,15 @@ export function propose(hw, r = RULES) {
   const def = Math.max(1, Math.floor(cap / 2));
   add('autopilot-concurrency', `${def} / ${cap}`, `cap floor(${ceiling} GB / ${r.workerHeavyGB} GB per worker in its heavy stage), default half the cap`);
   add('memory-ceiling-gb', ceiling, ceilingWhy);
-  add('test-cap', known(perf) ? Math.max(1, perf) : 4, known(perf) ? `the ${perf} performance cores` : 'core count unknown: 4');
-  // with-lock.sh lets this many suites or typechecks hold the test lock at once. Each runs 4 test
-  // workers, so the P-cores bound it; each slot also needs room beside the workers in their own heavy
-  // stage, so the memory ceiling does too.
-  const testCap = known(perf) ? Math.max(1, perf) : 4;
-  const byCores = Math.floor(testCap / r.testWorkersPerSuite);
-  const byMemory = Math.floor(ceiling / r.memoryPerLockSlotGB);
-  add('test-lock-slots', Math.max(1, Math.min(byCores, byMemory)),
-    `min(floor(${testCap} P-cores / ${r.testWorkersPerSuite} test workers per suite), floor(${ceiling} GB / ${r.memoryPerLockSlotGB} GB per slot)), at least 1: suites and typechecks that hold the test lock at once`);
+  // with-lock.sh lets test-lock-slots suites or typechecks hold the test lock at once, each with
+  // test-cap test workers, so the slots share the P-cores between them: slots x test-cap stays within
+  // the P-cores. Each slot also needs room beside the workers in their own heavy stage.
+  const testCores = known(perf) ? Math.max(1, perf) : 4;
+  const slots = Math.max(1, Math.min(Math.floor(ceiling / r.memoryPerLockSlotGB), Math.floor(testCores / r.minTestWorkers)));
+  add('test-cap', Math.max(1, Math.floor(testCores / slots)),
+    `${known(perf) ? `the ${perf} performance cores` : 'core count unknown: 4'}${slots > 1 ? `, shared by ${slots} test lock slots` : ''}`);
+  add('test-lock-slots', slots,
+    `min(floor(${ceiling} GB / ${r.memoryPerLockSlotGB} GB per slot), floor(${testCores} cores / ${r.minTestWorkers} test workers at least per suite)), at least 1: suites and typechecks that hold the test lock at once`);
   add('typecheck-lock-timeout-min', r.typecheckLockTimeoutMin,
     `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,

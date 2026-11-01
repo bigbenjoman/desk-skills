@@ -550,8 +550,9 @@ const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k)
 const baseFixes = (r) => (r.batches ? r.batches.reduce((a, b) => a + baseFixes(b), 0) : r.q?.base_fix?.running ? 1 : 0);
 // The workers a repo or batch has running: its running tickets and its base conflict fix.
 const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
-// Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs).
-export const machineRunning = (repos) => repos.reduce((a, r) => a + workersRunning(r), 0);
+// Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs
+// machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
+export const machineRunning = (repos) => repos.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
 const attention = (r) => (r.error || !r.q ? 0 : needsCount(r).shown);

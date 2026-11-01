@@ -1774,6 +1774,10 @@ for (const r of repos279) r.machine = { running: 10, cap: 10 };
 t('desk-q machine cap: a queued fix try waits for a machine slot while every repo\'s workers fill the cap',
   rail279('V-704'), 'Moves without you: #704 · merge conflict with main · waits for a machine slot (10 of 10 busy), then a worker repairs it, try 1 of 2.');
 for (const r of repos279) r.machine = { running: 0, cap: 10 };
+// The machine count is the pass's (borrow.mjs machineBudget): running tickets plus a running base
+// fix, and a batch whose queue cannot be read at its repo's cap.
+t('desk-q machine count: base fixes count, and an unreadable batch counts at its cap',
+  Q.machineRunning([{ rows: [{ k: 'running' }, { k: 'ready' }], q: { base_fix: { running: 'sess' } } }, { error: 'bad json', cap: 3, rows: [] }]), 5);
 t('DS-279 AC11 red only on a check workers can\'t fix: its reason and command', rail279('V-696'), 'Needs you: PR #696, Flows image missing · build it: ensure-flows-image.sh.');
 t('DS-279 AC12 a draft whose review has a P1, and one whose clean verdict is unreadable',
   `${row279('V-700').includes('#700 · draft · review not clean: 1 P1')} ${rail279('V-702')}`, 'true Needs you: PR #702, draft · review verdict unreadable: set §4 Clean review verdict.');

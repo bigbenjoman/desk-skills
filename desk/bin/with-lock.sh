@@ -27,10 +27,10 @@
 # machine profile's `test-lock-slots` row (DESK_TEST_LOCK_SLOTS wins over it), 1 without either, so
 # a machine nobody sized keeps the old one-at-a-time lock. Slot 1 is the original lock path, so a
 # command waiting under an older copy of this script still queues for it correctly. The browser lock
-# is always one slot. A single lock across 10 workers queued 8 suites and typechecks behind each
-# other for up to 14 minutes on 2026-11-01, with 15 GB free: slots raise throughput, the profile
-# keeps the memory bound.
+# is always one slot. Slots raise throughput; the profile keeps the memory bound.
 set -uo pipefail
+# This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
+here="$(cd "$(dirname "$0")" && pwd -P)"
 name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
 timeout=""
 if [ "${1:-}" = "--timeout" ]; then
@@ -76,11 +76,9 @@ gave_up() { echo "with-lock.sh: gave up waiting for the $name lock after ${timeo
 slots=1
 if [ "$name" = test ] || [ "$name" = tsc ]; then
   want="${DESK_TEST_LOCK_SLOTS:-}"
-  if [ -z "$want" ]; then
-    profile="${DESK_MACHINE:-${DESK_CONFIG_ROOT:-$HOME/.config/desk}/machine.md}"
-    profile="${profile/#\~/$HOME}"
-    [ -f "$profile" ] && want="$(sed -n 's/^| *`test-lock-slots` *| *`\{0,1\}\([0-9][0-9]*\)`\{0,1\} *|.*/\1/p' "$profile" | head -n 1)"
-  fi
+  # desk-env reads the profile as every other caller does; with no profile, row or node it prints
+  # nothing and the lock keeps one slot.
+  [ -n "$want" ] || want="$(node "$here/desk-env.mjs" machine get test-lock-slots 2>/dev/null)"
   case "$want" in ''|*[!0-9]*|0) ;; *) slots="$want" ;; esac
 fi
 # Slot i's lock path: slot 1 is the original path.

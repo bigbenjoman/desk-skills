@@ -102,6 +102,13 @@ bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/slot1'; sleep 3" & h1=$!
 n=0; while [ ! -f "$T/slot1" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 4' 2>&1); rc=$?
 check "with-lock slots: a second command runs beside the first" '[ $rc -eq 4 ]'
+# Slot 1 is the original path, so an older copy of the script, which knows only that path, queues
+# behind it: flock finds the file locked, and the mkdir lock finds its directory taken.
+if command -v flock >/dev/null 2>&1; then
+  check "with-lock slots: slot 1 is held at the original path" '! flock -n "$DESK_LOCK_DIR/desk-test.lock" true'
+else
+  check "with-lock slots: slot 1 is held at the original path" '[ -d "$DESK_LOCK_DIR/desk-test.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.1.d" ]'
+fi
 bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/slot2'; sleep 3" & h2=$!
 n=0; while [ ! -f "$T/slot2" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 true 2>&1); rc=$?
@@ -111,7 +118,7 @@ check "with-lock slots: DESK_TEST_LOCK_SLOTS wins over the profile" '[ $rc -eq 5
 out=$(bash "$SRC/desk/bin/with-lock.sh" browser --timeout 0 sh -c 'exit 6' 2>&1); rc=$?
 check "with-lock slots: the browser lock is its own" '[ $rc -eq 6 ]'
 wait "$h1" "$h2"
-check "with-lock slots: slot 1 keeps the original path, every slot released" '[ ! -e "$DESK_LOCK_DIR/desk-test.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.2.d" ]'
+check "with-lock slots: every slot released" '[ ! -e "$DESK_LOCK_DIR/desk-test.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.2.d" ]'
 mkdir -p "$DESK_LOCK_DIR/desk-test.lock.d" "$DESK_LOCK_DIR/desk-test.lock.2.d"
 echo 999999 > "$DESK_LOCK_DIR/desk-test.lock.d/pid"; echo 999998 > "$DESK_LOCK_DIR/desk-test.lock.2.d/pid"
 out=$(bash "$SRC/desk/bin/with-lock.sh" test --timeout 0 sh -c 'exit 7' 2>&1); rc=$?
