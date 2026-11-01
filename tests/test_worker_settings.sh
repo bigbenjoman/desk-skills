@@ -94,6 +94,10 @@ PMROW='`pnpm`' settings '`api: pnpm vitest run`' '| Pre-push checks | `api: pnpm
 check "DS-398 AC3 a pre-push item a locked row's item extends takes that row's lock" \
   '[ $rc -eq 0 ] && ! grep -qE "with-lock.sh nolock --cwd [^ ]*(api -- pnpm (run )?vitest|web -- pnpm (run )?tsc)" "$T/ws.json" \
      && allows "Bash($B/with-lock.sh test --cwd api -- pnpm vitest:*)" && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm tsc:*)"'
+PMROW='`pnpm`' settings '`web: pnpm vitest run`' '| Pre-push checks | `web: pnpm vitest` |' '| E2E tests | `web: pnpm vitest --browser` |'
+check "DS-398 AC3 a pre-push item two rows with different locks extend gets no wrapped form" \
+  '[ $rc -eq 0 ] && ! grep -qE "with-lock.sh [a-z]+ --cwd [^ ]*web (-- )?pnpm (run )?vitest:" "$T/ws.json" \
+     && allows "Bash($B/with-lock.sh test --cwd web -- pnpm vitest run:*)" && allows "Bash($B/with-lock.sh browser --cwd web -- pnpm vitest --browser:*)"'
 
 # A Related tests row that is one script is allowed bare and under the test lock; the compound it replaced is not.
 settings '`bash tests/run.sh`' '| Related tests | `bash tests/related.sh` |'

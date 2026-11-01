@@ -187,8 +187,9 @@ function twins(cmd) {
 // A pre-push item that is another row's item (a Typecheck or Unit tests item, say), by any twin and
 // however its directory is spelled, is left to that row; one that extends a locked row's item with
 // arguments, or that a locked row's item extends (its prefix rule would match that item), takes that
-// row's lock. Either way a locked command never gains a `nolock` form. The rest take `nolock`, as
-// pre-push.sh runs them.
+// row's lock. Where such rows take different locks, no one lock is right for every command its
+// prefix rule matches, so the item is left to those rows too. Either way a locked command never
+// gains a `nolock` form, or another lock's. The rest take `nolock`, as pre-push.sh runs them.
 const normDir = (d) => d.replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
 for (let i = items.length - 1; i >= 0; i--) {
   const p = items[i];
@@ -196,8 +197,9 @@ for (let i = items.length - 1; i >= 0; i--) {
   const forms = twins(p.cmd);
   const rows = items.filter((x) => x.id !== 'pre-push-checks' && normDir(x.dir) === normDir(p.dir));
   if (rows.some((x) => twins(x.cmd).some((c) => forms.includes(c)))) { items.splice(i, 1); continue; }
-  const locked = rows.find((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `))));
-  if (locked) p.lock = E.lockFor(locked.id);
+  const locks = new Set(rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `)))).map((x) => E.lockFor(x.id)));
+  if (locks.size > 1) items.splice(i, 1);
+  else if (locks.size) p.lock = [...locks][0];
 }
 const withPrefix = (c) => [c, ...(PREFIX ? [`${PREFIX} ${c}`] : [])];
 
