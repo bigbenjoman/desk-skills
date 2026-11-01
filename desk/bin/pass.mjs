@@ -1353,6 +1353,22 @@ const baselineBrief = () => {
     '',
   ].join('\n');
 };
+// A ticket whose every criterion triage found already met is a verify-only task.
+const verifyBrief = (t) => {
+  let r = null;
+  try { r = JSON.parse(readFileSync(join(STATE, 'triage', `${t.key}.json`), 'utf8')); } catch { return ''; }
+  if (r?.verify_only !== true) return '';
+  const met = (Array.isArray(r.already_met) ? r.already_met : []).map((m) => `- ${m}`);
+  return [
+    '## Verify-only',
+    '',
+    'Triage found every acceptance criterion already met on the base:',
+    ...met,
+    '',
+    'Prove each criterion with a test that exercises it. Change code only where a test shows a criterion is not met, and say in the PR which criteria were already met and where.',
+    '',
+  ].join('\n');
+};
 
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing. A base conflict fix worker still at it
@@ -1510,6 +1526,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
     ownedBrief(t, wt),
     fixBrief(t),
     baselineBrief(),
+    verifyBrief(t),
     t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,

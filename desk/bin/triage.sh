@@ -95,6 +95,25 @@ node "$DESK_BIN/worker-settings.mjs" triage --ticket "$TICKET" --out "$SETTINGS"
 # Both passes are offered only the tools they use (worker-tools.mjs).
 desk_tool_args triage || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
 
+# What is already settled for this ticket: the user's answers in its briefing (answer.mjs) and the
+# calls logged for it (decisions.mjs), so a re-triage does not ask them again.
+RECORDED="$(node --input-type=module - "$STATE" "$TICKET" "$DESK_BIN" <<'RECORDED_END' 2>/dev/null || true
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [state, ticket, bin] = process.argv.slice(2);
+const { collectAnswers, capBriefing } = await import(pathToFileURL(join(bin, 'briefing.mjs')).href);
+const brief = join(state, 'briefings', `${ticket}.md`);
+const answers = existsSync(brief) ? collectAnswers(readFileSync(brief, 'utf8')) : '';
+const log = join(state, 'decisions.jsonl');
+const calls = (existsSync(log) ? readFileSync(log, 'utf8').split('\n') : []).flatMap((l) => {
+  try { const e = JSON.parse(l); return e?.ticket === ticket ? [e] : []; } catch { return []; }
+}).map((e) => (e.kind === 'check' ? `- ${e.question}: checked ${e.checked}, which showed ${e.showed}` : `- ${e.question}: took "${e.chose}" (${e.category})`));
+const out = [answers, calls.length ? `Calls already taken or checked for ${ticket}:\n${[...new Set(calls)].join('\n')}` : ''].filter(Boolean).join('\n\n');
+if (out) process.stdout.write(capBriefing(out, 12000));
+RECORDED_END
+)"
+
 read -r -d '' PROMPT <<PROMPT_END || true
 Triage ticket $TICKET in $DESK_GH_REPO${REPO_DESC:+ ($REPO_DESC)}. Read-only: change nothing, create
 no branch or worktree.
@@ -129,10 +148,19 @@ Things that are not in that file and matter here:
   harness write-protects \`.claude/\` for a headless worker, and no setting or allow rule unlocks it,
   so only an interactive \`desk-ticket\` session can build it. List those paths in \`files_in_scope\`
   and start \`lane_reason\` with "the harness write-protects .claude/ for workers".
-- **\`unknowns\` is only for decisions that are the user's.** Before listing one, check: is it
-  already settled by the repo's own instructions ($INSTRUCTIONS) or a memory? Is it really the product
-  owner's or the reviewer's call (config §4) — if so say whose call it is. Would any reasonable
-  engineer just pick one and note it in the PR? Then pick it. Two well-aimed questions beat five.
+- **Only five topics wait for the user; every other call is taken.** Before listing an unknown,
+  check whether the repo's own instructions ($INSTRUCTIONS), a memory or what is already settled
+  for this ticket (below) answers it. Would any reasonable engineer just pick one and note it in the
+  PR? Then pick it, and it is not an unknown. Otherwise write it as \`{"question", "category",
+  "options", "recommended"}\`, where \`category\` is an ask category (\`money\`, \`legal\` for legal
+  or regulatory, \`production\` for production data or credentials, \`customer-copy\` for customer
+  copy where length means cost, \`user-fact\` for a fact only the user holds, such as missing
+  product, catalog or copy data) or a take category (\`product\`, \`design\`, \`wording\`,
+  \`review\`, \`engineering\`, \`scope\`, \`tracker\`). A take-category call with a recommendation
+  you can defend is taken: \`recommended\` names your option, the worker builds it and it is logged
+  as a decision, and it never stops the ticket. \`recommended\` is null only for an ask category,
+  or when you have no recommendation you can defend: those wait for the user. Two well-aimed
+  questions beat five.
 - **A design attached to a ticket is not by itself lane D.** Where UI tickets routinely carry a
   design (a Figma frame, or a Claude Design artifact), treating one as sufficient on its own parks
   most of the board. D is for a new screen, section or component the design specifies; a change to
@@ -153,16 +181,24 @@ Things that are not in that file and matter here:
   you can name file by file, which is lane A. Before writing lane C or D on a size signal, state
   what is genuinely missing *given what already exists*. If \`prior_art\` is non-empty and the lane
   is still C or D, \`lane_reason\` must say why the prior art does not shrink it.
-- **"Already fixed" is not a lane.** If the code seems to satisfy the ticket, say so in
-  \`lane_reason\` with file:line per acceptance criterion, keep the lane you would otherwise pick,
-  and add an \`unknowns\` entry. Nothing in a batch closes a ticket on a triage opinion.
+- **"Already fixed" is not a lane, and not a question.** For each acceptance criterion the code on
+  $BASE seems to satisfy, add an \`already_met\` entry naming the criterion and the file:line that
+  satisfies it, and keep the lane you would otherwise pick. When every criterion is met, set
+  \`verify_only\` to true: the ticket is admitted as a verify-only task whose worker proves each
+  criterion with a test and changes code only where one fails. Nothing in a batch closes a ticket on
+  a triage opinion, and none of this goes in \`unknowns\`.
 - **Name the change's blast radius in \`change_kind\`**: the largest of these the change makes, from
   the code you read, not the ticket's wording. plan-batch merges the batch in this order.
   \`relocate\`: moves, renames or deletes files or whole directories, or adds a new shared package.
   \`schema\`: changes a schema, a migration, or a persisted or wire format others read.
   \`shared\`: changes code, components, primitives or translation files more than one surface uses.
   \`surface\`: ordinary work on one surface.
+${RECORDED:+
+**Already settled for $TICKET.** These bind: raise no unknown they answer, on the same acceptance
+criterion or any other, and judge the lane and scope with them applied.
 
+$RECORDED
+}
 Write ONLY this JSON to $OUT — no prose, no code fence:
 
 {
@@ -177,7 +213,9 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "files_in_scope": ["repo-relative paths you expect to change"],
   "change_kind": "relocate|schema|shared|surface",
   "change_kind_reason": "<one clause: what it moves, the schema or shared code it changes, or the surface it touches>",
-  "unknowns": ["questions only the user can answer. Empty if none."],
+  "unknowns": [{"question": "<one line>", "category": "<an ask or take category, above>", "options": ["<at least two>"], "recommended": "<one of options, or null>"}],
+  "already_met": ["<an acceptance criterion the code already satisfies>: <file:line>"],
+  "verify_only": <true only when every acceptance criterion is in already_met>,
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],
   "ben_steps": [{"step": "<a step only the user can take, from the routing file's list>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}],
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
@@ -186,6 +224,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
 }
 
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.
+unknowns and already_met are [] when there are none.
 ben_steps is [] when the ticket needs no step only the user can take.
 PROMPT_END
 
@@ -207,6 +246,24 @@ if [ ! -f "$OUT" ]; then
 fi
 node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps");' "$OUT" \
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
+# Only the questions the user must answer stay in `unknowns`, as strings every reader of the record
+# takes them as; each call taken on its recommendation goes to `decided`, logged when the ticket is
+# admitted. `verify_only` holds only with criteria named in `already_met`.
+node --input-type=module - "$OUT" "$DESK_BIN" <<'CALLS_END' || { echo "FAIL: $TICKET triage record's questions could not be split" >&2; exit 1; }
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, bin] = process.argv.slice(2);
+const { triageCalls } = await import(pathToFileURL(join(bin, 'decisions.mjs')).href);
+const d = JSON.parse(readFileSync(out, 'utf8'));
+const { ask, taken } = triageCalls(d);
+d.unknowns = ask;
+d.decided = taken;
+d.already_met = (Array.isArray(d.already_met) ? d.already_met : []).map(String).filter((s) => s.trim());
+d.verify_only = d.verify_only === true && d.already_met.length > 0;
+writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
+if (taken.length) console.log(`[triage] ${d.ticket}  took ${taken.length} call(s) on their recommendation`);
+CALLS_END
 # A branch the worker could never push is refused, and the record goes with it, so the ticket is
 # triaged again rather than queued on that branch.
 BRANCH=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).branch)' "$OUT")
