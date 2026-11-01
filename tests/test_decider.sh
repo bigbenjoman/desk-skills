@@ -41,7 +41,7 @@ EOF
 echo "RECOVERY RULES: a lane C or D park is never requeued" > "$T/skills/desk-autopilot/references/orchestrator-recovery.md"
 
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs usage-limit.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { readFileSync } from 'node:fs';
 const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
@@ -67,6 +67,7 @@ case "\$mode" in
     node -e 'const [key, ids] = process.argv.slice(1); console.log(JSON.stringify({type:"result", total_cost_usd:0.1234, result:"Done.\nDECIDER_RESULT: "+JSON.stringify({settled: ids.split(/\s+/).filter(Boolean).map((id) => ({id, did:"requeued "+key+" for more agent work"})), handed:[]})}))' "\$key" "\$ids" ;;
   hand)
     node -e 'console.log(JSON.stringify({type:"result", total_cost_usd:0.05, result:"DECIDER_RESULT: "+JSON.stringify({settled:[], handed: process.argv[1].split(/\s+/).filter(Boolean).map((id) => ({id, why:"a product call"}))})}))' "\$ids" ;;
+  limit) cat "$S/fixtures/decider-usage-limit.json" ;;
   *) echo '{"type":"result","total_cost_usd":0.01,"result":"I could not decide."}' ;;
 esac
 EOF
@@ -219,6 +220,38 @@ queue '{"H":{"key":"H","state":"parked","lane":"A","park":{"question":"h?"}}}'
 verdict "$(parked H "h?")"; echo "none" > "$T/claude.mode"
 out=$(tick); settle; out=$(tick)
 check "a session with no result line hands its items on" 'handed | grep -q "^H|decider no DECIDER_RESULT: line$"'
+
+# ---- the decider at a usage limit hands nothing on, and none starts while the batch is held ----
+out=$(node --input-type=module -e "
+import { readResult, outcome } from '$B/decider.mjs';
+const rec = { items: [{ id: 'park-1', ticket: 'L', kind: 'parked', text: 'l?' }] };
+const r = readResult('$S/fixtures/decider-usage-limit.json');
+const o = outcome(rec, r);
+const plain = outcome(rec, { cost: 0.01, error: 'no DECIDER_RESULT: line' });
+console.log([r.limit, o.handed.length, o.settled.length, o.kept.map((i) => i.ticket).join(), plain.handed[0]?.why, plain.kept].join('|'));
+")
+check "DS-387 AC2: the recorded limit result hands nothing on and keeps every item" '[ "${out%%|decider*}" = "true|0|0|L" ]'
+check "DS-387 AC4: a result with no mark line and no error still hands its items on" '[ "$out" = "true|0|0|L|decider no DECIDER_RESULT: line|" ]'
+mark; rm -f "$T/state/handed.json"; echo "limit" > "$T/claude.mode"
+LQ='"L":{"key":"L","state":"parked","lane":"A","park":{"question":"l: the tests fail"}}'
+queue "{$LQ}"; verdict "$(parked L "l: the tests fail")"
+notes=$(grep -c "" "$T/state/batch-notes.md")
+out=$(tick); settle; out=$(tick)
+check "DS-387 AC2: a session at the limit hands nothing to the digest" '[ -z "$(handed)" ]'
+check "DS-387 AC2: the report says it stopped at the limit and kept L" 'grep -q "decider .*: \$0.00; stopped at the usage limit, so it settled nothing and handed nothing on; L kept for the next decider" "$LOG"'
+check "DS-387 AC2: nothing goes to the batch notes" '[ "$(grep -c "" "$T/state/batch-notes.md")" = "$notes" ]'
+check "DS-387 AC2: L kept goes to the next decider" '[ "$(calls)" = 2 ]'
+printf '{"version":1,"batch":"b1","supervised":true,"approved":{},"usage_hold":{"since":"2026-10-29T17:30:00Z","type":"seven_day","resets_at":1793545200,"preflight":"Z","paused":[]},"tickets":{%s}}\n' "$LQ" > "$DESK_QUEUE"
+settle; out=$(tick)
+check "DS-387 AC1: no decider starts while the batch is held on the usage limit" '[ "$(calls)" = 2 ]'
+check "DS-387 AC1: the log names the usage hold" 'grep -q "^decider: not started, the batch is held on the weekly usage limit until 2026-11-01 15:00 UTC (usage_hold); L wait for the next decider once it lifts$" "$LOG"'
+check "DS-387 AC1: nothing is handed on while held" '[ -z "$(handed)" ]'
+echo "requeue L" > "$T/claude.mode"
+queue "{$LQ}"
+out=$(tick); settle
+check "DS-387 AC3: once the hold clears, a decider starts for L" '[ "$(calls)" = 3 ] && grep -q "decider: started (pid [0-9]*) for L;" "$LOG"'
+verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'; out=$(tick)
+check "DS-387 AC3: and it settles L" 'grep -q "^- \[decider\] .* L: requeued L for more agent work$" "$T/state/batch-notes.md"'
 
 # ---- §3 worker-web-read: a park asking only for a public fact is requeued where workers can read the web ----
 lastargs(){ set -- "$T"/claude.args.*; echo "$T/claude.args.$(( $# - 1 ))"; }
