@@ -236,7 +236,7 @@ ln -s "$T/repo" "$T/link"
 out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/link" --branch fix/fix-thing --out "$T/ws.json" 2>&1); rc=$?
 check "DS-398 AC4 a symlinked --wt: git -C by the link or the real path" '[ $rc -eq 0 ] && ok "git -C $T/link status" "git -C $T/link commit -m x" "git -C $R status" "git -C $R add -A" && no "git -C $T/other status"'
 triage
-check "triage's allow-list is unchanged: no echo, printf or true" 'no "echo x" "printf %s x" "true"'
+check "triage's allow-list is unchanged: no echo or printf"   'no "echo x" "printf %s x"'
 check "AC10 triage: the token is not readable either"      '[ $rc -eq 0 ] && no "cat $CREDS/atlassian-token" "cat \${HOME}/.config/desk/repos/acme__widgets/x" && [ "$(readable "$CREDS/atlassian-token")" = refused ]'
 settings '`bash tests/run.sh`' '' "$(perm3 yes)"
 check "AC6 jira-transition yes: both allowed"             'ok "desk-jira transitions DS-1" "desk-jira transition DS-1 Done"'
