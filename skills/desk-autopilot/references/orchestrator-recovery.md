@@ -118,13 +118,17 @@ yourself and give the worker only the part that needs an agent.
 ## A worker killed by a reboot or a crash
 
 `pass.mjs` resumes it by itself. A running worker whose session is gone, whose log ends without a
-result event, and that printed no marker and has no open PR was killed mid-run. The pass queues it to
-resume (`resume=pending`, state `triaged`, its `session_id`, branch and worktree kept) and the spawn
-resumes it ahead of new tickets, through `spawn-worker.sh` with `AUTOPILOT_RESUME` on its own session,
-so inside the worker sandbox. The report says `resumed after it was killed (<n> of <limit>)` and
+result event, and that printed no marker was killed mid-run, whether or not its PR is open. A worker
+that exited at a usage limit is paused and resumed the same way once the limit lifts, PR or not. The
+pass queues it to resume (`resume=pending`, state `triaged`, its `session_id`, branch and worktree
+kept) and the spawn resumes it ahead of new tickets, through `spawn-worker.sh` with `AUTOPILOT_RESUME`
+on its own session, so inside the worker sandbox. The report says `resumed after it was killed (<n> of <limit>)` and
 whether the computer restarted. Config §3b "Resume a killed worker (times)" caps it per ticket (unset
 is 2); past it the ticket parks naming the limit and the session, and at `0` it is marked failed
 instead. A session that ended normally, and a worker the pass stopped as wedged, are never resumed.
+Past the limit, a killed worker whose PR is open is recorded done on it, as a worker that ended normally
+with no marker is. A fix try queued to resume its own session is never held as WORKTREE IN USE for
+the uncommitted changes or unpushed commits it left: they are its own.
 The count is the queue's `resumes`; a requeue starts a fresh session and clears a pending resume.
 
 ## Resuming a dead worker's half-finished worktree
