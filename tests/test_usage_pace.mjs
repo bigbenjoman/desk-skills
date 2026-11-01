@@ -97,6 +97,10 @@ t('DS-409 AC3 unit: an event with no unifiedWindows, naming one window, leaves b
 // A subscription with no 5-hour window lists seven_day alone: five_hour is none, not an older reading.
 log(B, 'B-1', [both(win(0.97, 4 * HOUR), win(0.54, 2 * DAY)), both(null, win(0.54, 5 * DAY))]);
 t('DS-409 AC1 unit: a window the newest event\'s unifiedWindows leaves out is none, not the older event\'s', JSON.stringify([reading().five_hour, reading().seven_day, reading().none]), JSON.stringify([null, win(0.54, 5 * DAY), ['five_hour']]));
+// The same switch with a real event from a subscription with no 5-hour window (tests/fixtures/usage-limit-seven-day-only.json).
+log(B, 'B-1', [both(win(0.97, 4 * HOUR), win(0.54, 2 * DAY)), readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'usage-limit-seven-day-only.json'), 'utf8').trim()]);
+t('DS-409 AC1 unit: a recorded seven_day-only event leaves five_hour none', JSON.stringify([reading().five_hour, reading().seven_day, reading().none]), JSON.stringify([null, { utilization: 0.12, resetsAt: 1793901600 }, ['five_hour']]));
+log(B, 'B-1', [both(win(0.97, 4 * HOUR), win(0.54, 2 * DAY)), both(null, win(0.54, 5 * DAY))]);
 t('DS-409 and weekly pacing still reads its 7-day window', JSON.stringify(P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })), JSON.stringify(win(0.54, 5 * DAY)));
 // A log over the 1 MB tail: the tail's newest reading, and the whole log when the tail has none.
 const filler = Array(12000).fill(JSON.stringify({ type: 'user', pad: 'x'.repeat(100) }));
