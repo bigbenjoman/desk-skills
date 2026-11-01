@@ -385,7 +385,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
 const runLine = (r) => {
   const w = runner(r);
-  return `@ ${r.name}: ${w.by === 'supervisor' ? 'run by the supervisor; its next pass picks answers up'
+  return `@ ${r.name}: ${w.by === 'supervisor' ? 'run by the supervisor; an answer wakes it, and its next pass picks the answer up'
     : w.by === 'session' ? `run by a live session${w.name ? ` (${w.name})` : ''}; resumes go to it by message`
       : `passes stopped; answers wait until they resume. To resume: ${w.resume}`}`;
 };

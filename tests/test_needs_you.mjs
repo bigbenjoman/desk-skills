@@ -762,6 +762,27 @@ t('DS-389 AC7 it has waited since the copy was first found behind', Math.round((
 const tDone = N.record({ word: 'nu', ticket: 'templates', action: 'done' });
 t('DS-389 AC7 done checks the copies again, and clears once none is behind', `${tDone.ok} ${tDone.line} ${nu().some((i) => i.kind === 'templates')}`, 'true nu templates: no copy is behind on origin/main now, so it is off your list. false');
 
+// ---- DS-396: an idle batch the loaded supervisor runs is not stopped; one with no agent is
+// Each last passed 20 minutes ago. omicron's supervisor has ticked idle since, refreshing its heartbeat as
+// supervisor.mjs idleBeat does (test_supervisor.sh proves the tick writes it); pi's agent is not loaded.
+put('omicron', { port: 3810, beat: 20, supervised: true, tickets: {
+  'O-1': parked('A', 30, 'Which copy?'),
+  'O-2': { ...parked('A', 30, 'Which colour?'), park: { question: 'Which colour?', since: minsAgo(30), answered: minsAgo(5) } },
+} });
+put('pi', { port: 3820, beat: 20, supervised: true, tickets: { 'P-1': parked('A', 30, 'Which size?') } });
+writeFileSync(join(T, 'bin', 'loaded'), 'com.desk-skills.supervisor.acme__alpha\ncom.desk-skills.supervisor.acme__omicron\n');
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__omicron', 'orchestrators', 'q.json'), JSON.stringify({ queue: join(env.DESK_HOME, 'repos', 'acme__omicron', 'queue.json'),
+  batch: 'omicron-batch', pid: 2, at: minsAgo(1), pass: minsAgo(20), next: new Date(NOW + 2 * 60000).toISOString() }));
+const runOf = (word) => N.listText(N.collect({ word })).split('\n').find((l) => l.startsWith('@ '));
+t('DS-396 AC1 an idle supervised batch says the supervisor runs it and an answer wakes it, not passes stopped',
+  `${runOf('omicron')} ${/passes stopped/i.test(cli('left', 'omicron').out)}`, '@ omicron: run by the supervisor; an answer wakes it, and its next pass picks the answer up false');
+t('DS-396 AC3 a batch with no supervisor agent loaded and no pass for 20 minutes still says passes stopped',
+  /^@ pi: passes stopped; answers wait until they resume\. To resume: /.test(runOf('pi') ?? ''), true);
+t('DS-396 AC4 desk-q counts the idle supervised batch live, so its answered park waits rather than needing you',
+  loadRepos().find((r) => r.name === 'omicron').rows.find((x) => x.t.key === 'O-2').k, 'waiting');
+t('DS-396 desk-q dates the idle supervised batch by its last pass, not by the idle tick that refreshed its beat',
+  `${(r => [r.live, r.last])(loadRepos().find((x) => x.name === 'omicron')).join(' ')}`, `true ${Date.parse(minsAgo(20))}`);
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
