@@ -47,7 +47,7 @@ import { gapsFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine } from './not-now.mjs';
 import { batchHolding } from './batches.mjs';
@@ -201,15 +201,14 @@ const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['mov
 // The open blockers outside its batch the last pass recorded for a ticket (pass.mjs outside_blockers),
 // each with its Jira status category and the batch of this repo holding it: `standing`, a named
 // batch, or null for none. A key two batches hold reads as held, so it is never offered to admit.
-const CATEGORY = { new: 'to do', indeterminate: 'in progress', done: 'done' };
 function outsideHolds(r, t) {
-  return (Array.isArray(t.outside_blockers) ? t.outside_blockers : []).map((b) => {
+  return outsideOf(t).map((b) => {
     let at;
     try { at = batchHolding(b.key, r.slug); } catch { at = { name: 'more than one batch' }; }
     return { key: b.key, category: b.category ?? 'new', batch: at ? (at.name ?? 'standing') : null };
   });
 }
-const holdWords = (o) => `${o.key} (${CATEGORY[o.category] ?? o.category}, ${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
+const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()},${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
 // Every blocker a ticket names, in its batch or outside it, with its state: a put-off item's input, so a
 // blocker that moves brings it back.
 function blockerStates(r, t) {
@@ -348,13 +347,17 @@ function putOffKey(r, t, item) {
 
 // A needs row as an item, and what the not-now register says of it: the one rule desk-q's count and
 // this list both go by. An item put off with unchanged inputs is asked again once it offers an action
-// it did not offer then; an entry that recorded none is asked again once, and records them.
+// it did not offer then. An entry from before entries recorded actions is asked again once, and
+// records them; one written since without them (answer.mjs and not-now.mjs add, which do not know an
+// item's actions) stays put off on its inputs alone.
+const ACTIONS_SINCE = Date.parse('2026-11-01T15:00:00Z');
+const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
 function judged(r, x, register) {
   const item = itemOf(r, x);
   const l = lookup(register, putOffKey(r, x.t, item));
   if (l.status !== 'put_off') return { item, l };
   const was = Array.isArray(l.entry.actions) ? l.entry.actions : null, now = verbsOf(item);
-  if (was && now.every((a) => was.includes(a))) return { item, l };
+  if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return { item, l };
   return { item, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
 }
 

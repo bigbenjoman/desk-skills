@@ -279,7 +279,7 @@ put('theta', { port: 3800, beat: 1, supervised: true, tickets: {
 } });
 const NN = await import('../desk/bin/not-now.mjs');
 const thetaState = join(env.HOME, '.desk-autopilot', 'acme__theta');
-// KAN-609's put-off, as the outside question was keyed before it was a held row.
+// A put-off under the outside question's triage key, with its start-anyway need and no blocker input.
 NN.addPutOff(NN.putOffEntry({ question: 'H-2 triage', ticket: 'H-2', inputs: { ticket: 'H-2', need: 'held by X-9, outside this batch: start anyway?' } }), thetaState);
 // A blocker another batch of the repo holds: something works it, so there is nothing to admit.
 const yq = join(env.DESK_HOME, 'repos', 'acme__theta', 'batches', 'Y-B', 'queue.json');
@@ -708,15 +708,19 @@ const m5 = N.record({ word: 'omega', ticket: 'M-5', action: 'move', text: 'F-1' 
 t('DS-380 a worktree holding untracked files is never removed, and nothing moves', `${m5.ok} ${/holds work cut from main \(uncommitted changes or untracked files\)/.test(m5.line)} ${existsSync(join(wt('M-5'), 'new.js'))} ${'M-5' in queueOf('omega').tickets} ${'M-5' in fQueue().tickets}`, 'false true true true false');
 // ---- DS-401: a put-off item comes back once it offers an action it did not offer when put off.
 const omegaState = join(env.HOME, '.desk-autopilot', 'acme__omega');
-// M-3 put off before move existed; M-2 put off as KAN-1291 was, by answer.mjs, recording no actions.
+// M-3 put off offering resume and not-now; M-2 by answer.mjs before entries recorded actions, so with
+// none; M-5 by answer.mjs since, with none either.
 NN.addPutOff(NN.putOffEntry({ question: 'this one too', ticket: 'M-3', inputs: {}, actions: ['resume', 'not-now'] }), omegaState);
-NN.addPutOff(NN.putOffEntry({ question: 'the file is on the feature branch', ticket: 'M-2', inputs: {} }), omegaState);
+NN.addPutOff(NN.putOffEntry({ question: 'the file is on the feature branch', ticket: 'M-2', inputs: {}, at: '2026-10-31T16:54:00.000Z' }), omegaState);
+NN.addPutOff(NN.putOffEntry({ question: 'and this one', ticket: 'M-5', inputs: {} }), omegaState);
 const omega = () => Object.fromEntries(N.collect({ word: 'omega' }).items.map((i) => [i.t.key, i]));
 t('DS-401 AC1 an item put off offering resume and not-now is listed again once it offers move, saying so',
   /^this one too \(Changed since it was put off on \d{4}-\d\d-\d\d: actions resume, not-now → resume, not-now, move\.\)$/.test(omega()['M-3']?.need ?? ''), true);
-t('DS-401 AC1 a put-off that recorded no actions (KAN-1291) is listed again once, saying so',
+t('DS-401 AC1 a put-off from before entries recorded actions (KAN-1291) is listed again once, saying so',
   /\(Changed since it was put off on \d{4}-\d\d-\d\d: actions \(not recorded\) → resume, not-now, move\.\)$/.test(omega()['M-2']?.need ?? ''), true);
 t('DS-401 AC1 desk-q counts them as needing you', N.needsCount(loadRepos().find((r) => r.name === 'omega')).rows.some((x) => x.t.key === 'M-3'), true);
+t('DS-401 AC4 a park put off since by answer.mjs, recording no actions, stays put off in the list and in desk-q\'s count',
+  `${'M-5' in omega()} ${N.needsCount(loadRepos().find((r) => r.name === 'omega')).rows.some((x) => x.t.key === 'M-5')}`, 'false false');
 N.record({ word: 'omega', ticket: 'M-3', action: 'not-now' });
 N.record({ word: 'omega', ticket: 'M-2', action: 'not-now' });
 const m3Entry = NN.readRegister(omegaState).entries.get(NN.questionKey('this one too'));
