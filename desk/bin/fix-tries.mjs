@@ -2,7 +2,8 @@
 // FIX_TRIES_MAX times: one still red after the driver's two reruns, or one in conflict with its base.
 // So does a draft whose posted review at its head found a P0 or a P1, or under §3 autopilot-judgement
 // yes a requirement gap (reviewFix), FIX_TRIES_MAX review fix tries of its own within FIX_TRIES_TOTAL
-// tries in all, and one whose review gaps the person
+// tries in all (a try that cleared what it quoted not counted, up to REVIEW_TRIES_CEILING), and one
+// whose review gaps the person
 // ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
 // (reviewTry) to a review worker, both within the same tries, and so does a draft in conflict with
@@ -107,10 +108,37 @@ export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // A review fix has FIX_TRIES_MAX of its own, counted over review fix tries only, so the conflict,
 // red-check and re-review tries before it leave it its own, within FIX_TRIES_TOTAL tries of every kind
 // that count. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always has one.
+// A review fix try that recorded what it quoted (`findings`, `gaps`) and whose findings all cleared,
+// none of them still in the review at the head, counts against neither: it moved the PR forward. Only
+// REVIEW_TRIES_CEILING bounds those, so a loop where every fix makes a new finding still ends.
 const FIX_TRIES_TOTAL = FIX_TRIES_MAX + 1;
-const reviewTriesMade = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'review').length;
-// The review fix tries left: its own, and no more than the overall cap leaves.
-const reviewTriesLeft = (done) => Math.min(FIX_TRIES_MAX - reviewTriesMade(done), FIX_TRIES_TOTAL - triesMade(done));
+export const REVIEW_TRIES_CEILING = 4;
+const isReviewTry = (x) => !x.extra && x.kind === 'review';
+const quoted = (x) => Boolean(x.findings?.length || x.gaps?.length);
+const reviewTriesMade = (done) => (done ?? []).filter(isReviewTry).length;
+// The review fix tries left: below the ceiling, and, over the tries not known to have cleared what
+// they quoted, its own and no more than the overall cap leaves.
+function reviewTriesLeft(done) {
+  const counted = (done ?? []).filter((x) => !(isReviewTry(x) && quoted(x)));
+  return Math.min(REVIEW_TRIES_CEILING - reviewTriesMade(done), FIX_TRIES_MAX - reviewTriesMade(counted), FIX_TRIES_TOTAL - triesMade(counted));
+}
+// A finding or gap as compared across heads: its first file:line, the path whole, so one holding
+// `[id]` or `(shop)` is not another file's, and its text with the markup, `F1 ·` label, severity,
+// that file:line, the seat in brackets after it and spacing taken out, so a finding that moved lines
+// still matches.
+const AT = /[\w./\-[\]()]+:\d+/;
+const firstAt = (text) => AT.exec(text)?.[0].replace(/^\((?![^)]*\))/, '') ?? null;
+const plain = (text) => String(text).replace(/[`*]/g, '').replace(AT, '').replace(/^[\s>-]*(F\d+\s*·\s*)?(P[0-3]\b[:\s·—-]*)?(\([^)]*\)\s*)?/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+// The findings and gaps at the head that an earlier review fix try quoted, so survived the try aimed
+// at them: the same file:line as the last try that quoted any (an older try's lines have since moved),
+// or the same text as any try's.
+function survivors(done, findings, gaps) {
+  const before = (done ?? []).filter(isReviewTry);
+  const atBefore = new Set((before.filter(quoted).at(-1)?.findings ?? []).map((f) => firstAt(f.text)).filter(Boolean));
+  const textBefore = new Set(before.flatMap((x) => [...(x.findings ?? []).map((f) => f.text), ...(x.gaps ?? [])].map(plain).filter(Boolean)));
+  return [...findings.filter((f) => atBefore.has(firstAt(f.text)) || textBefore.has(plain(f.text))).map((f) => `${f.sev}: ${f.text}`),
+    ...gaps.filter((g) => textBefore.has(plain(g)))];
+}
 // The tries that count, by kind in the order first made, as `1 conflict, 1 rereview, 1 review`.
 function triesByKind(done) {
   const n = new Map();
@@ -172,7 +200,7 @@ export function reviewFindings(body) {
   let sev = null;
   for (const line of String(body ?? '').split(/\r?\n/)) {
     const text = line.trim();
-    const own = /^[#>*_\s-]*(P[0-3])\b/.exec(line);
+    const own = /^[#>*_\s-]*(?:F\d+\s*·\s*)?(P[0-3])\b/.exec(line);
     if (own) sev = own[1];
     else if (isHeading(text)) sev = null;
     if (sev !== 'P0' && sev !== 'P1') continue;
@@ -227,8 +255,10 @@ const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 
 // A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
 // found a P0 or a P1: one try per head, FIX_TRIES_MAX review fix tries per PR, and none once the PR
-// has made FIX_TRIES_TOTAL tries of every kind, so its `of` is the last try it may make. Stuck, its
-// reason names the tries made by kind. Where
+// has made FIX_TRIES_TOTAL tries of every kind, counting no try that cleared what it quoted
+// (reviewTriesLeft), and never more than REVIEW_TRIES_CEILING. A finding or gap an earlier try quoted
+// that is still at the head survived its fix, and goes to the person, named. Stuck, its reason names
+// the tries made by kind. Where
 // config §3 autopilot-judgement is yes (opts.judgement), so do its requirement gaps: closing one is a
 // call the worker may make and record, or park when it needs a product or another person's ruling.
 // P2s are left as they are (null), and so is a review that counts a P0 or P1 but lists none with its
@@ -246,12 +276,15 @@ export function reviewFix(t, review, opts = {}) {
   const done = t.fix_tries ?? [];
   const made = reviewTriesMade(done);
   const room = reviewTriesLeft(done);
+  const byKind = triesByKind(done);
+  const after = `review not clean after ${tries(triesMade(done))}${byKind ? ` (${byKind})` : ''}: ${what}`;
   if (room <= 0 || fixedAt(done, review.head)) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
     const left = [...(counts ? reviewFindings(review.body).map((x) => `${x.sev}: ${x.text}`) : []), ...(gapsOpen ? reviewGaps(review.body) : [])];
-    const byKind = triesByKind(done);
-    return { call: 'stuck', why: `review not clean after ${tries(triesMade(done))}${byKind ? ` (${byKind})` : ''}: ${what}${left.length ? ` — ${left.join('; ')}` : ''}` };
+    const lead = made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
+      ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
+    return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
   const listed = counts ? reviewFindings(review.body) : [];
   const comments = !counts ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
@@ -259,6 +292,8 @@ export function reviewFix(t, review, opts = {}) {
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
   const gaps = gapsOpen ? reviewGaps(review.body) : [];
   if (counts ? !findings.length : !gaps.length) return null;
+  const survived = survivors(done, findings, gaps);
+  if (survived.length) return { call: 'stuck', why: `${after} — still open after the fix try that quoted it: ${survived.join('; ')}` };
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
   return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) } };
 }
@@ -380,8 +415,11 @@ export function fixBrief(t) {
     for (const c of f.not_mine ?? []) lines.push(`- ${c.name} is red too, and it is not yours to fix: ${c.command}. A person runs that; leave it red.`);
     if (f.draft) lines.push('', 'Read each failing run\'s log with gh run view <run id> --log-failed (the id is the number in its URL).');
   }
-  const left = f.kind === 'review' ? `with a P0 or P1${f.gaps?.length ? ' or a gap' : ''} in its review`
-    : f.kind === 'conflict' && f.draft ? 'in conflict' : f.draft ? 'red' : 'red or in conflict';
+  if (f.kind === 'review') {
+    lines.push('', `This is try ${f.try} of ${f.of}. A finding${f.gaps?.length ? ' or gap' : ''} quoted here that the review of your new head still lists goes to the person.`, '');
+    return lines.join('\n');
+  }
+  const left = f.kind === 'conflict' && f.draft ? 'in conflict' : f.draft ? 'red' : 'red or in conflict';
   lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${left} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
 }
