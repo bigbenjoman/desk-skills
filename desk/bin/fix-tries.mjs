@@ -105,14 +105,16 @@ const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: triesMa
 // without moving it. Base conflict fix tries (base-fix.mjs) count the same way.
 export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // A review fix has FIX_TRIES_MAX of its own, counted over review fix tries only, so the conflict,
-// red-check and re-review tries before it leave it its own. FIX_TRIES_TOTAL caps every try that
-// counts, of any kind, so a PR that keeps getting new findings still reaches the person.
-export const FIX_TRIES_TOTAL = 2 * FIX_TRIES_MAX;
+// red-check and re-review tries before it leave it its own, within FIX_TRIES_TOTAL tries of every kind
+// that count. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always has one.
+const FIX_TRIES_TOTAL = FIX_TRIES_MAX + 1;
 const reviewTriesMade = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'review').length;
-// The tries that count, by kind in the order first made, as `1 conflict, 1 rereview, 2 review`.
-export function triesByKind(done) {
+// The review fix tries left: its own, and no more than the overall cap leaves.
+const reviewTriesLeft = (done) => Math.min(FIX_TRIES_MAX - reviewTriesMade(done), FIX_TRIES_TOTAL - triesMade(done));
+// The tries that count, by kind in the order first made, as `1 conflict, 1 rereview, 1 review`.
+function triesByKind(done) {
   const n = new Map();
-  for (const x of done ?? []) if (!x.extra) n.set(x.kind ?? 'fix', (n.get(x.kind ?? 'fix') ?? 0) + 1);
+  for (const x of done ?? []) if (!x.extra && x.kind !== 'capture') n.set(x.kind ?? 'fix', (n.get(x.kind ?? 'fix') ?? 0) + 1);
   return [...n].map(([k, c]) => `${c} ${k}`).join(', ');
 }
 
@@ -225,7 +227,8 @@ const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 
 // A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
 // found a P0 or a P1: one try per head, FIX_TRIES_MAX review fix tries per PR, and none once the PR
-// has made FIX_TRIES_TOTAL tries of every kind. Stuck, its reason names the tries made by kind. Where
+// has made FIX_TRIES_TOTAL tries of every kind, so its `of` is the last try it may make. Stuck, its
+// reason names the tries made by kind. Where
 // config §3 autopilot-judgement is yes (opts.judgement), so do its requirement gaps: closing one is a
 // call the worker may make and record, or park when it needs a product or another person's ruling.
 // P2s are left as they are (null), and so is a review that counts a P0 or P1 but lists none with its
@@ -242,7 +245,8 @@ export function reviewFix(t, review, opts = {}) {
   if (!what || !review.head) return null;
   const done = t.fix_tries ?? [];
   const made = reviewTriesMade(done);
-  if (made >= FIX_TRIES_MAX || triesMade(done) >= FIX_TRIES_TOTAL || fixedAt(done, review.head)) {
+  const room = reviewTriesLeft(done);
+  if (room <= 0 || fixedAt(done, review.head)) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
     const left = [...(counts ? reviewFindings(review.body).map((x) => `${x.sev}: ${x.text}`) : []), ...(gapsOpen ? reviewGaps(review.body) : [])];
@@ -256,7 +260,7 @@ export function reviewFix(t, review, opts = {}) {
   const gaps = gapsOpen ? reviewGaps(review.body) : [];
   if (counts ? !findings.length : !gaps.length) return null;
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
-  return { call: 'requeue', fix: { try: made + 1, of: FIX_TRIES_MAX, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) } };
+  return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) } };
 }
 
 // The person's call on a draft's review gaps (desk-needs-you), as the fix it sends back: not one of

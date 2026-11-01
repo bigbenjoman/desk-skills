@@ -78,8 +78,8 @@ const captureNote = (s) => {
   const m = CAPTURE.exec(String(s?.why ?? ''));
   return m ? `(Not taken: ${m[2]}.${m[3] ? ` The capture try said: ${one(m[3])}` : ''})` : '';
 };
-// A review stuck reason's tries by kind (fix-tries.mjs triesByKind), as `after desk's 4 repairs (1
-// conflict fix, 1 re-review, 2 review fixes)`; null for a reason that names none.
+// A review stuck reason's tries by kind (fix-tries.mjs triesByKind), as `after desk's 3 repairs (1
+// conflict fix, 1 re-review, 1 review fix)`; null for a reason that names none.
 const REPAIR_KIND = { conflict: ['conflict fix', 'conflict fixes'], rereview: ['re-review', 're-reviews'], review: ['review fix', 'review fixes'], checks: ['red-check fix', 'red-check fixes'] };
 function repairsMade(why) {
   const m = /^review not clean after (\d+) fix tr(?:y|ies) \(([^)]*)\)/.exec(why);

@@ -125,15 +125,20 @@ const ds379 = [{ try: 1, head: 'f73edbe' + '0'.repeat(33), kind: 'conflict', wha
   { try: 2, head: '597a520' + '0'.repeat(33), kind: 'rereview', what: 'review its head: its review verdict is for fdcfe56, not the head 597a520' }];
 const p0At = (head) => ({ pr: 348, head, verdict: { p0: '1', p1: '0' }, body: reviewBody('p0=1 p1=0 p2=0', ['- **P0** `desk/bin/evidence.mjs:40` a code span splits the cell']) });
 const a1 = reviewFix(tk({ fix_tries: ds379 }), p0At(ds379[1].head));
-t('DS-384 AC1 after a conflict try and a rereview try, a P0 at the head goes to a review fix worker', `${a1?.call} ${a1?.fix.kind} ${a1?.fix.try}/${a1?.fix.of}`, `requeue review 1/${FIX_TRIES_MAX}`);
+t('DS-384 AC1 after a conflict try and a rereview try, a P0 at the head goes to a review fix worker, as its last try', `${a1?.call} ${a1?.fix.kind} ${a1?.fix.try}/${a1?.fix.of}`, 'requeue review 1/1');
 t('DS-384 AC1 the try quotes the P0', a1?.fix.findings.map((x) => x.text).join('|'), '- **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
+t('DS-384 AC1 its brief says the PR goes to the person after this try, as the overall cap has it', fixBrief(tk({ fix: a1.fix })).includes('This is try 1 of 1. A PR still with a P0 or P1 in its review after try 1 goes to the person.'), true);
 const reviewTries = (n, from = 3) => Array.from({ length: n }, (_, i) => ({ try: i + 1, head: `${from + i}`.repeat(40), kind: 'review' }));
-const a2 = reviewFix(tk({ fix_tries: [...ds379, ...reviewTries(FIX_TRIES_MAX)] }), p0At(HEAD));
-t('DS-384 AC2 once its review fix tries are spent, findings at the head go to the person', `${a2?.call} | ${a2?.why}`, 'stuck | review not clean after 4 fix tries (1 conflict, 1 rereview, 2 review): 1 P0 — P0: - **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
-const capped = [...ds379, { try: 3, head: 'd'.repeat(40), kind: 'checks' }, ...reviewTries(1)];
-const a3 = reviewFix(tk({ fix_tries: capped }), p0At(HEAD));
-t('DS-384 AC3 with a review try left but the overall cap reached, it goes to the person, naming the tries by kind', `${a3?.call} | ${a3?.why.split(':')[0]}`, 'stuck | review not clean after 4 fix tries (1 conflict, 1 rereview, 1 checks, 1 review)');
-t('DS-384 AC3 an extra review try a base merge earned counts toward neither cap', reviewFix(tk({ fix_tries: [...ds379, { try: 2, head: 'e'.repeat(40), kind: 'rereview', extra: true }, ...reviewTries(1)] }), p0At(HEAD))?.fix.try, 2);
+const afterOne = reviewFix(tk({ fix_tries: [ds379[0]] }), p0At(HEAD));
+t('DS-384 one conflict try leaves a review fix both its tries', `${afterOne?.fix.try}/${afterOne?.fix.of}`, `1/${FIX_TRIES_MAX}`);
+const a2 = reviewFix(tk({ fix_tries: reviewTries(FIX_TRIES_MAX) }), p0At(HEAD));
+t('DS-384 AC2 once its review fix tries are spent, findings at the head go to the person', `${a2?.call} | ${a2?.why}`, 'stuck | review not clean after 2 fix tries (2 review): 1 P0 — P0: - **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
+const a3 = reviewFix(tk({ fix_tries: [...ds379, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 AC3 with a review try of its own left but the overall cap reached, it goes to the person, naming the tries by kind', `${a3?.call} | ${a3?.why.split(':')[0]}`, 'stuck | review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review)');
+const ex = reviewFix(tk({ fix_tries: [ds379[0], { try: 1, head: 'e'.repeat(40), kind: 'rereview', extra: true }, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 AC3 an extra review try a base merge earned counts toward neither cap', `${ex?.call} ${ex?.fix?.try}/${ex?.fix?.of}`, 'requeue 2/2');
+const cap = reviewFix(tk({ fix_tries: [{ try: 1, head: 'f'.repeat(40), kind: 'capture' }, ...ds379, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 a capture try is not counted or named among the tries by kind', cap?.why.split(':')[0], 'review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review)');
 
 // ---- a review whose P0s and P1s are posted inline goes to a fix worker too
 const inlineBody = reviewBody('p0=0 p1=1 p2=0', ['P2 (0)']);
