@@ -622,6 +622,25 @@ killed Y-4 sess-y4; result_event >> "$T/state-k/logs/Y-4.log"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-197 AC4 an exit with no marker and no limit is marked failed as before" '[ "$(field Y-4 state)" = "\"failed\"" ] && echo "$out" | grep -q "Y-4: exited with no marker and no open PR on fix/Y-4 — check" && ! spawned_for Y-4'
 
+# DS-388: the same exits with the ticket's PR open, as VPL-585's fix worker had. Y-7 is killed mid-run
+# and Y-8 ends normally with no marker; then Y-6 exits at the limit, its log ending as usage_exit's does.
+printf '#!/bin/sh\ncase "$*" in *"--head fix/Y-"[678]*) echo 88 ;; esac\n' > "$T/stub/gh"
+killed Y-7 sess-y7
+killed Y-8 sess-y8; result_event >> "$T/state-k/logs/Y-8.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: PR #88"'
+check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: PR #88 (no marker printed"'
+q set Y-7 state=done
+probe_says limited $(( $(date +%s) + 3600 ))
+killed Y-6 sess-y6; usage_exit Y-6 $(( $(date +%s) + 3600 ))
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-388 AC1 a worker with an open PR that exited at the limit stays running, paused, not done" '[ "$(field Y-6 state)" = "\"running\"" ] && [ "$(field Y-6 result)" = null ] && echo "$out" | grep -q "^paused on the usage limit: Y-6 on the 5-hour usage limit until" && ! echo "$out" | grep -q "Y-6: PR #88" && ! spawned_for Y-6'
+usage_exit Y-6 $(( $(date +%s) - 60 ))
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-388 AC2 once the limit lifts, its own session is resumed in its worktree" 'echo "$out" | grep -q "Y-6 exited at the 5-hour usage limit, which lifted" && spawned_for Y-6 | grep -q "^Y-6 sess-y6 .*resume=yes$" && [ "$(field Y-6 worktree)" = "\"$T/wt/Y-6\"" ] && [ "$(field Y-6 result)" = null ]'
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+q set Y-6 state=done
+
 # DS-344: the weekly limit, as DS-333's log ended: a seven_day rejection, then the 429 result. W-1
 # exits there while the probe still gets 429, and W-2 is a new ticket behind it.
 q set-batch concurrency=2 concurrency_by=user
@@ -1990,5 +2009,28 @@ check "DS-348 AC3 once each cause clears, the next pass spawns the worker" \
   '[ "$(grep -cxE "W-[123]" "$T/wb-spawns")" = 3 ] && [ -z "$held" ]'
 check "and the record is dropped from each ticket once its worktree is clean" \
   '[ "$(field W-1 worktree_busy)$(field W-2 worktree_busy)$(field W-3 worktree_busy)" = nullnullnull ]'
+
+# DS-388: W-5 and W-6 are fix tries whose worktrees have an uncommitted change. The last session Claude
+# Code wrote a transcript for in W-5's is its own worker's: that session is resumed. In W-6's it is
+# another session's: still held.
+for w in W-1 W-2 W-3 W-4; do q set "$w" state=done; done
+: > "$T/wb-spawns"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1 \$3 resume=\${AUTOPILOT_RESUME:+yes}" >> "$T/wb-spawns"; echo "[spawn] ticket=\$1"
+EOF
+proj(){ printf '%s/.claude/projects/%s' "$HOME" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-')"; }
+for k in 5 6; do
+  git clone -q "$T/wb-origin.git" "$T/wt/W-$k" 2>/dev/null; git -C "$T/wt/W-$k" checkout -q -b "fix/W-$k"
+  echo a > "$T/wt/W-$k/a.txt"; git -C "$T/wt/W-$k" add a.txt; git -C "$T/wt/W-$k" commit -q -m a; git -C "$T/wt/W-$k" push -q origin "fix/W-$k" 2>/dev/null
+  echo b >> "$T/wt/W-$k/a.txt"; mkdir -p "$(proj "$T/wt/W-$k")"; : > "$(proj "$T/wt/W-$k")/sess-w$k.jsonl"
+  q add "W-$k"; q set "W-$k" state=triaged lane=A "branch=fix/W-$k" "worktree=$T/wt/W-$k" "session_id=sess-w$k" 'fix={"try":1,"of":2,"pr":5'"$k"',"kind":"review","what":"a P1 review finding"}'
+done
+touch -t 202601010000 "$(proj "$T/wt/W-6")/sess-w6.jsonl"; : > "$(proj "$T/wt/W-6")/someone-else.jsonl"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-388 AC3 a fix try whose worktree its own interrupted worker left dirty is not held, and that session resumes" \
+  'grep -qx "W-5 sess-w5 resume=yes" "$T/wb-spawns" && [ "$(field W-5 state)" = "\"running\"" ] && [ "$(field W-5 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-5: WORKTREE IN USE" && echo "$out" | grep -q "W-5 resumed .*its own worker stopped part way, leaving work in its worktree (its worktree $T/wt/W-5 has uncommitted changes (a.txt))"'
+check "DS-388 AC4 a fix try whose worktree another session left dirty is still held" \
+  '[ "$(field W-6 state)" = "\"triaged\"" ] && ! grep -q "^W-6 " "$T/wb-spawns" && echo "$out" | grep -qF "W-6: WORKTREE IN USE — its worktree $T/wt/W-6 has uncommitted changes (a.txt)" && [ "$(field W-6 resume)" = null ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

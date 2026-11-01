@@ -623,7 +623,34 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     recordScope(t);
     if (isSpine(t)) parkSpine(t, pr);
     else if (ownsSpecs(t)) checkOwned(t, pr);
+  } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
+    // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
+    // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,
+    // then is resumed in its own session, never failed or taken as done. Once per limit: a resume that
+    // ends before the model answers, with no new rejection, leaves the same count of limits in the log,
+    // and is then handled as any other exit below rather than resumed on every pass.
+    if (lifted(limit)) {
+      const why = `exited at ${limitName(limit.type)}, which lifted (${liftedHow(limit)})`;
+      q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`,
+        `resume_limits=${usage.limits.length}`);
+      report.advanced.push(`${t.key} ${why}: queued to resume in its own session`);
+    }
   } else {
+    // Killed mid-run, PR open or not: resumed in its own session by the spawn below, ahead of new
+    // tickets, unless config §3b refuses another resume.
+    const killed = !wedged && !endedNormally(logText) && t.session_id ? killedBy(log) : null;
+    const stop = killed ? resumeRefusal(t, killed) : null;
+    // A log written in the last two minutes, since this computer started, is a worker the registry
+    // has not caught up with, not a dead one: resuming it would put two processes on one session.
+    if (killed && killed !== REBOOT && Date.now() - statSync(log).mtimeMs < 120_000) {
+      report.quiet.push(`${t.key}: not in the session registry, but its log was written in the last 2 minutes — left running, checked again next pass`);
+      continue;
+    }
+    if (killed && !stop) {
+      q('set', t.key, 'state=triaged', 'resume=pending', `resume_why=${killed}`);
+      report.advanced.push(`${t.key} killed before it finished (${killed}): queued to resume`);
+      continue;
+    }
     // No marker is not evidence of failure. A worker can do everything and exit without
     // announcing it. Ask GitHub what actually exists before believing the silence. An open PR
     // means a PR exists, NOT that the review posted or that it merged — verify those separately.
@@ -636,36 +663,12 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       recordScope(t);
       if (isSpine(t)) parkSpine(t, Number(pr));
       else if (ownsSpecs(t)) checkOwned(t, Number(pr));
-    } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
-      // Exited at a usage limit: a headless worker ends its session there rather than waiting for the
-      // reset. It stays running, reported paused, until the limit lifts, then is resumed in its own
-      // session, never failed. Once per limit: a resume that ends before the model answers, with no
-      // new rejection, leaves the same count of limits in the log, and is then handled as any other
-      // exit below rather than resumed on every pass.
-      if (lifted(limit)) {
-        const why = `exited at ${limitName(limit.type)}, which lifted (${liftedHow(limit)})`;
-        q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`,
-          `resume_limits=${usage.limits.length}`);
-        report.advanced.push(`${t.key} ${why}: queued to resume in its own session`);
-      }
-    } else if (!wedged && !endedNormally(logText) && t.session_id) {
-      // Killed mid-run: resumed in its own session by the spawn below, ahead of new tickets.
-      const why = killedBy(log);
-      const stop = resumeRefusal(t, why);
-      // A log written in the last two minutes, since this computer started, is a worker the registry
-      // has not caught up with, not a dead one: resuming it would put two processes on one session.
-      if (why !== REBOOT && Date.now() - statSync(log).mtimeMs < 120_000) {
-        report.quiet.push(`${t.key}: not in the session registry, but its log was written in the last 2 minutes — left running, checked again next pass`);
-      } else if (stop?.fail) {
-        q('set', t.key, 'state=failed');
-        report.failed.push(`${t.key}: killed before it finished (${why}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
-      } else if (stop?.park) {
-        q('park', t.key, stop.park);
-        report.parked.push(`${t.key}: ${stop.park}`);
-      } else {
-        q('set', t.key, 'state=triaged', 'resume=pending', `resume_why=${why}`);
-        report.advanced.push(`${t.key} killed before it finished (${why}): queued to resume`);
-      }
+    } else if (stop?.fail) {
+      q('set', t.key, 'state=failed');
+      report.failed.push(`${t.key}: killed before it finished (${killed}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
+    } else if (stop?.park) {
+      q('park', t.key, stop.park);
+      report.parked.push(`${t.key}: ${stop.park}`);
     } else {
       q('set', t.key, 'state=failed');
       report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} — check ${log}`);
@@ -1758,7 +1761,11 @@ function busyWorktree(t) {
     return `its worktree ${wt} is the working directory of ${users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ')}, which the pass did not start`;
   }
   if (!(t.fix && !t.fix.finished) || resumed) return null;
-  // Tracked paths changed against HEAD, staged or not. A worktree git cannot read: setup-worktree.sh says so.
+  return leftovers(wt);
+}
+// Uncommitted tracked changes, staged or not, or commits not on origin, in a worktree, or null. A
+// worktree git cannot read: setup-worktree.sh says so.
+function leftovers(wt) {
   const diff = shOut('git', ['-C', wt, 'diff', '--name-only', 'HEAD']);
   const dirty = diff.ok ? diff.out.split('\n').filter(Boolean) : [];
   if (dirty.length) return `its worktree ${wt} has uncommitted changes (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''})`;
@@ -1767,6 +1774,34 @@ function busyWorktree(t) {
   const ahead = shOut('git', ['-C', wt, 'rev-list', '--count', `origin/${branch.out}..HEAD`]);
   if (ahead.ok && Number(ahead.out) > 0) return `its branch ${branch.out} is ${ahead.out} commit(s) ahead of origin/${branch.out}, not pushed`;
   return null;
+}
+// The session Claude Code last wrote a transcript for in a worktree (its project directory under
+// ~/.claude/projects), or null.
+function lastSession(wt) {
+  let real = wt;
+  try { real = realpathSync(wt); } catch { /* as recorded */ }
+  let best = null;
+  for (const p of new Set([wt, real])) {
+    const dir = join(E.HOME, '.claude', 'projects', p.replace(/[^A-Za-z0-9]/g, '-'));
+    let names = [];
+    try { names = readdirSync(dir).filter((f) => f.endsWith('.jsonl')); } catch { continue; }
+    for (const f of names) {
+      let mtimeMs;
+      try { ({ mtimeMs } = statSync(join(dir, f))); } catch { continue; }
+      if (!best || mtimeMs > best.mtimeMs) best = { session: f.slice(0, -'.jsonl'.length), mtimeMs };
+    }
+  }
+  return best?.session ?? null;
+}
+// A fix try whose worktree holds what its own worker left when it stopped part way (the last session
+// there is the ticket's session_id): why that session should be resumed, or null. Anyone else's
+// leftovers are a person's, and busyWorktree holds the ticket for them.
+function ownLeftovers(t) {
+  if (t.location === 'cloud' || toResume(t) || toHandoff(t) || !(t.fix && !t.fix.finished) || !t.session_id) return null;
+  if (!t.worktree || !existsSync(t.worktree)) return null;
+  const left = leftovers(t.worktree);
+  if (!left || lastSession(t.worktree) !== t.session_id) return null;
+  return `its own worker stopped part way, leaving work in its worktree (${left})`;
 }
 
 // A worktree held is kept on the ticket (`worktree_busy`), so desk-q and desk-needs-you show it as
@@ -1777,6 +1812,12 @@ for (const t of spawnable) {
   if (baseHold || usageStop || !(attempts < slots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
+  // The ticket's own worker's unfinished work is not a person's: that worker's session is resumed.
+  const own = ownLeftovers(t);
+  if (own) {
+    if (!DRY) q('set', t.key, 'resume=pending', `resume_why=${own}`);
+    Object.assign(t, { resume: 'pending', resume_why: own });
+  }
   // Held without taking a slot: another ticket may spawn in its place.
   const busy = busyWorktree(t);
   if (busy) {
