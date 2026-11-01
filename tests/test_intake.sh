@@ -549,5 +549,25 @@ out=$(intake)
 check "DS-380 AC3: once handed over, the next intake queues it in that batch" '[ "$(eget K-5 tickets.K-6.state)" = triaged ] && [ "$(qget tickets.K-6)" = undefined ] && grep -q "^intake: admitted K-6 by intake into batch K-5 " <<< "$out"'
 rm -rf "$EB/K-1" "$EB/K-5"
 
+# ---- DS-383: an epic admitted from a checkout on another branch, with desk's pre-push hook ---------
+# The real hook, with a Pre-push checks row that would fail if it ran.
+mkdir -p "$T/desk"; ln -s "$B" "$T/desk/bin"
+cp -R "$S/../desk/templates/.githooks" "$S/../desk/templates/scripts" "$T/repo/"; chmod +x "$T/repo/.githooks/pre-push"
+printf '\n## 4. Tools\n| Field | Value |\n|---|---|\n| Pre-push checks | `false` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+g config core.hooksPath .githooks; g checkout -q -b side-work; echo w > "$T/repo/src/side.js"; g add src/side.js; g commit -q -m side; g checkout -q -b elsewhere HEAD~1
+out=$(g push origin side-work:refs/heads/x 2>&1); rc=$?
+check "DS-383: the hook is live, and refuses a new commit that is not HEAD" '[ $rc -ne 0 ] && grep -q "^pre-push: .* not HEAD" <<< "$out"'
+rec E-21 A '"summary":"the side child"'; printf 'E-21\n' > "$T/children/E-20"; rec E-20 A '"type":"Epic","branch":"feat/E-20-side"'
+cat > "$T/claude.out" <<'EOF'
+{"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: the AC1 spec\", \"owners\": {\"AC1\": \"E-21\"}}"}
+EOF
+out=$(admit E-20 --by ben); rc=$?
+check "DS-383 AC1: from a checkout on another branch, the feature branch is pushed at main's tip and the batch starts" '[ $rc -eq 0 ] && grep -q "^started feature batch E-20 on feat/E-20-side" <<< "$out" && [ "$(git -C "$T/repo" ls-remote --heads origin feat/E-20-side | cut -f1)" = "$(git -C "$T/repo" rev-parse origin/main)" ]'
+mkdir -p "$T/refuse-hooks"; printf '#!/bin/sh\necho "pre-push: refused for the test" >&2\necho "pre-push: here is the fix" >&2\nexit 1\n' > "$T/refuse-hooks/pre-push"; chmod +x "$T/refuse-hooks/pre-push"
+g config core.hooksPath "$T/refuse-hooks"; rec E-22 A '"type":"Epic","branch":"feat/E-22-refused"'
+out=$(admit E-22 --by ben); rc=$?
+check "DS-383 AC4: a refused push's reason carries the hook's pre-push lines and git's" '[ $rc -eq 11 ] && grep -q "^not admitted E-22: .*could not be read or pushed (pre-push: refused for the test pre-push: here is the fix error: failed to push some refs" <<< "$out"'
+g config --unset core.hooksPath; g checkout -q main; rm -rf "$EB/E-20" "$T/desk/bin"
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -78,7 +78,10 @@ function ensureBranch(branch) {
     git(['push', '-q', 'origin', `origin/${def}:refs/heads/${branch}`]);
     return null;
   } catch (e) {
-    return `its feature branch ${branch} could not be read or pushed (${String(e.stderr || e.message).trim().split('\n').pop()})`;
+    // git's own last line, after any pre-push hook's lines: the hook says why it refused, git does not.
+    const err = String(e.stderr || e.message).trim().split('\n');
+    const said = [...err.filter((l) => l.startsWith('pre-push: ')), err.pop()];
+    return `its feature branch ${branch} could not be read or pushed (${[...new Set(said)].join(' ')})`;
   }
 }
 

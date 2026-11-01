@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # suite: pre-push hook (stdin, no row, lock timeout)
 # The committed pre-push hook (desk/templates): real `git push`es into a throwaway origin, with the
-# templates copied into a throwaway repo. Branch pushes run §4 Pre-push checks in order; tags and
-# deletes are not checked; a commit that is not HEAD is refused; no row pushes as today; a typecheck
+# templates copied into a throwaway repo. Branch pushes run §4 Pre-push checks in order; tags,
+# deletes and refs already on a remote are not checked; a new commit that is not HEAD is refused; no
+# row pushes as today; a typecheck
 # item takes the test lock and is skipped when the lock stays busy past the machine profile's timeout.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -69,8 +70,12 @@ git tag v1 HEAD~1; LINT_RC=1 push origin v1
 check "a tag push is not checked"                     '[ $rc -eq 0 ] && [ -z "$ran" ] && [ -n "$(remote v1)" ]'
 LINT_RC=1 push origin --delete elsewhere
 check "a delete is not checked"                       '[ $rc -eq 0 ] && [ -z "$ran" ] && [ -z "$(remote elsewhere)" ]'
-LINT_RC=1 push origin HEAD~1:refs/heads/old
-check "a commit that is not HEAD is refused"          '[ $rc -ne 0 ] && [ -z "$ran" ] && [[ "$out" == *"not HEAD"* ]] && [ -z "$(remote old)" ]'
+git checkout -q -b side; commit side; git checkout -q main
+LINT_RC=1 push origin side:refs/heads/old
+check "a commit on no remote that is not HEAD is refused" '[ $rc -ne 0 ] && [ -z "$ran" ] && [[ "$out" == *"not HEAD"* ]] && [ -z "$(remote old)" ]'
+git checkout -q side; echo dirty >> notes; LINT_RC=1 push origin origin/main:refs/heads/copy
+check "a ref already on a remote is pushed from any branch, unchecked" '[ $rc -eq 0 ] && [ -z "$ran" ] && [[ "$out" != *pre-push:* ]] && [ "$(remote copy)" = "$(git rev-parse origin/main)" ]'
+git checkout -q -- notes; git checkout -q main
 commit f; echo dirty >> notes; push origin main
 check "a dirty tracked tree is refused"               '[ $rc -ne 0 ] && [ -z "$ran" ] && [[ "$out" == *"differ from HEAD"* ]]'
 git checkout -q -- notes

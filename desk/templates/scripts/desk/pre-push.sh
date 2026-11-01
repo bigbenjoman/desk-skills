@@ -4,8 +4,8 @@
 # "<local ref> <local sha> <remote ref> <remote sha>" line per ref).
 #
 # - No desk install, no repo config, or the row unset, TODO or `none`: pushes as if there were no hook.
-# - Tags and deletes are never checked. Any other ref must be HEAD with a clean tracked tree, because
-#   the checks run on the working tree.
+# - Tags, deletes, and refs with no commit outside the remote-tracking refs are never checked. Any
+#   other ref must be HEAD with a clean tracked tree, because the checks run on the working tree.
 # - An item equal to a §4 Typecheck or Unit tests item takes the box-wide test lock (with-lock.sh, the
 #   memory guard), waiting at most the machine profile's pre-push-lock-timeout-s (60 without one);
 #   past that it is skipped with a warning, since CI runs it anyway.
@@ -27,6 +27,9 @@ else
     [ -n "${lsha:-}" ] || continue
     case "$lsha" in *[!0]*) ;; *) continue ;; esac   # all zeros: a delete
     case "$lref" in refs/tags/*) continue ;; esac
+    # Nothing outside the remote-tracking refs: the remote already has every commit, so nothing to check.
+    new="$(git rev-list -n1 "$lsha" --not --remotes 2>/dev/null)" || new=unknown
+    [ -n "$new" ] || continue
     refs="$refs $lref=$lsha"
   done
 fi
