@@ -72,7 +72,7 @@ import { readCloseouts } from './closeout.mjs';
 import { readInstalled, oldCode } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
-import { beatFile } from './borrow.mjs';
+import { lastBeat, writeBeat } from './borrow.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -421,22 +421,15 @@ function runIntake() {
 // An idle batch runs no pass, but its parked questions still go out at each check-in: the tick runs
 // the check-in alone and pushes what it returns, once per key, as a pass's push would be.
 // An idle tick runs no pass, so it refreshes the batch's heartbeat itself (pass.mjs writes it on a
-// pass): `at` this tick, `next` the agent's next one. Without it, an idle batch the supervisor still
-// runs, and an answer still wakes, reads as passes stopped once its last pass is LIVE_MS old.
+// pass): `at` this tick, `next` the agent's next one, and the last pass's time carried, so desk-q's
+// "last pass" still says when one ran. Without it, an idle batch the supervisor still runs, and an
+// answer still wakes, reads as passes stopped once its last pass is LIVE_MS old.
 function idleBeat(state, q) {
-  const file = beatFile(state, E.queueFile());
-  let hb = {};
-  try { hb = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none yet, or torn: written afresh */ }
-  const { next: _, ...kept } = hb;
   const every = Number(installedInterval(E.repoSlug()));
   const now = Date.now();
-  try {
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({
-      ...kept, queue: E.queueFile(), batch: q.batch ?? null, pid: process.pid, at: new Date(now).toISOString(),
-      ...(every > 0 ? { next: new Date(now + every * 1000).toISOString() } : {}),
-    }));
-  } catch { /* advisory, as pass.mjs's is */ }
+  writeBeat(state, E.queueFile(), {
+    batch: q.batch ?? null, now, pass: lastBeat(state, E.queueFile())?.pass ?? null, next: every > 0 ? now + every * 1000 : null,
+  });
 }
 
 // The check-in reads Jira and GitHub; one that hangs is killed so the tick still ends.

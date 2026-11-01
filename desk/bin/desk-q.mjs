@@ -438,7 +438,8 @@ function loadBatch(c, repoName, batch, limits, now) {
     Object.assign(r, { name: `${repoName} · ${batch}${base}`, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` });
   }
   const beat = lastBeat(stateDir, queuePath);
-  r.last = beat?.at ?? null;
+  // The last pass, not the last beat: a supervisor's idle tick refreshes the beat and runs no pass.
+  r.last = beat?.pass ?? null;
   r.next = beat?.next ?? null;
   r.live = liveBeat(beat, now);
   r.ctx = r.q ? holdContext(r) : NOBODY;

@@ -772,7 +772,7 @@ put('omicron', { port: 3810, beat: 20, supervised: true, tickets: {
 put('pi', { port: 3820, beat: 20, supervised: true, tickets: { 'P-1': parked('A', 30, 'Which size?') } });
 writeFileSync(join(T, 'bin', 'loaded'), 'com.desk-skills.supervisor.acme__alpha\ncom.desk-skills.supervisor.acme__omicron\n');
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__omicron', 'orchestrators', 'q.json'), JSON.stringify({ queue: join(env.DESK_HOME, 'repos', 'acme__omicron', 'queue.json'),
-  batch: 'omicron-batch', pid: 2, at: minsAgo(1), next: new Date(NOW + 2 * 60000).toISOString() }));
+  batch: 'omicron-batch', pid: 2, at: minsAgo(1), pass: minsAgo(20), next: new Date(NOW + 2 * 60000).toISOString() }));
 const runOf = (word) => N.listText(N.collect({ word })).split('\n').find((l) => l.startsWith('@ '));
 t('DS-396 AC1 an idle supervised batch says the supervisor runs it and an answer wakes it, not passes stopped',
   `${runOf('omicron')} ${/passes stopped/i.test(cli('left', 'omicron').out)}`, '@ omicron: run by the supervisor; an answer wakes it, and its next pass picks the answer up false');
@@ -780,6 +780,8 @@ t('DS-396 AC3 a batch with no supervisor agent loaded and no pass for 20 minutes
   /^@ pi: passes stopped; answers wait until they resume\. To resume: /.test(runOf('pi') ?? ''), true);
 t('DS-396 AC4 desk-q counts the idle supervised batch live, so its answered park waits rather than needing you',
   loadRepos().find((r) => r.name === 'omicron').rows.find((x) => x.t.key === 'O-2').k, 'waiting');
+t('DS-396 desk-q dates the idle supervised batch by its last pass, not by the idle tick that refreshed its beat',
+  `${(r => [r.live, r.last])(loadRepos().find((x) => x.name === 'omicron')).join(' ')}`, `true ${Date.parse(minsAgo(20))}`);
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);

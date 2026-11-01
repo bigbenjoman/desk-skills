@@ -281,8 +281,8 @@ check "AC9: no merge driver once the batch is idle" '[ "$(started)" = "$n" ]'
 # DS-396 AC2: the idle tick runs no pass, so it refreshes the heartbeat itself: `at` the tick's time,
 # `next` the agent's next tick, and desk-q's liveBeat reads the batch as live again.
 every=$(grep -A1 '<key>StartInterval</key>' "$PL" | grep -oE '[0-9]+')
-check "DS-396 AC2: an idle tick's heartbeat is at the tick's time, its next one interval on, and live" \
-  '[ "$(node -e "import(process.argv[1]).then((m) => { const b = JSON.parse(require(\"fs\").readFileSync(process.argv[2], \"utf8\")); const at = Date.parse(b.at), t0 = Number(process.argv[3]); console.log([at >= t0 && at <= Date.now(), Date.parse(b.next) - at === Number(process.argv[4]) * 1000, b.queue === process.argv[5] && b.batch === \"b1\", m.liveBeat(m.lastBeat(process.argv[6], process.argv[5]))].join(\" \")); })" "$B/borrow.mjs" "$BEAT" "$t0" "$every" "$DESK_QUEUE" "$T/state")" = "true true true true" ]'
+check "DS-396 AC2: an idle tick's heartbeat is at the tick's time, its next one interval on, live, and keeps the last pass's time" \
+  '[ "$(node -e "import(process.argv[1]).then((m) => { const b = JSON.parse(require(\"fs\").readFileSync(process.argv[2], \"utf8\")); const at = Date.parse(b.at), t0 = Number(process.argv[3]); const lb = m.lastBeat(process.argv[6], process.argv[5]); console.log([at >= t0 && at <= Date.now(), Date.parse(b.next) - at === Number(process.argv[4]) * 1000, b.queue === process.argv[5] && b.batch === \"b1\", m.liveBeat(lb), t0 - lb.pass >= 20 * 60000 && t0 - lb.pass < 21 * 60000].join(\" \")); })" "$B/borrow.mjs" "$BEAT" "$t0" "$every" "$DESK_QUEUE" "$T/state")" = "true true true true true" ]'
 notified=$(count "$T/notify.calls")
 echo '{"status":"sent","push":{"key":"digest:2026-10-23T17:00","text":"Check-in 17:00: 1 question(s)"}}' > "$T/checkin.json"
 out=$(tick); out=$(tick)
