@@ -48,9 +48,11 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
 
 - **RELEASE DUE**: every blocker's PR has merged. The merge driver releases it on its next loop (it
   reads both `--deps` and the queue's `held_by`, so a blocker added mid-batch counts). **Where the
-  driver is not running** (no merge grants), you release it: `queue.mjs set <TICKET> state=triaged
-  park=null held_by=null`, then `queue.mjs front <TICKET>`. That is the one manual release, and only
-  once GitHub shows every blocker merged: never because "it probably does not really depend on it".
+  driver is not running** (no merge grants), the pass releases it itself, as the driver would, and
+  says so under `released:`; it comes to you only when the queue refuses that release, and then you
+  run `queue.mjs set <TICKET> state=triaged park=null held_by=null`, then `queue.mjs front <TICKET>`.
+  That is the one manual release, and only once GitHub shows every blocker merged: never because "it
+  probably does not really depend on it".
 - **STUCK**: a blocker can no longer merge on its own (it failed, is parked for its own reason,
   finished with no PR, or its PR was closed unmerged). The user decides: re-run or finish the
   blocker, release the ticket anyway, or drop it. Of those blockers, a failed or parked one is

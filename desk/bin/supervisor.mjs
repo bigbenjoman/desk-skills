@@ -73,7 +73,7 @@ import { readInstalled, oldCode } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
-import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
+import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AGENTS = join(E.HOME, 'Library', 'LaunchAgents');
@@ -631,7 +631,7 @@ function reapDecider(state, s, now = new Date()) {
   }
   let q = {};
   try { q = readQueue(E.queueFile()); } catch { /* every park reads as still parked */ }
-  const o = outcome(rec, result, q);
+  const o = outcome(rec, result, q, { state });
   // Handed on from the session's start, to the second answers are stamped at: an answer given while it
   // ran never reached it, so it still counts as one since the hand-over and reaches the next session.
   handItems(state, o.handed, new Date(Math.floor((Date.parse(rec.started) || now.getTime()) / 1000) * 1000));
@@ -651,8 +651,15 @@ function decide(state, s, v, q, now = new Date()) {
   const settled = s.settled ?? [];
   s.settled = [];
   if (!['show_person', 'idle'].includes(v.status)) return [];
-  const { hand, ask } = presort(items, state);
+  const { hand, ask, waits } = presort(items, state);
   const lines = [];
+  // A park now waiting on a recorded clears-when is no longer the digest's: a pass settles it.
+  const handedNow = readHanded(state);
+  const waiting = waits.filter((i) => handedNow[i.id]);
+  if (waiting.length) {
+    dropHanded(state, waiting.map((i) => i.id));
+    lines.push(`decider: taken off the digest, each waits on its recorded clears-when: ${waiting.map((i) => i.ticket).join(', ')}`);
+  }
   // One the last session settled that a pass still lists was not settled: another session would only
   // settle it again.
   const again = ask.filter((i) => settled.includes(i.id));

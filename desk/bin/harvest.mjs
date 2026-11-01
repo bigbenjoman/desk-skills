@@ -98,6 +98,15 @@ export function endedNormally(logText) {
   return false;
 }
 
+// The last PR body a worker wrote between AUTOPILOT_PR_BODY_BEGIN: and AUTOPILOT_PR_BODY_END:, in its
+// own text (readLog's `texts`), without a code fence around it, or null when it wrote none.
+export function prBodyIn(texts) {
+  const re = /AUTOPILOT_PR_BODY_BEGIN:[^\n]*\n([\s\S]*?)\n[\s`>*#-]*AUTOPILOT_PR_BODY_END:/g;
+  let body = null;
+  for (const m of texts.join('\n').matchAll(re)) body = m[1];
+  return body == null ? null : body.replace(/^```[a-z]*\n/, '').replace(/\n```\s*$/, '');
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
@@ -113,12 +122,9 @@ if (isMain) {
   // --pr-body prints only the last body a worker wrote between AUTOPILOT_PR_BODY_BEGIN: and
   // AUTOPILOT_PR_BODY_END:, verbatim, and exits 3 when there is none.
   if (wantBody) {
-    const all = texts.join('\n');
-    const re = /AUTOPILOT_PR_BODY_BEGIN:[^\n]*\n([\s\S]*?)\n[\s`>*#-]*AUTOPILOT_PR_BODY_END:/g;
-    let body = null;
-    for (const m of all.matchAll(re)) body = m[1];
+    const body = prBodyIn(texts);
     if (body == null) { console.error('no AUTOPILOT_PR_BODY_BEGIN:/END: block in the log'); process.exit(3); }
-    process.stdout.write(`${body.replace(/^```[a-z]*\n/, '').replace(/\n```\s*$/, '')}\n`);
+    process.stdout.write(`${body}\n`);
     process.exit(0);
   }
 
