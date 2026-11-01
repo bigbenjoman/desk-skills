@@ -619,7 +619,7 @@ function byHand(keys, { state, by, front, now }) {
     }
     // A design no worker can read is snapshotted by the person's session before the admit, never after.
     const unread = needsPersonLane(t.rec) ? [] : unreadCanvases(t.rec);
-    if (unread.length) { refuse(key, `design not snapshotted: ${unread.join(', ')}: snapshot it into ${join(state, 'designs', key)}/ and record it (desk-design write), or have it shared with this subscription, then run /desk-admit ${key} again`); continue; }
+    if (unread.length) { refuse(key, `design not snapshotted: ${unread.join(', ')}: snapshot it into ${join(state, 'designs', key)}/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared with this subscription, then run /desk-admit ${key} again`); continue; }
     recs[key] = t.rec;
   }
   let started = null;
