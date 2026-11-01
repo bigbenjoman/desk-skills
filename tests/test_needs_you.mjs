@@ -588,7 +588,7 @@ t('its ticket page says the same', strip(ticketScreen(phr, 'F-2')).includes('wai
 const held378 = 'merge hold: touches billing — src/billing/**';
 const psiPr = (pr, more = {}) => greenPr(pr, { merge_blocked: held378, ...more });
 const sha = (pr) => `575fa8c5c${pr}aa`;
-const withHead = (t) => ({ ...t, pr_status: { ...t.pr_status, head: sha(t.result.pr) } });
+const withHead = (t) => ({ ...t, ...(t.stuck ? { stuck: { ...t.stuck, head: sha(t.result.pr) } } : {}), pr_status: { ...t.pr_status, head: sha(t.result.pr) } });
 put('psi', { port: 5100, beat: 1, supervised: true, merge: 'yes', tickets: {
   'Q-1': withHead(psiPr(141)),
   'Q-2': withHead(psiPr(142)),
@@ -645,6 +645,17 @@ t('DS-378 AC2 it is not listed again, nor counted', `${'Q-2' in psi()} ${N.needs
 const q3 = N.record({ word: 'psi', ticket: 'Q-3', action: 'done' });
 t('DS-378 AC5 an unreadable PR says its state could not be read, and is not marked done',
   `${q3.ok} ${/could not read PR #143's state from GitHub \(GraphQL: Could not resolve to a PullRequest \(143\)\), so it is not marked done and stays on your list\./.test(q3.line)} ${queueOf('psi').tickets['Q-3'].done_check} ${'Q-3' in psi()}`, 'false true undefined true');
+
+// ---- DS-386 AC3: a review stuck recorded at a head the PR has since left (DS-379's, on PR #348) is gone
+// before the next pass: the draft's undraft reason at its head is what the person sees.
+const undraft386 = { call: 'person', why: 'its body has a `_drag` cell with no screenshot', action: 'take it or take the cell out of #348' };
+const stale386 = { why: 'review not clean after 2 fix tries (2 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell', pr: 348, head: '597a520', at: minsAgo(60) };
+const draft386 = (stuck) => { const d = draftPr(348, passed, undraft386); return { ...d, ...(stuck ? { stuck } : {}), pr_status: { ...d.pr_status, head: 'a6e2ab4' } }; };
+put('stale', { port: 5150, beat: 1, supervised: true, merge: 'yes', tickets: { 'K-1': draft386(stale386), 'K-2': draft386(null), 'K-3': draft386({ ...stale386, head: 'a6e2ab4' }) } });
+const kap = Object.fromEntries(N.collect({ word: 'stale' }).items.map((i) => [i.t.key, i]));
+t('DS-386 AC3 a review stuck at an older head is no item: the draft shows its undraft reason, as one never stuck does',
+  `${kap['K-1']?.need === kap['K-2']?.need} ${/still has findings/.test(kap['K-1']?.need ?? '')}`, 'true false');
+t('DS-386 AC2 a review stuck at the PR\'s head still asks for the fix', /code review still has findings/.test(kap['K-3']?.need ?? ''), true);
 
 // ---- DS-379 AC3: a draft whose capture try could not take its screenshots names each screen and what
 // its worker said, whole, however long, and says what to do.

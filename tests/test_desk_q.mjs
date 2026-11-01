@@ -1959,5 +1959,13 @@ t('DS-357 AC2 one unreadable batch: home counts the readable one, names the repo
 t('DS-357 AC2b one unreadable batch: the repo\'s place lists the readable batch\'s tickets and says which queue it could not read',
   `${['TB-1', 'TB-2', 'TB-3'].every((k) => p357u.some((l) => l.includes(`  ${k} `)))} ${p357u.some((l) => l.includes(said357))}`, 'true true');
 
+// DS-386: a stuck that names no checks holds only at the PR head it was recorded at (DS-379's, on PR #348).
+const why386 = 'review not clean after 2 fix tries (2 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell';
+const t386 = (stuckHead, prHead) => ({ state: 'done', result: { pr: 348 }, stuck: { why: why386, pr: 348, ...(stuckHead ? { head: stuckHead } : {}) },
+  pr_status: { pr: 348, state: 'OPEN', isDraft: true, head: prHead, checks: [] } });
+t('DS-386 AC3 a review stuck whose head is not the PR\'s recorded head is gone', Q.stuckOf(t386('597a520', 'a6e2ab4')), null);
+t('DS-386 AC2 at the PR\'s head it holds as written', Q.stuckOf(t386('a6e2ab4', 'a6e2ab4'))?.why, why386);
+t('DS-386 a stuck recorded with no head holds as written', Q.stuckOf(t386(null, 'a6e2ab4'))?.why, why386);
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
