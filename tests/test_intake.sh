@@ -609,7 +609,7 @@ status(){ mkdir -p "$T/get"; printf '{"key":"%s","fields":{"status":{"name":"%s"
 call(){ printf '{"question":"%s","category":"%s","options":["%s","%s"],"recommended":%s}' "$1" "$2" "$3" "$4" "$5"; }
 logged(){ jq -s -c "[.[] | select(.ticket == \"$1\") | [.question, .chose, .category, .source]]" "$T/state/decisions.jsonl" 2>/dev/null; }
 tracker; running_batch; rm -f "$T/state/intake.json" "$T/state/decisions.jsonl"
-status DN-1 Done done; rec DN-1 A; n=$(count "$T/triage.calls")
+status DN-1 Done "done"; rec DN-1 A; n=$(count "$T/triage.calls")
 out=$(admit DN-1 --by ben); rc=$?
 check "DS-394 AC1: /desk-admit says a ticket done in Jira is already done, exit 0" '[ $rc -eq 0 ] && grep -q "^DN-1 is already done in Jira (Done): nothing triaged or admitted$" <<< "$out" && ! grep -q "not admitted" <<< "$out"'
 check "DS-394 AC1: nothing is triaged or admitted for it" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.DN-1)" = undefined ] && ! grep -qs DN-1 "$T/state/intake.json"'
