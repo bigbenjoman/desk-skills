@@ -22,7 +22,15 @@
 # taken over instead of wedging the box. Both block with no timeout: waiting is the feature.
 # --timeout <seconds> is only for a caller that must not wait (the committed pre-push hook): it bounds
 # the wait for the lock, never the command, and exits 75 without running anything when it passes.
+#
+# The test lock has SLOTS: up to N commands hold it at once, each in a slot of its own. N is the
+# machine profile's `test-lock-slots` row (DESK_TEST_LOCK_SLOTS wins over it), 1 without either, so
+# a machine nobody sized keeps the old one-at-a-time lock. Slot 1 is the original lock path, so a
+# command waiting under an older copy of this script still queues for it correctly. The browser lock
+# is always one slot. Slots raise throughput; the profile keeps the memory bound.
 set -uo pipefail
+# This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
+here="$(cd "$(dirname "$0")" && pwd -P)"
 name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
 timeout=""
 if [ "${1:-}" = "--timeout" ]; then
@@ -64,13 +72,42 @@ esac
 [ -n "$lock" ] || exec "$@"
 gave_up() { echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
 
+# How many commands may hold this lock at once.
+slots=1
+if [ "$name" = test ] || [ "$name" = tsc ]; then
+  want="${DESK_TEST_LOCK_SLOTS:-}"
+  # desk-env reads the profile as every other caller does; with no profile, row or node it prints
+  # nothing and the lock keeps one slot.
+  [ -n "$want" ] || want="$(node "$here/desk-env.mjs" machine get test-lock-slots 2>/dev/null)"
+  case "$want" in ''|*[!0-9]*|0) ;; *) slots="$want" ;; esac
+fi
+# Slot i's lock path: slot 1 is the original path.
+slot_path() { if [ "$1" -eq 1 ]; then echo "$lock"; else echo "$lock.$1"; fi; }
+
 if command -v flock >/dev/null 2>&1; then
-  [ -n "$timeout" ] || exec flock "$lock" "$@"
-  # The descriptor form, so a timeout is told apart from the command's own exit status. The command
-  # inherits fd 9, so the lock is held until it exits.
-  exec 9>>"$lock" || exit 2
-  flock -w "$timeout" 9 || gave_up
-  exec "$@"
+  if [ "$slots" -eq 1 ]; then
+    [ -n "$timeout" ] || exec flock "$lock" "$@"
+    # The descriptor form, so a timeout is told apart from the command's own exit status. The command
+    # inherits fd 9, so the lock is held until it exits.
+    exec 9>>"$lock" || exit 2
+    flock -w "$timeout" 9 || gave_up
+    exec "$@"
+  fi
+  # Several slots: try each without blocking, and wait 2 s between rounds.
+  waited=0
+  while :; do
+    i=1
+    while [ "$i" -le "$slots" ]; do
+      exec 9>>"$(slot_path "$i")" || exit 2
+      flock -n 9 && exec "$@"
+      exec 9>&-
+      i=$((i + 1))
+    done
+    [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
+    [ "$waited" -eq 0 ] && echo "with-lock.sh: waiting for $name lock (all $slots slots held)" >&2
+    waited=$((waited + 2))
+    sleep 2
+  done
 fi
 
 # ---- mkdir fallback ---------------------------------------------------------------------------
@@ -81,30 +118,46 @@ if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
   exit 2
 fi
 
-ldir="$lock.d"   # distinct from flock's file so the two can never be confused
 alive() { local p; for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
 
-waited=0
-while ! mkdir "$ldir" 2>/dev/null; do
-  [ -d "$ldir" ] || { echo "with-lock.sh: cannot create $ldir" >&2; exit 2; }
-  # shellcheck disable=SC2046
-  holders="$(cat "$ldir/pid" 2>/dev/null || true)"
-  stale=""
-  if [ -n "$holders" ]; then
-    # shellcheck disable=SC2086
-    alive $holders || stale=1
-  elif [ -n "$(find "$ldir" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-    stale=1   # created but no pid written for over a minute: the taker died between the two steps
-  fi
-  if [ -n "$stale" ]; then
+# Take slot directory $1, clearing it first if its holder is dead. 0 = taken, 1 = held by a live one.
+take() {
+  local d="$1" holders stale grave
+  while ! mkdir "$d" 2>/dev/null; do
+    [ -d "$d" ] || { echo "with-lock.sh: cannot create $d" >&2; exit 2; }
+    holders="$(cat "$d/pid" 2>/dev/null || true)"
+    stale=""
+    if [ -n "$holders" ]; then
+      # shellcheck disable=SC2086
+      alive $holders || stale=1
+    elif [ -n "$(find "$d" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      stale=1   # created but no pid written for over a minute: the taker died between the two steps
+    fi
+    [ -n "$stale" ] || { last_holders="$holders"; return 1; }
     # Rename first: mv of a directory is atomic, so exactly one taker wins and nobody deletes a
     # lock a faster taker has just re-created.
-    grave="$ldir.stale.$$"
-    if mv "$ldir" "$grave" 2>/dev/null; then rm -rf "$grave" 2>/dev/null || true; fi
-    continue
-  fi
+    grave="$d.stale.$$"
+    if mv "$d" "$grave" 2>/dev/null; then rm -rf "$grave" 2>/dev/null || true; fi
+  done
+  return 0
+}
+
+waited=0
+last_holders=""
+ldir=""
+while [ -z "$ldir" ]; do
+  i=1
+  while [ "$i" -le "$slots" ]; do
+    d="$(slot_path "$i").d"   # distinct from flock's file so the two can never be confused
+    if take "$d"; then ldir="$d"; break; fi
+    i=$((i + 1))
+  done
+  [ -n "$ldir" ] && break
   [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
-  if [ "$waited" -eq 0 ]; then echo "with-lock.sh: waiting for $name lock (held by pid ${holders:-?})" >&2; fi
+  if [ "$waited" -eq 0 ]; then
+    if [ "$slots" -eq 1 ]; then echo "with-lock.sh: waiting for $name lock (held by pid ${last_holders:-?})" >&2
+    else echo "with-lock.sh: waiting for $name lock (all $slots slots held)" >&2; fi
+  fi
   waited=$((waited + 2))
   sleep 2
 done

@@ -56,7 +56,9 @@ const mini = sized(macMini);
 t('desktop: sizes nothing for a CI runner', Object.keys(mini).filter((k) => k.startsWith('runner-')).join(), '');
 t('desktop: ceiling is memory less the OS', `${mini['memory-ceiling-gb'].value} ${mini['memory-ceiling-gb'].why}`, '56 64 GB - 8 for the OS');
 t('desktop: workers at 3 GB each', mini['autopilot-concurrency'].value, '9 / 18');
-t('desktop: test cap = performance cores', mini['test-cap'].value, '8');
+t('desktop: test cap = performance cores shared by the lock slots', `${mini['test-cap'].value} ${mini['test-cap'].why}`, '4 the 8 performance cores, shared by 2 test lock slots');
+t('desktop: 2 test lock slots (56 GB / 16 = 3, 8 P-cores / 4 = 2)', mini['test-lock-slots'].value, '2');
+t('desktop: slots x test cap stays within the P-cores', Number(mini['test-lock-slots'].value) * Number(mini['test-cap'].value) <= 8, true);
 t('desktop: typecheck lock timeout', mini['typecheck-lock-timeout-min'].value, '20');
 t('desktop: pre-push lock timeout', mini['pre-push-lock-timeout-s'].value, '60');
 
@@ -77,6 +79,7 @@ const lap = sized(laptop);
 t('laptop: ceiling 32 - 8', lap['memory-ceiling-gb'].value, '24');
 t('laptop: workers', lap['autopilot-concurrency'].value, '4 / 8');
 t('laptop: test cap', lap['test-cap'].value, '8');
+t('laptop: one test lock slot (24 GB / 16), so the test cap keeps every P-core', lap['test-lock-slots'].value, '1');
 t('laptop: battery or mains sizes the same', JSON.stringify(propose({ ...laptop, battery: 'no' })), JSON.stringify(propose(laptop)));
 
 // ---- an Intel Mac: one kind of core
@@ -103,6 +106,7 @@ t('linux not wsl', small.wsl, 'no');
 const sm = sized(small);
 t('16 GB: ceiling', sm['memory-ceiling-gb'].value, '8');
 t('16 GB: workers', sm['autopilot-concurrency'].value, '1 / 2');
+t('16 GB: one test lock slot (8 GB / 16 rounds down, at least 1)', sm['test-lock-slots'].value, '1');
 
 // ---- WSL: hybrid Intel P/E cores, and the 16 GB ceiling whatever the guest grant
 const wsl = parseLinux({
@@ -118,6 +122,7 @@ t('hybrid P/E split', `${wsl['performance-cores']} ${wsl['efficiency-cores']}`, 
 const ws = sized(wsl);
 t('wsl: ceiling 16', ws['memory-ceiling-gb'].value, '16');
 t('wsl: test cap = P-cores', ws['test-cap'].value, '16');
+t('wsl: test lock slots bound by the 16 GB ceiling', ws['test-lock-slots'].value, '1');
 t('cpu list', countCpuList('0-7,16-23'), 16);
 
 // ---- the file round-trips, and detect reports only real hardware changes

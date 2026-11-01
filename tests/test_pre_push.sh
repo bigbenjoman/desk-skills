@@ -96,6 +96,39 @@ out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 3' 2>&1); rc
 check "with-lock --timeout: a free lock runs the command, keeps its status" '[ $rc -eq 3 ]'
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout soon true 2>&1); rc=$?
 check "with-lock --timeout: a non-number is refused"  '[ $rc -eq 2 ]'
+# The test lock has slots: the machine profile's test-lock-slots row, overridden by DESK_TEST_LOCK_SLOTS
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-slots` | `2` | test |\n' > "$DESK_MACHINE"
+bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/slot1'; sleep 3" & h1=$!
+n=0; while [ ! -f "$T/slot1" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 4' 2>&1); rc=$?
+check "with-lock slots: a second command runs beside the first" '[ $rc -eq 4 ]'
+# Slot 1 is the original path, so an older copy of the script, which knows only that path, queues
+# behind it: flock finds the file locked, and the mkdir lock finds its directory taken.
+if command -v flock >/dev/null 2>&1; then
+  check "with-lock slots: slot 1 is held at the original path" '! flock -n "$DESK_LOCK_DIR/desk-test.lock" true'
+else
+  check "with-lock slots: slot 1 is held at the original path" '[ -d "$DESK_LOCK_DIR/desk-test.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.1.d" ]'
+fi
+bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/slot2'; sleep 3" & h2=$!
+n=0; while [ ! -f "$T/slot2" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 true 2>&1); rc=$?
+check "with-lock slots: a third waits while both slots are held" '[ $rc -eq 75 ]'
+out=$(DESK_TEST_LOCK_SLOTS=3 bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 5' 2>&1); rc=$?
+check "with-lock slots: DESK_TEST_LOCK_SLOTS wins over the profile" '[ $rc -eq 5 ]'
+out=$(bash "$SRC/desk/bin/with-lock.sh" browser --timeout 0 sh -c 'exit 6' 2>&1); rc=$?
+check "with-lock slots: the browser lock is its own" '[ $rc -eq 6 ]'
+wait "$h1" "$h2"
+check "with-lock slots: every slot released" '[ ! -e "$DESK_LOCK_DIR/desk-test.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.2.d" ]'
+mkdir -p "$DESK_LOCK_DIR/desk-test.lock.d" "$DESK_LOCK_DIR/desk-test.lock.2.d"
+echo 999999 > "$DESK_LOCK_DIR/desk-test.lock.d/pid"; echo 999998 > "$DESK_LOCK_DIR/desk-test.lock.2.d/pid"
+out=$(bash "$SRC/desk/bin/with-lock.sh" test --timeout 0 sh -c 'exit 7' 2>&1); rc=$?
+check "with-lock slots: a dead holder's slot is taken over" '[ $rc -eq 7 ]'
+rm -f "$DESK_MACHINE"
+out=$(bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/one'; sleep 2" 2>&1) & h3=$!
+n=0; while [ ! -f "$T/one" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+out=$(bash "$SRC/desk/bin/with-lock.sh" test --timeout 0 true 2>&1); rc=$?
+check "with-lock slots: no profile row keeps one slot" '[ $rc -eq 75 ]'
+wait "$h3"
 # A leading -- is optional without --cwd: `with-lock.sh browser -- <cmd>` runs <cmd>, not `--`
 out=$(bash "$SRC/desk/bin/with-lock.sh" browser -- sh -c 'echo ran; exit 3' 2>&1); rc=$?
 check "with-lock <lock> -- <cmd>: runs the command under the lock" '[ $rc -eq 3 ] && [ "$out" = ran ]'
