@@ -277,8 +277,34 @@ put('theta', { port: 3800, beat: 1, supervised: true, tickets: {
   'H-1': { state: 'running', lane: 'A' },
   'H-2': { state: 'parked', lane: 'A', held_by: 'H-1', open_questions: 1, outside_blockers: [{ key: 'X-9' }], park: { question: 'held by orchestrator: blocked by H-1 — starts once their PRs merge' } },
 } });
-const h2 = N.collect({ word: 'theta' }).items.find((i) => i.t.key === 'H-2');
-t('DS-279 a held ticket also held outside the batch asks the outside question, and answers it', `${h2?.kind} ${h2?.need} ${h2?.actions[0][0]}`, 'triage held by X-9, outside this batch: start anyway? answer');
+const NN = await import('../desk/bin/not-now.mjs');
+const thetaState = join(env.HOME, '.desk-autopilot', 'acme__theta');
+// A put-off under the outside question's triage key, with its start-anyway need and no blocker input.
+NN.addPutOff(NN.putOffEntry({ question: 'H-2 triage', ticket: 'H-2', inputs: { ticket: 'H-2', need: 'held by X-9, outside this batch: start anyway?' } }), thetaState);
+// A blocker another batch of the repo holds: something works it, so there is nothing to admit.
+const yq = join(env.DESK_HOME, 'repos', 'acme__theta', 'batches', 'Y-B', 'queue.json');
+mkdirSync(dirname(yq), { recursive: true });
+writeFileSync(yq, JSON.stringify({ version: 1, batch: 'yb-batch', base: 'feat/y', concurrency: 1, supervised: true, tickets: { 'Y-1': { key: 'Y-1', state: 'running', lane: 'A', added_at: minsAgo(60) } } }));
+const thq = queueOf('theta');
+thq.tickets['H-3'] = { key: 'H-3', state: 'triaged', lane: 'A', open_questions: 1, added_at: minsAgo(50), outside_blockers: [{ key: 'Y-1', category: 'indeterminate' }] };
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__theta', 'queue.json'), JSON.stringify(thq));
+const theta = () => Object.fromEntries(N.collect({ word: 'theta' }).items.map((i) => [i.t.key, i]));
+const h2 = theta()['H-2'];
+t('DS-401 AC3 (DS-279) a ticket held by an open ticket in no batch is a held row naming its state, recommending admitting it',
+  `${h2?.kind} | ${h2?.need} | ${h2?.actions.map((a) => a[0]).join()} | ${h2?.actions[0][1]}`,
+  'held | held by X-9 (to do, in no batch), outside this batch | admit,answer,not-now | X-9 is in no batch, so nothing works it: admitting queues it for a worker');
+t('DS-401 its put-off as the old outside question no longer hides it (KAN-609)', h2 != null, true);
+t('DS-401 AC3 a blocker another batch holds is named there, and offers no admit', `${theta()['H-3']?.kind} | ${theta()['H-3']?.need} | ${theta()['H-3']?.actions.map((a) => a[0]).join()}`,
+  'held | held by Y-1 (in progress, in batch Y-B), outside this batch | answer,not-now');
+const ad2 = N.record({ word: 'theta', ticket: 'H-2', action: 'admit' });
+t('DS-401 AC3 admit records nothing and names the /desk-admit to run', `${ad2.ok} ${/nothing recorded\. Run \/desk-admit X-9 in .*; H-2 stays held until it is Done/.test(ad2.line)} ${queueOf('theta').tickets['H-2'].state}`, 'true true parked');
+t('DS-401 admit is refused where no blocker is in no batch', N.record({ word: 'theta', ticket: 'H-3', action: 'admit' }).ok, false);
+N.record({ word: 'theta', ticket: 'H-2', action: 'not-now' });
+t('DS-401 AC4 put off as a held row, with nothing changed, it stays put off', theta()['H-2'], undefined);
+const moveBlocker = (category) => { const q = queueOf('theta'); q.tickets['H-2'].outside_blockers = [{ key: 'X-9', category }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__theta', 'queue.json'), JSON.stringify(q)); };
+moveBlocker('indeterminate');
+t('DS-401 AC2 once its outside blocker\'s state changes it is listed again, saying what changed',
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:running,X-9:new@none → H-1:running,X-9:indeterminate@none; need .*\)$/.test(theta()['H-2']?.need ?? ''), true);
 const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
@@ -680,6 +706,45 @@ og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
 writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
 const m5 = N.record({ word: 'omega', ticket: 'M-5', action: 'move', text: 'F-1' });
 t('DS-380 a worktree holding untracked files is never removed, and nothing moves', `${m5.ok} ${/holds work cut from main \(uncommitted changes or untracked files\)/.test(m5.line)} ${existsSync(join(wt('M-5'), 'new.js'))} ${'M-5' in queueOf('omega').tickets} ${'M-5' in fQueue().tickets}`, 'false true true true false');
+// ---- A put-off item comes back once it offers an action it did not offer when put off.
+const omegaState = join(env.HOME, '.desk-autopilot', 'acme__omega');
+// M-3 put off offering resume and not-now; M-2 by answer.mjs before entries recorded actions, so with
+// none; M-5 since, with none either, as an entry whose item no batch listed when it was put off.
+NN.addPutOff(NN.putOffEntry({ question: 'this one too', ticket: 'M-3', inputs: {}, actions: ['resume', 'not-now'] }), omegaState);
+NN.addPutOff(NN.putOffEntry({ question: 'the file is on the feature branch', ticket: 'M-2', inputs: {}, at: '2026-10-31T16:54:00.000Z' }), omegaState);
+NN.addPutOff(NN.putOffEntry({ question: 'and this one', ticket: 'M-5', inputs: {} }), omegaState);
+const omega = () => Object.fromEntries(N.collect({ word: 'omega' }).items.map((i) => [i.t.key, i]));
+t('DS-401 AC1 an item put off offering resume and not-now is listed again once it offers move, saying so',
+  /^this one too \(Changed since it was put off on \d{4}-\d\d-\d\d: actions resume, not-now → resume, not-now, move\.\)$/.test(omega()['M-3']?.need ?? ''), true);
+t('DS-401 AC1 a put-off from before entries recorded actions (KAN-1291) is listed again once, saying so',
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: actions \(not recorded\) → resume, not-now, move\.\)$/.test(omega()['M-2']?.need ?? ''), true);
+t('DS-401 AC1 desk-q counts them as needing you', N.needsCount(loadRepos().find((r) => r.name === 'omega')).rows.some((x) => x.t.key === 'M-3'), true);
+t('DS-401 AC4 a put-off written since with no actions stays put off in the list and in desk-q\'s count',
+  `${'M-5' in omega()} ${N.needsCount(loadRepos().find((r) => r.name === 'omega')).rows.some((x) => x.t.key === 'M-5')}`, 'false false');
+N.record({ word: 'omega', ticket: 'M-3', action: 'not-now' });
+N.record({ word: 'omega', ticket: 'M-2', action: 'not-now' });
+const m3Entry = NN.readRegister(omegaState).entries.get(NN.questionKey('this one too'));
+t('DS-401 a park put off again records the actions it offers', m3Entry?.actions?.join(), 'resume,not-now,move');
+t('DS-401 the actions are no input: the pass and the digest read the park as put off', NN.lookup(NN.readRegister(omegaState), { question: 'this one too', inputs: {} }).status, 'put_off');
+t('DS-401 AC4 with its question, inputs and actions unchanged, it stays put off, on this run and a later one',
+  `${'M-3' in omega()} ${'M-2' in omega()} ${N.collect({ word: 'omega', repos: loadRepos(NOW + 86400000) }).items.some((i) => ['M-2', 'M-3'].includes(i.t.key))}`, 'false false false');
+// A park put off straight through answer.mjs (the orchestrator, the digest) or not-now.mjs add records
+// its item's actions too, so one it gains brings it back as M-3 came back.
+const omegaQ = join(env.DESK_HOME, 'repos', 'acme__omega', 'queue.json');
+const oq = queueOf('omega');
+oq.tickets['M-6'] = { key: 'M-6', ...parked('A', 7, 'which copy for M-6?') };
+oq.tickets['M-7'] = { key: 'M-7', ...parked('A', 6, 'which copy for M-7?') };
+writeFileSync(omegaQ, JSON.stringify(oq));
+const runIn = (script, ...args) => spawnSync(process.execPath, [join(REAL_BIN, script), ...args], { encoding: 'utf8', cwd: T, env: { ...process.env, DESK_AUTOPILOT_STATE: omegaState, DESK_QUEUE: omegaQ } });
+const ans6 = runIn('answer.mjs', 'M-6', 'not now');
+const entryOf = (q) => NN.readRegister(omegaState).entries.get(NN.questionKey(q));
+t('DS-401 AC1 a park put off through answer.mjs records the actions it offers', `${ans6.status} ${entryOf('which copy for M-6?')?.actions?.join()}`, '0 resume,not-now,move');
+const add7 = runIn('not-now.mjs', 'add', 'M-7', 'which copy for M-7?');
+t('DS-401 AC1 a park put off through not-now.mjs add records them too', `${add7.status} ${entryOf('which copy for M-7?')?.actions?.join()}`, '0 resume,not-now,move');
+t('DS-401 AC4 and both stay put off', `${'M-6' in omega()} ${'M-7' in omega()}`, 'false false');
+NN.addPutOff(NN.putOffEntry({ question: 'this one too', ticket: 'M-3', inputs: {}, actions: ['resume', 'not-now'] }), omegaState);
+runIn('not-now.mjs', 'add', 'M-3', 'some other question');
+t('DS-401 a put-off of another question never stamps the item\'s own older entry, which still comes back', `${entryOf('this one too')?.actions?.join()} ${'M-3' in omega()}`, 'resume,not-now true');
 // ---- DS-390: an approved force-push becomes a one-off grant on the ticket; a step no worker is ever
 // allowed is a session item, never a requeue.
 const grWt = join(T, 'grantee-wt');
