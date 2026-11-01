@@ -12,17 +12,20 @@ import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } fr
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
-import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue } from './batch-state.mjs';
+import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor } from './batch-state.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
 
 crashShowsPerson();
 const QUEUE = join(binDir(), 'queue.mjs');
 
-const [ticket, ...rest] = process.argv.slice(2);
+const [ticket, ...args] = process.argv.slice(2);
+// --approve says outright that the answer approves the step its park asks for (batch-state.mjs grantFor).
+const approveFlag = args[0] === '--approve';
+const rest = approveFlag ? args.slice(1) : args;
 const text = rest.join(' ').trim();
 if (!ticket || !text) {
-  console.error('usage: answer.mjs <TICKET> "<the answer>"');
+  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"');
   process.exit(EXIT.SHOW_PERSON);
 }
 if (!SAFE_ID.test(ticket) || ticket.includes('..')) {
@@ -110,6 +113,31 @@ try {
   }
 } catch (e) {
   console.error(`${ticket}: answer recorded in the briefing, but the not-now register was not updated: ${e.message}`);
+}
+
+// An answer approving the step a park was refused records it as the ticket's one-off grant, which the
+// next worker's settings allow as that exact command (worker-settings.mjs). A step no worker is ever
+// allowed gets no grant: a requeue would only park it again, so it is a session's.
+try {
+  const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
+  if (t?.state === 'parked' && !isHeld(t) && !putOffAnswer && refusedStep(t.park?.question)) {
+    const remoteSha = (branch) => {
+      if (!t.worktree) return null;
+      try { return execFileSync('git', ['-C', t.worktree, 'rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+      catch { return null; }
+    };
+    const g = grantFor({ t, text, approve: approveFlag, remoteSha });
+    if (g.grant) {
+      execFileSync('node', [QUEUE, 'set', ticket, `grant=${JSON.stringify(g.grant)}`], { stdio: 'ignore' });
+      console.log(`${ticket}: approved once: its next worker may run \`git push --force-with-lease=${g.grant.branch}:${g.grant.lease} origin ${g.grant.branch}\`, and nothing wider.`);
+    } else if (neverStep(t.park?.question)) {
+      console.log(`${ticket}: ${g.why}: do not requeue it for a worker. Open an interactive session and run /desk-ticket ${ticket}.`);
+    } else {
+      console.log(`${ticket}: no grant recorded (${g.why}).`);
+    }
+  }
+} catch (e) {
+  console.error(`${ticket}: answer recorded in the briefing, but its grant was not: ${e.message}`);
 }
 
 // A triaged ticket's questions are its triage unknowns: clearing the count is what makes it eligible

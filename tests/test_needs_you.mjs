@@ -680,6 +680,44 @@ og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
 writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
 const m5 = N.record({ word: 'omega', ticket: 'M-5', action: 'move', text: 'F-1' });
 t('DS-380 a worktree holding untracked files is never removed, and nothing moves', `${m5.ok} ${/holds work cut from main \(uncommitted changes or untracked files\)/.test(m5.line)} ${existsSync(join(wt('M-5'), 'new.js'))} ${'M-5' in queueOf('omega').tickets} ${'M-5' in fQueue().tickets}`, 'false true true true false');
+// ---- DS-390: an approved force-push becomes a one-off grant on the ticket; a step no worker is ever
+// allowed is a session item, never a requeue.
+const grWt = join(T, 'grantee-wt');
+spawnSync('git', ['init', '-q', '-b', 'main', grWt]);
+spawnSync('git', ['-C', grWt, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x']);
+const leaseSha = spawnSync('git', ['-C', grWt, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+spawnSync('git', ['-C', grWt, 'update-ref', 'refs/remotes/origin/fix/GR-1', leaseSha]);
+// KAN-636 round 6, in the shape it parked.
+const KAN636 = 'Rebased onto origin/main to clear the conflict; the branch is already on origin, so it needs `git push --force-with-lease origin fix/GR-1`, which my settings deny (§3 git-force-with-lease is ask). Approve the force-push?';
+const AWS = 'Reading the voicepa-ci account needs the aws CLI, which is refused by my worker settings. Can you read it?';
+put('grantee', { port: 5300, beat: 1, supervised: true, tickets: {
+  'GR-1': { ...parked('A', 30, KAN636), branch: 'fix/GR-1', worktree: grWt },
+  'GR-2': { ...parked('A', 20, KAN636), branch: 'fix/GR-1', worktree: grWt },
+  'GR-3': parked('B', 10, AWS),
+} });
+const BS = await import('../desk/bin/batch-state.mjs');
+t('DS-390 the KAN-636 round 6 park names a force-push a grant covers', JSON.stringify(BS.refusedStep(KAN636)), '{"step":"force-push","grantable":true}');
+t('DS-390 a park needing curl and aws ssm names a step no worker is allowed', BS.neverStep('needs curl + aws ssm to read the parameter'), 'aws');
+t('DS-390 a park that only mentions aws in passing is not a session park', BS.neverStep('Should the copy say AWS or Amazon Web Services?'), null);
+t('DS-390 approvals: a yes approves, a no, not or wait does not', ['Yes, force-push it', 'approved', 'no, merge instead', 'yes but wait for CI', 'Use the short copy'].map(BS.approves).join(), 'true,true,false,false,false');
+const gr1 = N.record({ word: 'grantee', ticket: 'GR-1', action: 'resume', text: 'Yes, force-push it' });
+const grT1 = queueOf('grantee').tickets['GR-1'];
+t('DS-390 AC1 an approving answer records a grant for that branch and lease SHA, and requeues it',
+  `${gr1.ok} ${grT1.state} ${grT1.grant?.step} ${grT1.grant?.branch} ${grT1.grant?.lease === leaseSha}`, 'true triaged force-push fix/GR-1 true');
+const gr2 = N.record({ word: 'grantee', ticket: 'GR-2', action: 'resume', text: 'Use the short copy instead' });
+const grT2 = queueOf('grantee').tickets['GR-2'];
+t('DS-390 AC5 an answer that approves nothing records no grant', `${gr2.ok} ${grT2.state} ${grT2.grant ?? null}`, 'true triaged null');
+const grI3 = N.collect({ word: 'grantee' }).items.find((i) => i.t.key === 'GR-3');
+t('DS-390 AC3 a park on a step no worker is allowed is a session item, offering open and not-now only',
+  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${/never allowed aws/.test(grI3?.actions[0][1] ?? '')}`, 'session open,not-now true');
+const gr3 = N.record({ word: 'grantee', ticket: 'GR-3', action: 'resume', text: 'Yes, read it yourself' });
+t('DS-390 AC3 an answer approving it is not requeued to a worker', `${gr3.ok} ${queueOf('grantee').tickets['GR-3'].state} ${queueOf('grantee').tickets['GR-3'].grant ?? null}`, 'false parked null');
+t('DS-390 AC3 open names the session and says why', /not requeued \(a step no worker is allowed\).*\/desk-ticket GR-3/.test(N.record({ word: 'grantee', ticket: 'GR-3', action: 'open' }).line), true);
+const BSg = BS.grantFor({ t: { state: 'parked', branch: 'fix/GR-9', park: { question: KAN636, inputs: { lease: 'a'.repeat(40) } } }, text: 'ok' });
+t('DS-390 a lease the park names wins over the worktree read', BSg.grant?.lease, 'a'.repeat(40));
+t('DS-390 --approve grants with an answer that does not open with a yes', BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'Push it over abc', approve: true, remoteSha: () => 'b'.repeat(40) }).grant?.lease, 'b'.repeat(40));
+t('DS-390 no lease to read: no grant, saying why', /no lease SHA/.test(BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes' }).why), true);
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

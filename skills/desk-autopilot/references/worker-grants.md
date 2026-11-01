@@ -22,6 +22,8 @@ a worker cannot:
 - push anything but the exact commands `git push [-u|--set-upstream] origin <its branch>` (and
   `git push --force-with-lease origin <its branch>` where §3 `git-force-with-lease` is `yes`); bare
   `git push` is refused;
+- rebase onto the base a branch already on origin, unless it may force-push it afterwards: it takes
+  `git merge origin/<base>` instead;
 - run `git config`, `git -c …`, `git -C` on anything but its own worktree (and there only the
   reads), git aliases or `git stash`;
 - run `gh api` in any form, `gh alias`, `gh pr merge`, `gh pr ready`, or approve or request changes;
@@ -44,11 +46,22 @@ a worker cannot:
 It may also write its resume file, `$DESK_STATE/resume/<TICKET>.json`: the harness write-protects its
 worktree's `.claude/`, where `desk-ticket` keeps one interactively.
 
+**An approved force-push is a one-off grant.** Where §3 `git-force-with-lease` is not `yes` and a
+worker parks asking to force-push its branch, an answer that approves it (one opening with a yes and
+saying no no, not or wait, or `answer.mjs <TICKET> --approve "…"`) is recorded as the ticket's
+`grant`: its branch and the SHA origin held, from the park's `lease` input or the worktree's
+`origin/<branch>`. The requeued worker's settings then allow exactly
+`git push --force-with-lease=<branch>:<sha> origin <branch>`, and its prompt names it. Once origin's
+branch has moved off that SHA the grant is spent: git refuses the same push, and the next worker's
+settings leave it out. An answer that approves nothing records no grant.
+
 **No grant unlocks the fixed refusals.** A write under the worktree's `.claude/`, a write allowed only
 by a `Write(...)` rule, anything in your own settings, and `gh api` are refused by the harness or the
-launcher whatever §3 or a worker's settings say (the Stage 3 worker contract lists them). A park on
+launcher whatever §3 or a worker's settings say (the Stage 3 worker contract lists them), and no
+worker settings ever allow `aws`, `ssm`, `curl` or `wget`. A park on
 one is answered by opening an interactive `/desk-ticket` session, never by adding an allow rule and
-requeueing: the worker would only park again. Triage puts a change that writes under `.claude/` in
+requeueing: the worker would only park again. desk-needs-you offers such a park as a session item,
+and the pass never requeues it. Triage puts a change that writes under `.claude/` in
 lane C for the same reason.
 
 It may run `desk-env …` and the §4 toolchain rows, a directory item as

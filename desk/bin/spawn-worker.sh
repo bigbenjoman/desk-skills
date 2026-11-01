@@ -121,6 +121,11 @@ CONFIG_NOTE=""
 if [ -n "$DENIED" ]; then
   CONFIG_NOTE=" The user's config does not grant these, so the matching commands are denied to you: $(printf '%s' "$DENIED" | sed 's/^CONFIG_DENIED: //' | paste -sd ';' - | sed 's/;/; /g'). When your work reaches one, do not look for another route: print the exact payload (the Jira text, the PR body, the push you would make) and park naming that step, per the worker contract section 2."
 fi
+# A step the person approved in an answer to the last park, allowed once, as that exact command.
+GRANTED="$(printf '%s\n' "$WS_OUT" | sed -n 's/^CONFIG_GRANT: //p')"
+if [ -n "$GRANTED" ]; then
+  CONFIG_NOTE="$CONFIG_NOTE The person approved this step in their answer to your ticket's last park, and it is allowed to you once, exactly as written: $(printf '%s' "$GRANTED" | paste -sd ';' - | sed 's/;/; /g'). Run it when your work reaches that step; it fails once origin's branch has moved, and nothing wider is allowed."
+fi
 
 ADD_DIRS=(--add-dir "$DESK_SKILLS_DIR" --add-dir "$STATE")
 # The model checks below need no tool; the worker and its preflight get the same list (worker-tools.mjs).
@@ -359,4 +364,5 @@ printf '[spawn] ticket=%s pid=%s port=%s model=%s session=%s%s\n' \
   "$TICKET" "$PID" "$PORT" "${MODEL:-default}" "$SID" "${AUTOPILOT_DRY_RUN:+ (dry run)}"
 printf '[spawn] log=%s\n' "$LOG"
 [ -n "$DENIED" ] && printf '[spawn] %s\n' "$DENIED"
+[ -n "$GRANTED" ] && printf '[spawn] CONFIG_GRANT: %s\n' "$GRANTED"
 printf '[spawn] wait: until ! claude agents --json | grep -q %s; do sleep 20; done\n' "$SID"

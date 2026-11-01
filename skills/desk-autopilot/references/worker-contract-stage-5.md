@@ -19,7 +19,8 @@ tree, so you know before you start which files will conflict.
 yet (`git branch -r` does not list it), or where config §3 `git-force-with-lease` is `yes`, pushing
 an already-pushed branch with `git push --force-with-lease origin <branch>`. A branch already on
 origin with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase,
-no force push.
+no force push. Your settings refuse that rebase, unless your prompt names a force-push the person
+approved once; then rebase and push with exactly that command.
 
 **A conflict is yours to resolve, not a park.** Resolve each conflicted file keeping both sides'
 intent: their change lands, and so does yours. Where their side renamed, moved or reshaped
