@@ -378,6 +378,12 @@ out=$(admit X-1); rc=$?
 check "DS-352 AC1: an epic whose own feature batch is live is refused naming it" '[ $rc -eq 11 ] && grep -q "^not admitted X-1: an epic, and its feature batch X-1 is already running" <<< "$out" && ! grep -q "^plan X-1" <<< "$out"'
 n=$(count "$T/triage.calls"); out=$(admit X-2); rc=$?
 check "DS-307 AC4: /desk-admit refuses a ticket in another batch before any triage" '[ $rc -eq 11 ] && grep -q "^not admitted X-2: X-2 is in batch X-1" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+check "DS-400 AC2: the refusal of a ticket in a batch it does not belong to names the needs-you move" 'grep -q "^not admitted X-2: X-2 is in batch X-1: a ticket is in one batch at most; if it belongs elsewhere, move it from /desk-needs-you once it is parked or stopped" <<< "$out"'
+n=$(count "$T/triage.calls"); out=$(admit X-4); rc=$?
+check "DS-400 AC1: a child already in its epic's feature batch is said to be there with its state, exit 0, not triaged" '[ $rc -eq 0 ] && grep -qx "X-4 is already in batch X-1 (triaged)" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(nget tickets.X-4.state)" = triaged ]'
+out=$(admit Y-1); rc=$?
+check "DS-400 AC1: a ticket already in the batch its blocker routes it to is said to be there, exit 0" '[ $rc -eq 0 ] && grep -qx "Y-1 is already in batch X-1 (parked)" <<< "$out"'
+check "DS-400 AC3: the desk-admit skill asks nothing for a ticket already where it belongs" 'grep -q "is already in batch <B> (<state>)\`, its epic.s feature" "$SK" && grep -q "batch included: ask nothing about it" "$SK"'
 mkdir -p "$DESK_HOME/repos/acme__widgets/batches/.done"; mv "$NB" "$DESK_HOME/repos/acme__widgets/batches/.done/X-1"
 out=$(intake)
 check "DS-307: once the feature batch is archived, its child is taken as any other" '[ "$(qget tickets.X-3.state)" = triaged ]'

@@ -128,7 +128,8 @@ export function liveBatch(name) {
   return !!q && !finished(q);
 }
 
-// Why `key` may not join the batch whose queue is `own`, or null: another unfinished batch holds it, or
+// Why `key` may not join the batch whose queue is `own`, or null: another unfinished batch holds it
+// (`held` then names that batch, its state directory and the ticket's state there), or
 // its triage record `rec` names an epic whose feature batch is unfinished. -> {batch, why},
 // with `epic` set to that epic for its child, and `unreadable` set when another batch's queue cannot be
 // read, so the key cannot be checked. Never
@@ -141,7 +142,11 @@ export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
   if (bad) return { batch: label(bad.b), unreadable: true, why: `${key} cannot be checked against ${where(bad.b)}, whose queue cannot be read (${bad.unreadable})` };
   const live = read.filter((x) => !finished(x.q));
   const held = live.find((x) => x.q.tickets?.[key]);
-  if (held) return { batch: label(held.b), why: `${key} is in ${where(held.b)}: a ticket is in one batch at most` };
+  if (held) {
+    const move = `if it belongs elsewhere, move it from /desk-needs-you once it is parked or stopped (move "<batch>")`;
+    return { batch: label(held.b), held: { name: held.b.name, state: held.b.state, ticket: held.q.tickets[key].state },
+      why: `${key} is in ${where(held.b)}: a ticket is in one batch at most; ${move}` };
+  }
   const epic = rec?.epic?.key;
   const feature = epic && live.find((x) => x.b.name === epic);
   if (feature) return { batch: epic, epic, why: `${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another` };
