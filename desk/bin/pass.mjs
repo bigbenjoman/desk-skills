@@ -9,12 +9,14 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, endedNormally } from './harvest.mjs';
+import { workerMarkers, endedNormally, readLog, prBodyIn } from './harvest.mjs';
+import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
+import { samePark, answered } from './decider.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
@@ -194,7 +196,7 @@ const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
-const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [] };
+const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [], recovered: [] };
 
 // The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
 // question is asked as it would be without one, and the person is told.
@@ -364,6 +366,22 @@ function clearsWhenOf(t, log) {
   const p = parseClearsWhen(raw);
   if (!p.ok) report.clears.push(`${t.key}: unreadable clears-when (${p.why}), recorded as none`);
   return p.ok ? p.cond : { kind: 'none' };
+}
+
+// The call a worker's park recommends, from the `AUTOPILOT_PARK_RECOMMENDS:` after its last park
+// (recoveries.mjs), or null. One that does not read is logged and taken as none: the park is asked.
+function recommendsOf(t, question, log) {
+  let raw = null;
+  try {
+    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
+      if (k === 'AUTOPILOT_PARK') raw = null;
+      else if (k === RECOMMENDS_MARK) raw = v;
+    }
+  } catch { /* no log, no recommendation */ }
+  if (raw == null) return null;
+  const r = parkRecommends(raw, question);
+  if (!r.ok) report.inputs.push(`${t.key}: unreadable park recommendation (${r.why}), read as none: ${raw}`);
+  return r.ok ? r.decision : null;
 }
 
 // A session that handed off (AUTOPILOT_HANDOFF: 4b or 7) is queued to start that stage in a fresh
@@ -600,7 +618,9 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // answer given before this pass saw the park still counts as its answer.
     q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: statSync(log).mtime.toISOString() })}`);
     const reg = againstRegister(t, park.trim(), log);
-    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(clearsWhenOf(t, log))}`);
+    const recommends = recommendsOf(t, park.trim(), log);
+    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(clearsWhenOf(t, log))}`,
+      ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []));
     if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
     else report.parked.push(`${t.key}: ${park.trim()}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
     logDecisions(t, log, null);
@@ -800,6 +820,123 @@ for (const t of Object.values(queue().tickets)) {
     if (rq.ok) q('set', t.key, `cleared=${JSON.stringify({ what })}`);
     report.clears.push(rq.ok ? `${t.key}: "${what}" holds: requeued` : `${t.key}: "${what}" holds, but the requeue was refused (${rq.out.split('\n').pop()}): left parked`);
   }
+}
+
+// ---- routine recoveries (recoveries.mjs) ------------------------------------------
+// A park the pass settles by script, before any decider or person is asked: a branch whose change a
+// merged PR already holds is dropped and the ticket recorded done; a refused push or draft PR is
+// finished from the worker's payload; a take call parked with a recommended option is answered with it
+// and requeued. A park only a session may take (needsSession), a hold, a spine, an epic's plan, a claim
+// or one put off is never touched. The push and the take are tried once a park (park.recovery says
+// why one was not done); the merged-PR check once per base and branch head (park.dup_checked).
+const lastLine = (s) => String(s ?? '').trim().split('\n').pop();
+const shortQ = (s) => (String(s).length > 160 ? `${String(s).slice(0, 159)}…` : String(s));
+let baseFetched = false;
+// A branch with commits of its own that adds nothing to the base, where a merged PR names the ticket.
+function dropDuplicate(t) {
+  const root = E.repoRoot();
+  const git = (...a) => shOut('git', ['-C', root, ...a]);
+  if (!baseFetched) { baseFetched = true; git('fetch', '-q', 'origin', DEFAULT_BRANCH); }
+  const base = git('rev-parse', '--verify', '-q', `origin/${DEFAULT_BRANCH}`);
+  const ref = [`refs/heads/${t.branch}`, `refs/remotes/origin/${t.branch}`].find((r) => git('rev-parse', '--verify', '-q', r).ok);
+  if (!base.ok || !ref) return false;
+  const head = git('rev-parse', ref).out;
+  const mark = `${base.out}:${head}`;
+  if (t.park?.dup_checked === mark) return false;
+  const checked = () => { q('set', t.key, `park.dup_checked=${mark}`); return false; };
+  const own = git('rev-list', '--count', `${base.out}..${head}`);
+  const tree = git('merge-tree', '--write-tree', base.out, head);
+  const baseTree = git('rev-parse', `${base.out}^{tree}`);
+  if (!(Number(own.out) > 0) || !tree.ok || tree.out.split('\n')[0] !== baseTree.out) return checked();
+  const found = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', `${t.key} in:title`, '--json', 'number,title,headRefName', '--limit', '20']);
+  if (!found.ok) { report.recovered.push(`${t.key}: its branch ${t.branch} adds nothing to ${DEFAULT_BRANCH}, but merged PRs could not be listed (${lastLine(found.out)}): left parked`); return false; }
+  let prs = [];
+  try { prs = JSON.parse(found.out || '[]'); } catch { /* none read */ }
+  const pr = mergedNaming(t.key, prs);
+  if (!pr) return checked();
+  const wt = t.worktree && existsSync(t.worktree) ? t.worktree : null;
+  if (wt && sh('git', ['-C', wt, 'status', '--porcelain'], { tolerant: true })) {
+    report.recovered.push(`${t.key}: merged PR #${pr.number} already holds its change, but its worktree ${wt} has uncommitted changes: left parked`);
+    return checked();
+  }
+  if (wt) {
+    const rm = git('worktree', 'remove', '--force', wt);
+    if (!rm.ok) { report.recovered.push(`${t.key}: merged PR #${pr.number} already holds its change, but its worktree could not be removed (${lastLine(rm.out)}): left parked`); return checked(); }
+  }
+  git('branch', '-D', t.branch);
+  let remote = '';
+  if (git('rev-parse', '--verify', '-q', `refs/remotes/origin/${t.branch}`).ok) {
+    const del = E.permission('branch-delete');
+    if (del !== 'yes') remote = `; ${t.branch} on origin is left, since config §3 branch-delete is "${del}"`;
+    else { const d = git('push', 'origin', '--delete', t.branch); remote = d.ok ? `; ${t.branch} deleted on origin` : `; deleting ${t.branch} on origin failed (${lastLine(d.out)})`; }
+  }
+  q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr.number}`, `result.summary=its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}`);
+  report.recovered.push(`${t.key}: its branch ${t.branch} adds nothing to ${DEFAULT_BRANCH}, and merged PR #${pr.number} (${pr.title}) names it: recorded done on that PR, worktree and branch dropped${remote}`);
+  return true;
+}
+// A park on a refused push or draft PR, its PR body in the worker's log: push the branch, open the draft.
+function finishPush(t) {
+  if (!pushPark(t.park?.question) || !t.branch || !t.worktree || !existsSync(t.worktree)) return false;
+  let texts;
+  try { texts = readLog(readFileSync(join(STATE, 'logs', `${t.key}.log`), 'utf8')).texts; } catch { return false; }
+  const body = prBodyIn(texts);
+  if (body == null) return false;
+  const left = (why) => {
+    q('set', t.key, `park.recovery=${JSON.stringify(why)}`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${why}: left parked`);
+    return true;
+  };
+  const rows = ['git-push', 'pr-open'].filter((k) => E.permission(k) !== 'yes');
+  if (rows.length) return left(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
+  const wt = t.worktree;
+  if (sh('git', ['-C', wt, 'status', '--porcelain'], { tolerant: true })) return left(`its worktree ${wt} has uncommitted changes`);
+  const own = sh('git', ['-C', wt, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..${t.branch}`], { tolerant: true });
+  if (!(Number(own) > 0)) return left(`its branch ${t.branch} has no commit of its own on ${DEFAULT_BRANCH}`);
+  const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'all', '--json', 'number', '-q', '.[0].number']);
+  if (!open.ok) return false;
+  if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
+  const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
+  if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);
+  const title = prTitleIn(texts.join('\n')) || sh('git', ['-C', wt, 'log', '-1', '--format=%s', t.branch], { tolerant: true });
+  const bodyFile = join(STATE, 'pr-bodies', `${t.key}.md`);
+  mkdirSync(join(STATE, 'pr-bodies'), { recursive: true });
+  writeFileSync(bodyFile, `${body}\n`);
+  const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', title, '--body-file', bodyFile]);
+  const n = /\/pull\/(\d+)/.exec(made.out)?.[1];
+  if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
+  q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${n}`, `draft_pr=${n}`, `result.summary=draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused`);
+  report.done.push(`${t.key}: PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
+  return true;
+}
+// A take call parked with a recommended option: answer it with that option, requeue, log the call.
+function takeRecommended(t) {
+  const d = parseDecision(JSON.stringify(t.park?.recommends ?? null));
+  if (!d.ok || !takeable(d.decision, E.permission('autopilot-judgement'))) return false;
+  // An answer since it parked is the decider's to act on; the same park after an earlier take is the person's.
+  if (t.park.since && answered(STATE, { ticket: t.key, at: t.park.since })) return false;
+  if (t.auto_answered && samePark(t.auto_answered.question, t.park.question, t.key)) return false;
+  const left = (why) => {
+    q('set', t.key, `park.recovery=${JSON.stringify(why)}`);
+    report.recovered.push(`${t.key}: its park recommends "${d.decision.chose}" on a ${d.decision.category} call, but ${why}: left parked`);
+    return true;
+  };
+  const ans = shOut('node', [join(BIN, 'answer.mjs'), t.key, recommendedAnswer(d.decision)]);
+  if (!ans.ok) return left(`answer.mjs refused it (${lastLine(ans.out)})`);
+  const question = t.park.question;
+  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  if (!rq.ok) return left(`the requeue was refused (${lastLine(rq.out)})`);
+  q('set', t.key, `auto_answered=${JSON.stringify({ question, chose: d.decision.chose, at: new Date().toISOString() })}`);
+  appendDecisions([decisionEntry({ decision: d.decision, ticket: t.key, run: t.session_id ?? null, repo: GH_REPO, pr: null, source: 'pass' })], STATE);
+  report.recovered.push(`${t.key}: took the recommended option on its ${d.decision.category} call ("${d.decision.chose}"), answered it and requeued; logged as a decision`);
+  return true;
+}
+for (const t of DRY ? [] : Object.values(queue().tickets)) {
+  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t) || t.park?.claim?.session || needsSession(t) || putOff(t)) continue;
+  if (t.branch && dropDuplicate(t)) continue;
+  // Waiting on a recorded condition, or tried once already: the clears-when check or the person settles it.
+  if ((t.park?.clears_when?.kind && t.park.clears_when.kind !== 'none') || t.park?.recovery) continue;
+  if (finishPush(t)) continue;
+  takeRecommended(t);
 }
 
 // ---- claims by idle sessions ---------------------------------------------------
@@ -2514,11 +2651,21 @@ if (!merger.driver && undrafted.length) {
     report.waiting.push(`${t.key}: READY TO MERGE — PR #${s.pr} is out of draft and green, and no merge driver merges it (${merger.rows}): merge it yourself${feedbackFirst ? ' once no review thread is left unresolved' : ''}, pinned to its head (gh pr merge ${s.pr} --repo ${GH_REPO} --match-head-commit <sha>)`);
   }
 }
-// A live merge driver releases these on its next loop, so they only need you when it is not running.
+// A live merge driver releases these on its next loop; with none running, the pass releases them as
+// it would, every blocker's PR having merged, and only one the queue refuses needs you.
 const driverLive = E.mergeDriverHolder(STATE) != null;
+const releasedNow = [];
 for (const t of releaseDue) {
   if (driverLive) out.push(`release due: ${t.key} (every blocker merged; the merge driver releases it on its next loop)`);
-  else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running: release it (${E.releaseCommand(t.key)})`);
+  else if (DRY) out.push(`release due (dry run): ${t.key} would be released, every blocker merged (${predsOf(t).join(', ')})`);
+  else {
+    const set = shOut('node', [join(BIN, 'queue.mjs'), 'set', t.key, 'state=triaged', 'park=null', 'held_by=null']);
+    const front = set.ok ? shOut('node', [join(BIN, 'queue.mjs'), 'front', t.key]) : null;
+    if (set.ok) {
+      releasedNow.push(t);
+      out.push(`released: ${t.key}, every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
+    } else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running, but the release was refused (${set.out.split('\n').pop()}): release it (${E.releaseCommand(t.key)})`);
+  }
 }
 for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (no PR, a closed PR, or not in the batch): decide whether it waits, is released, or is dropped`);
 // A failed ticket waits on the person until it is requeued or dropped. This pass's failures are
@@ -2746,6 +2893,7 @@ for (const t of Object.values(queue().tickets)) {
 }
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (report.clears.length) out.push(`clears-when:\n  ${report.clears.join('\n  ')}`);
+if (report.recovered.length) out.push(`recovered:\n  ${report.recovered.join('\n  ')}`);
 if (report.inputs.length) out.push(`park inputs:\n  ${report.inputs.join('\n  ')}`);
 if (report.putOff.length) out.push(`put off, so not asked again until their inputs change (the digest lists them):\n  ${report.putOff.join('\n  ')}`);
 if (drift.length) out.push(`base drift: ${drift.join(', ')}`);
@@ -2845,6 +2993,6 @@ recordPass((prev) => {
 });
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {
-  waiting, parked, push, release_due: releaseDue.map((t) => t.key), stuck: stuck.map((t) => t.key),
+  waiting, parked, push, release_due: releaseDue.filter((t) => !releasedNow.includes(t)).map((t) => t.key), stuck: stuck.map((t) => t.key),
   on_park: onPark.map((t) => t.key),
 });

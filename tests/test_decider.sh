@@ -357,5 +357,45 @@ out=$(tick); settle
 check "DS-334 AC3: a different question from the last park goes to a session as before" '[ "$(calls)" = 1 ] && [ -z "$(handed)" ]'
 verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'; out=$(tick)
 
+# ---- DS-397: a park the decider left waiting on a clears-when, or put off, is settled -------------------
+# The recorded lines: KAN-1032 (30 Oct) recorded clears-when 'pr 863 merged' and handed it on; KAN-628
+# (27 Oct) was answered "not now" and left parked as deferred. Both read as still parked.
+mkdir -p "$T/nn"
+cat > "$T/ds397.mjs" <<EOF
+import { writeFileSync } from 'node:fs';
+import { outcome, presort, deciderItems } from '$B/decider.mjs';
+import { addPutOff, putOffEntry } from '$B/not-now.mjs';
+import { openQuestions } from '$B/digest.mjs';
+const C = 'KAN-1032: rebase it once PR 863 merges, since it changes the same files';
+const N = 'KAN-628: export the archive too, or leave it?';
+const park = (key, question, more = {}) => ({ key, state: 'parked', lane: 'A', park: { question, ...more } });
+const before = { tickets: { 'KAN-1032': park('KAN-1032', C), 'KAN-628': park('KAN-628', N), 'KAN-9': park('KAN-9', 'k9: which helper?') } };
+const items = deciderItems({ parked: [{ key: 'KAN-1032', question: C }, { key: 'KAN-628', question: N }, { key: 'KAN-9', question: 'k9: which helper?' }] }, before);
+addPutOff(putOffEntry({ question: N, ticket: 'KAN-628', inputs: {} }), '$T/nn');
+const after = { tickets: { ...before.tickets, 'KAN-1032': park('KAN-1032', C, { clears_when: { kind: 'pr-merged', pr: 863 } }) } };
+const r = { cost: 0.02, settled: { [items[1].id]: "Ben answered 'not now': left KAN-628 parked as deferred" },
+  handed: { [items[0].id]: "recorded clears-when 'pr 863 merged' so a later pass requeues KAN-1032", [items[2].id]: 'needs the person' } };
+const o = outcome({ items }, r, after, { state: '$T/nn' });
+const bare = outcome({ items }, r, after);
+const next = presort(deciderItems({ parked: [{ key: 'KAN-1032', question: C }] }, after));
+writeFileSync('$T/nn/queue.json', JSON.stringify(after));
+const asked = openQuestions({ slug: 'acme/widgets', state: '$T/nn', queue: '$T/nn/queue.json' }).map((x) => x.ticket);
+console.log([o.settled.map((x) => x.item.ticket + '=' + x.did).join(';'), o.handed.map((x) => x.item.ticket).join(),
+  bare.handed.map((x) => x.item.ticket).join(), next.waits.map((i) => i.ticket).join(), next.ask.length + next.hand.length, asked.join()].join('|'));
+EOF
+out=$(node "$T/ds397.mjs" 2>&1)
+check "DS-397 AC1: a park the decider recorded a clears-when on is settled, though it handed it on" 'echo "$out" | grep -q "^KAN-1032=recorded clears-when \"PR #863 merged\", which a later pass checks;"'
+check "DS-397 AC2: a park put off with not-now that the decider left deferred is settled" 'echo "$out" | grep -q ";KAN-628=put off with \"not now\": left parked until its inputs change|KAN-9|"'
+check "DS-397 AC2: without the register to read, the deferred park is still handed on" '[ "$(echo "$out" | cut -d"|" -f3)" = "KAN-628,KAN-9" ]'
+check "DS-397 AC1: on the next pass the park waits on its clears-when: no session, not handed on" '[ "$(echo "$out" | cut -d"|" -f4,5)" = "KAN-1032|0" ]'
+check "DS-397 AC1: the digest does not ask a park that waits on a clears-when, nor one put off" '[ "$(echo "$out" | cut -d"|" -f6)" = "KAN-9" ]'
+mark; rm -f "$T/state/handed.json"
+UQ='"U":{"key":"U","state":"parked","lane":"A","park":{"question":"u: waits on PR 7","clears_when":{"kind":"pr-merged","pr":7}}}'
+queue "{$UQ}"; verdict "$(parked U "u: waits on PR 7")"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ "park-x": { id: "park-x", ticket: "U", kind: "parked", text: "u: waits on PR 7", why: "old", at: "2026-10-30T07:52:00Z" } }))' "$T/state/handed.json"
+node --input-type=module -e "import { deciderItems } from '$B/decider.mjs'; import { writeFileSync, readFileSync } from 'node:fs'; const id = deciderItems({ parked: [{ key: 'U', question: 'u: waits on PR 7' }] })[0].id; const h = JSON.parse(readFileSync('$T/state/handed.json', 'utf8')); h['park-x'].id = id; writeFileSync('$T/state/handed.json', JSON.stringify({ [id]: h['park-x'] }));"
+out=$(tick)
+check "DS-397 AC1: a park waiting on its clears-when starts no session and leaves the digest" '[ "$(calls)" = 0 ] && [ -z "$(handed)" ] && grep -q "^decider: taken off the digest, each waits on its recorded clears-when: U$" "$LOG"'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

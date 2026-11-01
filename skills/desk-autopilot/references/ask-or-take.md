@@ -59,7 +59,16 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   what cleared it (a run's conclusion included). Each outcome, a run still in progress, and any
   check that could not run (the park left as it is), is one line under `clears-when:` in the report.
   An idle supervised batch with anything parked or failed still runs a pass every 30 minutes
-  (`DESK_IDLE_RECHECK_MS`), so a condition cleared outside the queue is seen.
+  (`DESK_IDLE_RECHECK_MS`), so a condition cleared outside the queue is seen. A park with a recorded
+  condition is settled by those checks, so neither the decider nor the digest takes it up.
+- **A park on a take call can carry its recommendation**: a worker that parks on a call outside the
+  ask categories anyway (one that widens the ticket past its criteria, say) prints
+  `AUTOPILOT_PARK_RECOMMENDS: {"options": ["…", "…"], "chose": "<recommended>", "category": "<category>"}`
+  on the line after its park. Where a worker may take that category (product, design and wording
+  only where `autopilot-judgement` is `yes`), the pass answers the park with the recommended option,
+  requeues it and logs the decision, with no decider or person; an ask category is never taken. It
+  is taken once: the same park asked again after that answer goes to the person. Each outcome is one
+  line under `recovered:` in the report.
 - **You and interactive sessions** check before asking, and record a "not now" the user gives in
   the conversation (an answer through `answer.mjs` or the digest is recorded for you):
 
