@@ -156,16 +156,14 @@ const PG_CONTAINER = /^postgres container\s+(\S+)$/i.exec((cfg('local-db') ?? ''
 // The §4 command rows a worker may run; the lock each takes when wrapped by with-lock.sh is E.lockFor.
 // desk-pr runs each PR-description check with the body file appended, so its prefix rule fits as is.
 // §4 Codegen (e.g. `pnpm prisma generate`) takes no lock: it is short and writes only the worktree.
-// Each §4 Pre-push checks item is allowed on its own too, beside the pre-push script that runs them all.
-// One that another row already lists (a Typecheck or Unit tests item, say) is left to that row, so it
-// runs only under that row's lock, as pre-push.sh runs it; the rest take `nolock`, as there.
+// Each §4 Pre-push checks item is allowed on its own too, beside the pre-push script that runs them all
+// (the lock it takes is settled below, once twins() can say which commands are the same).
 const TOOL_IDS = [...E.WORKER_COMMAND_IDS, 'pre-push-checks'].filter((id) => HAS_TICKET_DB || !['db-migrate-cmd', 'seed-cmd'].includes(id));
 const warns = [];
 const items = [];
 for (const id of TOOL_IDS) {
   for (const raw of cfgList(id)) {
     const { dir, cmd } = E.parseCommandItem(raw);
-    if (id === 'pre-push-checks' && items.some((x) => x.dir === dir && x.cmd === cmd)) continue;
     const why = E.commandItemProblem(cmd);
     if (why) { warns.push(`§4 ${E.CONFIG_ROWS[id].row} item "${raw}" ${why}`); continue; }
     const bin = cmd.split(/\s+/)[0];
@@ -185,6 +183,20 @@ function twins(cmd) {
     return [cmd, [w[0], 'run', ...w.slice(1)].join(' ')];
   }
   return [cmd];
+}
+// A pre-push item that is another row's item (a Typecheck or Unit tests item, say), by any twin and
+// however its directory is spelled, is left to that row; one that extends a locked row's item with
+// arguments takes that row's lock. Either way a locked command never gains a `nolock` form. The rest
+// take `nolock`, as pre-push.sh runs them.
+const normDir = (d) => d.replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+for (let i = items.length - 1; i >= 0; i--) {
+  const p = items[i];
+  if (p.id !== 'pre-push-checks') continue;
+  const forms = twins(p.cmd);
+  const rows = items.filter((x) => x.id !== 'pre-push-checks' && normDir(x.dir) === normDir(p.dir));
+  if (rows.some((x) => twins(x.cmd).some((c) => forms.includes(c)))) { items.splice(i, 1); continue; }
+  const locked = rows.find((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `))));
+  if (locked) p.lock = E.lockFor(locked.id);
 }
 const withPrefix = (c) => [c, ...(PREFIX ? [`${PREFIX} ${c}`] : [])];
 
@@ -417,7 +429,7 @@ if (mode === 'triage') {
       if (it.dir === '.') allow.push(...withPrefix(cmd).map(form(false)));
       // Every item also runs through with-lock.sh: under its lock where it has one, else `nolock`,
       // which only changes directory. A directory item has no bare form (the worker cannot `cd`).
-      allow.push(...lockForms(E.lockFor(it.id), it.dir, cmd).map(form(true)));
+      allow.push(...lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd).map(form(true)));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
   }
