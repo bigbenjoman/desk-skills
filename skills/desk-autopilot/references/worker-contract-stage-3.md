@@ -72,6 +72,11 @@ Your settings are an **allow-list**: anything not named here is refused.
   worktree. A lint or format tool (eslint, prettier, biome, oxlint, stylelint, tsx, `prisma generate`)
   runs as `./node_modules/.bin/<tool>`, never with `..`; suites, typechecks and migrations run only
   as their §4 rows.
+- **A force-push the person approved once**: where your prompt names one, exactly
+  `git push --force-with-lease=<branch>:<sha> origin <branch>` as written there, and no other form.
+  It works only while origin's branch is still at that SHA. `git rebase origin/<default>` is allowed
+  only while your branch is not on origin, or §3 `git-force-with-lease` is `yes`; otherwise bring the
+  base in with `git merge origin/<default>`.
 - **`gh`**: reads (`pr view`, `pr list`, `pr checks`, `pr diff`, `run view`, `run list`,
   `issue view`, `repo view`), and only where §3 grants them `gh pr create --draft …` (it must begin
   exactly `gh pr create --draft` or `gh pr create --repo <§0 GitHub repo> --draft`), `pr edit`,

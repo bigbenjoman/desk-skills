@@ -348,4 +348,50 @@ out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --
 check "DS-349 AC4 on the batch base: no rule, gh workflow denied" '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
 rm -f "$DESK_QUEUE"
 
+# ---- DS-390: a force-push the person approved once, and no rebase of a pushed branch without one ----
+PUSH3="$(rows3 git-push=yes git-force-with-lease=ask)"
+SHA=$(git -C "$T/repo" rev-parse HEAD)
+LEASE="git push --force-with-lease=fix/fix-thing:$SHA origin fix/fix-thing"
+grant_q(){ printf '{"batch":"b","tickets":{"fix-thing":{"key":"fix-thing","state":"triaged"%s}}}\n' "${1:+,\"grant\":$1}" > "$DESK_QUEUE"; }
+GRANT="{\"step\":\"force-push\",\"branch\":\"fix/fix-thing\",\"lease\":\"$SHA\",\"at\":\"2026-11-01T00:00:00Z\"}"
+git -C "$T/repo" update-ref refs/remotes/origin/fix/fix-thing "$SHA"
+grant_q ''
+settings '`bash tests/run.sh`' '' "$PUSH3"
+cp "$T/ws.json" "$T/ws-nogrant.json"
+check "DS-390 AC4 a pushed branch with lease ask: no rebase onto the base, merge allowed" \
+  '[ $rc -eq 0 ] && no "git rebase origin/main" && ok "git merge origin/main" "git rebase --continue" "git rebase --abort"'
+check "DS-390 AC5 no grant: the lease push is denied and named, as before" 'no "$LEASE" "git push --force-with-lease origin fix/fix-thing" && denied_line git-force-with-lease ask && [[ "$out" != *CONFIG_GRANT* ]]'
+rm -f "$DESK_QUEUE"
+settings '`bash tests/run.sh`' '' "$PUSH3"
+check "DS-390 AC5 a queue with no grant gives the same settings as no queue at all" '[ "$(jq -S .permissions "$T/ws.json")" = "$(jq -S .permissions "$T/ws-nogrant.json")" ]'
+grant_q "$GRANT"
+settings '`bash tests/run.sh`' '' "$PUSH3"
+check "DS-390 AC1 the grant allows exactly that push, for that branch and lease SHA" '[ $rc -eq 0 ] && ok "$LEASE" && [[ "$out" == *"CONFIG_GRANT: $LEASE"* ]] && ! denied_line git-force-with-lease ask'
+check "DS-390 AC1 and nothing wider" 'no "git push --force-with-lease origin fix/fix-thing" "git push --force-with-lease=fix/fix-thing:$(printf b%.0s {1..40}) origin fix/fix-thing" \
+  "git push --force-with-lease=main:$SHA origin main" "git push --force origin fix/fix-thing" "git push -f origin fix/fix-thing" "git push origin +fix/fix-thing" "$LEASE --force" "git -C $W ${LEASE#git }"'
+check "DS-390 AC4 with the grant the pushed branch is still not rebased onto the base" 'no "git rebase origin/main" && ok "git merge origin/main"'
+check "DS-390 AC1 the only allow rule added is the push, in each spelling of git" \
+  '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-nogrant.json") | map(select(test(\"git push --force-with-lease=fix/fix-thing:$SHA origin fix/fix-thing\\\\)$\") | not))" "$T/ws.json")" = "[]" ] && allows "Bash($LEASE)"'
+# Spent: origin's branch moved off the lease, so the next settings leave the grant out.
+git -C "$T/repo" commit -q --allow-empty -m pushed; git -C "$T/repo" update-ref refs/remotes/origin/fix/fix-thing HEAD
+settings '`bash tests/run.sh`' '' "$PUSH3"
+check "DS-390 AC2 once origin has moved off the lease, the grant is spent" 'no "$LEASE" && denied_line git-force-with-lease ask && [[ "$out" != *CONFIG_GRANT* ]] && no "git rebase origin/main"'
+grant_q "${GRANT/fix\/fix-thing/fix\/other}"
+settings '`bash tests/run.sh`' '' "$PUSH3"
+check "DS-390 a grant for another branch allows nothing here" '[[ "$out" != *CONFIG_GRANT* ]] && no "git push --force-with-lease=fix/other:$SHA origin fix/other"'
+rm -f "$DESK_QUEUE"
+settings '`bash tests/run.sh`' '' "$(rows3 git-push=yes git-force-with-lease=yes)"
+check "DS-390 AC4 lease yes: a pushed branch still rebases" 'ok "git rebase origin/main" "git push --force-with-lease origin fix/fix-thing"'
+git -C "$T/repo" update-ref -d refs/remotes/origin/fix/fix-thing
+settings '`bash tests/run.sh`' '' "$PUSH3"
+check "DS-390 AC4 a branch not on origin yet rebases, lease ask or not" 'ok "git rebase origin/main"'
+# AC2 in git itself: the granted push goes once, and the same command is refused after it.
+git init -q --bare "$T/o.git"; git clone -q "$T/o.git" "$T/lw" 2>/dev/null
+git -C "$T/lw" checkout -q -b fix/x; git -C "$T/lw" commit -q --allow-empty -m a; git -C "$T/lw" push -q -u origin fix/x 2>/dev/null
+L0=$(git -C "$T/lw" rev-parse HEAD); git -C "$T/lw" commit -q --amend --allow-empty -m b
+git -C "$T/lw" push -q --force-with-lease="fix/x:$L0" origin fix/x 2>/dev/null; first=$?
+git -C "$T/lw" commit -q --amend --allow-empty -m c
+git -C "$T/lw" push -q --force-with-lease="fix/x:$L0" origin fix/x 2>/dev/null; second=$?
+check "DS-390 AC2 git takes the granted push once and refuses it the second time" '[ $first -eq 0 ] && [ $second -ne 0 ]'
+
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

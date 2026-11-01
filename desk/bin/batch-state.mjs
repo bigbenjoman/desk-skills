@@ -105,12 +105,67 @@ export function designPark(r) {
 // can read it.
 export const needsPersonLane = (r) => r?.lane === 'C' || (r?.lane === 'D' && designGap(r) !== null);
 
+// ---- one-off grants: a step the person approved in an answer to a park, carried to the next worker's
+// settings for that one step and nothing wider. A park names the step its worker was refused:
+//   - a force-push of the ticket's own branch may be granted once: answer.mjs records an approving
+//     answer as the ticket's `grant`, and worker-settings.mjs allows one exact
+//     `git push --force-with-lease=<branch>:<lease> origin <branch>`.
+//   - a step worker settings never allow, whatever §3 or an answer says (aws, ssm, curl, wget,
+//     `gh api`, a write under `.claude/`) is a session's: a requeue only parks it again (sessionPark).
+const SHA = /^[0-9a-f]{40}$/;
+// Each needs a word saying the worker could not do it, so a park mentioning the tool in passing is not caught.
+// "needs" counts only right before the tool ("needs curl"): most questions say need somewhere.
+const NEVER = [['aws', /\baws\b/i], ['ssm', /\bssm\b/i], ['curl', /\bcurl\b/], ['wget', /\bwget\b/], ['gh api', /\bgh api\b/],
+  ['.claude/ write', /(?:^|[^\w.])\.claude\//]];
+const REFUSED = /\b(?:refus\w*|denied|den(?:y|ies)|not (?:allowed|granted|permitted)|blocked|can(?:not|'t) (?:run|use|reach|write|call))\b|\bneed(?:s|ed)? (?:the |to (?:run|use) )?(?:aws|ssm|curl|wget|gh api)\b/i;
+const FORCE_PUSH = /\bforce[- ]?push\w*|\bforce-with-lease\b/i;
+
+// The step a park's question says its worker was refused, { step, grantable }, or null. A step no
+// worker is allowed wins over a grantable one: the worker cannot finish either way.
+export function refusedStep(question) {
+  const q = String(question ?? '');
+  if (REFUSED.test(q)) for (const [step, re] of NEVER) if (re.test(q)) return { step, grantable: false };
+  return FORCE_PUSH.test(q) ? { step: 'force-push', grantable: true } : null;
+}
+export const neverStep = (question) => { const s = refusedStep(question); return s && !s.grantable ? s.step : null; };
+
+// An answer approves the step it answers only when it is nothing but a yes ("yes", "approved", "Yes,
+// force-push it"): "Sure, merge instead" opens with one and approves nothing. Anything else takes --approve.
+const YES_WORD = String.raw`(?:yes|yep|y|approved?|ok(?:ay)?|go ahead|do it|push it|force[- ]?push(?: it)?|confirmed?|granted|sure|please)`;
+const YES = new RegExp(String.raw`^\s*${YES_WORD}(?:[\s,.!:;-]+${YES_WORD})*[\s.!]*$`, 'i');
+export const approves = (text) => YES.test(String(text ?? ''));
+
+// The grant an answer records on a parked ticket, { grant }, or { why } when it records none. The lease
+// is the SHA the push may overwrite: the park inputs' `lease`, else `remoteSha(branch)`, origin's
+// branch as the ticket's worktree last saw it.
+export function grantFor({ t, text, approve = false, remoteSha = () => null, now = new Date() }) {
+  const step = refusedStep(t?.park?.question);
+  if (t?.state !== 'parked' || !step) return { why: 'its park names no step a grant covers' };
+  if (!step.grantable) return { why: `${step.step} is never a worker's, so only a session can do it` };
+  if (!approve && !approves(text)) return { why: 'the answer approves nothing' };
+  const branch = String(t.branch ?? '').trim();
+  if (!branch) return { why: 'the ticket records no branch to push' };
+  const named = String(t.park?.inputs?.lease ?? '').trim();
+  const lease = SHA.test(named) ? named : remoteSha(branch);
+  if (!SHA.test(String(lease ?? ''))) return { why: `no lease SHA: the park names none, and origin/${branch} could not be read in its worktree` };
+  return { grant: { step: step.step, branch, lease, at: now.toISOString() } };
+}
+
+// The git arguments (after `git`) of the one push a grant allows on `branch`, or null. Spent once
+// origin's branch (`remote`) has moved off the lease: git's own lease check then refuses the push, and
+// the next worker's settings leave it out.
+export function grantPush(grant, { branch, remote }) {
+  if (grant?.step !== 'force-push' || grant.branch !== branch || !SHA.test(String(grant.lease ?? '')) || remote !== grant.lease) return null;
+  return ` push --force-with-lease=${branch}:${grant.lease} origin ${branch}`;
+}
+
 // A park that puts its ticket in lane C, or lane D with its canvas not saved where a worker can read
-// it: a requeue only parks it again. "not lane C" or "from lane C" rules the lane out.
+// it, or that names a step no worker is ever allowed (neverStep): a requeue only parks it again.
+// "not lane C" or "from lane C" rules the lane out.
 const LANE_C = /(?<!\b(?:not|from|no longer|than) )\blane C\b/i;
 const LANE_D = /(?<!\b(?:not|from|no longer|than) )\blane D\b/i;
 const NO_CANVAS = /\bcanvas (?:is |was )?not (?:saved|on)\b|\bno saved canvas\b|\blinks no Claude Design canvas\b|\bonly (?:in|design is a) Figma\b/i;
-export const sessionPark = (question) => LANE_C.test(question) || (LANE_D.test(question) && NO_CANVAS.test(question));
+export const sessionPark = (question) => LANE_C.test(question) || (LANE_D.test(question) && NO_CANVAS.test(question)) || neverStep(question) !== null;
 
 // A queue ticket only an interactive session takes on: lane C, one parked at triage on its lane, or
 // one whose worker parked it in lane C or a canvas-less lane D. Any other lane D park is requeued.

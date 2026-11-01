@@ -7,7 +7,8 @@
 //
 // Prints one `CONFIG_DENIED: <§3 key> (<setting>)` line per capability the user's config §3 does not
 // grant, so the spawner can tell the worker what it must park on instead of attempting; one
-// `CONFIG_WARN: <text>` line per configured command that could not be allow-listed; and, in worker
+// `CONFIG_GRANT: <command>` line per one-off grant the person approved in an answer (batch-state.mjs),
+// allowed exactly once; one `CONFIG_WARN: <text>` line per configured command that could not be allow-listed; and, in worker
 // mode, one `TOOLCHAIN_PROBE: <command>` line per toolchain binary: the harmless `<bin> --version`
 // (behind §4 Command prefix) the preflight runs to prove each allow rule actually executes.
 //
@@ -65,6 +66,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { platform } from 'node:os';
 import * as E from './desk-env.mjs';
+import { grantPush } from './batch-state.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
 const opt = {};
@@ -188,6 +190,7 @@ const allow = [];
 const deny = [];
 const dirs = new Set([STATE, E.skillsDir()]);
 const denied = [];
+const granted = [];
 
 // Read-only commands, each with the forms that would make it write or execute denied. Deliberately
 // absent: sed and awk (both can execute: GNU sed `e`, awk `system()`), cp and mv (they write anywhere,
@@ -215,7 +218,8 @@ const GIT_READ_EXACT = [' branch -a', ' branch -r'];
 // and `-C`, `--git-dir` and `--work-tree` are denied below. `reset` moves only this worktree's branch
 // and index (`--soft`, `--mixed`, paths); `--hard` and `--merge`, which discard work, are denied below.
 const GIT_LOCAL = [' add', ' commit', ' restore', ' checkout', ' switch', ' merge', ' fetch', ' clean', ' rm', ' mv', ' reset'];
-// `rebase` takes bundled short flags (`-qx cmd` runs cmd), so it is allowed only in these exact forms.
+// `rebase` takes bundled short flags (`-qx cmd` runs cmd), so it is allowed only in these exact forms,
+// and onto the base only while the branch could be pushed afterwards (REBASE, below).
 const GIT_REBASE = [' rebase --continue', ' rebase --abort', ' rebase --skip', ` rebase origin/${E.defaultBranch()}`];
 // The ways a permitted git subcommand could reach outside it: another repo or config, an external
 // program, an output file anywhere.
@@ -270,6 +274,21 @@ if (mode === 'triage') {
   const baseFix = !!BATCH_BASE && T === E.baseFixKey(BATCH_BASE) && BRANCH === BATCH_BASE;
   const branchOk = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(BRANCH) && !BRANCH.includes('..') && !BRANCH.endsWith('.lock') && BRANCH !== DEFAULT;
   const REPO = (() => { try { return E.ghRepo(); } catch { return null; } })();
+  // origin's copy of this ticket's branch as the worktree last fetched it, or null while it is unpushed.
+  const REMOTE_SHA = (() => {
+    if (!branchOk) return null;
+    try { return execFileSync('git', ['-C', WT, 'rev-parse', '--verify', '-q', `refs/remotes/origin/${BRANCH}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null; }
+    catch { return null; }
+  })();
+  // The person's one-off grant on this ticket (answer.mjs, batch-state.mjs grantFor): one exact force-push of this
+  // branch over the SHA they approved, while origin still holds that SHA.
+  const ticketGrant = (() => { try { return JSON.parse(readFileSync(E.queueFile(), 'utf8')).tickets?.[T]?.grant ?? null; } catch { return null; } })();
+  const ONE_PUSH = baseFix ? null : grantPush(ticketGrant, { branch: BRANCH, remote: REMOTE_SHA });
+  // A rebased branch that is already on origin can only go back by force-push, so it is rebased only
+  // where §3 allows that; otherwise it takes `git merge origin/<base>`. A one-off grant adds no rebase:
+  // the branch it pushes was rebased before its park.
+  const leaseOk = E.permission('git-push') === 'yes' && E.permission('git-force-with-lease') === 'yes';
+  const REBASE = !REMOTE_SHA || leaseOk ? GIT_REBASE : GIT_REBASE.filter((s) => !s.startsWith(' rebase origin/'));
   // §3 worker-workflow-dispatch: only the exact `gh workflow run` commands §4 Worker workflows names,
   // each on this ticket's own branch, never the default branch or the batch base. An exact rule takes
   // no further argument, so a worker cannot add `-f environment=production` or name another workflow.
@@ -319,7 +338,7 @@ if (mode === 'triage') {
   allow.push(
     ...READS.flatMap((b) => bash(b)),
     'Bash(mkdir:*)', 'Bash(ps:*)', 'Bash(pgrep:*)',
-    ...bash('git', ...GIT_READ, ...GIT_LOCAL), ...[...GIT_READ_EXACT, ...GIT_REBASE].flatMap((t) => exact('git', t)),
+    ...bash('git', ...GIT_READ, ...GIT_LOCAL), ...[...GIT_READ_EXACT, ...REBASE].flatMap((t) => exact('git', t)),
     // The same reads aimed at this worktree by path: `-C <worktree>` is where the command runs anyway.
     ...bash('git', ...GIT_READ.map((s) => `${OWN_C}${s}`)), ...GIT_READ_EXACT.flatMap((t) => exact('git', `${OWN_C}${t}`)),
     ...bash('gh', ...GH_READ),
@@ -447,7 +466,12 @@ if (mode === 'triage') {
     if (grant('git-push', pushes.flatMap((p) => exact('git', p)), bash('git', ' push'))) {
       const lease = E.permission('git-force-with-lease');
       if (lease === 'yes') allow.push(...exact('git', ` push --force-with-lease origin ${BRANCH}`), ...exact('git', ` push --force-with-lease -u origin ${BRANCH}`));
-      else { FORCE.push(' push *--force-with-lease*'); denied.push(`${E.permissionKey('git-force-with-lease')} (${lease})`); }
+      else if (ONE_PUSH) {
+        // The person's one-off grant: only the push naming its lease. The bare lease forms stay denied.
+        allow.push(...exact('git', ONE_PUSH));
+        FORCE.push(' push *--force-with-lease', ' push *--force-with-lease *');
+        granted.push(`git${ONE_PUSH}`);
+      } else { FORCE.push(' push *--force-with-lease*'); denied.push(`${E.permissionKey('git-force-with-lease')} (${lease})`); }
     }
   }
   deny.push(...bash('git', ...FORCE));
@@ -643,5 +667,6 @@ if (wholesale.length) { console.error(`FAIL: wholesale allow rule would bypass t
 mkdirSync(dirname(opt.out), { recursive: true });
 writeFileSync(opt.out, `${JSON.stringify(settings, null, 2)}\n`);
 for (const d of denied) console.log(`CONFIG_DENIED: ${d}`);
+for (const g of granted) console.log(`CONFIG_GRANT: ${g}`);
 for (const w of warns) console.log(`CONFIG_WARN: ${w}`);
 if (mode === 'worker') for (const pr of opt.probes) console.log(`TOOLCHAIN_PROBE: ${pr}`);
