@@ -480,9 +480,21 @@ put('xi', { port: 4300, beat: 1, supervised: true, merge: 'yes', tickets: {
 const xi = N.collect({ word: 'xi' }).items;
 t('DS-419 AC7 a PR out of fix tries for its feedback is the person\'s, naming the thread', xi.find((i) => i.t.key === 'X-5')?.need, 'PR #95 still has review feedback open desk\'s own repairs did not fix: 1 unresolved thread — src/auth.ts:9 "P0 a hung DOB probe". Answer and resolve it, or fix it on its branch; desk then merges it once its checks are green.');
 t('DS-347 AC3 a green PR the driver merges is not an item, and one it holds for a thread with no try left is', xi.filter((i) => !['X-4', 'X-5'].includes(i.t.key)).map((i) => `${i.t.key} ${i.kind}`).join(), 'X-2 pr');
-t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi.find((i) => i.t.key === 'X-2')?.need, 'PR #92 is green, but held for review: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?". Resolve or answer it; desk then merges it.');
+t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi.find((i) => i.t.key === 'X-2')?.need, 'PR #92 is held for review: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?". Resolve or answer it; desk then merges it.');
 t('DS-419 AC1 a held thread with a fix try left is not the person\'s: a worker takes it', xi.some((i) => i.t.key === 'X-3'), false);
-t('DS-419 AC9 a feat PR green with no thread open and no approval asks the person for one', xi.find((i) => i.t.key === 'X-4')?.need, 'PR #94 is a feature and green, and desk merges a feature only once a person has approved it. Review and approve it on GitHub; desk then merges it.');
+t('DS-419 AC9 a feat PR green with no thread open and no approval asks the person for one', xi.find((i) => i.t.key === 'X-4')?.need, 'PR #94 waits on a person\'s approval: a feature, green with no approval. Review and approve it on GitHub; desk then merges it.');
+
+// ---- DS-420: a red PR the merge driver declined is the person's as its reason says, never called green.
+const redPr = (pr, more = {}) => { const g = greenPr(pr, more); return { ...g, pr_status: { ...g.pr_status, checks: [{ name: 'build', status: 'completed', conclusion: 'failure' }] } }; };
+put('xi420', { port: 4301, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'Y-1': redPr(96, { merge_blocked: 'approval: an approving review is required at b96666666: a person approves it before desk merges it' }),
+  'Y-2': redPr(97, { merge_blocked: 'review feedback: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"', fix_tries: spentTries }),
+} });
+const xi420 = N.collect({ word: 'xi420' }).items;
+t('DS-420 AC2 a red fix PR that needs an approving review asks for the approval, not calling it a green feature', xi420.find((i) => i.t.key === 'Y-1')?.need,
+  'PR #96 waits on a person\'s approval: an approving review is required. Review and approve it on GitHub; desk then merges it.');
+t('DS-420 AC1 a red PR held for a thread with no try left names the thread, not calling it green', xi420.find((i) => i.t.key === 'Y-2')?.need,
+  'PR #97 is held for review: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row". Resolve or answer it; desk then merges it.');
 
 // ---- DS-351 AC2: an epic admitted with no session waits on its drafted plan as one item, and its
 // children held behind it are not items of their own.

@@ -96,8 +96,8 @@ with no approval, the driver records `merge_blocked` `approval: …`, and desk-q
 to approve it. One held for review feedback asks for no approval: the feedback goes to a fix worker.
 A request is cleared once the PR is approved, or once it conflicts or is not green, so the queue
 shows the conflict or the red check instead. Any PR whose GitHub review decision is `REVIEW_REQUIRED`
-(branch protection wants an approving review) is recorded the same way, red or green, and is not
-rerun: no rerun or fix worker gives it the approval.
+(branch protection wants an approving review) is recorded the same way, red or green: no rerun or
+fix worker gives it the approval, though a red one is still rerun and repaired.
 
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
 handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is

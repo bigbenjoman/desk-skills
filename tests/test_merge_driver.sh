@@ -559,10 +559,10 @@ dloop
 check "DS-420 AC1: one refusal of a red PR for its thread is not yet recorded" '[ "$(qf T-81 .merge_blocked)" = null ] && echo "$out" | grep -q "#181 has outstanding review feedback (NONE, 1 unresolved)"'
 dloop
 check "DS-420 AC1: held a second loop, a red PR's thread is recorded as why, and it is not rerun" 'qf T-81 .merge_blocked | grep -q "^review feedback: 1 unresolved thread on a red PR, first " && ! grep -q "run rerun 9181" "$T/gh.log"'
-check "DS-420 AC2: a red PR that needs an approving review is recorded for the person, and not rerun" '[ "$(qf T-82 .merge_blocked)" = "approval: an approving review is required at b82222222: a person approves it before desk merges it" ] && ! grep -q "run rerun 9182" "$T/gh.log" && echo "$out" | grep -q "#182 at b82222222 needs an approving review (review decision REVIEW_REQUIRED) — not merging"'
+check "DS-420 AC2: a red PR that needs an approving review is recorded for the person, and still rerun so its fix tries come" '[ "$(qf T-82 .merge_blocked)" = "approval: an approving review is required at b82222222: a person approves it before desk merges it" ] && grep -q "run rerun 9182" "$T/gh.log" && echo "$out" | grep -q "#182 at b82222222 needs an approving review (review decision REVIEW_REQUIRED) — not merging"'
 check "DS-420 AC2: so is a green one, and it is not merged" '[ "$(qf T-83 .merge_blocked)" = "approval: an approving review is required at b83333333: a person approves it before desk merges it" ] && [ -z "$(merged)" ]'
 jq '."182".feedback = "APPROVED 0" | ."183".feedback = "APPROVED 0"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 dloop
-check "DS-420 AC2: once approved, the request is cleared: the red one is rerun, the green one confirmed" '[ "$(qf T-82 .merge_blocked)" = null ] && [ "$(qf T-83 .merge_blocked)" = null ] && grep -q "run rerun 9182" "$T/gh.log" && echo "$out" | grep -q "#183 green at b83333333 — confirming"'
+check "DS-420 AC2: once approved, the request is cleared: the red one reads red, the green one is confirmed" '[ "$(qf T-82 .merge_blocked)" = null ] && [ "$(qf T-83 .merge_blocked)" = null ] && echo "$out" | grep -q "#182 red at b82222222" && echo "$out" | grep -q "#183 green at b83333333 — confirming"'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

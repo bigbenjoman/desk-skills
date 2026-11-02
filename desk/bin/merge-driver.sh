@@ -46,7 +46,7 @@
 #                                            is yes (once per head), else parked for a person
 #   - an approving review required           GitHub's review decision is REVIEW_REQUIRED: recorded as
 #                                            merge_blocked (`approval: …`) for the person, red or
-#                                            green, and not rerun
+#                                            green; a red one is still rerun and repaired
 #   - not green                              "green" is desk-config.md's one definition, evaluated by
 #                                            gate.mjs (shared with desk-clearance); a head must stay
 #                                            green across two loops before it merges, so a check that
@@ -503,7 +503,7 @@ close_merged(){
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds carried="" fb decision unresolved held settled tid text green_at out waived label grant steps=""
+  local n="$1" key="$2" g sha ms state holds carried="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
@@ -554,14 +554,15 @@ EOF_RESOLVE
     BEHIND) approval_clear "$key"; behind "$n" "$sha" "$key"; return 1 ;;
   esac
 
-  # Branch protection wants an approving review the PR has not had: no rerun or fix worker gives it one,
-  # so it is not rerun, and the queue asks the person, red or green.
+  # Branch protection wants an approving review the PR has not had, which no rerun or fix worker gives
+  # it: the queue asks the person, red or green. A red one is still rerun, so its fix tries still come.
+  review_required=""
   if [ "$(printf '%s' "$g" | jq -r .reviewDecision)" = REVIEW_REQUIRED ]; then
+    review_required=1
     [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
     rm -f "$SD/green-$n"
     log "#$n at ${sha:0:9} needs an approving review (review decision REVIEW_REQUIRED) — not merging until a person approves it"
     queue_note "$key" "approval: an approving review is required at ${sha:0:9}: a person approves it before desk merges it"
-    return 1
   fi
 
   waived=""
@@ -570,9 +571,10 @@ EOF_RESOLVE
     fail)
       log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"
       if waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
-      else approval_clear "$key"; rerun "$n" "$sha" "$g"; return 1; fi ;;
-    *) approval_clear "$key"; log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
+      else [ -n "$review_required" ] || approval_clear "$key"; rerun "$n" "$sha" "$g"; return 1; fi ;;
+    *) [ -n "$review_required" ] || approval_clear "$key"; log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
   esac
+  [ -n "$review_required" ] && return 1
   # A waived head is held like a green one: the same head, still only red on its known flakes, a loop later.
   label="green"; [ -n "$waived" ] && label="green but for WAIVED $waived"
 
