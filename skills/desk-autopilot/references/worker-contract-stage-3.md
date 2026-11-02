@@ -18,7 +18,10 @@ with no design-build agent does: build it in this session from the saved boards,
 skills above, and leave out its "D still stops for agreement first". The agreement moves to the PR
 review: for each board the ticket names, the PR body holds the board's render and the built screen
 at that board's width, with every difference you accepted listed under it (`desk-pr`'s
-`references/screenshots.md`, "A ticket with a saved canvas"). Capturing the built screens needs §3
+`references/screenshots.md`, "A ticket with a saved canvas"). Where §4 Storybook (`desk-env cmds storybook-cmd`) is set, build it
+and run `desk-design compare` (`design-canvas.md`, "Comparing the build with each board"): both run
+under the browser lock whatever §3 `worker-screenshots` says, and a board no story matches is named
+in the PR as not compared, never a park. Capturing the built screens any other way needs §3
 `worker-screenshots`; where it is not `yes`, build and push, then park naming that row with the
 rest of the tail (section 6). A design you find is only in Figma, or a canvas not on your base,
 parks as a demotion to D does (core section 2).
@@ -34,7 +37,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   your own arguments after it, or through with-lock.sh with `--cwd .`. An item with a directory has no bare form (you cannot `cd`), so it
   runs as `~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD> [args]`, where `<lock>` is
   `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck, `browser` for §4 E2E
-  tests, and `nolock` for everything else (lint, build, codegen, dev server), which only changes
+  tests and §4 Storybook (`desk-env cmds storybook-cmd`; never bare, even at the root), and `nolock` for everything else (lint, build, codegen, dev server), which only changes
   directory. §4 Codegen (e.g. `pnpm prisma generate`) is how you regenerate code; with no such row,
   a ticket that needs a regeneration parks naming the command. Each row's items come from
   `desk-env cmds test-cmd`, `desk-env cmds integration-cmd`, `desk-env cmds typecheck-cmd`,

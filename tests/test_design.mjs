@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
@@ -92,6 +92,40 @@ t('v3 save: no /_blob/ reference is left', [read(join(dv3, 'A-Home.dc.html')), r
 t('v3 save: the assets are on disk', readFileSync(join(dv3, `assets/${B1}.png`)).equals(PNG) && read(join(dv3, `assets/${B2}.jpg`)) === 'JPEG', true);
 t('v3 save: support.js is the runtime', read(join(dv3, 'support.js')), 'window.dc = { runtime: true };');
 t('v3 save: bindings are kept as written', read(join(dv3, 'A-Home.dc.html')).includes('src="{{janeSrc}}"'), true);
+
+// DS-382 AC1: a font the boards load from the asset store, saved with no extension, is saved as the
+// font type its bytes say, beside support.js, and the board loads it by relative path.
+const B3 = 'aaaabbbbccccddddeeeeffff00001111';
+const sf = join(T, 'sf');
+put(join(sf, 'project/canvas.json'), JSON.stringify({ boards: [{ title: 'Kit', width: 1440, file: 'Kit.dc.html' }] }));
+put(join(sf, 'project/Kit.dc.html'), `<script src="./support.js"></script><style>@font-face { font-family: K; src: url("/_blob/${B3}") format("woff2"); }</style><main>Kit</main>`);
+put(join(sf, 'artifact-type/dc-runtime.js'), 'window.dc = {};');
+put(join(sf, `_blob/${B3}`), Buffer.concat([Buffer.from('wOF2'), Buffer.alloc(16)]));
+const rf = repo('rf-font');
+const sfd = join(rf, save(sf, { root: rf, dir: DIR, tickets: [{ key: 'KAN-1280', boards: [] }], url: URL1, version: '1' }).path, 'project');
+t('DS-382 AC1 save: support.js beside the boards', existsSync(join(sfd, 'support.js')), true);
+t('DS-382 AC1 save: the font is saved as .woff2', existsSync(join(sfd, `assets/${B3}.woff2`)), true);
+t('DS-382 AC1 save: the board loads it by relative path', read(join(sfd, 'Kit.dc.html')).includes(`url("assets/${B3}.woff2")`), true);
+
+// DS-382 AC2: the design tool's host is claude.ai, or the artifact URL's host; nothing else is.
+t('DS-382 AC2 callsHome: claude.ai and its subdomains', [callsHome('https://claude.ai/_blob/x', null), callsHome('https://cdn.claude.ai/x.js', null)].join(' '), 'true true');
+t('DS-382 AC2 callsHome: the artifact host', callsHome('https://design.example.com/x', 'https://design.example.com/p/1'), true);
+t('DS-382 AC2 callsHome: the local server and other hosts are not', [callsHome('http://127.0.0.1:5000/a.css', URL1), callsHome('https://fonts.googleapis.com/css2', URL1), callsHome('https://notclaude.ai/x', URL1)].join(' '), 'false false false');
+
+// DS-382 AC4/AC5: a board's story by id, title and name, or title alone; docs pages are not stories.
+const STORIES = storyEntries({ v: 5, entries: {
+  'checkout-ordersummary--empty': { id: 'checkout-ordersummary--empty', title: 'Checkout/OrderSummary', name: 'Empty', type: 'story' },
+  'checkout-ordersummary--default': { id: 'checkout-ordersummary--default', title: 'Checkout/OrderSummary', name: 'Default', type: 'story' },
+  'checkout-ordersummary--docs': { id: 'checkout-ordersummary--docs', title: 'Checkout/OrderSummary', name: 'Docs', type: 'docs' },
+  'press-kit-hero--wide': { id: 'press-kit-hero--wide', title: 'Press kit/Hero', name: 'Wide', type: 'story' },
+} });
+t('DS-382 storyEntries: docs pages left out', STORIES.length, 3);
+t('DS-382 storyEntries: Storybook 6 stories.json too', storyEntries({ v: 3, stories: { 'a--b': { id: 'a--b', kind: 'A', name: 'B' } } }).map((s) => `${s.id}:${s.title}/${s.name}`).join(' '), 'a--b:A/B');
+const matched = matchStories([{ name: 'Order summary' }, { name: 'Order summary / Empty' }, { name: 'Hero wide' }, { name: 'Footer' }], STORIES);
+t('DS-382 AC4 matchStories: a title match takes the Default story', `${matched[0].story.id} ${matched[0].by}`, 'checkout-ordersummary--default title');
+t('DS-382 AC4 matchStories: title and name pick the story', `${matched[1].story.id} ${matched[1].by}`, 'checkout-ordersummary--empty story');
+t('DS-382 AC4 matchStories: the title\'s last segment and the name', matched[2].story?.id, 'press-kit-hero--wide');
+t('DS-382 AC5 matchStories: a board no story matches', `${matched[3].story} ${matched[3].by}`, 'null null');
 t('v3 save: README lists every board', read(join(rv3, DIR, 'PM-2/README.md')).includes('| Landscape | 390px | Landscape.dc.html |'), true);
 t('v3 save: source.json records the saved paths', JSON.stringify(sv3.files), JSON.stringify(cv3.files));
 t('v3 save: the saved folder reads back with nothing missing', collect(join(rv3, DIR, 'PM-2')).missing.length, 0);
@@ -481,6 +515,41 @@ for (const it of items) { const i = document.createElement('img'); i.src = it.sr
   await browser.close();
   t('v3 file://: support.js and the asset load from disk', shown, 'true true');
   t('v3 file://: no request leaves the folder', off.join(' '), '');
+
+  // DS-382 AC2: a board that still asks claude.ai for a file fails the render, and the request is
+  // refused before it leaves the machine.
+  const home = canvasAt('rh');
+  put(join(home, 'project/test-390.dc.html'), '<!doctype html><main style="height:600px">Board<img src="https://claude.ai/_blob/0123456789abcdef0123456789abcdef"></main>');
+  const homeErr = await render(home, { chromium, bps: [390] }).then(() => 'no error', (e) => `${e.code}:${e.message}`);
+  t('DS-382 AC2 render: a request to claude.ai fails it', homeErr.startsWith('4:not rendered: board "Test 390"') && homeErr.includes('https://claude.ai/_blob/') && homeErr.includes("design tool's host"), true);
+
+  // DS-382 AC4/AC5: a built Storybook (index.json and an iframe that renders the story named in its
+  // query) beside the canvas: the matched board is shot at each width beside its story, the other
+  // board is listed as not compared.
+  const sb = join(T, 'storybook-static');
+  put(join(sb, 'index.json'), JSON.stringify({ v: 5, entries: {
+    'pages-test-390--default': { id: 'pages-test-390--default', title: 'Pages/Test 390', name: 'Default', type: 'story' },
+    'pages-broken--default': { id: 'pages-broken--default', title: 'Pages/Broken', name: 'Default', type: 'story' } } }));
+  put(join(sb, 'iframe.html'), `<!doctype html><body><div id="storybook-root"></div><script>
+const id = new URLSearchParams(location.search).get('id');
+if (id.includes('broken')) document.body.className = 'sb-show-errordisplay';
+else document.getElementById('storybook-root').innerHTML = '<main style="height:300px;background:#234;color:#fff">' + id + '</main>';
+</script></body>`);
+  const shots = join(T, 'shots');
+  const cmp = await compare(good, { chromium, storybook: sb, out: shots, widths: [390, 768] }).then((r) => r, (e) => e);
+  t('DS-382 AC4 compare: the board is paired with its story', cmp.pairs?.map((p) => `${p.board}=${p.story.id}`).join(' ') ?? cmp.message, 'Test 390=pages-test-390--default');
+  t('DS-382 AC4 compare: a canvas and a built image at each width', ['canvas-test-390-390.png', 'built-test-390-390.png', 'canvas-test-390-768.png', 'built-test-390-768.png']
+    .every((f) => readFileSync(join(shots, f)).subarray(1, 4).toString() === 'PNG'), true);
+  t('DS-382 AC4 compare: the canvas image is at the width', readFileSync(join(shots, 'canvas-test-390-768.png')).readUInt32BE(16), 768);
+  t('DS-382 AC5 compare: the board with no story is listed, not shot', `${cmp.unmatched?.join(' ')} ${existsSync(join(shots, 'canvas-test-960-390.png'))}`, 'Test 960 false');
+  put(join(T, 'bp-390.md'), '## 5. Conventions\n| Field | Value |\n|---|---|\n| Breakpoints | `390` |\n');
+  const cliC = spawnSync('node', [BIN, 'compare', good, '--storybook', sb, '--out', join(T, 'shots-cli')], { env: { ...process.env, DESK_CONFIG: join(T, 'bp-390.md') }, encoding: 'utf8' });
+  t('DS-382 AC5 cli compare: exit 0 with a board not compared', cliC.status === 0 && cliC.stdout.includes('not compared: Test 960') && cliC.stdout.includes('compared: 1 of 2 boards'), true);
+  t('DS-382 cli compare: shoots at config §5 Breakpoints', `${existsSync(join(T, 'shots-cli/built-test-390-390.png'))} ${existsSync(join(T, 'shots-cli/built-test-390-768.png'))}`, 'true false');
+  put(join(sb, 'index.json'), JSON.stringify({ v: 5, entries: { 'pages-test-390--default': { id: 'pages-broken--test-390', title: 'Pages/Test 390', name: 'Default', type: 'story' } } }));
+  const errC = await compare(good, { chromium, storybook: sb, out: join(T, 'shots-err'), widths: [390] }).then(() => 'no error', (e) => `${e.code}:${e.message}`);
+  t('DS-382 compare: a story on the error screen fails with exit 4, writing nothing', `${errC.startsWith('4:not compared: story pages-broken--test-390')} ${existsSync(join(T, 'shots-err'))}`, 'true false');
+  t('DS-382 compare: no Storybook index exits 3', spawnSync('node', [BIN, 'compare', good, '--storybook', join(T, 'nothing'), '--out', join(T, 'x')], { encoding: 'utf8' }).status, 3);
 }
 
 rmSync(T, { recursive: true, force: true });
