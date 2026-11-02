@@ -2439,7 +2439,9 @@ for (const t of Object.values(qNow.tickets)) {
     s = readPrStatus(n);
     if (!s) continue;
     s = withUntriggered(withHistory(s, t.pr_status));
-    prStates[n] = s.state;
+    // A closed PR still owed its reopen counts as open, so the batch is not idle and no ticket held
+    // behind it reads as stuck while the reopen is outstanding.
+    prStates[n] = owed && s.state === 'CLOSED' ? 'OPEN' : s.state;
     q('set', t.key, `pr_status=${JSON.stringify(s)}`);
     if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
     if (s.state === 'OPEN' && s.isDraft === false) undrafted.push({ t, s });
