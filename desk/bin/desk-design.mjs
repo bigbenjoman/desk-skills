@@ -35,10 +35,9 @@
 //       width into <dir>/screens/<board>@<width>.png, and lists them in the README; exit 4 (nothing
 //       written) when a board fails to load a file, asks claude.ai for one, or renders blank, 6 when
 //       Playwright is missing
-//   node desk-design.mjs compare <saved dir> --storybook <built folder | URL> --out <dir>
-//                                [--boards <a,b>] [--widths <w,w>]
-//       shoots each board beside the story whose id or title matches its name, at 390 768 1440 (or
-//       --widths) and the board's own width, into <out> as canvas-<board>-<w>.png and
+//   node desk-design.mjs compare <saved dir> --storybook <built folder> --out <dir> [--boards <a,b>]
+//       shoots each board beside the story whose id or title matches its name, at config §5
+//       Breakpoints (as render) and the board's own width, into <out> as canvas-<board>-<w>.png and
 //       built-<board>-<w>.png; a board with no story is listed as not compared. Exit 3 when there
 //       is no Storybook index there, 4 (nothing written) when a board or story fails, 6 as render
 // `--boards` binds to the `--key` before it; a key with none uses every board. compare's
@@ -604,6 +603,17 @@ async function openAt(browser, url, width, { height, origin, artifact }) {
   return { page, bad };
 }
 
+// A board's file, relative to the saved folder: exit 2 when it names none inside the folder, 4
+// (`verb` opening the message) when the file is not there.
+function boardFile(dir, home, b, verb) {
+  const rel = b.file && normalize(join(home, b.file));
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) fail(`board "${b.name}" names no file inside ${dir}`);
+  if (!existsSync(join(dir, rel))) fail(`${verb}: board "${b.name}" is ${rel}, which is not in ${dir}`, 4);
+  return rel;
+}
+
+const servedAt = (origin, rel) => origin + rel.split(sep).map(encodeURIComponent).join('/');
+
 // Renders every board from disk, all or nothing: a board that fails to load a file, or paints
 // nothing, fails the render naming the board and the file, and no image is written.
 // `chromium` is Playwright's.
@@ -617,19 +627,14 @@ export async function render(dir, { chromium, bps = breakpoints(), now = new Dat
   if (!boards.length) fail(`${canvas} names no boards: nothing to render`);
   const plan = renderPlan(boards, bps);
   const names = screenNames(boards);
-  const pages = new Map(boards.map((b, i) => {
-    const rel = b.file && normalize(join(home, b.file));
-    if (!rel || rel.startsWith('..') || isAbsolute(rel)) fail(`board "${b.name}" names no file inside ${dir}`);
-    if (!existsSync(join(dir, rel))) fail(`not rendered: board "${b.name}" is ${rel}, which is not in ${dir}`, 4);
-    return [names[i], rel];
-  }));
+  const pages = new Map(boards.map((b, i) => [names[i], boardFile(dir, home, b, 'not rendered')]));
   const { server, origin } = await serve(dir);
   const browser = await chromium.launch();
   const images = [];
   try {
     for (const shot of plan.shots) {
       const rel = pages.get(shot.screen);
-      const { page, bad } = await openAt(browser, origin + rel.split(sep).map(encodeURIComponent).join('/'), shot.width, { height, origin, artifact: source.url });
+      const { page, bad } = await openAt(browser, servedAt(origin, rel), shot.width, { height, origin, artifact: source.url });
       if (bad.length) fail(`not rendered: board "${shot.board}" (${rel}) at ${shot.width}px could not load ${[...new Set(bad)].join(', ')}`, 4);
       const painted = await page.evaluate(() => !!document.body && (document.body.innerText.trim() !== ''
         || [...document.body.querySelectorAll('*')].some((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })));
@@ -658,8 +663,6 @@ export async function render(dir, { chromium, bps = breakpoints(), now = new Dat
 
 // ---- compare (each board beside its Storybook story) ---------------------------------------------
 
-export const COMPARE_WIDTHS = [390, 768, 1440];
-
 // The stories a Storybook index lists, index.json (Storybook 7 on) or stories.json (6), as
 // [{id, title, name}], with docs pages left out.
 export function storyEntries(index) {
@@ -687,15 +690,8 @@ export function matchStories(boards, stories) {
   });
 }
 
-// The Storybook to shoot stories from: a built folder, served here, or a running one's URL.
+// The built Storybook to shoot stories from, served here.
 async function storybookAt(target) {
-  if (/^https?:\/\//i.test(target)) {
-    const origin = target.endsWith('/') ? target : `${target}/`;
-    for (const f of ['index.json', 'stories.json']) {
-      try { const r = await fetch(origin + f); if (r.ok) return { origin, index: await r.json(), close() {} }; } catch { /* the next */ }
-    }
-    return fail(`no Storybook at ${target}: neither index.json nor stories.json answered`, 3);
-  }
   const index = ['index.json', 'stories.json'].map((f) => join(target, f)).find((p) => existsSync(p));
   if (!index) fail(`no built Storybook at ${target}: it holds no index.json or stories.json; run §4 Storybook first`, 3);
   const { server, origin } = await serve(target);
@@ -707,7 +703,7 @@ async function storybookAt(target) {
 // board no story matches is listed, not shot. A board that fails to load a file, or a story that
 // shows Storybook's error screen, fails the run and writes nothing. Requests a story makes that fail
 // are returned as notes: a story may load what its mocks do not serve.
-export async function compare(dir, { chromium, storybook, out, widths = COMPARE_WIDTHS, boards: only = [], height = 900 }) {
+export async function compare(dir, { chromium, storybook, out, widths = breakpoints(), boards: only = [], height = 900 }) {
   const source = readJson(join(dir, 'source.json'));
   if (!source?.url) fail(`no saved canvas at ${dir}: compare a folder desk-design save wrote`);
   const { canvas, home } = collect(dir);
@@ -727,11 +723,10 @@ export async function compare(dir, { chromium, storybook, out, widths = COMPARE_
     browser = await chromium.launch();
     for (const { board: b, story, by } of matches) {
       if (!story) continue;
-      const rel = b.file && normalize(join(home, b.file));
-      if (!rel || rel.startsWith('..') || isAbsolute(rel) || !existsSync(join(dir, rel))) fail(`not compared: board "${b.name}" names no file in ${dir}`, 4);
+      const rel = boardFile(dir, home, b, 'not compared');
       const shots = [];
       for (const width of [...new Set([...widths, b.width])].filter(Number.isFinite).sort((x, y) => x - y)) {
-        const c = await openAt(browser, served.origin + rel.split(sep).map(encodeURIComponent).join('/'), width, { height, origin: served.origin, artifact: source.url });
+        const c = await openAt(browser, servedAt(served.origin, rel), width, { height, origin: served.origin, artifact: source.url });
         if (c.bad.length) fail(`not compared: board "${b.name}" (${rel}) at ${width}px could not load ${[...new Set(c.bad)].join(', ')}`, 4);
         const canvasPng = await c.page.screenshot({ fullPage: true });
         await c.page.close();
@@ -926,6 +921,14 @@ const isMain = (() => {
   catch { return false; }
 })();
 
+// Playwright's Chromium for render and compare; exit 6 when no Playwright is installed.
+async function playwrightChromium() {
+  const { findPlaywright, importPlaywright } = await import('./find-playwright.mjs');
+  const found = findPlaywright();
+  if (!found.entry) fail(`playwright not found (tried: ${found.tried.join(', ')}): re-run desk-skills' ./install.sh, which installs desk's own`, 6);
+  return (await importPlaywright(found)).chromium;
+}
+
 if (isMain) {
   const [cmd, target, ...rest] = process.argv.slice(2);
   try {
@@ -989,33 +992,16 @@ if (isMain) {
       for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir() }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
     } else if (cmd === 'render') {
       if (!target) fail('usage: desk-design render <saved dir>');
-      const { findPlaywright, importPlaywright } = await import('./find-playwright.mjs');
-      const found = findPlaywright();
-      if (!found.entry) {
-        fail(`playwright not found (tried: ${found.tried.join(', ')}): re-run desk-skills' ./install.sh, which installs desk's own`, 6);
-      }
-      const { chromium } = await importPlaywright(found);
-      const s = await render(resolve(target), { chromium });
+      const s = await render(resolve(target), { chromium: await playwrightChromium() });
       console.log(`rendered: ${join(target, 'screens')}/ (${s.screens.images.length} images, version ${s.version})`);
       for (const w of s.screens.widths) {
         console.log(`  ${w.width}px ${w.label}${w.breakpoint ? '' : ' (not a breakpoint)'}${w.boards.length ? `: ${w.boards.join(', ')}` : ''}`);
       }
     } else if (cmd === 'compare') {
       const storybook = opt(rest, '--storybook'); const out = opt(rest, '--out');
-      if (!target || !storybook || !out) fail('usage: desk-design compare <saved dir> --storybook <built folder | URL> --out <dir> [--boards <a,b>] [--widths <w,w>]');
-      const widthsOpt = opt(rest, '--widths');
-      const widths = widthsOpt ? widthsOpt.split(',').map((w) => {
-        const n = Number(w.trim().replace(/px$/i, ''));
-        return Number.isInteger(n) && n > 0 ? n : fail(`--widths holds ${w}, not a width in pixels`);
-      }) : undefined;
+      if (!target || !storybook || !out) fail('usage: desk-design compare <saved dir> --storybook <built folder> --out <dir> [--boards <a,b>]');
       const boards = (opt(rest, '--boards') ?? '').split(',').map((b) => b.trim()).filter(Boolean);
-      const { findPlaywright, importPlaywright } = await import('./find-playwright.mjs');
-      const found = findPlaywright();
-      if (!found.entry) fail(`playwright not found (tried: ${found.tried.join(', ')}): re-run desk-skills' ./install.sh, which installs desk's own`, 6);
-      const { chromium } = await importPlaywright(found);
-      const r = await compare(resolve(target), {
-        chromium, storybook: /^https?:\/\//i.test(storybook) ? storybook : resolve(storybook), out: resolve(out), widths, boards,
-      });
+      const r = await compare(resolve(target), { chromium: await playwrightChromium(), storybook: resolve(storybook), out: resolve(out), boards });
       for (const p of r.pairs) {
         console.log(`pair: ${p.board} = story ${p.story.id} (${p.by === 'story' ? 'its id or title and name' : 'its title'} matches the board)`);
         for (const s of p.shots) console.log(`  ${s.width}px${s.drawn ? ' (drawn)' : ''}: ${s.canvas} ${s.built}`);

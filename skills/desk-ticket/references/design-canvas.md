@@ -76,11 +76,12 @@ storybook-cmd`) is set, build it, then shoot each board beside its story, both u
 ```
 
 `--storybook` is the folder the build wrote (`storybook-static` beside its package unless the command
-names another) or a running Storybook's URL. `compare` serves the saved folder and the build itself,
+names another). `compare` serves the saved folder and the build itself,
 with nothing fetched from claude.ai, and pairs a board with the story whose id, or title and name,
 reads as the board's name, else a story whose title does (`Checkout/OrderSummary` for the board
 `Order summary`). For each pair it writes `canvas-<board>-<width>.png` and `built-<board>-<width>.png`
-at 390, 768 and 1440 and the board's own width: the canvas table's cells (desk-pr
+at each §5 Breakpoint (as `render`; 390, 768 and 1440 are among the defaults) and the board's own
+width: the canvas table's cells (desk-pr
 `references/screenshots.md`), compared by eye, each result `PASS` or `FAIL` with what differs.
 `not compared: <board>` is a board no story matches: the PR names it as not compared, with that
 reason, and it parks nothing. A `note:` is a file the story could not load, worth a look before

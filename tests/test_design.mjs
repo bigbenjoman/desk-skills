@@ -542,8 +542,10 @@ else document.getElementById('storybook-root').innerHTML = '<main style="height:
     .every((f) => readFileSync(join(shots, f)).subarray(1, 4).toString() === 'PNG'), true);
   t('DS-382 AC4 compare: the canvas image is at the width', readFileSync(join(shots, 'canvas-test-390-768.png')).readUInt32BE(16), 768);
   t('DS-382 AC5 compare: the board with no story is listed, not shot', `${cmp.unmatched?.join(' ')} ${existsSync(join(shots, 'canvas-test-960-390.png'))}`, 'Test 960 false');
-  const cliC = spawnSync('node', [BIN, 'compare', good, '--storybook', sb, '--out', join(T, 'shots-cli'), '--widths', '390'], { encoding: 'utf8' });
+  put(join(T, 'bp-390.md'), '## 5. Conventions\n| Field | Value |\n|---|---|\n| Breakpoints | `390` |\n');
+  const cliC = spawnSync('node', [BIN, 'compare', good, '--storybook', sb, '--out', join(T, 'shots-cli')], { env: { ...process.env, DESK_CONFIG: join(T, 'bp-390.md') }, encoding: 'utf8' });
   t('DS-382 AC5 cli compare: exit 0 with a board not compared', cliC.status === 0 && cliC.stdout.includes('not compared: Test 960') && cliC.stdout.includes('compared: 1 of 2 boards'), true);
+  t('DS-382 cli compare: shoots at config §5 Breakpoints', `${existsSync(join(T, 'shots-cli/built-test-390-390.png'))} ${existsSync(join(T, 'shots-cli/built-test-390-768.png'))}`, 'true false');
   put(join(sb, 'index.json'), JSON.stringify({ v: 5, entries: { 'pages-test-390--default': { id: 'pages-broken--test-390', title: 'Pages/Test 390', name: 'Default', type: 'story' } } }));
   const errC = await compare(good, { chromium, storybook: sb, out: join(T, 'shots-err'), widths: [390] }).then(() => 'no error', (e) => `${e.code}:${e.message}`);
   t('DS-382 compare: a story on the error screen fails with exit 4, writing nothing', `${errC.startsWith('4:not compared: story pages-broken--test-390')} ${existsSync(join(T, 'shots-err'))}`, 'true false');
