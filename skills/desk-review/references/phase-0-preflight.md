@@ -53,7 +53,7 @@ finder, and the verdict line carries `vendor=same-vendor`. A reader cannot tell 
 
 **3. Whether the named agents resolve.** Each role below is a desk subagent installed user-level
 (`~/.claude/agents/<name>.md`); a repo may override one in `.claude/agents/`. If a role's file is
-missing in both places, and §4 Project subagents sync is set, run it once. Anything still missing
+missing in both places, and §4 Project subagents sync (`desk-env cmds agents-sync`) is set, run it once. Anything still missing
 falls back to `general-purpose`, and the header says so:
 `agents: general-purpose fallback for <roles>`. A fleet that silently became one model checking
 itself must never read as a full run.

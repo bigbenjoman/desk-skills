@@ -8,7 +8,8 @@ a guess.
 
 §5 Ticket format `default` means this file. Where a repo's §5 Ticket format names its own sections,
 use those headings, but the substance below still goes in them: the rules, the criteria shape and
-the Bug's diagnosis. With §5 Ticket format still `TODO`, ask, and offer `/desk-setup`.
+the Bug's diagnosis. With §5 Ticket format still `TODO`, ask, and offer `/desk-setup`. The §4 rows
+below are `desk-env` reads: §4 Tracker `desk-env get tracker` and Staging `desk-env list staging`.
 
 Write the body in markdown in a `.md` file. `desk-jira create` converts it to wiki markup (desk-jira
 *Transport*). Each section is one `##` heading, so the rendered ticket has one `<h2` per section.

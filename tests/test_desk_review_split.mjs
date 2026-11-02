@@ -62,6 +62,13 @@ const REWRITTEN = [
     'except P2s carried from round 3',
   ].map((s) => ['DS-368', s, 1]),
   ['DS-369', 'first three lines are computed', 1], // the method line follows the heading
+  // each §3b and §4 row a worker reads is named with its desk-env call
+  ...[
+    'Read the `CONFIG` file. `EXISTS=no` means stop', '§4 Tracker, Ticket key pattern, Other work id patterns',
+    "Every other missing row follows the config's rule 7", '§4 Project subagents sync is set, run it once', 'or §4 Merge holds |',
+    'told to invoke the skill §4 Review domain experts names', '§3b Subagents that may run without asking still applies',
+    'Match §4 Ticket key pattern against', '| §4 Other work id patterns |', 'If one of §4 Required checks reads this verdict',
+  ].map((s) => ['DS-405', s, 1]),
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

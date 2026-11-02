@@ -74,14 +74,14 @@ say which trigger fired, give the new lane and its cost, and wait:
   obligations: parse the response with a runtime schema validator (the one the repo already uses);
   build the spec fixture from a recorded real payload and name its source in the PR's Testing; and
   verify a runtime or hydration fix on a preview before merge (with no preview deployments, on
-  §4 Staging, or say which verification could not run)
+  §4 Staging, `desk-env list staging`, or say which verification could not run)
 
 ## Cost is stated, not silent
 
 Before starting lanes C or D, say the lane, the specific signal that chose it, and the subagent
 count, then wait for agreement. Lanes A, B and E proceed without asking, and so does lane D on an
 autopilot worker, whose canvas is saved (Lane D below). How many subagents may run
-without asking at all is config §3b "Subagents that may run without asking".
+without asking at all is config §3b "Subagents that may run without asking" (`desk-env get subagents-without-asking`).
 
 Cost is the whole reason lanes exist. "Delete an empty video placeholder" is one line; routed to C
 it would stop for a plan nobody needs. Escalation needs a named signal, never a

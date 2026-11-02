@@ -49,7 +49,7 @@ config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs decisions.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs decisions.mjs borrow.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
 # with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -309,7 +309,7 @@ check "DS-391 AC5: an open blocker in no batch is named for /desk-admit to admit
 check "admit: --front moves each admitted ticket to the front" 'grep -q "H-4 moved to the front of the spawn order" <<< "$out" && [ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets)[0])" "$DESK_QUEUE")" = H-5 ]'
 rec H-9 A "$(design https://claude.ai/artifact/H9 null)"; rec H-10 A "$(design https://claude.ai/artifact/H10 '"/snap/H-10"')"
 out=$(admit H-9 H-10 --by ben); rc=$?
-check "DS-358 AC4: /desk-admit refuses a ticket whose canvas has no snapshot, naming the artifact" '[ $rc -eq 11 ] && grep -q "^not admitted H-9: design not snapshotted: https://claude.ai/artifact/H9: snapshot it into $T/state/designs/H-9/ and record it (desk-design write), or have it shared" <<< "$out" && [ "$(qget tickets.H-9)" = undefined ]'
+check "DS-358 AC4: /desk-admit refuses a ticket whose canvas has no snapshot, naming the artifact" '[ $rc -eq 11 ] && grep -q "^not admitted H-9: design not snapshotted: https://claude.ai/artifact/H9: snapshot it into $T/state/designs/H-9/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared" <<< "$out" && [ "$(qget tickets.H-9)" = undefined ]'
 check "DS-358 AC1: a snapshotted canvas is admitted runnable" '[ "$(qget tickets.H-10.state)" = triaged ]'
 # Without autopilot-workers yes, a session plans an epic with the person.
 config ask '`none`'

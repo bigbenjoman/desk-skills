@@ -106,6 +106,9 @@ try {
     try { by = configValue('name') ?? null; } catch { /* outside a repo */ }
     addPutOff(putOffEntry({ question, ticket, inputs: t.park.inputs ?? {}, by, at: stamp }), STATE);
     console.log(`${ticket}: put off in ${notNowPath(STATE)}; it is not asked again until its inputs change.`);
+    // With the actions its needs-you item offers, so one it gains brings it back there.
+    try { (await import('./needs-you.mjs')).stampActions({ stateDir: STATE, ticket, question }); }
+    catch (e) { console.error(`${ticket}: put off, but without its actions, so a new one will not bring it back: ${e.message}`); }
   } else if (putOffAnswer) {
     console.log(`${ticket}: "not now", but it has no parked question to put off, so nothing went in the register.`);
   } else if (question && clearPutOff(question, STATE).ok) {

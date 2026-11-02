@@ -55,7 +55,8 @@ no config, reaches intent from the PR and the commits only (Phase 2), and says
 
 - §0 GitHub repo (`<owner>/<repo>`) and Default branch (`<default>`).
 - §3 `read-own-work` and `read-others`, for reading tickets.
-- §4 Tracker, Ticket key pattern, Other work id patterns, and **Review bar**.
+- §4 Tracker (`desk-env get tracker`), Ticket key pattern (`desk-env get ticket-pattern`), Other
+  work id patterns (`desk-env list work-id-patterns`), and **Review bar** (`desk-env get review-bar`).
 - §5 Repo instructions: the repo's own files (`CLAUDE.md`, `AGENTS.md`…) win over this skill on
   anything they cover, including where they set the layering and when to extract.
 

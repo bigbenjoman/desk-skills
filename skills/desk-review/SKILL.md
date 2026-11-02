@@ -33,24 +33,25 @@ unread file list, a failed fetch, an unresolved agent or an unrefuted finding is
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer
-`/desk-setup`. A `TODO` in a §3 row is a `no` (config rule 4), so it makes the run report-only,
-never stops it. A `TODO` in any other row this skill needs is not a gap to guess: stop, ask, offer
+Read rows with `desk-env` (`desk-env ids` lists ids; a worker cannot read `CONFIG`). `EXISTS=no`
+means stop: say which slug was looked up and offer `/desk-setup`. A `TODO` in a §3 row is a `no`,
+so it makes the run report-only, never stops it. A `TODO` in any other row this skill needs is not a gap to guess: stop, ask, offer
 `/desk-setup`. Then take:
 
 - §0 GitHub repo (`<owner>/<repo>` below) and Default branch (`<default>`); §1 GitHub handle (`<me>`).
 - §3 `read-others`, `pr-self-review-comment`, `pr-review-others`, `codex-review`, `ci-rerun`.
-- §4 Tracker, Ticket key pattern, Other work id patterns, Required checks, Merge holds, Project
-  subagents sync, the **Infra and security owner** paths, **What review here consistently asks
-  for**, and the three review rows: **Review bar**, **Review domain experts**, **Clean review
-  verdict**.
+- §4 Tracker (`desk-env get tracker`), Ticket key pattern, Other work id patterns, Required checks,
+  Merge holds, Project subagents sync, the **Infra and security owner** paths, **What review here
+  consistently asks for** (`desk-env get review-asks`), and the three review rows: **Review bar**,
+  **Review domain experts**, **Clean review verdict** (`desk-env get review-bar`,
+  `desk-env list review-experts`, `desk-env get clean-verdict`).
 - §5 Repo instructions: the repo's own files (`CLAUDE.md`, `AGENTS.md`…) win over this skill on
   anything they cover, and every finder is pointed at them.
 
 **A review row missing from an older config is not a stop.** §4 Review bar missing or `default`
 means the bar in `references/review-bar.md`; §4 Review domain experts missing or `none` means no
 domain finder. Say which default applied in the report header, and offer `/desk-setup` once to add
-the rows. Every other missing row follows the config's rule 7: a §3 row missing is `no`.
+the rows. A missing §3 row is `no`.
 
 ### Which review bar
 
@@ -100,8 +101,7 @@ below marks its worker form. A sweep, or a review of someone else's PR, is never
 Each phase's rules are in its own file under `references/`. **Read a phase's file when the review
 reaches it.** The phases overlap, so some are read together: Phase 3 dispatches Bea (Phase 5) in the
 same message as the finders, and its codex cold call follows Phase 4's quoting rules, so read all
-three at Phase 3. This file holds what every phase needs: the config, the bar, the entry points,
-every seat's prompt, the round rules and the verdict.
+three at Phase 3.
 
 | # | Phase | Read at its start |
 |---|---|---|

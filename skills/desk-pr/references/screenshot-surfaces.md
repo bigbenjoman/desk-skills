@@ -1,6 +1,9 @@
 # Where to capture before/after shots
 
-Pick the cheapest surface that renders the real component with real copy. In order of cost:
+Pick the cheapest surface that renders the real component with real copy. In order of cost (the
+rows named here are read with `desk-env get local-db`, `desk-env list staging`,
+`desk-env get staging-bypass`, `desk-env get dev-port`, `desk-env cmds dev-cmd` and
+`desk-env get command-prefix`):
 
 | Surface | Use when | Needs |
 |---|---|---|

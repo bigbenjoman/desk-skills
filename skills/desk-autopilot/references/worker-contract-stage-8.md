@@ -5,14 +5,14 @@ an earlier stage. It binds exactly as the core does.
 
 ### Jira comments and transitions follow config §3
 
-With §4 Tracker `none` there are none: skip this section, and never comment on, label or close the
+With §4 Tracker (`desk-env get tracker`) `none` there are none: skip this section, and never comment on, label or close the
 GitHub issue.
 
 **Granted (`jira-comment` is `yes`):** at Stage 8, write the comment and call `desk-jira comment`
 yourself, then print it under `JIRA COMMENT — posted`. Do not print `JIRA COMMENT — awaiting approval`
 and do not park for it. **Check idempotency first**: read existing comments and skip if the
 `(<TICKET>/desk-ticket)` marker is already there, so a re-run does not double-post. Transitioning to
-§4 Review state (skip if it is `none`) works the same way under `jira-transition`, and field edits
+§4 Review state (`desk-env get review-state`; skip if it is `none`) works the same way under `jira-transition`, and field edits
 under `jira-edit`. `desk-jira link` and `unlink` are never yours, whatever `jira-edit` says: issue links are set
 interactively when an epic is written.
 

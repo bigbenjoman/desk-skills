@@ -8,6 +8,7 @@
 //     that is not `yes`, is handed straight on, as is a waiting line for a done ticket, which no
 //     decider tool acts on, and a park asking again what the park its last requeue cleared asked,
 //     with no answer since (queue.mjs requeue keeps that park as `prev_park`);
+//   - a park with a recorded clears-when waits on it, neither handed on nor given to a session;
 //   - the rest go to the session, unless already handed and not answered since (an answer through
 //     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
 //   - what the session does not report settled is handed on with its reason, unless the usage limit
@@ -18,9 +19,9 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
-import { CLEARS_WHEN_FORMS } from './clears-when.mjs';
+import { CLEARS_WHEN_FORMS, describeCond } from './clears-when.mjs';
 import { needsSession, planPark } from './batch-state.mjs';
-import { questionKey } from './not-now.mjs';
+import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
@@ -63,14 +64,14 @@ export function samePark(a, b, ticket = '') {
 // One item per parked ticket and per WAITING ON YOU line, as the pass's verdict names them. A line
 // whose label is no queue ticket (`BASE GATE`, `base sync`) is the batch's, with no ticket to answer.
 // A park carries its round (which park in a row this is, counted by queue.mjs requeue), the park the
-// last requeue cleared, and whether this one asks the same thing.
+// last requeue cleared, whether this one asks the same thing, and the clears-when it had when listed.
 export function deciderItems(v, q = {}) {
   const tickets = q.tickets ?? {};
   const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => {
     const prev = tickets[p.key]?.prev_park ?? null;
     return {
       id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: String(p.question ?? ''), lane: tickets[p.key]?.lane ?? null,
-      since: tickets[p.key]?.park?.since ?? null,
+      since: tickets[p.key]?.park?.since ?? null, clears: condKey(tickets[p.key]?.park?.clears_when),
       round: (prev?.round ?? 0) + 1, prev, repeat: !!prev && samePark(prev.question, p.question, p.key),
     };
   });
@@ -81,13 +82,15 @@ export function deciderItems(v, q = {}) {
   return [...parked, ...waiting];
 }
 
-// Items the rules hand on without a session: {hand: [{item, why}], ask: [item]}. A §3 row is read as
-// the pass's line gives it. A park that asks again what the park its last requeue cleared asked, with
-// no answer since that one, is handed on: another worker would park the same way. With no `state` to
-// read answers from, none is counted.
+// Items the rules hand on without a session: {hand: [{item, why}], ask: [item], waits: [item]}. A §3
+// row is read as the pass's line gives it. A park that asks again what the park its last requeue
+// cleared asked, with no answer since that one, is handed on: another worker would park the same way.
+// With no `state` to read answers from, none is counted. A park with a recorded clears-when waits on
+// it: each pass checks it and settles the park, so it needs neither a session nor the person.
 export function presort(items, state = null) {
   const hand = [];
   const ask = [];
+  const waits = [];
   const short = (s) => (s.length > 160 ? `${s.slice(0, 159)}…` : s);
   for (const item of items) {
     const row = /config §3 `?([\w-]+)`? is "([^"]*)"/.exec(item.text);
@@ -96,6 +99,8 @@ export function presort(items, state = null) {
       hand.push({ item, why: 'an epic\'s drafted plan: only the person starts, edits or discards it' });
     } else if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
+    } else if (item.kind === 'parked' && item.clears) {
+      waits.push(item);
     } else if (item.kind === 'parked' && item.repeat && !(state && prevAt && answered(state, { ticket: item.ticket, at: prevAt }))) {
       hand.push({ item, why: `park ${item.round} asks what park ${item.round - 1} asked, with no answer since: a requeue would park again (last park: "${short(item.prev.question)}")` });
     } else if (row && row[2] !== 'yes') {
@@ -104,7 +109,12 @@ export function presort(items, state = null) {
       hand.push({ item, why: `${item.ticket} is done, and the decider can only requeue or record clears-when for a parked ticket` });
     } else ask.push(item);
   }
-  return { hand, ask };
+  return { hand, ask, waits };
+}
+
+// A recorded clears-when as one comparable string, or null for none.
+function condKey(c) {
+  return c?.kind && c.kind !== 'none' ? JSON.stringify(c) : null;
 }
 
 // ---- the handed register -----------------------------------------------------------------------
@@ -280,17 +290,28 @@ export function readResult(out) {
 }
 
 // What a finished session settled and handed on. A park it says it settled that is still parked with
-// the same question was not settled. `q` is the queue as it stands now. A session the usage limit
-// refused settled and handed on nothing: its items are kept for the next one.
-export function outcome(rec, result, q = {}) {
+// the same question was not settled, unless it now waits on a clears-when it did not have, which each
+// pass checks, or is put off in the "not now" register (read from `state`): either is settled, whatever
+// the session called it. `q` is the queue as it stands now. A session the usage limit refused settled
+// and handed on nothing: its items are kept for the next one.
+export function outcome(rec, result, q = {}, { state = null } = {}) {
   if (result.limit) return { settled: [], handed: [], kept: rec.items, cost: result.cost ?? null };
   const settled = [];
   const handed = [];
+  let register = null;
+  const putOff = (t) => {
+    if (!state) return false;
+    register ??= readRegister(state);
+    return lookup(register, { question: t.park.question, inputs: t.park.inputs ?? {} }).status === 'put_off';
+  };
   for (const item of rec.items) {
     const did = result.settled?.[item.id];
     const t = q.tickets?.[item.ticket];
     const still = item.kind === 'parked' && t?.state === 'parked' && String(t.park?.question ?? '') === item.text;
-    if (did != null && !still) settled.push({ item, did });
+    const waits = still && condKey(t.park?.clears_when) && condKey(t.park.clears_when) !== item.clears;
+    if (waits) settled.push({ item, did: `recorded clears-when "${describeCond(t.park.clears_when)}", which a later pass checks` });
+    else if (still && putOff(t)) settled.push({ item, did: 'put off with "not now": left parked until its inputs change' });
+    else if (did != null && !still) settled.push({ item, did });
     else if (did != null) handed.push({ item, why: `the decider said "${did}", but ${item.ticket} is still parked` });
     else handed.push({ item, why: result.error ? `decider ${result.error}` : result.handed?.[item.id] || 'the decider handed it on' });
   }

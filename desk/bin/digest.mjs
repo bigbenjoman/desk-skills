@@ -19,7 +19,7 @@ import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { isHeld } from './batch-state.mjs';
+import { isHeld, needsSession } from './batch-state.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
@@ -203,7 +203,8 @@ export function jiraLine(slug, j) {
 }
 
 // One repo's open questions: each parked ticket's question (a hold is not one, nor a question the
-// person put off with the same inputs) and each triaged ticket's unanswered triage unknowns. Questions
+// person put off with the same inputs, nor a park waiting on a recorded clears-when, which a pass
+// settles unless only a session may take the ticket) and each triaged ticket's unanswered triage unknowns. Questions
 // already answered from a digest are left out. A put-off question whose inputs changed says what changed.
 export function openQuestions(r, answered = {}, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
@@ -220,6 +221,7 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   }
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
+      if (t.park?.clears_when?.kind && t.park.clears_when.kind !== 'none' && !needsSession(t)) continue;
       const l = parkPutOff(register, t);
       if (l.status === 'put_off') continue;
       const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;

@@ -573,8 +573,7 @@ check "AC5: the pass report asks for the merge too, and the children are not rel
 # AC6: once the spine PR merges, the children are released and spawn on a later pass.
 echo MERGED > "$T/pr/120"
 pass
-check "AC6: a merged spine makes the children due for release" 'echo "$out" | grep -q "T-21: RELEASE DUE" && echo "$out" | grep -q "T-22: RELEASE DUE" && ! echo "$out" | grep -q "SPINE APPROVED"'
-for k in T-21 T-22; do q set "$k" state=triaged park=null held_by=null; q front "$k"; done
+check "AC6: a merged spine releases the children, with no merge driver running" 'echo "$out" | grep -q "^released: T-21" && echo "$out" | grep -q "^released: T-22" && ! echo "$out" | grep -q "RELEASE DUE" && ! echo "$out" | grep -q "SPINE APPROVED"'
 pass
 check "AC6: the released children spawn"                         '[ "$(state T-21)" = running ] && [ "$(state T-22)" = running ]'
 finish T-21; finish T-22

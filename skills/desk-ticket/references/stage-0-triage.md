@@ -15,8 +15,8 @@ a "below" here that this file does not hold points there.
 
 | Argument | `<TICKET>` | Text comes from |
 |---|---|---|
-| a key matching §4 Ticket key pattern (Tracker `jira`) | the key | Jira, via `desk-jira` |
-| an id matching §4 Other work id patterns (any tracker), e.g. `P1-M14-FIX-1`, `BUG-119-5` | the id exactly as given, case kept | the planning file that defines it (`.belmont/`, or wherever §5 Repo instructions say work is planned), or the user |
+| a key matching §4 Ticket key pattern (`desk-env get ticket-pattern`; Tracker `jira`) | the key | Jira, via `desk-jira` |
+| an id matching §4 Other work id patterns (`desk-env list work-id-patterns`; any tracker), e.g. `P1-M14-FIX-1`, `BUG-119-5` | the id exactly as given, case kept | the planning file that defines it (`.belmont/`, or wherever §5 Repo instructions say work is planned), or the user |
 | with Tracker `none`: a GitHub issue URL or `#<n>` | `issue-<n>` | the issue, `gh issue view <n> --repo <repo> --comments` (§3 `read-own-work` / `read-others`) |
 | with Tracker `none`: a plain description | a kebab-case slug of it (two to five words, lowercase ASCII) that you state at Stage 0 | the user's words: anything they leave open is a question |
 

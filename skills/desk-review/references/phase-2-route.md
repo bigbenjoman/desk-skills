@@ -14,7 +14,7 @@ the jq and the path patterns, written to work across TypeScript and Python layou
 
 | Tier | Fires on (production paths) |
 | --- | --- |
-| HIGH | auth, sessions, permissions, middleware; API routes and handlers; payments, billing, ledgers, webhooks; migrations and schema; `.env*`; any path in §4 Infra and security owner or §4 Merge holds |
+| HIGH | auth, sessions, permissions, middleware; API routes and handlers; payments, billing, ledgers, webhooks; migrations and schema; `.env*`; any path in §4 Infra and security owner or §4 Merge holds (`desk-env list merge-holds`) |
 | MEDIUM | server, service, lib, domain, hooks, backend and data code; CI workflows, infrastructure and build config; or >300 changed lines |
 | LOW | everything else |
 
@@ -27,7 +27,7 @@ patterns err wide.
 | --- | --- | --- |
 | correctness | `lena-code-reviewer` | always |
 | security | `nadia-security-auditor` | any HIGH-tier production path |
-| domain | `general-purpose`, told to invoke the skill §4 Review domain experts names | a changed path matching that row's glob |
+| domain | `general-purpose`, told to invoke the skill §4 Review domain experts (`desk-env list review-experts`) names | a changed path matching that row's glob |
 | api | `theo-api-designer` | API routes, handlers, routers, schemas, serializers, models, migrations, `*.proto`, OpenAPI or GraphQL files |
 | tests | `mira-playwright-expert` | test paths, or a HIGH-tier change with no test changed |
 | infra | `jim-solution-architect` | CI workflows, infrastructure as code, Dockerfiles, compose files, deploy config |
@@ -47,7 +47,7 @@ Priority when trimming: **security > domain > api > tests > infra > frontend.**
 So a branch review is 1–3 finders plus the simplicity finder and codex cold, plus one refutation per
 finding, and none at all when the finders return `NO FINDINGS`, which is the common case. Keep it
 there: a review nobody runs because it takes ten minutes catches nothing. §3b Subagents that may run
-without asking still applies.
+without asking (`desk-env get subagents-without-asking`) still applies.
 
 **Domain experts** are why the fleet is not fixed. §4 Review domain experts is one span per rule,
 `` `<glob>: <skill>` ``, e.g. `` `apps/api/trading/**: energy-trader` ``. A matching change gets a

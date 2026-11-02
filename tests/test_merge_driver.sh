@@ -183,16 +183,18 @@ loop
 check "AC2: both green PRs merged within three loops, one per loop" '[ "$(merged)" = "101 102" ] && grep -qx "102 main $SHA2" "$T/merges.log"'
 check "a merged ticket with no spawn record gets its merge time and no history line" '[ "$(qf T-2 .merged_at)" != null ] && [ "$(wc -l < "$T/state/eta-history.jsonl" | tr -d " ")" = 1 ] && echo "$out" | grep -q "no spawn record: T-2"'
 
-# ---- pass.mjs: a release due with no driver running is the person's; the next loop releases it -----
+# ---- pass.mjs: a release due with no driver running is released by the pass, as the driver would ---
 q set T-3 state=done
 q add T-6 Task A; q set T-6 state=triaged branch=fix/T-6; q hold T-6 T-2
 pj
-check "pass: every blocker merged and no driver running exits 11, release due" '[ $rc -eq 11 ] && [ "$(js .notify)" = true ] && [ "$(js ".release_due | join(\",\")")" = T-6 ] && js ".waiting[]" | grep -q "^T-6: RELEASE DUE"'
+check "DS-397 AC4: every blocker merged and no driver running, the pass releases it, not the person" '[ "$(qf T-6 .state)" = triaged ] && [ "$(qf T-6 .held_by)" = null ] && [ "$(js ".release_due | length")" = 0 ] && ! js ".waiting[]" | grep -q "RELEASE DUE" && js .message | grep -q "^released: T-6, every blocker merged (T-2) and no merge driver is running; "'
+check "DS-397 AC4: and moves it to the front of the spawn order"   '[ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = T-6 ]'
 
-q set T-6 open_questions=1
+q drop T-6
+q add T-9 Task A; q set T-9 state=triaged branch=fix/T-9; q hold T-9 T-2; q set T-9 open_questions=1
 loop
-check "the driver releases the ticket pass.mjs reported due"         '[ "$(qf T-6 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-6"'
-check "DS-189 AC3: the release line says a question is still open and it will not spawn" 'echo "$out" | grep "RELEASED T-6" | grep -q "still has 1 question(s) open and will not spawn until they are answered: answer with answer.mjs T-6"'
+check "the driver releases a ticket whose every blocker merged"     '[ "$(qf T-9 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-9"'
+check "DS-189 AC3: the release line says a question is still open and it will not spawn" 'echo "$out" | grep "RELEASED T-9" | grep -q "still has 1 question(s) open and will not spawn until they are answered: answer with answer.mjs T-9"'
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
 check "AC5: a PR on another base is never the batch'\''s"            '! grep -q "^105 " "$T/merges.log" && ! echo "$out" | grep -q "#105"'

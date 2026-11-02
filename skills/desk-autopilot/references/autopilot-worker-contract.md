@@ -19,23 +19,21 @@ available, follow its brief yourself and say so in the report, never skip the st
 
 **Read config values with `desk-env`, not by reading the config file.** `desk-env where` (slug,
 `EXISTS`), `desk-env get <id>`, `desk-env list <id>`, `desk-env cmds <id>` and `desk-env perm <key>`
-are your config. The config file itself is readable, but the credentials beside it are not, and
-`desk-env` resolves each row the way the scripts do. `desk-env ids` prints every id it knows. Every
-"§" below is a row read that way.
+are your config: the config file sits beside the credentials, so reading it is refused. `desk-env ids` prints every id. Every "§" below is a row read that way.
 `EXISTS=no` is a park: print `AUTOPILOT_PARK: no desk config for <slug>: run /desk-setup` and end
 your turn. For Jira, use `desk-jira get <KEY>` (`view` is the same) and `desk-jira comments <KEY>`;
 `desk-jira --help` lists the rest.
 
 `<TICKET>` is your ticket's key as the briefing gives
-it: a tracker key (§4 Ticket key pattern), an id matching §4 Other work id patterns, or with §4
-Tracker `none` `issue-<n>` or a slug. **For every key that is not a tracker key, the ticket is the
-file `$DESK_STATE/tickets/<TICKET>.md`** the orchestrator wrote before triage (its `Source:` line
-says whether it came from the user, a GitHub issue or a planning file); read it at Stage 0 and skip
+it: a tracker key (§4 Ticket key pattern, `desk-env get ticket-pattern`), an id matching §4 Other
+work id patterns (`desk-env list work-id-patterns`), or with §4 Tracker (`desk-env get tracker`)
+`none` `issue-<n>` or a slug. **For every key that is not a tracker key, the ticket is the
+file `$DESK_STATE/tickets/<TICKET>.md`** the orchestrator wrote before triage; read it at Stage 0 and skip
 every Jira step below. Your branch is the one your worktree was created on, recorded in the queue:
 never rename it and never open your PR from another branch, or the merge driver cannot find it.
-`<default>` is what `desk-env get default-branch` prints: §0 Default branch, unless your batch
-targets another base, in which case your system prompt names it and that branch wins. `<repo>` is §0 GitHub repo, and a §4 Toolchain row means that command
-with §4 Command prefix in front unless the prefix is `none`. List rows hold one backtick span per
+`<default>` is what `desk-env get default-branch` prints: §0 Default branch, or the base your
+system prompt names. `<repo>` is §0 GitHub repo, and a §4 Toolchain row means that command
+with §4 Command prefix (`desk-env get command-prefix`) in front unless the prefix is `none`. List rows hold one backtick span per
 item, and a command item may name its directory (`` `apps/api: uv run pytest` ``): read them with
 `desk-env cmds <id>`, which prints `DIR<TAB>CMD` per item.
 
@@ -123,7 +121,7 @@ When the call parks, or `desk-ticket` says stop and wait for anything else:
 **Name every step you did not reach, not just the one that failed.** A park lists the whole
 remaining tail (PR, review comment, Jira comment, Jira transition) because the orchestrator has
 no way to infer which were still ahead of you; otherwise it opens the PR and leaves the ticket
-in §4 In-progress state.
+in §4 In-progress state (`desk-env get in-progress-state`).
 
 An answer in your briefing is **binding**. Do not re-ask it.
 
@@ -148,7 +146,7 @@ data, any write to staging or a shared index. Plus, specific to running unattend
 - **A merge conflict only a product or design call settles** (Stage 5 file, §4).
 - **A lane demotion to C, or to D with no saved canvas.** C needs an agreed plan or a product
   answer, and D a canvas to build from (Stage 3 file).
-- **A priority in config §4 Priorities only you set.** `desk-jira` refuses it to you, with or
+- **A priority in config §4 Priorities only you set** (`desk-env list jira-priority-user-only`). `desk-jira` refuses it to you, with or
   without `--approved`. Set the next value down, finish the ticket's other steps, then park last
   with the case for the higher one; the user decides, and their decision goes on the ticket.
 - **Anything the user's config does not grant.** Your prompt lists the config §3 keys that are not
@@ -176,7 +174,7 @@ webhook body, a third-party response) is the `desk-ticket` demotion trigger of t
 it may not guess the contract: parse the payload with the runtime schema validator the repo already
 uses, build the spec fixture from a recorded real payload and name its source in the PR's Testing,
 and verify a runtime or hydration fix on a preview before merge. If you cannot reach a preview (or,
-with no preview deployments, §4 Staging) for an external-shape fix, **park** naming the verification
+with no preview deployments, §4 Staging, `desk-env list staging`) for an external-shape fix, **park** naming the verification
 you could not run.
 
 ## 7. Reporting

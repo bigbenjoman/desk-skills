@@ -193,7 +193,7 @@ Run every pass as `pass.mjs --json`. Its stdout is one object:
 | `parked` | `{key, question}` for every ticket parked for its own reason (a hold is not one) |
 | `notify` | true exactly when the exit is 11 |
 | `push` | `{key, text}` for each thing to push now: the check-in digest (`digest:<slot>`) on the one pass on the machine that built it, each park whose question reads `PRODUCTION BROKEN` (`urgent:<slug>:<TICKET>`), the promotion question for a newly merged production-broken fix (`promotion:<slug>:<sha>:urgent`), each failing health check (`health:<slug>:<check>`, below), and main's failed `tests` check that blocks the desk-skills auto-release (`release-failed-<sha>`, *The weekly maintenance window*). Empty otherwise, on any exit |
-| `release_due` | held tickets whose every blocker's PR has merged (under `waiting` too when no merge driver is running) |
+| `release_due` | held tickets whose every blocker's PR has merged and that are still held: the merge driver's to release, or, with none running, one whose release the queue refused (under `waiting` too) |
 | `stuck` | held tickets whose blocker can no longer merge on its own (under `waiting` too) |
 | `on_park` | held tickets behind a failed or parked ticket: they wait on that answer, and are not under `waiting` |
 

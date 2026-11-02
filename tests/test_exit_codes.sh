@@ -140,11 +140,11 @@ pj
 check "DS-332 AC3: once that blocker is dropped, its dependant is STUCK" '[ "$(js ".stuck | join(\",\")")" = T-2,T-4 ] && [ "$(js ".on_park | length")" = 0 ] && js ".waiting[]" | grep -q "^T-4: STUCK — held behind T-5"'
 q drop T-4
 
-# Every blocker merged and no merge driver running: the release is the person's.
+# Every blocker merged and no merge driver running: the pass releases it, so it needs nobody.
 q set T-1 state=done result.pr=7
 printf '#!/bin/sh\necho MERGED\n' > "$T/stub/gh"
 pj
-check "pass: a release due with no driver exits 11"             '[ $rc -eq 11 ] && [ "$(js ".release_due | join(\",\")")" = T-2 ] && js ".waiting[]" | grep -q "^T-2: RELEASE DUE"'
+check "pass: a release due with no driver is released by the pass, and exits 10" '[ $rc -eq 10 ] && [ "$(js ".release_due | length")" = 0 ] && [ "$(js ".waiting | length")" = 0 ] && js .message | grep -q "^released: T-2"'
 
 # A finished batch: every ticket done and its PR merged, nothing parked or held.
 q drop T-2

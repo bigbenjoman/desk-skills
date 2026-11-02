@@ -22,7 +22,7 @@ this file wins.
 ## Review-sweep tasks: the comment is the deliverable
 
 If your task is reviewing a PR rather than implementing a ticket, the job is not finished when the
-findings are fixed: it is finished when a review from §4 Local review command, carrying its
+findings are fixed: it is finished when a review from §4 Local review command (`desk-env get local-review`), carrying its
 local-review marker, is visibly on the PR at the head you pushed. Post it even when the review is
 clean; post it even when findings survived the round cap, naming what is left. Post it after your
 final push, never before, then re-read the PR and confirm it is actually there before you claim

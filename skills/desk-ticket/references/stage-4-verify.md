@@ -6,7 +6,7 @@ a "below" here that this file does not hold points there.
 
 | # | Stage | What happens |
 |---|---|---|
-| 4 | Verify | `desk-dev` for the environment. §4 Typecheck, §4 Lint (its fixing form if the row gives one), §4 Unit tests and the knowledge check where the repo has one; a §4 Build only when the change needs one (below). Add a spec that guards the fix. A claim the knowledge check reports as changed gets written back in this branch (below). Then run the docs check from `desk-pr` §1 and **report** what it finds: a hit is sometimes a stale comment in the source rather than a page edit, and that is far cheaper to learn here than at Stage 7. Report only; rewriting a page is the user's call. |
+| 4 | Verify | `desk-dev` for the environment. §4 Typecheck (`desk-env cmds typecheck-cmd`), §4 Lint (`desk-env cmds lint-cmd`; its fixing form if the row gives one), §4 Unit tests (`desk-env cmds test-cmd`) and the knowledge check where the repo has one; a §4 Build (`desk-env cmds build-cmd`) only when the change needs one (below). Add a spec that guards the fix. A claim the knowledge check reports as changed gets written back in this branch (below). Then run the docs check from `desk-pr` §1 and **report** what it finds: a hit is sometimes a stale comment in the source rather than a page edit, and that is far cheaper to learn here than at Stage 7. Report only; rewriting a page is the user's call. |
 
 **Build only when the change needs it (Stage 4).** CI builds every PR. Run §4 Build locally when the
 change touches what typecheck, lint and unit tests cannot see: framework or bundler config,
@@ -28,7 +28,7 @@ itself at `cpus - 1` workers by default, with no awareness of any other run. A l
 width holds several GB resident, so two at once oversubscribe both RAM and CPU and each finishes
 slower than if you had simply waited.
 
-**Cap it and lock it, every time** (the cap is config §3b "Test worker cap under the test lock").
+**Cap it and lock it, every time** (the cap is config §3b "Test worker cap under the test lock", `desk-env get test-cap`).
 §4 Unit tests holds one backtick span per suite, and a suite may name its directory
 (`` `apps/api: uv run pytest` ``); `desk-env cmds test-cmd` prints each as `DIR<TAB>CMD` (`DIR` is
 `.` at the root). Run each in its directory with `--cwd`, never as `cd <dir> && …`, and append the
@@ -59,10 +59,10 @@ desk-env mem avail   # room to start something, in GiB; under ~4, wait
 
 If config §2 "Running on WSL?" is `yes`, the practical ceiling is lower than the guest reports:
 the Windows host runs out of RAM for VmmemWSL around config §3b "Memory ceiling for parallel work
-(GB)" whatever `free` says, which is why the cap is a fixed worker count rather than a percentage.
+(GB)" (`desk-env get memory-ceiling`) whatever `free` says, which is why the cap is a fixed worker count rather than a percentage.
 
 **Database-backed suites: never two at once against the same database.** Suites that isolate by
 per-worker schema tear down each other's schemas. Which suites touch a database is in §4 Unit tests,
-§4 E2E tests and §4 Local database; with §4 Local database `none`, this does not arise. The test lock
+§4 E2E tests (`desk-env cmds e2e-cmd`) and §4 Local database (`desk-env get local-db`); with §4 Local database `none`, this does not arise. The test lock
 does not cover every runner reliably, so check for another worktree's run first (match the runner's
 binary in `ps -eo args`, e.g. `grep -E '[.]bin/vitest run'`) and follow config §3 `tests-shared-db`.

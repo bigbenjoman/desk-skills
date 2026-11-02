@@ -80,7 +80,7 @@ report; a PR still at zero is named, never counted as posted.
 
 ### A required check that reads the verdict
 
-If one of §4 Required checks reads this verdict, it may have run before the review landed and
+If one of §4 Required checks (`desk-env list required-checks`) reads this verdict, it may have run before the review landed and
 recorded a failure. Re-run it only when **all** hold: the read-back above found the review, the
 verdict is clean, a run exists for this head, and §3 `ci-rerun` allows. Then:
 

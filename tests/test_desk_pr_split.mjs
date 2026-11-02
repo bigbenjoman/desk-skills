@@ -28,6 +28,15 @@ checkSize({ t, root, name: 'desk-pr', core, before });
 const REWRITTEN = [
   ['DS-368', 'only when round 3 of the self-review carried P2s', 1], // round 2 carries P2s too
   ['DS-368', 'the P2s a third self-review round carried', 1],
+  // each §4 row a worker reads is named with its desk-env call
+  ['DS-405', 'below is the key matched by §4 Ticket key pattern', 1],
+  ['DS-405', 'DIFF REVIEW — <recorded', 1],
+  ['DS-405', '**§4 What review here consistently asks for.**', 1],
+  ['DS-405', 'Files that feed a docs generator', 1],
+  ['DS-405', '**Self-review has run.**', 1],
+  ['DS-405', '**Capturing.** Playwright at the chosen widths', 1],
+  ['DS-405', 'letting CI judge the body', 1],
+  ['DS-405', "Merging with `--squash` because it's the usual", 1],
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 23, minRows: 35, rewritten: REWRITTEN });
 

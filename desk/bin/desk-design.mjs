@@ -13,6 +13,15 @@
 //       folder that already holds the same artifact, then writes source.json and README. A
 //       support.js the snapshot lacks is copied from its dc-runtime.js, which the artifact serves
 //       in its place
+//   node desk-design.mjs import <file> --url <u> --key <K> [--boards <a,b>] [--key ...] [--epic <E>]
+//       takes a design's self-contained HTML export as a single-page snapshot under
+//       <state>/designs/<EPIC or KEY>/ (or the folder already holding the artifact): source.json
+//       records from: export, the file's name and sha256, and its modified time as the version. Exit 4,
+//       recording nothing, when the page loads a file from anything but a data: or blob: URL
+//   node desk-design.mjs propose <snapshot dir>
+//       commits the snapshot into <design dir>/ on docs/design-<EPIC or KEY>, a branch off the batch's
+//       base in its own worktree, for the PR that puts it in the repo; nothing when the base already
+//       holds that version
 //   node desk-design.mjs status <saved dir | artifact URL> --version <v>
 //       exit 0 when the saved copy is that version, 3 when the artifact has moved on
 //   node desk-design.mjs check  <KEY | ticket file> [--key <K>]
@@ -27,6 +36,7 @@
 //       written) when a board fails to load a file or renders blank, 6 when Playwright is missing
 // `--boards` binds to the `--key` before it; a key with none uses every board. Usage errors exit 2.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
@@ -226,8 +236,11 @@ export function mergeSource(prev, next) {
   tickets.sort((a, b) => a.key.localeCompare(b.key, 'en', { numeric: true }));
   // Screens describe one version: a write at another version drops them (save removes the images).
   const screens = next.screens ?? (prev?.screens && String(prev.screens.version) === String(next.version) ? prev.screens : undefined);
+  // An HTML export's file name and hash describe its version too.
+  const from = next.from ? next : prev?.from && String(prev.version) === String(next.version) ? prev : null;
   return {
     url: next.url, version: String(next.version), fetched_at: next.fetched_at,
+    ...(from ? { from: from.from, file: from.file, sha256: from.sha256 } : {}),
     dir: next.dir ?? prev?.dir ?? null, tickets,
     boards: next.boards ?? prev?.boards ?? [], files: next.files ?? prev?.files ?? [], screens,
   };
@@ -245,9 +258,14 @@ export function readme(source) {
   return [
     `# Design canvas${source.dir ? ` ${source.dir}` : ''}`,
     '',
-    `Saved by \`desk-design\` from <${source.url}>, version ${source.version}, fetched ${source.fetched_at}.`,
+    ...(source.from === 'export'
+      ? [`Saved by \`desk-design\` from ${source.file}, an HTML export of <${source.url}> (sha256 ${source.sha256}),`,
+        `version ${source.version}, imported ${source.fetched_at}.`]
+      : [`Saved by \`desk-design\` from <${source.url}>, version ${source.version}, fetched ${source.fetched_at}.`]),
     'Open any board\'s HTML from this folder: it renders offline with the files saved beside it.',
-    'Do not edit these files by hand. When the artifact has a newer version, re-save it with',
+    source.from === 'export'
+      ? 'Do not edit these files by hand. For a newer export, run `desk-design import` on it, then'
+      : 'Do not edit these files by hand. When the artifact has a newer version, re-save it with',
     '`desk-design save`, which replaces them.',
     '',
     '| Ticket | Boards |',
@@ -370,10 +388,106 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
     }
     copyFileSync(from, join(dest, f));
   }
+  const fromExport = meta?.from && String(meta.version) === String(version) ? { from: meta.from, file: meta.file, sha256: meta.sha256 } : {};
   const source = writeRecord(dest, {
-    url, version, fetched_at: fetchedAt ?? meta?.fetched_at ?? now, dir: name, tickets: all, boards, files,
+    url, version, fetched_at: fetchedAt ?? meta?.fetched_at ?? now, dir: name, tickets: all, boards, files, ...fromExport,
   });
   return { path: destRel, source, files, remote, reused: !!existing, previous: prev?.version ?? null };
+}
+
+// ---- import (a design's HTML export) -----------------------------------------------------------
+
+// Every URL a page loads: a src or poster, each srcset candidate, a stylesheet, icon, preload or
+// manifest <link>'s href, an SVG <image> or <use>'s href, an <object>'s data, CSS url() and @import,
+// and a script's import of a quoted URL, in the order the page names them. An <a>'s href, or a
+// canonical <link>, is a link rather than a load. A template binding names no file, unless it sits
+// in a URL to another host. Attributes are read only in tags, and a script's body only for its
+// imports: an inline runtime's `img.src = u` is code, not a load. The page is read once, left to
+// right, so a `<!--` in a script, a stylesheet or an attribute's value never hides what follows it.
+const PART = /<!--[\s\S]*?(?:-->|$)|(<script\b(?:"[^"]*"|'[^']*'|[^'">])*>)([\s\S]*?)(?:<\/script\s*>|$)|<style\b(?:"[^"]*"|'[^']*'|[^'">])*>[\s\S]*?(?:<\/style\s*>|$)|<[a-z](?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+const TAG = /<([a-z][^\s/>]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/gi;
+const ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+)))?/g;
+// A static import or a re-export names its URL after `from`, which a minifier runs up against the
+// clause (`import{a}from"u"`, `export*from"u"`); a side-effect import and import() name it straight away.
+const IMPORT = /(?<![\w$.'"`-])(?:import\s*(?:\(\s*|(?=["']))|(?:import|export)\s*[\w$*{}\s,]*?(?<=[\s}*])from\s*)(["'])([^"'\n]+)\1/g;
+const SVG_HREF = new Set(['image', 'use', 'feimage']);
+// A srcset's URLs: each candidate's URL is its run of non-space characters, so a data: URL's comma
+// stays in it; a trailing comma ends the candidate, else its descriptors run to the next comma.
+function candidates(set) {
+  const out = [];
+  let rest = set;
+  while ((rest = rest.replace(/^[\s,]+/, ''))) {
+    const word = /^\S+/.exec(rest)[0];
+    const url = word.replace(/,+$/, '');
+    out.push(url);
+    rest = rest.slice(word.length);
+    if (url === word) rest = rest.replace(/^[^,]*/, '');
+  }
+  return out;
+}
+export function loads(text) {
+  const found = [];
+  const add = (at, r) => { const v = String(r ?? '').trim(); if (v && (!v.includes('{{') || isRemote(v))) found.push({ at, v }); };
+  const blank = (s) => s.replace(/[^\n]/g, ' ');
+  const scripts = [];
+  const markup = text.replace(PART, (m, open, body, at) => {
+    if (m.startsWith('<!--')) return blank(m);
+    if (open === undefined) return m;
+    scripts.push({ open, body, at: at + open.length });
+    return open + blank(body) + m.slice(open.length + body.length);
+  });
+  for (const t of markup.matchAll(TAG)) {
+    const tag = t[1].toLowerCase();
+    const attrs = new Map([...t[2].matchAll(ATTR)].map((m) => [m[1].toLowerCase(), m[2] ?? m[3] ?? m[4] ?? '']));
+    const at = t.index;
+    for (const a of ['src', 'poster']) if (attrs.has(a)) add(at, attrs.get(a));
+    for (const a of ['srcset', 'imagesrcset']) if (attrs.has(a)) for (const u of candidates(attrs.get(a))) add(at, u);
+    if (tag === 'link' && /\b(?:stylesheet|icon|preload|modulepreload|manifest)\b/i.test(attrs.get('rel') ?? '')) add(at, attrs.get('href'));
+    if (SVG_HREF.has(tag)) add(at, attrs.get('href') ?? attrs.get('xlink:href'));
+    if (tag === 'object') add(at, attrs.get('data'));
+  }
+  for (const s of scripts) {
+    const type = /\stype\s*=\s*["']?([^"'\s>]*)/i.exec(s.open)?.[1].toLowerCase() ?? '';
+    if (type && type !== 'module' && !/javascript|ecmascript/.test(type)) continue;
+    for (const m of s.body.matchAll(IMPORT)) add(s.at + m.index, m[2]);
+  }
+  for (const m of markup.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/gi)) add(m.index, m[1] ?? m[2] ?? m[3]);
+  for (const m of markup.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) add(m.index, m[1] ?? m[2]);
+  return [...new Set(found.sort((a, b) => a.at - b.at).map((f) => f.v))];
+}
+
+const SELF_CONTAINED = /^(?:data|blob|about|javascript):/i;
+
+// Takes an exported design (one self-contained HTML page) as a single-page snapshot under
+// <state>/designs/, in the folder already holding the artifact or <EPIC or first key>. Its version is
+// the file's modified time, kept while the content is unchanged and told apart by hash when a
+// different file has the same time. A page that loads anything but a data: or blob: URL is refused
+// before anything is written.
+export function importExport(file, { state, url, tickets, epic, now = new Date().toISOString() }) {
+  if (!existsSync(file) || !statSync(file).isFile()) fail(`no export file at ${file}`);
+  if (!url) fail('import needs --url: the artifact the export was downloaded from');
+  if (!tickets.length) fail('import needs at least one --key');
+  const bytes = readFileSync(file);
+  const external = loads(bytes.toString('utf8')).find((r) => !SELF_CONTAINED.test(r) && !r.startsWith('#'));
+  if (external) fail(`not imported: ${basename(file)} is not a self-contained page: it loads ${external}. Export the design again as one HTML file, or snapshot the artifact`, 4);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const held = snapshotOf(state, url);
+  const name = held ? basename(held) : (epic ?? tickets[0].key);
+  if (!safeId(name)) fail(`not a folder name for a design: ${name}`);
+  const dest = held ?? join(state, 'designs', name);
+  const prev = readJson(join(dest, 'source.json'));
+  if (prev?.url && canonicalUrl(prev.url) !== canonicalUrl(url)) fail(`${dest} already holds ${prev.url}: pass --epic to import this design elsewhere`);
+  const mtime = statSync(file).mtime.toISOString();
+  const version = prev?.sha256 === sha256 ? String(prev.version)
+    : prev && String(prev.version).split('+')[0] === mtime ? `${mtime}+${sha256.slice(0, 12)}` : mtime;
+  // The export is the whole design: whatever an earlier snapshot held beside it goes.
+  if (existsSync(dest)) for (const f of readdirSync(dest)) if (f !== 'source.json') rmSync(join(dest, f), { recursive: true, force: true });
+  mkdirSync(join(dest, 'project'), { recursive: true });
+  writeFileSync(join(dest, 'project', 'index.html'), bytes);
+  const source = writeRecord(dest, {
+    url, version, fetched_at: now, dir: prev?.dir ?? name, tickets, from: 'export', file: basename(file), sha256, boards: [], files: ['project/index.html'],
+  });
+  return { path: dest, source, previous: prev?.version ?? null };
 }
 
 // ---- status (AC: a newer version) --------------------------------------------------------------
@@ -555,12 +669,12 @@ export function snapshotOf(state, url) {
   return null;
 }
 
-// Every saved canvas under <dir> as committed at <ref>: [{path, url}].
+// Every saved canvas under <dir> as committed at <ref>: [{path, url, version}].
 export function savedAt(root, dir, ref) {
   const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 });
   return git('ls-tree', '-r', '--name-only', ref, '--', `${dir}/`).split('\n')
     .filter((f) => f.slice(dir.length + 1).split('/').length === 2 && f.endsWith('/source.json'))
-    .map((f) => { let s = null; try { s = JSON.parse(git('show', `${ref}:${f}`)); } catch { /* unreadable */ } return { path: `${dirname(f)}/`, url: s?.url }; })
+    .map((f) => { let s = null; try { s = JSON.parse(git('show', `${ref}:${f}`)); } catch { /* unreadable */ } return { path: `${dirname(f)}/`, url: s?.url, version: s?.version }; })
     .filter((c) => c.url);
 }
 
@@ -568,6 +682,35 @@ export function savedAt(root, dir, ref) {
 export function baseRef(root) {
   const base = E.batchBase() ?? E.defaultBranch();
   try { execFileSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `origin/${base}`], { stdio: 'ignore' }); return `origin/${base}`; } catch { return base; }
+}
+
+// ---- propose (the snapshot into the repo, at admission) ------------------------------------------
+
+// Commits a snapshot into <dir>/ on docs/design-<name>, a branch off <ref> (the batch's base) in its
+// own worktree under <worktrees>, so the session that took the snapshot opens the PR that puts the
+// design's source in the repo before any worker builds from it. A branch already on origin is
+// carried on from there. Nothing is done when <ref> already holds the snapshot's version.
+export function propose(src, { root, dir, ref, worktrees }) {
+  const meta = readJson(join(src, 'source.json'));
+  if (!meta?.url) fail(`no snapshot at ${src}: record it first (desk-design write or import)`);
+  let onBase = null;
+  try { onBase = savedAt(root, dir, ref).find((c) => canonicalUrl(c.url) === canonicalUrl(meta.url)) ?? null; } catch { /* nothing on a base that does not resolve */ }
+  if (onBase && String(onBase.version) === String(meta.version)) return { state: 'saved', path: onBase.path, ref };
+  const name = onBase ? basename(onBase.path.replace(/\/$/, '')) : (meta.dir ?? meta.tickets?.[0]?.key);
+  if (!safeId(name)) fail(`not a folder name for a canvas: ${name}`);
+  const git = (cwd, ...a) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const branch = `docs/design-${name}`;
+  let pushed = false;
+  try { pushed = !!git(root, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`); } catch { /* no origin */ }
+  if (pushed) { try { git(root, 'fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`); } catch { pushed = false; } }
+  const wt = join(worktrees, `design-${name}`);
+  if (!existsSync(wt)) git(root, 'worktree', 'add', '-q', '-B', branch, wt, pushed ? `origin/${branch}` : ref);
+  else if (git(wt, 'rev-parse', '--abbrev-ref', 'HEAD') !== branch) fail(`${wt} is not on ${branch}: remove that worktree or check ${branch} out there`);
+  const r = save(src, { root: wt, dir, tickets: [], epic: name });
+  git(wt, 'add', '-A', '--', r.path);
+  try { git(wt, 'diff', '--cached', '--quiet'); return { state: 'unchanged', branch, worktree: wt, path: r.path, ref, pushed }; } catch { /* staged changes */ }
+  git(wt, 'commit', '-q', '-m', `docs(design): save the ${name} design canvas, version ${r.source.version}`);
+  return { state: 'committed', branch, worktree: wt, path: r.path, ref, pushed, sha: git(wt, 'rev-parse', 'HEAD'), remote: r.remote };
 }
 
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
@@ -674,6 +817,22 @@ if (isMain) {
       console.log(`saved: ${r.path} (${r.files.length} files, version ${r.source.version}${was}${r.reused ? ', the folder already holding this artifact' : ''})`);
       for (const u of r.remote) console.log(`remote: ${u} (loads from the network, so it will not render offline)`);
       console.log(`design: ${r.source.url} · ${r.path}`);
+    } else if (cmd === 'import') {
+      if (!target) fail('usage: desk-design import <file> --url <u> --key <K> [--key ...] [--epic <E>]');
+      const r = importExport(resolve(target), { state: E.stateDir(), url: opt(rest, '--url'), tickets: ticketsFromArgs(rest), epic: opt(rest, '--epic') });
+      const was = r.previous && String(r.previous) !== String(r.source.version) ? `, replacing version ${r.previous}` : '';
+      console.log(`imported: ${r.path} (version ${r.source.version}${was}; sha256 ${r.source.sha256}; tickets ${r.source.tickets.map((t) => t.key).join(' ')})`);
+    } else if (cmd === 'propose') {
+      if (!target) fail('usage: desk-design propose <snapshot dir>');
+      const root = toplevel(); const ref = baseRef(root);
+      const r = propose(resolve(target), { root, dir: designDir(), ref, worktrees: E.worktreesDir() });
+      const base = ref.replace(/^origin\//, '');
+      if (r.state === 'saved') console.log(`saved: ${r.path} on ${ref} already holds this version: no PR needed`);
+      else if (r.state === 'unchanged') console.log(`unchanged: ${r.branch} in ${r.worktree} already holds this version (base ${base})`);
+      else {
+        console.log(`committed: ${r.path} on ${r.branch} in ${r.worktree} (${r.sha.slice(0, 7)}, base ${base}${r.pushed ? ', updating the branch already on origin' : ''})`);
+        for (const u of r.remote) console.log(`remote: ${u} (loads from the network, so it will not render offline)`);
+      }
     } else if (cmd === 'status') {
       const version = opt(rest, '--version');
       if (!target || !version) fail('usage: desk-design status <saved dir | artifact URL> --version <v>');
@@ -705,7 +864,7 @@ if (isMain) {
         console.log(`  ${w.width}px ${w.label}${w.breakpoint ? '' : ' (not a breakpoint)'}${w.boards.length ? `: ${w.boards.join(', ')}` : ''}`);
       }
     } else {
-      fail('usage: desk-design.mjs write|save|status|check|snapshots|render ... (see the top of the file)');
+      fail('usage: desk-design.mjs write|save|import|propose|status|check|snapshots|render ... (see the top of the file)');
     }
   } catch (e) {
     console.error(`desk-design: ${e.message}`);

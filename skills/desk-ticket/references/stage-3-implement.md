@@ -9,7 +9,7 @@ a "below" here that this file does not hold points there.
 | 3 | Implement | Per lane. A ticket that renders UI loads the design skills before any UI code (below). A change that is not mechanical gets its design from the area's expert first, and you write the code (below). Lane C stops for agreement before this stage; lane D hands the build to the project's design-build agent where it has one (routing reference). |
 
 **Experts shape the design; you write the code (Stage 3).** The project's own subagents (in
-`.claude/agents/`, linked into a worktree by §4 Project subagents sync) are for development as well
+`.claude/agents/`, linked into a worktree by §4 Project subagents sync, `desk-env cmds agents-sync`) are for development as well
 as review. When a change is not mechanical, ask the agent that owns its area for the approach before
 writing it, routed by path: use the area table the repo gives them (the local review command's role
 table where it has one, otherwise each agent's description), and the infra and security owner's

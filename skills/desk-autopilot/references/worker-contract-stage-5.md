@@ -65,7 +65,7 @@ call, and yours.
   `desk-pr`'s screenshot references carry the routes and their gotchas: follow them rather than
   improvising. Three that bite workers: dismiss the consent banner or it covers the content;
   take the "before" with `git checkout HEAD~1 -- <path>`, **never `git stash`** (it is shared across
-  every worktree); and real data needs the repo's seed command (§4 Local database says how), run
+  every worktree); and real data needs the repo's seed command (§4 Local database, `desk-env get local-db`, says how), run
   against your own database. "I could not seed" is not a reason to skip evidence.
 - **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head
   <your branch> --body-file <file> --title "<title>"`, in that order: the allow rule matches only a

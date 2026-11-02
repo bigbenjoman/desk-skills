@@ -36,15 +36,18 @@ Your settings are an **allow-list**: anything not named here is refused.
   `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck, `browser` for §4 E2E
   tests, and `nolock` for everything else (lint, build, codegen, dev server), which only changes
   directory. §4 Codegen (e.g. `pnpm prisma generate`) is how you regenerate code; with no such row,
-  a ticket that needs a regeneration parks naming the command.
+  a ticket that needs a regeneration parks naming the command. Each row's items come from
+  `desk-env cmds test-cmd`, `desk-env cmds integration-cmd`, `desk-env cmds typecheck-cmd`,
+  `desk-env cmds e2e-cmd`, `desk-env cmds lint-cmd`, `desk-env cmds build-cmd`,
+  `desk-env cmds codegen-cmd` and `desk-env cmds dev-cmd`.
   An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass the port as an argument in
   whatever form the §4 Dev server row gives (e.g. `-- --port 3008`).
-- **The package manager**: only `<§4 Package manager> install` with no arguments, `<bin> --version`,
+- **The package manager** (`desk-env get package-manager`): only `<§4 Package manager> install` with no arguments, `<bin> --version`,
   and the configured rows. Its add and sync forms (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`)
   only where §3 `worker-dependency-install` is `yes`, and never global, another directory or a `..`
   path; otherwise a ticket that needs a new dependency parks naming the row. `remove`, the one-off
   runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`, `bunx`, `uvx`) and the §4 Command
-  prefix run on its own (`<prefix> <anything>`) are refused. Run a TS script
+  prefix (`desk-env get command-prefix`) run on its own (`<prefix> <anything>`) are refused. Run a TS script
   with the worktree's installed runner, e.g. `node <worktree>/node_modules/tsx/dist/cli.mjs <file>.ts`.
 - **Screenshot capture**, only where §3 `worker-screenshots` is `yes`, and only under the browser
   lock from your worktree: `~/.claude/desk/bin/with-lock.sh browser` then `node ./<script>` or
@@ -54,7 +57,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   naming the row.
 - **Local services**: only where §3 `worker-local-services` is `yes`, and only
   `docker compose -f <main checkout>/<its compose file> [-f <its override file>] up -d --no-recreate
-  --no-deps <service>` for a service §4 Local services names: the shared project, never one named
+  --no-deps <service>` for a service §4 Local services (`desk-env list local-services`) names: the shared project, never one named
   after your worktree (`docker-compose` takes the same form). Nothing is allowed where the main
   checkout's `.env` sets `COMPOSE_FILE`. `docker compose down`, `rm`, `run`, `docker rm` and
   `docker run` are refused.
@@ -85,7 +88,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   and answer a review thread with a `gh pr comment` naming it (§3 `pr-reply`); resolving threads is
   the orchestrator's.
 - **`gh workflow run`**, only where §3 `worker-workflow-dispatch` is `yes`, and only exactly as
-  §4 Worker workflows lists each entry: `gh workflow run <file>.yml --ref <your branch> -f …` (or
+  §4 Worker workflows (`desk-env list worker-workflows`) lists each entry: `gh workflow run <file>.yml --ref <your branch> -f …` (or
   with `--repo <§0 GitHub repo>` after the file), no input added or changed. Any other workflow, ref
   or input is refused; so is `gh workflow enable`/`disable`. Once it starts, read the run's id with
   `gh run list --workflow <file>.yml --branch <your branch> --limit 1 --json databaseId,status`,
@@ -143,7 +146,7 @@ begins at Stage 4b.
 **The named agents are already synced: confirm, do not assume.** Where the repo gitignores its
 generated `.claude/agents/*.md`, a hand-made worktree starts empty and every named agent silently
 resolves to `general-purpose`, while the report still reads as a full fleet run. `setup-worktree.sh`
-runs §4 Project subagents sync and hard-fails the spawn if the directory is still empty. `ls
+runs §4 Project subagents sync (`desk-env cmds agents-sync`) and hard-fails the spawn if the directory is still empty. `ls
 .claude/agents/` to confirm, and only if it is genuinely empty run §4 Project subagents sync yourself;
 if that fails (or the row is `none` and the directory is empty), say so in `AUTOPILOT_DONE`. Never
 let a general-purpose-only review pass as a fleet one.

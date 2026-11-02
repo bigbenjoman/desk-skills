@@ -1,6 +1,6 @@
 # Driving staging headlessly
 
-For §4 Staging (resolve the config with `desk-env where`). §4 Staging `none`: none of this applies.
+For §4 Staging (`desk-env list staging`). §4 Staging `none`: none of this applies.
 
 Building a signed-in fixture on staging by hand can cost most of a session. Every blocker below is
 an **invisible** failure: the app looks broken rather than gated.

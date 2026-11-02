@@ -133,7 +133,7 @@ export const worktreeBusy = (t) => (t?.state === 'triaged' && t.worktree_busy?.w
 export const worktreeBusyText = (w) => `worktree in use: ${w.why} · commit, push or discard it`;
 export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
-const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
+export const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
 // A held ticket with a question of its own: it needs the user for that, whatever its blockers do.
 export const heldAsks = (t) => isHeld(t) && (t.open_questions ?? 0) > 0;
 const outsideText = (t) => {
@@ -209,11 +209,15 @@ function blockerHold(q, key, b, ctx, seen) {
 // { why, checks, outside }: `checks` the recorded checks still red, `outside` those of them a person
 // clears off GitHub ({ name, command }). A check named in the record that is no longer red is dropped,
 // and once none is left it is null. A record that names no checks (a conflict, a review) holds as it
-// was written.
+// was written while the PR is at the head it was written at; at another head it is gone, and the next
+// pass says what holds the PR there.
 export function stuckOf(t, ctx = NOBODY) {
   const s = t?.stuck;
   if (!s) return null;
-  if (!Array.isArray(s.checks)) return { why: s.why, checks: [], outside: [] };
+  if (!Array.isArray(s.checks)) {
+    const head = prStatusOf(t)?.head;
+    return s.head && head && s.head !== head ? null : { why: s.why, checks: [], outside: [] };
+  }
   const gate = evaluateGate(prStatusOf(t)?.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   const red = new Set(gate.failing.map((f) => f.name));
   const left = s.checks.filter((c) => red.has(c.name));
@@ -438,7 +442,8 @@ function loadBatch(c, repoName, batch, limits, now) {
     Object.assign(r, { name: `${repoName} · ${batch}${base}`, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` });
   }
   const beat = lastBeat(stateDir, queuePath);
-  r.last = beat?.at ?? null;
+  // The last pass, not the last beat: a supervisor's idle tick refreshes the beat and runs no pass.
+  r.last = beat?.pass ?? null;
   r.next = beat?.next ?? null;
   r.live = liveBeat(beat, now);
   r.ctx = r.q ? holdContext(r) : NOBODY;
@@ -2048,7 +2053,7 @@ const BLOCKERS_SHOWN = 6, FOLD_LINES = 2;
 // The rail the page's first lines sit on, in the ticket's state colour.
 const RAIL = '▌ ';
 // A Jira status category, as Jira names it.
-const JIRA_CATEGORY = { new: 'To Do', indeterminate: 'In Progress', done: 'Done' };
+export const JIRA_CATEGORY = { new: 'To Do', indeterminate: 'In Progress', done: 'Done' };
 const answerCmd = (key) => `node ~/.claude/desk/bin/answer.mjs ${key} "…"`;
 
 // What a ticket page leads with: whether it moves without the user and, if not, what would. `lead`

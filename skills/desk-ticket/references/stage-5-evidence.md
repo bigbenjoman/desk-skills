@@ -12,6 +12,6 @@ How to capture is in `desk-ticket-working-style.md` ("Evidence") and `desk-pr`.
 
 | Mistake | Consequence |
 |---|---|
-| Assuming the §3b dev-server port is yours | Another session may own it; screenshots may be of another branch's code |
+| Assuming the §3b Preferred dev-server port (`desk-env get dev-port`) is yours | Another session may own it; screenshots may be of another branch's code |
 | Capturing evidence before Stage 4b | A confirmed finding means a code change, and every screenshot is then of the old build |
 | `git stash` to stage the "before" shot after committing | It no-ops with nothing to stash, and stashes are shared across worktrees, so the "before" can be the fixed code. Use `git checkout HEAD~1 -- <path>` |
