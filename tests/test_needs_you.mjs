@@ -939,6 +939,19 @@ t('DS-403 AC3 with the approval recorded there is no item, and desk-q counts non
 put('rho2', { port: 3830, beat: 1, supervised: true, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-403 AC4 with no ask recorded there is no item', `${rho2().length} ${N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' }).ok}`, '0 false');
 
+// ---- DS-407: the person's step is one item, naming every PR and ticket waiting to merge on it
+const waitsOn = (pr) => ({ state: 'done', lane: 'A', result: { pr }, pr_status: { pr, state: 'OPEN', isDraft: false, checks: [] }, merge_after: 'OPS-9' });
+put('kappa407', { port: 5407, beat: 1, supervised: true, tickets: { 'K-1': waitsOn(71), 'K-2': waitsOn(72), 'K-3': { state: 'running', lane: 'A', merge_after: 'OPS-9' } },
+  triage: { 'K-1': { blockers: [{ key: 'OPS-9', category: 'new', type: 'Task', summary: 'Apply the billing migration' }] } } });
+const kp = () => N.collect({ word: 'kappa407' }).items;
+t('DS-407 AC2 one item for the step, and none for each PR waiting on it', kp().map((i) => `${i.t.key} ${i.kind}`).join(), 'step:OPS-9 step');
+t('DS-407 AC2 it names the step and every PR and ticket waiting on it', kp()[0].need.startsWith('OPS-9 ("Apply the billing migration") is a step only you can take, and 3 tickets wait to merge on it: PR #71 (K-1), PR #72 (K-2) and K-3 (being built). Do it and move OPS-9 to Done in Jira'), true);
+t('DS-407 its actions are done and not-now', kp()[0].actions.map((a) => a[0]).join(), 'done,not-now');
+t('DS-407 the list prints it as a line of its batch', cli('list', 'kappa407').out.split('\n').some((l) => l.startsWith('kappa407 step:OPS-9 step')), true);
+const kpDone = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'done' });
+t('DS-407 done records nothing: the pass reads the step from Jira', `${kpDone.ok} ${/next pass that reads OPS-9 from Jira lifts the hold/.test(kpDone.line)}`, 'true true');
+const kpOff = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'not-now' });
+t('DS-407 not-now puts it off', `${kpOff.ok} ${kp().length}`, 'true 0');
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

@@ -2219,14 +2219,15 @@ if (unreadEpics.length) {
 // `blockers`, kept on the ticket as outside_blockers [{key, category}] for desk-q. Only a ticket that
 // has some is read from Jira again (ticket-facts.mjs --blockers), at most once every INTAKE_EVERY_MS,
 // so this reads Jira no more often than intake does. A read that fails leaves the record, and so the
-// recorded blockers, as they were.
+// recorded blockers, as they were. A done ticket is read only while its PR waits to merge on the
+// person's steps (merge_after).
 const qB = queue();
 const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
 const outsideOf = (rec) => (Array.isArray(rec?.blockers)
   ? rec.blockers.filter((b) => !(b.key in qB.tickets) && b.category !== 'done').map((b) => ({ key: b.key, category: b.category }))
   : null);
 const onTracker = Object.values(qB.tickets).filter((t) => {
-  if (!onJira || t.state === 'done') return false;
+  if (!onJira || (t.state === 'done' && !(keysOf(t.merge_after).length && !t.merged_at))) return false;
   const k = E.ticketKind(t.key);
   return k.ok && k.kind === 'tracker';
 });
@@ -2277,6 +2278,28 @@ for (const t of onTracker) {
       q('front', t.key);
       epicLines.push(`outside hold: ${t.key}: ${what}; RELEASED`);
     }
+  }
+}
+
+// ---- merge holds on the person's steps -----------------------------------
+// A ticket admitted with blockers in no batch that are the person's steps (merge_after) is built as any
+// other, and the merge driver holds its PR. Each step is lifted once its triage record's `blockers`
+// read it Done (a step has no code to land), or no longer list it; lifting the last lets the driver
+// merge it, in the order the batch's own holds give.
+{
+  const qM = queue();
+  for (const t of Object.values(qM.tickets).filter((x) => keysOf(x.merge_after).length && !x.merged_at)) {
+    const steps = keysOf(t.merge_after);
+    const blockers = triageRec(t.key)?.blockers;
+    if (!Array.isArray(blockers)) continue;
+    const doneNow = steps.filter((p) => blockers.some((b) => b?.key === p && b.category === 'done'));
+    const unlinked = steps.filter((p) => !blockers.some((b) => b?.key === p));
+    const left = steps.filter((p) => !doneNow.includes(p) && !unlinked.includes(p));
+    if (left.length === steps.length) continue;
+    const what = [doneNow.length && `${doneNow.join(', ')} Done`, unlinked.length && `${unlinked.join(', ')} no longer linked as a blocker`].filter(Boolean).join('; ');
+    if (DRY) { epicLines.push(`merge hold (dry run): ${t.key}: ${what}`); continue; }
+    q('set', t.key, `merge_after=${left.join('|') || 'null'}`);
+    epicLines.push(`merge hold: ${t.key}: ${what}; ${left.length ? `still merges only after ${left.join(', ')}` : 'free to merge'}`);
   }
 }
 

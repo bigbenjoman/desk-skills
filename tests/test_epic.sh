@@ -78,7 +78,7 @@ cat > "$T/fixture.json" <<'EOF'
     "KAN-50": {"_names": {"customfield_10500": "Size"}, "customfield_10500": {"value": "L"},
                "issuelinks": [
                  {"id": "21", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
-                  "inwardIssue": {"key": "KAN-51", "fields": {"status": {"name": "Done", "statusCategory": {"key": "done"}}}}},
+                  "inwardIssue": {"key": "KAN-51", "fields": {"summary": "Apply the migration", "issuetype": {"name": "Task"}, "status": {"name": "Done", "statusCategory": {"key": "done"}}}}},
                  {"id": "22", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
                   "outwardIssue": {"key": "KAN-52", "fields": {"status": {"name": "To Do", "statusCategory": {"key": "new"}}}}},
                  {"id": "23", "type": {"name": "Duplicate", "inward": "is duplicated by", "outward": "duplicates"},
@@ -297,8 +297,8 @@ mkdir -p "$T/state/triage"
 rec(){ printf '%s' "$2" > "$T/state/triage/$1.json"; }
 rec KAN-50 '{"ticket":"KAN-50","lane":"A","branch":"b"}'
 out=$(node "$B/ticket-facts.mjs" KAN-50 2>&1); rc=$?
-check "facts: Blocks blockers from the inward side only, with category" \
-  '[ $rc -eq 0 ] && [ "$(jq -c .blockers "$T/state/triage/KAN-50.json")" = "[{\"key\":\"KAN-51\",\"category\":\"done\"}]" ]'
+check "facts: Blocks blockers from the inward side only, with category, summary and type" \
+  '[ $rc -eq 0 ] && [ "$(jq -c .blockers "$T/state/triage/KAN-50.json")" = "[{\"key\":\"KAN-51\",\"category\":\"done\",\"summary\":\"Apply the migration\",\"type\":\"Task\"}]" ]'
 check "facts: other link types counted, Relates not" '[ "$(jq .other_links "$T/state/triage/KAN-50.json")" = 1 ]'
 check "facts: size from the field named Size" '[ "$(jq -r .size "$T/state/triage/KAN-50.json")" = L ]'
 check "facts: the model-written fields survive" '[ "$(jq -r .lane "$T/state/triage/KAN-50.json")" = A ]'

@@ -193,6 +193,16 @@ check "DS-391 AC1: a ticket blocked by an open ticket in no batch is admitted he
 check "DS-391 AC4: a blocker Done in Jira whose PR has not merged to the base holds it; one merged, or with no PR, does not" '! grep -q "DONE-1\|DONE-3" <<< "$(qget tickets.B-5.held_by)"'
 check "DS-391 AC1: the report says what it waits for and until when" 'grep -q "admitted B-5 by intake into batch b1 (lane A, size S), waiting for OUT-9, DONE-2, outside the batch, until each is Done and on main" <<< "$out"'
 rm -f "$T/prs.json"
+# A blocker in no batch that is the person's step holds the merge, not the build. OPS-1 is a Task that
+# says apply; OPS-2 is a Story naming the ticket's ben_steps; OUT-7 is an ordinary dev Task.
+rec P-1 A '"blockers":[{"key":"OPS-1","category":"new","type":"Task","summary":"Apply the billing migration to staging and production"}]'
+rec P-2 A '"blockers":[{"key":"OPS-2","category":"indeterminate","type":"Story","summary":"Run the cdk deploy for the queue stack"}],"ben_steps":[{"step":"cdk deploy","blocker":"deploy the queue stack, unblocking P-2"}]'
+rec P-3 A '"blockers":[{"key":"OUT-7","category":"new","type":"Task","summary":"Add the export endpoint"}]'
+search P-1 P-2 P-3; out=$(intake)
+check "DS-407 AC1: a ticket blocked only by the person's step in no batch is admitted runnable, its merge held" '[ "$(qget tickets.P-1.state)" = triaged ] && [ "$(qget tickets.P-1.held_by)" = null ] && [ "$(qget tickets.P-1.held_outside)" = undefined ] && [ "$(qget tickets.P-1.merge_after)" = OPS-1 ]'
+check "DS-407 AC1: the report says it is built now and merged once the step is Done" 'grep -q "admitted P-1 by intake into batch b1 (lane A, size S), built now and merged only once OPS-1 (the person.s step) is Done" <<< "$out"'
+check "DS-407 AC1: a blocker naming one of the ticket'\''s ben_steps is a person'\''s step too" '[ "$(qget tickets.P-2.state)" = triaged ] && [ "$(qget tickets.P-2.merge_after)" = OPS-2 ]'
+check "DS-407 AC4: an ordinary dev ticket in no batch still holds the build, as DS-391 has it" '[ "$(qget tickets.P-3.state)" = parked ] && [ "$(qget tickets.P-3.held_outside)" = OUT-7 ] && [ "$(qget tickets.P-3.merge_after)" = undefined ]'
 
 # ---- the triage cap, and a triage that fails ------------------------------------------------------
 for k in M-1 M-2 M-3 M-4; do rec "$k" A; done
@@ -306,6 +316,9 @@ out2=$(admit N-3 N-2 N-1); rc=$?
 check "DS-391: the KAN-1292 cascade is admitted whole, the root held by its blocker in no batch and the rest behind the root" \
   '[ $rc -eq 0 ] && [ "$(qget tickets.N-1.held_outside)" = NX ] && [ "$(qget tickets.N-2.held_by)" = N-1 ] && [ "$(qget tickets.N-3.held_by)" = N-1 ] && ! grep -q "^not admitted" <<< "$out2"'
 check "DS-391 AC5: an open blocker in no batch is named for /desk-admit to admit next" 'grep -qx "admit next: NX (open blockers in no batch)" <<< "$out2"'
+rec P-4 A '"blockers":[{"key":"OPS-4","category":"new","type":"Task","summary":"Confirm the price list with finance"}]'
+out2=$(admit P-4); rc=$?
+check "DS-407 AC1: /desk-admit admits it runnable too, and never names the person'\''s step to admit next" '[ $rc -eq 0 ] && [ "$(qget tickets.P-4.merge_after)" = OPS-4 ] && [ "$(qget tickets.P-4.state)" = triaged ] && ! grep -q "^admit next" <<< "$out2"'
 check "admit: --front moves each admitted ticket to the front" 'grep -q "H-4 moved to the front of the spawn order" <<< "$out" && [ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets)[0])" "$DESK_QUEUE")" = H-5 ]'
 rec H-9 A "$(design https://claude.ai/artifact/H9 null)"; rec H-10 A "$(design https://claude.ai/artifact/H10 '"/snap/H-10"')"
 out=$(admit H-9 H-10 --by ben); rc=$?

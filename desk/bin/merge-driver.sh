@@ -43,6 +43,9 @@
 #                                            gate.mjs (shared with desk-clearance); a head must stay
 #                                            green across two loops before it merges, so a check that
 #                                            passes before the rest of CI has even queued cannot land it
+#   - waits on the person's step             its ticket's merge_after names blockers in no batch that are
+#                                            steps only the person takes: held, green or not, until
+#                                            pass.mjs reads each Done in Jira and lifts it
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
@@ -470,7 +473,7 @@ close_merged(){
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds carried="" fb decision unresolved held settled tid text green_at out waived label grant
+  local n="$1" key="$2" g sha ms state holds carried="" fb decision unresolved held settled tid text green_at out waived label grant steps=""
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
@@ -531,6 +534,18 @@ EOF_RESOLVE
   esac
   # A waived head is held like a green one: the same head, still only red on its known flakes, a loop later.
   label="green"; [ -n "$waived" ] && label="green but for WAIVED $waived"
+
+  # The person's steps in no batch (merge_after) hold the merge, not the build: pass.mjs lifts each once
+  # Jira has it Done. A queue that is there but cannot be read holds it too.
+  if [ -f "$DESK_QUEUE" ] && ! steps=$(jq -r --arg k "$key" '(.tickets[$k].merge_after // "") | split("|") | map(select(. != "")) | join(", ")' "$DESK_QUEUE" 2>/dev/null); then
+    log "#$n could not read the queue for its merge holds — not merging it this loop"; return 1
+  fi
+  if [ -n "${steps:-}" ]; then
+    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    rm -f "$SD/green-$n"
+    log "#$n $label at ${sha:0:9}, HELD until the person's step $steps is Done in Jira — the pass lifts the hold then"
+    return 1
+  fi
 
   # Green now. It must still be green at the same head on a later loop before it merges.
   green_at=$(awk -v s="$sha" '$1 == s { print $2 }' "$SD/green-$n" 2>/dev/null)

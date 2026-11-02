@@ -326,8 +326,9 @@ const spineHolds = (q, key) => [
 // say how it stands. `state` holds the triage records of q's tickets. `holds` (its blockers in q) gains
 // q's spine and plan holds when `holdSpine` is set, and every unfinished ticket it collides with when
 // `holdCollisions` is. `outside`, its blockers in no batch, are held too and recorded as held_outside:
-// pass.mjs lifts each once it is Done and on the batch's base.
-function admitInto(q, key, r, { state, by = null, holds = [], outside = [], holdSpine = false, holdCollisions = false }) {
+// pass.mjs lifts each once it is Done and on the batch's base. `mergeAfter`, the person's steps in no
+// batch, hold nothing until its PR is ready: recorded as merge_after, they hold only its merge.
+function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, holdCollisions = false }) {
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   const park = lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
@@ -359,10 +360,12 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], hold
     park: park ? { question: park, since: new Date().toISOString() } : holds.length ? heldPark(holds) : null, log: null, result: null,
     collides_with: collides.join('|') || null, open_questions: unknowns, held_by: holds.join('|') || null,
     ...(outside.length ? { held_outside: outside.join('|') } : {}),
+    ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
     added_at: new Date().toISOString(),
   };
-  return designOnly && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`;
+  const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
+  return `${designOnly && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}`;
 }
 
 const batchWord = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
@@ -569,9 +572,11 @@ switch (cmd) {
     // their PRs to merge rather than only for them to stop running. --hold-spine holds it behind this
     // feature batch's spine until done, and its epic while that waits on its plan. --hold-outside holds
     // it behind blockers in no batch, which pass.mjs lifts once each is Done and on the batch's base.
+    // --hold-merge records blockers in no batch that are the person's steps as merge_after: it is built
+    // as any other ticket, and the merge driver holds its PR until pass.mjs reads each step Done.
     const [key] = args;
     const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
-    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-outside <BLOCKER>[,<BLOCKER>...]] [--hold-spine] [--hold-collisions]   (after triage.sh <TICKET>)');
+    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-outside <BLOCKER>[,<BLOCKER>...]] [--hold-merge <STEP>[,<STEP>...]] [--hold-spine] [--hold-collisions]   (after triage.sh <TICKET>)');
     const listArg = (flag) => (args.includes(flag) ? String(args[args.indexOf(flag) + 1] ?? '').split(/[,|]/).filter(Boolean) : []);
     const holds = listArg('--hold');
     if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
@@ -582,14 +587,20 @@ switch (cmd) {
       if (!SAFE_ID.test(p) || p === key) throw new Error(`admit --hold-outside: ${p} is not a blocker of ${key}`);
       if (q.tickets[p]) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
     }
+    const mergeAfter = listArg('--hold-merge');
+    if (args.includes('--hold-merge') && !mergeAfter.length) throw new Error('admit --hold-merge wants the steps, comma-separated');
+    for (const p of mergeAfter) {
+      if (!SAFE_ID.test(p) || p === key || outside.includes(p) || holds.includes(p)) throw new Error(`admit --hold-merge: ${p} is not a step ${key} merges after`);
+      if (q.tickets[p]) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
+    }
     if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);
     if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
     const r = readTriage(stateDir(), key);
     const elsewhere = belongsElsewhere(key, r, QUEUE);
     if (elsewhere) throw new Error(elsewhere.why);
-    const asked = holds.length + outside.length;
-    const said = admitInto(q, key, r, { state: stateDir(), by, holds, outside, holdSpine: args.includes('--hold-spine'), holdCollisions: args.includes('--hold-collisions') });
+    const asked = holds.length + outside.length + mergeAfter.length;
+    const said = admitInto(q, key, r, { state: stateDir(), by, holds, outside, mergeAfter, holdSpine: args.includes('--hold-spine'), holdCollisions: args.includes('--hold-collisions') });
     save(q);
     console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !asked ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
     break;

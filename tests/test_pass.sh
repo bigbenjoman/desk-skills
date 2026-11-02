@@ -1124,6 +1124,17 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-391 AC1 a blocker in no batch whose link was removed no longer holds the ticket" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-8 no longer linked as a blocker; RELEASED"'
 q drop J-7
+# A done ticket whose PR waits on the person's step (merge_after) is read from Jira again, and the step
+# is lifted once Jira has it Done.
+ops1(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"OPS-1","fields":{"summary":"Apply the migration","issuetype":{"name":"Task"},"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-8.json"
+  q set J-8 outside_blockers_read=null; }
+q add J-8; q set J-8 state=done result.pr=600 merge_after=OPS-1
+printf '%s\n' '{"epic":null,"blockers":[{"key":"OPS-1","category":"new","type":"Task","summary":"Apply the migration"}]}' > "$T/state-j/triage/J-8.json"
+ops1 new; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-407 AC2 while the person's step is open, the done ticket's merge stays held" '[ "$(field J-8 merge_after)" = "\"OPS-1\"" ] && ! echo "$out" | grep -q "merge hold: J-8"'
+ops1 'done'; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-407 AC3 once Jira has the step Done, the next pass lifts the hold with no answer" '[ "$(field J-8 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-8: OPS-1 Done; free to merge"'
+q drop J-8
 # AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
 out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'

@@ -269,6 +269,10 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // Not red and nothing running, yet not green: a required check that never reported or was skipped.
   // Nothing reruns or repairs that, so the merge driver never merges it.
   if (checks.length && (gate.state === 'absent' || gate.state === 'fail')) return needs({ code: 'gate', text: gate.reasons[0] ?? null }, [gate.reasons[0] ?? 'checks not green', FAIL], [' · fix the check or §4 Required checks', null]);
+  // Held by the merge driver for the person's steps (merge_after): needs-you lists each step once, with
+  // every PR waiting on it, so the PR itself is not a second item.
+  const steps = keysOf(t.merge_after);
+  if (steps.length) return merging([`waits on your step ${steps.join(', ')}`, WARN], [' · merges once it is Done in Jira', null]);
   const advisory = checks.filter(checkFailed).length;
   const done = checks.filter((c) => c.status === 'completed').length;
   if (checks.length && done === checks.length) {
@@ -347,12 +351,13 @@ const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_s
 export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
 // How long an open PR's head and check results have gone unchanged, as the last pass read it
 // (pr_status changed_at), once that is STALL_MS or more; else null. desk-q flags a Merging row that
-// is, and the check-in digest lists it (stalledPrs).
+// is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after) is
+// held, not stalled.
 export const STALL_MS = 2 * 60 * 60 * 1000;
 export const STALL_FOR = span(STALL_MS);
 const stalledFor = (t, now) => {
   const ps = prStatusOf(t), at = Date.parse(ps?.changed_at ?? '');
-  return ps?.state === 'OPEN' && Number.isFinite(at) && now - at >= STALL_MS ? now - at : null;
+  return ps?.state === 'OPEN' && !keysOf(t.merge_after).length && Number.isFinite(at) && now - at >= STALL_MS ? now - at : null;
 };
 // A done ticket whose PR the last pass read as open or closed unmerged. One merged, with no PR, or not
 // read yet is done, as unmergedBlockers takes it.

@@ -487,4 +487,20 @@ hloop T-52; hloop T-52
 check "DS-377 AC2: a held path into the default branch is still held for a person" '[ "$(merged)" = 151 ] && echo "$out" | grep -q "#152 HELD by §4 Merge holds — a person merges it"'
 check "DS-377 AC2: the record leads with the hold'\''s reason from the row" '[ "$(qf T-52 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
 
+# ---- DS-407: the person's step in no batch holds a green PR's merge, and lifting it lets it merge --
+SHA61=f111111111111111111111111111111111111111
+cat > "$T/prs.json" <<EOF
+{ "161": { "head": "fix/T-61", "base": "main", "sha": "$SHA61", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] } }
+EOF
+q init merge-after-step
+q add T-61 Story A; q set T-61 branch=fix/T-61 state=done result.pr=161 merge_after=KAN-729
+: > "$T/merges.log"
+sloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-61 2>&1); rc=$?; }
+sloop; sloop
+check "DS-407 AC2: a clean, green PR whose ticket waits on the person's step is not merged" '[ -z "$(merged)" ] && echo "$out" | grep -q "#161 green at f11111111, HELD until the person.s step KAN-729 is Done in Jira"'
+check "DS-407 AC2: and it is not left for a person to merge by hand"     '[ "$(qf T-61 .merge_blocked)" = null ]'
+q set T-61 merge_after=null
+sloop; sloop
+check "DS-407 AC3: once the step is lifted, it merges with no other answer, pinned to its head" '[ "$(merged)" = 161 ] && grep -qx "161 main $SHA61" "$T/merges.log"'
+
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
