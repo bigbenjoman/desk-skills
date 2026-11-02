@@ -439,18 +439,21 @@ function stampItem(r, x, item) {
 }
 
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
-// `b`): the rows that need the person (`rows`, `shown` of them), less `putOff`, those put off with
-// unchanged inputs.
+// `b`): the rows that need the person (`rows`), plus each batch's person's-step items (stepItems), as
+// `shown`, less `putOff`, those put off with unchanged inputs.
 export function needsCount(r) {
   const registers = new Map();
+  const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
   const rows = [];
-  let putOff = 0;
+  let putOff = 0, steps = 0;
   for (const x of [...basePushRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
-    if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir));
-    if (judged(b, x, registers.get(b.stateDir)).l.status === 'put_off') putOff++; else rows.push(x);
+    if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
-  return { shown: rows.length, putOff, rows };
+  for (const b of (r.batches ?? [r]).filter((x) => x.q)) {
+    for (const s of stepItems(b)) if (lookup(register(b), putOffKey(b, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+  }
+  return { shown: rows.length + steps, putOff, rows };
 }
 
 // The batches `word` names, else every batch desk-q's home screen shows.
@@ -466,6 +469,14 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
   const seen = new Map();
   const unsetIn = (slug, k) => { const id = `${slug}\t${k}`; if (!seen.has(id)) seen.set(id, repoPermissionUnset(slug, k)); return seen.get(id); };
   const groups = new Map();
+  // The repo-level and step items, put off under their own key as any other item is.
+  const repoItem = (r, t, item, since) => {
+    const key = putOffKey(r, t, item);
+    const l = lookup(readRegister(r.stateDir), key);
+    if (l.status === 'put_off') { putOff++; return; }
+    if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
+    items.push({ r, t, ...item, putOffKey: key, since, broken: false });
+  };
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
     for (const x of [...batchRows(r), ...needsRows(r)]) {
@@ -482,22 +493,8 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
       if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
       items.push({ r, t: x.t, ...item, since, broken: PRODUCTION_BROKEN.test(x.t.park?.question ?? '') });
     }
-    for (const s of stepItems(r)) {
-      const key = putOffKey(r, s.t, s.item);
-      const l = lookup(register, key);
-      if (l.status === 'put_off') { putOff++; continue; }
-      if (l.status === 'changed') s.item.need = `${s.item.need} (${l.line})`;
-      items.push({ r, t: s.t, ...s.item, putOffKey: key, broken: false });
-    }
+    for (const s of stepItems(r)) repoItem(r, s.t, s.item, s.item.since);
   }
-  // The repo-level items, put off under their own key as any other item is.
-  const repoItem = (r, t, item, since) => {
-    const key = putOffKey(r, t, item);
-    const l = lookup(readRegister(r.stateDir), key);
-    if (l.status === 'put_off') { putOff++; return; }
-    if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
-    items.push({ r, t, ...item, putOffKey: key, since, broken: false });
-  };
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {

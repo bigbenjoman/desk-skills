@@ -720,11 +720,15 @@ t('DS-380 a worktree holding its own commits is never removed, and nothing moves
 const m3 = N.record({ word: 'omega', ticket: 'M-3', action: 'move', text: 'G-9' });
 t('DS-380 AC2 a move naming a batch that is not running is refused, naming those that are', `${m3.ok} ${m3.line}`, 'false omega M-3: G-9 is not a batch running in omega beside this one, so nothing was moved. The batches running are F-1 (on feat/f).');
 t('DS-380 AC2 and nothing moved', `${'M-3' in queueOf('omega').tickets} ${'M-3' in fQueue().tickets}`, 'true false');
-// A feature batch whose spine is not done holds a ticket moved into it behind that spine.
+// A feature batch whose spine is not done holds a ticket moved into it behind that spine. M-4 also
+// merges only after the person's step OPS-4, which goes with it.
 writeFileSync(fq, JSON.stringify({ ...fQueue(), feature: true, spine: 'F-2' }));
+const omegaQ = join(env.DESK_HOME, 'repos', 'acme__omega', 'queue.json');
+const oq4 = queueOf('omega'); oq4.tickets['M-4'].merge_after = 'OPS-4'; writeFileSync(omegaQ, JSON.stringify(oq4));
 const m4 = N.record({ word: 'omega', ticket: 'M-4', action: 'move', text: 'F-1' });
 const mv4 = fQueue().tickets['M-4'];
 t('DS-380 a ticket moved into a feature batch waits behind its unfinished spine', `${m4.ok} ${mv4?.state} ${mv4?.held_by}`, 'true parked F-2');
+t('DS-407 a ticket moved to another batch keeps its merge hold on the person\'s step', mv4?.merge_after, 'OPS-4');
 // New files nobody committed are work too: the worktree stays, and nothing moves.
 og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
 writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
@@ -754,7 +758,6 @@ t('DS-401 AC4 with its question, inputs and actions unchanged, it stays put off,
   `${'M-3' in omega()} ${'M-2' in omega()} ${N.collect({ word: 'omega', repos: loadRepos(NOW + 86400000) }).items.some((i) => ['M-2', 'M-3'].includes(i.t.key))}`, 'false false false');
 // A park put off straight through answer.mjs (the orchestrator, the digest) or not-now.mjs add records
 // its item's actions too, so one it gains brings it back as M-3 came back.
-const omegaQ = join(env.DESK_HOME, 'repos', 'acme__omega', 'queue.json');
 const oq = queueOf('omega');
 oq.tickets['M-6'] = { key: 'M-6', ...parked('A', 7, 'which copy for M-6?') };
 oq.tickets['M-7'] = { key: 'M-7', ...parked('A', 6, 'which copy for M-7?') };
@@ -948,10 +951,13 @@ t('DS-407 AC2 one item for the step, and none for each PR waiting on it', kp().m
 t('DS-407 AC2 it names the step and every PR and ticket waiting on it', kp()[0].need.startsWith('OPS-9 ("Apply the billing migration") is a step only you can take, and 3 tickets wait to merge on it: PR #71 (K-1), PR #72 (K-2) and K-3 (being built). Do it and move OPS-9 to Done in Jira'), true);
 t('DS-407 its actions are done and not-now', kp()[0].actions.map((a) => a[0]).join(), 'done,not-now');
 t('DS-407 the list prints it as a line of its batch', cli('list', 'kappa407').out.split('\n').some((l) => l.startsWith('kappa407 step:OPS-9 step')), true);
+const kpCount = () => N.needsCount(loadRepos().find((r) => r.name === 'kappa407'));
+t('DS-407 desk-q counts the step as needing you, as the list shows it', `${kpCount().shown} ${kpCount().putOff}`, '1 0');
 const kpDone = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'done' });
 t('DS-407 done records nothing: the pass reads the step from Jira', `${kpDone.ok} ${/next pass that reads OPS-9 from Jira lifts the hold/.test(kpDone.line)}`, 'true true');
 const kpOff = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'not-now' });
-t('DS-407 not-now puts it off', `${kpOff.ok} ${kp().length}`, 'true 0');
+t('DS-407 not-now puts it off, in the list and in desk-q\'s count', `${kpOff.ok} ${kp().length} ${kpCount().shown} ${kpCount().putOff}`, 'true 0 0 1');
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

@@ -1134,7 +1134,13 @@ ops1 new; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-407 AC2 while the person's step is open, the done ticket's merge stays held" '[ "$(field J-8 merge_after)" = "\"OPS-1\"" ] && ! echo "$out" | grep -q "merge hold: J-8"'
 ops1 'done'; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-407 AC3 once Jira has the step Done, the next pass lifts the hold with no answer" '[ "$(field J-8 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-8: OPS-1 Done; free to merge"'
-q drop J-8
+# A step admitted to this batch since is still read from Jira through the ticket waiting on it.
+q set J-8 merge_after=OPS-1; q add OPS-1
+ops1 new; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-407 a step that joined the batch still holds the merge while it is open" '[ "$(field J-8 merge_after)" = "\"OPS-1\"" ]'
+ops1 'done'; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-407 a step that joined the batch is lifted once Jira has it Done" '[ "$(field J-8 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-8: OPS-1 Done; free to merge"'
+q drop OPS-1; q drop J-8
 # AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
 out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'
