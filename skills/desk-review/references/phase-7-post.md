@@ -27,7 +27,11 @@ says: the row settles whether to post, this settles how many. **Never `--approve
 verdict**: it posts at a head nothing reviewed, and a review marker there would be a false clean.
 **Never post a second verdict at a SHA that already has one with different counts.** A wrong count
 needs a new run, because a gate reads the newest verdict and a re-count is indistinguishable from
-editing the result until it passes.
+editing the result until it passes. **The one exception is a gap the person accepted after it
+posted** (`phase-5-requirements.md`, *A gap the person accepted*): re-run verdict.mjs on that round's results with
+only the accepted gaps moved from `gaps` into `accepted`, same round and same `since`, and post it at
+the same SHA with the `--accepted` section in the body. Any other change, a finding or a gap nobody
+accepted, is a new run.
 
 **A clean run posts too**: "No P0, P1 or P2 findings at `<sha>`, N files, refuted by codex". Absence
 of a review then means *not reviewed*, unambiguously, and the next sweep's skip rule reads it.

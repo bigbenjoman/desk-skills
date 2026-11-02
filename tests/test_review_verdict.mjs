@@ -7,7 +7,8 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, tally, isClean, carriedSection, methodLine, CLEAN, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
+import { render, tally, isClean, carriedSection, acceptedSection, methodLine, CLEAN, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
+import { reviewGaps } from '../desk/bin/fix-tries.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -152,6 +153,35 @@ t('DS-368 AC3 round 2 with a P1 is not clean', reads(r2([p2(), f({ id: 'F2' })])
 t('DS-368 AC3 round 2 with a P0 is not clean', reads(r2([f({ severity: 'P0' })])), false)
 t('DS-368 an uncarried P2 on round 2 still blocks', reads(r2([f({ severity: 'P2' })])), false)
 
+// ---- DS-317: a requirement gap the person accepted is out of gaps, and counted on a line of its own
+const URL = 'https://github.com/acme/shop/pull/705#issuecomment-2440001'
+const acc = (o = {}) => ({ gap: 'AC3', by: 'bigbenjoman', at: '2026-10-29', url: URL, ...o })
+const before = base({ gaps: 1 })
+const after = base({ gaps: 0, accepted: [acc()] })
+t('DS-317 AC1 the round before the acceptance is not clean', reads(before), false)
+t('DS-317 AC1 the same round with the gap accepted reads clean at the same head', `${reads(after)} ${marker(after).includes(` sha=${SHA} `)}`, 'true true')
+t('DS-317 AC1 the verdict line is the one every gate reads, gaps=0', marker(after), marker(base()))
+t('DS-317 AC1 the accepted line counts it', render(after).split('\n')[3], '<!-- desk-review:accepted v=1 gaps=1 -->')
+t('DS-317 AC1 the method line follows it', render(after).split('\n')[4], '<!-- desk-review:method v=1 fallback=0 -->')
+t('DS-317 AC1 the heading says it was accepted', heading(after).startsWith('**desk-review, round 1: No P0, P1 or P2 findings; requirement gaps accepted: 1 at `0123456`**'), true)
+const accSec = acceptedSection(after).split('\n')
+t('DS-317 AC1 the body section: its heading names no open gaps', accSec[0], '### Accepted gaps')
+t('DS-317 AC1 the body names who accepted it, when, and links the record', accSec[2], `- AC3: accepted by \`bigbenjoman\` on 2026-10-29, ${URL}`)
+t('DS-317 AC1 a full timestamp is shown as its date', acceptedSection(base({ accepted: [acc({ at: '2026-10-29T14:59:53Z' })] })).split('\n')[2].includes(' on 2026-10-29, '), true)
+t('DS-317 the section is empty when nothing is accepted', acceptedSection(base()), '')
+t('DS-317 AC2 a gap with no acceptance still counts', `${reads(base({ gaps: 1, accepted: [] }))} ${marker(base({ gaps: 1, accepted: [] })).includes(' gaps=1 ')}`, 'false true')
+t('DS-317 AC2 no accepted line when none is accepted', render(base({ accepted: [] })).includes('desk-review:accepted'), false)
+const oneOfTwo = base({ gaps: 1, accepted: [acc()] })
+t('DS-317 one gap accepted beside one open: not clean', reads(oneOfTwo), false)
+t('DS-317 one gap accepted beside one open: heading names both', heading(oneOfTwo).includes('not clean: 1 requirement gap open, requirement gaps accepted: 1'), true)
+// The pass reads a review body's open gaps by its gaps heading; an accepted one is not open.
+const posted = [render(oneOfTwo), '', '### Requirement gaps', '- AC2: no retry on a 429', '', acceptedSection(oneOfTwo)].join('\n')
+t('DS-317 the body\'s accepted gap is not read as an open one', JSON.stringify(reviewGaps(posted)), JSON.stringify(['AC2: no retry on a 429']))
+const accAndCarried = r2([p2()], { accepted: [acc(), acc({ gap: 'AC4' })] })
+t('DS-317 with carried P2s: clean, heading names both', heading(accAndCarried).includes(': No P0 or P1 findings; P2 findings carried: 1; requirement gaps accepted: 2 at `0123456`**'), true)
+t('DS-317 with carried P2s: the accepted line follows the carried line', render(accAndCarried).split('\n').slice(3, 6).map((l) => l.split(' ')[1]).join(' '), 'desk-review:carried desk-review:accepted desk-review:method')
+t('DS-317 an accepted gap never hides a P1', reads(base({ accepted: [acc()], findings: [f()] })), false)
+
 // ---- the seats a general-purpose agent stood in for
 const gp = (role, o = {}) => ({ ...seat(role), agent: 'general-purpose', ...o })
 const fellBack = base({ seats: [{ ...seat('correctness'), agent: 'lena-code-reviewer', fallback: true }, gp('requirements', { fallback: true }), gp('simplicity'), seat('codex', 'codex')] })
@@ -203,6 +233,18 @@ want('refuses a DUPLICATE naming nothing', base({ findings: [f({ result: 'DUPLIC
 want('refuses a DUPLICATE of a missing finding', base({ findings: [f({ result: 'DUPLICATE', duplicate_of: 'F9' })] }), 'is not in findings')
 want('refuses a DUPLICATE of a DUPLICATE', base({ findings: [f({ id: 'F0' }), f({ id: 'F2', result: 'DUPLICATE', duplicate_of: 'F0' }), f({ id: 'F3', result: 'DUPLICATE', duplicate_of: 'F2' })] }), 'is itself a DUPLICATE')
 want('refuses duplicate_of on a non-duplicate', base({ findings: [f({ duplicate_of: 'F0' })] }), 'only a DUPLICATE')
+want('DS-317 refuses accepted that is not a list', base({ accepted: acc() }), 'accepted must list each accepted gap')
+want('DS-317 refuses an accepted gap naming no criterion', base({ accepted: [acc({ gap: ' ' })] }), 'accepted[0].gap names the criterion')
+want('DS-317 refuses an accepted gap listed twice', base({ accepted: [acc(), acc()] }), 'accepted gap AC3 is listed twice')
+want('DS-317 refuses an accepted gap with nobody who accepted it', base({ accepted: [acc({ by: undefined })] }), 'by is the GitHub login')
+want('DS-317 refuses an accepted gap with no date', base({ accepted: [acc({ at: 'yesterday' })] }), 'at is the date it was recorded')
+want('DS-317 refuses an accepted gap with no link', base({ accepted: [acc({ url: undefined })] }), 'url links the PR comment or review')
+want('DS-317 refuses a link to the PR, not the record', base({ accepted: [acc({ url: 'https://github.com/acme/shop/pull/705' })] }), 'url links the PR comment or review')
+want('DS-317 refuses a link to a Jira comment', base({ accepted: [acc({ url: 'https://acme.atlassian.net/browse/VPL-371?focusedCommentId=10419' })] }), 'url links the PR comment or review')
+want('DS-317 refuses an unknown accepted field (accepting a finding)', base({ accepted: [acc({ finding: 'F1' })] }), 'unknown field accepted[0].finding')
+for (const anchor of ['pullrequestreview-311', 'discussion_r12']) {
+  t(`DS-317 a link to a ${anchor.split(/[-_]/)[0]} is a record`, reads(base({ accepted: [acc({ url: `https://github.com/acme/shop/pull/705#${anchor}` })] })), true)
+}
 
 // ---- the CLI, and SKILL.md's documented forms
 const T = mkdtempSync(join(tmpdir(), 'desk-verdict-'))
@@ -225,6 +267,13 @@ const sec = spawnSync('node', [SCRIPT, '--carried', join(T, 'r3.json')], { encod
 t('CLI --carried prints the section', `${sec.status} ${sec.stdout.startsWith('### Carried review findings\n')}`, '0 true')
 const noSec = spawnSync('node', [SCRIPT, '--carried', join(T, 'ok.json')], { encoding: 'utf8' })
 t('CLI --carried with nothing carried prints nothing', `${noSec.status} ${JSON.stringify(noSec.stdout)}`, '0 ""')
+writeFileSync(join(T, 'acc.json'), JSON.stringify(after))
+const accCli = spawnSync('node', [SCRIPT, join(T, 'acc.json')], { encoding: 'utf8' })
+t('DS-317 CLI with an accepted gap prints five lines', `${accCli.status} ${accCli.stdout.trim().split('\n').length}`, '0 5')
+const accOut = spawnSync('node', [SCRIPT, '--accepted', join(T, 'acc.json')], { encoding: 'utf8' })
+t('DS-317 CLI --accepted prints the section', `${accOut.status} ${accOut.stdout.startsWith('### Accepted gaps\n')}`, '0 true')
+const noAcc = spawnSync('node', [SCRIPT, '--accepted', join(T, 'ok.json')], { encoding: 'utf8' })
+t('DS-317 CLI --accepted with nothing accepted prints nothing', `${noAcc.status} ${JSON.stringify(noAcc.stdout)}`, '0 ""')
 
 // A named seat that ran as general-purpose is named in the heading.
 const as = (role, agent) => ({ ...seat(role), agent })

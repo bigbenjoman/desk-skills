@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The opening lines of every posted desk-review: the review marker, the verdict marker, the heading,
-// from round 2 the carried marker, and then the method marker. They are computed from the run's
-// finder and refuter results, never written by hand, because a required check reads the verdict
+// from round 2 the carried marker, the accepted marker when a gap is accepted, and then the method
+// marker. They are computed from the run's finder and refuter results, never written by hand, because
+// a required check reads the verdict
 // marker and a hand count is how a review reads clean when it is not. The marker is a contract with
 // every gate that reads it: it changes only with a version bump. The carried count and the method
 // are lines of their own, after the heading, because a gate copy committed before them matches the
@@ -10,6 +11,7 @@
 //   node verdict.mjs <results.json>            prints the lines; exit 2 refuses the results
 //   node verdict.mjs --carried <results.json>  prints the PR body's carried-findings section, if any
 //   node verdict.mjs --method <results.json>   prints the PR body's line on how the review ran
+//   node verdict.mjs --accepted <results.json> prints the review body's accepted-gaps section, if any
 //
 // results.json, written by the reviewer once every finder and refuter has answered:
 //
@@ -28,6 +30,15 @@
 // results carry "since": the full SHA that round reviewed. Only then may a P2 be "carried": true,
 // left for the PR body or a follow-up ticket instead of blocking. P0 and P1 always block.
 //
+// A requirement gap the person accepted is not open: it leaves "gaps" and is listed in "accepted",
+// each with who accepted it, when, and the PR comment or review that records it:
+//
+//   "accepted": [ { "gap": "AC3", "by": "<GitHub login>", "at": "2026-10-29",
+//                   "url": "https://github.com/<owner>/<repo>/pull/<n>#issuecomment-<id>" } ]
+//
+// Only a requirement gap can be accepted; a P0 or P1 is never. The count goes on a line of its own
+// after the heading, as the carried count does, so every gate reads gaps=0 and nothing new.
+//
 // The rules, each a false clean otherwise:
 //   - every count is computed here; a count the caller leaves out is refused, never read as zero;
 //   - a CONFIRMED or UNREFUTED finding is outstanding, and counts in its p field;
@@ -38,14 +49,20 @@
 //   - vendor=codex-cross only when codex read the diff cold on this run and every finding was
 //     refuted by the other vendor: codex's by Claude, Claude's by codex;
 //   - a carried finding is an outstanding P2 on round 2 or later, never deferred, with a file:line;
-//     it counts in `carried`, not in p2, and an unrefuted one still counts in unrefuted.
+//     it counts in `carried`, not in p2, and an unrefuted one still counts in unrefuted;
+//   - an accepted gap names its criterion, who accepted it, when, and the PR comment or review that
+//     records it, once each: one without all four is refused, never counted out of gaps.
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
 const FIX_RANGE_ROUND = 2
-const TOP = ['sha', 'round', 'since', 'gaps', 'skipped_files', 'seats', 'findings']
+const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seats', 'findings']
+const ACCEPTED = ['gap', 'by', 'at', 'url']
+// The record of an acceptance: a comment or a review on a pull request, linked by its anchor.
+const ACCEPT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+#(?:issuecomment-\d+|pullrequestreview-\d+|discussion_r\d+)$/
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/
 const SEAT = ['role', 'agent', 'vendor', 'status', 'note', 'fallback']
 const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
@@ -82,6 +99,19 @@ export function tally(r) {
   } else if (r.since != null) no(`since is for round ${FIX_RANGE_ROUND} on; round ${r.round} reads the whole branch`)
   const gaps = count(r.gaps, 'gaps')
   const skipped = count(r.skipped_files, 'skipped_files')
+  const accepted = r.accepted ?? []
+  if (!Array.isArray(accepted)) no('accepted must list each accepted gap ([] or left out when there are none)')
+  const named = new Set()
+  accepted.forEach((a, i) => {
+    keysOf(a, ACCEPTED, `accepted[${i}]`)
+    if (typeof a.gap !== 'string' || !a.gap.trim()) no(`accepted[${i}].gap names the criterion it accepts, as AC3`)
+    const name = `accepted gap ${a.gap}`
+    if (named.has(a.gap)) no(`${name} is listed twice`)
+    named.add(a.gap)
+    if (!LOGIN.test(String(a.by ?? ''))) no(`${name}: by is the GitHub login of the person who accepted it`)
+    if (!/^\d{4}-\d{2}-\d{2}(?:$|T)/.test(String(a.at ?? ''))) no(`${name}: at is the date it was recorded, as YYYY-MM-DD`)
+    if (!ACCEPT_URL.test(String(a.url ?? ''))) no(`${name}: url links the PR comment or review that records it`)
+  })
 
   if (!Array.isArray(r.seats) || !r.seats.length) no('seats must list every seat dispatched')
   const seats = new Map()
@@ -159,7 +189,7 @@ export function tally(r) {
   const fallback = [...seats.values()]
     .filter((s) => s.fallback === true || (NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose'))
     .map((s) => s.role)
-  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried,
+  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
@@ -183,14 +213,17 @@ export function render(r) {
   if (n.gaps) parts.push(`${plural(n.gaps, 'requirement gap')} open`)
   // Worded so no count sits before "P2": a gate reads "<n> P2" in a heading as an open finding.
   const carried = t.carried.length ? `P2 findings carried: ${t.carried.length}` : ''
+  const accepted = t.accepted.length ? `requirement gaps accepted: ${t.accepted.length}` : ''
+  const kept = [carried, accepted].filter(Boolean)
   const verdict = isClean(n)
-    ? (carried ? `No P0 or P1 findings; ${carried}` : 'No P0, P1 or P2 findings')
-    : `not clean: ${[...parts, ...(carried ? [carried] : [])].join(', ')}`
+    ? `${carried ? 'No P0 or P1 findings' : 'No P0, P1 or P2 findings'}${kept.map((k) => `; ${k}`).join('')}`
+    : `not clean: ${[...parts, ...kept].join(', ')}`
   const range = t.since ? `, fix range ${t.since.slice(0, 7)}..${t.sha.slice(0, 7)}` : ''
   const fell = t.fallback.length ? ` · ${plural(t.fallback.length, 'fallback seat')} (${t.fallback.join(', ')})` : ''
   const heading = `**desk-review, round ${t.round}${range}: ${verdict} at \`${t.sha.slice(0, 7)}\`** · ${how(t)}${fell}`
   const lines = ['<!-- desk-review:local -->', marker, heading]
   if (t.since) lines.push(`<!-- desk-review:carried v=1 p2=${t.carried.length} since=${t.since} -->`)
+  if (t.accepted.length) lines.push(`<!-- desk-review:accepted v=1 gaps=${t.accepted.length} -->`)
   lines.push(`<!-- desk-review:method v=1 fallback=${t.fallback.length} -->`)
   return lines.join('\n')
 }
@@ -219,18 +252,32 @@ export function carriedSection(r) {
   ].join('\n')
 }
 
+// The review body's section for the accepted gaps: who accepted each, when, and the link to the
+// record; '' when none is accepted. Its heading never names requirement gaps, which a reader of the
+// body (fix-tries.mjs reviewGaps) takes for the open ones.
+export function acceptedSection(r) {
+  const t = tally(r)
+  if (!t.accepted.length) return ''
+  return [
+    '### Accepted gaps',
+    'The person accepted these requirement gaps, so the verdict does not count them in `gaps`:',
+    ...t.accepted.map((a) => `- ${a.gap}: accepted by \`${a.by}\` on ${a.at.slice(0, 10)}, ${a.url}`),
+  ].join('\n')
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch { return false }
 })()
 if (isMain) {
   try {
     const args = process.argv.slice(2)
-    const mode = args[0] === '--carried' || args[0] === '--method' ? args[0] : null
+    const modes = { '--carried': carriedSection, '--method': methodLine, '--accepted': acceptedSection }
+    const mode = Object.hasOwn(modes, args[0] ?? '') ? args[0] : null
     const [file, ...rest] = mode ? args.slice(1) : args
-    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method] <results.json>')
+    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method | --accepted] <results.json>')
     let r
     try { r = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { no(`cannot read ${file}: ${e.message}`) }
-    const out = mode === '--carried' ? carriedSection(r) : mode === '--method' ? methodLine(r) : render(r)
+    const out = mode ? modes[mode](r) : render(r)
     if (out) process.stdout.write(`${out}\n`)
   } catch (e) {
     process.stderr.write(`verdict.mjs: ${e.message}\n`)

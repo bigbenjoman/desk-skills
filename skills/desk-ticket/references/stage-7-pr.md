@@ -60,6 +60,9 @@ SHA that already has one with different counts, and never edit the counts of one
 A gate reads the last verdict at head, so a re-post that relabels findings is indistinguishable
 from editing the result until it passes: a re-post that zeroes the deferred count with no code
 change can clear a known P0. If a count is wrong, re-run the review at that head and post that run.
+The one exception is a requirement gap the person accepted after the verdict posted (desk-review's
+`phase-5-requirements.md`, *A gap the person accepted*): that round's results, with only the
+accepted gaps moved out of `gaps`, re-posted at the same SHA.
 
 ## Merging
 
