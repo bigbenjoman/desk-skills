@@ -546,6 +546,17 @@ done
 clean | awk '{ print } /^1\. AC1/ { print "2. AC2: Given a live session, when the link is created, then it is read back." }' > "$LD/acok.md"
 lint "$LD/acok.md" customfield_10208=M
 check "lint: a criterion about link code, or a live session, is one the worker can do" '[ $rc -eq 0 ]'
+acline(){ clean | awk -v a="$1" '{ print } /^1\. AC1/ { print "2. AC2: " a }' > "$LD/acq.md"; lint "$LD/acq.md" customfield_10208=M; }
+acline 'Given one shared server check, "is billing live?", when the account page loads, then it reads that one answer.'
+check "lint: a question mark only inside a quoted phrase is not an open question" '[ $rc -eq 0 ]'
+acline 'Given one shared server check, "is billing live", when the account page loads, then should it read that answer?'
+check "lint: a criterion ending in an unquoted question mark is still an open question" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* asks a question in Acceptance criteria"'
+acline 'Given a lapsed subscriber, when the billing page renders, then it shows the upgrade banner. On production before B07 this is what every subscriber sees.'
+check "lint: a sentence saying what production shows is not a production run" '[ $rc -eq 0 ]'
+acline 'Given the release, when it ships, then p95 latency in production is under 300 ms.'
+check "lint: a then-clause only production can meet is still a production run" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
+acline 'Given the billing tables, when a read-only query is run against the live database, then it returns no orphaned subscriptions.'
+check "lint: a read-only query run against the live database is still a production run" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
 # Advisory findings do not fail the lint.
 clean | grep -v -e '^## Out of scope' -e '^\* None' -e '^## Verification' -e '^\* Unit' > "$LD/adv0.md"
 { cat "$LD/adv0.md"; printf '\nPriority: P2\n'; } > "$LD/adv.md"
