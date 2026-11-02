@@ -3,7 +3,8 @@
 // declined, and archived under `batches/.done/` once its work is promoted or abandoned. A repo runs one
 // feature batch per epic, each on its own branch, beside the standing batch.
 //   node batch.mjs start <EPIC> <branch>   a batch named <EPIC> in batches/<EPIC>/, its epic and base set,
-//                                          not handed to the supervisor
+//                                          not handed to the supervisor; refused on a base no §4
+//                                          Required check's workflow runs on (gate.mjs admissionRefusal)
 //   node batch.mjs discard <EPIC>          removes a batch no ticket has started in and the supervisor does
 //                                          not run: its queue and state folders, and its branch from origin
 //                                          when that holds no commit the default branch lacks
@@ -22,6 +23,7 @@ import * as E from './desk-env.mjs';
 import { readQueue, EXIT, crashShowsPerson, describeCrash } from './batch-state.mjs';
 import { listBatches, finished, prState, prMergedAt, lastPromotion, orchestratorHolder, supervisorHolder } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
+import { admissionRefusal } from './gate.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DONE_DIR = '.done';
@@ -62,6 +64,12 @@ function start(epic, branch, slug = E.repoSlug()) {
     try { q = readQueue(b.queue); } catch (e) { refuse(`no batch started for ${epic}: ${b.name ? `batch ${b.name}'s` : 'the standing batch\'s'} queue cannot be read, so it may be live on ${branch} (${describeCrash(e)})`); }
     if (q.base === branch && !finished(q)) refuse(`no batch started for ${epic}: ${b.name ? `feature batch ${b.name}` : 'the standing batch'} is live on ${branch}, and each feature batch runs on its own branch`);
   }
+  // A base no §4 Required check's workflow runs on: every child PR into it would wait for good.
+  // Unread config or repo: nothing to check, as an unread workflow refuses nothing.
+  let required = [], repo = null;
+  try { required = [].concat(E.configValues('required-checks') ?? []).filter((c) => c && !E.isNone(c)); if (required.length) repo = E.ghRepo(); } catch { /* unread */ }
+  const never = admissionRefusal(branch, { required, defaultBranch: defaultBranch(), repo });
+  if (never) refuse(`no batch started for ${epic}: ${never}`);
   const failed = queueCmd(epic, ['init', epic]);
   if (failed) throw new Error(`queue.mjs init ${epic} failed: ${failed}`);
   const why = queueCmd(epic, ['set-batch', `epic=${epic}`, `base=${branch}`]);

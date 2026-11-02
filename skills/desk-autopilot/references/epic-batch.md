@@ -27,6 +27,11 @@ node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900   # the batch 
 - **The feature branch** is named as §5 Branch names says, cut from `origin/<default>`, and is the
   batch's base from the start. Pushing it is §3 `git-push`: at anything but `yes`, ask it now, the
   one question before `start`. A branch already on origin is used as it is.
+- **`start` refuses (exit 11) and makes nothing on a base no §4 Required check's workflow runs
+  on**, naming each check and its workflow file as not running on PRs into the branch: every child
+  PR would wait for good. Show the person: the workflow's `pull_request` branches need the base (or
+  a pattern such as `feat/**`), and then `start` again. A check only the default branch's copy runs
+  is left to the base sync.
 - **`start` refuses (exit 11) and makes nothing** while another epic's feature batch is live on the
   same branch, naming it: show the person and stop. It refuses a batch that already exists for this epic
   too: an earlier session started it, so pick it up with `--batch ABC-900` rather than start it

@@ -480,8 +480,8 @@ rec E-12 A '"type":"Epic","branch":"feat/E-12-untriggered"'; rec E-13 A '"branch
 ci main 'main, production'; ci feat%2FE-12-untriggered 'main, production'
 out=$(admit E-12 --by ben); rc=$?
 check "DS-412 AC1: an epic whose base no copy of the required check's workflow runs on is refused, naming the check and its workflow file" \
-  '[ $rc -eq 11 ] && grep -q "^not admitted E-12: an epic, and its feature batch was not started: a required check does not run on PRs into feat/E-12-untriggered, so no child PR could go green: \"tests\" never runs on PRs into feat/E-12-untriggered (workflow trigger: .github/workflows/ci.yml runs on pull requests only into main, production)\. Add feat/E-12-untriggered (or a pattern such as feat/\*\*) to the pull_request branches of that workflow, then admit it again; batch E-12 discarded$" <<< "$out"'
-check "DS-412 AC1: before any worker starts: the batch is discarded and nothing is drafted" '[ ! -e "$EB/E-12" ] && [ ! -e "$ES/E-12" ] && [ "$(count "$T/claude.calls")" = 0 ]'
+  '[ $rc -eq 11 ] && grep -q "^not admitted E-12: an epic, and its feature batch was not started: no batch started for E-12: a required check does not run on PRs into feat/E-12-untriggered, so no child PR could go green: \"tests\" never runs on PRs into feat/E-12-untriggered (workflow trigger: .github/workflows/ci.yml runs on pull requests only into main, production)\. Add feat/E-12-untriggered (or a pattern such as feat/\*\*) to the pull_request branches of that workflow, then admit the epic again$" <<< "$out"'
+check "DS-412 AC1: before any worker starts: batch.mjs start makes no batch and nothing is drafted" '[ ! -e "$EB/E-12" ] && [ ! -e "$ES/E-12" ] && [ "$(count "$T/claude.calls")" = 0 ]'
 # The base's copy lacks the trigger, the default branch's has it: the base sync starts it, so it is admitted
 # (E-5, below, under these workflows).
 ci main "main, 'feat/**'"; ci feat%2FE-5-a-feature 'main'

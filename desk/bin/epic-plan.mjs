@@ -17,7 +17,7 @@ import { FEATURE_PLAN_PREFIX, readQueue, planPark } from './batch-state.mjs';
 import { listBatches } from './batches.mjs';
 import { markedResult, answers } from './decider.mjs';
 import { NOT_NOW } from './not-now.mjs';
-import { gh, readWorkflows, baseUntriggered } from './gate.mjs';
+import { admissionRefusal } from './gate.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -86,19 +86,12 @@ function ensureBranch(branch) {
   }
 }
 
-// Why no child PR into `base` could ever go green, or null: a §4 Required check whose workflow, as the
-// base and the default branch hold it, runs on no PR into base from those child branches. A workflow
-// that cannot be read counts as running.
+// Why no child PR into `base` could ever go green, or null (gate.mjs admissionRefusal). batch.mjs start
+// asked it with no child branch; this asks again with them, for a push trigger filtered by branch.
 function untriggeredOn(base, branches) {
   let required = [];
   try { required = [].concat(E.configValues('required-checks') ?? []).filter((c) => c && !E.isNone(c)); } catch { return null; }
-  if (!required.length) return null;
-  const def = E.configValue('default-branch') || 'main';
-  const at = (ref) => readWorkflows({ repo: E.ghRepo(), ref, run: gh });
-  const never = baseUntriggered(required, base, { branches: [...new Set(branches)], atBase: at(base), atDefault: base === def ? [] : at(def), defaultBranch: def });
-  const names = Object.keys(never);
-  if (!names.length) return null;
-  return `${names.length === 1 ? 'a required check does' : 'required checks do'} not run on PRs into ${base}, so no child PR could go green: ${names.map((n) => `"${n}" ${never[n]}`).join('; ')}. Add ${base} (or a pattern such as feat/**) to the pull_request branches of ${names.length === 1 ? 'that workflow' : 'those workflows'}, then admit it again`;
+  return admissionRefusal(base, { required, branches, defaultBranch: E.configValue('default-branch') || 'main', repo: E.ghRepo() });
 }
 
 // The drafter's prompt: the epic, its numbered criteria and each child, and the feature.json shape.

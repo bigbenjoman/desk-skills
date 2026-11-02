@@ -98,6 +98,27 @@ t('DS-352 AC1 setup: X-2 is discarded again', batch(['discard', 'X-2']).code, 0)
 
 t('a name that is no batch name is refused', batch(['start', '../x', 'feat/x-1']).code, 11);
 
+// DS-412 AC1: the in-session epic start (/desk-autopilot <EPIC>) refuses a base no copy of a §4 Required
+// check's workflow runs on, before it makes anything. gh is a fake serving one ci.yml per ref from $WF.
+const WF = join(T, 'wf'), FAKEBIN = join(T, 'fakebin');
+mkdirSync(WF, { recursive: true }); mkdirSync(FAKEBIN, { recursive: true });
+writeFileSync(join(FAKEBIN, 'gh'), `#!/bin/sh\ncase "$*" in\n  "api repos/"*"/contents/.github/workflows?ref="*) echo .github/workflows/ci.yml ;;\n  "api -H Accept: application/vnd.github.raw repos/"*"/contents/.github/workflows/ci.yml?ref="*) a="$*"; cat "${WF}/\${a##*ref=}.yml" ;;\n  *) exit 1 ;;\nesac\n`, { mode: 0o755 });
+const ci = (ref, branches) => writeFileSync(join(WF, `${ref}.yml`), `name: CI\non:\n  pull_request:\n    branches: [${branches}]\njobs:\n  tests:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n`);
+const reqCfg = join(T, 'config-required.md');
+writeFileSync(reqCfg, `${readFileSync(base.DESK_CONFIG, 'utf8')}\n## 4. Toolchain\n\n| Field | Value |\n|---|---|\n| Required checks | \`tests\` |\n`);
+const withReq = { DESK_CONFIG: reqCfg, PATH: `${FAKEBIN}:${process.env.PATH}` };
+ci('main', 'main, production'); ci('feat%2Fx-2', 'main, production');
+r = batch(['start', 'Y-1', 'feat/x-2'], withReq);
+t('DS-412 AC1 batch.mjs start refuses a base no copy of the required check\'s workflow runs on, naming the check and its workflow file', r.code === 11 && r.out.includes('no batch started for Y-1: a required check does not run on PRs into feat/x-2, so no child PR could go green: "tests" never runs on PRs into feat/x-2 (workflow trigger: .github/workflows/ci.yml runs on pull requests only into main, production)'), true);
+t('DS-412 AC1 before anything is made', existsSync(dirname(namedQ('Y-1'))) || existsSync(namedS('Y-1')), false);
+ci('main', "main, 'feat/**'");
+r = batch(['start', 'Y-1', 'feat/x-2'], withReq);
+t('DS-412 a check only the default branch\'s copy runs is left to the base sync: the batch starts', r.code, 0);
+t('DS-412 setup: Y-1 is discarded again', batch(['discard', 'Y-1']).code, 0);
+ci('main', 'main'); ci('feat%2Fx-2', "main, 'feat/**'");
+t('DS-412 AC3 negative control: a base the workflow triggers on starts', batch(['start', 'Y-1', 'feat/x-2'], withReq).code, 0);
+t('DS-412 setup: Y-1 is discarded once more', batch(['discard', 'Y-1']).code, 0);
+
 // AC9: a started ticket, or a batch handed to the supervisor, refuses the discard and removes nothing.
 writeQ('X-1', { epic: 'X-1', base: 'feat/x-1', tickets: { 'X-5': { key: 'X-5', state: 'running' } } });
 r = batch(['discard', 'X-1']);
