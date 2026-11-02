@@ -350,6 +350,8 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-415 a run started before its fix was done is started again', `${before.file.length} ${before.prs[0].call}`, '0 rerun');
   const back = evidenceFixPlan([{ ...f(784, OLD), at: '2026-11-03T09:00:00Z' }, { ...f(794), at: '2026-11-03T09:05:00Z' }], doneFix, () => 'done');
   t('DS-415 a failure that comes back after its fix was done files a new fix, once, for every PR it fails', `${back.file.length} ${back.file[0]?.prs.map((p) => p.n).join(',')} ${back.prs.map((p) => p.call).join(',')}`, '1 784,794 file,file');
+  const mixed = evidenceFixPlan([{ ...f(784), at: '2026-11-02T09:00:00Z' }, { ...f(794), at: '2026-11-03T09:05:00Z' }], doneFix, () => 'done');
+  t('DS-415 a run from before the fix, read ahead of one from after it, joins the new fix rather than being started again under the old', `${mixed.file.length} ${mixed.file[0]?.prs.map((p) => p.n).join(',')} ${mixed.prs.map((p) => p.call).join(',')}`, '1 784,794 file,file');
 
   const ft = fixTicket({ workflow: 'pr-evidence.yml', line: lines[0], run: '41191877061', url: 'https://github.com/o/r/actions/runs/41191877061', prs: [{ n: 784, ticket: 'VPL-640' }, { n: 794, ticket: 'VPL-652' }] }, { repo: 'o/r', base: 'main', today: '2026-11-02' });
   t('DS-415 the fix ticket names the workflow and its error line', ft.summary.startsWith('evidence workflow pr-evidence.yml fails on every PR: Error: did not set a _vercel_jwt cookie'), true);

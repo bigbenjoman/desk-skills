@@ -139,16 +139,21 @@ export function evidenceFixPlan(failures, fixes, fixState) {
     file.get(f.key).prs.push(f);
     prs.push({ ...f, call: 'file', fix: null });
   };
+  // A failure is back once any of its runs started after its fix was done: decided for the key before
+  // any PR is, so none is started again under the fix that did not hold.
+  const back = new Set(failures.filter((f) => {
+    const rec = fixes[f.key];
+    return rec?.fix && rec.done_at && f.at && fixState(rec.fix) === 'done' && Date.parse(f.at) > Date.parse(rec.done_at);
+  }).map((f) => f.key));
   for (const f of failures) {
     const rec = fixes[f.key];
-    if (!rec?.fix || file.has(f.key)) { fileIt(f); continue; }
+    if (!rec?.fix) { fileIt(f); continue; }
     const st = fixState(rec.fix);
     const was = rec.prs?.[f.n];
-    const after = st === 'done' && rec.done_at && f.at && Date.parse(f.at) > Date.parse(rec.done_at);
     if (st === 'gone') prs.push({ ...f, call: 'person', fix: rec.fix, why: `${rec.fix}, the fix started for it, failed` });
     else if (st !== 'done') prs.push({ ...f, call: 'wait', fix: rec.fix });
     else if (was?.rerun === f.head) prs.push({ ...f, call: 'person', fix: rec.fix, why: `it failed the same way when it was run again after ${rec.fix} fixed it` });
-    else if (after) fileIt(f);
+    else if (back.has(f.key)) fileIt(f);
     else prs.push({ ...f, call: 'rerun', fix: rec.fix });
   }
   return { file: [...file.values()], prs };
