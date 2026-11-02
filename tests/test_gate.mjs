@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, workflowTriggers, branchMatches, untriggeredChecks, readWorkflows } from '../desk/bin/gate.mjs';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -94,6 +94,43 @@ t('later failure runId', G(regressed).failing[0].runId, '2');
 const requeued = [run(req[0], 'SUCCESS', 2, '2026-10-09T05:57:01Z'), run(req[1], 'FAILURE', 1, '2026-10-09T05:54:55Z'), { name: req[1], status: 'QUEUED', conclusion: null, workflowName: 'Validate PRs', detailsUrl: 'https://github.com/o/r/actions/runs/3/job/1' }];
 t('queued rerun supersedes old failure', G(requeued).state, 'pending');
 t('same name, other workflow kept', latestPerCheck(normaliseRollup([run('build', 'SUCCESS', 1, '2026-10-09T05:00:00Z', 'A'), run('build', 'FAILURE', 2, '2026-10-09T05:01:00Z', 'B')])).length, 2);
+
+// DS-410: a required check whose workflow never runs on the PR's base (voicepa VPL-627, PR #770 into
+// feat/VPL-626-voice-pa-on-off-contacts: ci.yml ran only on PRs into main and production).
+const ciYml = (branches) => [
+  'name: CI', '', 'on:', '  push:', '    branches: [main]', '  pull_request:', `    branches: ${branches} # PRs only`, '',
+  'jobs:', '  lint:', '    name: "Lint, Type Check & Build"', '    runs-on: ubuntu-latest', '    steps:', '      - name: Checkout', '        uses: actions/checkout@v4',
+].join('\n');
+const signoff = ['name: Script Sign-off', 'on:', '  pull_request:', '    branches-ignore:', "      - 'release/**'", 'jobs:', '  verify-script-sign-off:', '    name: Verify script sign-off', '    runs-on: ubuntu-latest'].join('\n');
+const FEAT = 'feat/VPL-626-voice-pa-on-off-contacts';
+const wfs = (branches) => [{ file: '.github/workflows/ci.yml', text: ciYml(branches) }, { file: '.github/workflows/signoff.yml', text: signoff }];
+t('DS-410 workflowTriggers reads the pull_request branch filter', JSON.stringify(workflowTriggers(ciYml('[main, production]'))), JSON.stringify({ prs: [{ event: 'pull_request', branches: ['main', 'production'], ignore: null }], jobs: [{ id: 'lint', name: 'Lint, Type Check & Build' }] }));
+t('DS-410 workflowTriggers reads a block branches-ignore list, and a job id with no name', JSON.stringify(workflowTriggers(signoff)), JSON.stringify({ prs: [{ event: 'pull_request', branches: null, ignore: ['release/**'] }], jobs: [{ id: 'verify-script-sign-off', name: 'Verify script sign-off' }] }));
+t('DS-410 an inline on: list counts pull_request as unfiltered', JSON.stringify(workflowTriggers('on: [push, pull_request]\njobs:\n  test:\n    runs-on: x\n').prs), JSON.stringify([{ event: 'pull_request', branches: null, ignore: null }]));
+t('DS-410 branch filters: * stops at /, ** does not, ! takes back', [branchMatches(['feat/*'], FEAT), branchMatches(['feat/*'], 'feat/a/b'), branchMatches(['feat/**'], 'feat/a/b'), branchMatches(['**', '!feat/**'], FEAT), branchMatches(['main'], 'feat/main')].join(','), 'true,false,true,false,false');
+const never = untriggeredChecks(req, FEAT, wfs('[main, production]'));
+t('DS-410 the check whose workflow runs only into main and production is untriggered on a feature base', JSON.stringify(Object.keys(never)), JSON.stringify([req[0]]));
+t('DS-410 its reason names the workflow trigger', never[req[0]], `never runs on PRs into ${FEAT} (workflow trigger: .github/workflows/ci.yml runs on pull requests only into main, production)`);
+t('DS-410 negative control: the same workflow on a PR into main is not untriggered', JSON.stringify(untriggeredChecks(req, 'main', wfs('[main, production]'))), '{}');
+t("DS-410 negative control: once the trigger takes 'feat/**', nothing is untriggered", JSON.stringify(untriggeredChecks(req, FEAT, wfs("[main, production, 'feat/**']"))), '{}');
+t('DS-410 a check no workflow reports (an app) is left out', JSON.stringify(untriggeredChecks(['Vercel'], FEAT, wfs('[main]'))), '{}');
+t('DS-410 a workflow with no pull_request trigger says so', untriggeredChecks(['lint'], FEAT, [{ file: 'w.yml', text: 'on:\n  push:\njobs:\n  lint:\n    runs-on: x\n' }]).lint, `never runs on PRs into ${FEAT} (workflow trigger: w.yml has no pull_request trigger)`);
+const seen = [cr('Label PR', 'COMPLETED', 'SUCCESS'), cr(req[1], 'COMPLETED', 'SUCCESS'), cr('Vercel', 'COMPLETED', 'SUCCESS')];
+const g410 = G(seen, { untriggered: never });
+t('DS-410 AC1 the gate reason names the workflow trigger, not "has not reported"', g410.reasons[0], `required check "${req[0]}" ${never[req[0]]}`);
+t('DS-410 AC1 the gate lists the untriggered check', JSON.stringify([g410.state, g410.untriggered]), JSON.stringify(['absent', [req[0]]]));
+t('DS-410 negative control: with no untriggered map the reason is unchanged', G(seen).reasons[0], `required check "${req[0]}" has not reported`);
+t('DS-410 AC2 once the check reports green, the gate passes as before', G([...seen, cr(req[0], 'COMPLETED', 'SUCCESS')], { untriggered: never }).state, 'pass');
+const wcalls = [];
+const wfGh = (args) => {
+  wcalls.push(args.join(' '));
+  if (args[1].endsWith('/contents/.github/workflows?ref=abc')) return '.github/workflows/ci.yml\n.github/workflows/README.md\n.github/workflows/gone.yaml';
+  if (args.at(-1).includes('gone.yaml')) throw new Error('HTTP 500');
+  return ciYml('[main]');
+};
+const readWf = readWorkflows({ repo: 'o/r', ref: 'abc', run: wfGh });
+t('DS-410 readWorkflows reads the yaml files at the ref, leaving out one it cannot read', JSON.stringify(readWf.map((w) => w.file)), JSON.stringify(['.github/workflows/ci.yml']));
+t('DS-410 readWorkflows reads nothing when the directory cannot be listed', readWorkflows({ repo: 'o/r', ref: 'x', run: () => { throw new Error('404'); } }).length, 0);
 
 // Briefing answers survive a requeue: answer.mjs appends below the sibling-notes block.
 const brief = ['Orchestrator session name: x', '', 'These questions were put to the user before you started.', '',

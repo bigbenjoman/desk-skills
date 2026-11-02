@@ -311,7 +311,7 @@ export function personHold(t, n, redrafts = []) {
   return { why: `it was put back to draft${how}`, action: `undraft #${n} to release it; the merge driver then merges it once it is green` };
 }
 
-// t: the queue ticket. pr: { number, head, mergeState, mergeable, body, reviews, comments, checks, carry }
+// t: the queue ticket. pr: { number, head, base, mergeState, mergeable, body, reviews, comments, checks, carry }
 // (checks as pr_status keeps them; carry(sha), when given, says whether a verdict posted on sha holds at
 // the head, as verdictCarries does). cfg: { spine, perm, approved, localReview, clean, handle, required,
 // advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
@@ -319,7 +319,8 @@ export function personHold(t, n, redrafts = []) {
 // check build recorded at that head, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
 // evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
 // the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
-// pr-conflict-unreviewed and -reviewed) }.
+// pr-conflict-unreviewed and -reviewed), untriggered(base, head) -> gate.mjs untriggeredChecks's map
+// for a required check that never reported }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -359,7 +360,12 @@ export function undraftCall(t, pr, cfg) {
     return (humanReviewed(pr, cfg.handle) ? cfg.conflictReviewed : cfg.conflictUnreviewed) === 'yes' ? { ...c, call: 'conflict' } : c;
   }
   if (pr.mergeable !== 'MERGEABLE') return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})` };
-  const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
+  let gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
+  // A required check that never reported may be one its workflow never runs on this PR's base.
+  if (gate.state === 'absent' && pr.base && cfg.untriggered) {
+    const untriggered = cfg.untriggered(pr.base, pr.head) ?? {};
+    if (Object.keys(untriggered).length) gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [], untriggered });
+  }
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   // Checks a workflow skips on a draft never go green there, so only the person's undraft runs them.
   const skipped = gate.state !== 'pass' && skippedOnly(pr.checks);
@@ -377,6 +383,11 @@ export function undraftCall(t, pr, cfg) {
     if (bc) return bc;
   }
   const codeRed = gate.failing.filter((f) => f.name !== VERDICT_CHECK);
+  // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.
+  if (red && gate.untriggered?.length && !codeRed.length) {
+    return person(`its checks are not green: ${gate.reasons.join('; ')}`,
+      `add ${pr.base} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${gate.untriggered.map((c) => `"${c}"`).join(', ')}, a change to the repo; once #${n}'s branch has it, its next push runs the check (re-running cannot, as no run exists)`);
+  }
   if (red && (codeRed.length || !gate.failing.length)) {
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
     const notGreen = person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);

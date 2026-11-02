@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { untriggeredChecks } from '../desk/bin/gate.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -108,6 +109,25 @@ for (const rerun of ['ask', 'no', undefined]) {
   t(`DS-330 AC4 ci-rerun ${rerun}: nothing is re-run, and no fix worker spends a try on it`, `${c?.call} | ${c?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out');
 }
 t('DS-330 a cancelled check with no run id has nothing to re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled' }])?.call, 'person');
+
+// DS-410: a required check its workflow never runs on the PR's base is put to the person as the
+// trigger to change, not a re-run (voicepa VPL-627, PR #770 into a feature base).
+const FEAT = 'feat/VPL-626-voice-pa-on-off-contacts';
+const ciOn = (branches) => [{ file: '.github/workflows/ci.yml', text: `on:\n  pull_request:\n    branches: ${branches}\njobs:\n  ci:\n    name: tests\n` }];
+const read410 = [];
+const basePr = (base, branches) => undraftCall(tk, { number: 770, head: HEAD, base, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'Vercel', status: 'completed', conclusion: 'success' }] },
+  { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], rerun: 'yes', reruns: () => 0, cooledDown: true,
+    untriggered: (b, h) => { read410.push(`${b}@${h.slice(0, 3)}`); return untriggeredChecks(['tests'], b, ciOn(branches)); } });
+const u410 = basePr(FEAT, '[main, production]');
+t('DS-410 AC1 the reason names the workflow trigger', u410?.why, `its checks are not green: required check "tests" never runs on PRs into ${FEAT} (workflow trigger: .github/workflows/ci.yml runs on pull requests only into main, production)`);
+t('DS-410 AC1 the person is told the repo change, not a re-run', `${u410?.call} | ${/^add feat\/VPL-626-voice-pa-on-off-contacts \(or a pattern such as feat\/\*\*\) to the pull_request branches of the workflow that runs "tests"/.test(u410?.action ?? '')} | ${/fix or re-run/.test(u410?.action ?? '')}`, 'person | true | false');
+t('DS-410 the workflows are read for the PR\'s base at its head', read410[0],`${FEAT}@aaa`);
+const fixed410 = basePr(FEAT, "[main, 'feat/**']");
+t('DS-410 negative control: a trigger that takes the base keeps today\'s call and words', `${fixed410?.call} | ${fixed410?.why} | ${fixed410?.action}`, 'checks | its checks are not green: required check "tests" has not reported | fix or re-run the checks on #770');
+read410.length = 0;
+const green410 = undraftCall(tk, { number: 770, head: HEAD, base: FEAT, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: green },
+  { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], untriggered: () => { read410.push('read'); return {}; } });
+t('DS-410 AC2 once the check reports green the PR is undrafted as today, with no workflow read', `${green410?.call} | ${read410.length}`, 'ready | 0');
 
 // DS-330: the pass reruns through rerun.sh, the merge driver's own rerun, against a fake gh.
 const tmp = mkdtempSync(join(tmpdir(), 'undraft-rerun-'));
