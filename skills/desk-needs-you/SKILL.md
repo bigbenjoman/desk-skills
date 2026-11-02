@@ -12,8 +12,7 @@ argument-hint: "[<repo>]"
 # desk-needs-you
 
 One script gives every item and records every answer. **Read nothing else**: no queue, worker log,
-briefing or digest page, and do not load `desk-autopilot` or its references. The script reads
-them as desk-q does.
+briefing or digest page, and do not load `desk-autopilot` or its references.
 
 ## 1. Collect
 
@@ -65,8 +64,8 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
 - For `resume`, `answer` and `reject`, the answer text is what gets recorded. Where the question
   offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Where it does
   not, the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
-  resume, so it never stays parked once answered. A `session` item has none either: only `open`
-  moves it. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
+  resume, so it never stays parked once answered. A `session` item has none either: once its step
+  is done, `resume` takes what was done and hands it to a worker. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
   `record` posts on the PR and sends to a worker on it.
 - An `override <id>` action takes the user's choice as its text.
 - A `move` takes the batch's name (`standing` for the standing batch). An answer to move the

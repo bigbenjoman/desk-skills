@@ -3,7 +3,7 @@
 // than on a context that has grown through the build. The worker writes $DESK_STATE/handoffs/<TICKET>.json
 // and prints `AUTOPILOT_HANDOFF: <stage>`; pass.mjs reads the file, adds the branch and its commits
 // from git, and spawns the next session with the rendered briefing in its first message.
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
@@ -30,10 +30,33 @@ export function readHandoff(stateDir, key) {
   if (d?.ticket != null && String(d.ticket) !== key) return { ok: false, why: `its handoff briefing ${path} is for ${d.ticket}, not ${key}` };
   const criteria = list(d?.criteria);
   if (!criteria.length) return { ok: false, why: `its handoff briefing ${path} lists no acceptance criteria` };
+  const back = String(d.handed_back?.note ?? '').trim();
   return {
     ok: true,
-    data: { criteria, lane: String(d.lane ?? '').trim() || 'not recorded', verification: list(d.verification), review: list(d.review), evidence: list(d.evidence) },
+    data: { criteria, lane: String(d.lane ?? '').trim() || 'not recorded', verification: list(d.verification), review: list(d.review), evidence: list(d.evidence),
+      ...(back ? { handedBack: { note: back, at: d.handed_back.at ?? null } } : {}) },
   };
+}
+
+// A lane C or D ticket the person handed back once its session step was done (queue.mjs handback, from
+// desk-needs-you's resume): the handoff briefing it starts at Stage 4b on. An earlier handoff's
+// criteria, verification, review and evidence are kept; with none, the session reads the criteria
+// from the ticket. Written to the ticket's handoff briefing path; returns that path.
+export function writeHandback(stateDir, { key, lane, note, at = new Date().toISOString() }) {
+  const was = readHandoff(stateDir, key);
+  const prior = was.ok ? was.data : null;
+  const path = handoffPath(stateDir, key);
+  mkdirSync(join(stateDir, 'handoffs'), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({
+    ticket: key,
+    criteria: prior?.criteria ?? [`Not handed on: read them from ${key} at the start of Stage 4b`],
+    lane: `${lane ?? 'not recorded'}, handed back by the person once the step that needed a session was done: do not park on the lane again`,
+    verification: prior?.verification ?? [],
+    review: prior?.review ?? [],
+    evidence: prior?.evidence ?? [],
+    handed_back: { note, at },
+  }, null, 2)}\n`);
+  return path;
 }
 
 // null when the session can start in this worktree on this branch, else what is missing.
@@ -151,7 +174,11 @@ export function renderHandoff({ key, stage, data, branch, worktree, base, commit
   return [
     `## Handoff: this session starts at Stage ${stage}`,
     '',
-    `An earlier session of this ticket finished Stages 0 to ${HANDOFF_STAGES[stage]} and ended so that this one starts fresh. This is everything it handed on.`,
+    ...(data.handedBack
+      ? ['This ticket needed an interactive session, and the person did that step and handed it back to a worker. What they did, in their words:', '',
+        `> ${data.handedBack.note.split('\n').join('\n> ')}`, '',
+        'Self-review the branch as it stands, then finish the ticket from there (evidence, the PR, Jira). This is everything handed on.']
+      : [`An earlier session of this ticket finished Stages 0 to ${HANDOFF_STAGES[stage]} and ended so that this one starts fresh. This is everything it handed on.`]),
     '',
     '### Ticket',
     '',

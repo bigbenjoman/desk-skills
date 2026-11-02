@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
+import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -40,7 +41,7 @@ function setBase(q, v) {
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -220,7 +221,7 @@ const answerWith = (t) => `answer with answer.mjs ${t.key} "<answer>"`;
 // edit that fails silently. The last round's log, park record and mailbox move aside to one
 // `.round<n>`, so pass.mjs neither refuses it as finished nor reports an old question as the new
 // worker's. The branch is kept: the merge driver finds the ticket's PR by it.
-function requeue(q, key) {
+function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
   if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
   if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
@@ -231,8 +232,10 @@ function requeue(q, key) {
   if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
   if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
   if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
-  if (t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
-  if (!['A', 'B', 'D', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E, and D with its canvas saved, go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
+  // A ticket handed back (handback) had its session step done by the person, so its lane no longer
+  // keeps it from a worker.
+  if (!handedBack && t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
+  if (!handedBack && !['A', 'B', 'D', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E, and D with its canvas saved, go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
   // A standard-model worker that failed, or was stopped as stalled, comes back one step stronger
   // (config §3b Worker models). A park with a question keeps its model, and so does a ticket whose
   // worker never ran (a failed preflight or spawn): that was not the model falling short.
@@ -273,6 +276,32 @@ function requeue(q, key) {
   const placed = toFront(q, key);
   save(q);
   return `${key} requeued: ${placed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+}
+
+// A lane C or D park whose step the person has done (desk-needs-you's resume on a session item), handed
+// back to a worker: it starts at Stage 4b in its worktree, on its branch, with what the person did in
+// its handoff briefing and, as a binding answer, in its briefing. Only the lane guards of requeue are
+// skipped: the person's step was the one a worker could not take.
+function handback(q, key, note) {
+  const t = ticket(q, key);
+  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t)) throw new Error(`${key} is not parked on a step of its own (state ${t.state}), so there is nothing to hand back`);
+  if (!needsSession(t)) throw new Error(`${key}'s park is not one only a session takes (${t.park?.question ?? '?'}): requeue it instead`);
+  const missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
+  if (missing) throw new Error(`${key}: ${missing}, so no worker can start it at Stage 4b. Finish it in an interactive session: /desk-ticket ${key}`);
+  const at = new Date().toISOString();
+  const stage = t.handoff_stage;
+  t.handoff_stage = '4b';
+  let msg;
+  try { msg = requeue(q, key, { handedBack: true }); } catch (e) { t.handoff_stage = stage; throw e; }
+  // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
+  const path = writeHandback(stateDir(), { key, lane: t.lane, note, at });
+  const dir = join(stateDir(), 'briefings');
+  mkdirSync(dir, { recursive: true });
+  const brief = join(dir, `${key}.md`);
+  const entry = `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`;
+  if (existsSync(brief)) appendFileSync(brief, entry);
+  else writeFileSync(brief, `# Briefing for ${key}\n${entry}`);
+  return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
 }
 
 // What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
@@ -635,6 +664,14 @@ switch (cmd) {
     break;
   }
 
+  case 'handback': {
+    const [key, ...rest] = args;
+    const note = rest.join(' ').trim();
+    if (!key || !note) throw new Error('usage: queue.mjs handback <TICKET> "<what the person did>"');
+    console.log(handback(q, key, note));
+    break;
+  }
+
   // A finished feature spine whose specs passed pass.mjs's check, approved by the person: the spine is
   // done, its PR leaves draft (§3 pr-ready), and it merges under the batch's merge rules, after which
   // what is held behind it is released. answer.mjs never un-parks; this is the orchestrator's decision.
@@ -852,7 +889,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

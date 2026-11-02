@@ -872,6 +872,47 @@ t('DS-396 AC4 desk-q counts the idle supervised batch live, so its answered park
 t('DS-396 desk-q dates the idle supervised batch by its last pass, not by the idle tick that refreshed its beat',
   `${(r => [r.live, r.last])(loadRepos().find((x) => x.name === 'omicron')).join(' ')}`, `true ${Date.parse(minsAgo(20))}`);
 
+// ---- DS-399: a lane C or D session item whose step the person has done is handed back to a worker
+// that starts at self-review. KAN-1280's shape: a lane D park with its worktree kept, ten held behind it.
+const sgWt = join(T, 'sigma-wt');
+spawnSync('git', ['init', '-q', '-b', 'fix/S-1', sgWt]);
+spawnSync('git', ['-C', sgWt, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x']);
+const LANE_D_PARK = 'lane D: the canvas-vs-build screenshots for PR #911 need an interactive session';
+put('sigma', { port: 5400, beat: 1, supervised: true, tickets: {
+  'S-1': { ...parked('D', 60, LANE_D_PARK), branch: 'fix/S-1', worktree: sgWt },
+  'S-2': parked('C', 50, 'lane C: the plan needs agreeing'),
+  'S-3': { state: 'parked', lane: 'A', held_by: 'S-1', added_at: minsAgo(40), park: { question: 'held by orchestrator: blocked by S-1 — starts once their PRs merge', since: minsAgo(40) } },
+  'S-4': { ...parked('B', 30, AWS), branch: 'fix/S-1', worktree: sgWt },
+} });
+const sigmaState = join(env.HOME, '.desk-autopilot', 'acme__sigma');
+const sigmaQ = () => readFileSync(join(env.DESK_HOME, 'repos', 'acme__sigma', 'queue.json'), 'utf8');
+const sgItems = () => N.collect({ word: 'sigma' }).items;
+const verbs = (k) => sgItems().find((i) => i.t.key === k)?.actions.map((a) => a[0]).join();
+t('DS-399 AC1 a lane D session item with its worktree offers resume beside open and not-now', `${sgItems().find((i) => i.t.key === 'S-1')?.kind} ${verbs('S-1')}`, 'session open,resume,not-now');
+t('DS-399 AC1 the list line says what resume does', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-1 session') && l.includes('2. resume (once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review)')), true);
+t('DS-399 a lane C park no worker ever worked has no worktree to start in, so no resume', verbs('S-2'), 'open,not-now');
+t('DS-399 a park on a step no worker is allowed is not offered resume, worktree or not', verbs('S-4'), 'open,not-now');
+const sgBefore = sigmaQ();
+const sgOpen = N.record({ word: 'sigma', ticket: 'S-1', action: 'open' });
+t('DS-399 AC4 open still only names the session, and the queue is unchanged', `${sgOpen.ok} ${/\/desk-ticket S-1/.test(sgOpen.line)} ${sigmaQ() === sgBefore}`, 'true true true');
+t('DS-399 resume with no note is refused', N.record({ word: 'sigma', ticket: 'S-1', action: 'resume' }).ok, false);
+t('DS-399 resume on a session item with no worktree is refused, and it stays parked', `${N.record({ word: 'sigma', ticket: 'S-2', action: 'resume', text: 'done' }).ok} ${queueOf('sigma').tickets['S-2'].state}`, 'false parked');
+const BSs = await import('../desk/bin/batch-state.mjs');
+t('DS-399 AC3 before: the ticket held behind it waits on a park', JSON.stringify(BSs.waitingOnPark(queueOf('sigma'), queueOf('sigma').tickets['S-3'])), '["S-1"]');
+const NOTE = 'screenshots captured and uploaded to PR #911, and 9 of the 11 diffs fixed';
+const sgRes = N.record({ word: 'sigma', ticket: 'S-1', action: 'resume', text: NOTE });
+const s1 = queueOf('sigma').tickets['S-1'];
+t('DS-399 AC2 resume hands it back: requeued to start at Stage 4b in its worktree', `${sgRes.ok} ${s1.state} ${s1.handoff} ${s1.handoff_stage} ${s1.park} ${s1.worktree === sgWt}`, 'true triaged pending 4b null true');
+t('DS-399 AC2 the line says it starts at self-review', /handed back to a worker that starts at self-review/.test(sgRes.line), true);
+const H = await import('../desk/bin/handoff.mjs');
+const sgHand = H.readHandoff(sigmaState, 'S-1');
+t('DS-399 AC2 its handoff briefing reads, carrying the note', `${sgHand.ok} ${sgHand.data?.handedBack?.note === NOTE}`, 'true true');
+const sgRendered = H.renderHandoff({ key: 'S-1', stage: '4b', data: sgHand.data, branch: 'fix/S-1', worktree: sgWt, base: 'origin/main', commits: [] });
+t('DS-399 AC2 the session briefing starts at Stage 4b with what the person did', `${sgRendered.includes('starts at Stage 4b')} ${sgRendered.includes(`> ${NOTE}`)} ${sgRendered.includes('Self-review the branch as it stands')}`, 'true true true');
+t('DS-399 AC2 the note is a binding answer in its briefing too', readFileSync(join(sigmaState, 'briefings', 'S-1.md'), 'utf8').includes(NOTE), true);
+t('DS-399 AC3 after: the ticket held behind it no longer waits on a park, but on S-1 going on to merge', `${BSs.waitingOnPark(queueOf('sigma'), queueOf('sigma').tickets['S-3'])} ${BSs.waitingOnMerge(queueOf('sigma'), queueOf('sigma').tickets['S-3'])}`, 'null true');
+t('DS-399 and it is off the list', sgItems().some((i) => i.t.key === 'S-1'), false);
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
