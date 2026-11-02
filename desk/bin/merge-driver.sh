@@ -338,7 +338,7 @@ NODE
 const fs = require('fs');
 let q = {};
 try { q = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
-for (const [k, t] of Object.entries(q)) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.pr ?? '?'}\tfalse\t${k}\tqueue`);
+for (const [k, t] of Object.entries(q)) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 NODE
 ) || known=""
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
