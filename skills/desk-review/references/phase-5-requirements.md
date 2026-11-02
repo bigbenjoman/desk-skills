@@ -78,7 +78,9 @@ gh pr view <n> --repo <owner>/<repo> --json comments,reviews
 ```
 
 Each gap so accepted leaves `gaps` and goes in the results file's `accepted` list, linked to its
-record (a comment's `url`, or the PR URL with a review's `#pullrequestreview-<id>` anchor):
+record: a comment's `url`, or a review's `html_url`. That `gh pr view` gives a review's `id` as a
+GraphQL node id (`PRR_…`), which no review link carries, so read a review's link from REST
+(`desk-gh read repos/<owner>/<repo>/pulls/<n>/reviews -X GET --jq '.[] | {html_url, user: .user.login}'`):
 
 ```json
 "accepted": [ { "gap": "AC3", "by": "<§1 GitHub handle>", "at": "2026-10-29",
@@ -95,7 +97,8 @@ criterion is met. Only a requirement gap is accepted: a P0 or P1 is fixed, and a
 
 An acceptance recorded after the head's verdict posted is the one case for a second verdict at that
 SHA (Phase 7, `phase-7-post.md`): the same round's results, with only the accepted gaps moved from
-`gaps` into `accepted`.
+`gaps` into `accepted`. It repeats that round, so it is not counted as one: the next round is the
+last verdict's `round=` + 1, not Phase 1's marker count + 1.
 
 ### Direction 2: diff the criteria do not ask for
 
