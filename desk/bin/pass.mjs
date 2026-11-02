@@ -2753,6 +2753,10 @@ for (const t of Object.values(qNow.tickets).filter((r) => r.approved === true &&
   const n = t.result.pr;
   if (merger.driver) continue;
   if (readPr(n) === 'MERGED') continue;
+  if (keysOf(t.merge_after).length) {
+    report.waiting.push(`${t.key}: MERGE HELD — spine PR #${n} is approved, but it merges only after your step ${keysOf(t.merge_after).join(', ')} is Done in Jira: do not merge it yet; the next pass that reads the step Done lifts the hold`);
+    continue;
+  }
   report.waiting.push(`${t.key}: SPINE APPROVED — merge PR #${n} once it is green (${merger.rows}, so no merge driver merges it); what is held behind it is released once it merges`);
 }
 // Out of draft and green with no merge driver to merge it (config §3, or the batch declined at Stage 3):
@@ -2765,6 +2769,13 @@ if (!merger.driver && undrafted.length) {
   for (const { t, s } of undrafted) {
     if (t.approved === true || s.mergeable === 'CONFLICTING') continue;
     if (evaluateGate(s.checks, gateCfg).state !== 'pass') continue;
+    // The person's steps hold the merge here as they hold the driver's: needs-you asks for the step,
+    // and the PR is put to them to merge only once the pass has lifted the last one.
+    const steps = keysOf(t.merge_after);
+    if (steps.length) {
+      report.waiting.push(`${t.key}: MERGE HELD — PR #${s.pr} is out of draft and green, but it merges only after your step ${steps.join(', ')} is Done in Jira: do not merge it yet; the next pass that reads the step Done lifts the hold and puts it to you to merge`);
+      continue;
+    }
     if (feedbackFirst && s.reviewDecision === 'CHANGES_REQUESTED') {
       report.waiting.push(`${t.key}: CHANGES REQUESTED — PR #${s.pr} is out of draft and green, but changes are requested on it, and no merge driver merges it (${merger.rows}): work the feedback first, then merge it yourself`);
       continue;

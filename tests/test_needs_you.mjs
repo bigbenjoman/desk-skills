@@ -957,6 +957,20 @@ const kpDone = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'done'
 t('DS-407 done records nothing: the pass reads the step from Jira', `${kpDone.ok} ${/next pass that reads OPS-9 from Jira lifts the hold/.test(kpDone.line)}`, 'true true');
 const kpOff = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'not-now' });
 t('DS-407 not-now puts it off, in the list and in desk-q\'s count', `${kpOff.ok} ${kp().length} ${kpCount().shown} ${kpCount().putOff}`, 'true 0 0 1');
+// A step two of the repo's batches wait on is still one item, naming the PRs in both.
+const kfq = join(env.DESK_HOME, 'repos', 'acme__kappa407', 'batches', 'KF', 'queue.json');
+const kfs = join(env.HOME, '.desk-autopilot', 'acme__kappa407', 'batches', 'KF');
+mkdirSync(dirname(kfq), { recursive: true });
+mkdirSync(join(kfs, 'orchestrators'), { recursive: true });
+writeFileSync(kfq, JSON.stringify({ version: 1, batch: 'kf-batch', base: 'feat/k', concurrency: 1, supervised: true, tickets: { 'K-4': { key: 'K-4', added_at: minsAgo(600), ...waitsOn(74) } } }));
+writeFileSync(join(kfs, 'orchestrators', 'q.json'), JSON.stringify({ queue: kfq, batch: 'kf-batch', pid: 1, at: minsAgo(1) }));
+const { repoRow } = await import('../desk/bin/desk-q.mjs');
+const kRow = () => repoRow(loadRepos().filter((r) => r.slug === 'acme__kappa407'));
+const kAll = kp().filter((i) => i.kind === 'step');
+t('DS-407 AC2 a step two batches wait on is one item, listing the PRs in both', `${kAll.length} ${kAll[0]?.t.key} ${/4 tickets wait to merge on it: PR #71 \(K-1\), PR #72 \(K-2\), K-3 \(being built\) and PR #74 \(K-4\)/.test(kAll[0]?.need)}`, '1 step:OPS-9 true');
+t('DS-407 AC2 it is keyed in the standing batch', kAll[0]?.r.batch ?? null, null);
+t('DS-407 AC2 desk-q counts it once for the repo, with its tickets now changed since the not-now', `${kRow().batches.length} ${N.needsCount(kRow()).shown}`, '2 1');
+t('DS-407 AC2 the feature batch on its own lists the same one item', N.collect({ word: 'kappa407:KF' }).items.filter((i) => i.kind === 'step').map((i) => i.t.key).join(), 'step:OPS-9');
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);

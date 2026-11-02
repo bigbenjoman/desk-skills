@@ -354,6 +354,10 @@ import { deciderItems, presort } from '$B/decider.mjs';
 const { hand } = presort(deciderItems(JSON.parse(readFileSync('$T/ready.json', 'utf8')), JSON.parse(readFileSync('$DESK_QUEUE', 'utf8'))));
 console.log(hand.map((h) => h.item.ticket + ' ' + h.why).join('\n'));")
 check "DS-203 AC8: under a supervisor that line goes to the check-in digest without a decider session" '[ "$hand" = "T-21 needs config §3 autopilot-merge, which is \"ask\"" ]'
+q set T-21 merge_after=OPS-9
+mpj "$T/config-ask.md"
+check "DS-407 AC1: with no merge driver, a green PR waiting on the person's step is held, never put to them to merge" 'js ".waiting[]" | grep -qF "T-21: MERGE HELD — PR #121 is out of draft and green, but it merges only after your step OPS-9 is Done in Jira: do not merge it yet" && ! js ".waiting[]" | grep -q "T-21: READY TO MERGE"'
+q set T-21 merge_after=null
 
 q set-batch approved.merge=true
 mloop "$T/config-no.md"
