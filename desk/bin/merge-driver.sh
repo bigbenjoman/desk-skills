@@ -570,7 +570,8 @@ EOF_RESOLVE
     pass) ;;
     fail)
       log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"
-      if waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
+      # A waiver only lets a head merge, which one awaiting an approval may not, and its note would replace the approval's.
+      if [ -z "$review_required" ] && waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
       else [ -n "$review_required" ] || approval_clear "$key"; rerun "$n" "$sha" "$g"; return 1; fi ;;
     *) [ -n "$review_required" ] || approval_clear "$key"; log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
   esac
