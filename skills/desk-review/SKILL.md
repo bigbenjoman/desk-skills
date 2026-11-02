@@ -271,10 +271,10 @@ this line to:
 
 From round 2 a fourth line follows the heading, `<!-- desk-review:carried v=1 p2=<n> since=<full SHA> -->`:
 the P2 findings carried (counted there, **not** in `p2`) and the fix range's start. It never decides
-clean; the blocking counts above do. It sits after the heading rather than in the verdict line
-because repos commit their own copy of the gate, and a copy from before carrying matches the verdict
-line exactly: an extra field there would read as no verdict at all. That copy reads this verdict as
-the blocking counts say (`tests/test_review_gate.mjs` holds it to that).
+clean; the blocking counts above do. It sits after the heading, not in the verdict line: a repo's
+committed gate copy matches that line exactly, and would read an extra field as no verdict at all
+(`tests/test_review_gate.mjs`). So does `<!-- desk-review:accepted v=1 gaps=<n> -->`, next: the gaps
+the person accepted (Phase 5), not in `gaps`.
 
 Last, `<!-- desk-review:method v=1 fallback=<n> -->` counts the fallback seats (the heading
 names them); like the carried line, it never decides clean. `verdict.mjs --method <results>`

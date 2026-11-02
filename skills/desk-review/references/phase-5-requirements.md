@@ -66,6 +66,40 @@ in the terminal report tagged `UNVERIFIED CODE CLAIM`, for the author to judge, 
 the verdict's `gaps` count. It is not sent to Phase 4 either: that refuter judges against code, not
 tickets, and would reject it on procedure.
 
+### A gap the person accepted
+
+A gap only the person can close (a criterion that can pass only after the merge, a manual check they
+took in another form) is **accepted** when a PR comment or review by §1 GitHub handle names the gap's
+criterion and accepts it. Nobody else's counts, nor a note on the ticket alone. Before counting
+`gaps`, the reviewer (not Bea) reads the PR's comments and reviews for one:
+
+```bash
+gh pr view <n> --repo <owner>/<repo> --json comments,reviews
+```
+
+Each gap so accepted leaves `gaps` and goes in the results file's `accepted` list, linked to its
+record: a comment's `url`, or a review's `html_url`. That `gh pr view` gives a review's `id` as a
+GraphQL node id (`PRR_…`), which no review link carries, so read a review's link from REST
+(`desk-gh read repos/<owner>/<repo>/pulls/<n>/reviews -X GET --jq '.[] | {html_url, user: .user.login}'`):
+
+```json
+"accepted": [ { "gap": "AC3", "by": "<§1 GitHub handle>", "at": "2026-10-29",
+                "url": "https://github.com/<owner>/<repo>/pull/<n>#issuecomment-<id>" } ]
+```
+
+verdict.mjs refuses an entry missing any of the four, or a gap listed twice. It prints
+`<!-- desk-review:accepted v=1 gaps=<n> -->` after the heading (and after the carried line), and the
+heading names the count. Like the carried line it never decides clean, so a verdict whose only gap
+is accepted reads `gaps=0` to every gate copy and is clean. `node verdict.mjs --accepted <results>`
+prints the `### Accepted gaps` section, naming who accepted each gap, when, and its link: it goes in
+the review body under the report. An accepted gap stays in `accepted` on every later round until its
+criterion is met. Only a requirement gap is accepted: a P0 or P1 is fixed, and a P2 carried.
+
+An acceptance recorded after the head's verdict posted is the one case for a second verdict at that
+SHA (Phase 7, `phase-7-post.md`): the same round's results, with only the accepted gaps moved from
+`gaps` into `accepted`. It repeats that round, so it is not counted as one: the next round is the
+last verdict's `round=` + 1, not Phase 1's marker count + 1.
+
 ### Direction 2: diff the criteria do not ask for
 
 Bea's prompt carries the review bar **verbatim**, as the finders' does, because she is now emitting

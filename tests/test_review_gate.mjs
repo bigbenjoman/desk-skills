@@ -105,6 +105,20 @@ for (const [name, b, clean] of METHOD_CASES) {
   t(`gate copy before the method line, ${name}: the heading is still the heading`, oldGate.parseVerdict(b).heading.startsWith('**desk-review, round '), true);
 }
 
+// DS-317: a verdict whose only gap the person accepted, re-posted at the same head after the one that
+// counted it: the new gate and a repo's committed copy from before accepting both read the newest
+// one, gaps=0, as clean, with its heading still the heading.
+const ACC = { gap: 'AC3', by: 'me', at: '2026-10-29', url: 'https://github.com/acme/shop/pull/705#issuecomment-1' };
+const round1 = (o) => render({ sha: HEAD, round: 1, skipped_files: 0, seats, findings: [], ...o });
+const counted = review(round1({ gaps: 1 }));
+const acceptedAt = review(`${round1({ gaps: 0, accepted: [ACC] })}\n\nreview prose`);
+t('DS-317 AC3 new gate: the gap counted, not clean', checkVerdict([counted], HEAD, WRITERS).ok, false);
+t('DS-317 AC3 new gate: then accepted at the same head, clean', checkVerdict([counted, acceptedAt], HEAD, WRITERS).ok, true);
+t('DS-317 AC3 gate copy before accepting: clean', oldGate.checkVerdict([counted, acceptedAt], HEAD, WRITERS).ok, true);
+t('DS-317 AC3 gate copy before accepting: reads gaps=0', oldGate.parseVerdict(acceptedAt.body)?.gaps, 0);
+t('DS-317 AC3 gate copy before accepting: no heading mismatch', oldGate.headingMismatch(oldGate.parseVerdict(acceptedAt.body)), null);
+t('DS-317 AC3 one gap accepted beside one open is not clean to either', `${checkVerdict([review(round1({ gaps: 1, accepted: [ACC] }))], HEAD, WRITERS).ok} ${oldGate.checkVerdict([review(round1({ gaps: 1, accepted: [ACC] }))], HEAD, WRITERS).ok}`, 'false false');
+
 // The pass's undraft step reads the same bodies the same way: the same sha and counts where this
 // gate reads a verdict, and nothing it can call clean where this gate reads none.
 const marker = (rest) => `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} ${rest} -->\nclean`;

@@ -6,6 +6,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks } from '../desk/bin/gate.mjs';
+import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -443,5 +444,17 @@ t('DS-316 a head whose first parents pass the reviewed commit by is not a carry'
 g('checkout', '-q', '-b', 'pr5', BASE); g('merge', '-q', '--no-ff', '--no-edit', 'main');
 t('DS-316 a clean base merge onto a commit before the reviewed one is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
 rmSync(dir, { recursive: true, force: true });
+
+// DS-317 AC3: a verdict whose only gap the person accepted, as verdict.mjs prints it, re-posted at the
+// head after the one that counted the gap, is clean, and the pass undrafts the PR.
+const acSeats = [{ role: 'correctness', vendor: 'claude', status: 'ran' }, { role: 'codex', vendor: 'codex', status: 'ran' }];
+const acRound = (o) => render({ sha: HEAD, round: 1, skipped_files: 0, seats: acSeats, findings: [], ...o });
+const acGap = review(acRound({ gaps: 1 }));
+const acAccepted = review(`${acRound({ gaps: 0, accepted: [{ gap: 'AC3', by: 'ben', at: '2026-10-29', url: 'https://github.com/acme/shop/pull/701#issuecomment-1' }] })}\n\n### Accepted gaps\n- AC3: accepted by \`ben\` on 2026-10-29`);
+t('DS-317 AC3 the gap counted at the head keeps it draft', call(DESK_REVIEW_CLEAN, [acGap])?.why.includes('gaps=1'), true);
+const acReady = call(DESK_REVIEW_CLEAN, [acGap, acAccepted]);
+t('DS-317 AC3 then accepted at the same head, it is undrafted', acReady?.call, 'ready');
+t('DS-317 AC3 reading gaps=0', acReady?.verdict?.gaps, '0');
+t('DS-317 AC3 under a plain-text row too', call('no findings', [acGap, acAccepted])?.call, 'ready');
 
 process.exit(fails ? 1 : 0);

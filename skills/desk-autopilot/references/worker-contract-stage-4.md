@@ -213,7 +213,9 @@ the verdict marker it emits (the full `headRefOid`, the counts, the vendor and t
 later fix-up reply opens with the command's reply marker and carries no verdict: it posts at a head
 nothing has reviewed. **Never post a second verdict at a commit that already has one with different
 counts**, and never edit a posted verdict's counts: a gate reads the last one, so a re-count is
-indistinguishable from editing the result until it passes. A wrong count needs a new run.
+indistinguishable from editing the result until it passes. A wrong count needs a new run. The one
+exception is a requirement gap the person accepted after the verdict posted (desk-review's
+`phase-5-requirements.md`, *A gap the person accepted*).
 
 ```bash
 gh pr review <n> --repo <repo> --comment --body-file <report>
