@@ -232,6 +232,45 @@ function buildCall(gate, cfg, n, head) {
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
 }
 
+// The words a park's not-reached tail may hold after its marker: the steps the worker contract has it
+// name (PR, review comment, Jira comment, transition, tracker state) and their glue.
+const TAIL_WORDS = new Set(['the', 'a', 'its', 'and', 'or', 'then', 'to', 'on', 'of', 'in', 'is', 'are', 'yet', 'stage', 'stages',
+  'pr', 'draft', 'body', 'self-review', 'review', 'reviews', 'desk-review', 'comment', 'comments', 'post', 'posting', 'posted',
+  'jira', 'tracker', 'ticket', 'transition', 'transitions', 'state', 'status', 'progress', 'done', 'screenshots', 'images', 'upload']);
+
+// A worker's park whose only blocker is a red check §4 Check builds names: every clause of the park
+// names one of those checks or its command, or lists the steps it did not reach (the tail the worker
+// contract has every park name), so a park that asks anything else beside the build stays a park, and
+// the ticket's open draft PR is red on such checks and nothing else, with nothing still
+// running. buildCall then runs the build once the ticket is done, so the pass records it done rather
+// than parked. readPr() -> { state, isDraft, checks } is read only once the park names a build. cfg:
+// { builds, rerun (§3 ci-rerun), required, advisory }. Returns { checks: [name], command } or null, and
+// null leaves the park as it is.
+export function buildPark(question, readPr, cfg) {
+  const builds = cfg.builds ?? [];
+  const namesBuild = (s) => builds.some((b) => s.includes(b.name.toLowerCase()) || s.includes(b.command.toLowerCase()));
+  // Clauses end at . ? ! ; followed by a space, or a line break, so a command's own dots stay whole.
+  // Each keeps its own end mark, so a tail clause can tell a question from a list.
+  const clauses = String(question ?? '').toLowerCase().split(/(?<=[.?!;])(?:\s+|$)|\n+/).map((s) => s.trim()).filter(Boolean);
+  // A tail clause starts with its marker, is no question, and holds nothing but the tail's own steps
+  // after it, so a question that only mentions the tail ("before the remaining steps, should we…",
+  // "not reached: the Jira comment, so confirm the fee") still parks.
+  const tail = (s) => {
+    if (s.includes('?')) return false;
+    const m = /^(?:steps? )?(?:not (?:yet )?reached|remaining steps?|steps? remaining)\b(.*?)[.!;]*$/.exec(s);
+    return !!m && m[1].split(/[\s,:()]+/).map((w) => w.replace(/^[-–—]+|[-–—]+$/g, '')).filter(Boolean).every((w) => TAIL_WORDS.has(w) || /^#?\d+$/.test(w));
+  };
+  if (cfg.rerun !== 'yes' || !clauses.some(namesBuild) || !clauses.every((s) => namesBuild(s) || tail(s))) return null;
+  const pr = readPr();
+  if (pr?.state !== 'OPEN' || pr.isDraft !== true) return null;
+  const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
+  if (gate.state !== 'fail' || gate.pending.length || !gate.failing.length) return null;
+  const names = [...new Set(gate.failing.map((f) => f.name))];
+  const used = names.map((x) => builds.find((b) => b.name === x));
+  if (used.some((b) => !b)) return null;
+  return { checks: names, command: [...new Set(used.map((b) => b.command))].join(' && ') };
+}
+
 // A body with `_drag <file>_` cells left and a fenced ```evidence block, where §4 Evidence workflow
 // names the workflow that fills them (cfg.evidence, evidence.mjs), once per head (cfg.evidenceRun(head)):
 // `evidence` starts it, `wait` while it runs, and `person` once it has run and cells are still left.
