@@ -664,7 +664,7 @@ t('DS-378 AC1 it is read from the repo\'s GitHub', readFileSync(GH_LOG, 'utf8').
 t('DS-378 AC1 it is listed again with that note', /^\(You said done at \d{4}-\d\d-\d\d \d\d:\d\d UTC, and GitHub still showed it unmerged\.\)$/.test(psi()['Q-1']?.note ?? ''), true);
 const q1Line = cli('list', 'psi').out.split('\n').find((l) => l.startsWith('psi Q-1 pr')) ?? '';
 t('DS-378 AC1 the listed line keeps the need and the note whole', q1Line.includes(`| ${psi()['Q-1'].need} ${psi()['Q-1'].note} |`), true);
-// AC4 on the listed line: recorded text a need quotes is cut short, so the line's cut never takes the next step.
+// AC4 on the listed line: a long recorded text a need quotes never takes the next step off it.
 const longHold = withHead(psiPr(147, { merge_blocked: `merge hold: ${'touches a very long list of held paths, '.repeat(6)}` }));
 const qhl = queueOf('psi'); qhl.tickets['Q-7'] = { key: 'Q-7', ...longHold };
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
@@ -686,6 +686,25 @@ t('DS-378 AC2 it is not listed again, nor counted', `${'Q-2' in psi()} ${N.needs
 const q3 = N.record({ word: 'psi', ticket: 'Q-3', action: 'done' });
 t('DS-378 AC5 an unreadable PR says its state could not be read, and is not marked done',
   `${q3.ok} ${/could not read PR #143's state from GitHub \(GraphQL: Could not resolve to a PullRequest \(143\)\), so it is not marked done and stays on your list\./.test(q3.line)} ${queueOf('psi').tickets['Q-3'].done_check} ${'Q-3' in psi()}`, 'false true undefined true');
+
+// ---- DS-417: the list form the skill names prints every need whole, so the session asks it with its recommendation.
+const skillList = /needs-you\.mjs (list <repo>)/.exec(skill)?.[1] ?? '';
+const longNeed = `${'Accept 2 and 3 segments, or trim the copy and shorten the link path, as the SMS segment count sets the cost. '.repeat(6)}Recommend shortening the link path.`;
+const runUrl = 'https://github.com/acme/long417/actions/runs/18234567890/job/51234567890';
+const urlPr = { ...draftPr(161, passed, { call: 'person', why: `its evidence workflow failed, see ${runUrl}`, action: 'fix the evidence run on #161' }),
+  done_check: { at: minsAgo(5), head: 'h161', state: 'OPEN', draft: true } };
+put('long417', { port: 5170, beat: 1, supervised: true, tickets: {
+  'L-1': parked('A', 30, longNeed),
+  'L-2': parked('A', 20, `Which link? The preview is at ${runUrl}?q=${'a'.repeat(260)} and the docs disagree.`),
+  'L-3': urlPr,
+} });
+const longLines = cli(...skillList.replace('<repo>', 'long417').split(' ')).out.split('\n');
+const longLine = (k) => longLines.find((l) => l.startsWith(`long417 ${k} `)) ?? '';
+t('DS-417 the skill names the list form', skillList, 'list <repo>');
+t('DS-417 AC1 a 600-character need is listed whole, recommendation included', `${longNeed.length >= 600} ${longLine('L-1').includes(`| ${longNeed} |`)}`, 'true true');
+t('DS-417 AC2 a URL in a parked need is printed whole', longLine('L-2').includes(`${runUrl}?q=${'a'.repeat(260)} and the docs disagree. |`), true);
+t('DS-417 AC2 a URL in a PR item\'s recorded reason is printed whole', longLine('L-3').includes(runUrl), true);
+t('DS-417 AC3 a done note still follows the need whole', /\| PR #161 [^|]*\. \(You said done at [^|]*, and GitHub still showed it unmerged, still a draft\.\) \|/.test(longLine('L-3')), true);
 
 // ---- A review stuck recorded at a head the PR has since left is gone
 // before the next pass: the draft's undraft reason at its head is what the person sees.
