@@ -663,6 +663,8 @@ upgrades only what you pick, after showing the diff. Upgrades are committed on a
 `chore/vendor-<date>` branch cut from `origin/main`, never on the branch you have checked out, and
 installed by the first `/desk-update` after that branch merges. It never pushes the branch without
 asking; when you agree, it pushes `chore/vendor-<date>`, opens a PR into `main` and prints its URL.
+Once that PR is open it closes any older open vendor PR, which the new one supersedes, naming the new
+one. A run whose upgrades leave `vendor/` as `main` has it opens no PR.
 
 ## Changing things
 

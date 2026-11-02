@@ -203,20 +203,33 @@ new branch and its commits. The previous branch gains nothing. **Install nothing
 `chore/vendor-<date>`**: it is not `main`, so the upgrade is installed by §1 of the first run after
 it merges.
 
-Ask before pushing it. On yes, push that branch and open a PR from it into `main`:
+**A branch that changes nothing under `vendor/` is not offered for a push.** Check it first:
+
+```bash
+bash ~/.claude/desk/bin/vendor-prs.sh same "$D" chore/vendor-<date>   # exit 0: vendor/ equals origin/main's
+```
+
+Exit 0 means main is already current: say so, open no PR, and leave the branch local.
+
+Otherwise ask before pushing it. On yes, push that branch and open a PR from it into `main`:
 
 ```bash
 git -C "$D" push -u origin chore/vendor-<date>
-gh pr create --repo <owner/name> --base main --head chore/vendor-<date> \
-  --title "chore(vendor): upgrade <name>..." --body "<one line per skill: old pin -> new pin, what changed>"
+bash ~/.claude/desk/bin/vendor-prs.sh open "$D" <owner/name> chore/vendor-<date> \
+  "chore(vendor): upgrade <name>..." "<one line per skill: old pin -> new pin, what changed>"
 ```
 
 `<owner/name>` is the GitHub repo `git -C "$D" remote get-url origin` names, so the PR opens on the
 desk-skills checkout's origin whatever directory you run it from.
 
-Report the PR URL `gh pr create` prints. Nothing is pushed to `main`: CI and the user merge the PR.
-If the push or the PR fails, report the error and the branch name, and leave it there; never retry
-by pushing to `main`. On no, report the branch as local only.
+`open` runs `gh pr create`, and only once the PR exists closes every other open `chore/vendor-*` PR
+from that repo, with a comment naming the new one, and deletes its branch: each run upgrades from
+`origin/main`'s pins, so the new PR holds every upgrade an older one does. PRs on any other branch
+are never touched. Report the PR URL and each `closed #<n>` line it prints. Nothing is pushed to
+`main`: CI and the user merge the PR. If the push or the PR fails (`open` exits 1 and closes
+nothing), report the error and the branch name, and leave it there; never retry by pushing to
+`main`. Exit 4 means the PR opened but an older one did not close: name it. On no, report the branch
+as local only.
 
 For the update notice: re-run `./install.sh` in a terminal, or register it the way install.sh does (a
 `SessionStart` entry running `bash ~/.claude/hooks/desk-update-check.sh`, timeout 15, settings backed up
