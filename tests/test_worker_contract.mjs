@@ -91,7 +91,7 @@ for (const f of formFiles) {
 }
 t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(lint, build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
 t('DS-338 AC1 the core\'s table says the Stage 3 file holds the dev server\'s form', core.includes('§6 the command forms you may run, a dev server\'s too'), true);
-// DS-337: where a worker reads how to park, the core states the allowed park inputs form.
+// Where a worker reads how to park, the core states the allowed park inputs form.
 t('DS-337 AC3 the core states park inputs are flat, lists allowed', core.includes('`AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok)'), true);
 
 // DS-335: a round-3 P0 or P1 goes to a fix try where autopilot-judgement is yes, and parks otherwise.
