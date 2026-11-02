@@ -329,11 +329,25 @@ for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside &&
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0
-  # One merged-PR listing for every predecessor at once, not one per predecessor per loop.
-  local merged
+  # A predecessor whose queue entry records a merge (merged_at, set by pass.mjs from that PR itself, or
+  # by this driver) has merged, whatever GitHub lists: `prs` sees only the newest 100 merged PRs, so a
+  # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
+  # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
+  local merged known
+  known=$(node - "$DESK_QUEUE" <<'NODE'
+const fs = require('fs');
+let q = {};
+try { q = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+for (const [k, t] of Object.entries(q)) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+NODE
+) || known=""
+  # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
+  # could not give still releases what the queue already knows merged.
   # Each predecessor key is its own argument: ticket keys hold no spaces or glob characters.
   # shellcheck disable=SC2046
-  merged=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || return 0
+  merged=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || merged=""
+  merged="$known${known:+$'\n'}$merged"
+  [ -n "$merged" ] || return 0
   while read -r succ preds; do
     [ -n "$succ" ] || continue
     all=1; got=""

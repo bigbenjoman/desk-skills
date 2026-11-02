@@ -195,6 +195,18 @@ q add T-9 Task A; q set T-9 state=triaged branch=fix/T-9; q hold T-9 T-2; q set 
 loop
 check "the driver releases a ticket whose every blocker merged"     '[ "$(qf T-9 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-9"'
 check "DS-189 AC3: the release line says a question is still open and it will not spawn" 'echo "$out" | grep "RELEASED T-9" | grep -q "still has 1 question(s) open and will not spawn until they are answered: answer with answer.mjs T-9"'
+
+# ---- a blocker whose PR is older than the merged listing: the queue's record of the merge counts ----
+# gh lists the newest 100 merged PRs, so an old PR (a long-lived draft merged today) is missing from it;
+# the fake gh here never lists T-11's PR at all. T-13's blocker has no recorded merge and stays held.
+q add T-11 Task A; q set T-11 state=done branch=fix/T-11 pr_status.pr=426; q merged T-11 2026-11-02T02:20:59.000Z
+q add T-12 Task A; q set T-12 state=triaged branch=fix/T-12; q hold T-12 T-11
+q add T-14 Task A; q set T-14 state=done branch=fix/T-14
+q add T-13 Task A; q set T-13 state=triaged branch=fix/T-13; q hold T-13 T-14
+loop
+check "a blocker GitHub does not list but the queue records as merged releases its successor" '[ "$(qf T-12 .state)" = triaged ] && [ "$(qf T-12 .held_by)" = null ] && echo "$out" | grep -q "merged: T-11#426 -> RELEASED T-12"'
+check "a blocker with no recorded merge and no merged PR still holds its successor" '[ "$(qf T-13 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-13"'
+q drop T-11; q drop T-12; q drop T-13; q drop T-14
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
 check "AC5: a PR on another base is never the batch'\''s"            '! grep -q "^105 " "$T/merges.log" && ! echo "$out" | grep -q "#105"'
