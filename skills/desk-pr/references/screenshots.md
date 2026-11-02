@@ -50,7 +50,11 @@ size:
   `canvas-<board>-<width>.png` so it uploads with the rest (an autopilot worker has no `cp`: do it
   in the capture script). Names stay to letters, digits and `-`: the upload matches each cell by
   the alt text GitHub writes from the file name.
-- **Built cell**: the page at the same width, `built-<board>-<width>.png`, captured as below.
+- **Built cell**: the page at the same width, `built-<board>-<width>.png`, captured as below. Where
+  §4 Storybook (`desk-env cmds storybook-cmd`) is set, `desk-design compare` writes both cells for
+  every board a story matches (desk-ticket `design-canvas.md`, "Comparing the build with each
+  board"); a board it lists as `not compared` gets one line under the table naming it and why
+  (no story matches it), not an `UNVERIFIABLE` row per width.
 - **Result**: `PASS` with what was compared, `FAIL` with expected against actual (the board's value,
   never the code's), or `UNVERIFIABLE` with why. A comparison that did not run is `UNVERIFIABLE`,
   never `PASS`: no canvas image at that width, no built capture, or the two not actually compared.

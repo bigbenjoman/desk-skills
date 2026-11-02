@@ -239,6 +239,11 @@ How to turn what you find into rows:
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
   `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
   wider, with no lock. `none` is a fine answer, and changes nothing.
+- **Storybook.** Propose it where a package has a `.storybook/` folder: the static build (`storybook
+  build`, often a `build-storybook` script), never `storybook dev`, in its directory and through the
+  package manager as its scripts run it, e.g. `` `apps/web: pnpm build-storybook` ``. Workers run
+  exactly this under the browser lock, then compare each saved canvas board with its story. `none`
+  where there is no Storybook.
 - **Baseline checks.** Propose `off`. `on` is for a repo whose batch bases carry typecheck or lint
   errors workers should not have to clear: an autopilot batch with a base records them before it
   spawns and workers fail only on errors they add. It reads tsc, ESLint's default format and mypy;

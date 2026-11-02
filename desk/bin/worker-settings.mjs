@@ -381,8 +381,9 @@ if (mode === 'triage') {
     // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
     // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
     ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
-    // `render` opens Chromium on the saved boards, so only under the browser lock.
-    ...BIN_FORMS.flatMap((b) => BIN_FORMS.map((d) => `Bash(${b}/with-lock.sh browser node ${d}/desk-design.mjs render:*)`)),
+    // `render` and `compare` open Chromium on the saved boards (and a built Storybook), so only
+    // under the browser lock.
+    ...BIN_FORMS.flatMap((b) => BIN_FORMS.flatMap((d) => [' render', ' compare'].map((s) => `Bash(${b}/with-lock.sh browser node ${d}/desk-design.mjs${s}:*)`))),
     // A script run by the worktree's installed tsx (the contract's `node <wt>/node_modules/tsx/…`).
     // This runs code, like the test command does; `..` is denied so it cannot leave tsx's directory.
     ...withPrefix(`node ${WT}/node_modules/tsx/`).map((c) => `Bash(${c}*)`),
@@ -429,9 +430,10 @@ if (mode === 'triage') {
   for (const it of items) {
     const form = (wrapped) => (c) => (it.id === 'install-cmd' && (wrapped || !depsOk) ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {
-      if (it.dir === '.') allow.push(...withPrefix(cmd).map(form(false)));
+      if (it.dir === '.' && !E.LOCK_ONLY.has(it.id)) allow.push(...withPrefix(cmd).map(form(false)));
       // Every item also runs through with-lock.sh: under its lock where it has one, else `nolock`,
-      // which only changes directory. A directory item has no bare form (the worker cannot `cd`).
+      // which only changes directory. A directory item, or a lock-only row's (§4 Storybook), has no
+      // bare form (the worker cannot `cd`).
       allow.push(...lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd).map(form(true)));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);

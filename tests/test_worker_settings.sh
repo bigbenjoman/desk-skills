@@ -64,11 +64,19 @@ check "desk-env machine write denied, reads allowed"      'allows "Bash(desk-env
 check "desk-env costs write denied"                       'jq -e ".permissions.deny | index(\"Bash(desk-env costs write:*)\") and index(\"Bash(node $B/desk-env.mjs costs write:*)\")" "$T/ws.json" >/dev/null'
 check "desk-design save, status and check allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
 check "desk-design render allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs render:*)" && ! allows "Bash(node $B/desk-design.mjs render:*)"'
+check "DS-382 desk-design compare allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs compare:*)" && ! allows "Bash(node $B/desk-design.mjs compare:*)"'
 check "DS-339 AC1 the worker's resume file in the state dir is writable" 'allows "Edit(/$T/state/resume/fix-thing.json)" && ! allows "Edit(/$T/state/resume/**)"'
 check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
 
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Storybook | `apps/web: pnpm build-storybook` |'
+check "DS-382 AC3 a Storybook item in a package directory runs under the browser lock" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh browser --cwd apps/web -- pnpm build-storybook:*)" && allows "Bash($B/with-lock.sh browser --cwd $T/repo/apps/web -- pnpm build-storybook:*)" \
+     && ! allows "Bash($B/with-lock.sh nolock --cwd apps/web -- pnpm build-storybook:*)" && [[ "$out" != *CONFIG_WARN* ]]'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Storybook | `pnpm build-storybook` |'
+check "DS-382 AC3 a root Storybook item is never bare"     '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh browser pnpm build-storybook:*)" && ! allows "Bash(pnpm build-storybook:*)"'
+
 settings '`sh scripts/check.sh`'
-check "sh <repo script>: allowed and probed"              '[ $rc -eq 0 ] && allows "Bash(sh scripts/check.sh:*)" && [[ "$out" == *"TOOLCHAIN_PROBE: sh --version"* ]]'
+check "sh <repo script>: allowed and probed"             '[ $rc -eq 0 ] && allows "Bash(sh scripts/check.sh:*)" && [[ "$out" == *"TOOLCHAIN_PROBE: sh --version"* ]]'
 
 check "no Pre-push checks row: no pre-push rule"          '! allows "Bash(bash scripts/desk/pre-push.sh --head)"'
 settings '`bash tests/run.sh`' '| Pre-push checks | `bash tests/run.sh` |

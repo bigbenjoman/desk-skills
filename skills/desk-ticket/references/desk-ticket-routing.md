@@ -136,7 +136,8 @@ When a design is the specification:
    `project/*.dc.html` board states the exact copy, colours and sizes. An artifact the user does not
    own reads as a summary, not the files: ask for access or an export rather than building from it.
    Verify against it at **every configured breakpoint and every board width**: capture the build at
-   each, put it beside the board's `screens/<board>@<width>.png` (`desk-design render`), and check
+   each, put it beside the board's `screens/<board>@<width>.png` (`desk-design render`; with §4
+   Storybook set, `desk-design compare` shoots each board beside its story, `design-canvas.md`), and check
    every string, colour and size the board states (or its copy key). A width with no image, or a
    pair not actually compared, is `UNVERIFIABLE`, never `PASS`. The results fill desk-pr's canvas
    table. Figma frames keep the procedure above.

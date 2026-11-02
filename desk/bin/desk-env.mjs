@@ -280,6 +280,7 @@ export const CONFIG_ROWS = Object.freeze({
   'test-cmd': { section: '4', row: 'Unit tests' },
   'related-test-cmd': { section: '4', row: 'Related tests' },
   'e2e-cmd': { section: '4', row: 'E2E tests' },
+  'storybook-cmd': { section: '4', row: 'Storybook' },
   'build-cmd': { section: '4', row: 'Build' },
   'codegen-cmd': { section: '4', row: 'Codegen' },
   'integration-cmd': { section: '4', row: 'Integration tests' },
@@ -583,7 +584,9 @@ function configValuesIn(parsed, id) {
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
 
 // The lock a §4 command row's items take under with-lock.sh; every other row runs `nolock`.
-export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser' };
+export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser', 'storybook-cmd': 'browser' };
+// Rows a worker runs only under their lock, never bare.
+export const LOCK_ONLY = new Set(['storybook-cmd']);
 export const lockFor = (id) => LOCK_OF[id] ?? 'nolock';
 
 // A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
@@ -598,7 +601,7 @@ export function parseCommandItem(item) {
 
 // The §4 command rows a worker may run (migrate and seed only against a per-ticket database). Its
 // settings allow each item as the exact configured command, so an item must be one plain command.
-export const WORKER_COMMAND_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'related-test-cmd', 'integration-cmd', 'e2e-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
+export const WORKER_COMMAND_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'related-test-cmd', 'integration-cmd', 'e2e-cmd', 'storybook-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
   'pr-description-checks', 'db-migrate-cmd', 'seed-cmd'];
 // Never allowed even as the exact configured command: a prefix rule for `rm -rf build` also matches
 // `rm -rf build /`, and a shell, fetcher or privilege tool is an allow-everything. git, gh and docker
