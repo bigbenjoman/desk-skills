@@ -478,7 +478,7 @@ put('xi', { port: 4300, beat: 1, supervised: true, merge: 'yes', tickets: {
   'X-5': greenPr(95, { fix_tries: spentTries, stuck: { why: 'review feedback still open after 2 fix tries: 1 unresolved thread — src/auth.ts:9 "P0 a hung DOB probe"', pr: 95, head: 'h95' } }),
 } });
 const xi = N.collect({ word: 'xi' }).items;
-t('DS-419 AC7 a PR out of fix tries for its feedback is the person\'s, naming the thread', xi.find((i) => i.t.key === 'X-5')?.need, 'PR #95 still has review feedback open desk\'s own repairs did not fix: 1 unresolved thread — src/auth.ts:9 "P0 a hung DOB probe". Answer and resolve it, or fix it on its branch; desk then merges it.');
+t('DS-419 AC7 a PR out of fix tries for its feedback is the person\'s, naming the thread', xi.find((i) => i.t.key === 'X-5')?.need, 'PR #95 still has review feedback open desk\'s own repairs did not fix: 1 unresolved thread — src/auth.ts:9 "P0 a hung DOB probe". Answer and resolve it, or fix it on its branch; desk then merges it once its checks are green.');
 t('DS-347 AC3 a green PR the driver merges is not an item, and one it holds for a thread with no try left is', xi.filter((i) => !['X-4', 'X-5'].includes(i.t.key)).map((i) => `${i.t.key} ${i.kind}`).join(), 'X-2 pr');
 t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi.find((i) => i.t.key === 'X-2')?.need, 'PR #92 is green, but held for review: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?". Resolve or answer it; desk then merges it.');
 t('DS-419 AC1 a held thread with a fix try left is not the person\'s: a worker takes it', xi.some((i) => i.t.key === 'X-3'), false);
