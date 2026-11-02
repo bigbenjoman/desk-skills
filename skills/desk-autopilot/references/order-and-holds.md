@@ -61,6 +61,13 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   blocker in no batch that the ticket was admitted behind (`held_outside`) is not STUCK: the pass
   lifts it once it is Done in Jira and its PR has merged to the batch's base.
 
+**A blocker in no batch that is a step only the person takes holds the merge, not the build.** A
+Task whose summary says apply, confirm or sign off, or a blocker whose summary names one of the
+ticket's triage `ben_steps`, is recorded on the ticket at admission as `merge_after`, not as a hold:
+the ticket is built and reviewed as any other, and the merge driver holds its PR until Jira has the
+step Done, when the pass lifts it and the PRs merge in the batch's own order. Needs you lists the
+step once, as `step:<KEY>`, naming every PR and ticket waiting on it.
+
 **Behind a failed or parked blocker, a held ticket is not a question of its own.** That blocker is
 already in front of the person (its `FAILED` line, or its park), so what is held behind it, at any
 depth, is listed once under `WAITING ON A PARK` and in `on_park`, never under `stuck` or `waiting`:

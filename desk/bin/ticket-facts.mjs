@@ -13,7 +13,8 @@
 // stderr with exit 1; pass.mjs runs this for every unfinished ticket whose record has no `epic` key.
 //
 // Adds, for a tracker key:
-//   blockers     [{key, category}] — "is blocked by" (Blocks) links, with the blocker's status category
+//   blockers     [{key, category, summary, type}] — "is blocked by" (Blocks) links, with the blocker's
+//                status category, summary and issue type
 //   other_links  how many links of another type (not Blocks, not Relates) were ignored
 //   size         XS|S|M|L|XL from the field named "Size", else a first description line "Size: M", else null
 //   epic         {key, summary, children: [{key, done}]} when its Jira parent is an epic, else null; the
@@ -56,7 +57,8 @@ function epicOf(issue, kids = new Map()) {
 
 const blockersOf = (issue) => (issue.fields?.issuelinks ?? [])
   .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
-  .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new' }));
+  .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new',
+    summary: l.inwardIssue.fields?.summary ?? null, type: l.inwardIssue.fields?.issuetype?.name ?? null }));
 
 if (process.argv[2] === '--blockers') {
   let failed = 0;

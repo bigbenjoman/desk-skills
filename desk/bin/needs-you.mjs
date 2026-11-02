@@ -41,7 +41,8 @@
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
 // `templates`, the repo's committed copies of desk's templates the supervisor found behind (done
-// checks them again).
+// checks them again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
+// it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then the longest waiting, less any put off with not-now whose inputs are unchanged and, where
 // its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
@@ -53,11 +54,11 @@ import { fileURLToPath } from 'node:url';
 import { gapsFix, personReviewFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
-import { batchHolding } from './batches.mjs';
+import { batchHolding, listBatches } from './batches.mjs';
 
 // A question longer than this is cut on its line: the session asks it, not reads it in full.
 const QUESTION_MAX = 240;
@@ -280,6 +281,47 @@ function templatesItem(r, rec) {
 }
 const standingOf = (repos, r) => repos.find((x) => x.slug === r.slug && x.batch == null) ?? r;
 
+// ---- the person's steps: one item for each, not one per ticket waiting on it ---------------------
+// A blocker in no batch that is a step only the person takes holds the merge of every ticket admitted
+// behind it (merge_after), not its build. The step is one item, `step:<KEY>`, for the repo however
+// many of its batches have a ticket still to merge on it, naming every PR and ticket waiting in each;
+// the pass lifts the hold once Jira has the step Done, so done records nothing. `batches` are one
+// repo's; each item is shown in `r`, the standing batch where it is one of them, else the first by
+// name with a ticket waiting, and is put off in `dir`, always the standing batch's state folder, so
+// desk-q's count over any of the repo's batches and this list read one register.
+const STEP = 'step:';
+const standingDir = (b) => (b.batch == null ? b.stateDir : resolve(b.stateDir, '..', '..'));
+// Every ticket in any of the repo's batches still to merge on the step, read from the queues on disk,
+// so a step is put off under the same inputs whichever of the repo's batches a caller passed.
+const waitingOn = (slug, key) => listBatches(slug)
+  .flatMap((b) => { try { return Object.values(readQueue(b.queue).tickets ?? {}); } catch { return []; /* no queue there */ } })
+  .filter((t) => !t.merged_at && t.state !== 'failed' && keysOf(t.merge_after).includes(key)).map((t) => t.key).sort();
+function stepItems(batches) {
+  const waits = new Map();
+  for (const b of batches) {
+    for (const t of Object.values(b.q?.tickets ?? {})) {
+      if (t.merged_at || t.state === 'failed') continue;
+      for (const k of keysOf(t.merge_after)) waits.set(k, [...(waits.get(k) ?? []), { b, t }]);
+    }
+  }
+  const standing = batches.find((b) => b.batch == null);
+  return [...waits].map(([key, ws]) => {
+    const r = standing ?? ws.map((w) => w.b).sort((a, c) => String(a.batch).localeCompare(String(c.batch)))[0];
+    return { r, dir: standingDir(r), in: new Set(ws.map((w) => w.b)), t: { key: `${STEP}${key}` }, item: { ...stepItem(key, ws), waiting: waitingOn(r.slug, key) } };
+  });
+}
+function stepItem(key, ws) {
+  const summary = ws.map(({ b, t }) => (triageOf(b.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
+  const what = ({ t }) => (t.state === 'done' && t.result?.pr != null ? `PR #${t.result.pr} (${t.key})` : `${t.key} (${t.state === 'running' ? 'being built' : t.state === 'done' ? 'no PR' : 'not built yet'})`);
+  const n = ws.length, merges = ws.filter(({ b }) => b.ctx?.merges).length;
+  const merger = merges === n ? 'desk merges them in order' : merges === 0 ? 'you merge them on GitHub'
+    : 'desk merges those in batches it merges, and you merge the rest on GitHub';
+  return { kind: 'step', step: key,
+    need: `${key}${summary ? ` ("${clip(summary)}")` : ''} is a step only you can take, and ${n === 1 ? 'one ticket waits' : `${n} tickets wait`} to merge on it: ${andList(ws.map(what))}. Do it and move ${key} to Done in Jira; the next pass that reads it lifts the hold, and ${merger}`,
+    actions: [['done', `once ${key} is Done in Jira, the next pass that reads it lifts the hold`], ['not-now']],
+    since: finite(Math.min(...ws.map(({ t }) => timeOf(t.added_at) ?? Infinity))) };
+}
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 function itemOf(r, x) {
   const t = x.t;
@@ -369,6 +411,8 @@ function itemOf(r, x) {
 const PARK_KINDS = ['parked', 'session', 'spine', 'plan'];
 function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
+  // A step: what waits on it in every batch of the repo, not its need, which names only those passed.
+  if (item.kind === 'step') return { question: `${t.key} step`, inputs: { ticket: t.key, waiting: item.waiting.join(', ') } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
@@ -414,18 +458,21 @@ function stampItem(r, x, item) {
 }
 
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
-// `b`): the rows that need the person (`rows`, `shown` of them), less `putOff`, those put off with
-// unchanged inputs.
+// `b`): the rows that need the person (`rows`), plus its person's-step items (stepItems), as
+// `shown`, less `putOff`, those put off with unchanged inputs.
 export function needsCount(r) {
   const registers = new Map();
+  const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
   const rows = [];
-  let putOff = 0;
+  let putOff = 0, steps = 0;
   for (const x of [...basePushRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
-    if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir));
-    if (judged(b, x, registers.get(b.stateDir)).l.status === 'put_off') putOff++; else rows.push(x);
+    if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
-  return { shown: rows.length, putOff, rows };
+  for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+  }
+  return { shown: rows.length + steps, putOff, rows };
 }
 
 // The batches `word` names, else every batch desk-q's home screen shows.
@@ -441,6 +488,15 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
   const seen = new Map();
   const unsetIn = (slug, k) => { const id = `${slug}\t${k}`; if (!seen.has(id)) seen.set(id, repoPermissionUnset(slug, k)); return seen.get(id); };
   const groups = new Map();
+  // The repo-level and step items, put off under their own key as any other item is.
+  // `dir` is where it is put off, its batch's state folder unless the item names another.
+  const repoItem = (r, t, item, since, dir = r.stateDir) => {
+    const key = putOffKey(r, t, item);
+    const l = lookup(readRegister(dir), key);
+    if (l.status === 'put_off') { putOff++; return; }
+    if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
+    items.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since, broken: false });
+  };
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
     for (const x of [...batchRows(r), ...needsRows(r)]) {
@@ -458,14 +514,14 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
       items.push({ r, t: x.t, ...item, since, broken: PRODUCTION_BROKEN.test(x.t.park?.question ?? '') });
     }
   }
-  // The repo-level items, put off under their own key as any other item is.
-  const repoItem = (r, t, item, since) => {
-    const key = putOffKey(r, t, item);
-    const l = lookup(readRegister(r.stateDir), key);
-    if (l.status === 'put_off') { putOff++; return; }
-    if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
-    items.push({ r, t, ...item, putOffKey: key, since, broken: false });
-  };
+  // A step once for its repo, over every readable batch of it, listed where a batch in scope waits on it.
+  const inScope = scope.filter((x) => !x.error && x.q);
+  for (const slug of new Set(inScope.map((x) => x.slug))) {
+    const dirs = new Set(inScope.filter((x) => x.slug === slug).map((x) => resolve(x.stateDir)));
+    for (const s of stepItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) {
+      if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+    }
+  }
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -517,7 +573,7 @@ function queueCmd(r, args) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now) }) {
-  if (ticket.startsWith(UNSET) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -697,12 +753,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   }
 }
 
-// A repo-level item's answer. Done on an unset row requeues every ticket parked on it once the row is
-// set, each in its own batch (or names the live session to message); done on behind templates checks
-// the copies again now.
+// A repo-level or step item's answer. Done on an unset row requeues every ticket parked on it once the
+// row is set, each in its own batch (or names the live session to message); done on behind templates
+// checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, now, repos }) {
   const c = collect({ word, now, repos });
-  let i = c.items.find((y) => y.repoLevel && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step') && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
     const key = ticket.slice(UNSET.length);
@@ -719,9 +775,10 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
   const say = (ok, line, message = null) => ({ ok, line: `${i.r.repo} ${ticket}: ${line}`, message });
   if (!i.actions.some(([a]) => a === verb)) return say(false, `${verb} is not an action for a ${i.kind} item (${i.actions.map(([a]) => a).join(', ')}).`);
   if (verb === 'not-now') {
-    addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString() }), i.r.stateDir);
-    return say(true, `put off (${notNowPath(i.r.stateDir)}).`);
+    addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
+    return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
   }
+  if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
   if (i.kind === TEMPLATES) {
     let rec;
     try { rec = templatesCheck({ slug: i.r.slug, force: true, now }).record; } catch (e) { return say(false, `could not check the copies again (${one(e.message)}), so it stays on your list.`); }

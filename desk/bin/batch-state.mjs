@@ -186,6 +186,19 @@ export function lanePark(r) {
     : `lane ${r.lane} — ${why.slice(0, 160)}`;
 }
 
+// Whether blocker `b` (a triage record's `blockers` entry) is a step only the person takes, such as a
+// migration applied or a sign-off: a Task whose summary says apply, confirm or sign off, or one whose
+// summary names a step the blocked ticket's triage record `rec` lists in ben_steps. Open and in no
+// batch, it holds the blocked ticket's merge, not its build (merge_after).
+const STEP_WORDS = /\b(appl(?:y|ies|ied)|confirm(?:s|ed)?|sign(?:s|ed)?[- ]?off)\b/i;
+export function personStep(b, rec = null) {
+  const summary = String(b?.summary ?? '').trim().toLowerCase();
+  if (!summary) return false;
+  const named = (Array.isArray(rec?.ben_steps) ? rec.ben_steps : [])
+    .some((s) => [s?.step, s?.blocker].some((x) => String(x ?? '').trim() && summary.includes(String(x).trim().toLowerCase())));
+  return named || (/^task$/i.test(String(b?.type ?? '').trim()) && STEP_WORDS.test(summary));
+}
+
 // Where a held ticket's hold leads: the parked or failed tickets it waits on, an empty list when every
 // predecessor is progressing (running, waiting to spawn, done with a PR that is open, itself held
 // and going somewhere, or a blocker in no batch it was admitted behind, held_outside) or merged (done

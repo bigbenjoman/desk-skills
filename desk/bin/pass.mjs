@@ -2219,18 +2219,20 @@ if (unreadEpics.length) {
 // `blockers`, kept on the ticket as outside_blockers [{key, category}] for desk-q. Only a ticket that
 // has some is read from Jira again (ticket-facts.mjs --blockers), at most once every INTAKE_EVERY_MS,
 // so this reads Jira no more often than intake does. A read that fails leaves the record, and so the
-// recorded blockers, as they were.
+// recorded blockers, as they were. A ticket waiting to merge on the person's steps (merge_after) is
+// read while it waits, done or not and whether or not a step has since joined this queue.
 const qB = queue();
 const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
 const outsideOf = (rec) => (Array.isArray(rec?.blockers)
   ? rec.blockers.filter((b) => !(b.key in qB.tickets) && b.category !== 'done').map((b) => ({ key: b.key, category: b.category }))
   : null);
+const waitsOnStep = (t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
 const onTracker = Object.values(qB.tickets).filter((t) => {
-  if (!onJira || t.state === 'done') return false;
+  if (!onJira || (t.state === 'done' && !waitsOnStep(t))) return false;
   const k = E.ticketKind(t.key);
   return k.ok && k.kind === 'tracker';
 });
-const blockersDue = onTracker.filter((t) => (t.outside_blockers ?? outsideOf(triageRec(t.key)) ?? []).length > 0
+const blockersDue = onTracker.filter((t) => (waitsOnStep(t) || (t.outside_blockers ?? outsideOf(triageRec(t.key)) ?? []).length > 0)
   && !(t.outside_blockers_read && Date.now() - Date.parse(t.outside_blockers_read) < INTAKE_EVERY_MS)).map((t) => t.key);
 if (blockersDue.length) {
   const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--blockers', ...blockersDue], { timeout: 120_000 });
@@ -2277,6 +2279,28 @@ for (const t of onTracker) {
       q('front', t.key);
       epicLines.push(`outside hold: ${t.key}: ${what}; RELEASED`);
     }
+  }
+}
+
+// ---- merge holds on the person's steps -----------------------------------
+// A ticket admitted with blockers in no batch that are the person's steps (merge_after) is built as any
+// other, and the merge driver holds its PR. Each step is lifted once its triage record's `blockers`
+// read it Done (a step has no code to land), or no longer list it; lifting the last lets the driver
+// merge it, in the order the batch's own holds give.
+{
+  const qM = queue();
+  for (const t of Object.values(qM.tickets).filter(waitsOnStep)) {
+    const steps = keysOf(t.merge_after);
+    const blockers = triageRec(t.key)?.blockers;
+    if (!Array.isArray(blockers)) continue;
+    const doneNow = steps.filter((p) => blockers.some((b) => b?.key === p && b.category === 'done'));
+    const unlinked = steps.filter((p) => !blockers.some((b) => b?.key === p));
+    const left = steps.filter((p) => !doneNow.includes(p) && !unlinked.includes(p));
+    if (left.length === steps.length) continue;
+    const what = [doneNow.length && `${doneNow.join(', ')} Done`, unlinked.length && `${unlinked.join(', ')} no longer linked as a blocker`].filter(Boolean).join('; ');
+    if (DRY) { epicLines.push(`merge hold (dry run): ${t.key}: ${what}`); continue; }
+    q('set', t.key, `merge_after=${left.join('|') || 'null'}`);
+    epicLines.push(`merge hold: ${t.key}: ${what}; ${left.length ? `still merges only after ${left.join(', ')}` : 'free to merge'}`);
   }
 }
 
@@ -2729,6 +2753,10 @@ for (const t of Object.values(qNow.tickets).filter((r) => r.approved === true &&
   const n = t.result.pr;
   if (merger.driver) continue;
   if (readPr(n) === 'MERGED') continue;
+  if (keysOf(t.merge_after).length) {
+    report.waiting.push(`${t.key}: MERGE HELD — spine PR #${n} is approved, but it merges only after your step ${keysOf(t.merge_after).join(', ')} is Done in Jira: do not merge it yet; the next pass that reads the step Done lifts the hold`);
+    continue;
+  }
   report.waiting.push(`${t.key}: SPINE APPROVED — merge PR #${n} once it is green (${merger.rows}, so no merge driver merges it); what is held behind it is released once it merges`);
 }
 // Out of draft and green with no merge driver to merge it (config §3, or the batch declined at Stage 3):
@@ -2741,6 +2769,13 @@ if (!merger.driver && undrafted.length) {
   for (const { t, s } of undrafted) {
     if (t.approved === true || s.mergeable === 'CONFLICTING') continue;
     if (evaluateGate(s.checks, gateCfg).state !== 'pass') continue;
+    // The person's steps hold the merge here as they hold the driver's: needs-you asks for the step,
+    // and the PR is put to them to merge only once the pass has lifted the last one.
+    const steps = keysOf(t.merge_after);
+    if (steps.length) {
+      report.waiting.push(`${t.key}: MERGE HELD — PR #${s.pr} is out of draft and green, but it merges only after your step ${steps.join(', ')} is Done in Jira: do not merge it yet; the next pass that reads the step Done lifts the hold and puts it to you to merge`);
+      continue;
+    }
     if (feedbackFirst && s.reviewDecision === 'CHANGES_REQUESTED') {
       report.waiting.push(`${t.key}: CHANGES REQUESTED — PR #${s.pr} is out of draft and green, but changes are requested on it, and no merge driver merges it (${merger.rows}): work the feedback first, then merge it yourself`);
       continue;

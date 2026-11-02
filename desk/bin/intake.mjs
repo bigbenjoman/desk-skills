@@ -28,7 +28,9 @@
 //     when the ticket is admitted (decisions.mjs triageCalls);
 //   - otherwise admitted (queue.mjs admit --by intake), held in the same write behind every open
 //     blocker in the batch, and every blocker in no batch until it is Done and its code is on the
-//     batch's base (--hold-outside, lifted by pass.mjs); or, when it links a Claude Design canvas no
+//     batch's base (--hold-outside, lifted by pass.mjs). An open blocker in no batch that is a step
+//     only the person takes (batch-state.mjs personStep) holds its merge instead, not its build
+//     (--hold-merge: the merge driver holds its PR until pass.mjs reads the step Done); or, when it links a Claude Design canvas no
 //     worker can read, parked on that instead, so Needs you names the artifact to snapshot or share.
 // With no queue, or one whose tickets are all done with no PR open, a batch is started for it
 // (`standing-<time>`, handed to the supervisor at once). A batch not handed over, an empty one included
@@ -54,7 +56,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
-import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern } from './batch-state.mjs';
+import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, personStep } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 import { startEpic, clearAbandoned } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
@@ -133,15 +135,18 @@ export function landedOn(key, base) {
 // How a triaged ticket's blockers hold it in a batch holding `tickets`, on `base`: `held`, those in
 // the batch not merged there, open in Jira or Done with a PR still to merge, released as they merge;
 // `outside`, those in no batch, open or Done with their code not yet on `base`, lifted by the pass once
-// each is both; `failed`, open ones that failed in the batch, which nothing releases.
+// each is both; `failed`, open ones that failed in the batch, which nothing releases; `merge`, open
+// ones in no batch that are a step only the person takes (personStep), which hold its merge, not its
+// build, until each is Done.
 function holdsFor(rec, tickets, base) {
-  const out = { held: [], outside: [], failed: [] };
+  const out = { held: [], outside: [], failed: [], merge: [] };
   for (const b of Array.isArray(rec.blockers) ? rec.blockers : []) {
     const t = tickets[b.key];
     if (t) {
       if (b.category !== 'done') out[t.state === 'failed' ? 'failed' : 'held'].push(b.key);
       else if (t.state !== 'failed' && !t.merged_at && !(t.state === 'done' && t.result?.pr == null)) out.held.push(b.key);
-    } else if (b.category !== 'done' || landedOn(b.key, base) !== true) out.outside.push(b.key);
+    } else if (b.category !== 'done' && personStep(b, rec)) out.merge.push(b.key);
+    else if (b.category !== 'done' || landedOn(b.key, base) !== true) out.outside.push(b.key);
   }
   return out;
 }
@@ -242,13 +247,14 @@ function startStanding(cur, now) {
 }
 
 // queue.mjs admit's arguments for a ticket's holds (holdsFor).
-const holdArgs = ({ held, outside }) => [...(held.length ? ['--hold', held.join(',')] : []), ...(outside.length ? ['--hold-outside', outside.join(',')] : [])];
+const holdArgs = ({ held, outside, merge = [] }) => [...(held.length ? ['--hold', held.join(',')] : []), ...(outside.length ? ['--hold-outside', outside.join(',')] : []),
+  ...(merge.length ? ['--hold-merge', merge.join(',')] : [])];
 // Admit one ticket that passed, held behind its blockers (holdsFor) in the same write, so no pass sees
-// it runnable first: {held, outside}, or why queue.mjs refused. One whose design no worker can read is
-// admitted parked on it, its holds kept for when it is requeued (queue.mjs admit).
+// it runnable first: {held, outside, merge}, or why queue.mjs refused. One whose design no worker can
+// read is admitted parked on it, its holds kept for when it is requeued (queue.mjs admit).
 function admitHeld(key, holds, by) {
   const a = queueCmd('admit', key, '--by', by, ...holdArgs(holds));
-  return a.status === 0 ? { held: holds.held, outside: holds.outside } : { why: lastLine(a) };
+  return a.status === 0 ? { held: holds.held, outside: holds.outside, merge: holds.merge } : { why: lastLine(a) };
 }
 // The register entry for an epic whose feature batch was started, so intake never takes it again.
 const epicEntry = (s, by, now) => ({ at: now.toISOString(), outcome: 'admitted', batch: s.batch,
@@ -259,10 +265,11 @@ function noteEpic(state, key, s, by, now) {
   writeIntake(state, reg);
 }
 const laneSize = (rec) => `lane ${rec.lane ?? '?'}${rec.size ? `, size ${rec.size}` : ''}${rec.verify_only ? ', verify-only' : ''}`;
-// How an admitted ticket is held, from its placement's {held, outside, base}. `refused`, blockers this
-// call did not admit, are named as such.
-const heldText = ({ held = [], outside = [], base = null }, refused = new Set()) => `${held.length ? `, held behind ${held.join(', ')}` : ''}${outside.length
-  ? `, waiting for ${outside.map((k) => (refused.has(k) ? `${k} (not admitted in this call)` : k)).join(', ')}, outside the batch, until ${outside.length === 1 ? 'it is' : 'each is'} Done and on ${base ?? 'its base'}` : ''}`;
+// How an admitted ticket is held, from its placement's {held, outside, merge, base}. `refused`, blockers
+// this call did not admit, are named as such.
+const heldText = ({ held = [], outside = [], merge = [], base = null }, refused = new Set()) => `${held.length ? `, held behind ${held.join(', ')}` : ''}${outside.length
+  ? `, waiting for ${outside.map((k) => (refused.has(k) ? `${k} (not admitted in this call)` : k)).join(', ')}, outside the batch, until ${outside.length === 1 ? 'it is' : 'each is'} Done and on ${base ?? 'its base'}` : ''}${merge.length
+  ? `, built now and merged only once ${merge.join(', ')} (${merge.length === 1 ? "the person's step" : "the person's steps"}) ${merge.length === 1 ? 'is' : 'are'} Done` : ''}`;
 
 // Logs each call the triage record took on its recommendation to the decision log in `state`, the
 // state of the batch the ticket joined, for the check-in digest: ", took N call(s) …", or ''.
@@ -365,7 +372,7 @@ function placeOne(key, rec, { started, by, now, mayStart = true }) {
     batch = started = st.name;
   }
   const a = admitHeld(key, holds, by);
-  return a.held ? { batch, base, held: a.held, outside: a.outside, started: startNew ? started : null } : { admitFailed: a.why, started: startNew ? started : null };
+  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, started: startNew ? started : null } : { admitFailed: a.why, started: startNew ? started : null };
 }
 
 function intake({ state, query, reg, now }) {
@@ -558,7 +565,7 @@ function joinFeature(key, epic, { by }) {
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds.held;
   try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter((k) => k && !holds.outside.includes(k)); } catch { /* admitted: say the holds asked for */ }
-  return { batch: b, base, held, outside: holds.outside, rec: t.rec, took: logTaken(key, t.rec, b.state) };
+  return { batch: b, base, held, outside: holds.outside, merge: holds.merge, rec: t.rec, took: logTaken(key, t.rec, b.state) };
 }
 
 function byHand(keys, { state, by, front, now }) {

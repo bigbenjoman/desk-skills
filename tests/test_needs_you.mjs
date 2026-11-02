@@ -720,11 +720,15 @@ t('DS-380 a worktree holding its own commits is never removed, and nothing moves
 const m3 = N.record({ word: 'omega', ticket: 'M-3', action: 'move', text: 'G-9' });
 t('DS-380 AC2 a move naming a batch that is not running is refused, naming those that are', `${m3.ok} ${m3.line}`, 'false omega M-3: G-9 is not a batch running in omega beside this one, so nothing was moved. The batches running are F-1 (on feat/f).');
 t('DS-380 AC2 and nothing moved', `${'M-3' in queueOf('omega').tickets} ${'M-3' in fQueue().tickets}`, 'true false');
-// A feature batch whose spine is not done holds a ticket moved into it behind that spine.
+// A feature batch whose spine is not done holds a ticket moved into it behind that spine. M-4 also
+// merges only after the person's step OPS-4, which goes with it.
 writeFileSync(fq, JSON.stringify({ ...fQueue(), feature: true, spine: 'F-2' }));
+const omegaQ = join(env.DESK_HOME, 'repos', 'acme__omega', 'queue.json');
+const oq4 = queueOf('omega'); oq4.tickets['M-4'].merge_after = 'OPS-4'; writeFileSync(omegaQ, JSON.stringify(oq4));
 const m4 = N.record({ word: 'omega', ticket: 'M-4', action: 'move', text: 'F-1' });
 const mv4 = fQueue().tickets['M-4'];
 t('DS-380 a ticket moved into a feature batch waits behind its unfinished spine', `${m4.ok} ${mv4?.state} ${mv4?.held_by}`, 'true parked F-2');
+t('DS-407 a ticket moved to another batch keeps its merge hold on the person\'s step', mv4?.merge_after, 'OPS-4');
 // New files nobody committed are work too: the worktree stays, and nothing moves.
 og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
 writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
@@ -754,7 +758,6 @@ t('DS-401 AC4 with its question, inputs and actions unchanged, it stays put off,
   `${'M-3' in omega()} ${'M-2' in omega()} ${N.collect({ word: 'omega', repos: loadRepos(NOW + 86400000) }).items.some((i) => ['M-2', 'M-3'].includes(i.t.key))}`, 'false false false');
 // A park put off straight through answer.mjs (the orchestrator, the digest) or not-now.mjs add records
 // its item's actions too, so one it gains brings it back as M-3 came back.
-const omegaQ = join(env.DESK_HOME, 'repos', 'acme__omega', 'queue.json');
 const oq = queueOf('omega');
 oq.tickets['M-6'] = { key: 'M-6', ...parked('A', 7, 'which copy for M-6?') };
 oq.tickets['M-7'] = { key: 'M-7', ...parked('A', 6, 'which copy for M-7?') };
@@ -938,6 +941,41 @@ t('DS-403 AC2 approve records approved.base_push on the batch queue', `${bpOk.ok
 t('DS-403 AC3 with the approval recorded there is no item, and desk-q counts none', `${rho2().length} ${rho2Count()}`, '0 0');
 put('rho2', { port: 3830, beat: 1, supervised: true, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-403 AC4 with no ask recorded there is no item', `${rho2().length} ${N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' }).ok}`, '0 false');
+
+// ---- DS-407: the person's step is one item, naming every PR and ticket waiting to merge on it
+const waitsOn = (pr) => ({ state: 'done', lane: 'A', result: { pr }, pr_status: { pr, state: 'OPEN', isDraft: false, checks: [] }, merge_after: 'OPS-9' });
+put('kappa407', { port: 5407, beat: 1, supervised: true, tickets: { 'K-1': waitsOn(71), 'K-2': waitsOn(72), 'K-3': { state: 'running', lane: 'A', merge_after: 'OPS-9' } },
+  triage: { 'K-1': { blockers: [{ key: 'OPS-9', category: 'new', type: 'Task', summary: 'Apply the billing migration' }] } } });
+const kp = () => N.collect({ word: 'kappa407' }).items;
+t('DS-407 AC2 one item for the step, and none for each PR waiting on it', kp().map((i) => `${i.t.key} ${i.kind}`).join(), 'step:OPS-9 step');
+t('DS-407 AC2 it names the step and every PR and ticket waiting on it', kp()[0].need.startsWith('OPS-9 ("Apply the billing migration") is a step only you can take, and 3 tickets wait to merge on it: PR #71 (K-1), PR #72 (K-2) and K-3 (being built). Do it and move OPS-9 to Done in Jira'), true);
+t('DS-407 its actions are done and not-now', kp()[0].actions.map((a) => a[0]).join(), 'done,not-now');
+t('DS-407 the list prints it as a line of its batch', cli('list', 'kappa407').out.split('\n').some((l) => l.startsWith('kappa407 step:OPS-9 step')), true);
+const kpCount = () => N.needsCount(loadRepos().find((r) => r.name === 'kappa407'));
+t('DS-407 desk-q counts the step as needing you, as the list shows it', `${kpCount().shown} ${kpCount().putOff}`, '1 0');
+const kpDone = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'done' });
+t('DS-407 done records nothing: the pass reads the step from Jira', `${kpDone.ok} ${/next pass that reads OPS-9 from Jira lifts the hold/.test(kpDone.line)}`, 'true true');
+const kpOff = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'not-now' });
+t('DS-407 not-now puts it off, in the list and in desk-q\'s count', `${kpOff.ok} ${kp().length} ${kpCount().shown} ${kpCount().putOff}`, 'true 0 0 1');
+// A step two of the repo's batches wait on is still one item, naming the PRs in both.
+const kfq = join(env.DESK_HOME, 'repos', 'acme__kappa407', 'batches', 'KF', 'queue.json');
+const kfs = join(env.HOME, '.desk-autopilot', 'acme__kappa407', 'batches', 'KF');
+mkdirSync(dirname(kfq), { recursive: true });
+mkdirSync(join(kfs, 'orchestrators'), { recursive: true });
+writeFileSync(kfq, JSON.stringify({ version: 1, batch: 'kf-batch', base: 'feat/k', concurrency: 1, supervised: true, tickets: { 'K-4': { key: 'K-4', added_at: minsAgo(600), ...waitsOn(74) } } }));
+writeFileSync(join(kfs, 'orchestrators', 'q.json'), JSON.stringify({ queue: kfq, batch: 'kf-batch', pid: 1, at: minsAgo(1) }));
+const { repoRow } = await import('../desk/bin/desk-q.mjs');
+const kRow = () => repoRow(loadRepos().filter((r) => r.slug === 'acme__kappa407'));
+const kAll = kp().filter((i) => i.kind === 'step');
+t('DS-407 AC2 a step two batches wait on is one item, listing the PRs in both', `${kAll.length} ${kAll[0]?.t.key} ${/4 tickets wait to merge on it: PR #71 \(K-1\), PR #72 \(K-2\), K-3 \(being built\) and PR #74 \(K-4\)/.test(kAll[0]?.need)}`, '1 step:OPS-9 true');
+t('DS-407 AC2 it is keyed in the standing batch', kAll[0]?.r.batch ?? null, null);
+t('DS-407 AC2 desk-q counts it once for the repo, with its tickets now changed since the not-now', `${kRow().batches.length} ${N.needsCount(kRow()).shown}`, '2 1');
+t('DS-407 AC2 the feature batch on its own lists the same one item', N.collect({ word: 'kappa407:KF' }).items.filter((i) => i.kind === 'step').map((i) => i.t.key).join(), 'step:OPS-9');
+const kfOff = N.record({ word: 'kappa407:KF', ticket: 'step:OPS-9', action: 'not-now' });
+const kfBatch = () => loadRepos().find((r) => r.slug === 'acme__kappa407' && r.batch != null);
+const kfOnly = () => N.needsCount(repoRow([kfBatch()]));
+t('DS-407 AC2 put off from the feature batch, it is put off in the standing batch\'s register', `${kfOff.ok} ${kfOff.line.includes(join('.desk-autopilot', 'acme__kappa407', 'not-now'))}`, 'true true');
+t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alone, and the list', `${N.needsCount(kRow()).shown} ${N.needsCount(kfBatch()).putOff} ${kfOnly().shown} ${kp().filter((i) => i.kind === 'step').length}`, '0 1 0 0');
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
