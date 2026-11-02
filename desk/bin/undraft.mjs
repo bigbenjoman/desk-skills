@@ -326,7 +326,8 @@ export function personHold(t, n, redrafts = []) {
 // evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
 // the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
 // pr-conflict-unreviewed and -reviewed), untriggered(base, head, branch) -> gate.mjs untriggeredChecks's map
-// for a required check that never reported }.
+// for a required check that never reported, stale(base, head, branch, baseHead) -> staleTriggers's
+// { behind, reopen } for one the pass's base sync or reopen starts }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -373,6 +374,13 @@ export function undraftCall(t, pr, cfg) {
     if (Object.keys(untriggered).length) gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [], untriggered });
   }
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  // One the base's or the default branch's copy of the workflow runs waits for the pass, which syncs the
+  // base and reopens the PR so it gets a run.
+  if (gate.state === 'absent' && !gate.failing.length && pr.base && cfg.stale) {
+    const s = cfg.stale(pr.base, pr.head, pr.branch ?? null, pr.baseHead ?? null) ?? {};
+    const why = { ...s.behind, ...s.reopen };
+    if (Object.keys(why).length) return { call: 'wait', why: `its base ${pr.base} is to be synced or the PR reopened before CI runs: ${Object.entries(why).map(([c, w]) => `required check "${c}" ${w}`).join('; ')}` };
+  }
   // Checks a workflow skips on a draft never go green there, so only the person's undraft runs them.
   const skipped = gate.state !== 'pass' && skippedOnly(pr.checks);
   // A red check is a code change for a fix worker, and a head with no verdict to read is a review for a

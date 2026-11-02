@@ -36,7 +36,7 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ, untriggeredChecks, readWorkflows } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows } from './gate.mjs';
 import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -1310,6 +1310,12 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   const featureMode = fresh.feature === true;
   if (featureMode && SLICE.bad) report.waiting.push(SLICE.bad);
   const willSpawn = slots > 0 && spawnable.length > 0;
+  // An open child PR whose required check the default branch's workflow runs on the base, but the
+  // base's does not (pr_status.behind, from the last pass), gets CI only once the base is synced, so the
+  // base syncs even with nothing to spawn.
+  const staleCI = Object.values(fresh.tickets ?? {}).filter((t) => t.state === 'done' && t.pr_status?.pr === t.result?.pr
+    && t.pr_status?.state === 'OPEN' && Object.keys(t.pr_status.behind ?? {}).length).map((t) => `PR #${t.result.pr}`);
+  const wantSync = willSpawn || staleCI.length > 0;
   const holdNote = featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands';
   const blocked = (why) => {
     report.waiting.push(`base sync: ${why} — ${holdNote}`);
@@ -1402,18 +1408,19 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   const gateBusy = gateAlive(fresh.gate);
   let metConflict = false;
   if (!wt.ok) {
-    if (willSpawn) blocked(wt.why);
+    if (wantSync) blocked(wt.why);
     else report.waiting.push(`base worktree: ${wt.why}`);
-  } else if (willSpawn && gateBusy) {
+  } else if (wantSync && gateBusy) {
     baseLines.push(`base sync: skipped while the base gate runs in ${wt.path}; spawning carries on from ${BASE} as it stands`);
-  } else if (willSpawn && baseFixLive) {
+  } else if (wantSync && baseFixLive) {
     // The worktree is the fix worker's until it ends.
     metConflict = true;
     const line = `conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
     heldForFix(line);
     gateConflict = { worker: true, line };
-  } else if (willSpawn) {
+  } else if (wantSync) {
     const s = syncBase({ path: wt.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY });
+    const ciNote = staleCI.length ? `, and syncing it starts CI on ${staleCI.join(', ')}, whose required checks only ${SOURCE}'s workflow runs on ${BASE}` : '';
     // A base that syncs is no longer in conflict, so a later conflict starts its tries afresh.
     if (s.ok && !s.dry && bf && !DRY) {
       baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(bf.tries.length)}`);
@@ -1421,7 +1428,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       bf = null;
     }
     if (s.ok && s.dry) baseLines.push(`base sync (dry run): would merge ${s.merged} commit(s) from ${SOURCE} into ${BASE}; nothing pushed`);
-    else if (s.ok && s.merged) baseLines.push(`base sync: merged ${s.merged} commit(s) from ${SOURCE} into ${BASE} and pushed${s.retried ? ' (the first push was refused as non-fast-forward: fetched, merged again, retried once)' : ''}`);
+    else if (s.ok && s.merged) baseLines.push(`base sync: merged ${s.merged} commit(s) from ${SOURCE} into ${BASE} and pushed${s.retried ? ' (the first push was refused as non-fast-forward: fetched, merged again, retried once)' : ''}${staleCI.length ? `; ${staleCI.join(', ')} ${staleCI.length === 1 ? 'is' : 'are'} reopened so CI runs` : ''}`);
     else if (s.ok) baseLines.push(`base sync: ${BASE} already has everything on ${SOURCE}`);
     else if (s.reason === 'conflict') {
       metConflict = true;
@@ -1430,7 +1437,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       if (line) heldForFix(line);
       gateConflict = { worker: !!line, line: line ?? person, said: !line };
     } else if (s.reason === 'permission') {
-      const why = `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${BASE_PUSH_KEY} is "${basePushPerm}", so it was not synced`;
+      const why = `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${BASE_PUSH_KEY} is "${basePushPerm}", so it was not synced${ciNote}`;
       if (basePushPerm === 'ask' && PASS_BY === 'supervisor') {
         // No session is there to ask, so the batch is asked once, as one needs-you item; the approval
         // it records on the queue is passed to every later pass by the supervisor.
@@ -2345,7 +2352,7 @@ const prStates = {};
 // merged_at yet.
 const PR_FINAL = ['MERGED', 'CLOSED'];
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
@@ -2356,23 +2363,35 @@ function readPrStatus(n) {
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, mergeable: v.mergeable ?? null,
     mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null,
-    base: v.baseRefName ?? null, branch: v.headRefName ?? null,
+    base: v.baseRefName ?? null, branch: v.headRefName ?? null, base_head: v.baseRefOid ?? null,
     checks, at: new Date().toISOString(),
   };
 }
+// The workflows at a ref (a head sha or a branch), read once a pass.
+const workflowsAt = (ref) => cached(`workflows:${ref}`, () => readWorkflows({
+  repo: GH_REPO, ref, run: (args) => { const r = shOut('gh', args); if (!r.ok) throw new Error(r.out); return r.out; },
+}));
 // The required checks a PR's workflows, read at its head, never run on its base (gate.mjs
-// untriggeredChecks), read once per head a pass.
-const untriggeredOf = (base, head, branch) => untriggeredChecks(gateLists().required, base, cached(`workflows:${head}`, () => readWorkflows({
-  repo: GH_REPO, ref: head, run: (args) => { const r = shOut('gh', args); if (!r.ok) throw new Error(r.out); return r.out; },
-})), { branch });
-// A ready PR whose gate is absent keeps that map on pr_status as `untriggered`, so desk-q, which reads
-// no workflow, names the trigger rather than "has not reported". A read that fails keeps none.
+// untriggeredChecks), split by whether the base's copy or the default branch's runs them (staleTriggers).
+const triggersOf = (base, head, branch) => {
+  const atHead = untriggeredChecks(gateLists().required, base, workflowsAt(head), { branch });
+  if (!Object.keys(atHead).length) return { untriggered: {}, behind: {}, reopen: {} };
+  // §0 Default branch, not DEFAULT_BRANCH, which a named batch sets to its base.
+  const main = String(SOURCE ?? '').trim() || 'main';
+  return staleTriggers(atHead, base, { branch, defaultBranch: main, atBase: workflowsAt(base), atDefault: workflowsAt(main) });
+};
+const untriggeredOf = (base, head, branch) => triggersOf(base, head, branch).untriggered;
+// An open PR whose gate is absent keeps those maps on pr_status as `untriggered`, `behind` and
+// `reopen`, so desk-q, which reads no workflow, names the trigger, the base sync or the reopen rather
+// than "has not reported", and the pass syncs the base and reopens it. A draft keeps only the last two:
+// undraft.mjs words its trigger. A read that fails keeps none.
 function withUntriggered(s) {
-  if (s.state !== 'OPEN' || s.isDraft !== false || !s.base || !s.head) return s;
+  if (s.state !== 'OPEN' || typeof s.isDraft !== 'boolean' || !s.base || !s.head) return s;
   if (evaluateGate(s.checks ?? [], gateLists()).state !== 'absent') return s;
   let u = {};
-  try { u = untriggeredOf(s.base, s.head, s.branch ?? null) ?? {}; } catch { u = {}; }
-  return Object.keys(u).length ? { ...s, untriggered: u } : s;
+  try { u = triggersOf(s.base, s.head, s.branch ?? null); } catch { u = {}; }
+  const keep = Object.entries(u).filter(([k, m]) => Object.keys(m ?? {}).length && !(s.isDraft && k === 'untriggered'));
+  return keep.length ? { ...s, ...Object.fromEntries(keep) } : s;
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const BUILD_DIR = join(STATE, 'check-builds');
@@ -2403,6 +2422,7 @@ function withHistory(s, was) {
 const merges = [];
 const drafts = [];
 const undrafted = [];
+const reopens = [];
 for (const t of Object.values(qNow.tickets)) {
   // A fix try is over once its worker has finished: later spawns are no longer that try's.
   if (t.state === 'done' && t.fix && !t.fix.finished && !DRY) { q('set', t.key, `fix.finished=${PASS_AT}`); t.fix.finished = PASS_AT; }
@@ -2422,6 +2442,7 @@ for (const t of Object.values(qNow.tickets)) {
     q('set', t.key, `pr_status=${JSON.stringify(s)}`);
     if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
     if (s.state === 'OPEN' && s.isDraft === false) undrafted.push({ t, s });
+    if (s.state === 'OPEN' && Object.keys(s.reopen ?? {}).length && s.base_head) reopens.push({ t, s });
   }
   if (s.state === 'MERGED' && !t.merged_at && !DRY) {
     const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));
@@ -2429,6 +2450,31 @@ for (const t of Object.values(qNow.tickets)) {
   }
 }
 for (const m of merges) out.push(`merge recorded: ${m}`);
+
+// ---- reopen --------------------------------------------------------------
+// A PR whose required checks never reported, though its base's copy of the workflow now runs them (the
+// base gained the trigger after the PR's last pull_request event), gets a run only from a new event:
+// it is closed and reopened, once per base head. The batch keeps that head as `reopened_at`, so a PR
+// still unreported after its reopen goes to the person rather than round again.
+const toReopen = reopens.filter(({ s }) => String(s.base_head) !== String(qNow.reopened_at ?? ''));
+if (toReopen.length && DRY) out.push(`reopen (dry run): would close and reopen ${toReopen.map(({ t, s }) => `PR #${s.pr} (${t.key})`).join(', ')} so their CI runs`);
+else if (toReopen.length) {
+  const done = [];
+  let failed = false;
+  for (const { t, s } of toReopen) {
+    const n = String(s.pr);
+    const closed = shOut('gh', ['pr', 'close', n, '--repo', GH_REPO]);
+    // A closed PR is never read again, so its reopen is tried twice.
+    const r = closed.ok ? (() => { const a = shOut('gh', ['pr', 'reopen', n, '--repo', GH_REPO]); return a.ok ? a : shOut('gh', ['pr', 'reopen', n, '--repo', GH_REPO]); })() : closed;
+    if (r.ok) { done.push(`PR #${n} (${t.key})`); continue; }
+    failed = true;
+    report.waiting.push(closed.ok
+      ? `reopen: PR #${n} (${t.key}) was closed to start its CI and did not reopen (${r.out.split('\n').pop()}): gh pr reopen ${n} --repo ${GH_REPO}`
+      : `reopen: PR #${n} (${t.key}) could not be closed to start its CI (${r.out.split('\n').pop()}); the next pass tries again`);
+  }
+  if (done.length) out.push(`reopen: closed and reopened ${done.join(', ')}, whose required checks never reported though ${toReopen[0].s.base}'s workflow now runs them, so their CI runs`);
+  if (!failed) q('set-batch', `reopened_at=${toReopen[toReopen.length - 1].s.base_head}`);
+}
 
 // ---- undraft -------------------------------------------------------------
 // Each done ticket's draft PR leaves draft under Stage 7's own rules (undraft.mjs), whoever runs the
@@ -2468,6 +2514,13 @@ if (drafts.length) {
     ...gateLists(), builds: buildRow.checks, evidence: evidenceRow?.workflow ? evidenceRow : null,
   };
   cfg.untriggered = untriggeredOf;
+  // A reopen already made at this base head is not waited on again: the check is the person's then.
+  cfg.stale = (base, head, branch, baseHead) => {
+    let x;
+    try { x = triggersOf(base, head, branch); } catch { return {}; }
+    const again = baseHead && String(baseHead) === String(qNow.reopened_at ?? '');
+    return { behind: x.behind, reopen: again ? {} : x.reopen };
+  };
   if (evidenceRow?.errors) out.push(`undraft: no evidence runs this pass, since config §4 Evidence workflow does not parse: ${evidenceRow.errors.join(', ')} (want \`<workflow>.yml\` or \`none\`). Run /desk-setup`);
   if (buildRow.errors.length) out.push(`undraft: no check builds this pass, since config §4 Check builds does not parse: ${buildRow.errors.join(', ')} (want \`<check>: <command>\`). Run /desk-setup`);
   const notesFile = join(STATE, 'batch-notes.md');
@@ -2486,7 +2539,7 @@ if (drafts.length) {
     const carry = (sha) => fetched() && verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
     // A head a merge from the base last moved, since the last try's, gets its own review try, outside the fix tries.
     const baseMerge = (from) => fetched() && movedByBase({ from, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
-    const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, shotsOf(t)) });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, shotsOf(t)) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it

@@ -162,8 +162,11 @@ function holdContext(r) {
   // The merge driver reruns a red check only where §3 ci-rerun is yes, and a fix try waits for those reruns.
   let reruns = false;
   try { reruns = repoPermission(r.slug, 'ci-rerun') === 'yes'; } catch { /* a row that cannot be read is no */ }
+  // The pass syncs a batch base behind the default branch only where §3 batch-base-push is yes.
+  let basePush = 'no';
+  try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, live: r.live, stage, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -268,8 +271,23 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
     return merging([red.length > 2 ? `${checksFailed(red.length)}: ${red[0]} +${red.length - 1}` : `${red.join(', ')} failed`, FAIL], [` · ${rerunStep(ps, red, triesLeft, now)}`, null]);
   }
   // Not red and nothing running, yet not green: a required check that never reported or was skipped.
-  // Nothing reruns or repairs that, so the merge driver never merges it. One its workflow never runs on
-  // this base no re-run can bring: the fix is that workflow's trigger, a change to the repo.
+  // Nothing reruns or repairs that, so the merge driver never merges it. One the base's own workflow
+  // now runs the pass reopens the PR for, once per base head (the batch's reopened_at). One only the
+  // default branch's workflow runs waits on the base sync: the pass's where §3 batch-base-push or the
+  // batch's approval lets it, the base-push item's where it was asked, else the person's.
+  const reopen = Object.keys(ps.reopen ?? {}), behind = Object.keys(ps.behind ?? {});
+  if (gate.state === 'absent' && reopen.length && String(q?.reopened_at ?? '') !== String(ps.base_head ?? '')) {
+    return merging([`${ps.base ?? 'its base'} now runs ${reopen.join(', ')}`, WARN], [' · the next pass closes and reopens it so CI runs', null]);
+  }
+  if (gate.state === 'absent' && behind.length) {
+    const base = ps.base ?? 'its base';
+    if (ctx.basePush === 'yes' || q?.approved?.base_push === true) return merging([`${base} is behind the default branch`, WARN], [' · the next pass syncs it and reopens this PR so CI runs', null]);
+    if (q?.base_push_ask) return merging([`${base} is behind the default branch`, WARN], [' · waits on the base-push item', null]);
+    const text = `required check "${behind[0]}" ${ps.behind[behind[0]]}`;
+    return needs({ code: 'behind', names: behind, base: ps.base ?? null, text }, [text, FAIL], [` · sync ${base}, then reopen it`, null]);
+  }
+  // One its workflow never runs on this base no re-run can bring: the fix is that workflow's trigger, a
+  // change to the repo.
   if (gate.state === 'absent' && gate.untriggered.length) {
     const text = gate.reasons.find((r) => gate.untriggered.some((n) => r.startsWith(`required check "${n}" never runs`))) ?? gate.reasons[0];
     return needs({ code: 'trigger', names: gate.untriggered, base: ps.base ?? null, text }, [text, FAIL], [` · add ${ps.base ?? 'its base'} to that workflow's trigger`, null]);
@@ -319,6 +337,7 @@ function draftNeed(q, t, needs, merging) {
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
+  if (u?.call === 'wait' && /^its base /.test(u.why ?? '')) return merging(['draft', null], [' · base being synced or the PR reopened so CI runs', null]);
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
   // Its evidence run failed for the repo, and a fix ticket in the batch takes it on for every PR it failed.
   if (u?.call === 'evidence-fix') return merging(['draft', null], [` · evidence workflow broken, ${/; (\S+) fixes it/.exec(u.why ?? '')?.[1] ?? 'a fix ticket'} fixes it, then screenshots are taken again`, null]);

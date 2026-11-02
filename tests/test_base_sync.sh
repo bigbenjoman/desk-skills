@@ -439,4 +439,46 @@ check "AC7 no base: nothing is recorded"              '[ ! -e "$C/state/baseline
 fresh dry; tip=$(origin_tip); out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
 check "a dry run pushes nothing and says what it would merge" '[ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"would merge 2 commit(s)"* ]]'
 
+# DS-416: a base cut before main added feat/** to the CI trigger. gh serves PR #801 into feat/x with
+# its required check "tests" unreported, and ci.yml at three refs: the PR's head as written below,
+# the base from $T/basewf and main from $T/mainwf. The base head is $T/bhead. Every gh call is logged to $T/ghlog.
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/ghlog"
+case "\$1 \$2" in
+  "pr view") printf '{"state":"OPEN","url":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","headRefOid":"h1","headRefName":"feat/T-1","baseRefName":"feat/x","baseRefOid":"%s","statusCheckRollup":[{"name":"Vercel","status":"COMPLETED","conclusion":"SUCCESS"}]}\n' "\$(cat "$T/bhead")"; exit 0 ;;
+  "pr close"|"pr reopen") exit 0 ;;
+esac
+case "\$*" in
+  *"workflows?ref="*--jq*) echo .github/workflows/ci.yml ;;
+  *"ci.yml?ref=h1"*) printf 'on:\n  pull_request:\n    branches: [main]\njobs:\n  tests:\n    runs-on: x\n' ;;
+  *"ci.yml?ref=feat%2Fx"*) printf 'on:\n  pull_request:\n    branches: %s\njobs:\n  tests:\n    runs-on: x\n' "\$(cat "$T/basewf")" ;;
+  *"ci.yml?ref=main"*) printf 'on:\n  pull_request:\n    branches: %s\njobs:\n  tests:\n    runs-on: x\n' "\$(cat "$T/mainwf")" ;;
+esac
+exit 0
+EOF
+chmod +x "$T/stub/gh"
+reopens(){ grep -c "^pr reopen 801" "$T/ghlog" 2>/dev/null || true; }
+fresh stale416; echo "[main, 'feat/**']" > "$T/mainwf"
+printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
+node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
+echo '[main]' > "$T/basewf"; echo b1 > "$T/bhead"; : > "$T/ghlog"; tip=$(origin_tip); pass
+check "DS-416 the PR's check only main's workflow runs on the base is recorded as behind" \
+  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.behind.tests" "$DESK_QUEUE")" != null ] && [ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered" "$DESK_QUEUE")" = null ] && [ "$(reopens)" = 0 ]'
+check "DS-416 nothing synced before the pass that read it" '[ "$(origin_tip)" = "$tip" ]'
+# The sync brings main's trigger to the base, which gh's base copy stands in for.
+echo "[main, 'feat/**']" > "$T/basewf"; pass
+check "DS-416 AC2 with nothing to spawn, the base syncs for the PR's CI" 'origin_has_main && [[ "$out" == *"merged 2 commit(s) from main into feat/x and pushed; PR #801 is reopened so CI runs"* ]] && [[ "$out" != *"spawned:"* ]]'
+check "DS-416 AC4 the PR is closed and reopened, and the base head recorded" \
+  'grep -q "^pr close 801" "$T/ghlog" && [ "$(reopens)" = 1 ] && [ "$(jq -r .reopened_at "$DESK_QUEUE")" = b1 ] && [[ "$out" == *"closed and reopened PR #801 (T-1)"* ]]'
+pass
+check "DS-416 AC4 once per base head: the next pass at b1 does not reopen it again" '[ "$(reopens)" = 1 ]'
+echo b2 > "$T/bhead"; pass
+check "DS-416 AC4 a new base head reopens it once more" '[ "$(reopens)" = 2 ] && [ "$(jq -r .reopened_at "$DESK_QUEUE")" = b2 ]'
+fresh trig416 yes; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
+node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
+echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; tip=$(origin_tip); pass; pass
+check "DS-416 AC5 a check main's workflow does not run on the base either is untriggered: no sync, no reopen" \
+  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered.tests" "$DESK_QUEUE")" != null ] && [ "$(origin_tip)" = "$tip" ] && [ "$(reopens)" = 0 ]'
+
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]

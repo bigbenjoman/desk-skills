@@ -17,6 +17,8 @@
 //     state:  'pass' | 'fail' | 'pending' | 'absent'
 //   untriggeredChecks(required, base, workflows, { branch }) -> { <check>: <why> } the required checks
 //     no workflow runs on a PR into base from branch (its trigger filters), for evaluateGate's `untriggered`
+//   staleTriggers(untriggered, base, { branch, atBase, atDefault, defaultBranch }) -> { untriggered, behind, reopen }
+//     that map split by whether the base's or the default branch's copy of the workflows runs each check
 //   readWorkflows({ repo, ref, run }) -> [{ file, text }] the repo's .github/workflows at ref
 //   normaliseRollup(nodes)   statusCheckRollup / GraphQL context nodes -> checks
 //   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
@@ -145,20 +147,39 @@ const mayRun = (t, base, branch) => !t || t.called || t.events.some((e) => e.unr
 // one of its jobs reports under that name (desk-ci.mjs checkIsJob). One that no readable workflow
 // reports (an app's, a status context) is left out, since nothing here says it will not run, and so is
 // every check when a workflow does not read.
+const readCopy = (workflows) => (workflows ?? []).map((w) => { const wf = parseWorkflow(String(w.text ?? '')); return { file: w.file, on: branchEvents(wf.on), names: wf.jobs.map(checkNameOf) }; });
+const ownersOf = (read, n) => read.filter((w) => w.names.some((name) => checkIsJob(n, name)));
 export function untriggeredChecks(required, base, workflows, { branch = null } = {}) {
   let read;
-  try {
-    read = (workflows ?? []).map((w) => { const wf = parseWorkflow(String(w.text ?? '')); return { file: w.file, on: branchEvents(wf.on), names: wf.jobs.map(checkNameOf) }; });
-  } catch { return {}; }
+  try { read = readCopy(workflows); } catch { return {}; }
   const out = {};
   for (const n of required ?? []) {
-    const own = read.filter((w) => w.names.some((name) => checkIsJob(n, name)));
+    const own = ownersOf(read, n);
     if (!own.length || own.some((w) => mayRun(w.on, base, branch))) continue;
     const how = own.map((w) => {
       const prs = w.on.events.filter((e) => e.event === 'pull_request');
       return `${w.file} ${prs.length ? `runs on pull requests ${prs.map(filterText).join(', or ')}` : 'has no pull_request trigger'}`;
     });
     out[n] = `never runs on PRs into ${base} (workflow trigger: ${how.join('; ')})`;
+  }
+  return out;
+}
+
+// A pull_request run takes its workflow from the merge of head into base, so a check the head's copy
+// never runs on the base may still run once the base has the trigger. Of untriggeredChecks's map, at
+// the head: `reopen` the checks the base's own copy runs (no pull_request event came since the base
+// gained the trigger, so closing and reopening the PR starts them), `behind` those only the default
+// branch's copy runs (the base is behind it, so syncing the base and then reopening starts them), and
+// `untriggered` the rest, a change to the workflow. A copy that does not read counts as running nothing.
+export function staleTriggers(untriggered, base, { branch = null, atBase = [], atDefault = [], defaultBranch = 'main' } = {}) {
+  const copy = (wfs) => { try { return readCopy(wfs); } catch { return []; } };
+  const b = copy(atBase), d = base === defaultBranch ? [] : copy(atDefault);
+  const runs = (read, n) => { const own = ownersOf(read, n); return own.length > 0 && own.some((w) => mayRun(w.on, base, branch)); };
+  const out = { untriggered: {}, behind: {}, reopen: {} };
+  for (const [n, why] of Object.entries(untriggered ?? {})) {
+    if (runs(b, n)) out.reopen[n] = `has not reported, though ${base}'s copy of its workflow now runs it: no pull_request event has come since, so closing and reopening the PR starts it`;
+    else if (runs(d, n)) out.behind[n] = `has not reported because ${base} is behind ${defaultBranch}, whose copy of its workflow runs it on PRs into ${base}: syncing ${base} with ${defaultBranch} and reopening the PR starts it`;
+    else out.untriggered[n] = why;
   }
   return out;
 }
@@ -414,11 +435,21 @@ if (isMain) {
       let runs = [];
       try { runs = readRuns(repo, pr.headRefOid); }
       catch { runs = [{ name: 'gh run list (unreadable)', status: 'unknown' }]; }
+      // A hold is for the merge that deploys: one into the repo's default branch (§0, never a batch
+      // base). A PR into any other base merges past it, and the hold falls on that base's own PR.
+      const repoDefault = String(E.configValue('default-branch') ?? '').trim();
+      const defaultBranch = repoDefault && !/^(todo|none)\b/i.test(repoDefault) ? repoDefault : 'main';
       let gate = evaluateGate(checks, { required, advisory, runs });
-      // A required check that never reported may be one its workflow never runs on this base.
+      // A required check that never reported may be one its workflow never runs on this base, or one a
+      // base behind the default branch has not yet been given the trigger for.
       if (gate.state === 'absent') {
-        const untriggered = untriggeredChecks(required, pr.baseRefName, readWorkflows({ repo, ref: pr.headRefOid, run: gh }), { branch: pr.headRefName ?? null });
-        if (Object.keys(untriggered).length) gate = evaluateGate(checks, { required, advisory, runs, untriggered });
+        const branch = pr.headRefName ?? null;
+        const atHead = untriggeredChecks(required, pr.baseRefName, readWorkflows({ repo, ref: pr.headRefOid, run: gh }), { branch });
+        if (Object.keys(atHead).length) {
+          const s = staleTriggers(atHead, pr.baseRefName, { branch, defaultBranch,
+            atBase: readWorkflows({ repo, ref: pr.baseRefName, run: gh }), atDefault: readWorkflows({ repo, ref: defaultBranch, run: gh }) });
+          gate = evaluateGate(checks, { required, advisory, runs, untriggered: { ...s.untriggered, ...s.behind, ...s.reopen } });
+        }
       }
       // Run ids of failing, non-advisory checks, for a bounded rerun. From the check itself, else the
       // failed completed runs for this commit.
@@ -435,10 +466,6 @@ if (isMain) {
       catch { filesOk = false; }
       const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
       const held = filesOk ? matchHolds(files, holds, contents) : holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [];
-      // A hold is for the merge that deploys: one into the repo's default branch (§0, never a batch
-      // base). A PR into any other base merges past it, and the hold falls on that base's own PR.
-      const repoDefault = String(E.configValue('default-branch') ?? '').trim();
-      const defaultBranch = repoDefault && !/^(todo|none)\b/i.test(repoDefault) ? repoDefault : 'main';
       const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null });
       // The failing runs of the checks it would waive, for the ticket filed after the merge.
       if (waiver) waiver.runs = [...new Set(gate.failing.filter((f) => waiver.checks.includes(f.name)).map((f) => f.runId).filter(Boolean))];
