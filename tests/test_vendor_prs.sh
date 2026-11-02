@@ -2,8 +2,8 @@
 # suite: vendor PRs (a new desk-update vendor PR closes the older ones it supersedes)
 # covers: desk/bin/vendor-prs.sh skills/desk-update/**
 # vendor-prs.sh against a fake gh and a throwaway checkout with an origin: the PR opens, then only the
-# other open chore/vendor-* PRs from this repo whose every moved pin the new branch has moved too (by
-# its own upgrade or by main's) are closed naming it; one upgrading something else stays open; a failed create closes nothing; a branch
+# other open chore/vendor-* PRs from this repo whose every moved pin the new branch upgrades, or main
+# pins at exactly that commit, are closed naming it; any other stays open; a failed create closes nothing; a branch
 # whose vendor/ equals origin/main's opens nothing.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -34,14 +34,16 @@ LIST='[{"number":401,"headRefName":"chore/vendor-2026-11-02","isCrossRepository"
  {"number":272,"headRefName":"chore/vendor-2026-10-28","isCrossRepository":false},
  {"number":273,"headRefName":"chore/vendor-2026-10-29","isCrossRepository":false},
  {"number":274,"headRefName":"chore/vendor-2026-10-30","isCrossRepository":false},
+ {"number":276,"headRefName":"chore/vendor-2026-10-27","isCrossRepository":false},
  {"number":400,"headRefName":"fix/DS-1-other","isCrossRepository":false},
  {"number":399,"headRefName":"chore/vendor-mine","isCrossRepository":true}'
 printf '%s]\n' "$LIST" > "$T/list.json"
 
-# A checkout whose origin/main first pins skills a, b and c at 1. On origin, cut from there: #272's
-# branch upgrades c, #273's a, #274's b. Then main takes c at 3 from a newer vendor PR. Locally: 11-02,
-# cut from that main, upgrades a, so it holds #272 (main moved c) and #273, not #274; 11-03 changes no
-# vendor/.
+# A checkout whose origin/main first pins skills a, b and c at 1. On origin, cut from there: #276's
+# branch upgrades c to 3, #272's c to 2, #273's a, #274's b. Then main takes c at 3 from another vendor
+# PR, which may be older than #272's c2 (merged after it was opened). Locally: 11-02, cut from that main,
+# upgrades a, so it holds #273 and #276 (main pins c at exactly its pin), not #272 (main's c differs)
+# or #274; 11-03 changes no vendor/.
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/d" 2>/dev/null
 D="$T/d"
@@ -50,6 +52,7 @@ pins(){ mkdir -p "$D/vendor/a" "$D/vendor/b" "$D/vendor/c"
   printf '{"_about":"x","skills":{"a":{"pin":{"commit":"%s"}},"b":{"pin":{"commit":"%s"}},"c":{"pin":{"commit":"%s"}}},"tools":{}}\n' "$1" "$2" "$3" > "$D/vendor/sources.json"; }
 pins a1 b1 c1; echo x > "$D/README"
 git -C "$D" add -A; git -C "$D" commit -qm init; git -C "$D" branch -qM main; git -C "$D" push -q origin main
+git -C "$D" switch -qc chore/vendor-2026-10-27 main; pins a1 b1 c3; git -C "$D" commit -qam c3; git -C "$D" push -q origin HEAD
 git -C "$D" switch -qc chore/vendor-2026-10-28 main; pins a1 b1 c2; git -C "$D" commit -qam c2; git -C "$D" push -q origin HEAD
 git -C "$D" switch -qc chore/vendor-2026-10-29 main; pins a2 b1 c1; git -C "$D" commit -qam a2; git -C "$D" push -q origin HEAD
 git -C "$D" switch -qc chore/vendor-2026-10-30 main; pins a1 b2 c1; git -C "$D" commit -qam b2; git -C "$D" push -q origin HEAD
@@ -79,7 +82,8 @@ out=$(bash "$V" open "$D" acme/desk chore/vendor-2026-11-02 "chore(vendor): upgr
 check "AC1 open exits 0 and reports the new PR and the close" '[ $rc -eq 0 ] && [[ "$out" == *"opened https://github.com/acme/desk/pull/401"* ]] && [[ "$out" == *"closed #273: superseded by #401"* ]]'
 check "AC1 the PR opens from the branch into main" 'grep -qF "pr create --repo acme/desk --base main --head chore/vendor-2026-11-02 --title chore(vendor): upgrade x --body body" "$GH_LOG"'
 check "AC1 the older vendor PR closes with a comment naming the new one and its branch deleted" 'grep -qE "^pr close 273 --repo acme/desk --delete-branch --comment Superseded by #401" "$GH_LOG"'
-check "an older vendor PR whose pin main has since overtaken closes too" '[[ "$out" == *"closed #272: superseded by #401"* ]] && grep -qE "^pr close 272 --repo acme/desk --delete-branch --comment Superseded by #401" "$GH_LOG"'
+check "an older vendor PR whose pin main now has exactly closes too" '[[ "$out" == *"closed #276: superseded by #401"* ]] && grep -qE "^pr close 276 --repo acme/desk --delete-branch --comment Superseded by #401" "$GH_LOG"'
+check "an older vendor PR whose pin main moved to a different, maybe older, commit stays open, named" '[[ "$out" == *"kept #272: main moved c to a different pin than it has"* ]] && ! grep -q "^pr close 272" "$GH_LOG"'
 check "an older vendor PR upgrading a skill the new one does not stays open, named" '[[ "$out" == *"kept #274: it upgrades b, which #401 does not"* ]] && ! grep -q "^pr close 274" "$GH_LOG"'
 check "AC4 exactly two PRs closed: not the new one, another head, a fork or one not superseded" '[ "$(grep -c "^pr close" "$GH_LOG")" = 2 ]'
 
