@@ -2909,15 +2909,18 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
 // head that is not clean goes to a review fix (reviewFix), and, where §3 merge-feedback-first holds
 // the merge for them, threads left unresolved or changes requested to a feedback fix (feedbackFix).
 // The threads a finished feedback try worked are replied on and resolved first, once its worker has
-// pushed past them, so the next try quotes only what is still open.
+// pushed past them, so the next try quotes only what is still open. One GitHub would not settle holds
+// any new try until a later pass settles it: a new try would replace the record of what was worked.
 function feedbackCall(t, s) {
   if (s.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const n = s.pr;
   const fb = readFeedback(n);
   if (!fb) { out.push(`fix tries: PR #${n} (${t.key}): its review threads could not be read; the next pass tries again`); return null; }
   if (fb.head !== s.head) return null;
-  const worked = resolvable(t, s.head);
+  const open = new Set(fb.left.map((x) => x.id));
+  const worked = resolvable(t, s.head).filter((x) => open.has(x.id));
   const settled = worked.length ? settleWorked(t, n, s.head, worked) : [];
+  if (settled.length < worked.length && !DRY) return null;
   if (fb.review) {
     const comments = () => {
       const r = reviewComments(fb.review.id);

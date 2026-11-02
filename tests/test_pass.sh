@@ -2242,7 +2242,10 @@ fs.appendFileSync(D + 'gh-calls', a.join(' ') + '\n');
 const arg = (k) => (a.find((x) => x.startsWith(k + '=')) ?? '').slice(k.length + 1);
 const q = arg('query');
 if (a[0] === 'api' && q.includes('addPullRequestReviewThreadReply')) fs.appendFileSync(D + 'replied.log', arg('id') + '\t' + arg('body') + '\n');
-else if (a[0] === 'api' && q.includes('resolveReviewThread')) { fs.appendFileSync(D + 'resolved.log', arg('id') + '\n'); console.log('true'); }
+else if (a[0] === 'api' && q.includes('resolveReviewThread')) {
+  if (fs.existsSync(D + 'refuse') && fs.readFileSync(D + 'refuse', 'utf8').split('\n').includes(arg('id'))) { console.log('HTTP 502: Bad Gateway'); process.exit(1); }
+  fs.appendFileSync(D + 'resolved.log', arg('id') + '\n'); console.log('true');
+}
 else if (a[0] === 'api' && q.includes('reviewThreads')) {
   const p = JSON.parse(fs.readFileSync(D + arg('n') + '.threads', 'utf8'));
   const done = fs.existsSync(D + 'resolved.log') ? fs.readFileSync(D + 'resolved.log', 'utf8').split('\n') : [];
@@ -2301,5 +2304,19 @@ check "DS-419 AC5 once its worker pushed past the try'\''s head, the thread it w
   'grep -q "^PRRT_a.Worked by desk.s fix try 1 of 2 at 222222222222" "$T/fb/replied.log" && grep -qx PRRT_a "$T/fb/resolved.log" && echo "$out" | grep -qF "fix tries: PR #801 (B-1): replied on and resolved 1 thread(s) fix try 1 worked"'
 check "DS-419 AC6 the review the worker posted at its new head raises a finding: another fix round starts" \
   '[ "$(field B-1 state)" = "\"triaged\"" ] && [ "$(field B-1 fix.kind)" = "\"review\"" ] && [ "$(field B-1 fix.head)" = "\"$H2\"" ] && [ "$(field B-1 fix_tries | jq length)" = 2 ]'
+# B-4's finished feedback try pushed H2, but GitHub refuses to resolve its thread: no new try spends a
+# round on the worked thread, the try is kept, and a later pass resolves it without replying twice.
+q add B-4; q set B-4 state=done lane=A branch=fix/B-4 result.pr=804 \
+  'fix={"try":1,"of":2,"pr":804,"head":"'"$H1"'","kind":"feedback","what":"review feedback: 1 unresolved thread","threads":[{"id":"PRRT_d","text":"src/w.ts:3"}],"finished":"2026-11-01T00:00:00Z"}' \
+  'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"feedback"}]'
+fbx 804 "$H2" - "PRRT_d:src/w.ts:3:P1 the widget drops its last row"
+echo PRRT_d > "$T/fb/refuse"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-419 a worked thread GitHub would not resolve holds the next try, and the try that worked it is kept" \
+  '[ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ] && [ "$(field B-4 fix.head)" = "\"$H1\"" ] && [ "$(field B-4 fix.replied | jq -r ".[0]")" = PRRT_d ] && echo "$out" | grep -qF "fix tries: PR #804 (B-4): thread src/w.ts:3" && ! echo "$out" | grep -qF "B-4 requeued"'
+: > "$T/fb/refuse"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-419 the next pass resolves it, with no second reply, and starts no try" \
+  '[ "$(grep -c "^PRRT_d" "$T/fb/replied.log")" = 1 ] && grep -qx PRRT_d "$T/fb/resolved.log" && [ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
