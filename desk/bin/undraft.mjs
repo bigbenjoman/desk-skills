@@ -14,6 +14,8 @@
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
 //   evidence  screenshot cells are left and §4 Evidence workflow names the workflow that fills them:
 //           the pass starts it, once per head (evidence.mjs), and the next pass reads the body again
+//   evidence-failed  that run failed, or filled no cell: the pass groups the same failure across PRs
+//           and starts one fix for the repo, which the PRs wait on (evidence.mjs evidenceFixPlan)
 //   person  it stays draft until the person acts; `action` is what they do, `why` says why
 //   held    (personHold, read by the pass before acting on any other call) a person put it back to
 //           draft: it stays draft, and nothing undrafts it or sends it to a worker until they undraft it
@@ -44,7 +46,7 @@
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
 import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, isHuman } from './gate.mjs';
 import { RERUNS_MAX } from './fix-tries.mjs';
-import { dragCells, hasEvidenceBlock } from './evidence.mjs';
+import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
@@ -273,8 +275,9 @@ export function buildPark(question, readPr, cfg) {
 
 // A body with `_drag <file>_` cells left and a fenced ```evidence block, where §4 Evidence workflow
 // names the workflow that fills them (cfg.evidence, evidence.mjs), once per head (cfg.evidenceRun(head)):
-// `evidence` starts it, `wait` while it runs, and `person` once it has run and cells are still left.
-// Anything else is null: the cells are the person's, as before.
+// `evidence` starts it, `wait` while it runs, `evidence-failed` once it failed or filled no cell (the pass
+// groups those into one fix for the repo, evidence.mjs evidenceFixPlan), and `person` once it has run and
+// cells are still left. Anything else is null: the cells are the person's, as before.
 function evidenceCall(pr, cfg) {
   const wf = cfg.evidence?.workflow;
   if (!wf || !hasEvidenceBlock(pr.body)) return null;
@@ -282,12 +285,15 @@ function evidenceCall(pr, cfg) {
   const at = String(pr.head ?? '?').slice(0, 9);
   const left = dragCells(pr.body);
   const rec = cfg.evidenceRun?.(pr.head) ?? null;
-  if (!rec) return { call: 'evidence', why: `${left} screenshot cell(s) left at ${at}, which §4 Evidence workflow \`${wf}\` fills`, workflow: wf };
+  if (!rec) return { call: 'evidence', why: `${left} screenshot cell(s) left at ${at}, which §4 Evidence workflow \`${wf}\` fills`, workflow: wf, cells: left };
   if (rec.state === 'running') return { call: 'wait', why: `its evidence workflow \`${wf}\` is taking the screenshots at ${at}${rec.url ? ` (${rec.url})` : ''}` };
-  return {
-    call: 'person', why: `its evidence workflow \`${wf}\` ran at ${at} (${rec.conclusion}${rec.url ? `, ${rec.url}` : ''}) and left ${left} screenshot cell(s)`,
-    action: `fill the cells it could not on #${n}, or fix its \`evidence\` block and re-run \`gh workflow run ${wf} -f pr=${n}\``,
-  };
+  const action = `fill the cells it could not on #${n}, or fix its \`evidence\` block and re-run \`gh workflow run ${wf} -f pr=${n}\``;
+  // A run that failed, or filled no cell, is the repo's to fix, not cells only the person can reach.
+  if (runFailed(rec, left)) {
+    const how = rec.conclusion === 'failure' ? 'failed' : 'filled none of its cells';
+    return { call: 'evidence-failed', why: `its evidence workflow \`${wf}\` ${how} at ${at}${rec.url ? ` (${rec.url})` : ''} and left ${left} screenshot cell(s)`, action, workflow: wf, runId: rec.runId, url: rec.url ?? null, conclusion: rec.conclusion };
+  }
+  return { call: 'person', why: `its evidence workflow \`${wf}\` ran at ${at} (${rec.conclusion}${rec.url ? `, ${rec.url}` : ''}) and left ${left} screenshot cell(s)`, action };
 }
 
 // Whether anyone but `handle`, and not a bot, has reviewed or commented on the PR: the line between

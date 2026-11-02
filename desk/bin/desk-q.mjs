@@ -320,6 +320,8 @@ function draftNeed(q, t, needs, merging) {
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
+  // Its evidence run failed for the repo, and a fix ticket in the batch takes it on for every PR it failed.
+  if (u?.call === 'evidence-fix') return merging(['draft', null], [` · evidence workflow broken, ${/; (\S+) fixes it/.exec(u.why ?? '')?.[1] ?? 'a fix ticket'} fixes it, then screenshots are taken again`, null]);
   if (u?.call === 'wait') return merging(['draft', null], [` · ${/^checks/.test(u.why ?? '') ? 'checks running' : 'GitHub is still checking for conflicts'}, out of draft once green`, null]);
   if (u?.call === 'ready' || u?.call === 'failed') return merging(['draft', null], [' · out of draft at the next pass', null]);
   if (t.key === q?.spine) return needs({ code: 'spine' }, ['draft', null], [' · feature spine: approve its specs', null]);
@@ -357,12 +359,13 @@ const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_s
 export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
 // How long an open PR's head and check results have gone unchanged, as the last pass read it
 // (pr_status changed_at), once that is STALL_MS or more; else null. desk-q flags a Merging row that
-// is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after) is
-// held, not stalled.
+// is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after), or
+// on a fix ticket for its evidence workflow, is held, not stalled.
 export const STALL_MS = 2 * 60 * 60 * 1000;
 export const STALL_FOR = span(STALL_MS);
 const stalledFor = (t, now) => {
   const ps = prStatusOf(t), at = Date.parse(ps?.changed_at ?? '');
+  if (t.undraft?.call === 'evidence-fix') return null;
   return ps?.state === 'OPEN' && !keysOf(t.merge_after).length && Number.isFinite(at) && now - at >= STALL_MS ? now - at : null;
 };
 // A done ticket whose PR the last pass read as open or closed unmerged. One merged, with no PR, or not

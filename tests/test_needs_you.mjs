@@ -636,8 +636,24 @@ t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
   'PR #145 is a draft, and its code review found 2 P1 findings that desk\'s own repairs did not fix. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
 t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,
   'PR #146 is in conflict with main, and desk\'s own repairs did not fix it. Resolve the conflict on its branch; desk then merges it once its checks are green.');
+// ---- DS-415: drafts whose evidence run failed wait on one fix ticket: no PR item each, and the fix's
+// park, naming a setting only the person holds, is the one item.
+const evWhy = (n) => `its evidence workflow \`pr-evidence.yml\` failed at aaaaaaaaa and left 2 screenshot cell(s): "Error: did not set a _vercel_jwt cookie"; EV-9 fixes it for the repo, then the run is started again`;
+put('evfix', { port: 5150, beat: 1, supervised: true, tickets: {
+  'EV-1': draftPr(151, passed, { call: 'evidence-fix', why: evWhy(151), action: null, pr: 151 }),
+  'EV-2': draftPr(152, passed, { call: 'evidence-fix', why: evWhy(152), action: null, pr: 152 }),
+  'EV-3': draftPr(153, passed, { call: 'evidence-fix', why: evWhy(153), action: null, pr: 153 }),
+  'EV-9': parked('A', 10, 'the Vercel protection bypass secret VERCEL_AUTOMATION_BYPASS_SECRET was rotated: set the new one in the repo secrets, as only you hold it'),
+} });
+const evItems = N.collect({ word: 'evfix' }).items;
+t('DS-415 AC1 AC2 PRs waiting on the evidence fix are not listed', evItems.filter((i) => i.kind === 'pr').length, 0);
+t('DS-415 AC5 the fix\'s park is one item for the repo, naming the setting', `${evItems.length} ${evItems[0]?.t.key} ${/bypass secret/.test(evItems[0]?.need ?? '')}`, '1 EV-9 true');
+const evr = loadRepos().find((x) => x.slug === 'acme__evfix');
+const ev1 = [...evr.rows, ...evr.prs].find((x) => x.t.key === 'EV-1');
+t('DS-415 desk-q shows each waiting PR as moving, naming the fix', `${ev1?.k} ${rowText(evr, ev1).includes('evidence workflow broken, EV-9 fixes it, then screenshots are taken again')}`, 'merging true');
+
 // AC3 and AC4 across every PR item any fixture repo lists.
-const prItems = N.collect().items.filter((i) => i.kind === 'pr' || /PR #\d+/.test(i.need));
+const prItems =N.collect().items.filter((i) => i.kind === 'pr' || /PR #\d+/.test(i.need));
 t('DS-378 AC3 no PR item names a commit SHA, a fix try or a review verdict', prItems.filter((i) => /\b[0-9a-f]{7,40}\b|fix tr(y|ies)|verdict readable/i.test(i.need)).map((i) => `${i.t.key}: ${i.need}`).join(' | '), '');
 t('DS-378 AC4 every PR item says what is wrong, then what to do and what happens next', prItems.filter((i) => i.kind === 'pr' && !/^PR #\d+[^]*\. [A-Z][^]*; [^]*?\.(?: \([^]*\))?$/.test(i.need)).map((i) => `${i.t.key}: ${i.need}`).join(' | '), '');
 // AC1: done on a PR still open says so, and the item comes back with that note.

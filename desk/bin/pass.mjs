@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync, realpathSync, readlinkSync } from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern } from './batch-state.mjs';
@@ -38,7 +39,7 @@ import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ, untriggeredChecks, readWorkflows } from './gate.mjs';
 import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
-import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots } from './evidence.mjs';
+import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
@@ -2451,7 +2452,7 @@ const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); 
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
-const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt', 'evidence', 'capture'];
+const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture'];
 // The screenshot files a ticket's directory holds: the one its worker was briefed with, or the one a
 // handed-off session printed (images_dir). Its `_drag <file>_` cells naming any other were never taken.
 const shotsOf = (t) => {
@@ -2470,6 +2471,8 @@ if (drafts.length) {
   if (evidenceRow?.errors) out.push(`undraft: no evidence runs this pass, since config §4 Evidence workflow does not parse: ${evidenceRow.errors.join(', ')} (want \`<workflow>.yml\` or \`none\`). Run /desk-setup`);
   if (buildRow.errors.length) out.push(`undraft: no check builds this pass, since config §4 Check builds does not parse: ${buildRow.errors.join(', ')} (want \`<check>: <command>\`). Run /desk-setup`);
   const notesFile = join(STATE, 'batch-notes.md');
+  // Evidence runs that failed, settled together once every draft is read, so one failure is one fix.
+  const evidenceFailed = [];
   for (const { t, s } of drafts) {
     const n = s.pr;
     const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,body,reviews,comments,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
@@ -2527,6 +2530,7 @@ if (drafts.length) {
     else if (c.call === 'build') rec = startCheckBuild(t, n, v.headRefOid, c, rec);
     else if (c.call === 'rebuilt') rec = rerunBuilt(t, n, v.headRefOid, c, rec);
     else if (c.call === 'evidence') rec = startEvidence(t, n, v.headRefOid, c, rec);
+    else if (c.call === 'evidence-failed') { evidenceFailed.push({ t, n, head: v.headRefOid, c, rec, cells: dragCells(v.body) }); continue; }
     else if (['person', 'findings', 'checks', 'review', 'conflict', 'capture'].includes(c.call)) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${c.why}${carried}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
     else if (DRY) out.push(`undraft (dry run): would mark PR #${n} (${t.key}) ready at ${String(v.headRefOid).slice(0, 12)}${carried}`);
     else {
@@ -2546,9 +2550,13 @@ if (drafts.length) {
         rec = { ...rec, call: 'failed', why };
       }
     }
-    const was = t.undraft ?? {};
-    if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
+    saveUndraft(t, rec);
   }
+  if (evidenceFailed.length) settleEvidenceFailures(evidenceFailed);
+}
+function saveUndraft(t, rec) {
+  const was = t.undraft ?? {};
+  if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
 }
 // The person's own undraft releases their hold: recorded as out of draft, so putting it back holds it again.
 for (const { t, s } of undrafted) {
@@ -2583,7 +2591,7 @@ function startEvidence(t, n, head, c, rec) {
   if (DRY) { out.push(`undraft (dry run): would run \`gh ${cmd.join(' ')}\` for PR #${n} (${t.key}): ${c.why}`); return rec; }
   const r = shOut('gh', cmd);
   if (r.ok) {
-    const run = recordDispatch(EVIDENCE_DIR, n, head, { workflow: c.workflow, out: r.out });
+    const run = recordDispatch(EVIDENCE_DIR, n, head, { workflow: c.workflow, out: r.out, cells: c.cells ?? null });
     out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why} (started ${run.url ?? 'its run'})`);
     return rec;
   }
@@ -2591,6 +2599,116 @@ function startEvidence(t, n, head, c, rec) {
   const action = `run \`gh workflow run ${c.workflow} -f pr=${n}\`, or upload the screenshots to #${n}`;
   report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
   return { ...rec, call: 'person', why, action };
+}
+// Drafts whose evidence run failed, or filled no cell (undraft.mjs `evidence-failed`): the failure is
+// the repo's, so one fix ticket is filed and admitted for each failure (the workflow and its run log's
+// first error line, evidence.mjs failureKey), and every PR it fails waits on that ticket rather than
+// going to the person. Once the ticket is done, each waiting PR's run is started again at its head;
+// one that then fails the same way, or whose fix failed or left the batch, is the person's.
+function settleEvidenceFailures(items) {
+  const runLog = (id) => cached(`log:${id}`, () => {
+    const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--log-failed'], { maxBuffer: 64 << 20 });
+    return r.ok ? r.out : null;
+  });
+  const fixes = readFixes(EVIDENCE_DIR);
+  const failures = [];
+  for (const it of items) {
+    const { t, n, c } = it;
+    // A run that succeeded has no failed log: its key is the workflow alone.
+    const log = c.conclusion === 'failure' ? runLog(c.runId) : '';
+    if (log == null) {
+      out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}, and its run's log could not be read; the next pass tries again`);
+      saveUndraft(t, { ...it.rec, call: 'wait', why: `${c.why}; its run's log is read at the next pass`, action: null });
+      continue;
+    }
+    const line = firstErrorLine(log);
+    failures.push({ ...it, ticket: t.key, key: failureKey(c.workflow, line), workflow: c.workflow, line, run: c.runId, url: c.url });
+  }
+  // A fix filed but refused by admission is admitted again first.
+  for (const rec of Object.values(fixes)) {
+    if (rec.fix && rec.admitted === false && !DRY) {
+      const a = admitFix(rec.fix);
+      if (a.ok) rec.admitted = true;
+      else rec.admit_error = a.why;
+    }
+  }
+  const plan = evidenceFixPlan(failures, fixes, evidenceFixState);
+  const filed = new Map();
+  for (const g of plan.file) {
+    if (DRY) { out.push(`undraft (dry run): would file and admit one fix for \`${g.key}\`, for PR(s) ${g.prs.map((p) => `#${p.n}`).join(', ')}`); continue; }
+    const f = fileEvidenceFix(g);
+    filed.set(g.key, f);
+    if (f.fix) fixes[g.key] = { workflow: g.workflow, line: g.line, run: g.run, url: g.url, fix: f.fix, at: PASS_AT, admitted: !f.why, ...(f.why ? { admit_error: f.why } : {}), prs: {} };
+    out.push(f.fix ? `evidence: filed ${f.fix} to fix \`${g.key}\` for PR(s) ${g.prs.map((p) => `#${p.n}`).join(', ')}${f.why ? `, but it was not admitted (${f.why})` : ', admitted to the batch'}`
+      : `evidence: no fix filed for \`${g.key}\`: ${f.why}`);
+  }
+  for (const p of plan.prs) {
+    const { t, n, head, c } = p;
+    let rec = p.rec;
+    const fix = p.fix ?? filed.get(p.key)?.fix ?? null;
+    const fr = fix ? fixes[p.key] : null;
+    const unadmitted = fr && fr.admitted === false ? `${fix} was filed for it but not admitted (${fr.admit_error ?? 'refused'}): /desk-admit ${fix}` : null;
+    const err = p.line ? `: "${p.line}"` : '';
+    const person = (why) => {
+      rec = { ...rec, call: 'person', why: `${c.why}${err}; ${why}`, action: c.action };
+      report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${rec.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
+    };
+    if (DRY && p.call === 'file') { saveUndraft(t, rec); continue; }
+    if (p.call === 'person') person(p.why);
+    else if (!fix) person(`no fix could be started for it (${filed.get(p.key)?.why ?? 'none filed'})`);
+    else if (unadmitted) person(unadmitted);
+    else if (p.call === 'rerun') {
+      fr.prs[n] = { ticket: t.key, head, rerun: head };
+      rec = startEvidence(t, n, head, { workflow: c.workflow, why: `${fix} fixed its evidence workflow \`${c.workflow}\`, so it runs again`, cells: p.cells }, { ...rec, call: 'evidence', why: `${fix} fixed its evidence workflow, so it runs again`, action: null });
+    } else {
+      fr.prs[n] = { ticket: t.key, head, rerun: fr.prs[n]?.rerun ?? null };
+      rec = { ...rec, call: 'evidence-fix', why: `${c.why}${err}; ${fix} fixes it for the repo, then the run is started again`, action: null };
+      out.push(`undraft: PR #${n} (${t.key}) stays draft: ${rec.why}`);
+    }
+    saveUndraft(t, rec);
+  }
+  if (!DRY) writeFixes(EVIDENCE_DIR, fixes);
+}
+// Where a fix ticket stands, for evidenceFixPlan: done once it merged (or finished with no PR), gone
+// once it failed, else open. One in no queue this pass reads is asked of the tracker.
+function evidenceFixState(key) {
+  const ft = queue().tickets?.[key];
+  if (ft) {
+    if (ft.state === 'failed') return 'gone';
+    return ft.merged_at || (ft.state === 'done' && ft.result?.pr == null) ? 'done' : 'open';
+  }
+  if (onJira && E.ticketKind(key).kind === 'tracker') { try { return clearsRead.ticket(key) === 'done' ? 'done' : 'open'; } catch { return 'open'; } }
+  return 'open';
+}
+// Files the fix for one failure (desk-jira's gate, §3 jira-create; with no tracker, a ticket file) and
+// admits it: { fix, why } (why: it was filed but not admitted), or { why } when nothing was filed.
+function fileEvidenceFix(g) {
+  const { summary, body } = fixTicket(g, { repo: GH_REPO, base: DEFAULT_BRANCH });
+  const id = createHash('sha1').update(g.key).digest('hex').slice(0, 8);
+  let fix;
+  if (onJira) {
+    const grant = E.permission('jira-create');
+    if (grant !== 'yes') return { why: `filing it needs config §3 ${E.permissionKey('jira-create')} to be "yes" (it is "${grant}")` };
+    mkdirSync(EVIDENCE_DIR, { recursive: true });
+    const file = join(EVIDENCE_DIR, `fix-${id}.md`);
+    // A workflow fix is small: S, in the §4 Size field, or the body's first line where there is none.
+    const sizeField = String(E.configValue('jira-size-field') ?? '').trim();
+    const sized = sizeField && !E.isNone(sizeField);
+    writeFileSync(file, sized ? body : `Size: S\n\n${body}`);
+    const r = shOut('desk-jira', ['create', 'Bug', summary, file, ...(sized ? [`${sizeField}=S`] : [])]);
+    fix = /^created ([A-Z][A-Z0-9_]*-\d+)/m.exec(r.out)?.[1];
+    if (!r.ok || !fix) return { why: `desk-jira create was refused (${r.out.split('\n').pop()})` };
+  } else {
+    fix = `evidence-fix-${id}`;
+    mkdirSync(join(STATE, 'tickets'), { recursive: true });
+    writeFileSync(join(STATE, 'tickets', `${fix}.md`), `# ${fix}\n\nSource: the desk pass, from evidence run ${g.url ?? g.run}\n\n# ${summary}\n\n${body}`);
+  }
+  const a = admitFix(fix);
+  return a.ok ? { fix } : { fix, why: a.why };
+}
+function admitFix(key) {
+  const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', key, '--by', 'evidence']);
+  return r.ok ? { ok: true } : { ok: false, why: r.out.split('\n').pop() };
 }
 // The ticket's worktree at the PR's head: moved on to it when it is behind and clean, never otherwise.
 function buildDir(t, head) {

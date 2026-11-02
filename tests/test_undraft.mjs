@@ -6,7 +6,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks } from '../desk/bin/gate.mjs';
-import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells } from '../desk/bin/evidence.mjs';
+import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -297,6 +297,65 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('EV no run id: running within the grace', evidenceRecord(evDir, 741, HEAD, () => null, Date.parse(at) + DISPATCH_GRACE_MS - 1)?.state, 'running');
   t('EV no run id: done after it', evidenceRecord(evDir, 741, HEAD, () => null, Date.parse(at) + DISPATCH_GRACE_MS)?.state, 'done');
   rmSync(evDir, { recursive: true, force: true });
+
+  // DS-415: a run that failed is the repo's to fix, once for every PR it fails the same way.
+  const runDone = (conclusion, cells = 2) => ({ evidenceRun: () => ({ state: 'done', conclusion, url: 'https://x/actions/runs/7', runId: '7', cells }) });
+  const failed = ev(EVB, runDone('failure'));
+  t('DS-415 AC1 a run that failed is evidence-failed, not the person\'s', `${failed?.call} ${failed?.runId} ${failed?.workflow} ${failed?.conclusion}`, 'evidence-failed 7 pr-evidence.yml failure');
+  t('DS-415 AC1 its why says it failed', failed?.why, 'its evidence workflow `pr-evidence.yml` failed at aaaaaaaaa (https://x/actions/runs/7) and left 2 screenshot cell(s)'.replace('aaaaaaaaa', HEAD.slice(0, 9)));
+  t('DS-415 a run that succeeded but filled no cell is evidence-failed too', ev(EVB, runDone('success', 2))?.call, 'evidence-failed');
+  t('DS-415 AC4 a run that succeeded and filled some cells is the person\'s, naming the cells left', `${ev(EVB, runDone('success', 3))?.call} ${/left 2 screenshot cell/.test(ev(EVB, runDone('success', 3))?.why)}`, 'person true');
+  t('DS-415 a run with no id is the person\'s, as no log can be read', ev(EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'failure', url: null, runId: null, cells: 2 }) })?.call, 'person');
+  t('DS-415 the dispatch call carries the cells it was started for', ev(EVB)?.cells, 2);
+  const cellsDir = mkdtempSync(join(tmpdir(), 'desk-evidence-'));
+  recordDispatch(cellsDir, 740, HEAD, { workflow: 'pr-evidence.yml', out: 'https://github.com/o/r/actions/runs/9', cells: 2 });
+  const cellsRec = evidenceRecord(cellsDir, 740, HEAD, () => ({ status: 'completed', conclusion: 'failure' }));
+  t('DS-415 the record keeps its run id and cells', `${cellsRec?.runId} ${cellsRec?.cells} ${runFailed(cellsRec, 2)}`, '9 2 true');
+  rmSync(cellsDir, { recursive: true, force: true });
+
+  // The same failure on three PRs: a run log each, with its own run id, timestamps and SHA.
+  const logOf = (id, sha, pr) => [
+    `evidence\tSet up job\t2026-11-01T19:29:0${id}.1234567Z Current runner version: '2.320.0'`,
+    `evidence\tShoot\t2026-11-01T19:29:1${id}.7654321Z \x1b[36;1mnode scripts/evidence.mjs --pr ${pr} --sha ${sha}\x1b[0m`,
+    `evidence\tShoot\t2026-11-01T19:29:2${id}.0000000Z Error: did not set a _vercel_jwt cookie for the bypass secret (run 4119187706${id}, ${sha})`,
+    `evidence\tShoot\t2026-11-01T19:29:2${id}.1000000Z ##[error]Process completed with exit code 1.`,
+  ].join('\n');
+  const lines = [['1', 'a1b2c3d4e5f6', 784], ['2', 'f00dfeed1234', 794], ['3', '0123456789abcdef0123456789abcdef01234567', 791]].map(([id, sha, pr]) => firstErrorLine(logOf(id, sha, pr)));
+  t('DS-415 AC2 the first error line is the script\'s, not the runner\'s exit', lines[0], 'Error: did not set a _vercel_jwt cookie for the bypass secret (run 41191877061, a1b2c3d4e5f6)');
+  t('DS-415 AC2 three runs of one failure share one key', new Set(lines.map((l) => failureKey('pr-evidence.yml', l))).size, 1);
+  t('DS-415 AC2 the key is the workflow and the line, normalised', failureKey('pr-evidence.yml', lines[0]), 'pr-evidence.yml: Error: did not set a _vercel_jwt cookie for the bypass secret (run <n>, <sha>)');
+  t('DS-415 another error is another key', failureKey('pr-evidence.yml', 'Error: page /x timed out') === failureKey('pr-evidence.yml', lines[0]), false);
+  t('DS-415 another workflow is another key', failureKey('other.yml', lines[0]) === failureKey('pr-evidence.yml', lines[0]), false);
+  t('DS-415 a log with no error line has none', firstErrorLine('job\tstep\t2026-11-01T00:00:00Z all good'), null);
+  t('DS-415 the runner\'s ##[error] marker is taken off', firstErrorLine('j\ts\t2026-11-01T00:00:00Z ##[error]Process completed with exit code 1.'), 'Process completed with exit code 1.');
+
+  const KEY = failureKey('pr-evidence.yml', lines[0]);
+  const f = (n, head = HEAD) => ({ n, ticket: `VPL-${n}`, head, key: KEY, workflow: 'pr-evidence.yml', line: lines[0], run: String(n), url: null });
+  const three = [f(784), f(794), f(791)];
+  const none = evidenceFixPlan(three, {}, () => 'open');
+  t('DS-415 AC2 three PRs failing the same way file one fix', `${none.file.length} ${none.file[0]?.prs.map((p) => p.n).join(',')}`, '1 784,794,791');
+  t('DS-415 AC2 and none of them goes to the person', none.prs.map((p) => p.call).join(','), 'file,file,file');
+  const fixes = { [KEY]: { fix: 'DS-900', prs: {} } };
+  const waiting = evidenceFixPlan(three, fixes, () => 'open');
+  t('DS-415 AC2 a fix already started: no other is filed and the PRs wait on it', `${waiting.file.length} ${waiting.prs.map((p) => `${p.call}:${p.fix}`).join(',')}`, '0 wait:DS-900,wait:DS-900,wait:DS-900');
+  const merged = evidenceFixPlan(three, fixes, (k) => (k === 'DS-900' ? 'done' : 'open'));
+  t('DS-415 AC3 once the fix is done, each waiting PR\'s run is started again', merged.prs.map((p) => p.call).join(','), 'rerun,rerun,rerun');
+  const again = evidenceFixPlan([f(784)], { [KEY]: { fix: 'DS-900', prs: { 784: { head: HEAD, rerun: HEAD } } } }, () => 'done');
+  t('DS-415 a run that fails the same way after the fix, at the head it was re-run at, is the person\'s', `${again.prs[0].call} ${/after DS-900 fixed it/.test(again.prs[0].why)}`, 'person true');
+  t('DS-415 a new head after the fix is started again', evidenceFixPlan([f(784, OLD)], { [KEY]: { fix: 'DS-900', prs: { 784: { head: HEAD, rerun: HEAD } } } }, () => 'done').prs[0].call, 'rerun');
+  const gone = evidenceFixPlan([f(784)], fixes, () => 'gone');
+  t('DS-415 a fix that failed or left the batch leaves the PR to the person', `${gone.prs[0].call} ${/DS-900, the fix started for it, failed/.test(gone.prs[0].why)}`, 'person true');
+
+  const ft = fixTicket({ workflow: 'pr-evidence.yml', line: lines[0], run: '41191877061', url: 'https://github.com/o/r/actions/runs/41191877061', prs: [{ n: 784, ticket: 'VPL-640' }, { n: 794, ticket: 'VPL-652' }] }, { repo: 'o/r', base: 'main', today: '2026-11-02' });
+  t('DS-415 the fix ticket names the workflow and its error line', ft.summary.startsWith('evidence workflow pr-evidence.yml fails on every PR: Error: did not set a _vercel_jwt cookie'), true);
+  t('DS-415 its body names the run and every PR waiting on it', ft.body.includes('https://github.com/o/r/actions/runs/41191877061') && ft.body.includes('#784 (VPL-640), #794 (VPL-652)'), true);
+  t('DS-415 its body has every section of the Bug template', ['Problem', 'Where seen', 'Steps to reproduce', 'Diagnosis', 'Acceptance criteria', 'Verification', 'Design', 'Out of scope', 'Decisions', 'Build on'].every((h) => ft.body.includes(`\n## ${h}\n`) || ft.body.startsWith(`## ${h}\n`)), true);
+  t('DS-415 AC5 its body tells the worker to park naming a setting only the person holds', /parks naming that setting and why/.test(ft.body), true);
+  const fxDir = mkdtempSync(join(tmpdir(), 'desk-evidence-'));
+  t('DS-415 no fixes recorded reads as none', JSON.stringify(readFixes(fxDir)), '{}');
+  writeFixes(fxDir, fixes);
+  t('DS-415 fixes round-trip', readFixes(fxDir)[KEY].fix, 'DS-900');
+  rmSync(fxDir, { recursive: true, force: true });
 
   t('EV setup step 1 proposes §4 Evidence workflow', /\*\*Evidence workflow\.\*\*[\s\S]*propose it for §4 Evidence workflow/.test(doc('../skills/desk-setup/references/step-1-detect.md')), true);
   t('EV the config template has the row', /^\| Evidence workflow \| /m.test(doc('../desk-config.md')), true);
