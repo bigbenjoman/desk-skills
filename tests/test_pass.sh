@@ -2001,7 +2001,7 @@ check "DS-346 AC3 the placeholder branch is rebuilt from key and summary, and th
   '[ "$(field B-1 branch)" = "\"fix/B-1-triage-keeps-the-slug-placeholder-in\"" ] && [ "$(field B-1 state)" = "\"running\"" ] && echo "$out" | grep -qF "branch fix/B-1-<slug> was unusable"'
 check "DS-346 AC3 a ticket whose worktree is kept keeps its branch" '[ "$(field B-2 branch)" = "\"fix/B-2-<slug>\"" ]'
 check "DS-346 AC3 a usable branch is left as it is" '[ "$(field B-3 branch)" = "\"fix/B-3-already-fine\"" ]'
-# DS-177: the convention's other placeholder, <kebab-slug>, is rebuilt the same way, keeping its prefix.
+# The convention's other placeholder, <kebab-slug>, is rebuilt the same way, keeping its prefix.
 export DESK_QUEUE="$T/queue-kb.json" DESK_AUTOPILOT_STATE="$T/state-kb"
 mkdir -p "$T/state-kb/logs" "$T/state-kb/triage"
 q init kb; q set-batch concurrency=3
