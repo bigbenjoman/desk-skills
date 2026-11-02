@@ -920,6 +920,25 @@ const s5 = queueOf('sigma').tickets['S-5'];
 t('DS-399 a lane C ticket handed back goes on as lane B, so a later requeue or park treats it as a worker\'s', `${sgC.ok} ${s5.state} ${s5.lane} ${BSs.needsSession(s5)}`, 'true triaged B false');
 t('DS-399 its handoff briefing still names the lane it was', H.readHandoff(sigmaState, 'S-5').data?.lane.startsWith('C, handed back'), true);
 
+// ---- A supervised batch whose base sync waits on §3 batch-base-push `ask` is one item for the
+// batch, and its approve records the approval on the queue the supervisor passes to each later pass.
+put('rho2', { port: 3830, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
+  tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+const rho2 = () => N.collect({ word: 'rho2' }).items;
+const bp = rho2();
+t('DS-403 AC1 one base-push item for the batch, and no ticket is one', bp.map((i) => `${i.t.key} ${i.kind}`).join(), 'base-push base-push');
+t('DS-403 AC1 its need names the base, the source and the row, and approve is recommended',
+  `${bp[0]?.need} | ${bp[0]?.actions.map((a) => a[0]).join()} ${!!bp[0]?.actions[0][1]}`,
+  'feat/x is behind main, and config §3 batch-base-push is "ask", so no pass merges main into it: approve it once for this batch | approve,not-now true');
+t('DS-403 AC1 it has waited since the pass first asked', Math.round((NOW - bp[0]?.since) / 60000), 40);
+const rho2Count = () => N.needsCount(loadRepos().find((r) => r.name === 'rho2')).shown;
+t('DS-403 AC1 desk-q counts it as needing you, since it never lifts by itself', rho2Count(), 1);
+const bpOk = N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' });
+t('DS-403 AC2 approve records approved.base_push on the batch queue', `${bpOk.ok} ${queueOf('rho2').approved?.base_push}`, 'true true');
+t('DS-403 AC3 with the approval recorded there is no item, and desk-q counts none', `${rho2().length} ${rho2Count()}`, '0 0');
+put('rho2', { port: 3830, beat: 1, supervised: true, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-403 AC4 with no ask recorded there is no item', `${rho2().length} ${N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' }).ok}`, '0 false');
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

@@ -46,9 +46,9 @@ starts, and discard removes the batch and releases the children. An edit it cann
 comes back as a new `plan` item naming why), `triage`
 (open triage questions), `held` (a hold only you can let start, or `admit` a blocker in no batch), `stopped` (a worker gave up), `pr`
 (an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
-`worktree` (no worker spawns into its worktree until it is clean) or `usage` (the batch is held on a usage limit:
-one item, named `usage-limit` in place of a ticket, that lifts by itself or sooner after a subscription
-switch); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
+`worktree` (no worker spawns into its worktree until it is clean), `usage` (a usage limit holds the batch:
+one item, `usage-limit`, that lifts by itself or sooner after a subscription
+switch) or `base-push` (approve the sync); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
 outside GitHub (a build, a staging migration) has none: its need names the step, and it leaves the
 list once its check is green.
 

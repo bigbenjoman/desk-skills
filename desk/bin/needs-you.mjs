@@ -25,7 +25,8 @@
 //       move "<batch>"      a parked or stopped ticket out of its batch and into another running batch of
 //                           the repo (queue.mjs transfer), its next worker on that batch's base; a batch
 //                           not running is refused, naming those that are
-//       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject)
+//       approve | reject "<note>"   a feature spine's specs (queue.mjs approve or reject); approve on a
+//                           batch's `base-push` item records approved.base_push on its queue
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
 //       not-now             put it off (the not-now register), asked again once its inputs change
 //       open                a lane C or D park, or one on a step no worker is allowed (aws, curl, gh
@@ -234,6 +235,15 @@ const verbsOf = (item) => [...new Set(item.actions.map(([a]) => a.split(' ')[0])
 // and held tickets are none of them stopped, so none is an item of its own.
 const USAGE_ITEM = 'usage-limit';
 const usageRow = (r) => (usageHoldOf(r) ? { t: { key: USAGE_ITEM }, usage: true } : null);
+// A supervised batch whose base is behind while §3 batch-base-push is `ask` (pass.mjs base_push_ask)
+// is one item, named by this, until its approval is on the queue: the supervisor passes
+// `approved.base_push` to every later pass of the batch.
+const BASE_PUSH_ITEM = 'base-push';
+const basePushRow = (r) => (r.q?.base_push_ask && r.q.approved?.base_push !== true ? { t: { key: BASE_PUSH_ITEM }, basePush: true } : null);
+const batchRows = (r) => [usageRow(r), basePushRow(r)].filter(Boolean);
+// The base-push items desk-q counts, one per batch of a repo row (each keyed in its batch, `b`): unlike
+// a usage hold it never lifts by itself, so it needs the person.
+const basePushRows = (r) => (r.batches ?? [r]).flatMap((b) => { const x = basePushRow(b); return x ? [{ ...x, b }] : []; });
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -274,6 +284,12 @@ const standingOf = (repos, r) => repos.find((x) => x.slug === r.slug && x.batch 
 function itemOf(r, x) {
   const t = x.t;
   if (x.usage) return { kind: 'usage', need: usageHoldOf(r), actions: [['done', 'it lifts by itself; switch subscription to lift it sooner, then say done'], ['not-now']] };
+  if (x.basePush) {
+    const a = r.q.base_push_ask;
+    const base = a.base ?? 'the batch base', source = a.source ?? 'the default branch';
+    return { kind: 'base-push', need: `${base} is behind ${source}, and config §3 batch-base-push is "ask", so no pass merges ${source} into it: approve it once for this batch`,
+      actions: [['approve', `it is only code: the next pass merges ${source} into ${base} and pushes it, and every later sync in this batch runs without asking`], ['not-now']] };
+  }
   if (heldDraft(t)) {
     const n = t.result.pr;
     return { kind: 'held', need: `you put PR #${n} back to draft, so nothing undrafts or merges it: undraft it to release it (gh pr ready ${n} --repo ${r.slug.replace('__', '/')})`, note: doneNote(t),
@@ -404,7 +420,7 @@ export function needsCount(r) {
   const registers = new Map();
   const rows = [];
   let putOff = 0;
-  for (const x of needsRows(r)) {
+  for (const x of [...basePushRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
     if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir));
     if (judged(b, x, registers.get(b.stateDir)).l.status === 'put_off') putOff++; else rows.push(x);
@@ -417,7 +433,7 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 
 // Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
-// A usage-limit hold is an item here, but not in desk-q's count.
+// A usage-limit hold is an item here, but not in desk-q's count; a base-push item is in both.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
   const { named, scope } = scopeOf(repos, word);
   const items = [];
@@ -427,11 +443,10 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
   const groups = new Map();
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
-    const hold = usageRow(r);
-    for (const x of [...(hold ? [hold] : []), ...needsRows(r)]) {
+    for (const x of [...batchRows(r), ...needsRows(r)]) {
       const { item, l } = judged(r, x, register);
       if (l.status === 'put_off') { putOff++; continue; }
-      const since = x.usage ? timeOf(r.q.usage_hold.since) : timeOf(x.t.park?.since ?? x.t.added_at);
+      const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : timeOf(x.t.park?.since ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
@@ -506,7 +521,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
-  const x = !r.q ? null : ticket === USAGE_ITEM ? usageRow(r) : needsRows(r).find((y) => y.t.key === ticket);
+  const x = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
   if (!x) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const item = itemOf(r, x);
   const [verb, id] = action.split(/\s+/);
@@ -611,7 +626,14 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, 'hold lifted; the next pass can start it.');
     }
     // queue.mjs's own lines: they name any undraft or merge left for the person to do.
-    case 'approve': { const q = queueCmd(r, ['approve', ticket]); return q.ok ? say(true, `spine approved: ${q.out}`) : say(false, q.out); }
+    case 'approve': {
+      if (item.kind === 'base-push') {
+        const q = queueCmd(r, ['set-batch', 'approved.base_push=true']);
+        return q.ok ? say(true, 'base sync approved for the batch (approved.base_push on its queue): the next pass merges the base up to date, and every later sync runs without asking.') : say(false, `approval refused: ${q.out}`);
+      }
+      const q = queueCmd(r, ['approve', ticket]);
+      return q.ok ? say(true, `spine approved: ${q.out}`) : say(false, q.out);
+    }
     case 'reject': {
       const q = queueCmd(r, ['reject', ticket, text]);
       return q.ok ? say(true, 'spine sent back with your note.') : say(false, q.out);

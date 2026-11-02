@@ -1429,9 +1429,19 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       if (line) heldForFix(line);
       gateConflict = { worker: !!line, line: line ?? person, said: !line };
     } else if (s.reason === 'permission') {
-      blocked(`${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${BASE_PUSH_KEY} is "${basePushPerm}", so it was not synced` +
-        (basePushPerm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''));
+      const why = `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${BASE_PUSH_KEY} is "${basePushPerm}", so it was not synced`;
+      if (basePushPerm === 'ask' && PASS_BY === 'supervisor') {
+        // No session is there to ask, so the batch is asked once, as one needs-you item; the approval
+        // it records on the queue is passed to every later pass by the supervisor.
+        if (!fresh.base_push_ask && !DRY) q('set-batch', `base_push_ask=${JSON.stringify({ since: PASS_AT, base: BASE, source: SOURCE })}`);
+        baseLines.push(`base sync: ${why}: asked once for the batch in /desk-needs-you (its base-push item) — ${holdNote}`);
+        if (featureMode) baseHold = true;
+      } else {
+        blocked(`${why}${basePushPerm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`);
+      }
     } else blocked(s.why);
+    // The ask is settled once the base is current, its push is granted, or the row no longer asks.
+    if (fresh.base_push_ask && (s.ok || mayPushBase || basePushPerm !== 'ask') && !DRY) q('set-batch', 'base_push_ask=null');
   }
   // The base gate met a conflict at the head origin's base is still at: the same fix worker takes it,
   // and the gate runs again once the base moves.
@@ -2851,6 +2861,12 @@ function baseGate(qx) {
     }
   }
   const outside = () => { if (!complete && stopped.length) out.push(`BASE GATE: not in this slice: ${stoppedList}`); };
+  // A base sync asked in /desk-needs-you and not yet approved: the gate's own sync would be refused the
+  // same way, so it waits for the approval rather than failing into the waiting list each pass.
+  if (qx.base_push_ask && qx.approved?.base_push !== true) {
+    out.push(`BASE GATE: waits on the base sync, asked once for the batch in /desk-needs-you (its base-push item)`);
+    return true;
+  }
   if (!g || (moved && (g.state === 'failed' || due))) {
     if (DRY) { out.push(`BASE GATE (dry run): would start on ${BASE}`); return false; }
     const slice = { n: p.slice ?? 1, keys: merged.map((t) => t.key), of: tickets.length, last: complete };
