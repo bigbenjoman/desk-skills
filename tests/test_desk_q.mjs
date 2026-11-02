@@ -109,7 +109,7 @@ t('AC4 (DS-188 AC5, DS-215 AC12) header', /^● 2 workers running │ machine ca
 t('AC5 port overlap note', lines(ov.out).some((l) => /^(note| {4}) {2}▲ ports +desk-skills \+ pranicuk share 3502–3503\./.test(l)), true);
 // ---- AC15: voicepa's counts, last pass and workers (and ALL DONE BY, with no history)
 const vp = (rowOf(ov.out, 'voicepa') ?? '').trim().split(/\s+/);
-t('AC15 (DS-279 AC14) voicepa row: a session 4m ago, run 2, ready 0, merging 0, wait 1, needs 0, done 3, workers 3', vp.slice(1, 15).join(' '), '● session · 4m ago 2 0 0 1 0 3 no history 3');
+t('AC15 (DS-279 AC14) voicepa row: a session 4m ago, run 2, ready 0, merging 0, wait 1, needs 0, done 3, workers 3', vp.slice(1, 20).join(' '), '● session · 4m ago 2 0 0 1 0 3 no history 2 of 3 · cap 5');
 
 // ---- AC7: a held ticket whose only unmerged blocker runs is waiting, behind that blocker only
 const repo = W.run('--plain', 'voicepa');
@@ -424,8 +424,8 @@ const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
   lines(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
-t('DS-116 AC12 a batch with more ready than free slots says so', rowOf(room, 'pr-ninja')?.endsWith('2 (cap 4) · 1 ready with no free slot'), true);
-t('DS-116 AC12 a batch whose ready tickets fit says nothing extra', rowOf(room, 'voicepa')?.endsWith('5 (cap 5)'), true);
+t('DS-116 AC12 a batch with more ready than free slots says so', rowOf(room, 'pr-ninja')?.endsWith('2 of 2 · cap 4 · 1 ready with no free slot'), true);
+t('DS-116 AC12 a batch whose ready tickets fit says nothing extra', rowOf(room, 'voicepa')?.endsWith('0 of 5 · cap 5'), true);
 
 // ---- DS-163: the Timeline and By day views, on a fixed clock: Mon 19 Oct 2026 18:51, local time.
 const FIXED = new Date(2026, 9, 19, 18, 51).getTime();
@@ -1373,11 +1373,11 @@ const fit215 = (width) => lines(Q.overview(Q.loadRepos(NOW).filter((r) => ['hold
 const cols215 = (ls) => ls.find((l) => l.startsWith('  REPO ')).trim().split(/ {2,}/).join('|');
 const wider = (ls, w) => ls.filter((l) => [...l].length > w).length;
 const f104 = fit215(104), f120 = fit215(120), f160 = fit215(160);
-t('DS-215 AC16 (DS-279 AC14) at 104 columns home drops DONE, no line is wider, and the no-free-slot count moves into the notes',
+t('DS-215 AC16 (DS-279 AC14) at 104 columns home drops DONE and MERGING, no line is wider, and the no-free-slot count moves into the notes',
   `${cols215(f104)} ${wider(f104, 104)} | ${f104.some((l) => /^(note| {4}) {4}mixed +1 ready with no free slot: it starts as its running workers finish\.$/.test(l))}`,
-  'REPO|LAST PASS|RUN|READY|MERGING|WAIT|NEEDS YOU|ALL DONE BY|WORKERS 0 | true');
+  'REPO|LAST PASS|RUN|READY|WAIT|NEEDS YOU|ALL DONE BY|WORKERS 0 | true');
 t('DS-215 AC16 (DS-279 AC14) at 120 columns the done column comes back, no line wider; at 160 the row says it has a ready ticket with no free slot',
-  `${cols215(f120)} ${wider(f120, 120)} | ${f160.find((l) => l.startsWith('  mixed '))?.endsWith('2 (cap 3) · 1 ready with no free slot')}`,
+  `${cols215(f120)} ${wider(f120, 120)} | ${f160.find((l) => l.startsWith('  mixed '))?.endsWith(' of 2 · cap 3 · 1 ready with no free slot')}`,
   'REPO|LAST PASS|RUN|READY|MERGING|WAIT|NEEDS YOU|DONE|ALL DONE BY|WORKERS 0 | true');
 const setup104 = f104.findIndex((l) => /^(note| {4}) {4}setup /.test(l));
 t('DS-215 AC17 a note wider than the terminal wraps between words, the rest indented under its text',
@@ -1426,7 +1426,7 @@ t('DS-215 AC10 --plain: the same words and glyphs, no colour, the band and notes
   `${plain215.includes('\x1b')} ${lines(plain215).includes(' ✕ off: the supervisor is off, so no passes run. Run: desk-q off supervisor on')} ${lines(plain215).some((l) => /^(note| {4}) {2}▲ over {10}set to the supervisor/.test(l))} ${/ ✕ supervisor off · \d+m /.test(rowOf(plain215, 'off') ?? '')}`, 'false true true true');
 t('DS-215 AC11 a repo screen\'s second header line: who runs it, the last pass, workers and cap, the batch',
   [lines(Q.repoScreen(at215('sup'), { now: NOW }))[2], lines(Q.repoScreen(at215('sess'), { now: NOW }))[2]].join(' | '),
-  '● supervisor  last pass 2m ago │ workers 1 of 2 · cap 3 │ batch sup | ● session  last pass 1m ago │ workers 0 of 2 · cap 3 │ batch sess');
+  '● supervisor  last pass 2m ago │ workers 1 of 2 · cap 3 · machine 11 of 10 │ batch sup | ● session  last pass 1m ago │ workers 0 of 2 · cap 3 · machine 11 of 10 │ batch sess');
 const Rs = screen({ kind: 'repo', slug: 'acme__sup' }, 160, () => NOW);
 await sleep(20);
 const rsHead = lastFrame(Rs).find((l) => l.replace(ANSI, '').startsWith('● supervisor')) ?? '';
@@ -1706,9 +1706,9 @@ mkdirSync(join(s310, 'orchestrators'), { recursive: true });
 writeFileSync(q310, JSON.stringify({ version: 1, batch: 'x1', base: 'feat/x', concurrency: 2, tickets: { 'X-2': { key: 'X-2', state: 'running', stage: '3/9' }, 'X-3': { key: 'X-3', state: 'parked', park: { question: 'which copy?' } } } }));
 writeFileSync(join(s310, 'orchestrators', 'q.json'), JSON.stringify({ queue: q310, batch: 'x1', pid: 1, at: minsAgo(3) }));
 const ov310 = W310.run('--plain').out;
-t('DS-310 AC4 with only a standing batch, its row shows its cap as its own', /\s2 \(cap 3\)$/.test(rowOf(ov310a, 'desk-skills') ?? ''), true);
+t('DS-310 AC4 with only a standing batch, its row shows its cap as its own', /\s\d+ of 2 · cap 3$/.test(rowOf(ov310a, 'desk-skills') ?? ''), true);
 t('DS-357 AC1 AC2 one desk-skills row, named with the repo only, its counts added up, the latest pass and the workers within the cap',
-  `${lines(ov310).filter((l) => /^ {2}desk-skills/.test(l)).length} ${ov310.includes('X-1')} ${/^ {2}desk-skills +● session · 1m ago +1 +1 +0 +0 +1 +0 +no date yet +3 \(cap 3\)$/.test(rowOf(ov310, 'desk-skills') ?? '')}`, '1 false true');
+  `${lines(ov310).filter((l) => /^ {2}desk-skills/.test(l)).length} ${ov310.includes('X-1')} ${/^ {2}desk-skills +● session · 1m ago +1 +1 +0 +0 +1 +0 +no date yet +1 of 3 · cap 3$/.test(rowOf(ov310, 'desk-skills') ?? '')}`, '1 false true');
 t('DS-357 AC4 the needs-you line names the repo once', lines(ov310)[0].endsWith('│ desk-skills 1'), true);
 const x310 = W310.run('--plain', 'desk-skills:X-1');
 t('DS-310 AC1 desk-q <repo>:<name> opens the named batch, and only its tickets', `${x310.code} ${/X-2/.test(x310.out)} ${/X-3/.test(x310.out)} ${/DS-1/.test(x310.out)}`, '0 true true false');
@@ -1745,6 +1745,9 @@ const board = {
 put(I.T, I.env, 'board', { port: 5600, conc: '3 / 5', beat: 1, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'board', concurrency: 3, supervised: true, tickets: board } });
 put(I.T, I.env, 'boardask', { port: 5610, conc: '3 / 5', beat: 1, queue: { batch: 'boardask', concurrency: 3, supervised: true, tickets: { 'V-701': prOn(701, okChecks(23)) } } });
 const repos279 = Q.loadRepos(NOW).filter((r) => ['board', 'boardask'].includes(r.name));
+// Every other fixture repo's workers count against this machine's cap of 10 and overfill it; these
+// checks are about the fix worker's wording, so the machine has room here.
+for (const r of repos279) r.machine = { running: 0, cap: 10 };
 const r279 = repos279.find((r) => r.name === 'board');
 const q279 = lines(Q.repoScreen(r279, { now: NOW }));
 const row279 = (key) => q279.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} `).test(l)) ?? '';
@@ -1766,6 +1769,15 @@ t('DS-279 AC9 11 failed checks on try 1: a worker repairs it while running, the 
   `${rail279('V-705').includes('11 checks failed · a worker repairs it, try 1 of 2')} ${rail279('V-697').includes('#697 · 11 checks failed · next free worker repairs it, try 1 of 2')}`, 'true true');
 t('DS-279 AC9 no row with a failed check leads with a pass count', q279.filter((l) => /failed/.test(l) && /passed|\d+ of \d+ done/.test(l)).join(' | '), '');
 t('DS-279 AC10 a DIRTY PR on its first try names the base branch', rail279('V-704'), 'Moves without you: #704 · merge conflict with main · next free worker repairs it, try 1 of 2.');
+// The machine cap is shared by every repo: a batch with free workers still waits while it is full.
+for (const r of repos279) r.machine = { running: 10, cap: 10 };
+t('desk-q machine cap: a queued fix try waits for a machine slot while every repo\'s workers fill the cap',
+  rail279('V-704'), 'Moves without you: #704 · merge conflict with main · waits for a machine slot (10 of 10 busy), then a worker repairs it, try 1 of 2.');
+for (const r of repos279) r.machine = { running: 0, cap: 10 };
+// The machine count is the pass's (borrow.mjs machineBudget): running tickets plus a running base
+// fix, and a batch whose queue cannot be read at its repo's cap.
+t('desk-q machine count: base fixes count, and an unreadable batch counts at its cap',
+  Q.machineRunning([{ rows: [{ k: 'running' }, { k: 'ready' }], q: { base_fix: { running: 'sess' } } }, { error: 'bad json', cap: 3, rows: [] }]), 5);
 t('DS-279 AC11 red only on a check workers can\'t fix: its reason and command', rail279('V-696'), 'Needs you: PR #696, Flows image missing · build it: ensure-flows-image.sh.');
 t('DS-279 AC12 a draft whose review has a P1, and one whose clean verdict is unreadable',
   `${row279('V-700').includes('#700 · draft · review not clean: 1 P1')} ${rail279('V-702')}`, 'true Needs you: PR #702, draft · review verdict unreadable: set §4 Clean review verdict.');
@@ -1907,7 +1919,7 @@ const ov357 = lines(Q.overview(twob(), { now: NOW, avail: 30, width: 120, badge:
 t('DS-357 AC1 one row for the repo, named with the repo only, and no batch or branch on home',
   `${ov357.filter((l) => /^ {2}twob/.test(l)).length} ${ov357.some((l) => /feat-epics|feat\/epics/.test(l))}`, '1 false');
 t('DS-357 AC2 its counts are the sums, the last pass the latest, the workers the total within the cap, and a batch with no date makes ALL DONE BY no date yet',
-  /^ {2}twob +● session · 1m ago +1 +3 +0 +0 +2 +0 +no date yet +3 \(cap 3\)$/.test(ov357.find((l) => l.startsWith('  twob')) ?? ''), true);
+  /^ {2}twob +● session · 1m ago +1 +3 +0 +0 +2 +0 +no date yet +1 of 3 · cap 3$/.test(ov357.find((l) => l.startsWith('  twob')) ?? ''), true);
 t('DS-357 AC3 at 120 columns every column shows, and a note\'s text starts after a tag column the repo name sizes',
   `${['RUN', 'READY', 'MERGING', 'WAIT', 'NEEDS YOU', 'DONE', 'ALL DONE BY', 'WORKERS'].every((h) => ov357.find((l) => l.includes('LAST PASS'))?.includes(h))} ${ov357.find((l) => l.includes('  dates'))?.indexOf('Tickets')} ${ov357.every((l) => l.length <= 120)}`,
   'true 21 true');

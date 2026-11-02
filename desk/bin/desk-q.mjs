@@ -424,11 +424,16 @@ function rowStage(stateDir, t, last) {
 export function loadRepos(now = Date.now()) {
   const claims = repoPortClaims();
   const short = claims.map((c) => c.slug.split('__').slice(1).join('__') || c.slug);
-  return claims.flatMap((c, i) => {
+  const all = claims.flatMap((c, i) => {
     const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
     const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
     return listBatches(c.slug).map((b) => loadBatch(c, name, b.name, limits, now));
   });
+  // Every batch carries the machine's load, so a repo's screen can say when the machine cap, not the
+  // batch's own workers, is what holds its ready tickets back.
+  const machine = { running: machineRunning(all), cap: machineCap() };
+  for (const r of all) r.machine = machine;
+  return all;
 }
 
 function loadBatch(c, repoName, batch, limits, now) {
@@ -541,6 +546,13 @@ const supervisorOff = (r) => r.run?.agent === 'off';
 
 // How many of the repo's tickets and unmerged PRs are in a shown state.
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
+// A batch's base conflict fix holds a worker while it runs: the pass counts it against both caps.
+const baseFixes = (r) => (r.batches ? r.batches.reduce((a, b) => a + baseFixes(b), 0) : r.q?.base_fix?.running ? 1 : 0);
+// The workers a repo or batch has running: its running tickets and its base conflict fix.
+const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
+// Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs
+// machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
+export const machineRunning = (repos) => repos.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
 const attention = (r) => (r.error || !r.q ? 0 : needsCount(r).shown);
@@ -1492,7 +1504,7 @@ export function headroom({ running, cap, avail, gate, perWorker }) {
 
 // Ready tickets beyond the batch's free slots: they start only as its running workers finish.
 const unslotted = (r) => (r.batches ? r.batches.reduce((a, b) => a + Math.max(0, unslotted(b)), 0)
-  : r.rows.filter((x) => x.k === 'ready').length - Math.max(0, r.workers - count(r, 'running')));
+  : r.rows.filter((x) => x.k === 'ready').length - Math.max(0, r.workers - workersRunning(r)));
 
 // Each screen is built as head lines, selectable rows and foot lines. The plain output joins them;
 // the interactive screen draws the rows with a selection and opens a row's `open` view on Enter.
@@ -1534,7 +1546,7 @@ export function usageOf(repos, now, shown = repos) {
   const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), now });
   const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
   const heldBy = shown.filter((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))).map((r) => r.name);
-  return { reading, running: repos.reduce((a, r) => a + count(r, 'running'), 0), held: heldBy.length > 0, heldBy };
+  return { reading, running: machineRunning(repos), held: heldBy.length > 0, heldBy };
 }
 
 // The usage line: a bar for the 5-hour and the 7-day window, each with its reset time; green under
@@ -1639,7 +1651,7 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 // Every repo's header: a band for each batch no pass can run, what needs the user in each repo, the
 // machine, then usage.
 function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false } = {}) {
-  const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
+  const running = machineRunning(repos);
   const each = byRepo(list);
   return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
     ...(pinUsage ? [] : [usageLine(usageOf(repos, now, each), { now, solid })])];
@@ -1656,7 +1668,7 @@ function homeLayout(list, w, width, now, checkin, needs) {
   const ok = list.filter((r) => !r.error);
   const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
   const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
-  const workers = (r, slot) => `  ${r.workers} (cap ${r.cap})${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
+  const workers = (r, slot) => `  ${workersRunning(r)} of ${r.workers} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [] }, fit = { lastW: lastFit, qdW: qdFit, slot: false };
   const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'MERGING'] }];
@@ -1777,7 +1789,8 @@ function passHead(r, now) {
   const next = r.next == null ? [] : on ? [[r.next > now ? ' · next pass ' : ' · next pass due ', GREY], [clock(r.next), null]] : [[', next was due ', GREY], [clock(r.next), null]];
   const last = r.last == null ? [['no pass yet', GREY]] : [['last pass ', GREY], [on ? ago(now - r.last) : clock(r.last), null], ...next];
   const line = segLine([[on ? cell.split(' · ')[0] : cell, sgr], ['  ', null], ...last, BAR,
-    ['workers ', GREY], [`${count(r, 'running')} of ${r.workers}`, BOLD], [' · cap ', GREY], [String(r.cap), BOLD],
+    ['workers ', GREY], [`${workersRunning(r)} of ${r.workers}`, BOLD], [' · cap ', GREY], [String(r.cap), BOLD],
+    ...(r.machine?.cap == null ? [] : [[' · machine ', GREY], [`${r.machine.running} of ${r.machine.cap}`, r.machine.running >= r.machine.cap ? WARN : BOLD]]),
     ...(r.batches?.length > 1 ? [] : [BAR, [`batch ${r.q.batch ?? '-'}`, GREY]])]);
   if (on) return [line];
   const log = r.run?.agent === 'loaded' ? supervisorLogLine(r) : null;
@@ -1804,14 +1817,19 @@ function countsLine(r) {
   return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY]]);
 }
 
-// What holds a ready ticket back from the next free worker, or null: its batch's worker slots, or a
-// running ticket it collides with, which the pass never starts it beside ("held back by a collision").
+// What holds a ready ticket back from the next free worker, or null: its batch's worker slots, a
+// running ticket it collides with, which the pass never starts it beside ("held back by a collision"),
+// or the machine cap, which every repo's workers share.
 function startWait(r, t) {
   if (r.workers === 0) return 'workers set to 0';
-  const busy = count(r, 'running');
+  const busy = workersRunning(r);
   if (busy >= r.workers) return `waits for a worker (${busy} of ${r.workers} busy)`;
   const clash = String(t.collides_with ?? '').split('|').filter((c) => r.q.tickets?.[c]?.state === 'running');
   if (clash.length) return `waits for ${clash.join(', ')} (collides)`;
+  // Every repo's workers count against the machine cap, so a batch with free slots can still wait. A
+  // batch with no passes waits for those first, which readyWhy says.
+  const m = r.machine;
+  if (r.live && m?.cap != null && m.running >= m.cap) return `waits for a machine slot (${m.running} of ${m.cap} busy)`;
   return null;
 }
 // Why a ready ticket has not started: startWait, or the pass that will start it.
@@ -3059,7 +3077,7 @@ export function interactive({
   // and the cost cache's reading, workers or not.
   probeTimer = setInterval(() => {
     const now = clock();
-    const running = repos.reduce((a, r) => a + count(r, 'running'), 0);
+    const running = machineRunning(repos);
     if (probeDue({ running, reading: readUsage({ now }), now })) probeWith({ now, done: () => { if (!done) draw(); } }).catch(() => {});
     try { costWith({ now }); } catch { /* the next check tries again */ }
   }, probeMs);
