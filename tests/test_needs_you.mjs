@@ -971,6 +971,11 @@ t('DS-407 AC2 a step two batches wait on is one item, listing the PRs in both', 
 t('DS-407 AC2 it is keyed in the standing batch', kAll[0]?.r.batch ?? null, null);
 t('DS-407 AC2 desk-q counts it once for the repo, with its tickets now changed since the not-now', `${kRow().batches.length} ${N.needsCount(kRow()).shown}`, '2 1');
 t('DS-407 AC2 the feature batch on its own lists the same one item', N.collect({ word: 'kappa407:KF' }).items.filter((i) => i.kind === 'step').map((i) => i.t.key).join(), 'step:OPS-9');
+const kfOff = N.record({ word: 'kappa407:KF', ticket: 'step:OPS-9', action: 'not-now' });
+const kfBatch = () => loadRepos().find((r) => r.slug === 'acme__kappa407' && r.batch != null);
+const kfOnly = () => N.needsCount(repoRow([kfBatch()]));
+t('DS-407 AC2 put off from the feature batch, it is put off in the standing batch\'s register', `${kfOff.ok} ${kfOff.line.includes(join('.desk-autopilot', 'acme__kappa407', 'not-now'))}`, 'true true');
+t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alone, and the list', `${N.needsCount(kRow()).shown} ${N.needsCount(kfBatch()).putOff} ${kfOnly().shown} ${kp().filter((i) => i.kind === 'step').length}`, '0 1 0 0');
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
