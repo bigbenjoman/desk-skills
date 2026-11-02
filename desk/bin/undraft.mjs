@@ -311,7 +311,7 @@ export function personHold(t, n, redrafts = []) {
   return { why: `it was put back to draft${how}`, action: `undraft #${n} to release it; the merge driver then merges it once it is green` };
 }
 
-// t: the queue ticket. pr: { number, head, base, mergeState, mergeable, body, reviews, comments, checks, carry }
+// t: the queue ticket. pr: { number, head, base, branch, mergeState, mergeable, body, reviews, comments, checks, carry }
 // (checks as pr_status keeps them; carry(sha), when given, says whether a verdict posted on sha holds at
 // the head, as verdictCarries does). cfg: { spine, perm, approved, localReview, clean, handle, required,
 // advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
@@ -319,7 +319,7 @@ export function personHold(t, n, redrafts = []) {
 // check build recorded at that head, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
 // evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
 // the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
-// pr-conflict-unreviewed and -reviewed), untriggered(base, head) -> gate.mjs untriggeredChecks's map
+// pr-conflict-unreviewed and -reviewed), untriggered(base, head, branch) -> gate.mjs untriggeredChecks's map
 // for a required check that never reported }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
@@ -363,7 +363,7 @@ export function undraftCall(t, pr, cfg) {
   let gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   // A required check that never reported may be one its workflow never runs on this PR's base.
   if (gate.state === 'absent' && pr.base && cfg.untriggered) {
-    const untriggered = cfg.untriggered(pr.base, pr.head) ?? {};
+    const untriggered = cfg.untriggered(pr.base, pr.head, pr.branch ?? null) ?? {};
     if (Object.keys(untriggered).length) gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [], untriggered });
   }
   if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };

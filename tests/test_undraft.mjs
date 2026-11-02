@@ -110,18 +110,18 @@ for (const rerun of ['ask', 'no', undefined]) {
 }
 t('DS-330 a cancelled check with no run id has nothing to re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled' }])?.call, 'person');
 
-// DS-410: a required check its workflow never runs on the PR's base is put to the person as the
-// trigger to change, not a re-run (voicepa VPL-627, PR #770 into a feature base).
+// A required check its workflow never runs on the PR's base is put to the person as the trigger to
+// change, not a re-run.
 const FEAT = 'feat/VPL-626-voice-pa-on-off-contacts';
-const ciOn = (branches) => [{ file: '.github/workflows/ci.yml', text: `on:\n  pull_request:\n    branches: ${branches}\njobs:\n  ci:\n    name: tests\n` }];
+const ciOn = (branches) => [{ file: '.github/workflows/ci.yml', text: `on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: ${branches}\njobs:\n  ci:\n    name: tests\n` }];
 const read410 = [];
-const basePr = (base, branches) => undraftCall(tk, { number: 770, head: HEAD, base, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'Vercel', status: 'completed', conclusion: 'success' }] },
+const basePr = (base, branches) => undraftCall(tk, { number: 770, head: HEAD, base, branch: 'feature/VPL-627', mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'Vercel', status: 'completed', conclusion: 'success' }] },
   { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], rerun: 'yes', reruns: () => 0, cooledDown: true,
-    untriggered: (b, h) => { read410.push(`${b}@${h.slice(0, 3)}`); return untriggeredChecks(['tests'], b, ciOn(branches)); } });
+    untriggered: (b, h, br) => { read410.push(`${b}@${h.slice(0, 3)} from ${br}`); return untriggeredChecks(['tests'], b, ciOn(branches), { branch: br }); } });
 const u410 = basePr(FEAT, '[main, production]');
 t('DS-410 AC1 the reason names the workflow trigger', u410?.why, `its checks are not green: required check "tests" never runs on PRs into ${FEAT} (workflow trigger: .github/workflows/ci.yml runs on pull requests only into main, production)`);
 t('DS-410 AC1 the person is told the repo change, not a re-run', `${u410?.call} | ${/^add feat\/VPL-626-voice-pa-on-off-contacts \(or a pattern such as feat\/\*\*\) to the pull_request branches of the workflow that runs "tests"/.test(u410?.action ?? '')} | ${/fix or re-run/.test(u410?.action ?? '')}`, 'person | true | false');
-t('DS-410 the workflows are read for the PR\'s base at its head', read410[0],`${FEAT}@aaa`);
+t('DS-410 the workflows are read for the PR\'s base at its head, with its branch', read410[0], `${FEAT}@aaa from feature/VPL-627`);
 const fixed410 = basePr(FEAT, "[main, 'feat/**']");
 t('DS-410 negative control: a trigger that takes the base keeps today\'s call and words', `${fixed410?.call} | ${fixed410?.why} | ${fixed410?.action}`, 'checks | its checks are not green: required check "tests" has not reported | fix or re-run the checks on #770');
 read410.length = 0;

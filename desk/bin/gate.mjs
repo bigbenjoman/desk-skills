@@ -15,8 +15,8 @@
 //   evaluateGate(checks, { required, advisory, runs, untriggered }) -> { state, reasons, failing, pending, succeeded, untriggered }
 //     checks: normalised { name, status: 'queued'|'in_progress'|'completed', conclusion, runId }
 //     state:  'pass' | 'fail' | 'pending' | 'absent'
-//   untriggeredChecks(required, base, workflows) -> { <check>: <why> } the required checks no workflow
-//     runs on a PR into base (its pull_request branch filters), for evaluateGate's `untriggered`
+//   untriggeredChecks(required, base, workflows, { branch }) -> { <check>: <why> } the required checks
+//     no workflow runs on a PR into base from branch (its trigger filters), for evaluateGate's `untriggered`
 //   readWorkflows({ repo, ref, run }) -> [{ file, text }] the repo's .github/workflows at ref
 //   normaliseRollup(nodes)   statusCheckRollup / GraphQL context nodes -> checks
 //   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
@@ -40,6 +40,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 // A required check passes as branch protection passes it: success, or a job its workflow skipped by
@@ -113,103 +114,50 @@ export const SKIPPED_ON_DRAFT = 'CI does not run on a draft, so its checks were 
 // ---- Workflow triggers -------------------------------------------------------------------------
 // A required check that never reported may be one its workflow never runs on the PR's base: a workflow
 // filtered to `pull_request: branches: [main]` reports nothing on a PR into a feature base, so no
-// re-run can help (DS-410). Just enough YAML for that: the `on:` block's pull_request and
-// pull_request_target branch filters, and each job's id and name. Anything it cannot read counts as
-// running everywhere, so the gate never blames a trigger it did not read.
-const PR_EVENTS = new Set(['pull_request', 'pull_request_target']);
-const unquote = (s) => String(s).trim().replace(/^(['"])(.*)\1$/, '$2');
-const flowList = (s) => { const m = /^\[(.*)\]$/.exec(s.trim()); return m ? m[1].split(',').map(unquote).filter(Boolean) : null; };
-// A line without its comment: a `#` after a space, outside quotes.
-const uncomment = (l) => {
-  let q = null;
-  for (let i = 0; i < l.length; i++) {
-    const c = l[i];
-    if (q) { if (c === q) q = null; } else if (c === '"' || c === "'") q = c;
-    else if (c === '#' && (i === 0 || /\s/.test(l[i - 1]))) return l.slice(0, i);
-  }
-  return l;
-};
-const yamlLines = (text) => String(text ?? '').split(/\r?\n/)
-  .map((l) => ({ ind: l.search(/\S/), text: uncomment(l).trim() }))
-  .filter((l) => l.ind >= 0 && l.text && l.text !== '---');
-// The lines one level under line i: those at the indent of its first child.
-const direct = (ls, i) => {
-  const out = [];
-  for (let j = i + 1; j < ls.length && ls[j].ind > ls[i].ind; j++) if (ls[j].ind === ls[i + 1].ind) out.push(j);
-  return out;
-};
-const keyOf = (t) => { const m = /^(['"]?)([^'"#:]+?)\1\s*:(?:\s+(.*))?$/.exec(t); return m ? [m[2].trim(), (m[3] ?? '').trim()] : [null, '']; };
-const itemOf = (t) => /^-\s*(.*)$/.exec(t)?.[1];
-const listAt = (ls, i) => {
-  const rest = keyOf(ls[i].text)[1];
-  if (rest) return flowList(rest) ?? [unquote(rest)];
-  return direct(ls, i).map((j) => itemOf(ls[j].text)).filter((x) => x != null).map(unquote);
-};
-
-// -> { prs: [{ event, branches, ignore }], jobs: [{ id, name }] }. branches and ignore are the
-// filter lists, null where unset.
-export function workflowTriggers(text) {
-  const ls = yamlLines(text);
-  const top = (k) => ls.findIndex((l) => l.ind === 0 && keyOf(l.text)[0] === k);
-  const prs = [];
-  const on = [top('on'), top('true')].find((i) => i >= 0);
-  if (on != null) {
-    const rest = keyOf(ls[on].text)[1];
-    if (rest) for (const e of flowList(rest) ?? [unquote(rest)]) { if (PR_EVENTS.has(e)) prs.push({ event: e, branches: null, ignore: null }); }
-    else {
-      for (const j of direct(ls, on)) {
-        const item = itemOf(ls[j].text);
-        if (item != null) { if (PR_EVENTS.has(unquote(item))) prs.push({ event: unquote(item), branches: null, ignore: null }); continue; }
-        const [k] = keyOf(ls[j].text);
-        if (!PR_EVENTS.has(k)) continue;
-        const f = { event: k, branches: null, ignore: null };
-        for (const c of direct(ls, j)) {
-          const [ck] = keyOf(ls[c].text);
-          if (ck === 'branches') f.branches = listAt(ls, c);
-          else if (ck === 'branches-ignore') f.ignore = listAt(ls, c);
-        }
-        prs.push(f);
-      }
-    }
-  }
-  const jobs = [];
-  const jb = top('jobs');
-  if (jb >= 0) {
-    for (const j of direct(ls, jb)) {
-      const [id] = keyOf(ls[j].text);
-      if (!id) continue;
-      const nm = direct(ls, j).find((c) => keyOf(ls[c].text)[0] === 'name');
-      jobs.push({ id, name: nm == null ? null : unquote(keyOf(ls[nm].text)[1]) });
-    }
-  }
-  return { prs, jobs };
-}
+// re-run can help. The workflow is read with desk-ci.mjs's scanner (branchEvents). Anything it cannot
+// read counts as running everywhere, so the gate never blames a trigger it did not read.
 
 // GitHub's branch filter patterns: `*` stops at `/`, `**` does not, `+` and `?` repeat the character
-// before them, `[…]` is a class, and a later `!pattern` takes back what earlier ones matched.
+// before them, and a later `!pattern` takes back what earlier ones matched. A pattern that does not
+// compile counts as matching.
 const branchRe = (p) => new RegExp(`^${p.replace(/[.^${}()|\\]/g, '\\$&').replace(/\*\*|\*/g, (m) => (m === '**' ? '.*' : '[^/]*'))}$`);
 export function branchMatches(patterns, branch) {
   let hit = false;
   for (const p of patterns ?? []) {
     const neg = p.startsWith('!');
-    if (branchRe(neg ? p.slice(1) : p).test(branch)) hit = !neg;
+    let re;
+    try { re = branchRe(neg ? p.slice(1) : p); } catch { return true; }
+    if (re.test(branch)) hit = !neg;
   }
   return hit;
 }
-const prRunsOn = (f, base) => (f.branches ? branchMatches(f.branches, base) : f.ignore ? !branchMatches(f.ignore, base) : true);
-const filterText = (f) => (f.branches ? `only into ${f.branches.join(', ')}` : `except into ${f.ignore.join(', ')}`);
+const filterHits = (e, ref) => (e.branches ? branchMatches(e.branches, ref) : e.ignore ? !branchMatches(e.ignore, ref) : true);
+const filterText = (e) => (e.branches ? `only into ${e.branches.join(', ')}` : `except into ${e.ignore.join(', ')}`);
+// Whether a workflow may report on a PR into `base` from `branch`. pull_request_target takes its
+// trigger from the base branch's copy, not the head's read here, and a push to the PR's branch reports
+// on its head too (with no branch to test, any filtered push counts).
+const mayRun = (t, base, branch) => !t || t.called || t.events.some((e) => e.unread || e.event === 'pull_request_target'
+  || (e.event === 'pull_request' && filterHits(e, base))
+  || (e.event === 'push' && (branch == null ? true : filterHits(e, branch))));
 
 // The required checks no workflow runs on a PR into `base`, as { <check>: <why> }. workflows: [{ file,
-// text }]. A check is a workflow's when one of its jobs reports under that name (its `name:`, else its
-// id, or either with a matrix suffix ` (…)`). One that no readable workflow reports (an app's, a status
-// context, a job named by an expression) is left out, since nothing here says it will not run.
-export function untriggeredChecks(required, base, workflows) {
-  const read = (workflows ?? []).map((w) => ({ file: w.file, ...workflowTriggers(w.text) }));
+// text }] at the PR's head; branch: its head branch, for push triggers. A check is a workflow's when
+// one of its jobs reports under that name (desk-ci.mjs checkIsJob). One that no readable workflow
+// reports (an app's, a status context) is left out, since nothing here says it will not run, and so is
+// every check when a workflow does not read.
+export function untriggeredChecks(required, base, workflows, { branch = null } = {}) {
+  let read;
+  try {
+    read = (workflows ?? []).map((w) => { const wf = parseWorkflow(String(w.text ?? '')); return { file: w.file, on: branchEvents(wf.on), names: wf.jobs.map(checkNameOf) }; });
+  } catch { return {}; }
   const out = {};
   for (const n of required ?? []) {
-    const own = read.filter((w) => w.jobs.some((j) => { const label = j.name ?? j.id; return n === label || n.startsWith(`${label} (`); }));
-    if (!own.length || own.some((w) => w.prs.some((f) => prRunsOn(f, base)))) continue;
-    const how = own.map((w) => `${w.file} ${w.prs.length ? `runs on pull requests ${w.prs.map(filterText).join(', or ')}` : 'has no pull_request trigger'}`);
+    const own = read.filter((w) => w.names.some((name) => checkIsJob(n, name)));
+    if (!own.length || own.some((w) => mayRun(w.on, base, branch))) continue;
+    const how = own.map((w) => {
+      const prs = w.on.events.filter((e) => e.event === 'pull_request');
+      return `${w.file} ${prs.length ? `runs on pull requests ${prs.map(filterText).join(', or ')}` : 'has no pull_request trigger'}`;
+    });
     out[n] = `never runs on PRs into ${base} (workflow trigger: ${how.join('; ')})`;
   }
   return out;
@@ -469,7 +417,7 @@ if (isMain) {
       let gate = evaluateGate(checks, { required, advisory, runs });
       // A required check that never reported may be one its workflow never runs on this base.
       if (gate.state === 'absent') {
-        const untriggered = untriggeredChecks(required, pr.baseRefName, readWorkflows({ repo, ref: pr.headRefOid, run: gh }));
+        const untriggered = untriggeredChecks(required, pr.baseRefName, readWorkflows({ repo, ref: pr.headRefOid, run: gh }), { branch: pr.headRefName ?? null });
         if (Object.keys(untriggered).length) gate = evaluateGate(checks, { required, advisory, runs, untriggered });
       }
       // Run ids of failing, non-advisory checks, for a bounded rerun. From the check itself, else the
