@@ -128,7 +128,7 @@ for k in '' 'move'; do
 done
 # DS-346: a branch with the convention's placeholder left in (DS-345's own triage output) is refused
 # and not recorded; one git accepts is kept as written. The prompt names every placeholder.
-for br in 'fix/DS-345-<slug>' 'fix/DS-345 two words' 'fix/DS-345..x'; do
+for br in 'fix/DS-345-<slug>' 'feat/DS-177-<kebab-slug>' 'fix/DS-345 two words' 'fix/DS-345..x'; do
   rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
   out=$(STUB_BRANCH="$br" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
   check "DS-346 AC1: a record whose branch is '$br' is refused and not kept" \

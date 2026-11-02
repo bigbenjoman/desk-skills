@@ -2001,6 +2001,15 @@ check "DS-346 AC3 the placeholder branch is rebuilt from key and summary, and th
   '[ "$(field B-1 branch)" = "\"fix/B-1-triage-keeps-the-slug-placeholder-in\"" ] && [ "$(field B-1 state)" = "\"running\"" ] && echo "$out" | grep -qF "branch fix/B-1-<slug> was unusable"'
 check "DS-346 AC3 a ticket whose worktree is kept keeps its branch" '[ "$(field B-2 branch)" = "\"fix/B-2-<slug>\"" ]'
 check "DS-346 AC3 a usable branch is left as it is" '[ "$(field B-3 branch)" = "\"fix/B-3-already-fine\"" ]'
+# DS-177: the convention's other placeholder, <kebab-slug>, is rebuilt the same way, keeping its prefix.
+export DESK_QUEUE="$T/queue-kb.json" DESK_AUTOPILOT_STATE="$T/state-kb"
+mkdir -p "$T/state-kb/logs" "$T/state-kb/triage"
+q init kb; q set-batch concurrency=3
+q add B-4; q set B-4 state=triaged 'branch=feat/B-4-<kebab-slug>'
+printf '{"ticket":"B-4","summary":"Branch keeps the <kebab-slug> placeholder"}' > "$T/state-kb/triage/B-4.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-177 AC1 a <kebab-slug> branch is rebuilt from the title, keeping its prefix, with no < or >" \
+  '[ "$(field B-4 branch)" = "\"feat/B-4-branch-keeps-the-kebab-slug-placeholder\"" ] && [ "$(field B-4 state)" = "\"running\"" ] && echo "$out" | grep -qF "branch feat/B-4-<kebab-slug> was unusable"'
 
 # ---- pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the
 # worktree setup and the worker it starts resolve X-1's queue and state too.
