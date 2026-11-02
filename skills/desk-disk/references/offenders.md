@@ -69,8 +69,16 @@ them either), and containers are small and needed the moment work starts.
 - **Lost by the fix:** nothing, while the files are in iCloud; opening one needs the network.
 - **Fix:** one folder per command, and **never a folder the row says holds a git repository**:
   evicting a repository's files makes every `git status` download it back, and a half-downloaded
-  `.git` corrupts it. Skip those and list each by path in the report. For a folder marked
-  `evictable`, skip the files already evicted (the dataless flag, `0x40000000`) and evict the rest:
+  `.git` corrupts it. Skip those, and those the scan could not search in full, and list each by
+  path in the report. For a folder marked `evictable`, first check again that it holds no `.git`
+  at any depth (a read, so it is not the fix): this must print nothing, or the folder is skipped.
+
+  ```bash
+  find "<folder>" -name .git -print
+  ```
+
+  Then, as the fix, skip the files already evicted (the dataless flag, `0x40000000`) and evict the
+  rest:
 
   ```bash
   find "<folder>" -type f ! -name '.*' -print0 | while IFS= read -r -d '' f; do (( $(stat -f %f "$f") & 0x40000000 )) || brctl evict "$f" >/dev/null; done
@@ -114,6 +122,8 @@ them either), and containers are small and needed the moment work starts.
 - **What it is:** Backblaze's upload logs, grown by backing up worktrees (4.7M `node_modules` files
   a day).
 - **Seen:** 51 GB.
+- **Lost by the fix:** the offsite copy of excluded worktrees, so work in one that is not pushed is
+  no longer backed up by Backblaze. Push it first.
 - **Fix:** the user's, in Backblaze → Settings → Exclusions: add each worktrees directory. Never
   delete the logs; they grow back while the cause stands.
 - **Restore:** remove the exclusion.
@@ -143,7 +153,8 @@ Only with `--backup-volume`.
 - **Lost by the fix:** the history in that backup: files changed or deleted since then that only it
   held.
 - **Fix (sudo):** `tmutil listbackups -d <volume>`, then oldest first, one per step:
-  `sudo tmutil delete -d <volume> -t <stamp>`. Ask before each; stop when free space is enough.
+  `sudo tmutil delete -d <volume> -t <stamp>`. Ask before each, measure with
+  `measure --backup-volume <volume>` before and after, and stop when `backup_free_gb` is enough.
 - **Restore:** none.
 - **Never force-eject an encrypted backup drive:** that left one locked and needing
   `diskutil apfs unlockVolume`.
@@ -152,6 +163,7 @@ Only with `--backup-volume`.
 
 - **What it is:** a plain folder in `/Volumes` with a drive's name. The drive then mounts as
   `<name> 1`, and Time Machine backups to it fail.
+- **Lost by the fix:** nothing: only an empty folder is removed.
 - **Fix (sudo):** with the drive unplugged, and only when the folder is empty
   (`ls -A /Volumes/<name>` prints nothing): `sudo rmdir "/Volumes/<name>"`. A folder with files in
   it is reported, never removed: they are writes meant for the drive.

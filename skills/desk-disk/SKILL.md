@@ -70,10 +70,12 @@ measured. A fix the user rejected is never run, in this step or any later batch.
 
 For each approved fix, three calls, in order, each its own Bash call:
 
-1. `bash ~/.agents/skills/desk-disk/bin/disk-scan.sh measure` → `free_gb=<n> local_snapshots=<n>`
+1. `bash ~/.agents/skills/desk-disk/bin/disk-scan.sh measure` → `free_gb=<n> local_snapshots=<n>`.
+   For a `time-machine` fix add `--backup-volume /Volumes/<name>`, which adds `backup_free_gb=<n>`:
+   that drive's figure is the one the fix moves, not the Mac's
 2. **the one fix command, alone**: never joined to another with `&&`, `;` or a pipe, never in
    parallel with another tool call, never in the background
-3. `measure` again, and report `<offender>: <before> → <after> GB free (+<delta>)`
+3. `measure` again, the same way, and report `<offender>: <before> → <after> GB free (+<delta>)`
 
 Then stop for the next pick, or go on to the next one the user already approved.
 
@@ -90,8 +92,9 @@ Take the `measure` before you hand it over and after the user says it finished.
 
 ## 4. Free space did not rise
 
-When a fix ran but `free_gb` did not go up, check the catalogue's known reasons before looking for
-a new offender:
+When a fix ran but `free_gb` did not go up (`backup_free_gb` for a backup deletion: the local
+snapshot check below is about the Mac's own disk, not the drive), check the catalogue's known
+reasons before looking for a new offender:
 
 1. `tmutil listlocalsnapshots /` (the `local_snapshots` count from `measure`): a local snapshot
    holds deleted blocks until it goes. Report it by name, with the `local-snapshots` entry's fix.
@@ -103,9 +106,10 @@ Say which applies. Do not start hunting a new offender to make up the number.
 
 ## iCloud folders that hold a git repository
 
-The scan marks every top-level iCloud Drive folder that holds a `.git` within four levels. **Those
-are never evicted**: the eviction skips them and the report lists each one by path, under "not
-acted on".
+The scan marks every top-level iCloud Drive folder that holds a `.git` at any depth, and every one
+it could not search in full. **Those are never evicted**: the eviction skips them and the report
+lists each one by path, under "not acted on". Only a folder the scan printed as `evictable` is
+evicted, and the catalogue's eviction checks again for a `.git` first.
 
 ## Gotchas
 

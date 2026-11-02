@@ -3,8 +3,8 @@
 # the read forms of docker and tmutil. Written for bash 3.2 (stock macOS /bin/bash) as well as 4+.
 #   disk-scan.sh scan [--worktrees <dir>]... [--backup-volume </Volumes/name>]
 #       free space on the data volume, then one row per offender in references/offenders.md
-#   disk-scan.sh measure
-#       free_gb=<n> local_snapshots=<n>: run before and after every fix
+#   disk-scan.sh measure [--backup-volume </Volumes/name>]
+#       free_gb=<n> local_snapshots=<n> [backup_free_gb=<n>]: run before and after every fix
 # DESK_DISK_SYSROOT prefixes the system paths it reads (/Library, /opt, /usr/local, /Volumes), so the
 # test can point them at a fixture tree.
 set -u
@@ -14,7 +14,8 @@ data_volume() { if [ -d /System/Volumes/Data ]; then echo /System/Volumes/Data; 
 
 # Available KB from `df -kP`, whose POSIX format never wraps a long device name.
 avail_kb() { df -kP "$1" 2>/dev/null | awk 'NR == 2 { print $4 }'; }
-mount_of() { df -kP "$1" 2>/dev/null | awk 'NR == 2 { print $6 }'; }
+# The mount point is everything after the fifth field, so a drive named "Backup Disk" keeps its space.
+mount_of() { df -kP "$1" 2>/dev/null | awk 'NR == 2 { s = $0; for (i = 0; i < 5; i++) sub(/^[^ ]+ +/, "", s); print s }'; }
 
 gb() { awk -v k="$1" 'BEGIN { printf "%.1f GB", k / 1048576 }'; }
 
@@ -38,9 +39,16 @@ local_snapshots() {
   tmutil listlocalsnapshots / 2>/dev/null | grep -c 'com.apple' || true
 }
 
+gb_num() { awk -v k="${1:-0}" 'BEGIN { printf "%.1f", k / 1048576 }'; }
+
+# With --backup-volume it adds that drive's free space, the figure a backup deletion moves.
 measure() {
   local k; k=$(avail_kb "$(data_volume)")
-  printf 'free_gb=%s local_snapshots=%s\n' "$(awk -v k="${k:-0}" 'BEGIN { printf "%.1f", k / 1048576 }')" "$(local_snapshots)"
+  printf 'free_gb=%s local_snapshots=%s' "$(gb_num "$k")" "$(local_snapshots)"
+  if [ -n "$BACKUP" ]; then
+    if [ -d "$BACKUP" ]; then printf ' backup_free_gb=%s' "$(gb_num "$(avail_kb "$BACKUP")")"; else printf ' backup_free_gb=-'; fi
+  fi
+  echo
 }
 
 scan_docker() {
@@ -74,15 +82,17 @@ scan_chrome_clones() {
 }
 
 scan_icloud() {
-  local root="$HOME/Library/Mobile Documents/com~apple~CloudDocs" d git k
+  local root="$HOME/Library/Mobile Documents/com~apple~CloudDocs" d git rc k
   sized_row icloud-drive "$root" "downloaded iCloud Drive files (evicted ones count 0)"
   [ -d "$root" ] || return 0
   for d in "$root"/*/; do
     [ -d "$d" ] || continue
     d="${d%/}"
-    git=$(find "$d" -maxdepth 4 -name .git -print 2>/dev/null | head -n 1)
+    # The whole tree, at any depth: a folder is evictable only when a complete search finds no .git.
+    git=$(find "$d" -name .git -print 2>/dev/null); rc=$?
     k=$(kb_of "$d")
     if [ -n "$git" ]; then row icloud-folder "$(gb "${k:-0}")" "$d" "holds a git repository: never evicted"
+    elif [ $rc -ne 0 ]; then row icloud-folder "$(gb "${k:-0}")" "$d" "partly unreadable, so not checked for git repositories: never evicted"
     else row icloud-folder "$(gb "${k:-0}")" "$d" "evictable"; fi
   done
 }
@@ -119,8 +129,10 @@ scan_time_machine() {
   row local-snapshots "$(local_snapshots)" "tmutil listlocalsnapshots /" "count, not size: macOS does not report a snapshot's size"
   # A folder in /Volumes that is not a mount point makes the drive of that name mount as "<name> 1".
   for v in "$SYS"/Volumes/*/; do
-    [ -d "$v" ] || continue
-    v="${v%/}"; m=$(mount_of "$v")
+    v="${v%/}"
+    # /Volumes/Macintosh HD is a symlink to /, not a stale folder.
+    [ -d "$v" ] && [ ! -L "$v" ] || continue
+    m=$(mount_of "$v")
     [ "$m" = "$v" ] || row stale-volume-folder "-" "$v" "a folder, not a mounted drive"
   done
   [ -n "$BACKUP" ] || return 0
@@ -164,5 +176,5 @@ done
 case "$cmd" in
   scan) scan ;;
   measure) measure ;;
-  *) echo "usage: disk-scan.sh scan [--worktrees <dir>]... [--backup-volume <path>] | disk-scan.sh measure" >&2; exit 2 ;;
+  *) echo "usage: disk-scan.sh scan [--worktrees <dir>]... [--backup-volume <path>] | disk-scan.sh measure [--backup-volume <path>]" >&2; exit 2 ;;
 esac
