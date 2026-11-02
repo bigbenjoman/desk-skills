@@ -1,6 +1,7 @@
 // A ready batch PR the merge driver cannot merge goes back to a worker on its own branch, at most
-// FIX_TRIES_MAX times: one still red after the driver's two reruns, or one in conflict with its base.
-// So does a draft whose posted review at its head found a P0 or a P1, or under §3 autopilot-judgement
+// FIX_TRIES_MAX times: one still red after the driver's two reruns, one in conflict with its base, or
+// one held for review feedback (feedbackFix); a ready PR whose review at its head is not clean goes to
+// a review fix, as a draft's does. So does a draft whose posted review at its head found a P0 or a P1, or under §3 autopilot-judgement
 // yes a requirement gap (reviewFix), FIX_TRIES_MAX review fix tries of its own within FIX_TRIES_TOTAL
 // tries in all (a try that cleared what it quoted not counted, up to REVIEW_TRIES_CEILING), and one
 // whose review gaps the person
@@ -318,6 +319,39 @@ export function personReviewFix(t, { pr, head, why }) {
   return findings.length ? { try: n, of: n, kind: 'review', person: true, pr, head: head ?? null, what: 'review not clean: sent back by the person for one more try', findings } : null;
 }
 
+// A ready PR the merge driver holds for review feedback under §3 merge-feedback-first (threads left
+// unresolved that no clean desk-review verdict settles, or changes requested) goes back to a fix
+// worker under the same tries as fixCall: one per head, FIX_TRIES_MAX per PR. The try quotes each
+// thread, so the pass can reply on and resolve each one once the worker has pushed past this head
+// (resolvable). Out of tries, or tried at this head already, it is the person's, naming each thread.
+// threads: [{ id, text }], text as review-threads.mjs threadLine names it.
+const threadCount = (n) => `${n} unresolved thread${n === 1 ? '' : 's'}`;
+export function feedbackFix(t, { pr, head, decision, threads }) {
+  const left = threads ?? [];
+  const changes = decision === 'CHANGES_REQUESTED';
+  if (!head || (!left.length && !changes)) return null;
+  const what = [left.length ? threadCount(left.length) : '', changes ? 'changes requested' : ''].filter(Boolean).join(', ');
+  const done = t.fix_tries ?? [];
+  // Changes requested with every thread resolved is the reviewer's to clear: no worker can.
+  if (!left.length && done.some((x) => x.kind === 'feedback')) {
+    return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: changes requested, which only the reviewer clears, by reviewing it again` };
+  }
+  if (spent(done, fixedAt(done, head))) {
+    const named = left.map((x) => x.text).join('; ');
+    return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: ${what}${named ? ` — ${named}` : ''}` };
+  }
+  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text }) => ({ id, text })) });
+}
+// The threads a finished feedback try quoted that the pass replies on and resolves: its worker
+// finished, did not park, and pushed past the try's head. [] otherwise.
+export function resolvable(t, head) {
+  const f = t.fix;
+  if (f?.kind !== 'feedback' || !f.finished || t.state !== 'done' || !head || head === f.head) return [];
+  return (f.threads ?? []).filter((x) => x.id && !(f.resolved ?? []).includes(x.id));
+}
+// The reply the pass posts on a thread a feedback try worked, before resolving it.
+export const feedbackReply = (f, head) => `Worked by desk's fix try ${f.try} of ${f.of} at ${String(head).slice(0, 12)}: the worker's reply, naming this thread, is on the PR's conversation, and a fresh desk-review is posted on that head. Reopen this thread if it still stands.`;
+
 // A draft with no review verdict the pass can read at its head (undraft.mjs `review`: none posted, one
 // it cannot read, or one for an older head) goes to a review worker, which reviews the head and posts
 // it. Its try is one of the FIX_TRIES_MAX, once per head: still unread after one, it is the person's,
@@ -407,8 +441,18 @@ export function fixBrief(t) {
       ? `Your PR #${f.pr} is a draft on this branch, and it conflicts with ${f.base}, so the pass cannot take it out of draft. Its review was for the old head, so the new head needs one of its own.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
     lines.push(f.files?.length ? `Conflicting files: ${f.files.join(', ')}.` : `The conflicting files were not listed: \`git merge-tree --write-tree --name-only origin/${f.base} HEAD\` names them.`);
+  } else if (f.kind === 'feedback') {
+    lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
+    if (f.threads?.length) {
+      lines.push('Its unresolved review threads:', '');
+      for (const x of f.threads) lines.push(`- ${x.text}`);
+      lines.push('');
+    }
+    lines.push('Read each thread in full (gh pr view --json reviews,comments, or desk-gh read for the thread), and validate it with desk-review-response before changing any code: fix what is right, and for what is not, say why.',
+      'Answer every thread with gh pr comment, naming it by its file:line and quoting its first line, saying what you changed in which commit or why the code stands. Do not resolve threads yourself: once you have pushed past this head and finished, the pass replies on each thread quoted here and resolves it.',
+      'A thread you cannot fix, or one that needs a product call or another person\'s ruling, is not yours: park (AUTOPILOT_PARK) naming the thread and exactly what blocks it.');
   } else if (f.kind === 'review') {
-    lines.push(`Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean${f.verdict ? ` (\`${f.verdict}\`)` : ''}.`);
+    lines.push(`Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean${f.verdict ? ` (\`${f.verdict}\`)` : ''}.`);
     if (f.findings?.length) {
       lines.push('Fix each P0 and P1 finding it lists:', '');
       for (const x of f.findings) lines.push(`- ${x.sev}: ${x.text}`);
@@ -435,7 +479,7 @@ export function fixBrief(t) {
     lines.push('', `${f.person ? "desk's own fix tries were spent, and the person sent this one more." : `This is try ${f.try} of ${f.of}.`} A finding${f.gaps?.length ? ' or gap' : ''} quoted here that the review of your new head still lists goes to the person.`, '');
     return lines.join('\n');
   }
-  const left = f.kind === 'conflict' && f.draft ? 'in conflict' : f.draft ? 'red' : 'red or in conflict';
+  const left = f.kind === 'feedback' ? 'holding unresolved review feedback' : f.kind === 'conflict' && f.draft ? 'in conflict' : f.draft ? 'red' : 'red or in conflict';
   lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${left} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
 }
@@ -457,10 +501,13 @@ export function fixTask(t) {
       `Open no new PR, leave the PR in draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status> said=<all taken, or for each screen you could not take, <file>: <why>>.`;
   }
   const gaps = f.kind === 'gaps';
-  // A draft's red checks or conflict are fixed in draft and reviewed again, as a review fix is.
-  const review = f.kind === 'review' || gaps || f.draft === true;
+  // A draft's red checks or conflict are fixed in draft and reviewed again, as a review fix is, and so
+  // is a ready PR's review feedback or review.
+  const review = f.kind === 'review' || f.kind === 'feedback' || gaps || f.draft === true;
+  const inDraft = review && !f.ready && f.kind !== 'feedback';
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
+    : f.kind === 'feedback' ? 'validate each review thread it quotes (desk-review-response), fix what is right, answer every thread with gh pr comment naming it, and park on one you cannot fix, naming it and what blocks it'
     : gaps ? 'do what the call says about each gap, and nothing else'
       : f.kind === 'review' ? (f.gaps?.length
         ? `${f.findings?.length ? 'fix each P0 and P1 finding it quotes and ' : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
@@ -476,5 +523,5 @@ export function fixTask(t) {
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     task +
     `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after}. ` +
-    `Open no new PR, leave the PR ${review ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>${said}.`;
+    `Open no new PR, leave the PR ${inDraft ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>${said}.`;
 }

@@ -31,7 +31,7 @@
 //   isHuman(author, self)    one that is neither a bot nor `self`
 //
 // CLI (merge-driver.sh):
-//   node gate.mjs pr <number> [--repo owner/name]   one JSON object: sha, base, head, mergeState,
+//   node gate.mjs pr <number> [--repo owner/name]   one JSON object: title, sha, base, head, mergeState,
 //     reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory checks), holds,
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
 //     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
@@ -430,7 +430,7 @@ if (isMain) {
       const ri = rest.indexOf('--repo');
       const repo = ri >= 0 ? rest[ri + 1] : E.ghRepo();
       const pr = JSON.parse(gh(['pr', 'view', n, '--repo', repo, '--json',
-        'number,headRefOid,headRefName,baseRefName,isDraft,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup']));
+        'number,title,headRefOid,headRefName,baseRefName,isDraft,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup']));
       const checks = normaliseRollup(pr.statusCheckRollup);
       let runs = [];
       try { runs = readRuns(repo, pr.headRefOid); }
@@ -471,7 +471,7 @@ if (isMain) {
       if (waiver) waiver.runs = [...new Set(gate.failing.filter((f) => waiver.checks.includes(f.name)).map((f) => f.runId).filter(Boolean))];
       if (waiver && !waiver.runs.length) waiver.runs = [...ids];
       console.log(JSON.stringify({
-        number: pr.number, sha: pr.headRefOid, head: pr.headRefName, base: pr.baseRefName, isDraft: pr.isDraft,
+        number: pr.number, title: pr.title ?? '', sha: pr.headRefOid, head: pr.headRefName, base: pr.baseRefName, isDraft: pr.isDraft,
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
         gate: { ...gate, failedRuns: [...ids] },
         holds: held.map((h) => ({ glob: h.glob, why: h.why, files: h.files.slice(0, 5), count: h.files.length })),

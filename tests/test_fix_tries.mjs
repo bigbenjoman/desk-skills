@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, personReviewFix, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -419,5 +419,38 @@ t('DS-406 AC3 its brief and task say the person sent it, quoting each finding', 
 t('DS-406 a reason that quotes no finding gives no try', personReviewFix(tk(), { why: 'review not clean after 2 fix tries (2 review): 1 P0' }), null);
 t('DS-406 findings listed at the same depth are each their own', reviewFindings('### P1\n  - src/a.ts:1 one\n  - src/b.ts:2 two').length, 2);
 t('DS-406 a deeper bullet under the next severity heading is not joined to the finding above it', reviewFindings('P0 (1)\n- src/a.ts:1 one\nP1 (1)\n  - src/b.ts:2 two').map((x) => x.sev).join(','), 'P0,P1');
+
+// DS-419: a ready PR held for review feedback goes to a fix worker, under the same tries.
+const th = [{ id: 'PRRT_1', text: 'src/rail.ts:40 "**P0** a class that goes live early is missing from the rail"', path: 'src/rail.ts' }];
+const fb1 = feedbackFix(tk(), { pr: 2402, head: HEAD, decision: 'NONE', threads: th });
+t('DS-419 AC1 one unresolved thread is a feedback fix try, try 1', `${fb1?.call} ${fb1?.fix.kind} ${fb1?.fix.try}/${fb1?.fix.of}`, `requeue feedback 1/${FIX_TRIES_MAX}`);
+t('DS-419 AC1 the try quotes the thread by id and text only', JSON.stringify(fb1?.fix.threads), JSON.stringify([{ id: 'PRRT_1', text: th[0].text }]));
+t('DS-419 AC1 it says what it is fixing', fb1?.fix.what, 'review feedback: 1 unresolved thread');
+t('DS-419 changes requested with no thread is feedback too', feedbackFix(tk(), { pr: 2402, head: HEAD, decision: 'CHANGES_REQUESTED', threads: [] })?.fix.what, 'review feedback: changes requested');
+t('DS-419 changes requested left after a feedback try, every thread resolved, is the reviewer\'s', feedbackFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'feedback' }] }), { pr: 2402, head: HEAD, decision: 'CHANGES_REQUESTED', threads: [] })?.why, 'review feedback still open after 1 fix try: changes requested, which only the reviewer clears, by reviewing it again');
+t('DS-419 no thread and no changes requested is nothing to fix', feedbackFix(tk(), { pr: 2402, head: HEAD, decision: 'APPROVED', threads: [] }), null);
+const fbBrief = fixBrief(tk({ fix: fb1.fix }));
+t('DS-419 AC5 the brief quotes each thread and says the PR is out of draft', fbBrief.includes(`- ${th[0].text}`) && fbBrief.includes('is open and out of draft'), true);
+t('DS-419 AC5 the brief has the worker validate, answer every thread, and leave resolving to the pass', fbBrief.includes('desk-review-response') && fbBrief.includes('Answer every thread with gh pr comment') && fbBrief.includes('the pass replies on each thread quoted here and resolves it'), true);
+t('DS-419 AC8 the brief has a thread the worker cannot fix parked, naming it and what blocks it', fbBrief.includes('park (AUTOPILOT_PARK) naming the thread and exactly what blocks it'), true);
+const fbTask = fixTask(tk({ fix: fb1.fix }));
+t('DS-419 AC5 the task pushes to the same branch and posts a fresh desk-review on the new head', fbTask.includes('push to the same branch with git push origin <your branch>, then review the new head with desk-review and post that review on the PR'), true);
+t('DS-419 the task leaves the ready PR out of draft', fbTask.includes('leave the PR out of draft'), true);
+// AC7: out of tries, or tried at this head already: the person's, naming each thread.
+const fbDone = [{ try: 1, head: 'b'.repeat(40), kind: 'feedback' }, { try: 2, head: 'c'.repeat(40), kind: 'feedback' }];
+const fb7 = feedbackFix(tk({ fix_tries: fbDone }), { pr: 2402, head: HEAD, decision: 'NONE', threads: th });
+t('DS-419 AC7 after 2 tries it is stuck, naming the thread', `${fb7?.call}: ${fb7?.why}`, `stuck: review feedback still open after 2 fix tries: 1 unresolved thread — ${th[0].text}`);
+t('DS-419 AC7 a try already made at this head is not made again', feedbackFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'feedback' }] }), { pr: 2402, head: HEAD, threads: th })?.call, 'stuck');
+// The threads the pass replies on and resolves: a finished try whose worker pushed past its head.
+const worked = { ...fb1.fix, finished: 'x' };
+t('DS-419 AC5 a finished try that moved the head has its threads resolved', resolvable(tk({ state: 'done', fix: worked }), 'd'.repeat(40)).map((x) => x.id).join(), 'PRRT_1');
+t('DS-419 not while the head is still the try\'s', resolvable(tk({ state: 'done', fix: worked }), HEAD).length, 0);
+t('DS-419 not while its worker runs or parked', [resolvable(tk({ state: 'done', fix: fb1.fix }), 'd'.repeat(40)).length, resolvable(tk({ state: 'parked', fix: worked }), 'd'.repeat(40)).length].join(), '0,0');
+t('DS-419 not one already resolved', resolvable(tk({ state: 'done', fix: { ...worked, resolved: ['PRRT_1'] } }), 'd'.repeat(40)).length, 0);
+t('DS-419 the reply names the try and the head', feedbackReply(fb1.fix, 'd'.repeat(40)).startsWith(`Worked by desk's fix try 1 of ${FIX_TRIES_MAX} at dddddddddddd`), true);
+// AC2: a ready PR's review fix says it is out of draft, and leaves it there.
+const rfReady = { ...reviewFix(tk(), { pr: 2289, head: HEAD, verdict: { p0: '1', p1: '0' }, body: '### P0 (1)\n- src/clerk.ts:12 signature changed on main' }).fix, ready: true };
+t('DS-419 AC2 a ready PR\'s review fix brief says it is out of draft', fixBrief(tk({ fix: rfReady })).includes('Your PR #2289 is open and out of draft'), true);
+t('DS-419 AC2 its task leaves it out of draft and reviews the new head', /review the new head with desk-review.*leave the PR out of draft/.test(fixTask(tk({ fix: rfReady }))), true);
 
 process.exit(fails ? 1 : 0);

@@ -250,11 +250,16 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // <glob>, …`) and leaves it for a person to merge, so the item says the hold's reason.
   const hold = /^merge hold: (.+?)(?: — .*)?$/.exec(String(t.merge_blocked ?? ''));
   if (hold) return needs({ code: 'hold', text: String(t.merge_blocked).replace(/^merge hold:\s*/, '') }, [`only a person merges it: ${hold[1]}`, WARN], [' · merge it', null]);
-  // It records a green PR it has held for unresolved review threads on two loops, naming the first.
-  const fb = /^review feedback: (.+)$/.exec(String(t.merge_blocked ?? ''));
-  if (fb) return needs({ code: 'feedback', text: fb[1] }, [fb[1], WARN], [' · resolve or answer it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
   const triesLeft = triesMade(t.fix_tries) < FIX_TRIES_MAX;
+  // It records a green PR it has held for unresolved review threads on two loops, naming the first:
+  // the pass sends that to a fix worker (feedbackFix) while a try is left.
+  const fb = /^review feedback: (.+)$/.exec(String(t.merge_blocked ?? ''));
+  if (fb && triesLeft) return merging([fb[1], WARN], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);
+  if (fb) return needs({ code: 'feedback', text: fb[1] }, [fb[1], WARN], [' · resolve or answer it', null]);
+  // A feat PR green and past the feedback check still needs a person's approval before the driver merges it.
+  const approval = /^approval: (.+)$/.exec(String(t.merge_blocked ?? ''));
+  if (approval) return needs({ code: 'approval', text: approval[1] }, [approval[1], WARN], [' · approve it', null]);
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
     if (!triesLeft) return needs({ code: 'conflict', base: ctx.base }, [`still in conflict with ${ctx.base} after ${FIX_TRIES_MAX} fix tries`, FAIL]);
     return merging([`merge conflict with ${ctx.base}`, FAIL], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);

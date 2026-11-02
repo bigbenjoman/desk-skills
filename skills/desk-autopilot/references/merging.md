@@ -80,6 +80,21 @@ and `stuck` keeps the checks by name: desk-q and desk-needs-you drop any that ha
 the PR, and stop showing the PR as stuck once none is left. A needs-you item whose blocker is a step
 outside GitHub recommends nothing: it names the step.
 
+Review feedback goes to a fix worker the same way, under the same two tries. A ready PR whose latest
+desk-review at its head is not clean, with a P0 or a P1 (or a gap, under §3 `autopilot-judgement`
+`yes`), gets a review fix, as a draft does. Where `merge-feedback-first` is not `no`, one with a
+review thread left unresolved (one no clean verdict settles) or changes requested gets a feedback
+fix: its briefing quotes each thread, and the worker validates each with `desk-review-response`,
+fixes what is right, answers every thread with `gh pr comment`, pushes, and posts a fresh
+desk-review on the new head. Once that worker has finished and pushed past the try's head, the pass
+replies on each thread the try quoted and resolves it, so the next pass reads only what is still
+open. A worker that cannot fix a thread parks naming it and what blocks it. Out of tries, the PR is
+`stuck` with `review feedback still open after 2 fix tries: <each thread>`.
+
+A PR titled `feat…` merges only once a person has approved it: green, past the feedback check and
+with no approval, the driver records `merge_blocked` `approval: …`, and desk-q and needs-you ask the person
+to approve it. One held for review feedback asks for no approval: the feedback goes to a fix worker.
+
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
 handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is
 `yes`, the rows a batch base's conflict reads too (`feature-branch.md`). Otherwise it goes under
@@ -115,9 +130,12 @@ a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, 
 and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
 reached `completed`. It **never arms auto-merge** (the platform's idea of green is not the
 config's) and never undrafts. Why a ticket's PR is not merging is recorded on the ticket as
-`merge_blocked=` (a hold, behind without `pr-update-branch`, or a green PR held for unresolved
-threads on two loops, naming the first), which `queue.mjs render` shows and desk-q and needs-you
-list as needing the person. It
+`merge_blocked=` (a hold, behind without `pr-update-branch`, a green PR held for unresolved
+threads on two loops, naming the first, or a feature waiting on an approval), which `queue.mjs
+render` shows and desk-q and needs-you list as needing the person, apart from held threads with a
+fix try still left, which desk-q shows as merging. In `queue.mjs render` a done ticket reads
+`DONE` only once its PR has merged (or it finished with no PR): `PR OPEN` while its PR is open,
+`CLOSED` once it was closed unmerged. It
 matches a ticket's PR by the recorded branch and base (above). `--tickets` is the starting set:
 every loop also takes in each ticket in the queue, so a ticket admitted or requeued mid-batch is
 merged with no restart. `--tickets` takes whitespace- or comma-separated keys and refuses (exit 2) anything that is not a key for this repo (§4 Ticket

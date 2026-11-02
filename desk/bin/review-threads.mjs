@@ -14,11 +14,15 @@
 // and the thread was opened by an earlier desk-review of the handle's: that verdict counts every P0 and
 // P1 outstanding at the head, so a finding it no longer counts was fixed, outdated or not inline at all.
 // A thread anyone else opened, or the handle opened outside a desk-review, is never settled here.
-import { readFileSync } from 'node:fs';
+//
+// pass.mjs imports readThreads and THREADS_QUERY: a ready PR's threads left, or a review at its head
+// that is not clean (`review`), go to a fix worker (fix-tries.mjs feedbackFix, reviewFix).
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { latestReview, verdictAt, pairs, DESK_REVIEW_CLEAN } from './undraft.mjs';
 import { LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
-const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
+export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
   headRefOid reviewDecision
   reviews(last:100){nodes{id author{login} body commit{oid}}}
   reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine
@@ -28,14 +32,18 @@ const firstLine = (s) => String(s ?? '').split(/\r?\n/).map((l) => l.trim()).fin
 
 // payload: the GraphQL response. handle: §1 GitHub handle. clean: the §4 Clean review verdict row; a
 // plain-text row is read against desk-review's own counts, and an unset one settles nothing.
-function readThreads(payload, { handle, clean }) {
+// `review` is the handle's latest desk-review when its verdict is at the head and not clean
+// ({ id, verdict, body }), else null.
+export function readThreads(payload, { handle, clean }) {
   const pr = payload?.data?.repository?.pullRequest;
   if (!pr) return null;
   const reviews = pr.reviews?.nodes ?? [];
   const row = String(clean ?? '').trim();
   const want = !row || /^(todo|none)\b/i.test(row) ? null : Object.keys(pairs(row)).length ? row : DESK_REVIEW_CLEAN;
   const latest = handle && want ? latestReview(reviews, handle) : null;
-  const settles = !!latest && verdictAt(latest.verdict, pr.headRefOid, want).clean;
+  const atHead = latest ? verdictAt(latest.verdict, pr.headRefOid, want) : null;
+  const settles = !!atHead?.clean;
+  const review = atHead?.settle ? { id: latest.id, verdict: latest.verdict, body: latest.body } : null;
   const index = new Map(reviews.map((r, i) => [r.id, i]));
   const at = latest ? index.get(latest.id) ?? -1 : -1;
   const own = (login) => !!handle && String(login ?? '').toLowerCase() === handle.toLowerCase();
@@ -50,7 +58,7 @@ function readThreads(payload, { handle, clean }) {
     const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(c?.body) };
     (ours ? resolve : left).push({ ...th, text: threadLine(th) });
   }
-  return { decision: pr.reviewDecision || 'NONE', head: pr.headRefOid ?? '', verdict: settles ? latest.verdict.sha : null, resolve, left };
+  return { decision: pr.reviewDecision || 'NONE', head: pr.headRefOid ?? '', verdict: settles ? latest.verdict.sha : null, review, resolve, left };
 }
 
 // A thread as one line names it: `path:line "first line"`, cut to a readable length.
@@ -60,9 +68,12 @@ function threadLine(t, max = 100) {
   return first ? `${where} "${first}"` : where;
 }
 
-const a = process.argv.slice(2);
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+})();
+const a = isMain ? process.argv.slice(2) : [null];
 const at = (flag) => (a.includes(flag) ? a[a.indexOf(flag) + 1] : undefined);
-if (a[0] === 'query') {
+if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   console.log(THREADS_QUERY);
 } else if (a[0] === 'read') {
   let r = null;
