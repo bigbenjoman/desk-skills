@@ -324,7 +324,7 @@ check "ask with the approval syncs"                  'origin_has_main && [[ "$ou
 fresh typo nope; tip=$(origin_tip); out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 node "$B/pass.mjs" 2>&1)
 check "a value the row cannot read is no, not ask"   '[ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"batch-base-push is \"no\""* ]]'
 
-# DS-403: a supervised batch under ask is asked once on the queue (needs-you's base-push item), never
+# A supervised batch under ask is asked once on the queue (needs-you's base-push item), never
 # listed as waiting, so no decider is handed it each pass. Its approval syncs this and every later pass.
 spass(){ out=$(node "$B/pass.mjs" --json --by supervisor 2>/dev/null); }
 waits_base(){ jq -e '[.waiting[] | select(test("base sync"))] | length > 0' <<<"$out" >/dev/null; }
@@ -334,6 +334,11 @@ check "DS-403 AC1 nothing waits on you for it, and the report says where it is a
 check "DS-403 AC1 feature mode still spawns nothing on it"  '[[ "$(jq -r .message <<<"$out")" != *"spawned:"* ]]'
 spass
 check "DS-403 AC1 the next pass keeps the same ask"   '[ "$(jq -r .base_push_ask.since "$DESK_QUEUE")" = "$since" ] && ! waits_base && [ "$(origin_tip)" = "$tip" ]'
+node "$B/queue.mjs" set-batch "gate={\"state\":\"failed\",\"sha\":\"$tip\",\"failures\":[\"feat/x is behind main, so it was not synced\"]}" >/dev/null
+spass
+check "DS-403 AC1 a failed base gate waits on the ask, not in the waiting list" \
+  '[[ "$(jq -r .message <<<"$out")" == *"BASE GATE: waits on the base sync, asked once for the batch in /desk-needs-you"* ]] && [ "$(jq "[.waiting[] | select(startswith(\"BASE GATE\"))] | length" <<<"$out")" = 0 ]'
+node "$B/queue.mjs" set-batch gate=null >/dev/null
 node "$B/queue.mjs" set-batch approved.base_push=true >/dev/null
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 node "$B/pass.mjs" --json --by supervisor 2>/dev/null)
 check "DS-403 AC2 approved, the next pass merges main in" 'origin_has_main && [[ "$(jq -r .message <<<"$out")" == *"merged 2 commit(s)"* ]]'

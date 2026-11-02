@@ -2861,6 +2861,12 @@ function baseGate(qx) {
     }
   }
   const outside = () => { if (!complete && stopped.length) out.push(`BASE GATE: not in this slice: ${stoppedList}`); };
+  // A base sync asked in /desk-needs-you and not yet approved: the gate's own sync would be refused the
+  // same way, so it waits for the approval rather than failing into the waiting list each pass.
+  if (qx.base_push_ask && qx.approved?.base_push !== true) {
+    out.push(`BASE GATE: waits on the base sync, asked once for the batch in /desk-needs-you (its base-push item)`);
+    return true;
+  }
   if (!g || (moved && (g.state === 'failed' || due))) {
     if (DRY) { out.push(`BASE GATE (dry run): would start on ${BASE}`); return false; }
     const slice = { n: p.slice ?? 1, keys: merged.map((t) => t.key), of: tickets.length, last: complete };

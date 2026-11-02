@@ -241,6 +241,9 @@ const usageRow = (r) => (usageHoldOf(r) ? { t: { key: USAGE_ITEM }, usage: true 
 const BASE_PUSH_ITEM = 'base-push';
 const basePushRow = (r) => (r.q?.base_push_ask && r.q.approved?.base_push !== true ? { t: { key: BASE_PUSH_ITEM }, basePush: true } : null);
 const batchRows = (r) => [usageRow(r), basePushRow(r)].filter(Boolean);
+// The base-push items desk-q counts, one per batch of a repo row (each keyed in its batch, `b`): unlike
+// a usage hold it never lifts by itself, so it needs the person.
+const basePushRows = (r) => (r.batches ?? [r]).flatMap((b) => { const x = basePushRow(b); return x ? [{ ...x, b }] : []; });
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -417,7 +420,7 @@ export function needsCount(r) {
   const registers = new Map();
   const rows = [];
   let putOff = 0;
-  for (const x of needsRows(r)) {
+  for (const x of [...basePushRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
     if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir));
     if (judged(b, x, registers.get(b.stateDir)).l.status === 'put_off') putOff++; else rows.push(x);
@@ -430,7 +433,7 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 
 // Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
-// A usage-limit hold is an item here, but not in desk-q's count.
+// A usage-limit hold is an item here, but not in desk-q's count; a base-push item is in both.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
   const { named, scope } = scopeOf(repos, word);
   const items = [];
