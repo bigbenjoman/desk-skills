@@ -43,7 +43,7 @@ import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCel
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
-import { groupsNow, keysOf } from './desk-q.mjs';
+import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
 import { listBatches, lastPromotion } from './batches.mjs';
@@ -1313,8 +1313,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   // An open child PR whose required check the default branch's workflow runs on the base, but the
   // base's does not (pr_status.behind, from the last pass), gets CI only once the base is synced, so the
   // base syncs even with nothing to spawn.
-  const staleCI = Object.values(fresh.tickets ?? {}).filter((t) => t.state === 'done' && t.pr_status?.pr === t.result?.pr
-    && t.pr_status?.state === 'OPEN' && Object.keys(t.pr_status.behind ?? {}).length).map((t) => `PR #${t.result.pr}`);
+  const staleCI = behindPrs(fresh);
   const wantSync = willSpawn || staleCI.length > 0;
   const holdNote = featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands';
   const blocked = (why) => {
@@ -2429,7 +2428,9 @@ for (const t of Object.values(qNow.tickets)) {
   const n = t.state === 'done' ? t.result?.pr : null;
   if (n == null) continue;
   let s = null;
-  if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state)) {
+  // A PR this pass's reopen closed and could not reopen is read again until it reopens.
+  const owed = t.reopening != null && String(t.reopening) === String(n);
+  if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
     prStates[n] = t.pr_status.state;
     if (t.pr_status.state !== 'MERGED' || t.merged_at) continue;
     if (t.pr_status.merged_at) s = t.pr_status;
@@ -2442,7 +2443,8 @@ for (const t of Object.values(qNow.tickets)) {
     q('set', t.key, `pr_status=${JSON.stringify(s)}`);
     if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
     if (s.state === 'OPEN' && s.isDraft === false) undrafted.push({ t, s });
-    if (s.state === 'OPEN' && Object.keys(s.reopen ?? {}).length && s.base_head) reopens.push({ t, s });
+    if ((s.state === 'OPEN' && Object.keys(s.reopen ?? {}).length && s.base_head) || (owed && s.state === 'CLOSED')) reopens.push({ t, s, owed });
+    else if (owed && !DRY) q('set', t.key, 'reopening=null');
   }
   if (s.state === 'MERGED' && !t.merged_at && !DRY) {
     const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));
@@ -2455,25 +2457,31 @@ for (const m of merges) out.push(`merge recorded: ${m}`);
 // A PR whose required checks never reported, though its base's copy of the workflow now runs them (the
 // base gained the trigger after the PR's last pull_request event), gets a run only from a new event:
 // it is closed and reopened, once per base head. The batch keeps that head as `reopened_at`, so a PR
-// still unreported after its reopen goes to the person rather than round again.
-const toReopen = reopens.filter(({ s }) => String(s.base_head) !== String(qNow.reopened_at ?? ''));
+// still unreported after its reopen goes to the person rather than round again. Each ticket owes its
+// reopen (`reopening`, its PR) from before the close until the reopen lands, so one whose close or
+// reopen failed is tried again next pass, at any base head, and a closed one is read again till then.
+const toReopen = reopens.filter(({ s, owed }) => owed || String(s.base_head) !== String(qNow.reopened_at ?? ''));
 if (toReopen.length && DRY) out.push(`reopen (dry run): would close and reopen ${toReopen.map(({ t, s }) => `PR #${s.pr} (${t.key})`).join(', ')} so their CI runs`);
 else if (toReopen.length) {
   const done = [];
-  let failed = false;
-  for (const { t, s } of toReopen) {
+  for (const { t, s, owed } of toReopen) {
     const n = String(s.pr);
-    const closed = shOut('gh', ['pr', 'close', n, '--repo', GH_REPO]);
-    // A closed PR is never read again, so its reopen is tried twice.
-    const r = closed.ok ? (() => { const a = shOut('gh', ['pr', 'reopen', n, '--repo', GH_REPO]); return a.ok ? a : shOut('gh', ['pr', 'reopen', n, '--repo', GH_REPO]); })() : closed;
-    if (r.ok) { done.push(`PR #${n} (${t.key})`); continue; }
-    failed = true;
+    if (!owed) q('set', t.key, `reopening=${n}`);
+    const closed = s.state === 'CLOSED' ? { ok: true } : shOut('gh', ['pr', 'close', n, '--repo', GH_REPO]);
+    const r = closed.ok ? shOut('gh', ['pr', 'reopen', n, '--repo', GH_REPO]) : closed;
+    if (r.ok) {
+      // Until the next pass reads it, desk-q shows it reopened rather than its unreported checks.
+      q('set', t.key, 'reopening=null', 'pr_status.state=OPEN', 'pr_status.reopened=true');
+      done.push(`PR #${n} (${t.key})`);
+      continue;
+    }
     report.waiting.push(closed.ok
-      ? `reopen: PR #${n} (${t.key}) was closed to start its CI and did not reopen (${r.out.split('\n').pop()}): gh pr reopen ${n} --repo ${GH_REPO}`
+      ? `reopen: PR #${n} (${t.key}) is closed, to start its CI, and did not reopen (${r.out.split('\n').pop()}); the next pass tries again, or: gh pr reopen ${n} --repo ${GH_REPO}`
       : `reopen: PR #${n} (${t.key}) could not be closed to start its CI (${r.out.split('\n').pop()}); the next pass tries again`);
   }
   if (done.length) out.push(`reopen: closed and reopened ${done.join(', ')}, whose required checks never reported though ${toReopen[0].s.base}'s workflow now runs them, so their CI runs`);
-  if (!failed) q('set-batch', `reopened_at=${toReopen[toReopen.length - 1].s.base_head}`);
+  const head = toReopen.map(({ s }) => s.base_head).filter(Boolean).at(-1);
+  if (head) q('set-batch', `reopened_at=${head}`);
 }
 
 // ---- undraft -------------------------------------------------------------

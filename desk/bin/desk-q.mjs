@@ -195,7 +195,7 @@ function blockerHold(q, key, b, ctx, seen) {
   if (bt.state === 'done') {
     if (n == null) return { k: 'needs', name: b, text: `${b} finished with no PR: let it start`, act: releaseCmd(key) };
     const ps = prStatusOf(bt), pr = `#${n}`;
-    if (ps.state === 'CLOSED') return { k: 'needs', name: pr, text: `${pr} was closed unmerged: let it start`, act: releaseCmd(key) };
+    if (ps.state === 'CLOSED' && !owesReopen(bt)) return { k: 'needs', name: pr, text: `${pr} was closed unmerged: let it start`, act: releaseCmd(key) };
     // Its first reason is enough: its page lists the checks. A PR that needs the user is their one
     // thing to do, on its own row, so the ticket behind it waits on it rather than counting twice.
     // `you` marks that wait: it ends only once the user has acted on the PR, so it has no date.
@@ -240,6 +240,7 @@ const tryOf = (t) => `try ${triesMade(t.fix_tries) + 1} of ${FIX_TRIES_MAX}`;
 function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const ps = prStatusOf(t);
   const needs = (why, ...segs) => ({ k: 'needs', why, segs }), merging = (...segs) => ({ k: 'merging', segs });
+  if (ps.state === 'CLOSED' && owesReopen(t)) return merging(['closed to start its CI', WARN], [' · the next pass reopens it', null]);
   if (ps.state === 'CLOSED') return needs({ code: 'closed' }, ['closed unmerged: requeue or drop it', null]);
   // What no fix try can move: a check only a person clears, or one still red after both tries.
   const stuck = stuckOf(t, ctx);
@@ -275,14 +276,18 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // now runs the pass reopens the PR for, once per base head (the batch's reopened_at). One only the
   // default branch's workflow runs waits on the base sync: the pass's where §3 batch-base-push or the
   // batch's approval lets it, the base-push item's where it was asked, else the person's.
+  // The pass marks one it has just reopened (pr_status.reopened) until it next reads the PR.
+  if (gate.state === 'absent' && ps.reopened === true) return merging(['reopened so CI runs', null], [' · checks starting', null]);
   const reopen = Object.keys(ps.reopen ?? {}), behind = Object.keys(ps.behind ?? {});
-  if (gate.state === 'absent' && reopen.length && String(q?.reopened_at ?? '') !== String(ps.base_head ?? '')) {
+  if (gate.state === 'absent' && reopen.length && (owesReopen(t) || String(q?.reopened_at ?? '') !== String(ps.base_head ?? ''))) {
     return merging([`${ps.base ?? 'its base'} now runs ${reopen.join(', ')}`, WARN], [' · the next pass closes and reopens it so CI runs', null]);
   }
   if (gate.state === 'absent' && behind.length) {
     const base = ps.base ?? 'its base';
     if (ctx.basePush === 'yes' || q?.approved?.base_push === true) return merging([`${base} is behind the default branch`, WARN], [' · the next pass syncs it and reopens this PR so CI runs', null]);
-    if (q?.base_push_ask) return merging([`${base} is behind the default branch`, WARN], [' · waits on the base-push item', null]);
+    // A supervisor's pass asks once for the batch (the base-push item), from the pass after it reads this.
+    const asks = ctx.basePush === 'ask' && (q?.supervised === true || q?.pass?.by === 'supervisor');
+    if (q?.base_push_ask || asks) return merging([`${base} is behind the default branch`, WARN], [' · waits on the base-push item', null]);
     const text = `required check "${behind[0]}" ${ps.behind[behind[0]]}`;
     return needs({ code: 'behind', names: behind, base: ps.base ?? null, text }, [text, FAIL], [` · sync ${base}, then reopen it`, null]);
   }
@@ -376,6 +381,11 @@ function holdsReach(q, from, key, seen = new Set()) {
 // Nothing here calls GitHub.
 const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
+// The open child PRs whose required checks only the default branch's copy of the workflow runs on the
+// base (pr_status.behind), as `PR #n`: syncing the base starts their CI.
+export const behindPrs = (q) => Object.values(q?.tickets ?? {}).filter((t) => landing(t) && Object.keys(t.pr_status.behind ?? {}).length).map((t) => `PR #${t.result.pr}`);
+// A PR the pass closed to start its CI and has still to reopen (the ticket's `reopening`).
+const owesReopen = (t) => t?.reopening != null && String(t.reopening) === String(t.result?.pr);
 // How long an open PR's head and check results have gone unchanged, as the last pass read it
 // (pr_status changed_at), once that is STALL_MS or more; else null. desk-q flags a Merging row that
 // is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after), or

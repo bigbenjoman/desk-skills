@@ -55,7 +55,7 @@ import { gapsFix, personReviewFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, worktreeBusy, worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches } from './batches.mjs';
@@ -331,8 +331,7 @@ function itemOf(r, x) {
   if (x.basePush) {
     const a = r.q.base_push_ask;
     const base = a.base ?? 'the batch base', source = a.source ?? 'the default branch';
-    // Child PRs whose required checks only the default branch's workflow runs on the base (pr_status.behind).
-    const ci = Object.values(r.q.tickets ?? {}).filter((c) => c.state === 'done' && c.pr_status?.state === 'OPEN' && Object.keys(c.pr_status.behind ?? {}).length).map((c) => `PR #${c.result?.pr ?? c.pr_status.pr}`);
+    const ci = behindPrs(r.q);
     const starts = ci.length ? ` Syncing ${base} starts CI on its child ${ci.length === 1 ? 'PR' : 'PRs'} ${andList(ci)}, whose required checks only ${source}'s workflow runs on ${base}; the pass then reopens ${ci.length === 1 ? 'it' : 'them'}.` : '';
     return { kind: 'base-push', need: `${base} is behind ${source}, and config §3 batch-base-push is "ask", so no pass merges ${source} into it: approve it once for this batch${starts ? `.${starts}` : ''}`,
       actions: [['approve', `it is only code: the next pass merges ${source} into ${base} and pushes it, and every later sync in this batch runs without asking`], ['not-now']] };

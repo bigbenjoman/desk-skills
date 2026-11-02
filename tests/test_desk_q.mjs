@@ -1862,6 +1862,13 @@ t('DS-416 with nothing to sync the base, the PR needs the person, naming the bas
 const reopen416 = { e2e: "has not reported, though feat/E-1's copy of its workflow now runs it: no pull_request event has come since, so closing and reopening the PR starts it" };
 t('DS-416 AC4 a PR the base now triggers waits on its reopen, once per base head',
   `${why416(q416({ reopen: reopen416 }), 'yes')} | ${why416(q416({ reopen: reopen416 }, { reopened_at: 'b1' }), 'yes')}`, 'none | gate');
+t('DS-416 a PR the pass has just reopened waits on its checks until the next pass reads it',
+  why416(q416({ reopen: reopen416, reopened: true }, { reopened_at: 'b1' }), 'yes'), 'none');
+t('DS-416 AC3 a supervised ask batch waits on the base-push item from the pass that reads it; a session\'s needs the person',
+  `${why416(q416({ behind: behind416 }, { supervised: true }), 'ask')} | ${why416(q416({ behind: behind416 }), 'ask')}`, 'none | behind');
+const owed416 = (reopening) => { const q = q416({ state: 'CLOSED' }); q.tickets['T-1'].reopening = reopening; return q; };
+t('DS-416 a PR closed to start its CI and owed its reopen is no item; one closed otherwise is',
+  `${why416(owed416(815), 'yes')} | ${why416(owed416(null), 'yes')}`, 'none | closed');
 
 // ---- DS-280: a PR inside its reruns stays in Merging naming the red check, each Merging and Needs you
 // row says how long it has sat there, and a ticket behind a PR that needs you counts once.

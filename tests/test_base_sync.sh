@@ -446,8 +446,9 @@ cat > "$T/stub/gh" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/ghlog"
 case "\$1 \$2" in
-  "pr view") printf '{"state":"OPEN","url":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","headRefOid":"h1","headRefName":"feat/T-1","baseRefName":"feat/x","baseRefOid":"%s","statusCheckRollup":[{"name":"Vercel","status":"COMPLETED","conclusion":"SUCCESS"}]}\n' "\$(cat "$T/bhead")"; exit 0 ;;
-  "pr close"|"pr reopen") exit 0 ;;
+  "pr view") printf '{"state":"%s","url":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","headRefOid":"h1","headRefName":"feat/T-1","baseRefName":"feat/x","baseRefOid":"%s","statusCheckRollup":[{"name":"Vercel","status":"COMPLETED","conclusion":"SUCCESS"}]}\n' "\$(cat "$T/prstate" 2>/dev/null || echo OPEN)" "\$(cat "$T/bhead")"; exit 0 ;;
+  "pr close") echo CLOSED > "$T/prstate"; exit 0 ;;
+  "pr reopen") [ -e "$T/reopenfail" ] && { echo "HTTP 502" >&2; exit 1; }; echo OPEN > "$T/prstate"; exit 0 ;;
 esac
 case "\$*" in
   *"workflows?ref="*--jq*) echo .github/workflows/ci.yml ;;
@@ -475,6 +476,18 @@ pass
 check "DS-416 AC4 once per base head: the next pass at b1 does not reopen it again" '[ "$(reopens)" = 1 ]'
 echo b2 > "$T/bhead"; pass
 check "DS-416 AC4 a new base head reopens it once more" '[ "$(reopens)" = 2 ] && [ "$(jq -r .reopened_at "$DESK_QUEUE")" = b2 ]'
+check "DS-416 a reopened PR is marked so until the next pass reads it" \
+  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.reopened" "$DESK_QUEUE")" = true ] && [ "$(jq -r ".tickets[\"T-1\"].reopening" "$DESK_QUEUE")" = null ]'
+closes(){ grep -c "^pr close 801" "$T/ghlog" 2>/dev/null || true; }
+# A reopen that fails leaves the PR closed: the ticket owes it, and the next pass reopens it.
+echo b3 > "$T/bhead"; touch "$T/reopenfail"; pass
+check "DS-416 a failed reopen is owed on the ticket and said, the head still recorded" \
+  '[ "$(cat "$T/prstate")" = CLOSED ] && [ "$(jq -r ".tickets[\"T-1\"].reopening" "$DESK_QUEUE")" = 801 ] && [ "$(jq -r .reopened_at "$DESK_QUEUE")" = b3 ] && [[ "$out" == *"PR #801 (T-1) is closed, to start its CI, and did not reopen"* ]]'
+c=$(closes); rm -f "$T/reopenfail"; pass
+check "DS-416 the next pass reads the closed PR again and reopens it without closing it again" \
+  '[ "$(cat "$T/prstate")" = OPEN ] && [ "$(closes)" = "$c" ] && [ "$(jq -r ".tickets[\"T-1\"].reopening" "$DESK_QUEUE")" = null ] && [[ "$out" == *"closed and reopened PR #801 (T-1)"* ]]'
+c=$(closes); r=$(reopens); pass
+check "DS-416 once reopened, the same base head does not close it again" '[ "$(closes)" = "$c" ] && [ "$(reopens)" = "$r" ]'
 fresh trig416 yes; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
 node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
 echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; tip=$(origin_tip); pass; pass
