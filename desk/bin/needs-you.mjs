@@ -8,7 +8,9 @@
 //       line starts
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
-//                           name the session to ask
+//                           name the session to ask. On a lane C or D session item whose step the
+//                           person has done, "<what was done>": handed back to a worker that starts at
+//                           self-review, with it in its briefing (queue.mjs handback)
 //       answer "<answer>"   answer it only (digest.mjs answer): triage questions, and an epic's drafted
 //                           plan (start, discard, or an edit), recorded on the epic for the supervisor to
 //                           act on (epic-plan.mjs actOnPlan). On a draft PR whose
@@ -72,6 +74,12 @@ const parkText = (r, t) => String(t.park?.question ?? openQuestion(r.stateDir, t
 const SESSION_WHY = 'lane C/D: a worker would only park on it';
 // Why a session park is one: a step no worker is ever allowed, or its lane.
 const sessionWhy = (q) => { const s = neverStep(q); return s ? `a worker is never allowed ${s}, so a requeue would only park it again` : SESSION_WHY; };
+// Once the person has done a lane C or D park's step, resume hands it back to a worker that starts at
+// self-review (queue.mjs handback). Offered only where that worker has somewhere to start, the
+// worktree and branch the queue records, and never on a step no worker is allowed: a worker parked
+// mid-build there, and self-review would skip the rest of its build.
+const handBack = (r, t) => (t.worktree && t.branch && !neverStep(parkText(r, t))
+  ? [['resume', null, 'once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review']] : []);
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
@@ -322,8 +330,8 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
-    if (sessionPark(parkText(r, t))) return { kind: 'session', need, actions: [['open', sessionWhy(parkText(r, t))], ['not-now']] };
-    if (needsSession(t)) return { kind: 'session', need, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ['not-now']] };
+    if (sessionPark(parkText(r, t))) return { kind: 'session', need, actions: [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), ['not-now']] };
+    if (needsSession(t)) return { kind: 'session', need, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), ['not-now']] };
     if (triagePark(t)) return { kind: 'session', need, actions: [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']] };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
@@ -570,6 +578,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return a.ok ? say(true, 'answer recorded (digest.mjs answer).') : say(false, a.why);
     }
     case 'resume': {
+      // A session item's step done by the person: handed back to a worker at self-review whoever runs
+      // the batch, as a fix is, since nothing about it is a session's to decide.
+      if (item.kind === 'session') {
+        const h = queueCmd(r, ['handback', ticket, text]);
+        return h.ok ? say(true, 'handed back to a worker that starts at self-review, with your note in its briefing; the next pass can spawn it.') : say(false, `not handed back: ${h.out}`);
+      }
       const a = ans();
       if (!a.ok) return say(false, a.why);
       if (w.by === 'session') {
