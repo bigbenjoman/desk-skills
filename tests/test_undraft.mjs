@@ -344,7 +344,12 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-415 a run that fails the same way after the fix, at the head it was re-run at, is the person\'s', `${again.prs[0].call} ${/after DS-900 fixed it/.test(again.prs[0].why)}`, 'person true');
   t('DS-415 a new head after the fix is started again', evidenceFixPlan([f(784, OLD)], { [KEY]: { fix: 'DS-900', prs: { 784: { head: HEAD, rerun: HEAD } } } }, () => 'done').prs[0].call, 'rerun');
   const gone = evidenceFixPlan([f(784)], fixes, () => 'gone');
-  t('DS-415 a fix that failed or left the batch leaves the PR to the person', `${gone.prs[0].call} ${/DS-900, the fix started for it, failed/.test(gone.prs[0].why)}`, 'person true');
+  t('DS-415 a fix that failed leaves the PR to the person', `${gone.prs[0].call} ${/DS-900, the fix started for it, failed/.test(gone.prs[0].why)}`, 'person true');
+  const doneFix = { [KEY]: { fix: 'DS-900', done_at: '2026-11-02T10:00:00Z', prs: { 784: { head: HEAD, rerun: null } } } };
+  const before = evidenceFixPlan([{ ...f(784), at: '2026-11-02T09:00:00Z' }], doneFix, () => 'done');
+  t('DS-415 a run started before its fix was done is started again', `${before.file.length} ${before.prs[0].call}`, '0 rerun');
+  const back = evidenceFixPlan([{ ...f(784, OLD), at: '2026-11-03T09:00:00Z' }, { ...f(794), at: '2026-11-03T09:05:00Z' }], doneFix, () => 'done');
+  t('DS-415 a failure that comes back after its fix was done files a new fix, once, for every PR it fails', `${back.file.length} ${back.file[0]?.prs.map((p) => p.n).join(',')} ${back.prs.map((p) => p.call).join(',')}`, '1 784,794 file,file');
 
   const ft = fixTicket({ workflow: 'pr-evidence.yml', line: lines[0], run: '41191877061', url: 'https://github.com/o/r/actions/runs/41191877061', prs: [{ n: 784, ticket: 'VPL-640' }, { n: 794, ticket: 'VPL-652' }] }, { repo: 'o/r', base: 'main', today: '2026-11-02' });
   t('DS-415 the fix ticket names the workflow and its error line', ft.summary.startsWith('evidence workflow pr-evidence.yml fails on every PR: Error: did not set a _vercel_jwt cookie'), true);

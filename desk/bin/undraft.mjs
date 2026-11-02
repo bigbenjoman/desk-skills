@@ -291,7 +291,7 @@ function evidenceCall(pr, cfg) {
   // A run that failed, or filled no cell, is the repo's to fix, not cells only the person can reach.
   if (runFailed(rec, left)) {
     const how = rec.conclusion === 'failure' ? 'failed' : 'filled none of its cells';
-    return { call: 'evidence-failed', why: `its evidence workflow \`${wf}\` ${how} at ${at}${rec.url ? ` (${rec.url})` : ''} and left ${left} screenshot cell(s)`, action, workflow: wf, runId: rec.runId, url: rec.url ?? null, conclusion: rec.conclusion };
+    return { call: 'evidence-failed', why: `its evidence workflow \`${wf}\` ${how} at ${at}${rec.url ? ` (${rec.url})` : ''} and left ${left} screenshot cell(s)`, action, workflow: wf, runId: rec.runId, url: rec.url ?? null, conclusion: rec.conclusion, at: rec.at ?? null };
   }
   return { call: 'person', why: `its evidence workflow \`${wf}\` ran at ${at} (${rec.conclusion}${rec.url ? `, ${rec.url}` : ''}) and left ${left} screenshot cell(s)`, action };
 }

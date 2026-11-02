@@ -68,7 +68,7 @@ export function evidenceRecord(dir, n, head, view, now = Date.now()) {
   if (!head) return null;
   const rec = readJson(file(dir, n, head));
   if (!rec) return null;
-  const base = { workflow: rec.workflow, url: rec.url ?? null, runId: rec.runId ?? null, cells: rec.cells ?? null };
+  const base = { workflow: rec.workflow, url: rec.url ?? null, runId: rec.runId ?? null, cells: rec.cells ?? null, at: rec.at ?? null };
   if (!rec.runId) {
     const done = now - Date.parse(rec.at) >= DISPATCH_GRACE_MS;
     return { ...base, state: done ? 'done' : 'running', conclusion: done ? 'unknown (its run id was not printed)' : null };
@@ -112,8 +112,9 @@ export const NO_ERROR_LINE = 'no error line in its failed log';
 export const failureKey = (workflow, line) => `${workflow}: ${line ? normaliseLine(line) : NO_ERROR_LINE}`;
 
 // The repo-level fixes started for failed runs, keyed by failureKey: { [key]: { workflow, line, run,
-// url, fix, at, prs: { [n]: { ticket, head, rerun } } } }. `fix` is the ticket that fixes it; a PR's
-// `rerun` is the head its run was started again at once the fix was done.
+// url, fix, at, done_at, prs: { [n]: { ticket, head, rerun } } } }. `fix` is the ticket that fixes it,
+// `done_at` when it was first read as done; a PR's `rerun` is the head its run was started again at
+// once the fix was done.
 const fixesFile = (dir) => join(dir, 'fixes.json');
 export const readFixes = (dir) => readJson(fixesFile(dir)) ?? {};
 export function writeFixes(dir, fixes) {
@@ -122,29 +123,32 @@ export function writeFixes(dir, fixes) {
 }
 
 // What each failed run's PR does, given the fixes started so far. failures: [{ n, ticket, head, key,
-// workflow, line, run, url }]. fixState(fix) -> 'open' (its ticket is not done), 'done' (it is, and
-// what it changed is on the default branch) or 'gone' (it failed or left the batch). Returns
-// { file: [{ key, workflow, line, run, url, prs: [failure] }], prs: [{ ...failure, call, fix }] }:
-//   file    no fix is started for this failure: one is filed for every PR it fails
+// workflow, line, run, url, at }] (`at`: when its run was started). fixState(fix) -> 'open' (its ticket
+// is not done), 'done' (it is, and what it changed is on the default branch) or 'gone' (it failed).
+// Returns { file: [{ key, workflow, line, run, url, prs: [failure] }], prs: [{ ...failure, call, fix }] }:
+//   file    no fix is started for this failure, or its fix was done before this run started (the
+//           failure came back): one is filed for every PR it fails
 //   wait    its fix is not done yet: the PR waits on it
-//   rerun   its fix is done and its run has not been started again at this head: start it
-//   person  its run failed the same way after the fix, or the fix is gone
+//   rerun   its fix is done and its run, started before that, has not been started again at this head
+//   person  its run failed the same way when it was started again after the fix, or the fix failed
 export function evidenceFixPlan(failures, fixes, fixState) {
   const file = new Map();
   const prs = [];
+  const fileIt = (f) => {
+    if (!file.has(f.key)) file.set(f.key, { key: f.key, workflow: f.workflow, line: f.line, run: f.run, url: f.url, prs: [] });
+    file.get(f.key).prs.push(f);
+    prs.push({ ...f, call: 'file', fix: null });
+  };
   for (const f of failures) {
     const rec = fixes[f.key];
-    if (!rec?.fix) {
-      if (!file.has(f.key)) file.set(f.key, { key: f.key, workflow: f.workflow, line: f.line, run: f.run, url: f.url, prs: [] });
-      file.get(f.key).prs.push(f);
-      prs.push({ ...f, call: 'file', fix: null });
-      continue;
-    }
+    if (!rec?.fix || file.has(f.key)) { fileIt(f); continue; }
     const st = fixState(rec.fix);
     const was = rec.prs?.[f.n];
-    if (st === 'gone') prs.push({ ...f, call: 'person', fix: rec.fix, why: `${rec.fix}, the fix started for it, failed or left the batch` });
+    const after = st === 'done' && rec.done_at && f.at && Date.parse(f.at) > Date.parse(rec.done_at);
+    if (st === 'gone') prs.push({ ...f, call: 'person', fix: rec.fix, why: `${rec.fix}, the fix started for it, failed` });
     else if (st !== 'done') prs.push({ ...f, call: 'wait', fix: rec.fix });
     else if (was?.rerun === f.head) prs.push({ ...f, call: 'person', fix: rec.fix, why: `it failed the same way when it was run again after ${rec.fix} fixed it` });
+    else if (after) fileIt(f);
     else prs.push({ ...f, call: 'rerun', fix: rec.fix });
   }
   return { file: [...file.values()], prs };

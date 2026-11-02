@@ -2622,17 +2622,24 @@ function settleEvidenceFailures(items) {
       continue;
     }
     const line = firstErrorLine(log);
-    failures.push({ ...it, ticket: t.key, key: failureKey(c.workflow, line), workflow: c.workflow, line, run: c.runId, url: c.url });
+    failures.push({ ...it, ticket: t.key, key: failureKey(c.workflow, line), workflow: c.workflow, line, run: c.runId, url: c.url, at: c.at ?? null });
   }
-  // A fix filed but refused by admission is admitted again first.
+  // Where each fix stands. Done is kept, with when, so a fix whose ticket has left the queue still
+  // reads as done and a failure that comes back after it is told apart. One in no batch is admitted
+  // again, and so is one filed but refused by admission.
+  const states = {};
   for (const rec of Object.values(fixes)) {
-    if (rec.fix && rec.admitted === false && !DRY) {
+    if (!rec.fix) continue;
+    const s = rec.done_at ? { st: 'done' } : evidenceFixState(rec.fix);
+    if (s.st === 'done' && !rec.done_at) rec.done_at = s.at ?? PASS_AT;
+    if (s.st === 'lost' && rec.admitted !== false) { rec.admitted = false; rec.admit_error = `${rec.fix} is in no batch`; }
+    states[rec.fix] = s.st === 'lost' ? 'open' : s.st;
+    if (rec.admitted === false && !DRY) {
       const a = admitFix(rec.fix);
-      if (a.ok) rec.admitted = true;
-      else rec.admit_error = a.why;
+      if (a.ok) { rec.admitted = true; delete rec.admit_error; } else rec.admit_error = a.why;
     }
   }
-  const plan = evidenceFixPlan(failures, fixes, evidenceFixState);
+  const plan = evidenceFixPlan(failures, fixes, (fix) => states[fix] ?? 'open');
   const filed = new Map();
   for (const g of plan.file) {
     if (DRY) { out.push(`undraft (dry run): would file and admit one fix for \`${g.key}\`, for PR(s) ${g.prs.map((p) => `#${p.n}`).join(', ')}`); continue; }
@@ -2642,12 +2649,16 @@ function settleEvidenceFailures(items) {
     out.push(f.fix ? `evidence: filed ${f.fix} to fix \`${g.key}\` for PR(s) ${g.prs.map((p) => `#${p.n}`).join(', ')}${f.why ? `, but it was not admitted (${f.why})` : ', admitted to the batch'}`
       : `evidence: no fix filed for \`${g.key}\`: ${f.why}`);
   }
+  // A failure no fix could be started or admitted for is one item for the person, on the lowest PR it
+  // fails (so the item stays put from pass to pass), naming the others, which wait on it.
+  const stuck = (p) => (p.call === 'file' || p.call === 'wait') && (!(p.fix ?? filed.get(p.key)?.fix) || fixes[p.key]?.admitted === false);
+  const lead = new Map();
+  for (const p of plan.prs) if (stuck(p)) lead.set(p.key, [...(lead.get(p.key) ?? []), p.n].sort((a, b) => a - b));
   for (const p of plan.prs) {
     const { t, n, head, c } = p;
     let rec = p.rec;
     const fix = p.fix ?? filed.get(p.key)?.fix ?? null;
     const fr = fix ? fixes[p.key] : null;
-    const unadmitted = fr && fr.admitted === false ? `${fix} was filed for it but not admitted (${fr.admit_error ?? 'refused'}): /desk-admit ${fix}` : null;
     const err = p.line ? `: "${p.line}"` : '';
     const person = (why) => {
       rec = { ...rec, call: 'person', why: `${c.why}${err}; ${why}`, action: c.action };
@@ -2655,11 +2666,20 @@ function settleEvidenceFailures(items) {
     };
     if (DRY && p.call === 'file') { saveUndraft(t, rec); continue; }
     if (p.call === 'person') person(p.why);
-    else if (!fix) person(`no fix could be started for it (${filed.get(p.key)?.why ?? 'none filed'})`);
-    else if (unadmitted) person(unadmitted);
-    else if (p.call === 'rerun') {
-      fr.prs[n] = { ticket: t.key, head, rerun: head };
+    else if (stuck(p)) {
+      const [first, ...rest] = lead.get(p.key);
+      const why = fix ? `${fix} was filed to fix it for the repo but not admitted (${fr.admit_error ?? 'refused'}): /desk-admit ${fix}`
+        : `no fix could be started for it for the repo (${filed.get(p.key)?.why ?? 'none filed'})`;
+      if (n === first) person(`${why}${rest.length ? `. PR(s) ${rest.map((x) => `#${x}`).join(', ')} fail the same way and wait on this` : ''}`);
+      else {
+        rec = { ...rec, call: 'evidence-fix', why: `${c.why}${err}; ${fix ? `${fix} fixes it` : 'its fix'} once PR #${first}'s item is settled`, action: null };
+        out.push(`undraft: PR #${n} (${t.key}) stays draft: ${rec.why}`);
+      }
+    } else if (p.call === 'rerun') {
+      const prev = fr.prs[n]?.rerun ?? null;
       rec = startEvidence(t, n, head, { workflow: c.workflow, why: `${fix} fixed its evidence workflow \`${c.workflow}\`, so it runs again`, cells: p.cells }, { ...rec, call: 'evidence', why: `${fix} fixed its evidence workflow, so it runs again`, action: null });
+      // Only a run that started counts as run again: one GitHub refused is started at the next pass.
+      fr.prs[n] = { ticket: t.key, head, rerun: rec.call === 'person' ? prev : head };
     } else {
       fr.prs[n] = { ticket: t.key, head, rerun: fr.prs[n]?.rerun ?? null };
       rec = { ...rec, call: 'evidence-fix', why: `${c.why}${err}; ${fix} fixes it for the repo, then the run is started again`, action: null };
@@ -2669,22 +2689,24 @@ function settleEvidenceFailures(items) {
   }
   if (!DRY) writeFixes(EVIDENCE_DIR, fixes);
 }
-// Where a fix ticket stands, for evidenceFixPlan: done once it merged (or finished with no PR), gone
-// once it failed, else open. One in no queue this pass reads is asked of the tracker.
+// Where a fix ticket stands: { st, at }. done once it merged (at: when) or finished with no PR, gone
+// once it failed, else open. One in no queue this pass reads is asked of the tracker: done there is
+// done, and otherwise, or with no tracker to ask, it is lost (in no batch, so nothing works it).
 function evidenceFixState(key) {
   const ft = queue().tickets?.[key];
   if (ft) {
-    if (ft.state === 'failed') return 'gone';
-    return ft.merged_at || (ft.state === 'done' && ft.result?.pr == null) ? 'done' : 'open';
+    if (ft.state === 'failed') return { st: 'gone' };
+    return ft.merged_at || (ft.state === 'done' && ft.result?.pr == null) ? { st: 'done', at: ft.merged_at ?? null } : { st: 'open' };
   }
-  if (onJira && E.ticketKind(key).kind === 'tracker') { try { return clearsRead.ticket(key) === 'done' ? 'done' : 'open'; } catch { return 'open'; } }
-  return 'open';
+  if (onJira && E.ticketKind(key).kind === 'tracker') { try { return { st: clearsRead.ticket(key) === 'done' ? 'done' : 'lost' }; } catch { return { st: 'open' }; } }
+  return { st: 'lost' };
 }
 // Files the fix for one failure (desk-jira's gate, §3 jira-create; with no tracker, a ticket file) and
 // admits it: { fix, why } (why: it was filed but not admitted), or { why } when nothing was filed.
 function fileEvidenceFix(g) {
   const { summary, body } = fixTicket(g, { repo: GH_REPO, base: DEFAULT_BRANCH });
-  const id = createHash('sha1').update(g.key).digest('hex').slice(0, 8);
+  // A failure that comes back after its fix is filed again, so the id is this filing's, not the key's.
+  const id = createHash('sha1').update(`${g.key}\n${PASS_AT}`).digest('hex').slice(0, 8);
   let fix;
   if (onJira) {
     const grant = E.permission('jira-create');

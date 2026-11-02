@@ -1312,12 +1312,14 @@ else if (a[0] === 'run' && a[1] === 'view' && a.includes('--log-failed')) {
   console.log(['evidence\tShoot\t2026-11-01T19:29:0' + id.slice(-1) + '.1Z node scripts/evidence.mjs', 'evidence\tShoot\t2026-11-01T19:29:1' + id.slice(-1) + '.1Z Error: did not set a _vercel_jwt cookie for the bypass secret (run ' + id + '00000, ' + sha + ')', 'evidence\tShoot\t2026-11-01T19:29:2' + id.slice(-1) + '.1Z ##[error]Process completed with exit code 1.'].join('\n'));
 }
 else if (a[0] === 'run' && a[1] === 'view') console.log(JSON.stringify(a[2].startsWith('77') ? { status: 'in_progress', conclusion: null } : { status: 'completed', conclusion: 'failure' }));
+else if (a[0] === 'workflow' && a[1] === 'run' && fs.existsSync('$T/wf-refuse-' + a[a.length - 1].replace('pr=', ''))) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
 else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
 else process.exit(1);
 EOF
 cat > "$T/desk/bin/intake.mjs" <<EOF
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 appendFileSync('$T/admits', process.argv.slice(2).join(' ') + '\n');
+if (existsSync('$T/admit-refuse')) { console.log('not admitted ' + process.argv[3] + ': batch ev is run by a session, not the supervisor'); process.exit(1); }
 console.log('admitted ' + process.argv[3]);
 EOF
 uconfig yes; printf '| Evidence workflow | `pr-evidence.yml` |\n' >> "$T/config-u.md"
@@ -1328,24 +1330,30 @@ for n in 801 802 803; do
   q add "E-$n"; q set "E-$n" state=done "result.pr=$n"
   printf '{"workflow":"pr-evidence.yml","runId":"9%s","url":"https://github.com/acme/widgets/actions/runs/9%s","at":"2026-11-01T19:28:00Z","cells":2}\n' "$n" "$n" > "$T/state-ev/evidence-runs/$n-$HEAD_A.json"
 done
-: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+: > "$T/gh-calls"; touch "$T/admit-refuse"; out=$(node "$B/pass.mjs" 2>&1)
 fixkey=$(node -e 'const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(Object.values(f).map((r) => r.fix).join(" "))' "$T/state-ev/evidence-runs/fixes.json" 2>/dev/null)
-check "DS-415 AC2 three drafts failing the same way file one fix and admit it" \
+check "DS-415 AC2 three drafts failing the same way file one fix and try to admit it" \
   '[ "$(echo "$fixkey" | wc -w | tr -d " ")" = 1 ] && [ "$(wc -l < "$T/admits" | tr -d " ")" = 1 ] && grep -q "^admit $fixkey --by evidence$" "$T/admits" && [ -f "$T/state-ev/tickets/$fixkey.md" ]'
 check "DS-415 AC2 its ticket names the run and the error line" 'grep -q "Error: did not set a _vercel_jwt cookie for the bypass secret" "$T/state-ev/tickets/$fixkey.md" && grep -q "#801 (E-801), #802 (E-802), #803 (E-803)" "$T/state-ev/tickets/$fixkey.md"'
-check "DS-415 AC1 AC2 each PR waits on the fix, and none goes to the person" \
-  'for n in 801 802 803; do [ "$(field E-$n undraft.call)" = "\"evidence-fix\"" ] || exit 1; done; ! echo "$out" | grep -q "DRAFT — PR #80"'
+check "DS-415 a fix the batch refuses is one item, on the lowest PR, naming the others, not one per PR" \
+  '[ "$(field E-801 undraft.call)" = "\"person\"" ] && [ "$(field E-802 undraft.call)" = "\"evidence-fix\"" ] && [ "$(field E-803 undraft.call)" = "\"evidence-fix\"" ] && [ "$(echo "$out" | grep -c "DRAFT — PR #80")" = 1 ] && echo "$out" | grep "DRAFT — PR #801" | grep -q "/desk-admit $fixkey. PR(s) #802, #803 fail the same way"'
+rm -f "$T/admit-refuse"; : > "$T/gh-calls"; : > "$T/admits"; out=$(node "$B/pass.mjs" 2>&1)
+q add "$fixkey"
+check "DS-415 AC1 AC2 once the fix is admitted, each PR waits on it, and none goes to the person" \
+  'grep -q "^admit $fixkey --by evidence$" "$T/admits" && for n in 801 802 803; do [ "$(field E-$n undraft.call)" = "\"evidence-fix\"" ] || exit 1; done; ! echo "$out" | grep -q "DRAFT — PR #80"'
 check "DS-415 AC1 the run's log was read once per run" '[ "$(grep -c "^run view 9801 .*--log-failed" "$T/gh-calls")" = 1 ]'
 : > "$T/gh-calls"; : > "$T/admits"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-415 AC2 the next pass files no other fix, and the PRs still wait" \
   '[ ! -s "$T/admits" ] && [ "$(field E-801 undraft.call)" = "\"evidence-fix\"" ] && ! grep -q "^workflow run" "$T/gh-calls"'
-q add "$fixkey"; q set "$fixkey" state=done result.pr=900 merged_at=2026-11-02T10:00:00Z
-: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+q set "$fixkey" state=done result.pr=900 merged_at=2026-11-02T10:00:00Z
+: > "$T/gh-calls"; touch "$T/wf-refuse-803"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-415 AC3 once the fix merged, the evidence workflow is started again on each waiting PR" \
-  'for n in 801 802 803; do grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=$n$" "$T/gh-calls" || exit 1; [ "$(field E-$n undraft.call)" = "\"evidence\"" ] || exit 1; done'
-: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+  'for n in 801 802 803; do grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=$n$" "$T/gh-calls" || exit 1; done; for n in 801 802; do [ "$(field E-$n undraft.call)" = "\"evidence\"" ] || exit 1; done'
+rm -f "$T/wf-refuse-803"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-415 AC3 and the next pass waits on those runs, starting none again" \
-  '! grep -q "^workflow run" "$T/gh-calls" && [ "$(field E-801 undraft.call)" = "\"wait\"" ]'
+  '! grep -q "^workflow run pr-evidence.yml .* -f pr=80[12]$" "$T/gh-calls" && [ "$(field E-801 undraft.call)" = "\"wait\"" ]'
+check "DS-415 a run GitHub refused to start again is started at the next pass, not read as failing after the fix" \
+  'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=803$" "$T/gh-calls" && [ "$(field E-803 undraft.call)" = "\"evidence\"" ]'
 
 # ---- DS-278: a ready PR red after the driver's reruns, or in conflict, goes back to a fix worker twice
 # The fake gh answers each PR from $T/fx/<n>.json. The driver's rerun record is written as the driver
