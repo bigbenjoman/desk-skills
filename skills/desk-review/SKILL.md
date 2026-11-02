@@ -213,8 +213,8 @@ one `file:line` per finding (desk-pr places it).
 **The body's opening lines are computed, never written by hand**: the review and verdict
 markers, the heading, from round 2 the carried line, then the method line. A hand count is how a
 review reads clean when it is not. Once every finder and refuter has answered, write the run's
-results with the Write tool to `<scratchpad>/desk-review-results.json` (a worker:
-`desk-review-results.json` at its worktree root, removed at the end with `git clean -f`):
+results with the Write tool to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
+worker: at its worktree root, removed at the end with `git clean -f`):
 
 ```json
 { "sha": "<full reviewed SHA>", "round": 1, "gaps": 0, "skipped_files": 0,
@@ -244,7 +244,7 @@ Then:
 node ~/.agents/skills/desk-review/bin/verdict.mjs <results>
 ```
 
-`<results>` is the file's full scratchpad path, or `desk-review-results.json` in a worker (run from
+`<results>` is the file's full scratchpad path, or `desk-review-results-<run>.json` in a worker (run from
 its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set
 elsewhere. It prints four lines (five from round 2) and refuses (exit 2) any results file that
 is incomplete or contradicts itself. Its tests, `tests/test_review_verdict.mjs`, prove that no

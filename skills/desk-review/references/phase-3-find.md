@@ -37,8 +37,11 @@ Write its brief with the Write tool to `<scratchpad>/desk-review-codex-brief-<ru
 which writes only inside its worktree: `desk-review-codex-brief-<run>.txt` at the worktree root,
 removed at the end with `git clean -f desk-review-codex-brief-<run>.txt`). `<run>` is this run's own
 id: the reviewed head's short SHA, a hyphen and six random lowercase letters or digits you pick once
-for the run (`a7b84ca-k3q9xz`). Never a fixed name: two reviews running at once share a scratchpad,
-and one would overwrite the other's brief, so codex reads the wrong diff. The brief holds the
+for the run (`a7b84ca-k3q9xz`). **Every scratch file the run writes carries `<run>`**: this brief,
+any Claude seat's brief put in a file (`desk-review-<seat>-brief-<run>.txt`, `<seat>` its role) and
+the results file (`desk-review-results-<run>.json`, the core's *The verdict*). Never a fixed name:
+two reviews running at once share a scratchpad, and one would overwrite or append to the other's
+files, so a seat reads the wrong diff and the verdict counts the wrong findings. The brief holds the
 resolved bar's text, the diff command from item 3, the changed-file list, the §5 Repo instructions paths, the intent
 paragraph, the `FINDING` format, the round rules on round 2+, and:
 
@@ -94,8 +97,9 @@ confident false verdict. If the ref is missing the search could not run: no find
   is not a finding. **Cite the census** ("one consumer: `apps/web/x.ts:14`"). No census, no finding.
 
 **After the round, `git status --porcelain`.** The tree was clean at Phase 0, so anything listed now,
-other than this skill's own scratch files (`desk-review-codex-brief-<run>.txt`,
-`desk-review-results.json` and `desk-review.md`, written by name), is a finder's edit: save the
+other than this skill's own scratch files (`desk-review-codex-brief-<run>.txt`, any
+`desk-review-<seat>-brief-<run>.txt`, `desk-review-results-<run>.json` and `desk-review.md`, written
+by name), is a finder's edit: save the
 stray diff to the scratchpad, restore with `git checkout -- <paths>`, re-run that finder, and say in
 the report that a round was discarded. Otherwise the refutation confirms findings about code nobody
 pushed.
