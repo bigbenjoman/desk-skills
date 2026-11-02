@@ -883,6 +883,7 @@ put('sigma', { port: 5400, beat: 1, supervised: true, tickets: {
   'S-2': parked('C', 50, 'lane C: the plan needs agreeing'),
   'S-3': { state: 'parked', lane: 'A', held_by: 'S-1', added_at: minsAgo(40), park: { question: 'held by orchestrator: blocked by S-1 — starts once their PRs merge', since: minsAgo(40) } },
   'S-4': { ...parked('B', 30, AWS), branch: 'fix/S-1', worktree: sgWt },
+  'S-5': { ...parked('C', 20, 'lane C: the plan needs agreeing'), branch: 'fix/S-1', worktree: sgWt },
 } });
 const sigmaState = join(env.HOME, '.desk-autopilot', 'acme__sigma');
 const sigmaQ = () => readFileSync(join(env.DESK_HOME, 'repos', 'acme__sigma', 'queue.json'), 'utf8');
@@ -912,6 +913,12 @@ t('DS-399 AC2 the session briefing starts at Stage 4b with what the person did',
 t('DS-399 AC2 the note is a binding answer in its briefing too', readFileSync(join(sigmaState, 'briefings', 'S-1.md'), 'utf8').includes(NOTE), true);
 t('DS-399 AC3 after: the ticket held behind it no longer waits on a park, but on S-1 going on to merge', `${BSs.waitingOnPark(queueOf('sigma'), queueOf('sigma').tickets['S-3'])} ${BSs.waitingOnMerge(queueOf('sigma'), queueOf('sigma').tickets['S-3'])}`, 'null true');
 t('DS-399 and it is off the list', sgItems().some((i) => i.t.key === 'S-1'), false);
+const sgNever = spawnSync(process.execPath, [join(REAL_BIN, 'queue.mjs'), 'handback', 'S-4', 'done'], { env: { ...process.env, DESK_QUEUE: join(env.DESK_HOME, 'repos', 'acme__sigma', 'queue.json'), DESK_AUTOPILOT_STATE: sigmaState }, encoding: 'utf8' });
+t('DS-399 queue.mjs handback itself refuses a park on a step no worker is allowed, and it stays parked', `${sgNever.status !== 0} ${/no worker is allowed/.test(sgNever.stderr)} ${queueOf('sigma').tickets['S-4'].state} ${queueOf('sigma').tickets['S-4'].handoff_stage ?? null}`, 'true true parked null');
+const sgC = N.record({ word: 'sigma', ticket: 'S-5', action: 'resume', text: 'plan agreed with Ben' });
+const s5 = queueOf('sigma').tickets['S-5'];
+t('DS-399 a lane C ticket handed back goes on as lane B, so a later requeue or park treats it as a worker\'s', `${sgC.ok} ${s5.state} ${s5.lane} ${BSs.needsSession(s5)}`, 'true triaged B false');
+t('DS-399 its handoff briefing still names the lane it was', H.readHandoff(sigmaState, 'S-5').data?.lane.startsWith('C, handed back'), true);
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);

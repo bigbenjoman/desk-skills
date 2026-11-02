@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -232,10 +232,10 @@ function requeue(q, key, { handedBack = false } = {}) {
   if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
   if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
   if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
-  // A ticket handed back (handback) had its session step done by the person, so its lane no longer
-  // keeps it from a worker.
+  // A lane D ticket handed back (handback) had its session step done by the person, so its design park
+  // no longer keeps it from a worker. A lane C one is moved to lane B first.
   if (!handedBack && t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
-  if (!handedBack && !['A', 'B', 'D', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E, and D with its canvas saved, go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
+  if (!['A', 'B', 'D', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E, and D with its canvas saved, go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
   // A standard-model worker that failed, or was stopped as stalled, comes back one step stronger
   // (config §3b Worker models). A park with a question keeps its model, and so does a ticket whose
   // worker never ran (a failed preflight or spawn): that was not the model falling short.
@@ -286,22 +286,33 @@ function handback(q, key, note) {
   const t = ticket(q, key);
   if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t)) throw new Error(`${key} is not parked on a step of its own (state ${t.state}), so there is nothing to hand back`);
   if (!needsSession(t)) throw new Error(`${key}'s park is not one only a session takes (${t.park?.question ?? '?'}): requeue it instead`);
+  // A worker parked mid-build on a step no worker is allowed: a session starting at self-review would
+  // skip the rest of its build.
+  const never = neverStep(String(t.park?.question ?? ''));
+  if (never) throw new Error(`${key} parked mid-build on ${never}, which no worker is allowed, so a worker starting at self-review would skip the rest of its build. Finish it in an interactive session: /desk-ticket ${key}`);
   const missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
   if (missing) throw new Error(`${key}: ${missing}, so no worker can start it at Stage 4b. Finish it in an interactive session: /desk-ticket ${key}`);
   const at = new Date().toISOString();
-  const stage = t.handoff_stage;
-  t.handoff_stage = '4b';
+  const was = { handoff_stage: t.handoff_stage, lane: t.lane };
+  // A lane C ticket goes on as lane B, or every later requeue (a fix, an answered park) would refuse
+  // it on its lane and its parks would read as session items again. A lane D one leaves its design
+  // park behind with the requeue, so it needs no change.
+  Object.assign(t, { handoff_stage: '4b', ...(t.lane === 'C' ? { lane: 'B' } : {}) });
   let msg;
-  try { msg = requeue(q, key, { handedBack: true }); } catch (e) { t.handoff_stage = stage; throw e; }
+  try { msg = requeue(q, key, { handedBack: true }); } catch (e) { Object.assign(t, was); throw e; }
   // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
-  const path = writeHandback(stateDir(), { key, lane: t.lane, note, at });
+  const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
+  appendBriefing(key, `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`);
+  return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
+}
+
+// A binding answer for a ticket's next worker, appended to its briefing (pass.mjs writeBrief keeps it).
+function appendBriefing(key, entry) {
   const dir = join(stateDir(), 'briefings');
   mkdirSync(dir, { recursive: true });
   const brief = join(dir, `${key}.md`);
-  const entry = `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`;
   if (existsSync(brief)) appendFileSync(brief, entry);
   else writeFileSync(brief, `# Briefing for ${key}\n${entry}`);
-  return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
 }
 
 // What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
@@ -725,14 +736,10 @@ switch (cmd) {
     const t = ticket(q, key);
     if (!spinePark(t)) throw new Error(`${key} is not a feature spine parked for approval (state ${t.state})`);
     const pr = t.result?.pr;
-    const dir = join(stateDir(), 'briefings');
-    mkdirSync(dir, { recursive: true });
-    const brief = join(dir, `${key}.md`);
     const entry = `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person sent this spine's acceptance specs back: ${note}\n` +
       (pr != null ? `Your PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.\n` : '');
     const msg = requeue(q, key);
-    if (existsSync(brief)) appendFileSync(brief, entry);
-    else writeFileSync(brief, `# Briefing for ${key}\n${entry}`);
+    appendBriefing(key, entry);
     console.log(`${key} sent back with the note in its briefing; ${msg}`);
     break;
   }
