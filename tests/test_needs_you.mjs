@@ -969,6 +969,16 @@ t('DS-403 AC2 approve records approved.base_push on the batch queue', `${bpOk.ok
 t('DS-403 AC3 with the approval recorded there is no item, and desk-q counts none', `${rho2().length} ${rho2Count()}`, '0 0');
 put('rho2', { port: 3830, beat: 1, supervised: true, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-403 AC4 with no ask recorded there is no item', `${rho2().length} ${N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' }).ok}`, '0 false');
+// ---- DS-416: a child PR whose required check only the default branch's workflow runs on the base is
+// no item of its own under ask: the base-push item says syncing the base starts its CI.
+const behind416 = { [LINT]: 'has not reported because feat/x is behind main, whose copy of its workflow runs it on PRs into feat/x: syncing feat/x with main and reopening the PR starts it' };
+const child416 = (pr) => ({ ...ready410(pr, null), pr_status: { ...ready410(pr, null).pr_status, base: 'feat/x', behind: behind416 } });
+put('rho416', { port: 3831, beat: 1, supervised: true, required: [LINT], batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
+  tickets: { 'V-1': child416(121), 'V-2': child416(122) } });
+const bp416 = N.collect({ word: 'rho416' }).items;
+t('DS-416 AC3 one base-push item and no pr item for the child PRs', bp416.map((i) => `${i.t.key} ${i.kind}`).join(), 'base-push base-push');
+t('DS-416 AC3 its text says syncing the base starts CI on its child PRs', bp416[0]?.need,
+  'feat/x is behind main, and config §3 batch-base-push is "ask", so no pass merges main into it: approve it once for this batch. Syncing feat/x starts CI on its child PRs PR #121 and PR #122, whose required checks only main\'s workflow runs on feat/x; the pass then reopens them.');
 
 // ---- DS-407: the person's step is one item, naming every PR and ticket waiting to merge on it
 const waitsOn = (pr) => ({ state: 'done', lane: 'A', result: { pr }, pr_status: { pr, state: 'OPEN', isDraft: false, checks: [] }, merge_after: 'OPS-9' });

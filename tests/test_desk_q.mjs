@@ -1845,6 +1845,33 @@ t('DS-410 AC1 a ready PR whose required check never runs on its base names the t
 t('DS-410 AC2 once the check reports green, the record no longer holds it',
   Q.shownState({ tickets: { 'T-1': { key: 'T-1', ...prOn(813, [okCheck('build'), okCheck('e2e')], { base: 'feat/E-1', untriggered: never410 }) } } }, { key: 'T-1', ...prOn(813, [okCheck('build'), okCheck('e2e')], { base: 'feat/E-1', untriggered: never410 }) }, advCtx([], ['e2e'])),
   Q.shownState(reqQ, { key: 'G', ...prOn(814, [okCheck('build'), okCheck('e2e')]) }, advCtx([], ['e2e'])));
+// DS-416: a base cut before the default branch added it to the trigger. A check only the default
+// branch's workflow runs waits on the base sync; one the base's own now runs waits on the reopen.
+const behind416 = { e2e: 'has not reported because feat/E-1 is behind main, whose copy of its workflow runs it on PRs into feat/E-1: syncing feat/E-1 with main and reopening the PR starts it' };
+const q416 = (more = {}, batch = {}) => ({ ...batch, tickets: { 'T-1': { key: 'T-1', ...prOn(815, [okCheck('build')], { base: 'feat/E-1', base_head: 'b1', ...more }) } } });
+const why416 = (q, basePush) => Q.prWhy({ q, ctx: { ...advCtx([], ['e2e']), basePush } }, q.tickets['T-1'])?.code ?? 'none';
+t('DS-416 AC2 with batch-base-push yes, a PR behind the default branch needs nobody: the pass syncs the base',
+  `${why416(q416({ behind: behind416 }), 'yes')} | ${Q.needText({ q: q416({ behind: behind416 }), ctx: { ...advCtx([], ['e2e']), basePush: 'yes' }, live: true }, { t: q416({ behind: behind416 }).tickets['T-1'], k: 'merging', pr: true })}`,
+  'none | #815 · feat/E-1 is behind the default branch · the next pass syncs it and reopens this PR so CI runs');
+t('DS-416 AC3 under ask with the base-push item raised, the PR is no item of its own',
+  why416(q416({ behind: behind416 }, { base_push_ask: { base: 'feat/E-1', source: 'main' } }), 'ask'), 'none');
+t('DS-416 AC2 the batch\'s base-push approval syncs it too', why416(q416({ behind: behind416 }, { approved: { base_push: true } }), 'ask'), 'none');
+t('DS-416 with nothing to sync the base, the PR needs the person, naming the base, not the trigger',
+  Q.needText({ q: q416({ behind: behind416 }), ctx: { ...advCtx([], ['e2e']), basePush: 'no' }, live: true }, { t: q416({ behind: behind416 }).tickets['T-1'], k: 'needs', pr: true }),
+  `#815 · required check "e2e" ${behind416.e2e} · sync feat/E-1, then reopen it`);
+const reopen416 = { e2e: "has not reported, though feat/E-1's copy of its workflow now runs it: no pull_request event has come since, so closing and reopening the PR starts it" };
+t('DS-416 AC4 a PR the base now triggers waits on its reopen, once per base head',
+  `${why416(q416({ reopen: reopen416 }), 'yes')} | ${why416(q416({ reopen: reopen416 }, { reopened_at: 'b1' }), 'yes')}`, 'none | gate');
+t('DS-416 a PR the pass has just reopened waits on its checks until the next pass reads it',
+  why416(q416({ reopen: reopen416, reopened: true }, { reopened_at: 'b1' }), 'yes'), 'none');
+t('DS-416 AC3 a supervised ask batch waits on the base-push item from the pass that reads it; a session\'s needs the person',
+  `${why416(q416({ behind: behind416 }, { supervised: true }), 'ask')} | ${why416(q416({ behind: behind416 }), 'ask')}`, 'none | behind');
+const owed416 = (reopening) => { const q = q416({ state: 'CLOSED' }); q.tickets['T-1'].reopening = reopening; return q; };
+t('DS-416 a PR closed to start its CI and owed its reopen is no item; one closed otherwise is',
+  `${why416(owed416(815), 'yes')} | ${why416(owed416(null), 'yes')}`, 'none | closed');
+const behindOwed416 = (reopening) => { const q = owed416(reopening); q.tickets.H = { key: 'H', ...heldBy('T-1') }; return /closed unmerged/.test(Q.holdOf(q, q.tickets.H, { ...advCtx([], ['e2e']), basePush: 'yes' }).text); };
+t('DS-416 a ticket held behind a PR owed its reopen is not told to start; behind one closed otherwise it is',
+  `${behindOwed416(815)} | ${behindOwed416(null)}`, 'false | true');
 
 // ---- DS-280: a PR inside its reruns stays in Merging naming the red check, each Merging and Needs you
 // row says how long it has sat there, and a ticket behind a PR that needs you counts once.

@@ -128,6 +128,14 @@ read410.length = 0;
 const green410 = undraftCall(tk, { number: 770, head: HEAD, base: FEAT, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: green },
   { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], untriggered: () => { read410.push('read'); return {}; } });
 t('DS-410 AC2 once the check reports green the PR is undrafted as today, with no workflow read', `${green410?.call} | ${read410.length}`, 'ready | 0');
+// DS-416: one only the default branch's workflow runs on the base waits for the pass's base sync and
+// reopen, and is not put to the person as a trigger to add.
+const stalePr = (stale) => undraftCall(tk, { number: 771, head: HEAD, base: FEAT, baseHead: 'b1', branch: 'feature/VPL-627', mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'Vercel', status: 'completed', conclusion: 'success' }] },
+  { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], rerun: 'yes', reruns: () => 0, cooledDown: true, untriggered: () => ({}), stale });
+const behind416 = { tests: `has not reported because ${FEAT} is behind main, whose copy of its workflow runs it on PRs into ${FEAT}: syncing ${FEAT} with main and reopening the PR starts it` };
+const s416 = stalePr(() => ({ behind: behind416, reopen: {} }));
+t('DS-416 a draft behind the default branch waits on the base sync, naming no workflow change', `${s416?.call} | ${s416?.why}`, `wait | its base ${FEAT} is to be synced or the PR reopened before CI runs: required check "tests" ${behind416.tests}`);
+t('DS-416 negative control: with nothing stale it goes as before', stalePr(() => ({ behind: {}, reopen: {} }))?.call, 'checks');
 
 // DS-330: the pass reruns through rerun.sh, the merge driver's own rerun, against a fake gh.
 const tmp = mkdtempSync(join(tmpdir(), 'undraft-rerun-'));
