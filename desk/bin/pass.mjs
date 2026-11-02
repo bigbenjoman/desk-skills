@@ -708,22 +708,20 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // means a PR exists, NOT that the review posted or that it merged — verify those separately.
     const pr = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch ?? '',
       '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
-    logDecisions(t, log, /^\d+$/.test(pr) ? pr : null);
     if (/^\d+$/.test(pr)) {
-      q('set', t.key, 'state=done', 'handoff_stage=null', `result.pr=${pr}`, 'result.summary=completed without printing a marker');
-      report.done.push(`${t.key}: PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)`);
-      recordScope(t);
-      if (isSpine(t)) parkSpine(t, Number(pr));
-      else if (ownsSpecs(t)) checkOwned(t, Number(pr));
-    } else if (stop?.fail) {
-      q('set', t.key, 'state=failed');
-      report.failed.push(`${t.key}: killed before it finished (${killed}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
-    } else if (stop?.park) {
-      q('park', t.key, stop.park);
-      report.parked.push(`${t.key}: ${stop.park}`);
+      recordDone(t, { log, h, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)` });
     } else {
-      q('set', t.key, 'state=failed');
-      report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} — check ${log}`);
+      logDecisions(t, log, null);
+      if (stop?.fail) {
+        q('set', t.key, 'state=failed');
+        report.failed.push(`${t.key}: killed before it finished (${killed}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
+      } else if (stop?.park) {
+        q('park', t.key, stop.park);
+        report.parked.push(`${t.key}: ${stop.park}`);
+      } else {
+        q('set', t.key, 'state=failed');
+        report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} — check ${log}`);
+      }
     }
   }
 }
