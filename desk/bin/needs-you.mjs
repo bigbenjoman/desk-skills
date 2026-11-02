@@ -60,8 +60,6 @@ import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } fro
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches } from './batches.mjs';
 
-// A question longer than this is cut on its line: the session asks it, not reads it in full.
-const QUESTION_MAX = 240;
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
 
@@ -90,16 +88,17 @@ const prComment = (text) => `The person's call on this PR's review gaps, recorde
 
 // ---- A PR item in the person's words: what is wrong, then what to do and what happens once they have.
 // No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
-// quoted in one is cut short (clip), so the line's cut never takes what to do and what happens next.
-const clip = (s, n = 80) => cut(one(s), n);
-const plainWords = (s) => clip(one(s).replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
-  .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review'));
+// quoted in one is kept whole, and a URL in it untouched, so the session can ask it as it stands.
+const URL_PART = /(https?:\/\/\S+)/;
+const passWords = (s) => s.replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
+  .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
+const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : passWords(p))).join(''));
 // Once the person's step is done: desk merges it where it may, else merging is theirs too.
 const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks are green' : 'then merge it on GitHub once its checks are green');
 const REPAIRED = "desk's own repairs did not fix";
 // A draft fix-tries.mjs captureTry left stuck: the screenshots still not taken, then what its worker said.
 const CAPTURE = /^(\d+) screenshot\(s\) still not taken after a capture try: (.+?)(?:; the capture try said: ([^]*))?$/;
-// Those screens and the worker's reason, whole: the item's note, which listText never cuts.
+// Those screens and the worker's reason, whole: the item's note, which listText prints after the need.
 const captureNote = (s) => {
   const m = CAPTURE.exec(String(s?.why ?? ''));
   return m ? `(Not taken: ${m[2]}.${m[3] ? ` The capture try said: ${one(m[3])}` : ''})` : '';
@@ -166,12 +165,12 @@ function prPlain(r, t) {
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
     case 'draft': return draftPlain(r, n, w.undraft);
-    case 'hold': return `${n} touches files under a merge hold (${clip(w.text)}), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.`;
-    case 'feedback': return `${n} is green, but held for review: ${clip(w.text, 150)}. Resolve or answer it; desk then merges it.`;
+    case 'hold': return `${n} touches files under a merge hold (${one(w.text)}), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.`;
+    case 'feedback': return `${n} is green, but held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'conflict': return `${n} is in conflict with ${w.base}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
     case 'red': return `${n} has ${w.names.length === 1 ? 'a failing check' : `${w.names.length} failing checks`}, ${andList(w.names.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${w.names.length === 1 ? 'it' : 'them'}. Fix or re-run ${w.names.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.`;
-    case 'trigger': return `${n} is not green: ${clip(w.text, 240)}. Re-running cannot help, as no run exists: add ${w.base ?? 'its base'} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${andList(w.names.map((c) => `"${c}"`))}, a change to the repo; its next push then runs the check, and ${thenMerge(r)}.`;
-    case 'behind': return `${n} is not green: ${clip(w.text, 240)}. Nothing here may sync ${w.base ?? 'its base'}: merge the default branch into it, then close and reopen ${n} so its checks run; ${thenMerge(r)}.`;
+    case 'trigger': return `${n} is not green: ${one(w.text)}. Re-running cannot help, as no run exists: add ${w.base ?? 'its base'} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${andList(w.names.map((c) => `"${c}"`))}, a change to the repo; its next push then runs the check, and ${thenMerge(r)}.`;
+    case 'behind': return `${n} is not green: ${one(w.text)}. Nothing here may sync ${w.base ?? 'its base'}: merge the default branch into it, then close and reopen ${n} so its checks run; ${thenMerge(r)}.`;
     case 'gate': return `${n} is not green: ${plainWords(w.text ?? 'a required check did not pass')}. Fix that check, or §4 Required checks if it should not be required; ${thenMerge(r)}.`;
     case 'green': return `${n} has ${w.checks === 1 ? 'its check' : `all ${w.checks} checks`} green${w.advisory ? ` (${w.advisory} advisory failed, which holds nothing)` : ''}, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done.`;
     case 'running': return `${n}${w.checks ? `'s checks are still running (${w.done} of ${w.checks} done)` : ' has no checks reported yet'}, and desk may not merge in this repo. Merge it on GitHub once its checks are green; the ticket is then done.`;
@@ -180,7 +179,7 @@ function prPlain(r, t) {
 }
 
 // What GitHub showed the last time the person said done on a PR, while its head is the one it showed.
-// It is the item's `note`, which listText keeps whole when it cuts the need.
+// It is the item's `note`, which listText prints whole after the need.
 function doneNote(t) {
   const d = t.done_check;
   if (!d || (d.head ?? null) !== (t.pr_status?.head ?? null)) return '';
@@ -319,7 +318,7 @@ function stepItem(key, ws) {
   const merger = merges === n ? 'desk merges them in order' : merges === 0 ? 'you merge them on GitHub'
     : 'desk merges those in batches it merges, and you merge the rest on GitHub';
   return { kind: 'step', step: key,
-    need: `${key}${summary ? ` ("${clip(summary)}")` : ''} is a step only you can take, and ${n === 1 ? 'one ticket waits' : `${n} tickets wait`} to merge on it: ${andList(ws.map(what))}. Do it and move ${key} to Done in Jira; the next pass that reads it lifts the hold, and ${merger}`,
+    need: `${key}${summary ? ` ("${one(summary)}")` : ''} is a step only you can take, and ${n === 1 ? 'one ticket waits' : `${n} tickets wait`} to merge on it: ${andList(ws.map(what))}. Do it and move ${key} to Done in Jira; the next pass that reads it lifts the hold, and ${merger}`,
     actions: [['done', `once ${key} is Done in Jira, the next pass that reads it lifts the hold`], ['not-now']],
     since: finite(Math.min(...ws.map(({ t }) => timeOf(t.added_at) ?? Infinity))) };
 }
@@ -555,8 +554,9 @@ export function listText(c, now = Date.now()) {
   const repos = [...new Set(c.items.map((i) => i.r))];
   for (const i of c.items) {
     const waited = i.since == null ? '' : ` ${since(now - i.since)}`;
-    // A done note follows the need whole: it is what GitHub showed when the person last said done.
-    const need = `${cut(i.need, QUESTION_MAX)}${i.note ? ` ${i.note}` : ''}`;
+    // The need is never cut: the session asks from this line, so a recommendation or URL in it must
+    // survive. A done note follows it whole: what GitHub showed when the person last said done.
+    const need = `${i.need}${i.note ? ` ${i.note}` : ''}`;
     lines.push(`${i.r.word} ${i.t.key} ${i.kind}${waited} | ${need} | ${i.actions.map(actionText).join(' | ')}`);
   }
   const n = new Set(repos.map((r) => r.slug)).size;
