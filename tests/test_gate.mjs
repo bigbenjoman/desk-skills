@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, readWorkflows } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows } from '../desk/bin/gate.mjs';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -161,6 +161,14 @@ const n416 = stale(wfs('[main, production]'), wfs('[main, production]'));
 t('DS-416 AC5 a check neither copy runs keeps the DS-410 trigger reason', JSON.stringify(n416), JSON.stringify({ untriggered: never, behind: {}, reopen: {} }));
 t('DS-416 AC5 its gate reason still names the workflow trigger', G(seen, { untriggered: n416.untriggered }).reasons[0], `required check "${req[0]}" ${never[req[0]]}`);
 t('DS-416 a copy that does not read blames nothing on the base', JSON.stringify(stale([], [])), JSON.stringify({ untriggered: never, behind: {}, reopen: {} }));
+
+// At a batch's admission there is no head yet: its children's branches are cut from the base.
+const atAdmit = (atBase, atDefault, branches = [HEADB]) => baseUntriggered(req, FEAT, { branches, defaultBranch: 'main', atBase, atDefault });
+t('DS-412 AC1 a check neither copy of its workflow runs on the base is named, with its workflow file', JSON.stringify(atAdmit(wfs('[main, production]'), wfs('[main, production]'))), JSON.stringify(never));
+t('DS-412 a check only the default branch\'s copy runs is left to the base sync', JSON.stringify(atAdmit(wfs('[main, production]'), wfs("[main, production, 'feat/**']"))), '{}');
+t('DS-412 AC3 negative control: a base the workflow triggers on names nothing', JSON.stringify(atAdmit(wfs("[main, 'feat/**']"), wfs("[main, 'feat/**']"))), '{}');
+t('DS-412 a copy that does not read names nothing', JSON.stringify(atAdmit([], [])), '{}');
+t('DS-412 a push trigger on one child\'s branch does not excuse another child', Object.keys(baseUntriggered(['lint'], FEAT, { branches: ['feature/a', 'fix/b'], atBase: lintOn("on:\n  push:\n    branches: ['feature/**']\n  pull_request:\n    branches: [main]"), atDefault: [] })).join(), 'lint');
 
 // Briefing answers survive a requeue: answer.mjs appends below the sibling-notes block.
 const brief = ['Orchestrator session name: x', '', 'These questions were put to the user before you started.', '',

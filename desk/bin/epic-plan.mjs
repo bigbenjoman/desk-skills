@@ -17,6 +17,7 @@ import { FEATURE_PLAN_PREFIX, readQueue, planPark } from './batch-state.mjs';
 import { listBatches } from './batches.mjs';
 import { markedResult, answers } from './decider.mjs';
 import { NOT_NOW } from './not-now.mjs';
+import { readWorkflows, baseUntriggered } from './gate.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -83,6 +84,21 @@ function ensureBranch(branch) {
     const said = [...err.filter((l) => l.startsWith('pre-push: ')), err.pop()];
     return `its feature branch ${branch} could not be read or pushed (${[...new Set(said)].join(' ')})`;
   }
+}
+
+// Why no child PR into `base` could ever go green, or null: a §4 Required check whose workflow, as the
+// base and the default branch hold it, runs on no PR into base from those child branches. A workflow
+// that cannot be read counts as running.
+function untriggeredOn(base, branches) {
+  let required = [];
+  try { required = [].concat(E.configValues('required-checks') ?? []).filter((c) => c && !E.isNone(c)); } catch { return null; }
+  if (!required.length) return null;
+  const def = E.configValue('default-branch') || 'main';
+  const at = (ref) => readWorkflows({ repo: E.ghRepo(), ref, run: (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) });
+  const never = baseUntriggered(required, base, { branches: [...new Set(branches)], atBase: at(base), atDefault: base === def ? [] : at(def), defaultBranch: def });
+  const names = Object.keys(never);
+  if (!names.length) return null;
+  return `${names.length === 1 ? 'a required check does' : 'required checks do'} not run on PRs into ${base}, so no child PR could go green: ${names.map((n) => `"${n}" ${never[n]}`).join('; ')}. Add ${base} (or a pattern such as feat/**) to the pull_request branches of ${names.length === 1 ? 'that workflow' : 'those workflows'}, then admit it again`;
 }
 
 // The drafter's prompt: the epic, its numbered criteria and each child, and the feature.json shape.
@@ -194,6 +210,8 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
     if (!r) return discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`);
     recs[c] = r;
   }
+  const never = untriggeredOn(branch, children.map((c) => recs[c].branch ?? null));
+  if (never) return discard(never);
 
   let v = planOf(children, env);
   if (v.why) return discard(v.why);

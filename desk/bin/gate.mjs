@@ -19,6 +19,8 @@
 //     no workflow runs on a PR into base from branch (its trigger filters), for evaluateGate's `untriggered`
 //   staleTriggers(untriggered, base, { branch, atBase, atDefault, defaultBranch }) -> { untriggered, behind, reopen }
 //     that map split by whether the base's or the default branch's copy of the workflows runs each check
+//   baseUntriggered(required, base, { branches, atBase, atDefault, defaultBranch }) -> { <check>: <why> }
+//     at a batch's admission, the required checks no copy runs on PRs into base from those branches
 //   readWorkflows({ repo, ref, run }) -> [{ file, text }] the repo's .github/workflows at ref
 //   normaliseRollup(nodes)   statusCheckRollup / GraphQL context nodes -> checks
 //   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
@@ -180,6 +182,19 @@ export function staleTriggers(untriggered, base, { branch = null, atBase = [], a
     if (runs(b, n)) out.reopen[n] = `has not reported, though ${base}'s copy of its workflow now runs it: no pull_request event has come since, so closing and reopening the PR starts it`;
     else if (runs(d, n)) out.behind[n] = `has not reported because ${base} is behind ${defaultBranch}, whose copy of its workflow runs it on PRs into ${base}: syncing ${base} with ${defaultBranch} and reopening the PR starts it`;
     else out.untriggered[n] = why;
+  }
+  return out;
+}
+
+// Before a batch on `base` starts: the required checks neither the base's nor the default branch's
+// copy of the workflows runs on a PR into base from any of `branches`, as { <check>: <why> }. A child's
+// head is cut from the base, so the base's copy stands in for it; one only the default branch's copy
+// runs is left to the base sync.
+export function baseUntriggered(required, base, { branches = [], atBase = [], atDefault = [], defaultBranch = 'main' } = {}) {
+  const out = {};
+  for (const branch of branches.length ? branches : [null]) {
+    const atHead = untriggeredChecks(required, base, atBase, { branch });
+    Object.assign(out, staleTriggers(atHead, base, { branch, atBase, atDefault, defaultBranch }).untriggered);
   }
   return out;
 }
