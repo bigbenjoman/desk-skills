@@ -18,7 +18,7 @@ with no design-build agent does: build it in this session from the saved boards,
 skills above, and leave out its "D still stops for agreement first". The agreement moves to the PR
 review: for each board the ticket names, the PR body holds the board's render and the built screen
 at that board's width, with every difference you accepted listed under it (`desk-pr`'s
-`references/screenshots.md`, "A ticket with a saved canvas"). Where §4 Storybook is set, build it
+`references/screenshots.md`, "A ticket with a saved canvas"). Where §4 Storybook (`desk-env cmds storybook-cmd`) is set, build it
 and run `desk-design compare` (`design-canvas.md`, "Comparing the build with each board"): both run
 under the browser lock whatever §3 `worker-screenshots` says, and a board no story matches is named
 in the PR as not compared, never a park. Capturing the built screens any other way needs §3
