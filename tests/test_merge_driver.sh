@@ -530,11 +530,16 @@ q add T-71 Story A; q set T-71 branch=feat/T-71 state=done result.pr=171
 q add T-72 Story A; q set T-72 branch=feat/T-72 state=done result.pr=172 "merge_blocked=approval: stale"
 : > "$T/merges.log"
 aloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-71 T-72" 2>&1); rc=$?; }
-aloop; aloop
+aloop
+check "DS-419 AC10: a feat PR with an unresolved thread is held for the feedback, and its approval request is cleared" 'echo "$out" | grep -q "#172 has outstanding review feedback (NONE, 1 unresolved)" && ! echo "$out" | grep -q "#172 .*a feature with no approval" && [ "$(qf T-72 .merge_blocked)" = null ]'
+aloop
 check "DS-419 AC9: a green feat PR with no thread open and no approval is not merged" '[ -z "$(merged)" ] && echo "$out" | grep -q "#171 green at a71111111, a feature with no approval — not merging until a person approves it"'
 check "DS-419 AC9: the queue asks the person for an approval" '[ "$(qf T-71 .merge_blocked)" = "approval: a feature, green at a71111111 with no approval: a person approves it before desk merges it" ]'
-check "DS-419 AC10: a feat PR with an unresolved thread is held for the feedback, with no approval asked" 'echo "$out" | grep -q "#172 has outstanding review feedback (NONE, 1 unresolved)" && ! echo "$out" | grep -q "#172 .*a feature with no approval" && [ "$(qf T-72 .merge_blocked)" != "approval: stale" ]'
-jq '."171".feedback = "APPROVED 0"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+check "DS-419 AC10: held a second loop, its feedback is recorded for the fix worker, with no approval asked" '! echo "$out" | grep -q "#172 .*a feature with no approval" && qf T-72 .merge_blocked | grep -q "^review feedback: 1 unresolved thread on a green PR, first "'
+jq '."171".checks = [["test", "FAILURE"]]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+aloop
+check "DS-419: a feat PR that goes red no longer asks for an approval" '[ "$(qf T-71 .merge_blocked)" = null ] && [ -z "$(merged)" ]'
+jq '."171".checks = [["test", "SUCCESS"]] | ."171".feedback = "APPROVED 0"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 aloop; aloop
 check "DS-419 AC9: once approved, the request is cleared and it merges, pinned to its head" '[ "$(merged)" = 171 ] && grep -qx "171 main $SHA71" "$T/merges.log" && [ "$(qf T-71 .merge_blocked)" = null ]'
 

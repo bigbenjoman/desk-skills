@@ -94,6 +94,8 @@ open. A worker that cannot fix a thread parks naming it and what blocks it. Out 
 A PR titled `feat…` merges only once a person has approved it: green, past the feedback check and
 with no approval, the driver records `merge_blocked` `approval: …`, and desk-q and needs-you ask the person
 to approve it. One held for review feedback asks for no approval: the feedback goes to a fix worker.
+A request is cleared once the PR is approved, or once it conflicts or is not green, so the queue
+shows the conflict or the red check instead.
 
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
 handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is
