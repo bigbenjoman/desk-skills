@@ -19,6 +19,10 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   as `AUTOPILOT_USER_APPROVED=1`, `approved.base_push` as `AUTOPILOT_BASE_PUSH_APPROVED=1`). It never
   grants one it was not given, so a batch whose `ask` was never answered spawns nothing and the pass
   says why;
+- where the base is behind and §3 `batch-base-push` is `ask` with no `approved.base_push`, the pass
+  records `base_push_ask` on the queue rather than listing it as waiting, so no decider takes it:
+  `/desk-needs-you` asks it once as the batch's `base-push` item, and its `approve` sets
+  `approved.base_push`;
 - appends the report to `<state>/supervisor.log`;
 - sends one macOS notification, titled with the repo, for the pass's `push` entries the last
   notification did not carry (the check-in digest, a production-broken park), or for a pass that

@@ -324,6 +324,29 @@ check "ask with the approval syncs"                  'origin_has_main && [[ "$ou
 fresh typo nope; tip=$(origin_tip); out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 node "$B/pass.mjs" 2>&1)
 check "a value the row cannot read is no, not ask"   '[ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"batch-base-push is \"no\""* ]]'
 
+# DS-403: a supervised batch under ask is asked once on the queue (needs-you's base-push item), never
+# listed as waiting, so no decider is handed it each pass. Its approval syncs this and every later pass.
+spass(){ out=$(node "$B/pass.mjs" --json --by supervisor 2>/dev/null); }
+waits_base(){ jq -e '[.waiting[] | select(test("base sync"))] | length > 0' <<<"$out" >/dev/null; }
+fresh supask ask; feature; tip=$(origin_tip); spass; since=$(jq -r .base_push_ask.since "$DESK_QUEUE")
+check "DS-403 AC1 a supervised pass under ask records one ask on the queue" '[ "$(origin_tip)" = "$tip" ] && [ "$(jq -r .base_push_ask.base "$DESK_QUEUE")" = feat/x ] && [ "$(jq -r .base_push_ask.source "$DESK_QUEUE")" = main ]'
+check "DS-403 AC1 nothing waits on you for it, and the report says where it is asked" '! waits_base && [[ "$(jq -r .message <<<"$out")" == *"asked once for the batch in /desk-needs-you"* ]]'
+check "DS-403 AC1 feature mode still spawns nothing on it"  '[[ "$(jq -r .message <<<"$out")" != *"spawned:"* ]]'
+spass
+check "DS-403 AC1 the next pass keeps the same ask"   '[ "$(jq -r .base_push_ask.since "$DESK_QUEUE")" = "$since" ] && ! waits_base && [ "$(origin_tip)" = "$tip" ]'
+node "$B/queue.mjs" set-batch approved.base_push=true >/dev/null
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 node "$B/pass.mjs" --json --by supervisor 2>/dev/null)
+check "DS-403 AC2 approved, the next pass merges main in" 'origin_has_main && [[ "$(jq -r .message <<<"$out")" == *"merged 2 commit(s)"* ]]'
+check "DS-403 AC2 the approval stays on the queue and the ask is cleared" '[ "$(jq -r .approved.base_push "$DESK_QUEUE")" = true ] && [ "$(jq -r .base_push_ask "$DESK_QUEUE")" = null ]'
+git -C "$C/repo" commit -q --allow-empty -m three; git -C "$C/repo" push -q origin main
+node "$B/queue.mjs" set T-1 state=triaged >/dev/null
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 node "$B/pass.mjs" --json --by supervisor 2>/dev/null)
+check "DS-403 AC3 behind again, it syncs with no new ask" 'origin_has_main && [[ "$(jq -r .message <<<"$out")" == *"merged 1 commit(s)"* ]] && [ "$(jq -r .base_push_ask "$DESK_QUEUE")" = null ]'
+fresh supno no; feature; tip=$(origin_tip); spass
+check "DS-403 AC4 batch-base-push no: nothing synced and no ask raised" '[ "$(origin_tip)" = "$tip" ] && [ "$(jq -r .base_push_ask "$DESK_QUEUE")" = null ] && waits_base'
+fresh sesask ask; tip=$(origin_tip); out=$(node "$B/pass.mjs" --json 2>/dev/null)
+check "DS-403 a session's pass under ask still waits on its session, with no queue ask" '[ "$(jq -r .base_push_ask "$DESK_QUEUE")" = null ] && waits_base'
+
 # A production base written into the queue by hand is refused on read, before anything is pushed.
 fresh prod; git -C "$C/repo" push -q origin origin/feat/x:refs/heads/production
 tip=$(git -C "$C/origin.git" rev-parse production)
