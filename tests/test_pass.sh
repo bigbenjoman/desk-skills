@@ -2258,9 +2258,10 @@ else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"
-# fbx <n> <head> <review: "<sha> <counts>" or -> <threads: "<id>:<path>:<line>:<first line>"...>: PR #n
-# open, out of draft and green at <head>, with ben's desk-review and colleagues' threads.
-fbx(){
+# ffx <n> <head> <review: "<sha> <counts>" or -> <threads: "<id>:<path>:<line>:<first line>"...>: PR #n
+# open, out of draft and green at <head>, with ben's desk-review and colleagues' threads. (Not fbx:
+# DS-327's helper above keeps that name.)
+ffx(){
   node -e 'const [dir, n, head, review, ...threads] = process.argv.slice(1);
     const fs = require("fs");
     fs.writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, statusCheckRollup: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }] }));
@@ -2281,10 +2282,10 @@ cp "$T/config-r.md" "$T/config-fb.md"
 export DESK_CONFIG="$T/config-fb.md" DESK_QUEUE="$T/queue-fb.json" DESK_AUTOPILOT_STATE="$T/state-fb"
 q init fb; q set-batch concurrency=5
 for k in 1 2 3; do q add "B-$k"; q set "B-$k" state=done lane=A "branch=fix/B-$k" "result.pr=80$k"; done
-fbx 801 "$H1" - "PRRT_a:src/rail.ts:40:P0 a class that goes live early is missing from the rail"
-fbx 802 "$H1" "$H1 p0=1 p1=0"
+ffx 801 "$H1" - "PRRT_a:src/rail.ts:40:P0 a class that goes live early is missing from the rail"
+ffx 802 "$H1" "$H1 p0=1 p1=0"
 q set B-3 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"feedback"},{"try":2,"head":"'"$H2"'","kind":"feedback"}]'
-fbx 803 "$H1" - "PRRT_c:src/auth.ts:9:P0 a hung DOB probe leaves Finishing sign-in forever"
+ffx 803 "$H1" - "PRRT_c:src/auth.ts:9:P0 a hung DOB probe leaves Finishing sign-in forever"
 : > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-419 AC1 a ready PR with one unresolved thread is requeued for a fix worker, quoting the thread" \
   '[ "$(field B-1 state)" = "\"triaged\"" ] && [ "$(field B-1 fix.kind)" = "\"feedback\"" ] && [ "$(field B-1 fix.threads | jq -r ".[0].id")" = PRRT_a ] && echo "$out" | grep -qF "fix try 1 of 2: B-1 requeued for PR #801 — review feedback: 1 unresolved thread"'
@@ -2298,7 +2299,7 @@ check "DS-419 AC5 the fix worker'\''s task and briefing are the feedback try on 
 # B-1's worker pushes H2 and posts a desk-review there that finds a P1: the thread is replied on and
 # resolved, and the P1 goes to another fix round.
 q set B-1 state=done session_id=null result.pr=801
-fbx 801 "$H2" "$H2 p0=0 p1=1" "PRRT_a:src/rail.ts:40:P0 a class that goes live early is missing from the rail"
+ffx 801 "$H2" "$H2 p0=0 p1=1" "PRRT_a:src/rail.ts:40:P0 a class that goes live early is missing from the rail"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-419 AC5 once its worker pushed past the try'\''s head, the thread it worked is replied on and resolved" \
   'grep -q "^PRRT_a.Worked by desk.s fix try 1 of 2 at 222222222222" "$T/fb/replied.log" && grep -qx PRRT_a "$T/fb/resolved.log" && echo "$out" | grep -qF "fix tries: PR #801 (B-1): replied on and resolved 1 thread(s) fix try 1 worked"'
@@ -2309,7 +2310,7 @@ check "DS-419 AC6 the review the worker posted at its new head raises a finding:
 q add B-4; q set B-4 state=done lane=A branch=fix/B-4 result.pr=804 \
   'fix={"try":1,"of":2,"pr":804,"head":"'"$H1"'","kind":"feedback","what":"review feedback: 1 unresolved thread","threads":[{"id":"PRRT_d","text":"src/w.ts:3"}],"finished":"2026-11-01T00:00:00Z"}' \
   'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"feedback"}]'
-fbx 804 "$H2" - "PRRT_d:src/w.ts:3:P1 the widget drops its last row"
+ffx 804 "$H2" - "PRRT_d:src/w.ts:3:P1 the widget drops its last row"
 echo PRRT_d > "$T/fb/refuse"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-419 a worked thread GitHub would not resolve holds the next try, and the try that worked it is kept" \
