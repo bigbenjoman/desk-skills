@@ -464,6 +464,14 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-env"
   ok "desk-env -> ~/.local/bin (desk-env where: which repo config applies here)"
   wrote "desk-env ~/.local/bin/desk-env"
+  # desk-gh on PATH: `desk-gh read`, the read-only gh api a worker may run.
+  GH_SHIM="$(mktemp)"
+  printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: read-only gh api.\nexec node "%s" "$@"\n' \
+    "$DESKDIR/bin/desk-gh.mjs" > "$GH_SHIM"
+  install_file "$GH_SHIM" "$HOME/.local/bin/desk-gh"; rm -f "$GH_SHIM"
+  chmod +x "$HOME/.local/bin/desk-gh"
+  ok "desk-gh -> ~/.local/bin (desk-gh read: a read-only gh api call)"
+  wrote "desk-gh  ~/.local/bin/desk-gh"
   # retired local CI runner: its scripts, PATH shim, launchd jobs and state go, the VM image stays.
   gone=""
   # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.

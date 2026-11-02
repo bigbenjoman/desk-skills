@@ -32,7 +32,7 @@
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
 //   node desk-env.mjs merge-grant             print config|batch|none, a tab, and why (mergeGrant); exit 1
 //                                             when nothing may merge this batch's green PRs
-//   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, exit 3 if
+//   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, `none` if
 //                                             unset (no override), exit 4 if the row is malformed
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
@@ -1402,11 +1402,10 @@ if (isMain) {
         console.log(PERMISSION_KEYS[args[0]]);
         break;
       case 'model': {
-        // §3b Worker models' finder or text model; exit 3 when it is unset (no override).
+        // §3b Worker models' finder or text model; `none` when it is unset (no override). Exits 0
+        // either way, so a worker reads the answer without a compound `; echo $?`.
         if (!EXTRA_MODELS.includes(args[0])) throw new Error(`usage: desk-env.mjs model ${EXTRA_MODELS.join('|')}`);
-        const m = workerModels()[args[0]];
-        if (!m) process.exit(3);
-        console.log(m);
+        console.log(workerModels()[args[0]] || 'none');
         break;
       }
       case 'budget': {

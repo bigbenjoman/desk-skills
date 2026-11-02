@@ -69,6 +69,7 @@ const REWRITTEN = [
     'told to invoke the skill §4 Review domain experts names', '§3b Subagents that may run without asking still applies',
     'Match §4 Ticket key pattern against', '| §4 Other work id patterns |', 'If one of §4 Required checks reads this verdict',
   ].map((s) => ['DS-405', s, 1]),
+  ['DS-398', 'It exits 3: there is none', 1], // desk-env model prints `none` and exits 0
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

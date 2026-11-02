@@ -149,6 +149,8 @@ const REWRITTEN = [
     'reading as §4 Clean review verdict', '§4 Local database says how', 'it opens the PR and leaves the ticket', '§4 Codegen (e.g.',
     '**The package manager**: only', 'for a service §4 Local services names', 'a review from §4 Local review command, carrying',
   ].map((s) => ['DS-405', s, 1]),
+  ['DS-398', 'takes the read subcommands only', 1], // `git -C <worktree>` takes the local writes too
+  ['DS-398', '`ps`, `pgrep`. **Not** `sed`', 1], // echo, printf and true join the reading tools
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));
