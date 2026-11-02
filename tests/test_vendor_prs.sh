@@ -2,8 +2,8 @@
 # suite: vendor PRs (a new desk-update vendor PR closes the older ones it supersedes)
 # covers: desk/bin/vendor-prs.sh skills/desk-update/**
 # vendor-prs.sh against a fake gh and a throwaway checkout with an origin: the PR opens, then only the
-# other open chore/vendor-* PRs from this repo whose every upgraded pin the new one also upgrades are
-# closed naming it; one upgrading something else stays open; a failed create closes nothing; a branch
+# other open chore/vendor-* PRs from this repo whose every moved pin the new branch has moved too (by
+# its own upgrade or by main's) are closed naming it; one upgrading something else stays open; a failed create closes nothing; a branch
 # whose vendor/ equals origin/main's opens nothing.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -31,24 +31,30 @@ EOF
 chmod +x "$T/bin/gh"
 export PATH="$T/bin:$PATH" GH_DIR="$T" GH_LOG="$T/gh.log"
 LIST='[{"number":401,"headRefName":"chore/vendor-2026-11-02","isCrossRepository":false},
+ {"number":272,"headRefName":"chore/vendor-2026-10-28","isCrossRepository":false},
  {"number":273,"headRefName":"chore/vendor-2026-10-29","isCrossRepository":false},
  {"number":274,"headRefName":"chore/vendor-2026-10-30","isCrossRepository":false},
  {"number":400,"headRefName":"fix/DS-1-other","isCrossRepository":false},
  {"number":399,"headRefName":"chore/vendor-mine","isCrossRepository":true}'
 printf '%s]\n' "$LIST" > "$T/list.json"
 
-# A checkout whose origin/main pins skills a and b at 1. On origin: #273's branch upgrades a, #274's
-# upgrades b. Locally: 11-02 upgrades a again (it supersedes #273, not #274); 11-03 changes no vendor/.
+# A checkout whose origin/main first pins skills a, b and c at 1. On origin, cut from there: #272's
+# branch upgrades c, #273's a, #274's b. Then main takes c at 3 from a newer vendor PR. Locally: 11-02,
+# cut from that main, upgrades a, so it holds #272 (main moved c) and #273, not #274; 11-03 changes no
+# vendor/.
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/d" 2>/dev/null
 D="$T/d"
-pins(){ mkdir -p "$D/vendor/a" "$D/vendor/b"; echo "$1" > "$D/vendor/a/f"; echo "$2" > "$D/vendor/b/f"
-  printf '{"_about":"x","skills":{"a":{"pin":{"commit":"%s"}},"b":{"pin":{"commit":"%s"}}},"tools":{}}\n' "$1" "$2" > "$D/vendor/sources.json"; }
-pins a1 b1; echo x > "$D/README"
+pins(){ mkdir -p "$D/vendor/a" "$D/vendor/b" "$D/vendor/c"
+  echo "$1" > "$D/vendor/a/f"; echo "$2" > "$D/vendor/b/f"; echo "$3" > "$D/vendor/c/f"
+  printf '{"_about":"x","skills":{"a":{"pin":{"commit":"%s"}},"b":{"pin":{"commit":"%s"}},"c":{"pin":{"commit":"%s"}}},"tools":{}}\n' "$1" "$2" "$3" > "$D/vendor/sources.json"; }
+pins a1 b1 c1; echo x > "$D/README"
 git -C "$D" add -A; git -C "$D" commit -qm init; git -C "$D" branch -qM main; git -C "$D" push -q origin main
-git -C "$D" switch -qc chore/vendor-2026-10-29 main; pins a2 b1; git -C "$D" commit -qam a2; git -C "$D" push -q origin HEAD
-git -C "$D" switch -qc chore/vendor-2026-10-30 main; pins a1 b2; git -C "$D" commit -qam b2; git -C "$D" push -q origin HEAD
-git -C "$D" switch -qc chore/vendor-2026-11-02 main; pins a3 b1; git -C "$D" commit -qam a3
+git -C "$D" switch -qc chore/vendor-2026-10-28 main; pins a1 b1 c2; git -C "$D" commit -qam c2; git -C "$D" push -q origin HEAD
+git -C "$D" switch -qc chore/vendor-2026-10-29 main; pins a2 b1 c1; git -C "$D" commit -qam a2; git -C "$D" push -q origin HEAD
+git -C "$D" switch -qc chore/vendor-2026-10-30 main; pins a1 b2 c1; git -C "$D" commit -qam b2; git -C "$D" push -q origin HEAD
+git -C "$D" switch -q main; pins a1 b1 c3; git -C "$D" commit -qam c3; git -C "$D" push -q origin main
+git -C "$D" switch -qc chore/vendor-2026-11-02 main; pins a3 b1 c3; git -C "$D" commit -qam a3
 git -C "$D" switch -qc chore/vendor-2026-11-03 main; echo y > "$D/README"; git -C "$D" commit -qam readme
 git -C "$D" switch -q main
 
@@ -73,8 +79,9 @@ out=$(bash "$V" open "$D" acme/desk chore/vendor-2026-11-02 "chore(vendor): upgr
 check "AC1 open exits 0 and reports the new PR and the close" '[ $rc -eq 0 ] && [[ "$out" == *"opened https://github.com/acme/desk/pull/401"* ]] && [[ "$out" == *"closed #273: superseded by #401"* ]]'
 check "AC1 the PR opens from the branch into main" 'grep -qF "pr create --repo acme/desk --base main --head chore/vendor-2026-11-02 --title chore(vendor): upgrade x --body body" "$GH_LOG"'
 check "AC1 the older vendor PR closes with a comment naming the new one and its branch deleted" 'grep -qE "^pr close 273 --repo acme/desk --delete-branch --comment Superseded by #401" "$GH_LOG"'
+check "an older vendor PR whose pin main has since overtaken closes too" '[[ "$out" == *"closed #272: superseded by #401"* ]] && grep -qE "^pr close 272 --repo acme/desk --delete-branch --comment Superseded by #401" "$GH_LOG"'
 check "an older vendor PR upgrading a skill the new one does not stays open, named" '[[ "$out" == *"kept #274: it upgrades b, which #401 does not"* ]] && ! grep -q "^pr close 274" "$GH_LOG"'
-check "AC4 exactly one PR closed: not the new one, another head, a fork or one not superseded" '[ "$(grep -c "^pr close" "$GH_LOG")" = 1 ]'
+check "AC4 exactly two PRs closed: not the new one, another head, a fork or one not superseded" '[ "$(grep -c "^pr close" "$GH_LOG")" = 2 ]'
 
 # An older vendor PR whose branch cannot be read is left open, and the run says so with exit 4.
 printf '%s,\n {"number":275,"headRefName":"chore/vendor-gone","isCrossRepository":false}]\n' "$LIST" > "$T/list.json"

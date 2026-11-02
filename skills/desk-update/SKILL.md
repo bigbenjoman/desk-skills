@@ -224,9 +224,10 @@ desk-skills checkout's origin whatever directory you run it from.
 
 `open` runs `gh pr create`, and only once the PR exists closes each other open `chore/vendor-*` PR
 from that repo that it supersedes, with a comment naming the new one, and deletes its branch. It
-supersedes one when it upgrades every skill and tool whose pin the older one changes: each run
-upgrades from `origin/main`'s pins, so its pins are then the same or newer. An older PR upgrading
-something this run did not pick stays open (`kept #<n>: it upgrades <names>…`). PRs on any other
+supersedes one when every skill and tool whose pin the older one moves has moved on the new branch
+too, by this run's upgrade or by a newer vendor PR `main` already merged: pins only move forward, so
+the new branch's are the same or newer. An older PR upgrading something neither touched stays open
+(`kept #<n>: it upgrades <names>…`). PRs on any other
 branch are never touched. Report the PR URL and each `closed #<n>` and `kept #<n>` line it prints.
 Nothing is pushed to `main`: CI and the user merge the PR. If the push or the PR fails (`open` exits
 1 and closes nothing), report the error and the branch name, and leave it there; never retry by
