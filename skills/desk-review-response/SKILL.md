@@ -33,10 +33,6 @@ The order the skill's author asked for, repeatedly: *"Don't change the code yet,
 you start working. Are all of the reviewer's comments correct?"* and *"is that what we should have
 done in the first place? Answer before fixing."*
 
-**Load this skill, don't approximate it.** Comments worked "in its spirit" without loading it keep
-the assessment and lose the voice file — replies run three to five paragraphs against a 2-3
-sentence register, and carry em-dashes.
-
 ## Required: assess first
 
 Produce this before any edit. One row per comment, no exceptions:
