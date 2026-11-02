@@ -1869,6 +1869,9 @@ t('DS-416 AC3 a supervised ask batch waits on the base-push item from the pass t
 const owed416 = (reopening) => { const q = q416({ state: 'CLOSED' }); q.tickets['T-1'].reopening = reopening; return q; };
 t('DS-416 a PR closed to start its CI and owed its reopen is no item; one closed otherwise is',
   `${why416(owed416(815), 'yes')} | ${why416(owed416(null), 'yes')}`, 'none | closed');
+const behindOwed416 = (reopening) => { const q = owed416(reopening); q.tickets.H = { key: 'H', ...heldBy('T-1') }; return /closed unmerged/.test(Q.holdOf(q, q.tickets.H, { ...advCtx([], ['e2e']), basePush: 'yes' }).text); };
+t('DS-416 a ticket held behind a PR owed its reopen is not told to start; behind one closed otherwise it is',
+  `${behindOwed416(815)} | ${behindOwed416(null)}`, 'false | true');
 
 // ---- DS-280: a PR inside its reruns stays in Merging naming the red check, each Merging and Needs you
 // row says how long it has sat there, and a ticket behind a PR that needs you counts once.

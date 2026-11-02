@@ -483,7 +483,10 @@ closes(){ grep -c "^pr close 801" "$T/ghlog" 2>/dev/null || true; }
 echo b3 > "$T/bhead"; touch "$T/reopenfail"; pass
 check "DS-416 a failed reopen is owed on the ticket and said, the head still recorded" \
   '[ "$(cat "$T/prstate")" = CLOSED ] && [ "$(jq -r ".tickets[\"T-1\"].reopening" "$DESK_QUEUE")" = 801 ] && [ "$(jq -r .reopened_at "$DESK_QUEUE")" = b3 ] && [[ "$out" == *"PR #801 (T-1) is closed, to start its CI, and did not reopen"* ]]'
-c=$(closes); rm -f "$T/reopenfail"; pass
+c=$(closes); pass
+check "DS-416 a second failed reopen records the PR closed and still owed" \
+  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.state" "$DESK_QUEUE")" = CLOSED ] && [ "$(jq -r ".tickets[\"T-1\"].reopening" "$DESK_QUEUE")" = 801 ] && [ "$(closes)" = "$c" ]'
+rm -f "$T/reopenfail"; pass
 check "DS-416 the next pass reads the closed PR again and reopens it without closing it again" \
   '[ "$(cat "$T/prstate")" = OPEN ] && [ "$(closes)" = "$c" ] && [ "$(jq -r ".tickets[\"T-1\"].reopening" "$DESK_QUEUE")" = null ] && [[ "$out" == *"closed and reopened PR #801 (T-1)"* ]]'
 c=$(closes); r=$(reopens); pass
