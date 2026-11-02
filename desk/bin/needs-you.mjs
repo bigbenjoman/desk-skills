@@ -131,6 +131,8 @@ function stuckPlain(r, n, s) {
   }
   // Before the conflict test: a review reason names the conflict tries it was made after.
   if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}. ${personReviewFix({}, { why }) ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.`;
+  const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
+  if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
   if (/conflict/.test(why)) return `${n} is in conflict with ${r.ctx?.base ?? 'its base'}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
   if (/^no review verdict/.test(why)) return `${n} has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.`;
   const red = /^still red[^:]*:\s*(.+)$/.exec(why);
@@ -167,6 +169,7 @@ function prPlain(r, t) {
     case 'draft': return draftPlain(r, n, w.undraft);
     case 'hold': return `${n} touches files under a merge hold (${one(w.text)}), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.`;
     case 'feedback': return `${n} is green, but held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
+    case 'approval': return `${n} is a feature and green, and desk merges a feature only once a person has approved it. Review and approve it on GitHub; desk then merges it.`;
     case 'conflict': return `${n} is in conflict with ${w.base}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
     case 'red': return `${n} has ${w.names.length === 1 ? 'a failing check' : `${w.names.length} failing checks`}, ${andList(w.names.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${w.names.length === 1 ? 'it' : 'them'}. Fix or re-run ${w.names.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.`;
     case 'trigger': return `${n} is not green: ${one(w.text)}. Re-running cannot help, as no run exists: add ${w.base ?? 'its base'} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${andList(w.names.map((c) => `"${c}"`))}, a change to the repo; its next push then runs the check, and ${thenMerge(r)}.`;

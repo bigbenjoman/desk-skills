@@ -40,7 +40,8 @@ import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver,
 import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { readThreads, THREADS_QUERY } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
@@ -2848,8 +2849,9 @@ function reviewComments(id) {
 }
 
 // ---- fix tries -----------------------------------------------------------
-// A ready PR the merge driver cannot merge, red after its two reruns or in conflict with its base,
-// goes back to a fix worker on the same branch, at most twice (fix-tries.mjs). What no worker can
+// A ready PR the merge driver cannot merge, red after its two reruns, in conflict with its base, held
+// for review feedback, or with a review at its head that is not clean, goes back to a fix worker on
+// the same branch, at most twice (fix-tries.mjs). What no worker can
 // fix, a check a person clears (§4 Checks workers can't fix, Check builds or Pre-merge steps) or a third failure, is recorded on the ticket as `stuck`
 // and put to the person. The driver's per-head rerun record is read from its state directory.
 if (fixRowErrors.length && undrafted.length) {
@@ -2899,9 +2901,67 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
     },
     conflictFiles: () => conflictFiles(t.branch),
   };
-  const c = fixCall(t, s, ctx);
+  const c = fixCall(t, s, ctx) ?? feedbackCall(t, s);
   if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
   applyFix(t, n, s.head, c);
+}
+// A ready PR's review, read as the merge driver reads it (review-threads.mjs): a desk-review at its
+// head that is not clean goes to a review fix (reviewFix), and, where §3 merge-feedback-first holds
+// the merge for them, threads left unresolved or changes requested to a feedback fix (feedbackFix).
+// The threads a finished feedback try worked are replied on and resolved first, once its worker has
+// pushed past them, so the next try quotes only what is still open. One GitHub would not settle holds
+// any new try until a later pass settles it: a new try would replace the record of what was worked.
+function feedbackCall(t, s) {
+  if (s.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
+  const n = s.pr;
+  const fb = readFeedback(n);
+  if (!fb) { out.push(`fix tries: PR #${n} (${t.key}): its review threads could not be read; the next pass tries again`); return null; }
+  if (fb.head !== s.head) return null;
+  const open = new Set(fb.left.map((x) => x.id));
+  const worked = resolvable(t, s.head).filter((x) => open.has(x.id));
+  const settled = worked.length ? settleWorked(t, n, s.head, worked) : [];
+  if (settled.length < worked.length && !DRY) return null;
+  if (fb.review) {
+    const comments = () => {
+      const r = reviewComments(fb.review.id);
+      if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
+      return r.comments;
+    };
+    const rf = reviewFix(t, { pr: n, head: s.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: E.permission('autopilot-judgement') });
+    if (rf) return rf.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
+  }
+  if (E.permissionOrUnset('merge-feedback-first') === 'no') return null;
+  return feedbackFix(t, { pr: n, head: s.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
+}
+function readFeedback(n) {
+  const [owner, name] = GH_REPO.split('/');
+  const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`, '-f', `query=${THREADS_QUERY}`]);
+  if (!r.ok) return null;
+  try { return readThreads(JSON.parse(r.out), { handle: conflictHandle, clean: E.configValue('clean-verdict') }); } catch { return null; }
+}
+// Replies on each thread a finished feedback try worked, then resolves it: -> the ids resolved. Each
+// step is recorded on the try (fix.replied, fix.resolved), so a pass that stops between them neither
+// replies twice nor leaves a thread replied on and open.
+function settleWorked(t, n, head, worked) {
+  if (DRY) { out.push(`fix tries (dry run): would reply on and resolve ${worked.length} thread(s) fix try ${t.fix.try} worked on PR #${n} (${t.key})`); return []; }
+  const REPLY_MUTATION = 'mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}';
+  const RESOLVE_MUTATION = 'mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}';
+  const replied = [...(t.fix.replied ?? [])], resolved = [...(t.fix.resolved ?? [])];
+  for (const x of worked) {
+    if (!replied.includes(x.id)) {
+      const r = shOut('gh', ['api', 'graphql', '-f', `query=${REPLY_MUTATION}`, '-f', `id=${x.id}`, '-f', `body=${feedbackReply(t.fix, head)}`]);
+      if (!r.ok) { out.push(`fix tries: PR #${n} (${t.key}): thread ${x.text} could not be replied on (${r.out.split('\n').pop()}); the next pass tries again`); continue; }
+      replied.push(x.id);
+    }
+    const r = shOut('gh', ['api', 'graphql', '-f', `query=${RESOLVE_MUTATION}`, '-f', `id=${x.id}`, '--jq', '.data.resolveReviewThread.thread.isResolved']);
+    if (r.ok && r.out === 'true') resolved.push(x.id);
+    else out.push(`fix tries: PR #${n} (${t.key}): thread ${x.text} could not be resolved (${r.out.split('\n').pop()}); the next pass tries again`);
+  }
+  q('set', t.key, `fix.replied=${JSON.stringify(replied)}`, `fix.resolved=${JSON.stringify(resolved)}`);
+  t.fix = { ...t.fix, replied, resolved };
+  const now = worked.filter((x) => resolved.includes(x.id));
+  if (now.length) out.push(`fix tries: PR #${n} (${t.key}): replied on and resolved ${now.length} thread(s) fix try ${t.fix.try} worked, now at ${String(head).slice(0, 12)}`);
+  return now.map((x) => x.id);
 }
 // A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
 // `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`.

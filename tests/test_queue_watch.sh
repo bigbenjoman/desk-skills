@@ -168,7 +168,7 @@ q set T-6 merged_at=2026-10-26T07:00:00.000Z
 n=0; while [ "$(mems)" -lt 3 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done
 stop_watch
 out=$(cat "$T/watch.out")
-check "DS-201 AC2 quiet: a PR opened and a merge each get a change line"     'grep -q "^T-5 .*port 3502 → RUNNING port 3502  PR #50$" "$T/watch.out" && grep -q "^T-6 .*DONE PR #51 → DONE PR #51 merged$" "$T/watch.out"'
+check "DS-201 AC2 quiet: a PR opened and a merge each get a change line"     'grep -q "^T-5 .*port 3502 → RUNNING port 3502  PR #50$" "$T/watch.out" && grep -q "^T-6 .*PR OPEN PR #51 → DONE PR #51 merged$" "$T/watch.out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -121,6 +121,16 @@ check "DS-189 AC4: front says it will not spawn until answered"           '[ $rc
 q set A-5 open_questions=0; q front A-5
 check "front with no question open says nothing more"                     '[ $rc -eq 0 ] && [ "$out" = "A-5 moved to the front of the spawn order" ]'
 
+# DS-419 AC4: a done ticket is DONE only once its PR has merged, or it finished with no PR.
+q set A-5 state=done result.pr=2289; q render
+check "DS-419 AC4: a done ticket whose PR is open is not listed as DONE"  '[ $rc -eq 0 ] && echo "$out" | grep -q "^  PR OPEN  A-5       PR #2289$"'
+q set A-5 pr_status.pr=2289 pr_status.state=CLOSED; q render
+check "DS-419 AC4: one whose PR was closed unmerged reads CLOSED"         'echo "$out" | grep -q "^  CLOSED   A-5       PR #2289$"'
+q set A-5 pr_status.state=MERGED merged_at=2026-11-02T10:00:00.000Z; q render
+check "DS-419 AC4: once it merged, it is DONE"                            'echo "$out" | grep -q "^  DONE     A-5       PR #2289 merged$"'
+q set A-5 result.pr=null merged_at=null pr_status=null; q render
+check "DS-419 AC4: one that finished with no PR is DONE"                  'echo "$out" | grep -Eq "^  DONE +A-5 *$"'
+
 rm -rf "$T"
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

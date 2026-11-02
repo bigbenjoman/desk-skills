@@ -949,6 +949,14 @@ function tableChanges(before, after) {
   return out;
 }
 
+// A done ticket is DONE only once its PR has merged, or it finished with no PR: one whose PR is still
+// open is PR OPEN, and one whose PR was closed unmerged CLOSED.
+function doneLabel(t) {
+  if (t.result?.pr == null || t.merged_at) return 'DONE';
+  const ps = t.pr_status?.pr === t.result.pr ? t.pr_status.state : null;
+  return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : 'PR OPEN';
+}
+
 // The table's parts: the batch heading, one row per ticket in shown order, and how many wait on you.
 // `stages: false` leaves a running ticket's stage out, so a stage step alone changes nothing;
 // `asks` maps a running ticket to the question it is waiting on, shown on its row.
@@ -961,7 +969,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
   for (const t of rows) {
     const parks = isHeld(t) ? waitingOnPark(q, t) : null;
     const stuck = isHeld(t) && !parks && !waitingOnMerge(q, t);
-    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state.toUpperCase();
+    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : t.state.toUpperCase();
     const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
     const tail = stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
       : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${String(t.held_by).split('|').join(', ')} merge`

@@ -18,7 +18,8 @@ re-reads your whole context, and desk-q already shows every stage. The table pri
 real change carries each running ticket's current stage. `queue.mjs watch --stages` fires on stage
 steps too, as it used to. A draft PR a worker opens while it carries on shows on its running row
 once a pass finds it on GitHub (from Stage 7, kept as `draft_pr`), and a merge (`queue.mjs merged`)
-marks the done row `merged`, so both wake you.
+moves the row from `PR OPEN` to `DONE … merged`, so both wake you. A finished ticket reads `DONE`
+only once its PR has merged, or it finished with no PR; `CLOSED` once its PR was closed unmerged.
 
 | Ticket | State | Stage | Port | Notes |
 |---|---|---|---|---|

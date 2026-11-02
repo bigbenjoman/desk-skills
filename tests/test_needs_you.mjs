@@ -463,17 +463,26 @@ t('DS-378 done on a held draft once undrafted says it is released, and records i
   `${u51.ok} ${u51.line} ${queueOf('iota').tickets['E-1'].pr_status.isDraft}`, 'true iota E-1: GitHub shows PR #51 out of draft, so it is released; the next pass takes it on from there. false');
 t('DS-378 it is no longer held', N.collect({ word: 'iota' }).items.find((i) => i.t.key === 'E-1')?.kind ?? 'none', 'pr');
 
-// ---- DS-347 AC3: a green PR the merge driver has held on two loops for an unresolved thread is the
-// person's, naming the thread; a green PR it merges is not.
+// ---- DS-347 AC3: a green PR the merge driver has held on two loops for an unresolved thread, with no
+// fix try left (DS-419), is the person's, naming the thread; a green PR it merges is not, and nor is
+// one held for a thread a fix try is still left for.
 const greenPr = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, ...more,
   pr_status: { pr, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', head: `h${pr}`, checks: passed, at: minsAgo(1) } });
+const held347 = 'review feedback: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?"';
+const spentTries = [{ try: 1, head: 'h0', kind: 'feedback' }, { try: 2, head: 'h1', kind: 'feedback' }];
 put('xi', { port: 4300, beat: 1, supervised: true, merge: 'yes', tickets: {
   'X-1': greenPr(91),
-  'X-2': greenPr(92, { merge_blocked: 'review feedback: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?"' }),
+  'X-2': greenPr(92, { merge_blocked: held347, fix_tries: spentTries }),
+  'X-3': greenPr(93, { merge_blocked: held347 }),
+  'X-4': greenPr(94, { merge_blocked: 'approval: a feature, green at a71111111 with no approval: a person approves it before desk merges it' }),
+  'X-5': greenPr(95, { fix_tries: spentTries, stuck: { why: 'review feedback still open after 2 fix tries: 1 unresolved thread — src/auth.ts:9 "P0 a hung DOB probe"', pr: 95, head: 'h95' } }),
 } });
 const xi = N.collect({ word: 'xi' }).items;
-t('DS-347 AC3 a green PR the driver merges is not an item, and one it holds for a thread is', xi.map((i) => `${i.t.key} ${i.kind}`).join(), 'X-2 pr');
-t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi[0]?.need, 'PR #92 is green, but held for review: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?". Resolve or answer it; desk then merges it.');
+t('DS-419 AC7 a PR out of fix tries for its feedback is the person\'s, naming the thread', xi.find((i) => i.t.key === 'X-5')?.need, 'PR #95 still has review feedback open desk\'s own repairs did not fix: 1 unresolved thread — src/auth.ts:9 "P0 a hung DOB probe". Answer and resolve it, or fix it on its branch; desk then merges it once its checks are green.');
+t('DS-347 AC3 a green PR the driver merges is not an item, and one it holds for a thread with no try left is', xi.filter((i) => !['X-4', 'X-5'].includes(i.t.key)).map((i) => `${i.t.key} ${i.kind}`).join(), 'X-2 pr');
+t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi.find((i) => i.t.key === 'X-2')?.need, 'PR #92 is green, but held for review: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?". Resolve or answer it; desk then merges it.');
+t('DS-419 AC1 a held thread with a fix try left is not the person\'s: a worker takes it', xi.some((i) => i.t.key === 'X-3'), false);
+t('DS-419 AC9 a feat PR green with no thread open and no approval asks the person for one', xi.find((i) => i.t.key === 'X-4')?.need, 'PR #94 is a feature and green, and desk merges a feature only once a person has approved it. Review and approve it on GitHub; desk then merges it.');
 
 // ---- DS-351 AC2: an epic admitted with no session waits on its drafted plan as one item, and its
 // children held behind it are not items of their own.

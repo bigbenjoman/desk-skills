@@ -33,8 +33,13 @@
 #                                            resolved once the latest desk-review verdict is clean
 #                                            (§4 Clean review verdict) at the head (review-threads.mjs);
 #                                            anyone else's stays. Held so on two loops while green, it
-#                                            is recorded as merge_blocked for the person
-#                                            (`review feedback: …`, naming the first thread)
+#                                            is recorded as merge_blocked (`review feedback: …`,
+#                                            naming the first thread); pass.mjs sends the feedback
+#                                            to a fix worker (fix-tries.mjs feedbackFix), and to the
+#                                            person once no try is left
+#   - a feature with no approval             a PR titled feat… merges only once a person approves it:
+#                                            green and past the feedback check, it is recorded as
+#                                            merge_blocked (`approval: …`) for the person
 #   - DIRTY                                  a conflict needs resolving and a fresh review: pass.mjs
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
@@ -278,12 +283,19 @@ feedback_stall(){ # feedback_stall <n> <key> <gate state> <count> <thread>
   [ "$4" -eq 1 ] && s=""
   [ "$c" -ge 2 ] && queue_note "$2" "review feedback: $4 unresolved thread$s on a green PR, first $5"
 }
-feedback_clear(){
-  rm -f "$SD/feedback-$1"
-  case "$(jq -r --arg k "$2" '.tickets[$k].merge_blocked // ""' "$DESK_QUEUE" 2>/dev/null)" in
-    "review feedback:"*) node "$Q" set "$2" merge_blocked=null >/dev/null 2>&1 || true ;;
+# Clears the ticket's merge_blocked note when it is the one this reason wrote.
+blocked_clear(){ # blocked_clear <key> <reason prefix>
+  case "$(jq -r --arg k "$1" '.tickets[$k].merge_blocked // ""' "$DESK_QUEUE" 2>/dev/null)" in
+    "$2"*) queue_note "$1" null ;;
   esac
 }
+feedback_clear(){ rm -f "$SD/feedback-$1"; blocked_clear "$2" "review feedback:"; }
+# A feature (a PR titled feat…) merges only once a person has approved it. Green, past the feedback
+# check and with no approval, the queue asks the person for one; cleared once it is approved, or once it
+# is not green and past the feedback check (review feedback goes to a fix worker, a conflict or a red
+# check to the fix tries).
+is_feature(){ case "$1" in feat:*|feat\(*|feat!:*) return 0 ;; esac; return 1; }
+approval_clear(){ blocked_clear "$1" "approval:"; }
 
 # Tickets join the batch after the driver starts, so each loop adds every queue ticket not yet in
 # KEY_LIST, checked as a --tickets entry is. A refused id is logged once and never retried.
@@ -525,6 +537,7 @@ EOF_RESOLVE
     if [ "$decision" = "CHANGES_REQUESTED" ] || [ "$unresolved" -gt 0 ]; then
       [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
       log "#$n has outstanding review feedback ($decision, $unresolved unresolved) — work it first; not merging (§3 merge-feedback-first: $FEEDBACK_RAW)"
+      approval_clear "$key"
       if [ "$unresolved" -gt 0 ]; then feedback_stall "$n" "$key" "$state" "$unresolved" "$(printf '%s\n' "$held" | head -1)"
       else feedback_clear "$n" "$key"; fi
       return 1
@@ -533,8 +546,8 @@ EOF_RESOLVE
   fi
 
   case "$ms" in
-    DIRTY) log "#$n DIRTY — the pass sends it to a fix worker for the conflict, or reports it stuck"; return 1 ;;
-    BEHIND) behind "$n" "$sha" "$key"; return 1 ;;
+    DIRTY) approval_clear "$key"; log "#$n DIRTY — the pass sends it to a fix worker for the conflict, or reports it stuck"; return 1 ;;
+    BEHIND) approval_clear "$key"; behind "$n" "$sha" "$key"; return 1 ;;
   esac
 
   waived=""
@@ -543,8 +556,8 @@ EOF_RESOLVE
     fail)
       log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"
       if waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
-      else rerun "$n" "$sha" "$g"; return 1; fi ;;
-    *) log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
+      else approval_clear "$key"; rerun "$n" "$sha" "$g"; return 1; fi ;;
+    *) approval_clear "$key"; log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
   esac
   # A waived head is held like a green one: the same head, still only red on its known flakes, a loop later.
   label="green"; [ -n "$waived" ] && label="green but for WAIVED $waived"
@@ -560,6 +573,15 @@ EOF_RESOLVE
     log "#$n $label at ${sha:0:9}, HELD until the person's step $steps is Done in Jira — the pass lifts the hold then"
     return 1
   fi
+
+  if is_feature "$(printf '%s' "$g" | jq -r '.title // ""')" && [ "$(printf '%s' "$g" | jq -r .reviewDecision)" != APPROVED ]; then
+    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    rm -f "$SD/green-$n"
+    log "#$n $label at ${sha:0:9}, a feature with no approval — not merging until a person approves it"
+    queue_note "$key" "approval: a feature, $label at ${sha:0:9} with no approval: a person approves it before desk merges it"
+    return 1
+  fi
+  approval_clear "$key"
 
   # Green now. It must still be green at the same head on a later loop before it merges.
   green_at=$(awk -v s="$sha" '$1 == s { print $2 }' "$SD/green-$n" 2>/dev/null)

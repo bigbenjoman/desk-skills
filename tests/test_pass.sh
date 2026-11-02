@@ -2228,4 +2228,96 @@ check "DS-397 AC3 a recommendation in an ask category is never taken" \
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-397 a second pass opens no second draft and takes nothing again" '[ "$(grep -c "^pr create" "$T/rc-gh.log")" = 1 ] && [ "$(grep -c "\"R-1\"" "$T/state-rc/decisions.jsonl")" = 1 ] && [ "$(field R-2 state)" = "\"parked\"" ]'
 
+# ---- DS-419: a ready PR held for review feedback, or with a review at its head that is not clean,
+# goes back to a fix worker; the threads a finished try worked are replied on and resolved.
+# The fake gh answers pr view from $T/fb/<n>.json and the review-threads query from $T/fb/<n>.threads,
+# reads a thread id in resolved.log as resolved, and records replies and resolves.
+mkdir -p "$T/fb" "$T/state-fb/logs"
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+const D = '$T/fb/';
+fs.appendFileSync(D + 'gh-calls', a.join(' ') + '\n');
+const arg = (k) => (a.find((x) => x.startsWith(k + '=')) ?? '').slice(k.length + 1);
+const q = arg('query');
+if (a[0] === 'api' && q.includes('addPullRequestReviewThreadReply')) fs.appendFileSync(D + 'replied.log', arg('id') + '\t' + arg('body') + '\n');
+else if (a[0] === 'api' && q.includes('resolveReviewThread')) {
+  if (fs.existsSync(D + 'refuse') && fs.readFileSync(D + 'refuse', 'utf8').split('\n').includes(arg('id'))) { console.log('HTTP 502: Bad Gateway'); process.exit(1); }
+  fs.appendFileSync(D + 'resolved.log', arg('id') + '\n'); console.log('true');
+}
+else if (a[0] === 'api' && q.includes('reviewThreads')) {
+  const p = JSON.parse(fs.readFileSync(D + arg('n') + '.threads', 'utf8'));
+  const done = fs.existsSync(D + 'resolved.log') ? fs.readFileSync(D + 'resolved.log', 'utf8').split('\n') : [];
+  for (const t of p.reviewThreads.nodes) t.isResolved = done.includes(t.id);
+  console.log(JSON.stringify({ data: { repository: { pullRequest: p } } }));
+}
+else if (a[0] === 'api' && a[1] === 'graphql') process.stdout.write('[]');
+else if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync(D + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+# ffx <n> <head> <review: "<sha> <counts>" or -> <threads: "<id>:<path>:<line>:<first line>"...>: PR #n
+# open, out of draft and green at <head>, with ben's desk-review and colleagues' threads. (Not fbx:
+# DS-327's helper above keeps that name.)
+ffx(){
+  node -e 'const [dir, n, head, review, ...threads] = process.argv.slice(1);
+    const fs = require("fs");
+    fs.writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, statusCheckRollup: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }] }));
+    const reviews = [];
+    if (review !== "-") {
+      const [sha, counts] = [review.slice(0, 40), review.slice(41)];
+      const listed = /p0=[1-9]/.test(counts) ? ["", "P0 (1)", " src/clerk.ts:12    updateClerkUserMetadata signature changed on main"] : /p1=[1-9]/.test(counts) ? ["", "P1 (1)", " src/probe.ts:30    a hung DOB probe never times out"] : [];
+      reviews.push({ id: `PRR_${n}`, author: { login: "ben" }, commit: { oid: sha }, body: ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts} p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->`, "**desk-review, round 1**", ...listed].join("\n") });
+    }
+    const nodes = threads.map((x) => { const [id, path, line, first] = x.split(":"); return { id, isResolved: false, isOutdated: false, path, line: Number(line), originalLine: Number(line),
+      comments: { nodes: [{ author: { login: "pullbot" }, body: first, pullRequestReview: { id: `PRR_bot_${id}` } }] } }; });
+    fs.writeFileSync(`${dir}/${n}.threads`, JSON.stringify({ headRefOid: head, reviewDecision: null, reviews: { nodes: reviews }, reviewThreads: { nodes } }));' "$T/fb" "$@"
+}
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \${AUTOPILOT_TASK:-}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
+EOF
+cp "$T/config-r.md" "$T/config-fb.md"
+export DESK_CONFIG="$T/config-fb.md" DESK_QUEUE="$T/queue-fb.json" DESK_AUTOPILOT_STATE="$T/state-fb"
+q init fb; q set-batch concurrency=5
+for k in 1 2 3; do q add "B-$k"; q set "B-$k" state=done lane=A "branch=fix/B-$k" "result.pr=80$k"; done
+ffx 801 "$H1" - "PRRT_a:src/rail.ts:40:P0 a class that goes live early is missing from the rail"
+ffx 802 "$H1" "$H1 p0=1 p1=0"
+q set B-3 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"feedback"},{"try":2,"head":"'"$H2"'","kind":"feedback"}]'
+ffx 803 "$H1" - "PRRT_c:src/auth.ts:9:P0 a hung DOB probe leaves Finishing sign-in forever"
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-419 AC1 a ready PR with one unresolved thread is requeued for a fix worker, quoting the thread" \
+  '[ "$(field B-1 state)" = "\"triaged\"" ] && [ "$(field B-1 fix.kind)" = "\"feedback\"" ] && [ "$(field B-1 fix.threads | jq -r ".[0].id")" = PRRT_a ] && echo "$out" | grep -qF "fix try 1 of 2: B-1 requeued for PR #801 — review feedback: 1 unresolved thread"'
+check "DS-419 AC2 a ready PR whose review at its head has a P0 is requeued for a review fix, out of draft" \
+  '[ "$(field B-2 state)" = "\"triaged\"" ] && [ "$(field B-2 fix.kind)" = "\"review\"" ] && [ "$(field B-2 fix.ready)" = true ] && echo "$out" | grep -qF "fix try 1 of 2: B-2 requeued for PR #802 — review not clean: 1 P0"'
+check "DS-419 AC7 out of fix tries, it is the person'\''s, naming the thread, and no worker is started" \
+  '[ "$(field B-3 state)" = "\"done\"" ] && [ "$(field B-3 fix_tries | jq length)" = 2 ] && field B-3 stuck.why | jq -r . | grep -qF "review feedback still open after 2 fix tries: 1 unresolved thread — src/auth.ts:9 \"P0 a hung DOB probe leaves Finishing sign-in forever\"" && echo "$out" | grep -qF "B-3: STUCK — PR #803: review feedback still open"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-419 AC5 the fix worker'\''s task and briefing are the feedback try on the same PR" \
+  'grep -q "^B-1 .*Your task is fix try 1 of 2 on PR #801.*review the new head with desk-review and post that review on the PR.*leave the PR out of draft" "$T/spawns" && grep -qF "src/rail.ts:40 \"P0 a class that goes live early is missing from the rail\"" "$T/state-fb/briefings/B-1.md"'
+# B-1's worker pushes H2 and posts a desk-review there that finds a P1: the thread is replied on and
+# resolved, and the P1 goes to another fix round.
+q set B-1 state=done session_id=null result.pr=801
+ffx 801 "$H2" "$H2 p0=0 p1=1" "PRRT_a:src/rail.ts:40:P0 a class that goes live early is missing from the rail"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-419 AC5 once its worker pushed past the try'\''s head, the thread it worked is replied on and resolved" \
+  'grep -q "^PRRT_a.Worked by desk.s fix try 1 of 2 at 222222222222" "$T/fb/replied.log" && grep -qx PRRT_a "$T/fb/resolved.log" && echo "$out" | grep -qF "fix tries: PR #801 (B-1): replied on and resolved 1 thread(s) fix try 1 worked"'
+check "DS-419 AC6 the review the worker posted at its new head raises a finding: another fix round starts" \
+  '[ "$(field B-1 state)" = "\"triaged\"" ] && [ "$(field B-1 fix.kind)" = "\"review\"" ] && [ "$(field B-1 fix.head)" = "\"$H2\"" ] && [ "$(field B-1 fix_tries | jq length)" = 2 ]'
+# B-4's finished feedback try pushed H2, but GitHub refuses to resolve its thread: no new try spends a
+# round on the worked thread, the try is kept, and a later pass resolves it without replying twice.
+q add B-4; q set B-4 state=done lane=A branch=fix/B-4 result.pr=804 \
+  'fix={"try":1,"of":2,"pr":804,"head":"'"$H1"'","kind":"feedback","what":"review feedback: 1 unresolved thread","threads":[{"id":"PRRT_d","text":"src/w.ts:3"}],"finished":"2026-11-01T00:00:00Z"}' \
+  'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"feedback"}]'
+ffx 804 "$H2" - "PRRT_d:src/w.ts:3:P1 the widget drops its last row"
+echo PRRT_d > "$T/fb/refuse"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-419 a worked thread GitHub would not resolve holds the next try, and the try that worked it is kept" \
+  '[ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ] && [ "$(field B-4 fix.head)" = "\"$H1\"" ] && [ "$(field B-4 fix.replied | jq -r ".[0]")" = PRRT_d ] && echo "$out" | grep -qF "fix tries: PR #804 (B-4): thread src/w.ts:3" && ! echo "$out" | grep -qF "B-4 requeued"'
+: > "$T/fb/refuse"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-419 the next pass resolves it, with no second reply, and starts no try" \
+  '[ "$(grep -c "^PRRT_d" "$T/fb/replied.log")" = 1 ] && grep -qx PRRT_d "$T/fb/resolved.log" && [ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
