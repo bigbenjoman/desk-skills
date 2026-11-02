@@ -19,6 +19,10 @@
 //     no workflow runs on a PR into base from branch (its trigger filters), for evaluateGate's `untriggered`
 //   staleTriggers(untriggered, base, { branch, atBase, atDefault, defaultBranch }) -> { untriggered, behind, reopen }
 //     that map split by whether the base's or the default branch's copy of the workflows runs each check
+//   baseUntriggered(required, base, { branches, atBase, atDefault, defaultBranch }) -> { <check>: <why> }
+//     at a batch's admission, the required checks no copy runs on PRs into base from those branches
+//   admissionRefusal(base, { required, branches, defaultBranch, repo, run }) -> why or null
+//     that check against the workflows on GitHub, worded as a refused epic admission or batch start
 //   readWorkflows({ repo, ref, run }) -> [{ file, text }] the repo's .github/workflows at ref
 //   normaliseRollup(nodes)   statusCheckRollup / GraphQL context nodes -> checks
 //   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
@@ -182,6 +186,37 @@ export function staleTriggers(untriggered, base, { branch = null, atBase = [], a
     else out.untriggered[n] = why;
   }
   return out;
+}
+
+// Before a batch on `base` starts: the required checks neither the base's nor the default branch's
+// copy of the workflows runs on a PR into base from any of `branches`, as { <check>: <why> }. A child's
+// head is cut from the base, so the base's copy stands in for it; one only the default branch's copy
+// runs is left to the base sync. A check either copy reads no workflow for is left out: an unread
+// workflow counts as running, so a failed read never refuses a batch.
+export function baseUntriggered(required, base, { branches = [], atBase = [], atDefault = [], defaultBranch = 'main' } = {}) {
+  let d = null;
+  if (base !== defaultBranch) { try { d = readCopy(atDefault); } catch { return {}; } }
+  const out = {};
+  for (const branch of branches.length ? branches : [null]) {
+    const atHead = untriggeredChecks(required, base, atBase, { branch });
+    for (const [n, why] of Object.entries(staleTriggers(atHead, base, { branch, atBase, atDefault, defaultBranch }).untriggered)) {
+      if (!d || ownersOf(d, n).length) out[n] = why;
+    }
+  }
+  return out;
+}
+
+// Why no child PR into `base` could ever go green, or null: baseUntriggered over the workflows the base
+// and the default branch hold on GitHub, as the line a refused admission or batch start prints. Both
+// epic paths ask it before any worker starts: batch.mjs start (no child branch yet) and startEpic once
+// its children are triaged. run: gh's runner, as readWorkflows takes it.
+export function admissionRefusal(base, { required = [], branches = [], defaultBranch = 'main', repo, run = gh } = {}) {
+  if (!required.length || !repo) return null;
+  const at = (ref) => readWorkflows({ repo, ref, run });
+  const never = baseUntriggered(required, base, { branches: [...new Set(branches)], atBase: at(base), atDefault: base === defaultBranch ? [] : at(defaultBranch), defaultBranch });
+  const names = Object.keys(never);
+  if (!names.length) return null;
+  return `${names.length === 1 ? 'a required check does' : 'required checks do'} not run on PRs into ${base}, so no child PR could go green: ${names.map((n) => `"${n}" ${never[n]}`).join('; ')}. Add ${base} (or a pattern such as feat/**) to the pull_request branches of ${names.length === 1 ? 'that workflow' : 'those workflows'}, then admit the epic again`;
 }
 
 // The repo's workflow files at ref, as untriggeredChecks reads them. run(ghArgs) returns gh's stdout

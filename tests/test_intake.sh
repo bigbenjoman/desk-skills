@@ -49,7 +49,7 @@ config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs decisions.mjs borrow.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
 # with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -78,8 +78,17 @@ EOF
 printf "import { appendFileSync } from 'node:fs';\nappendFileSync('%s/digest.calls', 'checkin\\\\n');\nconsole.log(JSON.stringify({ status: 'not_due', push: null }));\n" "$T" > "$T/bin/digest.mjs"
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
 printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
-# A PR list is whatever $T/prs.json holds (none by default); any other call reads OPEN.
-printf '#!/bin/sh\ncase "$*" in "pr list "*) cat "%s/prs.json" 2>/dev/null || echo "[]" ;; *) echo OPEN ;; esac\n' "$T" > "$T/fakes/gh"
+# A PR list is whatever $T/prs.json holds (none by default). The workflows at a ref are one ci.yml,
+# $T/wf/<the ref, URL-encoded>.yml, while $T/wf exists; any other call reads OPEN.
+cat > "$T/fakes/gh" <<EOF
+#!/bin/sh
+case "\$*" in
+  "pr list "*) cat "$T/prs.json" 2>/dev/null || echo "[]" ;;
+  "api repos/"*"/contents/.github/workflows?ref="*) [ -d "$T/wf" ] && echo .github/workflows/ci.yml || exit 1 ;;
+  "api -H Accept: application/vnd.github.raw repos/"*"/contents/.github/workflows/ci.yml?ref="*) a="\$*"; cat "$T/wf/\${a##*ref=}.yml" ;;
+  *) echo OPEN ;;
+esac
+EOF
 printf '#!/bin/sh\nexit 1\n' > "$T/fakes/launchctl"
 printf '#!/bin/sh\nexit 0\n' > "$T/fakes/osascript"
 chmod +x "$T/fakes/"* "$T/bin/triage.sh" "$T/bin/merge-driver.sh"
@@ -462,6 +471,20 @@ eget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"
 rec E-6 A '"summary":"the first child"'; rec E-7 A '"summary":"the second child"'
 printf 'E-6\nE-7\n' > "$T/children/E-5"; printf 'E-6\n' > "$T/children/E-8"
 rec E-5 A '"type":"Epic","branch":"feat/E-5-a-feature"'; rec E-8 A '"type":"Epic","branch":"feat/E-8-another"'
+
+# ---- DS-412: a feature base no §4 Required check's workflow runs on is refused at admission --------
+# ci.yml runs "tests" on pull requests into the branches given; a ref with no file has none to read.
+ci(){ mkdir -p "$T/wf"; printf 'name: CI\non:\n  pull_request:\n    branches: [%s]\njobs:\n  tests:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' "$2" > "$T/wf/$1.yml"; }
+printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+rec E-12 A '"type":"Epic","branch":"feat/E-12-untriggered"'; rec E-13 A '"branch":"fix/E-13-a-child"'; printf 'E-13\n' > "$T/children/E-12"
+ci main 'main, production'; ci feat%2FE-12-untriggered 'main, production'
+out=$(admit E-12 --by ben); rc=$?
+check "DS-412 AC1: an epic whose base no copy of the required check's workflow runs on is refused, naming the check and its workflow file" \
+  '[ $rc -eq 11 ] && grep -q "^not admitted E-12: an epic, and its feature batch was not started: no batch started for E-12: a required check does not run on PRs into feat/E-12-untriggered, so no child PR could go green: \"tests\" never runs on PRs into feat/E-12-untriggered (workflow trigger: .github/workflows/ci.yml runs on pull requests only into main, production)\. Add feat/E-12-untriggered (or a pattern such as feat/\*\*) to the pull_request branches of that workflow, then admit the epic again$" <<< "$out"'
+check "DS-412 AC1: before any worker starts: batch.mjs start makes no batch and nothing is drafted" '[ ! -e "$EB/E-12" ] && [ ! -e "$ES/E-12" ] && [ "$(count "$T/claude.calls")" = 0 ]'
+# The base's copy lacks the trigger, the default branch's has it: the base sync starts it, so it is admitted
+# (E-5, below, under these workflows).
+ci main "main, 'feat/**'"; ci feat%2FE-5-a-feature 'main'
 
 # A plan the drafter cannot write leaves no batch behind.
 touch "$T/claude.fails"; before=$(cat "$DESK_QUEUE")

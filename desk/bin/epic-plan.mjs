@@ -17,6 +17,7 @@ import { FEATURE_PLAN_PREFIX, readQueue, planPark } from './batch-state.mjs';
 import { listBatches } from './batches.mjs';
 import { markedResult, answers } from './decider.mjs';
 import { NOT_NOW } from './not-now.mjs';
+import { admissionRefusal } from './gate.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -83,6 +84,14 @@ function ensureBranch(branch) {
     const said = [...err.filter((l) => l.startsWith('pre-push: ')), err.pop()];
     return `its feature branch ${branch} could not be read or pushed (${[...new Set(said)].join(' ')})`;
   }
+}
+
+// Why no child PR into `base` could ever go green, or null (gate.mjs admissionRefusal). batch.mjs start
+// asked it with no child branch; this asks again with them, for a push trigger filtered by branch.
+function untriggeredOn(base, branches) {
+  let required = [];
+  try { required = [].concat(E.configValues('required-checks') ?? []).filter((c) => c && !E.isNone(c)); } catch { return null; }
+  return admissionRefusal(base, { required, branches, defaultBranch: E.configValue('default-branch') || 'main', repo: E.ghRepo() });
 }
 
 // The drafter's prompt: the epic, its numbered criteria and each child, and the feature.json shape.
@@ -194,6 +203,8 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
     if (!r) return discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`);
     recs[c] = r;
   }
+  const never = untriggeredOn(branch, children.map((c) => recs[c].branch ?? null));
+  if (never) return discard(never);
 
   let v = planOf(children, env);
   if (v.why) return discard(v.why);
