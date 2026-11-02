@@ -46,6 +46,7 @@ t('AC3 a phase file that cannot be read stops the review', core.includes('**A ph
 // text only it holds.
 const REWRITTEN = [
   ['DS-176', 'desk-review-codex-brief.txt', 3], // the codex brief's path is per run
+  ['DS-176', 'desk-review-results.json', 3], // and so is the results file's
   ...[ // the fix range, and carrying P2s, start at round 2
     'from round 3, the SHA the previous round reviewed',
     '**From round 3, the fix range instead**',
@@ -101,11 +102,16 @@ const dropped = paras.filter((p) => !after.includes(p) && kept(p));
 t(`AC2 every paragraph of the old file survives the split (${paras.length} read)`, dropped.length, 0);
 for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
 
-// DS-176 AC1: concurrent reviews share a scratchpad, so no skill or doc names one fixed codex brief
-// path, and Phase 3 names a per-run one.
-const fixedBrief = [...walk(join(root, 'skills')), ...walk(join(root, 'docs')), join(root, 'README.md')].filter((p) => readFileSync(p, 'utf8').includes('desk-review-codex-brief.txt'));
-t('DS-176 AC1 no skill or doc names a fixed codex brief path', JSON.stringify(fixedBrief.map((p) => p.slice(root.length + 1))), '[]');
+// DS-176 AC1: concurrent reviews share a scratchpad, so no skill or doc names a fixed path for a
+// brief or the results file, and desk-review names a per-run one for each.
+const docs = [...walk(join(root, 'skills')), ...walk(join(root, 'docs')), join(root, 'README.md')];
+for (const fixed of ['desk-review-codex-brief.txt', 'desk-review-claude-brief.txt', 'desk-review-results.json']) {
+  const naming = docs.filter((p) => readFileSync(p, 'utf8').includes(fixed));
+  t(`DS-176 AC1 no skill or doc names the fixed path ${fixed}`, JSON.stringify(naming.map((p) => p.slice(root.length + 1))), '[]');
+}
 t('DS-176 AC1 Phase 3 writes the brief to a per-run path', read('phase-3-find.md').includes('<scratchpad>/desk-review-codex-brief-<run>.txt'), true);
+t('DS-176 AC1 Phase 3 gives a Claude seat\'s brief a per-run path', read('phase-3-find.md').includes('`desk-review-<seat>-brief-<run>.txt`'), true);
+t('DS-176 AC1 the core writes the results to a per-run path', core.includes('<scratchpad>/desk-review-results-<run>.json'), true);
 
 // AC4: a citation of a desk-review section still finds it.
 const sources = [...walk(join(root, 'skills')), ...walk(join(root, 'docs')), join(root, 'README.md')];
