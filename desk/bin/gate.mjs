@@ -189,12 +189,17 @@ export function staleTriggers(untriggered, base, { branch = null, atBase = [], a
 // Before a batch on `base` starts: the required checks neither the base's nor the default branch's
 // copy of the workflows runs on a PR into base from any of `branches`, as { <check>: <why> }. A child's
 // head is cut from the base, so the base's copy stands in for it; one only the default branch's copy
-// runs is left to the base sync.
+// runs is left to the base sync. A check either copy reads no workflow for is left out: an unread
+// workflow counts as running, so a failed read never refuses a batch.
 export function baseUntriggered(required, base, { branches = [], atBase = [], atDefault = [], defaultBranch = 'main' } = {}) {
+  let d = null;
+  if (base !== defaultBranch) { try { d = readCopy(atDefault); } catch { return {}; } }
   const out = {};
   for (const branch of branches.length ? branches : [null]) {
     const atHead = untriggeredChecks(required, base, atBase, { branch });
-    Object.assign(out, staleTriggers(atHead, base, { branch, atBase, atDefault, defaultBranch }).untriggered);
+    for (const [n, why] of Object.entries(staleTriggers(atHead, base, { branch, atBase, atDefault, defaultBranch }).untriggered)) {
+      if (!d || ownersOf(d, n).length) out[n] = why;
+    }
   }
   return out;
 }

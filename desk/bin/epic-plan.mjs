@@ -17,7 +17,7 @@ import { FEATURE_PLAN_PREFIX, readQueue, planPark } from './batch-state.mjs';
 import { listBatches } from './batches.mjs';
 import { markedResult, answers } from './decider.mjs';
 import { NOT_NOW } from './not-now.mjs';
-import { readWorkflows, baseUntriggered } from './gate.mjs';
+import { gh, readWorkflows, baseUntriggered } from './gate.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -94,7 +94,7 @@ function untriggeredOn(base, branches) {
   try { required = [].concat(E.configValues('required-checks') ?? []).filter((c) => c && !E.isNone(c)); } catch { return null; }
   if (!required.length) return null;
   const def = E.configValue('default-branch') || 'main';
-  const at = (ref) => readWorkflows({ repo: E.ghRepo(), ref, run: (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) });
+  const at = (ref) => readWorkflows({ repo: E.ghRepo(), ref, run: gh });
   const never = baseUntriggered(required, base, { branches: [...new Set(branches)], atBase: at(base), atDefault: base === def ? [] : at(def), defaultBranch: def });
   const names = Object.keys(never);
   if (!names.length) return null;

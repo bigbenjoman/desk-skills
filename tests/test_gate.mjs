@@ -168,7 +168,11 @@ t('DS-412 AC1 a check neither copy of its workflow runs on the base is named, wi
 t('DS-412 a check only the default branch\'s copy runs is left to the base sync', JSON.stringify(atAdmit(wfs('[main, production]'), wfs("[main, production, 'feat/**']"))), '{}');
 t('DS-412 AC3 negative control: a base the workflow triggers on names nothing', JSON.stringify(atAdmit(wfs("[main, 'feat/**']"), wfs("[main, 'feat/**']"))), '{}');
 t('DS-412 a copy that does not read names nothing', JSON.stringify(atAdmit([], [])), '{}');
-t('DS-412 a push trigger on one child\'s branch does not excuse another child', Object.keys(baseUntriggered(['lint'], FEAT, { branches: ['feature/a', 'fix/b'], atBase: lintOn("on:\n  push:\n    branches: ['feature/**']\n  pull_request:\n    branches: [main]"), atDefault: [] })).join(), 'lint');
+t('DS-412 a default branch copy that does not read refuses nothing, though the base\'s lacks the trigger', JSON.stringify(atAdmit(wfs('[main, production]'), [])), '{}');
+t('DS-412 a default branch copy missing the check\'s workflow refuses nothing', JSON.stringify(atAdmit(wfs('[main, production]'), lintOn('on: [pull_request]'))), '{}');
+t('DS-412 on the default branch itself, the base\'s copy alone decides', JSON.stringify(baseUntriggered(req, 'main', { branches: [HEADB], defaultBranch: 'main', atBase: wfs('[production]'), atDefault: [] })), JSON.stringify(untriggeredChecks(req, 'main', wfs('[production]'), { branch: HEADB })));
+const lintPush = lintOn("on:\n  push:\n    branches: ['feature/**']\n  pull_request:\n    branches: [main]");
+t('DS-412 a push trigger on one child\'s branch does not excuse another child', Object.keys(baseUntriggered(['lint'], FEAT, { branches: ['feature/a', 'fix/b'], atBase: lintPush, atDefault: lintPush })).join(), 'lint');
 
 // Briefing answers survive a requeue: answer.mjs appends below the sibling-notes block.
 const brief = ['Orchestrator session name: x', '', 'These questions were put to the user before you started.', '',
