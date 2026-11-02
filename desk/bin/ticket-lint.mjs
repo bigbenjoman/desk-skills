@@ -45,7 +45,13 @@ const SCOPE = /^(?:outcome|acceptance criteria|definition of done|out of scope)\
 const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
 const WRITE = String.raw`(?:link(?:s|ed)?|block(?:s|ed)?|transition(?:s|ed)?|move[sd]?|assign(?:s|ed)?|label(?:s|l?ed)?|comment(?:s|ed)?|close[sd]?|reopen(?:s|ed)?|re-?parent(?:s|ed)?)`;
 const JIRA_VERB = new RegExp(`\\b(?:create|set|update|edit|write|add)\\b|\\b${WRITE}\\b`, 'i');
-const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:data|database|traffic|run|users|site)\b|\blive (?:site|traffic|users|customers|data|measurement|environment)\b/i;
+const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:data|database|traffic|run|users|site)\b|\blive (?:site|traffic|users|customers|data|database|measurement|environment)\b/i;
+// A sentence that names production is a production run only when it also does something there;
+// "on production this is what every subscriber sees" only describes it.
+const ACT = /\b(?:run|runs|ran|running|execute[sd]?|measure[sd]?|measuring|quer(?:y|ies|ied)|check(?:s|ed)?|verif(?:y|ies|ied)|confirm(?:s|ed)?|test(?:s|ed)?|deploy(?:s|ed)?|backfill(?:s|ed)?|migrate[sd]?|apply|applie[sd]|reproduce[sd]?|trigger(?:s|ed)?|monitor(?:s|ed)?|observe[sd]?|compare[sd]?|benchmark(?:s|ed)?)\b/i;
+const runsOnProduction = (p) => p.split(/(?<=[.!?;])\s+/).some((s) => PRODUCTION.test(s) && ACT.test(s));
+// A question inside a quoted phrase is quoted copy, not one the ticket asks.
+const unquoted = (s) => s.replace(/"[^"\n]*"|“[^”\n]*”/g, ' ');
 const OPERATOR = /\boperator\b|\bby hand\b|\bmanually\b|\bsigns? off\b|\bsign-off\b/i;
 // The Size fallback, a first line `Size: M`, for a project with no Size field.
 export const SIZE_LINE = /^\s*[*_]*size[*_]*\s*:\s*[*_]*\s*([a-z]+)/i;
@@ -80,7 +86,7 @@ export function lintTicket(t, { root, dir, ref } = {}) {
   }
   for (const s of secs.filter((x) => SCOPE.test(x.name))) {
     for (const l of s.lines) {
-      if (prose(l.text).includes('?')) add('blocking', 'open-decision', `line ${l.n} asks a question in ${s.name}: "${quote(l.text)}": answer it before the ticket is filed`);
+      if (unquoted(prose(l.text)).includes('?')) add('blocking', 'open-decision', `line ${l.n} asks a question in ${s.name}: "${quote(l.text)}": answer it before the ticket is filed`);
     }
   }
 
@@ -102,7 +108,7 @@ export function lintTicket(t, { root, dir, ref } = {}) {
     if (!p.trim()) continue;
     const why = (nearKey && nearKey.test(p)) || (/\b(?:in|on|to) Jira\b/i.test(p) && JIRA_VERB.test(p))
       ? 'a Jira write (the filer makes links and field changes when filing)'
-      : PRODUCTION.test(p) ? 'a live production run'
+      : runsOnProduction(p) ? 'a live production run'
         : OPERATOR.test(p) ? 'an operator or human step (it belongs under Verification, with who does it)' : null;
     if (why) add('blocking', 'criterion', `line ${l.n} is a criterion the worker cannot do in its branch, ${why}: "${quote(l.text)}"`);
   }
