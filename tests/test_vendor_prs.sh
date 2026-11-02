@@ -52,7 +52,8 @@ pins(){ mkdir -p "$D/vendor/a" "$D/vendor/b" "$D/vendor/c"
   printf '{"_about":"x","skills":{"a":{"pin":{"commit":"%s"}},"b":{"pin":{"commit":"%s"}},"c":{"pin":{"commit":"%s"}}},"tools":{}}\n' "$1" "$2" "$3" > "$D/vendor/sources.json"; }
 pins a1 b1 c1; echo x > "$D/README"
 git -C "$D" add -A; git -C "$D" commit -qm init; git -C "$D" branch -qM main; git -C "$D" push -q origin main
-git -C "$D" switch -qc chore/vendor-2026-10-27 main; pins a1 b1 c3; git -C "$D" commit -qam c3; git -C "$D" push -q origin HEAD
+# Its own message, so within one second it is not the very commit main takes c3 in below.
+git -C "$D" switch -qc chore/vendor-2026-10-27 main; pins a1 b1 c3; git -C "$D" commit -qam "c3 on 10-27"; git -C "$D" push -q origin HEAD
 git -C "$D" switch -qc chore/vendor-2026-10-28 main; pins a1 b1 c2; git -C "$D" commit -qam c2; git -C "$D" push -q origin HEAD
 git -C "$D" switch -qc chore/vendor-2026-10-29 main; pins a2 b1 c1; git -C "$D" commit -qam a2; git -C "$D" push -q origin HEAD
 git -C "$D" switch -qc chore/vendor-2026-10-30 main; pins a1 b2 c1; git -C "$D" commit -qam b2; git -C "$D" push -q origin HEAD
