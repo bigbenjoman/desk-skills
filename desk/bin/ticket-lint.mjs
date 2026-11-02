@@ -46,9 +46,10 @@ const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
 const WRITE = String.raw`(?:link(?:s|ed)?|block(?:s|ed)?|transition(?:s|ed)?|move[sd]?|assign(?:s|ed)?|label(?:s|l?ed)?|comment(?:s|ed)?|close[sd]?|reopen(?:s|ed)?|re-?parent(?:s|ed)?)`;
 const JIRA_VERB = new RegExp(`\\b(?:create|set|update|edit|write|add)\\b|\\b${WRITE}\\b`, 'i');
 const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:data|database|traffic|run|users|site)\b|\blive (?:site|traffic|users|customers|data|database|measurement|environment)\b/i;
-// A sentence that names production is a production run only when it also does something there;
+// A sentence that names production is a production run when it does something there, or when it is
+// the criterion's then-clause ("then p95 in production is under 300 ms" can only be met there);
 // "on production this is what every subscriber sees" only describes it.
-const ACT = /\b(?:run|runs|ran|running|execute[sd]?|measure[sd]?|measuring|quer(?:y|ies|ied)|check(?:s|ed)?|verif(?:y|ies|ied)|confirm(?:s|ed)?|test(?:s|ed)?|deploy(?:s|ed)?|backfill(?:s|ed)?|migrate[sd]?|apply|applie[sd]|reproduce[sd]?|trigger(?:s|ed)?|monitor(?:s|ed)?|observe[sd]?|compare[sd]?|benchmark(?:s|ed)?)\b/i;
+const ACT = /\b(?:run|runs|ran|running|execute[sd]?|measure[sd]?|measuring|quer(?:y|ies|ied)|check(?:s|ed)?|verif(?:y|ies|ied)|confirm(?:s|ed)?|test(?:s|ed)?|deploy(?:s|ed)?|backfill(?:s|ed)?|migrate[sd]?|apply|applie[sd]|reproduce[sd]?|trigger(?:s|ed)?|monitor(?:s|ed)?|observe[sd]?|compare[sd]?|benchmark(?:s|ed)?|then)\b/i;
 const runsOnProduction = (p) => p.split(/(?<=[.!?;])\s+/).some((s) => PRODUCTION.test(s) && ACT.test(s));
 // A question inside a quoted phrase is quoted copy, not one the ticket asks.
 const unquoted = (s) => s.replace(/"[^"\n]*"|“[^”\n]*”/g, ' ');
