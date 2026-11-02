@@ -543,4 +543,26 @@ jq '."171".checks = [["test", "SUCCESS"]] | ."171".feedback = "APPROVED 0"' "$T/
 aloop; aloop
 check "DS-419 AC9: once approved, the request is cleared and it merges, pinned to its head" '[ "$(merged)" = 171 ] && grep -qx "171 main $SHA71" "$T/merges.log" && [ "$(qf T-71 .merge_blocked)" = null ]'
 
+# ---- DS-420: why the driver is not merging a red PR is recorded too: its review threads, or an approval --
+SHA81=b811111111111111111111111111111111111111; SHA82=b822222222222222222222222222222222222222
+SHA83=b833333333333333333333333333333333333333
+cat > "$T/prs.json" <<EOF
+{ "181": { "head": "fix/T-81", "base": "main", "sha": "$SHA81", "state": "open", "draft": false, "feedback": "NONE 1", "checks": [["test", "SUCCESS", 9081], ["build", "FAILURE", 9181]] },
+  "182": { "head": "fix/T-82", "base": "main", "sha": "$SHA82", "state": "open", "draft": false, "feedback": "REVIEW_REQUIRED 0", "checks": [["test", "SUCCESS", 9082], ["build", "FAILURE", 9182]] },
+  "183": { "head": "fix/T-83", "base": "main", "sha": "$SHA83", "state": "open", "draft": false, "feedback": "REVIEW_REQUIRED 0", "checks": [["test", "SUCCESS", 9083]] } }
+EOF
+q init merge-declines
+for k in T-81 T-82 T-83; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+: > "$T/merges.log"; : > "$T/gh.log"
+dloop(){ out=$(DESK_CONFIG="$T/config-flaky.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-81 T-82 T-83" 2>&1); rc=$?; }
+dloop
+check "DS-420 AC1: one refusal of a red PR for its thread is not yet recorded" '[ "$(qf T-81 .merge_blocked)" = null ] && echo "$out" | grep -q "#181 has outstanding review feedback (NONE, 1 unresolved)"'
+dloop
+check "DS-420 AC1: held a second loop, a red PR's thread is recorded as why, and it is not rerun" 'qf T-81 .merge_blocked | grep -q "^review feedback: 1 unresolved thread on a red PR, first " && ! grep -q "run rerun 9181" "$T/gh.log"'
+check "DS-420 AC2: a red PR that needs an approving review is recorded for the person, and not rerun" '[ "$(qf T-82 .merge_blocked)" = "approval: an approving review is required at b82222222: a person approves it before desk merges it" ] && ! grep -q "run rerun 9182" "$T/gh.log" && echo "$out" | grep -q "#182 at b82222222 needs an approving review (review decision REVIEW_REQUIRED) — not merging"'
+check "DS-420 AC2: so is a green one, and it is not merged" '[ "$(qf T-83 .merge_blocked)" = "approval: an approving review is required at b83333333: a person approves it before desk merges it" ] && [ -z "$(merged)" ]'
+jq '."182".feedback = "APPROVED 0" | ."183".feedback = "APPROVED 0"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+dloop
+check "DS-420 AC2: once approved, the request is cleared: the red one is rerun, the green one confirmed" '[ "$(qf T-82 .merge_blocked)" = null ] && [ "$(qf T-83 .merge_blocked)" = null ] && grep -q "run rerun 9182" "$T/gh.log" && echo "$out" | grep -q "#183 green at b83333333 — confirming"'
+
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

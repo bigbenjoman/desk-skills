@@ -252,12 +252,13 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   if (hold) return needs({ code: 'hold', text: String(t.merge_blocked).replace(/^merge hold:\s*/, '') }, [`only a person merges it: ${hold[1]}`, WARN], [' · merge it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
   const triesLeft = triesMade(t.fix_tries) < FIX_TRIES_MAX;
-  // It records a green PR it has held for unresolved review threads on two loops, naming the first:
-  // the pass sends that to a fix worker (feedbackFix) while a try is left.
+  // It records a PR it has held for unresolved review threads on two loops, green or red, naming the
+  // first: the pass sends that to a fix worker (feedbackFix) while a try is left.
   const fb = /^review feedback: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (fb && triesLeft) return merging([fb[1], WARN], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);
   if (fb) return needs({ code: 'feedback', text: fb[1] }, [fb[1], WARN], [' · resolve or answer it', null]);
-  // A feat PR green and past the feedback check still needs a person's approval before the driver merges it.
+  // A feat PR green and past the feedback check, or one GitHub's review decision says needs an approving
+  // review, waits on a person's approval before the driver merges it.
   const approval = /^approval: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (approval) return needs({ code: 'approval', text: approval[1] }, [approval[1], WARN], [' · approve it', null]);
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
@@ -274,7 +275,10 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
     // reruns: without both nothing moves. After both tries the pass records it stuck once the reruns
     // on the new head are spent (t.stuck, above), and until then the driver may still merge it.
     if (!ctx.merges || !ctx.reruns) return needs({ code: 'red', names: red }, [checksFailed(red.length), FAIL], [' · fix or re-run it', null]);
-    return merging([red.length > 2 ? `${checksFailed(red.length)}: ${red[0]} +${red.length - 1}` : `${red.join(', ')} failed`, FAIL], [` · ${rerunStep(ps, red, triesLeft, now)}`, null]);
+    const names = red.length > 2 ? `${red[0]} +${red.length - 1}` : red.join(', ');
+    // The driver reruns no check more than RERUNS_MAX times at a head, so past that it is red, not flaky.
+    if (rerunsTried(ps, red) >= RERUNS_MAX) return merging([`red after ${RERUNS_MAX} reruns: ${names}`, FAIL], [` · ${triesLeft ? 'a worker repairs it next' : 'no fix tries left'}`, null]);
+    return merging([red.length > 2 ? `${checksFailed(red.length)}: ${names}` : `${names} failed`, FAIL], [` · ${rerunStep(ps, red, triesLeft, now)}`, null]);
   }
   // Not red and nothing running, yet not green: a required check that never reported or was skipped.
   // Nothing reruns or repairs that, so the merge driver never merges it. One the base's own workflow
@@ -319,12 +323,12 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
 }
 
 // Where the merge driver is with a red PR's reruns, from what the pass read of its files (pr_status
-// reruns, per check at this head, and rerun_at, its last): the rerun it is on and when the next is due,
-// or that they are spent and a fix try follows. It always names the rerun to come, so the count only
-// moves when the driver reruns. With `now` null, a due time is left out.
+// reruns, per check at this head, and rerun_at, its last): the rerun it is on and when the next is due.
+// It always names the rerun to come, so the count only moves when the driver reruns. With `now` null,
+// a due time is left out.
+const rerunsTried = (ps, red) => Math.max(0, ...red.map((n) => Number(ps.reruns?.[n]) || 0));
 function rerunStep(ps, red, triesLeft, now) {
-  const tried = Math.max(0, ...red.map((n) => Number(ps.reruns?.[n]) || 0));
-  if (tried >= RERUNS_MAX) return triesLeft ? 'reruns spent, a worker repairs it next' : 'reruns spent; no fix tries left';
+  const tried = rerunsTried(ps, red);
   const due = tried ? Date.parse(ps.rerun_at ?? '') + RERUN_COOLDOWN_S * 1000 : NaN;
   const step = `rerun ${tried + 1} of ${RERUNS_MAX} ${now != null && due > now ? `at ${clock(due)}` : 'next'}`;
   return triesLeft ? step : `${step}; no fix tries left`;

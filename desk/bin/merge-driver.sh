@@ -32,11 +32,11 @@
 #                                            thread an earlier desk-review of the author's opened is
 #                                            resolved once the latest desk-review verdict is clean
 #                                            (§4 Clean review verdict) at the head (review-threads.mjs);
-#                                            anyone else's stays. Held so on two loops while green, it
-#                                            is recorded as merge_blocked (`review feedback: …`,
-#                                            naming the first thread); pass.mjs sends the feedback
-#                                            to a fix worker (fix-tries.mjs feedbackFix), and to the
-#                                            person once no try is left
+#                                            anyone else's stays. Held so on two loops, green or red
+#                                            (a red one is not rerun), it is recorded as merge_blocked
+#                                            (`review feedback: …`, naming the first thread); pass.mjs
+#                                            sends the feedback to a fix worker (fix-tries.mjs
+#                                            feedbackFix), and to the person once no try is left
 #   - a feature with no approval             a PR titled feat… merges only once a person approves it:
 #                                            green and past the feedback check, it is recorded as
 #                                            merge_blocked (`approval: …`) for the person
@@ -44,6 +44,9 @@
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
 #                                            is yes (once per head), else parked for a person
+#   - an approving review required           GitHub's review decision is REVIEW_REQUIRED: recorded as
+#                                            merge_blocked (`approval: …`) for the person, red or
+#                                            green, and not rerun
 #   - not green                              "green" is desk-config.md's one definition, evaluated by
 #                                            gate.mjs (shared with desk-clearance); a head must stay
 #                                            green across two loops before it merges, so a check that
@@ -274,14 +277,15 @@ resolve_thread(){
     --jq '.data.resolveReviewThread.thread.isResolved' 2>/dev/null
 }
 queue_note(){ node "$Q" set "$1" "merge_blocked=$2" >/dev/null 2>&1 || true; }
-# A green PR held for unresolved threads on two loops in a row is the person's: the queue names the
-# first thread, so desk-q and needs-you list it rather than showing it merging. Cleared once it is not.
+# A PR held for unresolved threads on two loops in a row, green or not, is recorded naming the first
+# thread: the hold is why it is not merging (a red one is not rerun either), so desk-q and needs-you say
+# so rather than its checks. Cleared once it is not held for them.
 feedback_stall(){ # feedback_stall <n> <key> <gate state> <count> <thread>
-  local f="$SD/feedback-$1" c s=s
-  [ "$3" = pass ] || { feedback_clear "$1" "$2"; return; }
+  local f="$SD/feedback-$1" c s=s on="a PR not yet green"
+  case "$3" in pass) on="a green PR" ;; fail) on="a red PR" ;; esac
   c=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo "$c" > "$f"
   [ "$4" -eq 1 ] && s=""
-  [ "$c" -ge 2 ] && queue_note "$2" "review feedback: $4 unresolved thread$s on a green PR, first $5"
+  [ "$c" -ge 2 ] && queue_note "$2" "review feedback: $4 unresolved thread$s on $on, first $5"
 }
 # Clears the ticket's merge_blocked note when it is the one this reason wrote.
 blocked_clear(){ # blocked_clear <key> <reason prefix>
@@ -549,6 +553,16 @@ EOF_RESOLVE
     DIRTY) approval_clear "$key"; log "#$n DIRTY — the pass sends it to a fix worker for the conflict, or reports it stuck"; return 1 ;;
     BEHIND) approval_clear "$key"; behind "$n" "$sha" "$key"; return 1 ;;
   esac
+
+  # Branch protection wants an approving review the PR has not had: no rerun or fix worker gives it one,
+  # so it is not rerun, and the queue asks the person, red or green.
+  if [ "$(printf '%s' "$g" | jq -r .reviewDecision)" = REVIEW_REQUIRED ]; then
+    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    rm -f "$SD/green-$n"
+    log "#$n at ${sha:0:9} needs an approving review (review decision REVIEW_REQUIRED) — not merging until a person approves it"
+    queue_note "$key" "approval: an approving review is required at ${sha:0:9}: a person approves it before desk merges it"
+    return 1
+  fi
 
   waived=""
   case "$state" in
