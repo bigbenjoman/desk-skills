@@ -222,14 +222,16 @@ bash ~/.claude/desk/bin/vendor-prs.sh open "$D" <owner/name> chore/vendor-<date>
 `<owner/name>` is the GitHub repo `git -C "$D" remote get-url origin` names, so the PR opens on the
 desk-skills checkout's origin whatever directory you run it from.
 
-`open` runs `gh pr create`, and only once the PR exists closes every other open `chore/vendor-*` PR
-from that repo, with a comment naming the new one, and deletes its branch: each run upgrades from
-`origin/main`'s pins, so the new PR holds every upgrade an older one does. PRs on any other branch
-are never touched. Report the PR URL and each `closed #<n>` line it prints. Nothing is pushed to
-`main`: CI and the user merge the PR. If the push or the PR fails (`open` exits 1 and closes
-nothing), report the error and the branch name, and leave it there; never retry by pushing to
-`main`. Exit 4 means the PR opened but an older one did not close: name it. On no, report the branch
-as local only.
+`open` runs `gh pr create`, and only once the PR exists closes each other open `chore/vendor-*` PR
+from that repo that it supersedes, with a comment naming the new one, and deletes its branch. It
+supersedes one when it upgrades every skill and tool whose pin the older one changes: each run
+upgrades from `origin/main`'s pins, so its pins are then the same or newer. An older PR upgrading
+something this run did not pick stays open (`kept #<n>: it upgrades <names>…`). PRs on any other
+branch are never touched. Report the PR URL and each `closed #<n>` and `kept #<n>` line it prints.
+Nothing is pushed to `main`: CI and the user merge the PR. If the push or the PR fails (`open` exits
+1 and closes nothing), report the error and the branch name, and leave it there; never retry by
+pushing to `main`. Exit 4 means the PR opened but an older one could not be read or closed: name it.
+On no, report the branch as local only.
 
 For the update notice: re-run `./install.sh` in a terminal, or register it the way install.sh does (a
 `SessionStart` entry running `bash ~/.claude/hooks/desk-update-check.sh`, timeout 15, settings backed up
