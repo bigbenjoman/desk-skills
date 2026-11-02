@@ -2320,7 +2320,7 @@ const prStates = {};
 // merged_at yet.
 const PR_FINAL = ['MERGED', 'CLOSED'];
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
@@ -2331,8 +2331,23 @@ function readPrStatus(n) {
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, mergeable: v.mergeable ?? null,
     mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null,
+    base: v.baseRefName ?? null, branch: v.headRefName ?? null,
     checks, at: new Date().toISOString(),
   };
+}
+// The required checks a PR's workflows, read at its head, never run on its base (gate.mjs
+// untriggeredChecks), read once per head a pass.
+const untriggeredOf = (base, head, branch) => untriggeredChecks(gateLists().required, base, cached(`workflows:${head}`, () => readWorkflows({
+  repo: GH_REPO, ref: head, run: (args) => { const r = shOut('gh', args); if (!r.ok) throw new Error(r.out); return r.out; },
+})), { branch });
+// A ready PR whose gate is absent keeps that map on pr_status as `untriggered`, so desk-q, which reads
+// no workflow, names the trigger rather than "has not reported". A read that fails keeps none.
+function withUntriggered(s) {
+  if (s.state !== 'OPEN' || s.isDraft !== false || !s.base || !s.head) return s;
+  if (evaluateGate(s.checks ?? [], gateLists()).state !== 'absent') return s;
+  let u = {};
+  try { u = untriggeredOf(s.base, s.head, s.branch ?? null) ?? {}; } catch { u = {}; }
+  return Object.keys(u).length ? { ...s, untriggered: u } : s;
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const BUILD_DIR = join(STATE, 'check-builds');
@@ -2377,7 +2392,7 @@ for (const t of Object.values(qNow.tickets)) {
   if (!s) {
     s = readPrStatus(n);
     if (!s) continue;
-    s = withHistory(s, t.pr_status);
+    s = withUntriggered(withHistory(s, t.pr_status));
     prStates[n] = s.state;
     q('set', t.key, `pr_status=${JSON.stringify(s)}`);
     if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
@@ -2427,10 +2442,7 @@ if (drafts.length) {
     handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
     ...gateLists(), builds: buildRow.checks, evidence: evidenceRow?.workflow ? evidenceRow : null,
   };
-  // The required checks a PR's workflows, read at its head, never run on its base.
-  cfg.untriggered = (base, head, branch) => untriggeredChecks(cfg.required, base, cached(`workflows:${head}`, () => readWorkflows({
-    repo: GH_REPO, ref: head, run: (args) => { const r = shOut('gh', args); if (!r.ok) throw new Error(r.out); return r.out; },
-  })), { branch });
+  cfg.untriggered = untriggeredOf;
   if (evidenceRow?.errors) out.push(`undraft: no evidence runs this pass, since config §4 Evidence workflow does not parse: ${evidenceRow.errors.join(', ')} (want \`<workflow>.yml\` or \`none\`). Run /desk-setup`);
   if (buildRow.errors.length) out.push(`undraft: no check builds this pass, since config §4 Check builds does not parse: ${buildRow.errors.join(', ')} (want \`<check>: <command>\`). Run /desk-setup`);
   const notesFile = join(STATE, 'batch-notes.md');

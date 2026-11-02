@@ -257,7 +257,8 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   }
   const checks = ps.checks ?? [];
   // Red as the fix tries read it (evaluateGate): a failed advisory check holds nothing and gets no worker.
-  const gate = evaluateGate(checks, { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
+  // A required check its workflow never runs on this base the pass records as ps.untriggered.
+  const gate = evaluateGate(checks, { required: ctx.required ?? [], advisory: ctx.advisory ?? [], untriggered: ps.untriggered ?? {} });
   const red = [...new Set(gate.failing.map((f) => f.name))];
   if (red.length) {
     // Only the merge driver reruns a red check, where §3 ci-rerun lets it, and a fix try waits for its
@@ -267,7 +268,12 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
     return merging([red.length > 2 ? `${checksFailed(red.length)}: ${red[0]} +${red.length - 1}` : `${red.join(', ')} failed`, FAIL], [` · ${rerunStep(ps, red, triesLeft, now)}`, null]);
   }
   // Not red and nothing running, yet not green: a required check that never reported or was skipped.
-  // Nothing reruns or repairs that, so the merge driver never merges it.
+  // Nothing reruns or repairs that, so the merge driver never merges it. One its workflow never runs on
+  // this base no re-run can bring: the fix is that workflow's trigger, a change to the repo.
+  if (gate.state === 'absent' && gate.untriggered.length) {
+    const text = gate.reasons.find((r) => gate.untriggered.some((n) => r.startsWith(`required check "${n}" never runs`))) ?? gate.reasons[0];
+    return needs({ code: 'trigger', names: gate.untriggered, base: ps.base ?? null, text }, [text, FAIL], [` · add ${ps.base ?? 'its base'} to that workflow's trigger`, null]);
+  }
   if (checks.length && (gate.state === 'absent' || gate.state === 'fail')) return needs({ code: 'gate', text: gate.reasons[0] ?? null }, [gate.reasons[0] ?? 'checks not green', FAIL], [' · fix the check or §4 Required checks', null]);
   const advisory = checks.filter(checkFailed).length;
   const done = checks.filter((c) => c.status === 'completed').length;

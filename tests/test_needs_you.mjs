@@ -60,7 +60,8 @@ function put(name, r) {
     `## 3. Permissions\n\n| Key | Action | Recommended | Your setting |\n|---|---|---|---|\n| \`pr-ready\` | Undraft | \`ask\` | \`${r.prReady ?? 'no'}\` |\n` +
     `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n\n` +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
-    `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n`);
+    `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
+    (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
@@ -518,6 +519,17 @@ t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done 
 t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
   sg['S-6']?.actions[0][2], `the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "${LINT}", "Flows image" are green`);
 t('DS-375 a reason recorded before the pass kept its checks still names them', sg['S-5']?.need, 'PR #105 has failing checks desk\'s own repairs did not fix: Lint. Fix them on its branch; desk then merges it once its checks are green.');
+// ---- DS-410: a ready PR into a feature base held on a required check its workflow never runs there.
+const why410 = 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/ci.yml runs on pull requests into main, production)';
+const ready410 = (pr, untriggered) => ({ state: 'done', lane: 'A', result: { pr },
+  pr_status: { pr, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', head: `h${pr}`, base: 'feat/E-1', checks: passed, at: minsAgo(1), ...(untriggered ? { untriggered } : {}) } });
+put('tau410', { port: 4610, beat: 1, supervised: true, merge: 'yes', required: [LINT], tickets: { 'U-1': ready410(111, { [LINT]: why410 }), 'U-2': ready410(112, null) } });
+const u410 = Object.fromEntries(N.collect({ word: 'tau410' }).items.map((i) => [i.t.key, i]));
+t('DS-410 AC1 a ready PR whose required check never runs on its base names the trigger, not a re-run',
+  `${u410['U-1']?.need} | ${/re-run (it|them)\b/i.test(u410['U-1']?.need ?? '')}`,
+  `PR #111 is not green: required check "${LINT}" ${why410}. Re-running cannot help, as no run exists: add feat/E-1 (or a pattern such as feat/**) to the pull_request branches of the workflow that runs "${LINT}", a change to the repo; its next push then runs the check, and desk then merges it once its checks are green. | false`);
+t('DS-410 negative control: with no untriggered record it still says the check has not reported',
+  u410['U-2']?.need, `PR #112 is not green: required check "${LINT}" has not reported. Fix that check, or §4 Required checks if it should not be required; desk then merges it once its checks are green.`);
 const sr = loadRepos().find((x) => x.slug === 'acme__sigma');
 t('DS-375 AC1 the ticket page reads it the same way', /For you +still red after 1 fix try: Lint, Type Check & Build \(failed step: Run eslint\)$/m.test(ticketScreen(sr, 'S-1')), true);
 
