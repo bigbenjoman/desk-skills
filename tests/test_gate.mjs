@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, readWorkflows } from '../desk/bin/gate.mjs';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -94,6 +94,57 @@ t('later failure runId', G(regressed).failing[0].runId, '2');
 const requeued = [run(req[0], 'SUCCESS', 2, '2026-10-09T05:57:01Z'), run(req[1], 'FAILURE', 1, '2026-10-09T05:54:55Z'), { name: req[1], status: 'QUEUED', conclusion: null, workflowName: 'Validate PRs', detailsUrl: 'https://github.com/o/r/actions/runs/3/job/1' }];
 t('queued rerun supersedes old failure', G(requeued).state, 'pending');
 t('same name, other workflow kept', latestPerCheck(normaliseRollup([run('build', 'SUCCESS', 1, '2026-10-09T05:00:00Z', 'A'), run('build', 'FAILURE', 2, '2026-10-09T05:01:00Z', 'B')])).length, 2);
+
+// A required check whose workflow never runs on the PR's base: ci.yml runs only on PRs into main and
+// production, and on pushes to main.
+const ciYml = (branches) => [
+  'name: CI', '', 'on:', '  push:', '    branches: [main]', '  pull_request:', `    branches: ${branches} # PRs only`, '',
+  'jobs:', '  lint:', '    name: "Lint, Type Check & Build"', '    runs-on: ubuntu-latest', '    steps:', '      - name: Checkout', '        uses: actions/checkout@v4',
+].join('\n');
+const signoff = ['name: Script Sign-off', 'on:', '  pull_request:', '    branches-ignore:', "      - 'release/**'", 'jobs:', '  verify-script-sign-off:', '    name: Verify script sign-off', '    runs-on: ubuntu-latest'].join('\n');
+const FEAT = 'feat/VPL-626-voice-pa-on-off-contacts';
+const wfs = (branches) => [{ file: '.github/workflows/ci.yml', text: ciYml(branches) }, { file: '.github/workflows/signoff.yml', text: signoff }];
+const HEADB = 'feature/VPL-627-voice-pa-contacts-file';
+const U = (required, base, workflows, branch = HEADB) => untriggeredChecks(required, base, workflows, { branch });
+const lintOn = (on) => [{ file: 'w.yml', text: `${on}\njobs:\n  lint:\n    runs-on: x\n` }];
+t('DS-410 branch filters: * stops at /, ** does not, ! takes back', [branchMatches(['feat/*'], FEAT), branchMatches(['feat/*'], 'feat/a/b'), branchMatches(['feat/**'], 'feat/a/b'), branchMatches(['**', '!feat/**'], FEAT), branchMatches(['main'], 'feat/main')].join(','), 'true,false,true,false,false');
+t('DS-410 a pattern that does not compile counts as matching', branchMatches(['feat/[a'], FEAT), true);
+const never = U(req, FEAT, wfs('[main, production]'));
+t('DS-410 the check whose workflow runs only into main and production is untriggered on a feature base', JSON.stringify(Object.keys(never)), JSON.stringify([req[0]]));
+t('DS-410 its reason names the workflow trigger', never[req[0]], `never runs on PRs into ${FEAT} (workflow trigger: .github/workflows/ci.yml runs on pull requests only into main, production)`);
+t('DS-410 negative control: the same workflow on a PR into main is not untriggered', JSON.stringify(U(req, 'main', wfs('[main, production]'))), '{}');
+t("DS-410 negative control: once the trigger takes 'feat/**', nothing is untriggered", JSON.stringify(U(req, FEAT, wfs("[main, production, 'feat/**']"))), '{}');
+t('DS-410 a branches-ignore filter that leaves the base out runs there', JSON.stringify(U(['Verify script sign-off'], FEAT, wfs('[main]'))), '{}');
+t('DS-410 a check no workflow reports (an app) is left out', JSON.stringify(U(['Vercel'], FEAT, wfs('[main]'))), '{}');
+t('DS-410 a workflow with no pull_request trigger says so', U(['lint'], FEAT, lintOn('on:\n  push:\n    branches: [main]')).lint, `never runs on PRs into ${FEAT} (workflow trigger: w.yml has no pull_request trigger)`);
+// Shapes it must not blame: each either runs on the base or does not read, so counts as running.
+t('DS-410 a multi-line flow branch list is read, and does not throw', JSON.stringify([U(['lint'], FEAT, lintOn('on:\n  pull_request:\n    branches: [\n      main,\n      production\n    ]')), U(['lint'], 'main', lintOn('on:\n  pull_request:\n    branches: [\n      main,\n    ]'))]), JSON.stringify([{ lint: `never runs on PRs into ${FEAT} (workflow trigger: w.yml runs on pull requests only into main, production)` }, {}]));
+t('DS-410 an indentless branch list is read', Object.keys(U(['lint'], 'main', lintOn('on:\n  pull_request:\n    branches:\n    - main'))).length, 0);
+t('DS-410 an indentless on: event list counts pull_request as unfiltered', Object.keys(U(['lint'], FEAT, lintOn('on:\n- push\n- pull_request'))).length, 0);
+t('DS-410 an inline on: list counts pull_request as unfiltered', Object.keys(U(['lint'], FEAT, lintOn('on: [push, pull_request]'))).length, 0);
+t('DS-410 a flow-mapping on: does not read, so counts as running', Object.keys(U(['lint'], FEAT, lintOn('on: { pull_request: { branches: [main] } }'))).length, 0);
+t('DS-410 a branch pattern with a [class] does not read, so counts as running', Object.keys(U(['lint'], FEAT, lintOn("on:\n  pull_request:\n    branches: ['release/v[0-9]', main]"))).length, 0);
+t('DS-410 pull_request_target takes its trigger from the base, so counts as running', Object.keys(U(['lint'], FEAT, lintOn('on:\n  pull_request_target:\n    branches: [main]'))).length, 0);
+t('DS-410 a reusable workflow runs on its caller\'s PRs', Object.keys(U(['lint'], FEAT, lintOn('on:\n  workflow_call:'))).length, 0);
+t('DS-410 a push to the PR\'s branch reports on its head', Object.keys(U(['lint'], FEAT, lintOn('on:\n  push:\n    branches: [\'feature/**\']\n  pull_request:\n    branches: [main]'))).length, 0);
+t('DS-410 with no head branch to test, a filtered push counts as running', Object.keys(U(['lint'], FEAT, lintOn('on:\n  push:\n    branches: [main]'), null)).length, 0);
+t('DS-410 a matrix leg is its job\'s', Object.keys(U(['lint (node 20)'], FEAT, lintOn('on:\n  pull_request:\n    branches: [main]'))).join(), 'lint (node 20)');
+const seen = [cr('Label PR', 'COMPLETED', 'SUCCESS'), cr(req[1], 'COMPLETED', 'SUCCESS'), cr('Vercel', 'COMPLETED', 'SUCCESS')];
+const g410 = G(seen, { untriggered: never });
+t('DS-410 AC1 the gate reason names the workflow trigger, not "has not reported"', g410.reasons[0], `required check "${req[0]}" ${never[req[0]]}`);
+t('DS-410 AC1 the gate lists the untriggered check', JSON.stringify([g410.state, g410.untriggered]), JSON.stringify(['absent', [req[0]]]));
+t('DS-410 negative control: with no untriggered map the reason is unchanged', G(seen).reasons[0], `required check "${req[0]}" has not reported`);
+t('DS-410 AC2 once the check reports green, the gate passes as before', G([...seen, cr(req[0], 'COMPLETED', 'SUCCESS')], { untriggered: never }).state, 'pass');
+const wcalls = [];
+const wfGh = (args) => {
+  wcalls.push(args.join(' '));
+  if (args[1].endsWith('/contents/.github/workflows?ref=abc')) return '.github/workflows/ci.yml\n.github/workflows/README.md\n.github/workflows/gone.yaml';
+  if (args.at(-1).includes('gone.yaml')) throw new Error('HTTP 500');
+  return ciYml('[main]');
+};
+const readWf = readWorkflows({ repo: 'o/r', ref: 'abc', run: wfGh });
+t('DS-410 readWorkflows reads the yaml files at the ref, leaving out one it cannot read', JSON.stringify(readWf.map((w) => w.file)), JSON.stringify(['.github/workflows/ci.yml']));
+t('DS-410 readWorkflows reads nothing when the directory cannot be listed', readWorkflows({ repo: 'o/r', ref: 'x', run: () => { throw new Error('404'); } }).length, 0);
 
 // Briefing answers survive a requeue: answer.mjs appends below the sibling-notes block.
 const brief = ['Orchestrator session name: x', '', 'These questions were put to the user before you started.', '',

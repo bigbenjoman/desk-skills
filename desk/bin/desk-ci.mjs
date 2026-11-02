@@ -1070,7 +1070,7 @@ export function fullReasons(job, wf) {
 
 const unquote = (s) => s.replace(/^(["'])([\s\S]*)\1$/, '$2');
 // The check name a job reports under: its `name:`, else its id.
-const checkNameOf = (job) => (job.keys.name?.value ? unquote(job.keys.name.value) : job.id);
+export const checkNameOf = (job) => (job.keys.name?.value ? unquote(job.keys.name.value) : job.id);
 
 // Whether a check (or a job in measure's report) is this job's: the exact name, a matrix leg
 // `name (a, b)`, a job of the workflow it calls `name / job`, or, for a job in a called workflow,
@@ -1082,23 +1082,55 @@ export function checkIsJob(check, name) {
     : c === name || c.startsWith(`${name} (`) || c.startsWith(`${name} / `)));
 }
 
-// The PR trigger: whether the workflow runs on pull requests, and the base branches it is limited to.
-// A reusable workflow (`workflow_call`) runs on whatever its caller runs on, PRs included, and sees
-// the caller's `github` context, so it counts as running on them with no branch filter of its own.
-function prTrigger(on) {
-  if (!on) return { runs: true, called: false, branches: null, line: null };
+// The branch events an `on:` names (pull_request, pull_request_target, push), each with its
+// `branches` and `branches-ignore` filters (null where unset), or null with no `on:` at all. `unread`
+// marks a filter whose patterns hold a `[…]` class, which tokens() cannot keep whole. `called`: a
+// reusable workflow (`workflow_call`), which runs on whatever its caller runs on, PRs included.
+const BRANCH_EVENTS = ['pull_request', 'pull_request_target', 'push'];
+export function branchEvents(on) {
+  if (!on) return null;
+  const flowFilter = (text, key) => new RegExp(`(?:^|[\\s{,])${key}\\s*:\\s*\\[([^\\]]*)\\]`).exec(text)?.[1];
+  const hasClass = (raw) => /[[\]]/.test(raw.trim().replace(/^\[([\s\S]*)\]$/, '$1'));
   if (on.value) {
-    const called = /\bworkflow_call\b/.test(on.value);
-    return { runs: called || /\bpull_request(_target)?\b/.test(on.value), called, branches: null, line: on.line.n };
+    const named = BRANCH_EVENTS.filter((e) => new RegExp(`\\b${e}\\b(?!_)`).test(on.value));
+    return { called: /\bworkflow_call\b/.test(on.value), events: named.map((event) => ({ event, branches: null, ignore: null, unread: /^\s*\{/.test(on.value), line: on.line.n })) };
   }
   const m = mapping(on.block);
-  const called = 'workflow_call' in m;
-  const k = m.pull_request ?? m.pull_request_target;
-  if (!k) return { runs: called, called, branches: null, line: on.line.n };
-  const flow = /\bbranches\s*:\s*\[([^\]]*)\]/.exec(k.value);
-  if (flow) return { runs: true, called, branches: tokens(flow[1]), line: k.line.n };
-  const b = mapping(k.block).branches;
-  return { runs: true, called, branches: b ? tokens(textOf(b)) : null, line: (b ?? k).line.n };
+  const first = on.block.find((l) => !l.blank && !l.scalar);
+  const items = on.block.filter((l) => !l.scalar && l.indent === first?.indent && /^-\s/.test(l.text)).map((l) => unquote(l.text.replace(/^-\s+/, '')));
+  const events = BRANCH_EVENTS.filter((e) => e in m || items.includes(e)).map((event) => {
+    const k = m[event];
+    if (!k) return { event, branches: null, ignore: null, unread: false, line: on.line.n };
+    const e = { event, branches: null, ignore: null, unread: false, line: k.line.n };
+    const keys = mapping(k.block);
+    for (const [key, field] of [['branches', 'branches'], ['branches-ignore', 'ignore']]) {
+      const flow = flowFilter(k.value, key);
+      const kv = keys[key];
+      if (flow == null && !kv) continue;
+      let raw = flow != null ? `[${flow}]` : textOf(kv);
+      // A flow list over several lines may close at the key's own indent, past its block.
+      if (flow == null && kv.value.startsWith('[') && !raw.includes(']')) {
+        const rest = k.block.slice(k.block.indexOf(kv.line) + 1);
+        const end = rest.findIndex((l) => l.text.includes(']'));
+        raw = end < 0 ? null : [kv.value, ...rest.slice(0, end + 1).map((l) => l.text)].join('\n');
+      }
+      e[field] = raw == null ? [] : tokens(raw);
+      if (raw == null || hasClass(raw) || !e[field].length) e.unread = true;
+      if (flow == null && field === 'branches') e.line = kv.line.n;
+    }
+    return e;
+  });
+  return { called: 'workflow_call' in m || items.includes('workflow_call'), events };
+}
+
+// The PR trigger: whether the workflow runs on pull requests, and the base branches it is limited to.
+// A reusable workflow runs on its caller's PRs and sees the caller's `github` context, so it counts
+// as running on them with no branch filter of its own.
+function prTrigger(on) {
+  const t = branchEvents(on);
+  if (!t) return { runs: true, called: false, branches: null, line: null };
+  const k = t.events.find((e) => e.event !== 'push');
+  return { runs: t.called || !!k, called: t.called, branches: k?.branches ?? null, line: k?.line ?? on.line.n };
 }
 
 export function profileJobs(text) {

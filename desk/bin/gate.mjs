@@ -12,9 +12,12 @@
 // The merge is then pinned to that commit with `--match-head-commit <sha>`.
 //
 // Library:
-//   evaluateGate(checks, { required, advisory, runs }) -> { state, reasons, failing, pending, succeeded }
+//   evaluateGate(checks, { required, advisory, runs, untriggered }) -> { state, reasons, failing, pending, succeeded, untriggered }
 //     checks: normalised { name, status: 'queued'|'in_progress'|'completed', conclusion, runId }
 //     state:  'pass' | 'fail' | 'pending' | 'absent'
+//   untriggeredChecks(required, base, workflows, { branch }) -> { <check>: <why> } the required checks
+//     no workflow runs on a PR into base from branch (its trigger filters), for evaluateGate's `untriggered`
+//   readWorkflows({ repo, ref, run }) -> [{ file, text }] the repo's .github/workflows at ref
 //   normaliseRollup(nodes)   statusCheckRollup / GraphQL context nodes -> checks
 //   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
 //   matchHolds(files, holds, contents) -> [{ glob, why, files }]
@@ -37,6 +40,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 // A required check passes as branch protection passes it: success, or a job its workflow skipped by
@@ -107,7 +111,77 @@ export function skippedOnly(allChecks) {
 }
 export const SKIPPED_ON_DRAFT = 'CI does not run on a draft, so its checks were skipped';
 
-export function evaluateGate(allChecks, { required = [], advisory = [], runs = [] } = {}) {
+// ---- Workflow triggers -------------------------------------------------------------------------
+// A required check that never reported may be one its workflow never runs on the PR's base: a workflow
+// filtered to `pull_request: branches: [main]` reports nothing on a PR into a feature base, so no
+// re-run can help. The workflow is read with desk-ci.mjs's scanner (branchEvents). Anything it cannot
+// read counts as running everywhere, so the gate never blames a trigger it did not read.
+
+// GitHub's branch filter patterns: `*` stops at `/`, `**` does not, `+` and `?` repeat the character
+// before them, and a later `!pattern` takes back what earlier ones matched. A pattern that does not
+// compile counts as matching.
+const branchRe = (p) => new RegExp(`^${p.replace(/[.^${}()|\\]/g, '\\$&').replace(/\*\*|\*/g, (m) => (m === '**' ? '.*' : '[^/]*'))}$`);
+export function branchMatches(patterns, branch) {
+  let hit = false;
+  for (const p of patterns ?? []) {
+    const neg = p.startsWith('!');
+    let re;
+    try { re = branchRe(neg ? p.slice(1) : p); } catch { return true; }
+    if (re.test(branch)) hit = !neg;
+  }
+  return hit;
+}
+const filterHits = (e, ref) => (e.branches ? branchMatches(e.branches, ref) : e.ignore ? !branchMatches(e.ignore, ref) : true);
+const filterText = (e) => (e.branches ? `only into ${e.branches.join(', ')}` : `except into ${e.ignore.join(', ')}`);
+// Whether a workflow may report on a PR into `base` from `branch`. pull_request_target takes its
+// trigger from the base branch's copy, not the head's read here, and a push to the PR's branch reports
+// on its head too (with no branch to test, any filtered push counts).
+const mayRun = (t, base, branch) => !t || t.called || t.events.some((e) => e.unread || e.event === 'pull_request_target'
+  || (e.event === 'pull_request' && filterHits(e, base))
+  || (e.event === 'push' && (branch == null ? true : filterHits(e, branch))));
+
+// The required checks no workflow runs on a PR into `base`, as { <check>: <why> }. workflows: [{ file,
+// text }] at the PR's head; branch: its head branch, for push triggers. A check is a workflow's when
+// one of its jobs reports under that name (desk-ci.mjs checkIsJob). One that no readable workflow
+// reports (an app's, a status context) is left out, since nothing here says it will not run, and so is
+// every check when a workflow does not read.
+export function untriggeredChecks(required, base, workflows, { branch = null } = {}) {
+  let read;
+  try {
+    read = (workflows ?? []).map((w) => { const wf = parseWorkflow(String(w.text ?? '')); return { file: w.file, on: branchEvents(wf.on), names: wf.jobs.map(checkNameOf) }; });
+  } catch { return {}; }
+  const out = {};
+  for (const n of required ?? []) {
+    const own = read.filter((w) => w.names.some((name) => checkIsJob(n, name)));
+    if (!own.length || own.some((w) => mayRun(w.on, base, branch))) continue;
+    const how = own.map((w) => {
+      const prs = w.on.events.filter((e) => e.event === 'pull_request');
+      return `${w.file} ${prs.length ? `runs on pull requests ${prs.map(filterText).join(', or ')}` : 'has no pull_request trigger'}`;
+    });
+    out[n] = `never runs on PRs into ${base} (workflow trigger: ${how.join('; ')})`;
+  }
+  return out;
+}
+
+// The repo's workflow files at ref, as untriggeredChecks reads them. run(ghArgs) returns gh's stdout
+// and throws on failure; a file that cannot be read is left out, and so are all of them when the
+// directory cannot be listed.
+export function readWorkflows({ repo, ref, run }) {
+  const at = `?ref=${encodeURIComponent(ref)}`;
+  let paths;
+  try { paths = String(run(['api', `repos/${repo}/contents/.github/workflows${at}`, '--jq', '.[] | select(.type == "file") | .path'])).split('\n').filter((p) => /\.ya?ml$/.test(p)); }
+  catch { return []; }
+  const out = [];
+  for (const file of paths) {
+    try { out.push({ file, text: String(run(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${file.split('/').map(encodeURIComponent).join('/')}${at}`])) }); }
+    catch { /* unread: its checks count as running */ }
+  }
+  return out;
+}
+
+// untriggered: untriggeredChecks's map. A required check that has not reported and is in it gets that
+// reason instead, and is listed in the result's `untriggered`.
+export function evaluateGate(allChecks, { required = [], advisory = [], runs = [], untriggered = {} } = {}) {
   const checks = latestPerCheck(allChecks);
   const adv = new Set(advisory);
   const reasons = [];
@@ -119,9 +193,16 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
   }
   // 1. Required: each present, each instance completed with success or skipped.
   let absent = false;
+  const never = [];
   for (const n of required) {
     const hits = checks.filter((c) => c.name === n);
-    if (!hits.length) { absent = true; reasons.push(`required check "${n}" has not reported`); continue; }
+    if (!hits.length) {
+      absent = true;
+      const why = Object.hasOwn(untriggered ?? {}, n) ? untriggered[n] : null;
+      if (why) never.push(n);
+      reasons.push(`required check "${n}" ${why ?? 'has not reported'}`);
+      continue;
+    }
     for (const h of hits) {
       if (h.status !== 'completed') { pending.push(n); reasons.push(`required check "${n}" is ${h.status}`); }
       else if (!REQUIRED_PASS.has(h.conclusion)) {
@@ -154,7 +235,7 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
     : absent || !checks.length ? 'absent'
     : reasons.length ? 'fail'
     : 'pass';
-  return { state, reasons, failing, pending, succeeded };
+  return { state, reasons, failing, pending, succeeded, untriggered: never };
 }
 
 // §4 Merge holds items: `<glob>: <why>`, split on the first `: `. A bare glob holds with no reason given.
@@ -333,7 +414,12 @@ if (isMain) {
       let runs = [];
       try { runs = readRuns(repo, pr.headRefOid); }
       catch { runs = [{ name: 'gh run list (unreadable)', status: 'unknown' }]; }
-      const gate = evaluateGate(checks, { required, advisory, runs });
+      let gate = evaluateGate(checks, { required, advisory, runs });
+      // A required check that never reported may be one its workflow never runs on this base.
+      if (gate.state === 'absent') {
+        const untriggered = untriggeredChecks(required, pr.baseRefName, readWorkflows({ repo, ref: pr.headRefOid, run: gh }), { branch: pr.headRefName ?? null });
+        if (Object.keys(untriggered).length) gate = evaluateGate(checks, { required, advisory, runs, untriggered });
+      }
       // Run ids of failing, non-advisory checks, for a bounded rerun. From the check itself, else the
       // failed completed runs for this commit.
       const ids = new Set(gate.failing.map((f) => f.runId).filter(Boolean));

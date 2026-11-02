@@ -1835,6 +1835,16 @@ t('DS-279 a required check that never reported or ended neutral needs you, namin
 t('DS-279 and its row names the check and what to do',
   ['R-1', 'R-2'].map((k) => Q.needText({ q: reqQ, ctx: advCtx([], ['e2e']), live: true }, { t: reqQ.tickets[k], k: 'needs', pr: true })).join(' | '),
   '#811 · required check "e2e" has not reported · fix the check or §4 Required checks | #812 · required check "e2e" is neutral · fix the check or §4 Required checks');
+// DS-410: the pass records on pr_status the required checks no workflow runs on the PR's base, so a
+// ready PR's row names the trigger, as the undraft path does for a draft.
+const never410 = { e2e: 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/e2e.yml runs on pull requests into main)' };
+const trigQ = { tickets: { 'T-1': { key: 'T-1', ...prOn(813, [okCheck('build')], { base: 'feat/E-1', untriggered: never410 }) } } };
+t('DS-410 AC1 a ready PR whose required check never runs on its base names the trigger, not a re-run',
+  `${Q.needText({ q: trigQ, ctx: advCtx([], ['e2e']), live: true }, { t: trigQ.tickets['T-1'], k: 'needs', pr: true })} | ${Q.prWhy({ q: trigQ, ctx: advCtx([], ['e2e']) }, trigQ.tickets['T-1'])?.code}`,
+  `#813 · required check "e2e" ${never410.e2e} · add feat/E-1 to that workflow's trigger | trigger`);
+t('DS-410 AC2 once the check reports green, the record no longer holds it',
+  Q.shownState({ tickets: { 'T-1': { key: 'T-1', ...prOn(813, [okCheck('build'), okCheck('e2e')], { base: 'feat/E-1', untriggered: never410 }) } } }, { key: 'T-1', ...prOn(813, [okCheck('build'), okCheck('e2e')], { base: 'feat/E-1', untriggered: never410 }) }, advCtx([], ['e2e'])),
+  Q.shownState(reqQ, { key: 'G', ...prOn(814, [okCheck('build'), okCheck('e2e')]) }, advCtx([], ['e2e'])));
 
 // ---- DS-280: a PR inside its reruns stays in Merging naming the red check, each Merging and Needs you
 // row says how long it has sat there, and a ticket behind a PR that needs you counts once.
