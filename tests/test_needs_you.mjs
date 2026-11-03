@@ -703,6 +703,25 @@ writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stri
 t('DS-378 AC4 a long merge hold still says what happens next on its listed line',
   (cli('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Do what it asks first, then merge it on GitHub; the ticket is then done. |'), true);
 delete qhl.tickets['Q-7']; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
+// ---- DS-411: a merge hold's item names its step, the routine desk did not run, or the step it failed at
+const migr = 'merge hold: apply the migration to staging and production first — prisma/migrations/**, 1 file(s), e.g. prisma/migrations/2026_brand/migration.sql';
+qhl.tickets['Q-7'] = { key: 'Q-7', ...withHead(psiPr(147, { merge_blocked: migr })) };
+qhl.tickets['Q-8'] = { key: 'Q-8', ...withHead(psiPr(148, { merge_blocked: `${migr}; routine \`./scripts/apply-migrations.sh\` not run: §3 merge-hold-routine is no` })) };
+qhl.tickets['Q-9'] = { key: 'Q-9', ...withHead(psiPr(149, { merge_blocked: `${migr}; routine \`./scripts/apply-migrations.sh\` failed at 575fa8c51 (exit 2): migrate deploy on public: P3009 failed migration` })) };
+qhl.tickets['Q-10'] = { key: 'Q-10', ...withHead(psiPr(150, { merge_blocked: `${migr}; routine \`./scripts/apply-migrations.sh\` not run: it also touches a hold no routine clears: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf` })) };
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
+const p411 = psi();
+t('DS-411 AC3 a routine hold beside a hold with no routine keeps the routine step first, and the row is not offered',
+  p411['Q-10']?.need, 'PR #150 touches files under a merge hold (prisma/migrations/**, 1 file(s), e.g. prisma/migrations/2026_brand/migration.sql), and its step comes before the merge: apply the migration to staging and production first. desk can run its routine, `./scripts/apply-migrations.sh`, but it also touches a hold no routine clears: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf. Run it and take that step yourself, then merge it on GitHub; the ticket is then done.');
+t('DS-411 AC3 a hold with no routine names the step from its reason, not only a merge',
+  p411['Q-7']?.need, 'PR #147 is under a merge hold, so desk never merges it itself: "apply the migration to staging and production first" (prisma/migrations/**, 1 file(s), e.g. prisma/migrations/2026_brand/migration.sql). Do what it asks first, then merge it on GitHub; the ticket is then done.');
+t('DS-411 AC3 with §3 merge-hold-routine off, it names the step, the routine and the row',
+  p411['Q-8']?.need, 'PR #148 touches files under a merge hold (prisma/migrations/**, 1 file(s), e.g. prisma/migrations/2026_brand/migration.sql), and its step comes before the merge: apply the migration to staging and production first. desk can run its routine, `./scripts/apply-migrations.sh`, but §3 merge-hold-routine is no. Run it yourself, then merge it on GitHub (or set that row to yes with /desk-setup, and desk runs it and merges); the ticket is then done.');
+t('DS-411 AC2 a routine that failed is named with the step it failed at',
+  p411['Q-9']?.need, 'PR #149 touches files under a merge hold (prisma/migrations/**, 1 file(s), e.g. prisma/migrations/2026_brand/migration.sql), and desk ran its routine, `./scripts/apply-migrations.sh`, at 575fa8c51: it failed (exit 2) at "migrate deploy on public: P3009 failed migration". Settle that step and finish the routine by hand, then merge it on GitHub; the ticket is then done.');
+t('DS-411 AC3 no hold item says only to merge it on GitHub', ['Q-7', 'Q-8', 'Q-9'].filter((k) => !/apply the migration|failed \(exit/.test(p411[k]?.need ?? '')).join(), '');
+for (const k of ['Q-7', 'Q-8', 'Q-9', 'Q-10']) delete qhl.tickets[k];
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 t('DS-378 AC1 the CLI shows it to the person', cli('record', 'psi', 'Q-1', 'done').code, 11);
 const qh = queueOf('psi'); qh.tickets['Q-1'].pr_status.head = sha(999);
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qh));

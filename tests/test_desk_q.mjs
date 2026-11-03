@@ -1274,7 +1274,16 @@ const rail217 = (name, key) => railText(Q.ticketScreen(repo217(name), key, { now
 t('DS-218 AC1 (DS-279) a PR\'s own page says whether it needs you: a draft, one nothing merges, a conflict a fix try takes on, a merge hold',
   ['hold B-DRAFT', 'hold B-READY', 'holdsup B-CONF', 'holdsup B-HOLD'].map((s) => rail217(...s.split(' '))).join(' / '),
   'Needs you: PR #175, draft · undraft it once it is reviewed. / Needs you: PR #176, tests running, 0m · 0 of 1 done · merge it once green. / '
-  + 'Moves without you: PR #178, merge conflict with main · the next pass sends it to a worker, try 1 of 2. / Needs you: PR #180, only a person merges it: build and push the Lambda images first · merge it.');
+  + 'Moves without you: PR #178, merge conflict with main · the next pass sends it to a worker, try 1 of 2. / Needs you: PR #180, only a person merges it: build and push the Lambda images first · take that step, then merge it.');
+t('DS-411 a merge hold note is read for its step, its routine and the step a failed routine stopped at',
+  JSON.stringify(['merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql',
+    'merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh --all` not run: §3 merge-hold-routine is no',
+    'merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh` failed at 1234abcde (exit 2): staging: P3009', 'review feedback: x'].map((n) => Q.parseHoldNote(n))),
+  JSON.stringify([
+    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: null, off: null, failed: null },
+    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh --all` not run: §3 merge-hold-routine is no', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: './apply.sh --all', off: '§3 merge-hold-routine is no', failed: null },
+    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh` failed at 1234abcde (exit 2): staging: P3009', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: './apply.sh', off: null, failed: { sha: '1234abcde', exit: 2, step: 'staging: P3009' } },
+    null]));
 t('DS-218 AC1 a PR that merges by itself moves without you', rail217('holdsup', 'B-GREEN').startsWith('Moves without you: PR #177, tests running'), true);
 const halted218 = Q.loadRepos(NOW).find((r) => r.name === 'halted');
 t('DS-218 AC1 with passes stopped a ready ticket will not move until they resume, and says how',

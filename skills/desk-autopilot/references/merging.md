@@ -43,6 +43,13 @@ other base (a feature batch's) deploys nothing, so it merges as any other; the h
 base's own PR into the default branch. The driver records it on the child's ticket as it merges, and
 each pass names it under `WAITING ON YOU` against the promotion PR until that PR merges.
 
+The other exception is a hold that names its routine (`<glob>: <why>; desk runs: <command>`) where §3
+`merge-hold-routine` is `yes`: the driver takes the PR through the rest of the gate, then runs each
+routine once at the head, in a detached checkout of it, and merges pinned to that head only if every
+one exits 0 and the head has not moved. A routine that fails is recorded with the step it failed at
+(its last line of output), and is not run again until a new head; put that under `WAITING ON YOU`.
+You never run a routine yourself: it is the driver's, outside any session's permission mode.
+
 **Known flaky checks: the one written waiver.** A PR whose only red checks are named in §4 Known
 flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver, pinned to its head, once
 each of them is still red after the driver's two reruns at that head, the PR's files touch none of

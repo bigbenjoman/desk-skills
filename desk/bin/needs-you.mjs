@@ -157,6 +157,22 @@ function draftPlain(r, n, u) {
   return `${n} is a draft: ${plainWords(why.replace(/^its? /, ''))}. ${capital(plainWords(u.action ?? 'settle it'))}; the next pass then picks it up.`;
 }
 
+// A PR into the default branch under a §4 Merge hold (desk-q parseHoldNote): the hold's step comes
+// first, so the need names it, or the routine desk ran and the step it failed at.
+function holdPlain(n, w) {
+  const files = w.where ? ` (${one(w.where)})` : '';
+  if (w.failed) {
+    return `${n} touches files under a merge hold${files}, and desk ran its routine, \`${w.routine}\`, at ${w.failed.sha}: it failed (exit ${w.failed.exit}) at "${one(w.failed.step)}". Settle that step and finish the routine by hand, then merge it on GitHub; the ticket is then done.`;
+  }
+  const step = `${n} touches files under a merge hold${files}, and its step comes before the merge: ${one(w.why)}.`;
+  // Only a routine held back by the §3 row is one the row can hand to desk; one held by a hold with no
+  // routine stays the person's even with the row on.
+  if (w.routine && /^§3 /.test(w.off ?? '')) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off}. Run it yourself, then merge it on GitHub (or set that row to yes with /desk-setup, and desk runs it and merges); the ticket is then done.`;
+  if (w.routine) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off ?? 'it was not run'}. Run it and take that step yourself, then merge it on GitHub; the ticket is then done.`;
+  // With no routine, the hold's reason is the step the person takes before merging.
+  return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
+}
+
 // An unmerged PR's need, from the reason desk-q has it need the person (prWhy).
 function prPlain(r, t) {
   const n = `PR #${t.result.pr}`;
@@ -167,11 +183,7 @@ function prPlain(r, t) {
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
     case 'draft': return draftPlain(r, n, w.undraft);
-    case 'hold': {
-      // The recorded hold is `<why> — <glob>, …`: its reason is the step the person takes before merging.
-      const [why, ...where] = String(w.text ?? '').split(' — ');
-      return `${n} is under a merge hold, so desk never merges it itself: "${one(why)}"${where.length ? ` (${one(where.join(' — '))})` : ''}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
-    }
+    case 'hold': return holdPlain(n, w);
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
     case 'conflict': return `${n} is in conflict with ${w.base}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
