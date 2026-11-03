@@ -508,7 +508,7 @@ hloop T-52; hloop T-52
 check "DS-377 AC2: a held path into the default branch is still held for a person" '[ "$(merged)" = 151 ] && echo "$out" | grep -q "#152 HELD by §4 Merge holds — a person merges it"'
 check "DS-377 AC2: the record leads with the hold'\''s reason from the row" '[ "$(qf T-52 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
 
-# ---- DS-413: a code-owner hold whose every owner is the merging account holds nothing -----------
+# ---- a code-owner hold whose every owner is the merging account holds nothing --------------------
 sed -e 's/| Merge holds | `none` |/| Merge holds | `frontend\/**: CODEOWNERS path, needs your code-owner approval` |/' "$T/config.md" > "$T/config-co.md"
 mkdir -p "$T/contents/.github"; printf '* @Tester\nfrontend/b/ @tester @alice\n' > "$T/contents/.github/CODEOWNERS"
 SHA71=a711111111111111111111111111111111111111; SHA72=a722222222222222222222222222222222222222
@@ -532,6 +532,15 @@ check "DS-413 AC1: its old merge-hold record is cleared, so needs-you lists noth
 coloop T-71
 check "DS-413 AC1: it merges pinned to its head" '[ "$(merged)" = 171 ] && grep -qx "171 main $SHA71" "$T/merges.log"'
 check "DS-413 AC1: CODEOWNERS is read from the PR'\''s base" 'grep -q "contents/.github/CODEOWNERS?ref=main" "$T/gh.log"'
+SHA73=a733333333333333333333333333333333333333
+cat > "$T/prs.json" <<EOF
+{ "173": { "head": "fix/T-73", "base": "feat/epics", "sha": "$SHA73", "state": "open", "draft": false, "files": ["frontend/a.ts"], "checks": [["test", "SUCCESS"]] } }
+EOF
+q init merge-holds-codeowners-feature; jq '.base = "feat/epics"' "$DESK_QUEUE" > "$T/q.tmp" && mv "$T/q.tmp" "$DESK_QUEUE"
+q add T-73 Bug A; q set T-73 branch=fix/T-73 state=done result.pr=173
+: > "$T/gh.log"
+coloop T-73; coloop T-73
+check "DS-413 a code-owner hold into a batch base is carried whole for the base'\''s own PR, never met against the batch base" '[ "$(qf T-73 .promotion_hold)" = "CODEOWNERS path, needs your code-owner approval — frontend/**, 1 file(s), e.g. frontend/a.ts" ] && ! grep -q "contents/.github/CODEOWNERS" "$T/gh.log"'
 
 # ---- DS-407: the person's step in no batch holds a green PR's merge, and lifting it lets it merge --
 SHA61=f111111111111111111111111111111111111111

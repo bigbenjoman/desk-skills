@@ -75,7 +75,7 @@ t('server error leaves the file unread', read.has('apps/x/package.json'), false)
 t('only keyed-hold files read', calls.some((c) => c.includes('src/a.ts')), false);
 t('unchanged scripts not held', heldBy(['package.json'], read), '');
 t('nothing to read, no gh call', (await readKeyedFiles({ repo: 'o/r', base: 'main', head: 'x', files: ['a.ts'], holds: ciHolds, run: () => { throw new Error('called'); } })).size, 0);
-// DS-413: a code-owner hold is met where the base's CODEOWNERS gives every held file to the merging account.
+// A code-owner hold is met where the base's CODEOWNERS gives every held file to the merging account.
 const own = (p, f) => codeOwnersOf(parseCodeowners(p), f).join(' ');
 t('DS-413 CODEOWNERS last match wins', own('* @a\nsrc/ @b\n', 'src/x.ts'), '@b');
 t('DS-413 CODEOWNERS a trailing / owns a directory anywhere', own('apps/ @a', 'web/apps/x.ts'), '@a');

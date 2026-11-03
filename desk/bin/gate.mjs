@@ -569,9 +569,12 @@ if (isMain) {
       try { files = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean); }
       catch { filesOk = false; }
       const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
+      // A code-owner hold is met only on the merge into the default branch, against its CODEOWNERS:
+      // into a batch base every hold is carried, for that base's own PR to be judged.
       const mi = rest.indexOf('--merger');
+      const merger = mi >= 0 && pr.baseRefName === defaultBranch ? rest[mi + 1] : null;
       const owned = filesOk
-        ? await codeOwnerHolds(matchHolds(files, holds, contents), { repo, base: pr.baseRefName, merger: mi >= 0 ? rest[mi + 1] : null, run: gh })
+        ? await codeOwnerHolds(matchHolds(files, holds, contents), { repo, base: pr.baseRefName, merger, run: gh })
         : { held: holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [], satisfied: [] };
       const held = owned.held;
       const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null });
@@ -583,7 +586,7 @@ if (isMain) {
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
         gate: { ...gate, failedRuns: [...ids] },
         holds: held.map((h) => ({ glob: h.glob, why: h.why, files: h.files.slice(0, 5), count: h.files.length })),
-        holdsMet: owned.satisfied.map((h) => ({ glob: h.glob, why: h.why, files: h.files.slice(0, 5), count: h.files.length })),
+        holdsMet: owned.satisfied.map(({ glob, why }) => ({ glob, why })),
         defaultBranch, holdsApply: pr.baseRefName === defaultBranch,
         waiver,
       }));

@@ -657,7 +657,7 @@ t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
   'PR #145 is a draft, and its code review found 2 P1 findings that desk\'s own repairs did not fix. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
 t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,
   'PR #146 is in conflict with main, and desk\'s own repairs did not fix it. Resolve the conflict on its branch; desk then merges it once its checks are green.');
-// ---- DS-413: a merge hold's item quotes its reason as the step to take, never only "merge it on GitHub".
+// ---- a merge hold's item quotes its reason as the step to take, never only "merge it on GitHub".
 put('hold413', { port: 5413, beat: 1, supervised: true, merge: 'yes', tickets: {
   'H-1': greenPr(161, { merge_blocked: 'merge hold: legal copy sign-off — content/legal/**, 1 file(s), e.g. content/legal/terms.md' }),
   'H-2': greenPr(162, { merge_blocked: 'merge hold: CODEOWNERS path, needs your code-owner approval (code-owner approval from @alice) — src/api/**, 2 file(s), e.g. src/api/a.ts' }),

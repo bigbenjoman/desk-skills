@@ -579,7 +579,7 @@ async function applyHolds(prs, holds, unset, merger) {
   await Promise.all(prs.map(async (pr) => {
     if (unset) { pr.holds = []; pr.parkReasons.push('config §4 Merge holds is unset - run /desk-setup (`none` if no path needs a person)'); pr.mergeBlocked = true; return }
     const contents = await G.readKeyedFiles({ repo: GH.full, base: pr.base, head: pr.head, files: pr.files || [], holds, run })
-    const { held } = await G.codeOwnerHolds(G.matchHolds(pr.files || [], holds, contents), { repo: GH.full, base: pr.base, merger, run })
+    const { held } = await G.codeOwnerHolds(G.matchHolds(pr.files || [], holds, contents), { repo: GH.full, base: pr.base, merger: pr.baseIsDefault ? merger : null, run })
     pr.holds = held.map((h) => ({ glob: h.glob, why: h.why, count: h.files.length, first: h.files[0] }))
     for (const h of pr.holds) pr.parkReasons.push(`merge hold ${h.glob}: ${h.why} (${h.count} file${h.count > 1 ? 's' : ''}, e.g. ${h.first})`)
     if (pr.holds.length) pr.mergeBlocked = true
