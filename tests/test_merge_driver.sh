@@ -585,7 +585,8 @@ check "DS-411 AC2: the record names the routine and the step it failed at" '[ "$
 rloop config-routine.md T-92
 check "DS-411 AC2: a routine that failed is not run again at the same head" '[ "$(grep -c "^192 " "$T/routine.ran")" = 1 ] && [ "$(merged)" = 191 ] && qf T-92 .merge_blocked | grep -q "failed at ${SHA92:0:9} (exit 3)"'
 rloop config-routine.md T-93; rloop config-routine.md T-93
-check "DS-411: a PR that also touches a hold with no routine is the person'\''s, and no routine runs" '! grep -q "^193 " "$T/routine.ran" && [ "$(merged)" = 191 ] && [ "$(qf T-93 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
+check "DS-411: a PR that also touches a hold with no routine is the person'\''s, and no routine runs" '! grep -q "^193 " "$T/routine.ran" && [ "$(merged)" = 191 ] && echo "$out" | grep -q "#193 HELD by §4 Merge holds — a person merges it, after its step: apply the migration"'
+check "DS-411 AC3: its record still leads with the routine hold'\''s step, and names the hold with no routine" '[ "$(qf T-93 .merge_blocked)" = "merge hold: apply the migration to staging and production first — db/**, 1 file(s), e.g. db/up.sql; routine \`bash $T/routine.sh\` not run: it also touches a hold no routine clears: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
 
 # ---- DS-407: the person's step in no batch holds a green PR's merge, and lifting it lets it merge --
 SHA61=f111111111111111111111111111111111111111

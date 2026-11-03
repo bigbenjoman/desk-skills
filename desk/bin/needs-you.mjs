@@ -165,7 +165,10 @@ function holdPlain(n, w) {
     return `${n} touches files under a merge hold${files}, and desk ran its routine, \`${w.routine}\`, at ${w.failed.sha}: it failed (exit ${w.failed.exit}) at "${one(w.failed.step)}". Settle that step and finish the routine by hand, then merge it on GitHub; the ticket is then done.`;
   }
   const step = `${n} touches files under a merge hold${files}, and its step comes before the merge: ${one(w.why)}.`;
-  if (w.routine) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off ?? 'it was not run'}. Run it yourself, then merge it on GitHub (or set that row to yes with /desk-setup, and desk runs it and merges); the ticket is then done.`;
+  // Only a routine held back by the §3 row is one the row can hand to desk; one held by a hold with no
+  // routine stays the person's even with the row on.
+  if (w.routine && /^§3 /.test(w.off ?? '')) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off}. Run it yourself, then merge it on GitHub (or set that row to yes with /desk-setup, and desk runs it and merges); the ticket is then done.`;
+  if (w.routine) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off ?? 'it was not run'}. Run it and take that step yourself, then merge it on GitHub; the ticket is then done.`;
   // With no routine, the hold's reason is the step the person takes before merging.
   return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
 }

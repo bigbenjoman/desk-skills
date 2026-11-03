@@ -525,6 +525,14 @@ routine_failed_note(){ # routine_failed_note <key> <failed record> <sha>
   IFS="$TAB" read -r rc cmd hold step < "$2" || return 0
   queue_note "$1" "merge hold: $hold; routine \`$cmd\` failed at ${3:0:9} (exit $rc): ${step:-it printed nothing}"
 }
+# routine_off_note <key> <routines> <why not run>: the first routine hold's step and command, and every
+# other routine the PR's holds name, so none of them is left out of the person's item.
+routine_off_note(){
+  local first more
+  first=$(printf '%s\n' "$2" | head -1)
+  more=$(printf '%s\n' "$2" | tail -n +2 | cut -f1 | awk 'NF { printf "%s`%s`", s, $0; s = ", " }')
+  queue_note "$1" "merge hold: $(printf '%s' "$first" | cut -f2); routine \`$(printf '%s' "$first" | cut -f1)\` not run: $3${more:+ (it also names $more)}"
+}
 # run_routines <n> <sha> <key> <routines> -> 0 once each routine has exited 0 at <sha> and the PR's head is
 # still <sha>. <routines> is lines `<command>\t<hold>`. Each runs with bash in a detached checkout of
 # <sha> (removed after), with DESK_PR, DESK_HEAD_SHA and DESK_REPO set, stdin closed.
@@ -588,13 +596,15 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
     routines=$(printf '%s' "$g" | jq -r 'reduce (.holds[] | select((.routine // "") != "")) as $h ([]; if any(.[]; .routine == $h.routine) then . else . + [$h] end)
       | .[] | "\(.routine)\t\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
     if [ -n "$bare" ]; then
-      log "#$n HELD by §4 Merge holds — a person merges it, after its step: $(printf '%s' "$bare" | paste -sd ';' -)"
-      queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)"
+      log "#$n HELD by §4 Merge holds — a person merges it, after its step: $(printf '%s' "$holds" | paste -sd ';' -)"
+      # A routine hold's step comes first in the note, so the person is never sent past it to the merge.
+      if [ -n "$routines" ]; then routine_off_note "$key" "$routines" "it also touches a hold no routine clears: $(printf '%s' "$bare" | head -1)"
+      else queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)"; fi
       return 1
     fi
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is $ROUTINE_PERM: $(printf '%s' "$holds" | paste -sd ';' -)"
-      queue_note "$key" "merge hold: $(printf '%s' "$routines" | head -1 | cut -f2); routine \`$(printf '%s' "$routines" | head -1 | cut -f1)\` not run: §3 merge-hold-routine is $ROUTINE_PERM"
+      routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"
       return 1
     fi
     if [ -f "$SD/routine-$n-$sha.failed" ]; then
@@ -694,8 +704,16 @@ EOF_RESOLVE
   if ! grant=$(node "$DESK_ENV_MJS" merge-grant 2>&1); then
     log "FAIL: ${grant#*"$TAB"} — not merging #$n; stopping"; exit 1
   fi
-  # Last before the merge, so a routine never runs for a PR that would not merge after it.
-  if [ -n "$routines" ] && ! run_routines "$n" "$sha" "$key" "$routines"; then rm -f "$SD/green-$n"; return 1; fi
+  # Last before the merge, so a routine never runs for a PR that would not merge after it. The row is
+  # read again here, as the grant is, so revoking it stops a driver that is already running.
+  if [ -n "$routines" ]; then
+    ROUTINE_PERM="$(desk_perm merge-hold-routine)"
+    if [ "$ROUTINE_PERM" != yes ]; then
+      log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is now $ROUTINE_PERM"
+      routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"; rm -f "$SD/green-$n"; return 1
+    fi
+    if ! run_routines "$n" "$sha" "$key" "$routines"; then rm -f "$SD/green-$n"; return 1; fi
+  fi
   if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then

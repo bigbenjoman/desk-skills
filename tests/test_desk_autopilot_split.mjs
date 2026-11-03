@@ -39,8 +39,8 @@ const REWRITTEN = [
   ['DS-397', '(no merge grants), you release it:', 1],
   ['DS-385', 'and ask the user to share it with this subscription or give its files', 1], // an export is imported
   ['DS-419', 'naming the first), which `queue.mjs render` shows', 1], // held threads go to a fix worker first
-  ['DS-419', 'marks the done row `merged`, so both wake you.', 1],
-  ['DS-411', 'a person merges: the driver and you never merge them', 1], // a hold's named routine is the driver's // a done row with an open PR reads PR OPEN
+  ['DS-419', 'marks the done row `merged`, so both wake you.', 1], // a done row with an open PR reads PR OPEN
+  ['DS-411', 'a person merges: the driver and you never merge them', 1], // a hold's named routine is the driver's
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));
