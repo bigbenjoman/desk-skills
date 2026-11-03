@@ -109,6 +109,11 @@ if (a[0] === 'pr' && a[1] === 'list') {
   pr.headRefOid = p.sha;
   for (const t of pr.reviewThreads.nodes) { t.id = n + '-' + t.id; if (done.has(t.id)) t.isResolved = true; }
   out({ data: { repository: { pullRequest: pr } } });
+} else if (a[0] === 'api' && a.join(' ').includes('/contents/')) {
+  // A file at a ref, from contents/<path>; one with no file there is GitHub's 404.
+  const f = '$T/contents/' + decodeURIComponent(/contents\/([^?]+)/.exec(a.join(' '))[1]);
+  if (!fs.existsSync(f)) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
+  process.stdout.write(fs.readFileSync(f, 'utf8'));
 } else if (a[0] === 'api') {
   const n = /pulls\/(\d+)\/files/.exec(a.join(' '))?.[1];
   out(((n && prs[n]?.files) || ['src/a.txt']).join('\n'));
@@ -502,6 +507,31 @@ q add T-52 Bug A; q set T-52 branch=fix/T-52 state=done result.pr=152
 hloop T-52; hloop T-52
 check "DS-377 AC2: a held path into the default branch is still held for a person" '[ "$(merged)" = 151 ] && echo "$out" | grep -q "#152 HELD by §4 Merge holds — a person merges it"'
 check "DS-377 AC2: the record leads with the hold'\''s reason from the row" '[ "$(qf T-52 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
+
+# ---- DS-413: a code-owner hold whose every owner is the merging account holds nothing -----------
+sed -e 's/| Merge holds | `none` |/| Merge holds | `frontend\/**: CODEOWNERS path, needs your code-owner approval` |/' "$T/config.md" > "$T/config-co.md"
+mkdir -p "$T/contents/.github"; printf '* @Tester\nfrontend/b/ @tester @alice\n' > "$T/contents/.github/CODEOWNERS"
+SHA71=a711111111111111111111111111111111111111; SHA72=a722222222222222222222222222222222222222
+cat > "$T/prs.json" <<EOF
+{
+  "171": { "head": "fix/T-71", "base": "main", "sha": "$SHA71", "state": "open", "draft": false, "files": ["frontend/a.ts", "frontend/c/d.ts"], "checks": [["test", "SUCCESS"]] },
+  "172": { "head": "fix/T-72", "base": "main", "sha": "$SHA72", "state": "open", "draft": false, "files": ["frontend/b/x.ts"], "checks": [["test", "SUCCESS"]] }
+}
+EOF
+coloop(){ out=$(DESK_CONFIG="$T/config-co.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$1" 2>&1); rc=$?; }
+q init merge-holds-codeowners
+q add T-72 Bug A; q set T-72 branch=fix/T-72 state=done result.pr=172
+: > "$T/merges.log"
+coloop T-72; coloop T-72
+check "DS-413 AC2: a code-owner hold another person owns stays held" '[ -z "$(merged)" ] && echo "$out" | grep -q "#172 HELD by §4 Merge holds — a person merges it"'
+check "DS-413 AC2: the record names that owner'\''s approval" '[ "$(qf T-72 .merge_blocked)" = "merge hold: CODEOWNERS path, needs your code-owner approval (code-owner approval from @alice) — frontend/**, 1 file(s), e.g. frontend/b/x.ts" ]'
+q add T-71 Bug A; q set T-71 branch=fix/T-71 state=done result.pr=171 "merge_blocked=merge hold: CODEOWNERS path, needs your code-owner approval — frontend/**, 2 file(s), e.g. frontend/a.ts"
+coloop T-71
+check "DS-413 AC1: a code-owner hold the merging account alone owns is met, and says so" 'echo "$out" | grep -q "#171 §4 Merge holds met with no person: CODEOWNERS path, needs your code-owner approval (every code owner is @tester, the merging account) — frontend/\*\*" && ! echo "$out" | grep -q "#171 HELD"'
+check "DS-413 AC1: its old merge-hold record is cleared, so needs-you lists nothing" '[ "$(qf T-71 .merge_blocked)" = null ]'
+coloop T-71
+check "DS-413 AC1: it merges pinned to its head" '[ "$(merged)" = 171 ] && grep -qx "171 main $SHA71" "$T/merges.log"'
+check "DS-413 AC1: CODEOWNERS is read from the PR'\''s base" 'grep -q "contents/.github/CODEOWNERS?ref=main" "$T/gh.log"'
 
 # ---- DS-407: the person's step in no batch holds a green PR's merge, and lifting it lets it merge --
 SHA61=f111111111111111111111111111111111111111

@@ -167,7 +167,11 @@ function prPlain(r, t) {
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
     case 'draft': return draftPlain(r, n, w.undraft);
-    case 'hold': return `${n} touches files under a merge hold (${one(w.text)}), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.`;
+    case 'hold': {
+      // The recorded hold is `<why> — <glob>, …`: its reason is the step the person takes before merging.
+      const [why, ...where] = String(w.text ?? '').split(' — ');
+      return `${n} is under a merge hold, so desk never merges it itself: "${one(why)}"${where.length ? ` (${one(where.join(' — '))})` : ''}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
+    }
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
     case 'conflict': return `${n} is in conflict with ${w.base}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
