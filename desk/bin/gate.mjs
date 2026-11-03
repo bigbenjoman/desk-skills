@@ -39,7 +39,7 @@
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name]   one JSON object: title, sha, base, head, mergeState,
 //     reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory checks that are
-//     not §4 State checks, failedJobs: [{ runId, jobId, name }] for those in a run that also holds a
+//     not §4 State checks, failedJobs: [{ runId, jobId, name }] for the one in a run that also holds a
 //     failing state check, rerun by job instead, and stateFailing: the failing state checks, each
 //     { name, kind, runId, why, rerunWith? } with why the first error its run annotated, or null), holds,
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
@@ -545,13 +545,14 @@ if (isMain) {
         .map((x) => /\/job\/(\d+)/.exec(String(x.detailsUrl ?? ''))?.[1]).filter(Boolean).pop() ?? null;
       const state = stateFailing(gate.failing, stateChecks).map((f) => ({ ...f, why: failureMessage(repo, jobOf(f)) }));
       const toRerun = gate.failing.filter((f) => !state.some((s) => s.name === f.name));
-      // A run holding a red state check as well as a red check to rerun: `--failed` would rerun the state
-      // check too, so its other red jobs are rerun one by one. Where a job id cannot be read, the whole
-      // run is rerun and the state check is marked as rerun with it (rerunWith), so the log says so.
+      // A run holding a red state check as well as one red check to rerun: `--failed` would rerun the state
+      // check too, so that check's job is rerun alone. With more than one (a job rerun puts the run in
+      // progress, which refuses the next) or a job id it cannot read, the whole run is rerun and the state
+      // check is marked as rerun with it (rerunWith), so the log says so.
       const failedJobs = [];
       for (const r of new Set(state.map((s) => s.runId).filter((r) => r && toRerun.some((f) => f.runId === r)))) {
         const js = toRerun.filter((f) => f.runId === r).map((f) => ({ runId: String(r), jobId: jobOf(f), name: f.name }));
-        if (js.every((j) => j.jobId)) failedJobs.push(...js);
+        if (js.length === 1 && js[0].jobId) failedJobs.push(...js);
         else for (const s of state) if (s.runId === r) s.rerunWith = String(r);
       }
       const byJob = new Set(failedJobs.map((j) => j.runId));

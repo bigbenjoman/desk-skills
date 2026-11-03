@@ -68,8 +68,9 @@ unclean review at the head (a review missing, for an older head, or in a form th
 to a review worker that reviews the head and posts it, under the fix tries below; the person gets it
 once no try is left. A bare one (a title check, or a CI gate red because one of these is) red with
 no `verdict` or `approval` check beside it is put to the person as stuck. Where a red state check
-shares a workflow run with a red check to rerun, the driver reruns that check's job, not the run. A
-row that does not parse stops the driver at start.
+shares a workflow run with one red check to rerun, the driver reruns that check's job, not the run
+(with more, the run, and its log says the state check is rerun with it). A row that does not parse
+stops the driver at start.
 
 **Fix tries: what the driver cannot merge goes back to a worker, twice.** Each pass reads every
 ready batch PR (`pass.mjs`, `fix-tries.mjs`). One still red after the driver's two reruns at its
