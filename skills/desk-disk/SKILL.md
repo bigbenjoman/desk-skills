@@ -74,7 +74,8 @@ For each approved fix, three calls, in order, each its own Bash call:
    For a `time-machine` fix add `--backup-volume /Volumes/<name>`, which adds `backup_free_gb=<n>`:
    that drive's figure is the one the fix moves, not the Mac's
 2. **the one fix command, alone**: never joined to another with `&&`, `;` or a pipe, never in
-   parallel with another tool call, never in the background
+   parallel with another tool call, never in the background. If it exits non-zero, stop that fix:
+   report the error and run none of its later steps
 3. `measure` again, the same way, and report `<offender>: <before> → <after> GB free (+<delta>)`
 
 Then stop for the next pick, or go on to the next one the user already approved.

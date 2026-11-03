@@ -106,6 +106,28 @@ check "AC7 the scan wrote, moved and deleted nothing outside its scratch directo
 out=$(grep -vE '^(docker (info|system df|volume ls)|tmutil (listlocalsnapshots|listbackups)|getconf DARWIN_USER_CACHE_DIR)' "$CALLS")
 check "AC7 the scan ran only the read forms of docker, tmutil and getconf" '[ -z "$out" ]'
 
+# ---- nothing written anywhere outside scratch: the scan under a macOS sandbox ----
+# The listing above sees only the fixture tree. A write to a fixed path (/tmp, /var/folders, $T) is
+# outside it, so the scan also runs under sandbox-exec, which denies every file write but the
+# scratch directory, the fakes' call log and /dev, and kills the writer: a write the script hides
+# with 2>/dev/null still fails the run. Linux CI has no sandbox-exec, so this part SKIPs there.
+real(){ ( cd -P "$1" && pwd ); }
+box(){ sandbox-exec -p "(version 1)(allow default)(deny file-write* (require-not (require-any (subpath \"$(real "$TMPDIR")\") (literal \"$(real "$T")/calls.log\") (subpath \"/dev\"))) (with send-signal SIGKILL))" "$@"; }
+if ! command -v sandbox-exec >/dev/null 2>&1; then echo "SKIP AC7 sandboxed scan: no sandbox-exec (not macOS)"
+elif ! box true 2>/dev/null; then echo "SKIP AC7 sandboxed scan: sandbox-exec cannot apply a profile here (already inside a sandbox)"
+else
+  out=$(box bash -c 'echo x > "$1/leak"' _ "$T" 2>&1); rc=$?
+  check "AC7 the sandbox catches a write to an absolute path outside the fixture tree" '[ $rc -ne 0 ] && [ ! -e "$T/leak" ]'
+  out=$(box bash -c 'exec 2>/dev/null; echo x > "$1/leak"; echo done' _ "$T" 2>&1); rc=$?
+  check "AC7 the sandbox catches a write whose error is hidden" '[ ! -e "$T/leak" ] && [ "$out" != done ]'
+  out=$(box bash -c 'echo x > "$TMPDIR/boxed"; cat "$TMPDIR/boxed"' 2>&1); rc=$?
+  check "AC7 the sandbox allows a write inside scratch" '[ $rc -eq 0 ] && [ "$out" = x ]'
+  out=$(cd "$W" && box bash "$D" scan --worktrees "$W/wt" --backup-volume "$W/backup" 2>&1); rc=$?
+  check "AC7 the scan runs to the same result with every write outside scratch denied" '[ $rc -eq 0 ] && [ "$out" = "$scan" ]'
+  out=$(cd "$W" && box bash "$D" measure --backup-volume "$W/backup" 2>&1); rc=$?
+  check "AC7 measure runs with every write outside scratch denied" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qE "^free_gb=[0-9.]+ local_snapshots=2 backup_free_gb=[0-9.]+$"'
+fi
+
 # ---- measure ----
 stamp
 out=$(cd "$W" && bash "$D" measure 2>&1)

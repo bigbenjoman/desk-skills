@@ -152,10 +152,9 @@ scan() {
   scan_chrome_clones
   scan_icloud
   scan_onedrive
+  # A pipe, not a heredoc: bash writes a heredoc to a temp file, and the scan writes nothing.
   if [ -n "$WORKTREES" ]; then
-    while IFS= read -r w; do [ -n "$w" ] && sized_row worktrees "$w" "measured once, so pnpm's hard links count once"; done <<EOF
-$WORKTREES
-EOF
+    printf '%s' "$WORKTREES" | while IFS= read -r w; do [ -n "$w" ] && sized_row worktrees "$w" "measured once, so pnpm's hard links count once"; done
   else row worktrees "-" "(none given)" "pass --worktrees <§2 Worktrees directory> for each repo"; fi
   scan_postgres
   sized_row backblaze-logs "$SYS/Library/Backblaze.bzpkg/bzdata/bzlogs" "fixed by Backblaze exclusions, not by deleting"

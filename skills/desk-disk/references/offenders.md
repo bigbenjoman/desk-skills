@@ -109,11 +109,14 @@ them either), and containers are small and needed the moment work starts.
 
 - **What it is:** Homebrew's Postgres cluster. A single idle database can be most of it.
 - **Seen:** one idle 22 GB database (`forewatt_verify`).
-- **Lost by the fix:** nothing, once the dump is verified. Which database is idle is the user's call:
-  list them (`psql -d postgres -c '\l+'`) and ask about each one.
-- **Fix:** three commands, each its own approved step:
+- **Lost by the fix:** nothing, once every row of the dump has read back. Which database is idle is
+  the user's call: list them (`psql -d postgres -c '\l+'`) and ask about each one.
+- **Fix:** three commands, each its own approved step, and each run only if the one before it exited
+  0. A disk this full can cut a dump short, so any error, a full disk included, stops the fix here
+  with nothing dropped:
   1. `pg_dump -Fc -f <dump path> <db>`, the dump on a drive with room for it
-  2. `pg_restore --list <dump path>`: the dump reads back (it lists the tables); stop if it fails
+  2. `pg_restore --exit-on-error -f /dev/null <dump path>`: reads every table's data back, not just
+     the table of contents (`pg_restore --list` lists a dump cut short as clean), and writes nothing
   3. `dropdb <db>`
 - **Restore:** `createdb <db> && pg_restore -d <db> <dump path>`.
 
