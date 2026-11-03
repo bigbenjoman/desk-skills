@@ -17,7 +17,7 @@ first, explains, and changes nothing until the user picks a fix.
 
 **Core principle: measure, explain, then one approved fix at a time, measured before and after.**
 
-It is about this computer, not a repo, so it needs no repo config. macOS only: the desk-runner VM's
+It is about this computer, not a repo, so it needs no repo config. macOS only: the CI runner VM's
 disk is DS-62's, and a Linux machine is out of scope (say so and stop).
 
 ## 1. Scan
