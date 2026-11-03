@@ -25,8 +25,9 @@
 //     that check against the workflows on GitHub, worded as a refused epic admission or batch start
 //   readWorkflows({ repo, ref, run }) -> [{ file, text }] the repo's .github/workflows at ref
 //   normaliseRollup(nodes)   statusCheckRollup / GraphQL context nodes -> checks
-//   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
-//   matchHolds(files, holds, contents) -> [{ glob, why, files }]
+//   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>[; desk runs: <command>]`
+//                            -> [{ glob, path, key, why, routine }]
+//   matchHolds(files, holds, contents) -> [{ glob, why, routine, files }]
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
 //   codeOwnerHolds(held, { repo, base, merger, run }) -> { held, satisfied }: a code-owner hold whose
 //     every held file the base's CODEOWNERS gives to `merger` alone is satisfied
@@ -39,7 +40,8 @@
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name] [--merger <login>]   one JSON object: title, sha, base,
 //     head, mergeState, reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory
-//     checks), holds, holdsMet (the code-owner holds `merger` alone owns, so not holding it),
+//     checks), holds (each { glob, why, routine, files, count }), holdsMet (the code-owner holds
+//     `merger` alone owns, so not holding it),
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
 //     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
@@ -301,14 +303,23 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
 // `<glob>#<key>` holds a JSON file only when the PR changes that key (dotted for a nested one), so
 // `package.json#scripts` holds a PR that edits the scripts but not one that only bumps versions.
 // `glob` is the item as written, for reporting; `path` is the part matched against file names.
+// `<why>; desk runs: <command>` names the routine that clears the hold (null when none is named):
+// the merge driver runs it before merging where §3 merge-hold-routine is yes.
+export const ROUTINE_MARK = '; desk runs: ';
 export function parseHolds(items) {
   if (!items) return [];
   return items.filter((x) => x && !/^none$/i.test(x.trim())).map((x) => {
     const i = x.indexOf(': ');
     const glob = (i < 0 ? x : x.slice(0, i)).trim();
-    const why = i < 0 ? '(no reason given in §4 Merge holds)' : x.slice(i + 2).trim();
+    let why = i < 0 ? '(no reason given in §4 Merge holds)' : x.slice(i + 2).trim();
+    let routine = null;
+    const m = why.indexOf(ROUTINE_MARK);
+    if (m >= 0) {
+      routine = why.slice(m + ROUTINE_MARK.length).trim() || null;
+      why = why.slice(0, m).trim() || '(no reason given in §4 Merge holds)';
+    }
     const k = glob.indexOf('#');
-    return { glob, path: k < 0 ? glob : glob.slice(0, k), key: k < 0 ? null : glob.slice(k + 1), why };
+    return { glob, path: k < 0 ? glob : glob.slice(0, k), key: k < 0 ? null : glob.slice(k + 1), why, routine };
   });
 }
 
@@ -585,7 +596,7 @@ if (isMain) {
         number: pr.number, title: pr.title ?? '', sha: pr.headRefOid, head: pr.headRefName, base: pr.baseRefName, isDraft: pr.isDraft,
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
         gate: { ...gate, failedRuns: [...ids] },
-        holds: held.map((h) => ({ glob: h.glob, why: h.why, files: h.files.slice(0, 5), count: h.files.length })),
+        holds: held.map((h) => ({ glob: h.glob, why: h.why, routine: h.routine ?? null, files: h.files.slice(0, 5), count: h.files.length })),
         holdsMet: owned.satisfied.map(({ glob, why }) => ({ glob, why })),
         defaultBranch, holdsApply: pr.baseRefName === defaultBranch,
         waiver,

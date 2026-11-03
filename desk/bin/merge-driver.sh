@@ -28,7 +28,16 @@
 #                                            the hold falls on that base's own PR. A hold whose reason
 #                                            is a code-owner approval is met, and holds nothing, where
 #                                            the base's CODEOWNERS gives every held file to §1's handle
-#                                            alone (gate.mjs codeOwnerHolds); any other owner is named
+#                                            alone (gate.mjs codeOwnerHolds); any other owner is named.
+#                                            Where every hold it
+#                                            touches names a routine (`<why>; desk runs: <command>`)
+#                                            and §3 merge-hold-routine is yes, it goes through the rest
+#                                            of the gate, then the driver runs each routine once at the
+#                                            head, in a detached checkout of it, and merges pinned to
+#                                            that head only if all exit 0 and the head has not moved. A
+#                                            routine that fails is recorded (`merge hold: …; routine
+#                                            `<command>` failed at <sha> (exit <n>): <its last line>`)
+#                                            and never run again at that head
 #   - review feedback outstanding            a CHANGES_REQUESTED decision or an unresolved thread,
 #                                            unless §3 merge-feedback-first is explicitly `no`
 #                                            (unset, ask and yes are all the strict default). A
@@ -177,6 +186,8 @@ node "$DESK_ENV_MJS" list merge-holds >/dev/null 2>&1 \
   || { echo "FAIL: config §4 Merge holds is not set — run /desk-setup (\`none\` if no path needs a person to merge it). Refusing to guess." >&2; exit 1; }
 RERUN_PERM="$(desk_perm ci-rerun)"
 UPDATE_PERM="$(desk_perm pr-update-branch)"
+# Unset, ask and no all leave a hold's routine unrun: only `yes` lets the driver run it unattended.
+ROUTINE_PERM="$(desk_perm merge-hold-routine)"
 # Strict unless explicitly relaxed: unset, ask and yes all mean feedback is worked before merging.
 FEEDBACK_RAW="$(node "$DESK_ENV_MJS" perm-or-unset merge-feedback-first 2>/dev/null || echo unset)"
 if [ "$FEEDBACK_RAW" = no ]; then FEEDBACK_STRICT=""; else FEEDBACK_STRICT=1; fi
@@ -505,8 +516,58 @@ close_merged(){
   else log "#$n $key transition sent but it reads ${st:-unreadable}, not $DONE_STATE — check it by hand"; fi
 }
 
+# A §4 Merge holds routine is run once per PR head, recorded in <state>/merge-driver/routine-<n>-<sha>.*:
+# .log (everything each command printed), .ok once every command exited 0, .failed (`<exit>\t<routine>\t
+# <hold>\t<step>`, the step being the failing command's last line of output) once one did not. A failed
+# head is never run again; a new head runs it afresh.
+routine_failed_note(){ # routine_failed_note <key> <failed record> <sha>
+  local rc cmd hold step
+  IFS="$TAB" read -r rc cmd hold step < "$2" || return 0
+  queue_note "$1" "merge hold: $hold; routine \`$cmd\` failed at ${3:0:9} (exit $rc): ${step:-it printed nothing}"
+}
+# run_routines <n> <sha> <key> <routines> -> 0 once each routine has exited 0 at <sha> and the PR's head is
+# still <sha>. <routines> is lines `<command>\t<hold>`. Each runs with bash in a detached checkout of
+# <sha> (removed after), with DESK_PR, DESK_HEAD_SHA and DESK_REPO set, stdin closed.
+run_routines(){
+  local n="$1" sha="$2" key="$3" rec="$SD/routine-$1-$2" dir="$SD/routine-$1-checkout" cmd hold rc step head
+  if [ ! -f "$rec.ok" ]; then
+    if ! git cat-file -e "$sha^{commit}" 2>/dev/null && ! git fetch -q origin "pull/$n/head" 2>/dev/null; then
+      log "#$n its §4 Merge holds routine is not run: head ${sha:0:9} could not be fetched — retrying next loop"; return 1
+    fi
+    git worktree remove --force "$dir" >/dev/null 2>&1; rm -rf "$dir"
+    if ! git worktree add -q --detach "$dir" "$sha" >/dev/null 2>&1; then
+      log "#$n its §4 Merge holds routine is not run: no checkout of ${sha:0:9} could be made at $dir — retrying next loop"; return 1
+    fi
+    : > "$rec.log"
+    while IFS="$TAB" read -r cmd hold; do
+      [ -n "$cmd" ] || continue
+      log "#$n running the §4 Merge holds routine at ${sha:0:9} (§3 merge-hold-routine): $cmd"
+      printf '$ %s\n' "$cmd" >> "$rec.log"
+      : > "$rec.step"
+      (cd "$dir" && DESK_PR="$n" DESK_HEAD_SHA="$sha" DESK_REPO="$REPO" bash -c "$cmd" </dev/null 2>&1) | tee -a "$rec.log" > "$rec.step"
+      rc=${PIPESTATUS[0]}
+      if [ "$rc" -ne 0 ]; then
+        step=$(grep -v '^[[:space:]]*$' "$rec.step" | tail -1 | cut -c1-300)
+        printf '%s\t%s\t%s\t%s\n' "$rc" "$cmd" "$hold" "$step" > "$rec.failed"
+        rm -f "$rec.step"; git worktree remove --force "$dir" >/dev/null 2>&1
+        log "#$n its §4 Merge holds routine FAILED at ${sha:0:9} (exit $rc): $cmd — ${step:-it printed nothing}; not merging, and not run again at this head (output: $rec.log)"
+        routine_failed_note "$key" "$rec.failed" "$sha"
+        return 1
+      fi
+      log "#$n routine done at ${sha:0:9}: $cmd"
+    done <<EOF_ROUTINES
+$4
+EOF_ROUTINES
+    rm -f "$rec.step"; git worktree remove --force "$dir" >/dev/null 2>&1
+    touch "$rec.ok"
+  fi
+  # The routine ran against this commit: a head that moved meanwhile is a different change.
+  head=$(gh pr view "$n" --repo "$REPO" --json headRefOid 2>/dev/null | jq -r '.headRefOid // empty')
+  if [ "$head" != "$sha" ]; then log "#$n head is ${head:-unreadable}, not ${sha:0:9} where its routine ran — not merging"; return 1; fi
+}
+
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required
+  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
@@ -521,9 +582,28 @@ try_pr(){ # try_pr <n> <key> -> 0 when it merged
     log "#$n touches §4 Merge holds ($carried), but its base $BASE_BRANCH is not $(printf '%s' "$g" | jq -r .defaultBranch), so merging it deploys nothing; once it merges, the hold is the pass's to report on $BASE_BRANCH's own PR"
   elif [ -n "$holds" ]; then
     [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
-    log "#$n HELD by §4 Merge holds — a person merges it: $(printf '%s' "$holds" | paste -sd ';' -)"
-    queue_note "$key" "merge hold: $(printf '%s' "$holds" | head -1)"
-    return 1
+    # A hold that names no routine is the person's step; one that does is run below, before the merge,
+    # where §3 merge-hold-routine is yes. Each routine once, in the row's order.
+    bare=$(printf '%s' "$g" | jq -r '.holds[] | select((.routine // "") == "") | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
+    routines=$(printf '%s' "$g" | jq -r 'reduce (.holds[] | select((.routine // "") != "")) as $h ([]; if any(.[]; .routine == $h.routine) then . else . + [$h] end)
+      | .[] | "\(.routine)\t\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
+    if [ -n "$bare" ]; then
+      log "#$n HELD by §4 Merge holds — a person merges it, after its step: $(printf '%s' "$bare" | paste -sd ';' -)"
+      queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)"
+      return 1
+    fi
+    if [ "$ROUTINE_PERM" != yes ]; then
+      log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is $ROUTINE_PERM: $(printf '%s' "$holds" | paste -sd ';' -)"
+      queue_note "$key" "merge hold: $(printf '%s' "$routines" | head -1 | cut -f2); routine \`$(printf '%s' "$routines" | head -1 | cut -f1)\` not run: §3 merge-hold-routine is $ROUTINE_PERM"
+      return 1
+    fi
+    if [ -f "$SD/routine-$n-$sha.failed" ]; then
+      log "#$n HELD by §4 Merge holds — its routine already failed at ${sha:0:9}; a person settles it (a new head runs it again)"
+      routine_failed_note "$key" "$SD/routine-$n-$sha.failed" "$sha"
+      return 1
+    fi
+    blocked_clear "$key" "merge hold:"
+    log "#$n touches §4 Merge holds whose routine desk runs before merging (§3 merge-hold-routine): $(printf '%s' "$holds" | paste -sd ';' -)"
   fi
 
   if [ -n "$FEEDBACK_STRICT" ]; then
@@ -614,6 +694,8 @@ EOF_RESOLVE
   if ! grant=$(node "$DESK_ENV_MJS" merge-grant 2>&1); then
     log "FAIL: ${grant#*"$TAB"} — not merging #$n; stopping"; exit 1
   fi
+  # Last before the merge, so a routine never runs for a PR that would not merge after it.
+  if [ -n "$routines" ] && ! run_routines "$n" "$sha" "$key" "$routines"; then rm -f "$SD/green-$n"; return 1; fi
   if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then

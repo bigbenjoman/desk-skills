@@ -237,6 +237,23 @@ const tryOf = (t) => `try ${triesMade(t.fix_tries) + 1} of ${FIX_TRIES_MAX}`;
 // `segs` is WHAT IT NEEDS after the PR number: the reason, then the command. With `now` null, an
 // unfinished check's age is left out. A `needs` also carries `why`, the reason as a code with what it
 // names, which needs-you words for the person (prWhy).
+// A merge_blocked note the merge driver wrote for a §4 Merge hold, or null: { text (after the prefix),
+// why, where, routine (the command it names, or null), off (why it was not run, or null), failed
+// ({ sha, exit, step }, or null) }.
+export function parseHoldNote(note) {
+  const m = /^merge hold:\s*(.*)$/s.exec(String(note ?? ''));
+  if (!m) return null;
+  const text = m[1];
+  const r = /; routine `([^`]+)` (?:not run: (.*)|failed at (\S+) \(exit (-?\d+)\): (.*))$/s.exec(text);
+  const head = r ? text.slice(0, r.index) : text;
+  const i = head.indexOf(' — ');
+  return {
+    text, why: (i < 0 ? head : head.slice(0, i)).trim(), where: i < 0 ? '' : head.slice(i + 3).trim(),
+    routine: r?.[1] ?? null, off: r?.[2] ?? null,
+    failed: r && r[3] ? { sha: r[3], exit: Number(r[4]), step: r[5] } : null,
+  };
+}
+
 function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const ps = prStatusOf(t);
   const needs = (why, ...segs) => ({ k: 'needs', why, segs }), merging = (...segs) => ({ k: 'merging', segs });
@@ -247,9 +264,11 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   if (stuck) return needs({ code: 'stuck', stuck }, [stuck.why, null]);
   if (ps.isDraft === true) return draftNeed(q, t, needs, merging);
   // The merge driver records a PR into the default branch under §4 Merge holds (`merge hold: <why> —
-  // <glob>, …`) and leaves it for a person to merge, so the item says the hold's reason.
-  const hold = /^merge hold: (.+?)(?: — .*)?$/.exec(String(t.merge_blocked ?? ''));
-  if (hold) return needs({ code: 'hold', text: String(t.merge_blocked).replace(/^merge hold:\s*/, '') }, [`only a person merges it: ${hold[1]}`, WARN], [' · merge it', null]);
+  // <glob>, …`, then `; routine `<command>` not run: …` or `… failed at <sha> (exit <n>): <step>` where
+  // the hold names one) and leaves it for a person, so the item says the hold's step.
+  const hold = parseHoldNote(t.merge_blocked);
+  if (hold?.failed) return needs({ code: 'hold', ...hold }, [`merge hold routine failed: ${hold.failed.step}`, WARN], [' · settle it, then merge it', null]);
+  if (hold) return needs({ code: 'hold', ...hold }, [`only a person merges it: ${hold.why}`, WARN], [hold.routine ? ` · run ${hold.routine}, then merge it` : ' · take that step, then merge it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
   const triesLeft = triesMade(t.fix_tries) < FIX_TRIES_MAX;
   // It records a PR it has held for unresolved review threads on two loops, green or red, naming the

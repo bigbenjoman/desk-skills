@@ -542,6 +542,51 @@ q add T-73 Bug A; q set T-73 branch=fix/T-73 state=done result.pr=173
 coloop T-73; coloop T-73
 check "DS-413 a code-owner hold into a batch base is carried whole for the base'\''s own PR, never met against the batch base" '[ "$(qf T-73 .promotion_hold)" = "CODEOWNERS path, needs your code-owner approval — frontend/**, 1 file(s), e.g. frontend/a.ts" ] && ! grep -q "contents/.github/CODEOWNERS" "$T/gh.log"'
 
+# ---- DS-411: a hold that names its routine is run by the driver, then merged pinned to the head --
+# The PR heads are real commits, so the routine's checkout is of the head itself.
+git -C "$T/repo" checkout -q -b fix/T-91; echo up > "$T/repo/up.sql"; git -C "$T/repo" add up.sql; git -C "$T/repo" commit -q -m T-91
+SHA91=$(git -C "$T/repo" rev-parse HEAD)
+git -C "$T/repo" checkout -q main; git -C "$T/repo" checkout -q -b fix/T-92; git -C "$T/repo" commit -q --allow-empty -m T-92
+SHA92=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" checkout -q main
+cat > "$T/routine.sh" <<EOF
+#!/usr/bin/env bash
+echo "snapshot taken"
+echo "\$DESK_PR \$DESK_HEAD_SHA \$(git rev-parse HEAD) \$([ -f up.sql ] && echo has-file)" >> "$T/routine.ran"
+echo "applying to staging"
+[ "\$DESK_PR" = 192 ] && { echo "staging refused the migration" >&2; exit 3; }
+echo "applied to production"
+EOF
+sed -e "s#| Merge holds | \`none\` |#| Merge holds | \`db/**: apply the migration to staging and production first; desk runs: bash $T/routine.sh\` \`infra/**: deploys the infrastructure on merge\` |#" "$T/config.md" > "$T/config-routine-off.md"
+sed -e '/^| `pr-ready` |/a\
+| `merge-hold-routine` | Run hold routines | `no` | `yes` |
+' "$T/config-routine-off.md" > "$T/config-routine.md"
+cat > "$T/prs.json" <<EOF
+{ "191": { "head": "fix/T-91", "base": "main", "sha": "$SHA91", "state": "open", "draft": false, "files": ["db/up.sql"], "checks": [["test", "SUCCESS"]] },
+  "192": { "head": "fix/T-92", "base": "main", "sha": "$SHA92", "state": "open", "draft": false, "files": ["db/down.sql"], "checks": [["test", "SUCCESS"]] },
+  "193": { "head": "fix/T-93", "base": "main", "sha": "$SHA92", "state": "open", "draft": false, "files": ["db/up.sql", "infra/main.tf"], "checks": [["test", "SUCCESS"]] } }
+EOF
+rloop(){ out=$(DESK_CONFIG="$T/$1" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$2" 2>&1); rc=$?; }
+q init merge-hold-routine
+for k in T-91 T-92 T-93; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+: > "$T/merges.log"; rm -f "$T/routine.ran"
+rloop config-routine-off.md T-91; rloop config-routine-off.md T-91
+check "DS-411 AC3: with §3 merge-hold-routine unset, the routine is not run and the PR is not merged" '[ -z "$(merged)" ] && [ ! -f "$T/routine.ran" ] && echo "$out" | grep -q "#191 HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is no"'
+check "DS-411 AC3: the record names the hold'\''s step and its routine" '[ "$(qf T-91 .merge_blocked)" = "merge hold: apply the migration to staging and production first — db/**, 1 file(s), e.g. db/up.sql; routine \`bash $T/routine.sh\` not run: §3 merge-hold-routine is no" ]'
+rloop config-routine.md T-91
+check "DS-411 AC1: green and held a first loop, the routine waits for the head to be confirmed" '[ -z "$(merged)" ] && [ ! -f "$T/routine.ran" ] && [ "$(qf T-91 .merge_blocked)" = null ] && echo "$out" | grep -q "#191 green at .* — confirming on the next loop"'
+rloop config-routine.md T-91
+check "DS-411 AC1: the routine runs once, in a checkout of the head, with the PR and head set" '[ "$(cat "$T/routine.ran")" = "191 $SHA91 $SHA91 has-file" ]'
+check "DS-411 AC1: then the PR merges, pinned to that head, with nothing left for the person" '[ "$(merged)" = 191 ] && grep -qx "191 main $SHA91" "$T/merges.log" && [ "$(qf T-91 .merge_blocked)" = null ]'
+check "DS-411 AC1: the routine'\''s checkout is removed" '[ ! -d "$T/state/merge-driver/routine-191-checkout" ] && ! git -C "$T/repo" worktree list | grep -q routine-191'
+rloop config-routine.md T-92; o1=$out; rloop config-routine.md T-92; out="$o1
+$out"
+check "DS-411 AC2: a routine that exits non-zero leaves the PR unmerged" '[ "$(merged)" = 191 ] && echo "$out" | grep -q "#192 its §4 Merge holds routine FAILED at ${SHA92:0:9} (exit 3)"'
+check "DS-411 AC2: the record names the routine and the step it failed at" '[ "$(qf T-92 .merge_blocked)" = "merge hold: apply the migration to staging and production first — db/**, 1 file(s), e.g. db/down.sql; routine \`bash $T/routine.sh\` failed at ${SHA92:0:9} (exit 3): staging refused the migration" ]'
+rloop config-routine.md T-92
+check "DS-411 AC2: a routine that failed is not run again at the same head" '[ "$(grep -c "^192 " "$T/routine.ran")" = 1 ] && [ "$(merged)" = 191 ] && qf T-92 .merge_blocked | grep -q "failed at ${SHA92:0:9} (exit 3)"'
+rloop config-routine.md T-93; rloop config-routine.md T-93
+check "DS-411: a PR that also touches a hold with no routine is the person'\''s, and no routine runs" '! grep -q "^193 " "$T/routine.ran" && [ "$(merged)" = 191 ] && [ "$(qf T-93 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
+
 # ---- DS-407: the person's step in no batch holds a green PR's merge, and lifting it lets it merge --
 SHA61=f111111111111111111111111111111111111111
 cat > "$T/prs.json" <<EOF

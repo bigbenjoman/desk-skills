@@ -29,6 +29,11 @@ t('hold split on first ": "', holds[0].why, 'build and push Lambda images first 
 t('hold match', matchHolds(['backend/app/x.py', 'frontend/a.ts'], holds).map((h) => h.glob).join(','), 'backend/**');
 t('hold basename any depth', matchHolds(['docs/claude.md'], holds).length, 1);
 t('no hold', matchHolds(['backendish/x', 'frontend/backend.ts'], holds).length, 0);
+t('DS-411 a hold names no routine unless the item does', JSON.stringify(holds.map((h) => h.routine)), '[null,null]');
+const routined = parseHolds(['prisma/migrations/**: apply it to staging and production first; desk runs: ./scripts/apply.sh --both', 'db/**: ; desk runs: ./a.sh', 'x/**: runs; desk runs:']);
+t('DS-411 `; desk runs: <command>` is the routine, and the reason stops before it', JSON.stringify(routined.map((h) => [h.why, h.routine])),
+  JSON.stringify([['apply it to staging and production first', './scripts/apply.sh --both'], ['(no reason given in §4 Merge holds)', './a.sh'], ['runs; desk runs:', null]]));
+t('DS-411 a matched hold keeps its routine', matchHolds(['prisma/migrations/1/m.sql'], routined).map((h) => h.routine).join(), './scripts/apply.sh --both');
 const kids = [
   { key: 'T-1', merged_at: '2026-10-01T10:00:00Z', result: { pr: 11 }, promotion_hold: 'deploys infra — infra/**, 1 file(s), e.g. infra/a.tf' },
   { key: 'T-2', merged_at: '2026-10-03T10:00:00Z', result: { pr: 12 }, promotion_hold: 'build the images first — backend/**, 2 file(s), e.g. backend/x.py' },
