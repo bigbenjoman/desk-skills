@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, tally, isClean, carriedSection, acceptedSection, methodLine, CLEAN, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
+import { render, tally, isClean, carriedSection, acceptedSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
 import { reviewGaps } from '../desk/bin/fix-tries.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -301,6 +301,28 @@ t('the fix range falls back to the merge base', whole.includes('`since` is the b
 t('after a partial previous round', whole.includes('**The previous verdict was partial**'), true)
 t('after a rebase', whole.includes('`git merge-base --is-ancestor <since> HEAD` fails'), true)
 t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEAD` prints anything'), true)
+
+// DS-422 AC5: --check reads a review body as the repo's review gate does, before the worker pushes.
+{
+  const gate = await import('../desk/templates/scripts/desk/review-gate.mjs')
+  const H = 'b'.repeat(40)
+  const body = (marker, heading = `## desk-review: clean at \`${H.slice(0, 9)}\`, round 1`) => `<!-- desk-review:local -->\n${marker}\n\n${heading}\n`
+  const clean = (o = {}) => `<!-- desk-review:verdict v=1 sha=${o.sha ?? H} p0=0 p1=${o.p1 ?? 0} p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=${o.vendor ?? 'codex-cross'} round=1 -->`
+  t('DS-422 AC5 a clean verdict at the head reads', gateRejects(body(clean()), H, gate), null)
+  t('DS-422 AC5 an old-format marker is rejected', /reads no verdict/.test(gateRejects(body('<!-- desk-review:verdict sha=bbb p0=0 -->'), H, gate)), true)
+  t('DS-422 AC5 a verdict for another commit is rejected', /attests ccccccccc, not the head bbbbbbbbb/.test(gateRejects(body(clean({ sha: 'c'.repeat(40) })), H, gate)), true)
+  t('DS-422 AC5 a vendor the gate does not take is rejected', /vendor=same-vendor, and the gate requires codex-cross/.test(gateRejects(body(clean({ vendor: 'same-vendor' })), H, gate, 'codex-cross')), true)
+  t('DS-422 AC5 a heading contradicting a clean marker is rejected', /lists "1 P1"/.test(gateRejects(body(clean(), '## desk-review: 1 P1'), H, gate)), true)
+  t('DS-422 AC5 counts handed on are no format fault', gateRejects(body(clean({ p1: 1 }), '## desk-review: 1 P1'), H, gate), null)
+  const dir = mkdtempSync(join(tmpdir(), 'verdict-check-'))
+  const f = join(dir, 'report.md')
+  writeFileSync(f, body(clean({ sha: 'c'.repeat(40) })))
+  const r = spawnSync('node', [SCRIPT, '--check', f, H], { cwd: dir, encoding: 'utf8' })
+  t('DS-422 AC5 --check exits 1 naming why', `${r.status} ${/^REJECTED by .*review-gate\.mjs: its verdict marker attests/.test(r.stdout)}`, '1 true')
+  writeFileSync(f, body(clean()))
+  t('DS-422 AC5 --check exits 0 on a body the gate reads', spawnSync('node', [SCRIPT, '--check', f, H], { cwd: dir, encoding: 'utf8' }).status, 0)
+  rmSync(dir, { recursive: true, force: true })
+}
 
 console.log(fails ? `${fails} failed` : 'all verdict checks passed')
 process.exit(fails ? 1 : 0)

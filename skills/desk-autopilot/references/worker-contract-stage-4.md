@@ -206,6 +206,21 @@ finders read-only, and when and how to call `codex`. Read that section before th
 - **Nothing found**: say so with the count of files reviewed. It goes in the PR's Testing bullet
   per `desk-pr`, carrying the SHA and any `(same-vendor)` tag.
 
+**Before every push, check the review you will post reads at that head.** A review the repo's gate
+rejects (no verdict marker it reads, one for another commit, a vendor other than the one it requires,
+or a heading contradicting a clean marker) leaves its verdict check red, and the merge driver never
+reruns a check that reads the PR's state. Write the report body you will post to a file, then:
+
+```bash
+node <DESK_SKILLS_DIR>/desk-review/bin/verdict.mjs --check <report> <full head SHA>
+```
+
+(`desk-env paths` prints `DESK_SKILLS_DIR`; `git rev-parse HEAD` the SHA.)
+
+Exit 0 reads it as the repo's own `scripts/desk/review-gate.mjs` does. Exit 1 names why: do not
+push. Run §4 Local review command again at the head, rebuild the report from that run's results with
+`verdict.mjs`, and check it again. Still rejected after that run: park with the reason it printed.
+
 **Post the report to your PR** where config §3 `pr-self-review-comment` is `yes` (otherwise park
 with the report). After `gh pr create --draft`, submit it as one `COMMENTED` review. Where the review
 command defines markers, its first line is exactly the command's local-review marker and its second
