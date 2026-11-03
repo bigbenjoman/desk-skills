@@ -1946,7 +1946,6 @@ const raw280 = async (key) => {
   s.ui.finish(0);
   return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
 };
-// DS-421 colours a Merging age by the age itself, so a check that changed 30 minutes ago no longer clears it.
 t('DS-280 AC6 and DS-421 a Merging age of 2 hours or more is amber, whether or not a check changed since', `${await raw280('M-6')} | ${await raw280('M-4')}`, '38;5;180:for 3h | 38;5;180:for 2h 5m');
 t('DS-280 AC9 behind only a PR that needs you: Waiting, saying so, and starting after it', `${/V-504 +· waiting/.test(row280('V-504'))} ${cells280('V-504').join(' | ')}`,
   'true behind #698, which needs you | after #698');
