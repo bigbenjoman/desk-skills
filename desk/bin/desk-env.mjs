@@ -293,6 +293,7 @@ export const CONFIG_ROWS = Object.freeze({
   'branch-protection': { section: '4', row: 'Branch protection' },
   'advisory-checks': { section: '4', row: 'Advisory checks' },
   'flaky-checks': { section: '4', row: 'Known flaky checks' },
+  'state-checks': { section: '4', row: 'State checks' },
   'operator-checks': { section: '4', row: "Checks workers can't fix" },
   'check-builds': { section: '4', row: 'Check builds' },
   'pre-merge-steps': { section: '4', row: 'Pre-merge steps' },

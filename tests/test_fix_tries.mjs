@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -452,5 +452,23 @@ t('DS-419 the reply names the try and the head', feedbackReply(fb1.fix, 'd'.repe
 const rfReady = { ...reviewFix(tk(), { pr: 2289, head: HEAD, verdict: { p0: '1', p1: '0' }, body: '### P0 (1)\n- src/clerk.ts:12 signature changed on main' }).fix, ready: true };
 t('DS-419 AC2 a ready PR\'s review fix brief says it is out of draft', fixBrief(tk({ fix: rfReady })).includes('Your PR #2289 is open and out of draft'), true);
 t('DS-419 AC2 its task leaves it out of draft and reviews the new head', /review the new head with desk-review.*leave the PR out of draft/.test(fixTask(tk({ fix: rfReady }))), true);
+
+// DS-422: a §4 State check reads the PR's state, so the driver never reruns it and no fix worker fixes it.
+const STATE = [{ name: '🌿 Local Adversarial Code Review', kind: 'verdict' }, { name: '🔐 Review gate', kind: 'approval' }, { name: '🏁 CI gate', kind: null }];
+const stateRed = pr([ok('tests'), red('🌿 Local Adversarial Code Review', '41439509032'), red('🔐 Review gate', '41439509055'), red('🏁 CI gate', '41439509055')]);
+t('DS-422 AC1 red only on state checks, reruns spent: no fix try is sent', fixCall(tk(), stateRed, ctx({ stateChecks: STATE })), null);
+const bareRed = fixCall(tk(), pr([ok('tests'), red('PR title', '77')]), ctx({ stateChecks: [...STATE, { name: 'PR title', kind: null }], reruns: () => 0 }));
+t('DS-422 AC1 red only on a state check of no kind, never rerun: put to the person as stuck', `${bareRed?.call} ${bareRed?.why}`, 'stuck red on "PR title", a §4 State check: it reads the PR\'s state, not its code, so no rerun or fix try turns it green; a person clears what it reads');
+const codeAndState = pr([...stateRed.checks, red('Backend tests', '901')]);
+t('DS-422 AC2 a red test beside them still waits on its own reruns', fixCall(tk(), codeAndState, ctx({ stateChecks: STATE, reruns: (n) => (n === 'Backend tests' ? 1 : 0) })), null);
+const c422 = fixCall(tk(), codeAndState, ctx({ stateChecks: STATE, reruns: (n) => (n === 'Backend tests' ? 2 : 0) }));
+t('DS-422 AC2 and once they are spent, its fix try names only the test', c422?.fix.what, 'red: Backend tests');
+const vt = verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE });
+t('DS-422 AC3 a red verdict state check goes to a review worker', `${vt?.call} ${vt?.fix.kind} ${vt?.fix.ready}`, 'requeue rereview true');
+t('DS-422 AC3 its brief says the PR is out of draft and why', fixBrief(tk({ fix: vt.fix })).includes('Your PR #697 is open and out of draft on this branch, and the merge driver will not rerun the check that reads its review at its head aaaaaaaaaaaa: its "🌿 Local Adversarial Code Review" check is red, and a rerun reads the same verdict.'), true);
+t('DS-422 AC3 its task reviews the head and leaves it out of draft', /desk-review.*leave the PR out of draft/.test(fixTask(tk({ fix: vt.fix }))), true);
+t('DS-422 AC3 one review try per head: tried here, it is the person\'s', verdictTry(tk({ fix_tries: [{ ...vt.fix }] }), stateRed, { required: ['tests'], stateChecks: STATE })?.call, 'stuck');
+t('DS-422 AC4 a red approval check alone sends no worker', verdictTry(tk(), pr([ok('tests'), red('🔐 Review gate', '7')]), { required: ['tests'], stateChecks: STATE }), null);
+t('DS-422 a draft is undraft.mjs\'s, not this', verdictTry(tk(), { ...stateRed, isDraft: true }, { required: ['tests'], stateChecks: STATE }), null);
 
 process.exit(fails ? 1 : 0);

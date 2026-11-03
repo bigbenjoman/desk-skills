@@ -62,6 +62,20 @@ put that under `WAITING ON YOU`. It never waives:
 A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
 Unset waives nothing.
 
+**State checks are never rerun.** A check §4 State checks names (`` `<check>[: verdict|approval]` ``;
+unset, desk-gate.yml's `desk-review verdict` and `protected-path approval`) reads the PR's reviews,
+approvals or title, so a rerun reads the same state and fails the same way. The driver logs each red
+one with the error its run gave and reruns only the rest, so a PR red on nothing else gets no rerun
+and no cooldown. A red `approval` check is recorded as `merge_blocked` `approval: … needs approval
+from a human reviewer`, which desk-q and needs-you put to the person. A red `verdict` check with no
+unclean review at the head (a review missing, for an older head, or in a form the gate rejects) goes
+to a review worker that reviews the head and posts it, under the fix tries below; the person gets it
+once no try is left. A bare one (a title check, or a CI gate red because one of these is) red with
+no `verdict` or `approval` check beside it is put to the person as stuck. Where a red state check
+shares a workflow run with one red check to rerun, the driver reruns that check's job, not the run
+(with more, the run, and its log says the state check is rerun with it). A row that does not parse
+stops the driver at start.
+
 **Fix tries: what the driver cannot merge goes back to a worker, twice.** Each pass reads every
 ready batch PR (`pass.mjs`, `fix-tries.mjs`). One still red after the driver's two reruns at its
 head, and not waived above, or one GitHub reports in conflict with its base, has its ticket
