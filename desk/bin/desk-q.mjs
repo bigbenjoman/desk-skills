@@ -2000,6 +2000,14 @@ function inGroup(x, now) {
   const g = groupOf(x.k), at = Date.parse(x.t.group?.at ?? '');
   return ['merging', 'needs'].includes(g) && x.t.group?.g === g && Number.isFinite(at) ? Math.max(0, now - at) : null;
 }
+// The age STARTS shows: a Merging PR's from its head commit (pr_status head_at), which a driver restart
+// or a migration does not reset and a new head does; else how long the row has been in its group.
+function ageOf(x, now) {
+  const at = groupOf(x.k) === 'merging' ? Date.parse(prStatusOf(x.t)?.head_at ?? '') : NaN;
+  return Number.isFinite(at) ? Math.max(0, now - at) : inGroup(x, now);
+}
+// A Merging row's age is amber from STALL_MS and red from AGE_RED_MS, so ten days stuck never reads as two hours.
+export const AGE_RED_MS = 3 * 24 * 60 * 60 * 1000;
 
 // Each unfinished ticket's and unmerged PR's group, as a running pass reads the batch, for it to stamp
 // when a row entered its group (`group` on the ticket): the age STARTS shows, and the digest's stalled PRs.
@@ -2084,9 +2092,12 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const asked = new Set(needsCount(r).rows);
   const gk = (x) => (groupOf(x.k) === 'needs' && !asked.has(x) ? PUT_OFF : x.k);
   // A ticket with a PR open has started and has no ship date of its own. One in Merging or Needs you
-  // says how long it has been there instead, amber for a Merging PR with no change for STALL_MS.
-  const starts = (x) => { const a = afterPrs(of(x), x), g = inGroup(x, now); return g != null ? `for ${span(g)}` : x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
-  const startsSgr = (x) => (of(x).live && groupOf(x.k) === 'merging' && inGroup(x, now) != null && stalledFor(x.t, now) != null ? WARN : null);
+  // says how long it has been there instead (ageOf), a Merging PR's amber or red by that age.
+  const starts = (x) => { const a = afterPrs(of(x), x), g = ageOf(x, now); return g != null ? `for ${span(g)}` : x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
+  const startsSgr = (x) => {
+    const g = of(x).live && groupOf(x.k) === 'merging' ? ageOf(x, now) : null;
+    return g == null || g < STALL_MS ? null : g >= AGE_RED_MS ? FAIL : WARN;
+  };
   const ships = (x) => (x.pr ? '—' : shipsCell(Fof(x), x, now));
   const row = (x) => segRow(x.t.key, [
     [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]],

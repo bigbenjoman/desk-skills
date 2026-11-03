@@ -1407,7 +1407,7 @@ mkdir -p "$T/state-f/logs" "$T/state-f/merge-driver" "$T/fx"
 fx(){
   node -e 'const [dir, n, head, mergeable, ...cs] = process.argv.slice(1);
     const checks = cs.map((c) => { const [name, conclusion, run] = c.split(":"); return { __typename: "CheckRun", name, status: "COMPLETED", conclusion, detailsUrl: run ? `https://github.com/acme/widgets/actions/runs/${run}/job/1` : "" }; });
-    require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: false, mergeable, mergeStateStatus: mergeable === "CONFLICTING" ? "DIRTY" : "BLOCKED", headRefOid: head, statusCheckRollup: checks }))' "$T/fx" "$@"
+    require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: false, mergeable, mergeStateStatus: mergeable === "CONFLICTING" ? "DIRTY" : "BLOCKED", headRefOid: head, statusCheckRollup: checks, commits: [{ oid: "0000000000000000000000000000000000000000", committedDate: "2025-10-01T09:00:00Z" }, { oid: head, committedDate: "2025-10-20T09:00:00Z" }] }))' "$T/fx" "$@"
 }
 reran(){ printf '%s\n' "${@:3}" "${@:3}" > "$T/state-f/merge-driver/reruns-$1-$2"; }   # reran <n> <head> <check>...: two reruns each
 H1=1111111111111111111111111111111111111111; H2=2222222222222222222222222222222222222222; H3=3333333333333333333333333333333333333333
@@ -1476,6 +1476,7 @@ fx 699 "$H1" MERGEABLE tests:SUCCESS Lint:SUCCESS
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-280 AC7 a check result that changed moves the last change, and the group's start stays" \
   '[ "$(field F-5 pr_status.changed_at)" != "$F5_CHANGED" ] && [ "$(field F-5 pr_status.changed_at)" = "$(field F-5 pr_status.at)" ] && [ "$(field F-5 group)" = "$F5_GROUP" ]'
+check "DS-421 the PR's head commit time is recorded, the head's and not an earlier commit's" '[ "$(field F-5 pr_status.head_at)" = "\"2025-10-20T09:00:00Z\"" ]'
 # Ahead of pace: new tickets hold, and a fix try still starts within the worker count.
 export DESK_QUEUE="$T/queue-p.json" DESK_AUTOPILOT_STATE="$T/state-p"
 mkdir -p "$T/state-p/logs"

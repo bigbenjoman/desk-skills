@@ -2349,20 +2349,22 @@ const prStates = {};
 // Each done ticket's PR is read once a pass, its state, draft, review decision, mergeable state and
 // checks in one call, and kept on the ticket as pr_status for desk-q, which makes no network call of
 // its own. A PR recorded merged or closed is not read again, unless it merged and the ticket has no
-// merged_at yet.
+// merged_at yet. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
+// counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
 const PR_FINAL = ['MERGED', 'CLOSED'];
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
   // gh writes a time GitHub has not set as the zero time, 0001-01-01.
   const time = (s) => (s && !s.startsWith('0001-') ? s : null);
   const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued', runId: c.runId ?? null }));
+  const headCommit = (v.commits ?? []).find((c) => c?.oid && c.oid === v.headRefOid);
   return {
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, mergeable: v.mergeable ?? null,
-    mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null,
+    mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null, head_at: time(headCommit?.committedDate),
     base: v.baseRefName ?? null, branch: v.headRefName ?? null, base_head: v.baseRefOid ?? null,
     checks, at: new Date().toISOString(),
   };

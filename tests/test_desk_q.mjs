@@ -1946,7 +1946,7 @@ const raw280 = async (key) => {
   s.ui.finish(0);
   return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
 };
-t('DS-280 AC6 and AC7 the age is amber with no change for 2 hours, and uncoloured after a change 30 minutes ago', `${await raw280('M-6')} | ${await raw280('M-4')}`, '38;5;180:for 3h | ');
+t('DS-280 AC6 and DS-421 a Merging age of 2 hours or more is amber, whether or not a check changed since', `${await raw280('M-6')} | ${await raw280('M-4')}`, '38;5;180:for 3h | 38;5;180:for 2h 5m');
 t('DS-280 AC9 behind only a PR that needs you: Waiting, saying so, and starting after it', `${/V-504 +· waiting/.test(row280('V-504'))} ${cells280('V-504').join(' | ')}`,
   'true behind #698, which needs you | after #698');
 t('DS-280 AC10 held behind it and asking its own question: Needs you, for its question, on its row and its page', `${/V-510 +◆ needs you/.test(row280('V-510'))} ${cells280('V-510')[0]} | ${rail279('V-510', r280)}`,
@@ -1955,6 +1955,35 @@ t('DS-280 AC9 and AC10 the header counts #698 and V-510 once each, and V-504 not
   `${q280[1].startsWith('◆ 3 tickets need you')} ${Q.needsRows(r280).map((x) => x.t.key ?? '').sort().join(',')}`, 'true N-5,V-510,V-698');
 t('DS-280 the pass\'s groups match what desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds280', stateDir: r280.stateDir, queuePath: r280.queuePath, q: r280.q, now: NOW })),
   JSON.stringify(Object.fromEntries(Object.keys(ds280).map((k) => [k, { 'N-5': 'needs', 'V-698': 'needs', 'V-510': 'needs', 'V-504': 'waiting' }[k] ?? 'merging']))));
+
+// ---- DS-421: a Merging PR's age counts from its head commit (pr_status head_at), so a driver restart
+// or a migration, which restamp `group`, leave it alone, and a new head starts it again.
+const head421 = (m, group) => ({ ...prOn(m.pr, okChecks(2).map((c, i) => (i ? c : { ...c, status: 'in_progress', conclusion: null })), { head_at: ago194(m.head), changed_at: ago194(20) }), ...(group ? { group } : {}) });
+const ds421 = {
+  // AC1: pushed 10 days ago, in Merging since the pass after a restart 30 minutes ago.
+  'R-1': head421({ pr: 921, head: 10 * 24 * 60 }, at280(30)),
+  // AC2: the same PR moved to a new slot, whose stamp is of another group until the next pass.
+  'R-2': head421({ pr: 922, head: 10 * 24 * 60 }, { g: 'running', at: ago194(1) }),
+  // AC3: a new head 20 minutes ago on a PR in Merging for 5 days.
+  'R-3': head421({ pr: 923, head: 20 }, at280(5 * 24 * 60)),
+  // AC4: stuck for 2 hours (amber) beside the 10-day one (red).
+  'R-4': head421({ pr: 924, head: 125 }, at280(125)),
+};
+put(I.T, I.env, 'ds421', { port: 5670, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds421', concurrency: 3, supervised: true, tickets: ds421 } });
+const q421 = lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'ds421'), { now: NOW, width: 200 }));
+const starts421 = (key) => fxRow(q421, key).slice(83, 96).trim();
+t('DS-421 AC1 after a restart a PR pushed 10 days ago reads 10 days, not the time since', starts421('R-1'), 'for 10d');
+t('DS-421 AC2 a migrated PR keeps its age', starts421('R-2'), 'for 10d');
+t('DS-421 AC3 a new head counts from its push', starts421('R-3'), 'for 20m');
+const raw421 = async (key) => {
+  const s = screen({ kind: 'repo', slug: 'acme__ds421' }, 200, () => NOW);
+  await sleep(20);
+  const l = lastFrame(s).find((x) => new RegExp(`^.\\s+(-|\\d+) {2}${key} `).test(x.replace(ANSI, ''))) ?? '';
+  s.ui.finish(0);
+  return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
+};
+t('DS-421 AC4 2 hours stuck is amber and 10 days red, so the two never render alike', `${await raw421('R-4')} | ${await raw421('R-1')}`, '38;5;180:for 2h 5m | 38;5;210:for 10d');
+t('DS-421 under 2 hours the age is uncoloured', await raw421('R-3'), '');
 
 // ---- DS-357: a repo with its standing batch and a batch in a slot named after a long branch is one
 // row on home, and one Queue in its place, whose moves act within each ticket's own batch.
