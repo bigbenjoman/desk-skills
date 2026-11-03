@@ -168,7 +168,8 @@ not, and `mergeable` never is — it flaps to `UNKNOWN` every time the default b
   (the hold says which), so a person merges it: clearance never does, whatever §3
   grants, and never arms auto-merge on it. `clearance-state.mjs` parks such a PR's merge (its park
   reason names the glob and why) and prints `DISARM` for any held PR with auto-merge armed; you
-  disarm it and report it under `HELD`. **While §4 Merge holds is unset, every PR's merge is
+  disarm it and report it under `HELD`. A code-owner hold whose files the base's CODEOWNERS gives
+  to the author alone is met, as in the merge driver (`gate.mjs` `codeOwnerHolds`). **While §4 Merge holds is unset, every PR's merge is
   parked** until `/desk-setup` sets it (`none` is a fine answer).
 - **No standing `CHANGES_REQUESTED`.** Where §4 Branch protection enforces it the platform refuses
   the merge; where it does not (or it is `none`), clearance refuses it itself. Only that reviewer

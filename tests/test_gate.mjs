@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold } from '../desk/bin/gate.mjs';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -75,6 +75,39 @@ t('server error leaves the file unread', read.has('apps/x/package.json'), false)
 t('only keyed-hold files read', calls.some((c) => c.includes('src/a.ts')), false);
 t('unchanged scripts not held', heldBy(['package.json'], read), '');
 t('nothing to read, no gh call', (await readKeyedFiles({ repo: 'o/r', base: 'main', head: 'x', files: ['a.ts'], holds: ciHolds, run: () => { throw new Error('called'); } })).size, 0);
+// A code-owner hold is met where the base's CODEOWNERS gives every held file to the merging account.
+const own = (p, f) => codeOwnersOf(parseCodeowners(p), f).join(' ');
+t('DS-413 CODEOWNERS last match wins', own('* @a\nsrc/ @b\n', 'src/x.ts'), '@b');
+t('DS-413 CODEOWNERS a trailing / owns a directory anywhere', own('apps/ @a', 'web/apps/x.ts'), '@a');
+t('DS-413 CODEOWNERS a leading / anchors', own('/docs/ @a', 'web/docs/x.md'), '');
+t('DS-413 CODEOWNERS docs/* does not own nested files', own('docs/* @a', 'docs/a/b.md'), '');
+t('DS-413 CODEOWNERS a bare name owns a directory of that name', own('frontend @a # note', 'frontend/src/a.ts'), '@a');
+t('DS-413 CODEOWNERS a pattern with no owners leaves the path unowned', own('* @a\nsrc/gen/\n', 'src/gen/x.ts'), '');
+const coHold = (files) => matchHolds(files, parseHolds(['frontend/**: CODEOWNERS path, needs your code-owner approval', 'content/legal/**: legal copy sign-off']));
+const coGh = (text, seen = []) => (args) => {
+  seen.push(args.at(-1));
+  const m = /contents\/(.+)\?ref=main$/.exec(args.at(-1));
+  if (text[m?.[1]] === undefined) throw Object.assign(new Error('x'), { stderr: 'gh: Not Found (HTTP 404)' });
+  if (text[m[1]] === 500) throw Object.assign(new Error('x'), { stderr: 'gh: Server Error (HTTP 500)' });
+  return text[m[1]];
+};
+const co = (files, text, merger = 'BigBenjoman', seen) => codeOwnerHolds(coHold(files), { repo: 'o/r', base: 'main', merger, run: coGh(text, seen) });
+const seen413 = [];
+const mine = await co(['frontend/a.ts', 'frontend/b/c.ts'], { CODEOWNERS: '* @bigbenjoman\n' }, 'BigBenjoman', seen413);
+t('DS-413 AC1 every owner the merging account: the code-owner hold is met', `${mine.held.length} ${mine.satisfied.map((h) => h.glob).join()}`, '0 frontend/**');
+t('DS-413 AC1 CODEOWNERS read from the base, .github/ first, then the root', seen413.join(' '), 'repos/o/r/contents/.github/CODEOWNERS?ref=main repos/o/r/contents/CODEOWNERS?ref=main');
+const other = await co(['frontend/a.ts', 'frontend/b/c.ts'], { '.github/CODEOWNERS': '* @bigbenjoman\nfrontend/b/ @bigbenjoman @alice @acme/web\n' });
+t('DS-413 AC2 another owner keeps it held, naming that owner\'s approval', `${other.satisfied.length} ${other.held[0]?.why}`,
+  '0 CODEOWNERS path, needs your code-owner approval (code-owner approval from @alice, @acme/web)');
+t('DS-413 a held file no pattern owns stays held', (await co(['frontend/a.ts'], { CODEOWNERS: 'backend/ @bigbenjoman' })).held[0]?.why,
+  'CODEOWNERS path, needs your code-owner approval (CODEOWNERS names no owner for frontend/a.ts, so held)');
+t('DS-413 an unreadable CODEOWNERS stays held', (await co(['frontend/a.ts'], { '.github/CODEOWNERS': 500, CODEOWNERS: '* @bigbenjoman' })).held[0]?.why,
+  'CODEOWNERS path, needs your code-owner approval (CODEOWNERS could not be read, so held)');
+t('DS-413 no CODEOWNERS stays held', (await co(['frontend/a.ts'], {})).held.length, 1);
+const legal = await co(['content/legal/terms.md', 'frontend/a.ts'], { CODEOWNERS: '* @bigbenjoman' });
+t('DS-413 negative control: a hold whose reason is not a code-owner approval is never met by CODEOWNERS', `${legal.held.map((h) => h.why).join()} | ${legal.satisfied.map((h) => h.glob).join()}`, 'legal copy sign-off | frontend/**');
+t('DS-413 no merger, nothing read and nothing met', (await codeOwnerHolds(coHold(['frontend/a.ts']), { repo: 'o/r', base: 'main', merger: null, run: () => { throw new Error('called'); } })).held.length, 1);
+t('DS-413 the reason is matched as a code-owner approval in any spelling', ['needs codeowner review', 'Code owner approval', 'code-owners'].every((why) => isCodeOwnerHold({ why })) && !isCodeOwnerHold({ why: 'owner sign-off' }), true);
 t('glob *', globToRegExp('apps/*/alembic/**').test('apps/api/alembic/versions/1.py'), true);
 t('glob * no slash', globToRegExp('apps/*/x').test('apps/a/b/x'), false);
 t('gh-checks bucket skipping', evaluateGate(normaliseRollup([{ name: 'a', bucket: 'skipping', state: 'SKIPPED' }]), { required: ['a'] }).state, 'fail');
