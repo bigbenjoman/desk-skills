@@ -95,7 +95,9 @@ A PR titled `feat…` merges only once a person has approved it: green, past the
 with no approval, the driver records `merge_blocked` `approval: …`, and desk-q and needs-you ask the person
 to approve it. One held for review feedback asks for no approval: the feedback goes to a fix worker.
 A request is cleared once the PR is approved, or once it conflicts or is not green, so the queue
-shows the conflict or the red check instead.
+shows the conflict or the red check instead. Any PR whose GitHub review decision is `REVIEW_REQUIRED`
+(branch protection wants an approving review) is recorded the same way, red or green: no rerun or
+fix worker gives it the approval, though a red one is still rerun and repaired.
 
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
 handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is
@@ -132,8 +134,8 @@ a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, 
 and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
 reached `completed`. It **never arms auto-merge** (the platform's idea of green is not the
 config's) and never undrafts. Why a ticket's PR is not merging is recorded on the ticket as
-`merge_blocked=` (a hold, behind without `pr-update-branch`, a green PR held for unresolved
-threads on two loops, naming the first, or a feature waiting on an approval), which `queue.mjs
+`merge_blocked=` (a hold, behind without `pr-update-branch`, a PR held for unresolved threads on
+two loops, green or red, naming the first, or one waiting on an approval), which `queue.mjs
 render` shows and desk-q and needs-you list as needing the person, apart from held threads with a
 fix try still left, which desk-q shows as merging. In `queue.mjs render` a done ticket reads
 `DONE` only once its PR has merged (or it finished with no PR): `PR OPEN` while its PR is open,

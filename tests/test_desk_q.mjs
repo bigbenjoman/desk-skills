@@ -1909,10 +1909,29 @@ t('DS-280 AC1 once its cooldown passes, the same rerun is next, not a different 
 t('DS-280 AC2 two red before any rerun: Merging, leading with the checks, never a pass count',
   `${/M-2 +▸ merging +#902 · Backend tests, Lint failed · rerun/.test(row280('M-2'))} ${rail279('M-2', r280)}`, 'true Moves without you: PR #902, Backend tests, Lint failed · rerun 1 of 2 next.');
 t('DS-280 AC3 both reruns spent and no fix try yet: Merging, a worker repairs it next',
-  `${/M-3 +▸ merging +#903 · Lint failed · reruns spent/.test(row280('M-3'))} ${rail279('M-3', r280)}`, 'true Moves without you: PR #903, Lint failed · reruns spent, a worker repairs it next.');
+  `${/M-3 +▸ merging +#903 · red after 2 reruns: Lint · a worker/.test(row280('M-3'))} ${rail279('M-3', r280)}`, 'true Moves without you: PR #903, red after 2 reruns: Lint · a worker repairs it next.');
 t('DS-280 more than two red checks lead with the count and the first', Q.needText(r280, { t: { ...ds280['M-2'], pr_status: { ...ds280['M-2'].pr_status, checks: [lint, backend, { ...red, name: 'e2e' }] } }, k: 'merging', pr: true }),
   '#902 · 3 checks failed: Lint +2 · rerun 1 of 2 next');
 t('DS-280 AC4 STARTS says how long a PR has been in Merging', cells280('M-4')[1], 'for 2h 5m');
+
+// ---- DS-420: a red PR the merge driver declined reads as the driver's reason, not its failed checks.
+const ci420 = { ...red, name: 'CI gate' };
+const red420 = (pr, more = {}, ps = {}) => ({ ...prOn(pr, [...okChecks(2), lint, backend, ci420], { reruns: {}, rerun_at: null, ...fresh, ...ps }), ...more });
+const thread420 = 'review feedback: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"';
+const need420 = (t) => Q.needText(r280, { t, k: 'merging', pr: true });
+t('DS-420 AC1 a red PR declined for an unresolved thread gives that reason, never its failed checks',
+  need420(red420(921, { merge_blocked: thread420 })), '#921 · 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row" · the next pass sends it to a worker, try 1 of 2');
+const approval420 = red420(922, { merge_blocked: 'approval: an approving review is required at abc123456: a person approves it before desk merges it' });
+t('DS-420 AC2 a red PR declined for an approving review is in Needs you, as needing an approval',
+  `${Q.prWhy(r280, approval420)?.code} | ${need420(approval420)}`, 'approval | #922 · an approving review is required at abc123456: a person approves it before desk merges it · approve it');
+t('DS-420 AC3 a red PR in conflict says it has a conflict',
+  need420(red420(923, {}, { mergeable: 'CONFLICTING' })), '#923 · merge conflict with main · the next pass sends it to a worker, try 1 of 2');
+t('DS-420 AC4 a PR the driver stopped rerunning says it is red after that many reruns',
+  need420(red420(924, {}, { reruns: { Lint: 2, 'Backend tests': 2, 'CI gate': 2 } })), '#924 · red after 2 reruns: Lint +2 · a worker repairs it next');
+t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r280, ds280['M-4'])} | ${need420(ds280['M-4'])}`, 'null | #904 · check 1 running, 30m · 2 of 3 done');
+const q420 = { tickets: { B: { key: 'B', ...red420(921, { merge_blocked: thread420 }) }, W: { key: 'W', ...heldBy('B') } } };
+t('DS-420 AC6 a ticket waiting behind a declined PR gives the PR\'s reason, not its failed-check count',
+  Q.holdOf(q420, q420.tickets.W, r280.ctx).text, 'behind #921: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"');
 t('DS-280 AC5 STARTS says how long a ticket has been in Needs you', `${/N-5 +◆ needs you/.test(row280('N-5'))} ${cells280('N-5')[1]}`, 'true for 1d 1h');
 t('DS-280 AC6 no change for 2 hours: WHAT IT NEEDS ends saying so', cells280('M-6')[0], '#906 · check 1 running, 2h 30m · no change for 2h');
 t('DS-280 AC7 a check that changed 30 minutes ago: no note', `${cells280('M-4')[0]} | ${q280.filter((l) => /no change/.test(l)).length}`, '#904 · check 1 running, 30m · 2 of 3 done | 1');
