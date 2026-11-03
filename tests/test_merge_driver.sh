@@ -595,8 +595,8 @@ EOF
 q init merge-state
 for k in T-91 T-92 T-93 T-94; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
 : > "$T/merges.log"; : > "$T/gh.log"
-sloop(){ out=$(DESK_CONFIG="$T/config-state.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-91 T-92 T-93 T-94" 2>&1); rc=$?; }
-sloop
+stloop(){ out=$(DESK_CONFIG="$T/config-state.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-91 T-92 T-93 T-94" 2>&1); rc=$?; }
+stloop
 check "DS-422: the driver starts with the state row read" '[ $rc -eq 0 ] && echo "$out" | grep -q "state=\[🌿 Local Adversarial Code Review,🔐 Review gate,🏁 CI gate\]"'
 check "DS-422 AC1: red only on state checks, none is rerun" '! grep -q "run rerun 919[125]" "$T/gh.log" && [ ! -e "$SD/reruns-191-$SHA91" ]'
 check "DS-422 AC1: each is logged with the gate and why" 'echo "$out" | grep -qF "#191 \"🌿 Local Adversarial Code Review\" failed (verdict state): The review at 135ce1536 is not in the current form" && echo "$out" | grep -qF "#191 \"🔐 Review gate\" failed (approval state): Approval required — a feat(portal): title" && echo "$out" | grep -qF "#191 \"🏁 CI gate\" failed (state) — a state check: a rerun reads the same PR state, so it is not rerun"'
@@ -604,7 +604,7 @@ check "DS-422 AC4: a red approval check puts the PR to the person, with no rerun
 check "DS-422 AC2: a red build beside a state check is rerun as today, and only it is counted" 'grep -q "run rerun 9193 --repo acme/widgets --failed" "$T/gh.log" && ! grep -q "run rerun 9194" "$T/gh.log" && [ "$(cat "$SD/reruns-192-$SHA92")" = build ] && [ -e "$SD/cooldown-192" ]'
 check "DS-422 AC1: a red build sharing a run with a red state check is rerun by its job, not the run, so the state check is not" 'grep -q "run rerun --job 96001 --repo acme/widgets" "$T/gh.log" && ! grep -q "run rerun 9196" "$T/gh.log" && ! grep -q "96002 --repo" "$T/gh.log" && [ "$(cat "$SD/reruns-193-$SHA93")" = build ] && [ "$(cat "$SD/reruns-ok-193-$SHA93")" = build ]'
 check "DS-422 AC2: two red checks sharing a run with a state check rerun the run, and the log says the state check goes with it" 'grep -q "run rerun 9197 --repo acme/widgets --failed" "$T/gh.log" && ! grep -q "run rerun --job 9700" "$T/gh.log" && echo "$out" | grep -qF "#194 \"🌿 Local Adversarial Code Review\" failed (verdict state) — a state check: a rerun reads the same PR state, so it is not rerun for itself, though rerunning run 9197 for the check beside it reruns it too"'
-sloop
+stloop
 check "DS-422 AC1: a later loop reruns no state check either" '! grep -q "run rerun 919[12]" "$T/gh.log" && ! echo "$out" | grep -q "#191 red, cooling down"'
 out=$(DESK_CONFIG="$T/config-state-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merge-driver.sh" --tickets "T-91" 2>&1); rc=$?
 check "DS-422: a state row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: config §4 State checks does not parse: \`🔐 Review gate: approve\`" && ! echo "$out" | grep -q "merge driver up"'
