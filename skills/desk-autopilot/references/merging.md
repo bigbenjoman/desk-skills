@@ -43,7 +43,7 @@ other base (a feature batch's) deploys nothing, so it merges as any other; the h
 base's own PR into the default branch. The driver records it on the child's ticket as it merges, and
 each pass names it under `WAITING ON YOU` against the promotion PR until that PR merges.
 
-The one exception is a hold that names its routine (`<glob>: <why>; desk runs: <command>`) where §3
+The other exception is a hold that names its routine (`<glob>: <why>; desk runs: <command>`) where §3
 `merge-hold-routine` is `yes`: the driver takes the PR through the rest of the gate, then runs each
 routine once at the head, in a detached checkout of it, and merges pinned to that head only if every
 one exits 0 and the head has not moved. A routine that fails is recorded with the step it failed at
