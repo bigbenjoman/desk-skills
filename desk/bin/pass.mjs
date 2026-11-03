@@ -36,11 +36,11 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows } from './gate.mjs';
 import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { readThreads, THREADS_QUERY } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
@@ -2502,8 +2502,12 @@ const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
 // §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
 // applied to staging), so no fix worker is sent for it and the person is told the step.
 const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
+// §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
+// sends a review worker for one reading the verdict).
+const stateRow = parseStateChecks(E.configValues('state-checks'));
 // The rows the fix tries read: one that does not parse makes none this pass.
-const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow], ['§4 Pre-merge steps', preMergeRow]].filter(([, r]) => r.errors.length).map(([row, r]) => `${row} does not parse: ${r.errors.join(', ')}`);
+const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <what fixes it>`'], ['§4 Pre-merge steps', preMergeRow, '`<check>: <what fixes it>`'], ['§4 State checks', stateRow, '`<check>` or `<check>: verdict|approval`']]
+  .filter(([, r]) => r.errors.length).map(([row, r, want]) => `${row} does not parse: ${r.errors.join(', ')} (want ${want})`);
 // The steps a red check's run failed at (fix-tries.mjs failedSteps), read once per run; none when gh cannot read it.
 const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'jobs']); return r.ok ? JSON.parse(r.out) : null; });
 const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
@@ -2853,11 +2857,12 @@ function reviewComments(id) {
 // ---- fix tries -----------------------------------------------------------
 // A ready PR the merge driver cannot merge, red after its two reruns, in conflict with its base, held
 // for review feedback, or with a review at its head that is not clean, goes back to a fix worker on
-// the same branch, at most twice (fix-tries.mjs). What no worker can
+// the same branch, at most twice (fix-tries.mjs); one whose §4 State check reading its verdict is red,
+// which the driver never reruns, to a review worker (verdictTry). What no worker can
 // fix, a check a person clears (§4 Checks workers can't fix, Check builds or Pre-merge steps) or a third failure, is recorded on the ticket as `stuck`
 // and put to the person. The driver's per-head rerun record is read from its state directory.
 if (fixRowErrors.length && undrafted.length) {
-  out.push(`fix tries: none this pass, since config ${fixRowErrors.join('; ')} (want \`<check>: <what fixes it>\`). Run /desk-setup`);
+  out.push(`fix tries: none this pass, since config ${fixRowErrors.join('; ')}. Run /desk-setup`);
 }
 const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 // The files a PR conflicts on, as git works them out against the base; null when it cannot.
@@ -2893,7 +2898,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   }
   const ctx = {
     // Out of draft, a §4 Check builds check is the person's too: the pass builds only a draft's.
-    repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows,
+    repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows, stateChecks: stateRow.checks,
     ...driverReruns(n, s.head),
     // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
     waived: (names) => {
@@ -2932,8 +2937,10 @@ function feedbackCall(t, s) {
     const rf = reviewFix(t, { pr: n, head: s.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: E.permission('autopilot-judgement') });
     if (rf) return rf.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
   }
-  if (E.permissionOrUnset('merge-feedback-first') === 'no') return null;
-  return feedbackFix(t, { pr: n, head: s.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
+  const ff = E.permissionOrUnset('merge-feedback-first') === 'no' ? null
+    : feedbackFix(t, { pr: n, head: s.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
+  // A red verdict state check with no unclean review at the head to fix: a review worker posts one.
+  return ff ?? (fb.review ? null : verdictTry(t, s, { ...gateLists(), stateChecks: stateRow.checks }));
 }
 function readFeedback(n) {
   const [owner, name] = GH_REPO.split('/');

@@ -149,6 +149,13 @@ How to turn what you find into rows:
   failed on most of them (it merged red, so it is not gating in practice), with the failure count,
   e.g. "`Run e2e tests` failed on 14 of 15". Never propose a required check. The user confirms each;
   `none` is the default. Everything not listed must pass for "green".
+- **State checks.** Search the workflows for checks that read the PR's state rather than its code:
+  one that reads a desk-review (or other review) verdict from the PR's reviews, one that requires an
+  approval, one that checks the title, and a gate job that only aggregates others (`needs:` on them).
+  Propose each as `` `<check>: verdict` ``, `` `<check>: approval` `` or a bare `` `<check>` ``, named
+  exactly as GitHub shows it; desk-gate.yml's `desk-review verdict: verdict` and `protected-path
+  approval: approval` are the default when the user writes nothing. Say that the merge driver never
+  reruns one: a red verdict check goes to a review worker, a red approval check to the user.
 - **Checks workers can't fix.** Search the repo instructions and the workflows for checks that fail
   until a person does something outside the code: an image built by hand, a credential, a service
   only they can reach ("run `ensure-flows-image.sh` if the Flows check says the image is missing").

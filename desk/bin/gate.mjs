@@ -33,6 +33,8 @@
 //     every held file the base's CODEOWNERS gives to `merger` alone is satisfied
 //   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` -> { flaky, errors }
 //   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
+//   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
+//   stateFailing(failing, stateChecks) -> the failing checks that are state checks, each with its kind
 //   skippedOnly(checks)      every check finished, at least one was skipped, and the rest passed
 //   isBot(author)            a PR author, reviewer or commenter ({ login, __typename? }) that is a bot
 //   isHuman(author, self)    one that is neither a bot nor `self`
@@ -40,13 +42,18 @@
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name] [--merger <login>]   one JSON object: title, sha, base,
 //     head, mergeState, reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory
-//     checks), holds (each { glob, why, routine, files, count }), holdsMet (the code-owner holds
-//     `merger` alone owns, so not holding it),
+//     checks that are not §4 State checks, failedJobs: [{ runId, jobId, name }] for the one in a run that
+//     also holds a failing state check, rerun by job instead, and stateFailing: the failing state checks,
+//     each { name, kind, runId, why, rerunWith? } with why the first error its run annotated, or null),
+//     holds (each { glob, why, routine, files, count }), holdsMet (the code-owner holds `merger` alone
+//     owns, so not holding it),
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
 //     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
 //     (with no diff to read, a `#<key>` hold on a listed file holds)
 //   node gate.mjs flaky                            print each known flaky check as `<check>\t<globs>`;
+//     exit 1 naming the row when it does not parse
+//   node gate.mjs state                            print each §4 State check as `<check>\t<kind>`;
 //     exit 1 naming the row when it does not parse
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -460,6 +467,36 @@ export function parseFlaky(items) {
   return { flaky, errors };
 }
 
+// §4 State checks items: checks that read the PR's state (its reviews, approvals, title or another
+// gate over those) rather than its code, so a rerun reads the same state and fails the same way. Each
+// is `<check>` or `<check>: <kind>`, split on the last `: `: kind `verdict` reads the desk-review
+// verdict at the head (a review worker posts a fresh one), `approval` reads a person's approval at
+// the head (only a person clears it); a bare check reads other state, such as the title or an
+// aggregate gate failing because of one of the others. A one-word tail that is no kind is an error,
+// never a guess. Unset is desk-gate.yml's two state jobs; `none` names none.
+export const STATE_KINDS = ['verdict', 'approval'];
+export const DEFAULT_STATE_CHECKS = [{ name: 'desk-review verdict', kind: 'verdict' }, { name: 'protected-path approval', kind: 'approval' }];
+export function parseStateChecks(items) {
+  if (items == null) return { checks: DEFAULT_STATE_CHECKS, errors: [] };
+  const checks = [];
+  const errors = [];
+  for (const x of items) {
+    if (!x || /^none$/i.test(x.trim())) continue;
+    const i = x.lastIndexOf(': ');
+    const tail = i < 0 ? '' : x.slice(i + 2).trim();
+    const kind = STATE_KINDS.includes(tail) ? tail : null;
+    const name = (kind ? x.slice(0, i) : x).trim();
+    if (!name || (!kind && /^[a-z]+$/.test(tail))) errors.push(`\`${x}\``);
+    else checks.push({ name, kind });
+  }
+  return { checks, errors };
+}
+// The gate's failing checks that are state checks, each with its kind.
+export const stateFailing = (failing, stateChecks) => (failing ?? []).flatMap((f) => {
+  const s = (stateChecks ?? []).find((x) => x.name === f.name);
+  return s ? [{ ...f, kind: s.kind }] : [];
+});
+
 // Whether a red head may merge past its failures because each is a §4 Known flaky check. null when
 // there is nothing to waive (not red, or no row). Otherwise `applies` is true only when every failing
 // check is listed, none is required (branch protection enforces those, and merging past one is a
@@ -530,6 +567,21 @@ function loadFlaky(E) {
   if (errors.length) throw new Error(`config §4 Known flaky checks does not parse: ${errors.join(', ')} (want \`<check>: <glob> [<glob>…]\`, one span per check, or \`none\`). Run /desk-setup`);
   return flaky;
 }
+// §4 State checks, refused whole when any item does not parse.
+function loadStateChecks(E) {
+  const { checks, errors } = parseStateChecks(E.configValues('state-checks'));
+  if (errors.length) throw new Error(`config §4 State checks does not parse: ${errors.join(', ')} (want \`<check>\` or \`<check>: ${STATE_KINDS.join('|')}\`, one span per check, or \`none\`). Run /desk-setup`);
+  return checks;
+}
+// The first failure a check run's annotations give (a workflow's ::error:: line), or null.
+function failureMessage(repo, jobId) {
+  if (!jobId) return null;
+  try {
+    const notes = JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations`]));
+    const m = (Array.isArray(notes) ? notes : []).find((x) => x?.annotation_level === 'failure' && x.message)?.message;
+    return m ? String(m).split('\n')[0].trim().slice(0, 300) : null;
+  } catch { return null; }
+}
 export const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 // The workflow runs on a commit, in the shape evaluateGate reads. Throws when gh cannot list them.
 export const readRuns = (repo, sha) =>
@@ -566,14 +618,35 @@ if (isMain) {
           gate = evaluateGate(checks, { required, advisory, runs, untriggered: { ...s.untriggered, ...s.behind, ...s.reopen } });
         }
       }
-      // Run ids of failing, non-advisory checks, for a bounded rerun. From the check itself, else the
-      // failed completed runs for this commit.
-      const ids = new Set(gate.failing.map((f) => f.runId).filter(Boolean));
-      if (gate.failing.some((f) => !f.runId)) {
+      // A failing §4 State check is never rerun: it reads the PR's state, which a rerun reads again.
+      // Each carries the error its run gave, for the driver's log.
+      const stateChecks = loadStateChecks(E);
+      const jobOf = (f) => (pr.statusCheckRollup ?? []).filter((x) => x?.name === f.name && (!f.runId || String(x.detailsUrl ?? '').includes(`/runs/${f.runId}/`)))
+        .map((x) => /\/job\/(\d+)/.exec(String(x.detailsUrl ?? ''))?.[1]).filter(Boolean).pop() ?? null;
+      const state = stateFailing(gate.failing, stateChecks).map((f) => ({ ...f, why: failureMessage(repo, jobOf(f)) }));
+      const toRerun = gate.failing.filter((f) => !state.some((s) => s.name === f.name));
+      // A run holding a red state check as well as one red check to rerun: `--failed` would rerun the state
+      // check too, so that check's job is rerun alone. With more than one (a job rerun puts the run in
+      // progress, which refuses the next) or a job id it cannot read, the whole run is rerun and the state
+      // check is marked as rerun with it (rerunWith), so the log says so.
+      const failedJobs = [];
+      for (const r of new Set(state.map((s) => s.runId).filter((r) => r && toRerun.some((f) => f.runId === r)))) {
+        const js = toRerun.filter((f) => f.runId === r).map((f) => ({ runId: String(r), jobId: jobOf(f), name: f.name }));
+        if (js.length === 1 && js[0].jobId) failedJobs.push(...js);
+        else for (const s of state) if (s.runId === r) s.rerunWith = String(r);
+      }
+      const byJob = new Set(failedJobs.map((j) => j.runId));
+      // Run ids of failing, non-advisory checks that are not state checks, for a bounded rerun. From the
+      // check itself, else the failed completed runs for this commit.
+      const ids = new Set(toRerun.map((f) => f.runId).filter((r) => r && !byJob.has(String(r))));
+      if (toRerun.some((f) => !f.runId)) {
         // Only the latest run of each workflow: rerunning a superseded one replays its old payload.
         const latest = new Map();
         for (const r of runs) { const k = r.workflowName || r.name; if (!latest.has(k) || Number(r.databaseId) > Number(latest.get(k).databaseId)) latest.set(k, r); }
         for (const r of latest.values()) if (lc(r.status) === 'completed' && FAILED.has(lc(r.conclusion)) && !advisory.includes(r.name) && !advisory.includes(r.workflowName)) ids.add(String(r.databaseId));
+        // A run whose only failures are state checks stays out.
+        for (const s of state) if (s.runId && !toRerun.some((f) => f.runId === s.runId)) ids.delete(String(s.runId));
+        for (const r of byJob) ids.delete(r);
       }
       let files = [];
       let filesOk = true;
@@ -595,7 +668,7 @@ if (isMain) {
       console.log(JSON.stringify({
         number: pr.number, title: pr.title ?? '', sha: pr.headRefOid, head: pr.headRefName, base: pr.baseRefName, isDraft: pr.isDraft,
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
-        gate: { ...gate, failedRuns: [...ids] },
+        gate: { ...gate, failedRuns: [...ids], failedJobs, stateFailing: state },
         holds: held.map((h) => ({ glob: h.glob, why: h.why, routine: h.routine ?? null, files: h.files.slice(0, 5), count: h.files.length })),
         holdsMet: owned.satisfied.map(({ glob, why }) => ({ glob, why })),
         defaultBranch, holdsApply: pr.baseRefName === defaultBranch,
@@ -607,8 +680,10 @@ if (isMain) {
       for (const h of matchHolds(files, holds)) console.log(`${h.glob}\t${h.why}\t${h.files.length}`);
     } else if (cmd === 'flaky') {
       for (const f of loadFlaky(await import('./desk-env.mjs'))) console.log(`${f.name}\t${f.paths.join(' ')}`);
+    } else if (cmd === 'state') {
+      for (const s of loadStateChecks(await import('./desk-env.mjs'))) console.log(`${s.name}\t${s.kind ?? ''}`);
     } else {
-      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs holds <file> | gate.mjs flaky');
+      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs holds <file> | gate.mjs flaky | gate.mjs state');
       process.exit(2);
     }
   } catch (e) {

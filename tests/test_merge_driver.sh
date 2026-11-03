@@ -79,8 +79,13 @@ if (a[0] === 'pr' && a[1] === 'list') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
     state: p.state.toUpperCase(), mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
-    statusCheckRollup: p.checks.map(([name, conclusion, run]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci',
-      detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/1' : undefined })) });
+    statusCheckRollup: p.checks.map(([name, conclusion, run, job]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci',
+      detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/' + (job ?? run) : undefined })) });
+} else if (a[0] === 'api' && /check-runs\/\d+\/annotations/.test(a[1] ?? '')) {
+  // A job's annotations: annotations.json maps a job id to the error its run gave.
+  const id = /check-runs\/(\d+)/.exec(a[1])[1];
+  const m = fs.existsSync('$T/annotations.json') ? JSON.parse(fs.readFileSync('$T/annotations.json', 'utf8'))[id] : null;
+  out(m ? [{ annotation_level: 'failure', message: m }] : []);
 } else if (a[0] === 'run' && a[1] === 'list') {
   out([]);
 } else if (a[0] === 'run' && a[1] === 'rerun') {
@@ -652,5 +657,42 @@ check "DS-420 AC2: so is a green one, and it is not merged" '[ "$(qf T-83 .merge
 jq '."182".feedback = "APPROVED 0" | ."183".feedback = "APPROVED 0"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 dloop
 check "DS-420 AC2: once approved, the request is cleared: the red one reads red, the green one is confirmed" '[ "$(qf T-82 .merge_blocked)" = null ] && [ "$(qf T-83 .merge_blocked)" = null ] && echo "$out" | grep -q "#182 red at b82222222" && echo "$out" | grep -q "#183 green at b83333333 — confirming"'
+
+# ---- DS-422: a red §4 State check reads the PR's state, so it is never rerun ------------------------
+cp "$T/config-flaky.md" "$T/config-state.md"
+echo '| State checks | `🌿 Local Adversarial Code Review: verdict` `🔐 Review gate: approval` `🏁 CI gate` |' >> "$T/config-state.md"
+cp "$T/config-flaky.md" "$T/config-state-bad.md"
+echo '| State checks | `🔐 Review gate: approve` |' >> "$T/config-state-bad.md"
+SHA91=c911111111111111111111111111111111111111; SHA92=c922222222222222222222222222222222222222; SHA93=c933333333333333333333333333333333333333; SHA94=c944444444444444444444444444444444444444
+cat > "$T/prs.json" <<EOF
+{ "191": { "head": "fix/T-91", "base": "main", "sha": "$SHA91", "state": "open", "draft": false,
+           "checks": [["test", "SUCCESS", 9090], ["🌿 Local Adversarial Code Review", "FAILURE", 9191], ["🔐 Review gate", "FAILURE", 9192], ["🏁 CI gate", "FAILURE", 9195]] },
+  "192": { "head": "fix/T-92", "base": "main", "sha": "$SHA92", "state": "open", "draft": false,
+           "checks": [["test", "SUCCESS", 9090], ["build", "FAILURE", 9193], ["🏁 CI gate", "FAILURE", 9194]] },
+  "193": { "head": "fix/T-93", "base": "main", "sha": "$SHA93", "state": "open", "draft": false,
+           "checks": [["test", "SUCCESS", 9090], ["build", "FAILURE", 9196, 96001], ["🌿 Local Adversarial Code Review", "FAILURE", 9196, 96002]] },
+  "194": { "head": "fix/T-94", "base": "main", "sha": "$SHA94", "state": "open", "draft": false,
+           "checks": [["test", "SUCCESS", 9090], ["build", "FAILURE", 9197, 97001], ["lint", "FAILURE", 9197, 97002], ["🌿 Local Adversarial Code Review", "FAILURE", 9197, 97003]] } }
+EOF
+cat > "$T/annotations.json" <<'EOF'
+{ "9191": "The review at 135ce1536 is not in the current form: it claims cross-provider but its providers line does not say codex read the diff.",
+  "9192": "Approval required — a feat(portal): title, and only fix, docs, chore merge without an approval." }
+EOF
+q init merge-state
+for k in T-91 T-92 T-93 T-94; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+: > "$T/merges.log"; : > "$T/gh.log"
+stloop(){ out=$(DESK_CONFIG="$T/config-state.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-91 T-92 T-93 T-94" 2>&1); rc=$?; }
+stloop
+check "DS-422: the driver starts with the state row read" '[ $rc -eq 0 ] && echo "$out" | grep -q "state=\[🌿 Local Adversarial Code Review,🔐 Review gate,🏁 CI gate\]"'
+check "DS-422 AC1: red only on state checks, none is rerun" '! grep -q "run rerun 919[125]" "$T/gh.log" && [ ! -e "$SD/reruns-191-$SHA91" ]'
+check "DS-422 AC1: each is logged with the gate and why" 'echo "$out" | grep -qF "#191 \"🌿 Local Adversarial Code Review\" failed (verdict state): The review at 135ce1536 is not in the current form" && echo "$out" | grep -qF "#191 \"🔐 Review gate\" failed (approval state): Approval required — a feat(portal): title" && echo "$out" | grep -qF "#191 \"🏁 CI gate\" failed (state) — a state check: a rerun reads the same PR state, so it is not rerun"'
+check "DS-422 AC4: a red approval check puts the PR to the person, with no rerun and no cooldown" '[ "$(qf T-91 .merge_blocked)" = "approval: \"🔐 Review gate\" needs approval from a human reviewer at c91111111: a person approves it before desk merges it" ] && [ ! -e "$SD/cooldown-191" ] && ! echo "$out" | grep -q "#191 red, cooling down"'
+check "DS-422 AC2: a red build beside a state check is rerun as today, and only it is counted" 'grep -q "run rerun 9193 --repo acme/widgets --failed" "$T/gh.log" && ! grep -q "run rerun 9194" "$T/gh.log" && [ "$(cat "$SD/reruns-192-$SHA92")" = build ] && [ -e "$SD/cooldown-192" ]'
+check "DS-422 AC1: a red build sharing a run with a red state check is rerun by its job, not the run, so the state check is not" 'grep -q "run rerun --job 96001 --repo acme/widgets" "$T/gh.log" && ! grep -q "run rerun 9196" "$T/gh.log" && ! grep -q "96002 --repo" "$T/gh.log" && [ "$(cat "$SD/reruns-193-$SHA93")" = build ] && [ "$(cat "$SD/reruns-ok-193-$SHA93")" = build ]'
+check "DS-422 AC2: two red checks sharing a run with a state check rerun the run, and the log says the state check goes with it" 'grep -q "run rerun 9197 --repo acme/widgets --failed" "$T/gh.log" && ! grep -q "run rerun --job 9700" "$T/gh.log" && echo "$out" | grep -qF "#194 \"🌿 Local Adversarial Code Review\" failed (verdict state) — a state check: a rerun reads the same PR state, so it is not rerun for itself, though rerunning run 9197 for the check beside it reruns it too"'
+stloop
+check "DS-422 AC1: a later loop reruns no state check either" '! grep -q "run rerun 919[12]" "$T/gh.log" && ! echo "$out" | grep -q "#191 red, cooling down"'
+out=$(DESK_CONFIG="$T/config-state-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merge-driver.sh" --tickets "T-91" 2>&1); rc=$?
+check "DS-422: a state row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: config §4 State checks does not parse: \`🔐 Review gate: approve\`" && ! echo "$out" | grep -q "merge driver up"'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

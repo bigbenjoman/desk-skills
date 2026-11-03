@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold } from '../desk/bin/gate.mjs';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -239,4 +239,15 @@ t('DS-362 AC2 the oldest entry cut', cut.includes('- [X-1] note 1 '), false);
 t('DS-362 AC2 the full file named', cut.trimEnd().endsWith(`every note is in ${P}: grep it]`), true);
 t('DS-362 a header over the cap is cut within it', capNotes(`${'x'.repeat(5000)}\n- [X-1] y\n`, P, 1000).length <= 1000, true);
 t('DS-362 MAX_NOTES is the default cap', capNotes(notesOf(1000), P).length <= MAX_NOTES, true);
+
+// DS-422: §4 State checks.
+const sc = (items) => JSON.stringify(parseStateChecks(items));
+t('DS-422 unset is desk-gate.yml\'s two state jobs', sc(null), JSON.stringify({ checks: [{ name: 'desk-review verdict', kind: 'verdict' }, { name: 'protected-path approval', kind: 'approval' }], errors: [] }));
+t('DS-422 kinds and a bare check', sc(['🌿 Local Adversarial Code Review: verdict', '🔐 Review gate: approval', '🏁 CI gate']),
+  JSON.stringify({ checks: [{ name: '🌿 Local Adversarial Code Review', kind: 'verdict' }, { name: '🔐 Review gate', kind: 'approval' }, { name: '🏁 CI gate', kind: null }], errors: [] }));
+t('DS-422 a check name may hold ": "', sc(['Gate: title: approval']), JSON.stringify({ checks: [{ name: 'Gate: title', kind: 'approval' }], errors: [] }));
+t('DS-422 none names none', sc(['none']), JSON.stringify({ checks: [], errors: [] }));
+t('DS-422 an unknown kind is an error, never a guess', parseStateChecks(['Review gate: approve']).errors.join(), '`Review gate: approve`');
+t('DS-422 stateFailing keeps only the state checks, with their kinds', JSON.stringify(stateFailing([{ name: 'tests', runId: '1' }, { name: '🔐 Review gate', runId: '2' }], parseStateChecks(['🔐 Review gate: approval']).checks)),
+  JSON.stringify([{ name: '🔐 Review gate', runId: '2', kind: 'approval' }]));
 process.exit(fails ? 1 : 0);

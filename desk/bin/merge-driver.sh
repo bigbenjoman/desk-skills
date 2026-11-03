@@ -59,7 +59,10 @@
 #   - an approving review required           GitHub's review decision is REVIEW_REQUIRED: recorded as
 #                                            merge_blocked (`approval: …`) for the person, red or
 #                                            green; a red one is still rerun and repaired
-#   - not green                              "green" is desk-config.md's one definition, evaluated by
+#   - a red approval state check             a §4 State check of kind approval is red: recorded as
+#                                            merge_blocked (`approval: …`) for the person, and never
+#                                            rerun, so no cooldown is scheduled for it
+#   - not green                             "green" is desk-config.md's one definition, evaluated by
 #                                            gate.mjs (shared with desk-clearance); a head must stay
 #                                            green across two loops before it merges, so a check that
 #                                            passes before the rest of CI has even queued cannot land it
@@ -83,6 +86,9 @@
 # the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
 # A check still red after both goes back to a fix worker: pass.mjs reads reruns-<n>-<sha> and
 # cooldown-<n> in <state>/merge-driver for that, so their names and contents are shared with it.
+# A red §4 State check reads the PR's state, not its code, so it is never rerun: each is logged with
+# the error its run gave. One of kind `approval` is recorded as merge_blocked (`approval: …`) for the
+# person; one of kind `verdict` the pass sends to a review worker (fix-tries.mjs verdictTry).
 # It NEVER undrafts, and never arms auto-merge (the platform's idea of green is not this one); an
 # armed auto-merge on a held PR, or one with feedback outstanding, is disarmed.
 #
@@ -198,6 +204,10 @@ desk_load_identity || exit 1
 # §4 Known flaky checks: what may be waived, and how a waiver's ticket is filed. Unset waives nothing.
 if ! FLAKY="$(node "$DESK_BIN/gate.mjs" flaky 2>&1)"; then
   echo "FAIL: $(printf '%s' "$FLAKY" | sed 's/^gate: //') — the driver waives nothing until it does." >&2; exit 1
+fi
+# §4 State checks: the checks a rerun cannot turn green, since they read the PR's state, not its code.
+if ! STATE_CHECKS="$(node "$DESK_BIN/gate.mjs" state 2>&1)"; then
+  echo "FAIL: $(printf '%s' "$STATE_CHECKS" | sed 's/^gate: //') — the driver cannot tell which red checks a rerun could fix until it does." >&2; exit 1
 fi
 TRACKER="$(desk_cfg tracker 2>/dev/null | tr 'A-Z' 'a-z' || true)"
 JIRA_CREATE_PERM="$(desk_perm jira-create)"
@@ -575,7 +585,7 @@ EOF_ROUTINES
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required
+  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
@@ -666,9 +676,16 @@ EOF_RESOLVE
     pass) ;;
     fail)
       log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"
+      # A red §4 State check of kind approval reads a person's approval at the head: only a person
+      # clears it, so the queue asks them, and rerun leaves it alone.
+      awaiting=$(printf '%s' "$g" | jq -r '[.gate.stateFailing[]? | select(.kind == "approval") | "\"\(.name)\""] | join(", ")')
+      if [ -n "$awaiting" ] && [ -z "$review_required" ]; then
+        log "#$n at ${sha:0:9} waits on an approval: $awaiting — a person approves it; no rerun"
+        queue_note "$key" "approval: $awaiting needs approval from a human reviewer at ${sha:0:9}: a person approves it before desk merges it"
+      fi
       # A waiver only lets a head merge, which one awaiting an approval may not, and its note would replace the approval's.
-      if [ -z "$review_required" ] && waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
-      else [ -n "$review_required" ] || approval_clear "$key"; rerun "$n" "$sha" "$g"; return 1; fi ;;
+      if [ -z "$review_required" ] && [ -z "$awaiting" ] && waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
+      else [ -n "$review_required" ] || [ -n "$awaiting" ] || approval_clear "$key"; rerun "$n" "$sha" "$g"; return 1; fi ;;
     *) [ -n "$review_required" ] || approval_clear "$key"; log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
   esac
   [ -n "$review_required" ] && return 1
@@ -740,7 +757,7 @@ EOF_RESOLVE
   return 1
 }
 
-log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD merge-by=$GRANT_BY required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)]"
+log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD merge-by=$GRANT_BY required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)] state=[$(printf '%s' "$STATE_CHECKS" | cut -f1 | paste -sd ',' -)]"
 # One release pass and out: for tests, and for checking by hand what would be released now.
 if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
 # pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run.

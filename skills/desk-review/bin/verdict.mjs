@@ -12,6 +12,9 @@
 //   node verdict.mjs --carried <results.json>  prints the PR body's carried-findings section, if any
 //   node verdict.mjs --method <results.json>   prints the PR body's line on how the review ran
 //   node verdict.mjs --accepted <results.json> prints the review body's accepted-gaps section, if any
+//   node verdict.mjs --check <body.md> <head>  exit 0 when the repo's review gate (its own
+//                                              scripts/desk/review-gate.mjs, else desk's) reads the
+//                                              body's verdict at that full head SHA; 1 naming why not
 //
 // results.json, written by the reviewer once every finder and refuter has answered:
 //
@@ -52,8 +55,9 @@
 //     it counts in `carried`, not in p2, and an unrefuted one still counts in unrefuted;
 //   - an accepted gap names its criterion, who accepted it, when, and the PR comment or review that
 //     records it, once each: one without all four is refused, never counted out of gaps.
-import { readFileSync, realpathSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
@@ -265,10 +269,50 @@ export function acceptedSection(r) {
   ].join('\n')
 }
 
+// Why the review gate would reject a review body posted at `head`, or null: no verdict marker it reads,
+// a marker for another commit, a vendor other than the one the gate requires, or a heading that
+// contradicts a clean marker. gate: the review-gate.mjs module (parseVerdict, headingMismatch, COUNTS).
+// Counts that are not clean are no format fault: a review may hand its findings on.
+export function gateRejects(body, head, gate, vendor = '') {
+  const v = gate.parseVerdict(body)
+  if (!v) return 'the gate reads no verdict in it: its first line must be the local-review marker and its second the v=1 verdict marker'
+  if (v.sha !== head) return `its verdict marker attests ${v.sha.slice(0, 9)}, not the head ${String(head).slice(0, 9)}`
+  if (vendor && v.vendor !== vendor) return `its verdict marker says vendor=${v.vendor}, and the gate requires ${vendor}`
+  const clean = Array.isArray(gate.COUNTS) && gate.COUNTS.every((k) => v[k] === 0)
+  if (clean) return gate.headingMismatch?.(v) ?? null
+  return v.heading ? null : 'the review has no visible heading under its markers'
+}
+
+// The review gate a repo runs: its own copy, else desk's template beside this install or this source tree.
+function gatePath() {
+  const home = process.env.DESK_HOME || `${process.env.HOME}/.claude/desk`
+  const here = fileURLToPath(new URL('../../../desk/templates/scripts/desk/review-gate.mjs', import.meta.url))
+  return ['scripts/desk/review-gate.mjs', `${home}/templates/scripts/desk/review-gate.mjs`, here].find((p) => existsSync(p))
+}
+// The vendor the repo's desk-gate.yml requires (REQUIRE_VENDOR), or ''.
+function gateVendor() {
+  try { return /REQUIRE_VENDOR:\s*['"]?([a-z-]*)/.exec(readFileSync('.github/workflows/desk-gate.yml', 'utf8'))?.[1] ?? '' } catch { return '' }
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch { return false }
 })()
-if (isMain) {
+if (isMain && process.argv[2] === '--check') {
+  // node verdict.mjs --check <review body> <head sha>: exit 0 when the gate reads it, 1 naming why not.
+  const [file, head, ...rest] = process.argv.slice(3)
+  const path = gatePath()
+  let body
+  try { body = readFileSync(file ?? '', 'utf8') } catch (e) { body = e }
+  const fail = !file || !/^[0-9a-f]{40}$/.test(head ?? '') || rest.length ? 'usage: verdict.mjs --check <review body file> <full head sha>'
+    : !path ? "no review-gate.mjs found: neither scripts/desk/review-gate.mjs here nor desk's template"
+    : body instanceof Error ? `cannot read ${file}: ${body.message}` : null
+  if (fail) { process.stderr.write(`verdict.mjs: ${fail}\n`); process.exit(2) }
+  const gate = await import(pathToFileURL(resolve(path)).href)
+  if (typeof gate.parseVerdict !== 'function') { process.stderr.write(`verdict.mjs: ${path} exports no parseVerdict, so its verdict format cannot be checked\n`); process.exit(2) }
+  const why = gateRejects(body, head, gate, gateVendor())
+  process.stdout.write(why ? `REJECTED by ${path}: ${why}\n` : `ok: ${path} reads its verdict at ${head.slice(0, 9)}\n`)
+  process.exit(why ? 1 : 0)
+} else if (isMain) {
   try {
     const args = process.argv.slice(2)
     const modes = { '--carried': carriedSection, '--method': methodLine, '--accepted': acceptedSection }

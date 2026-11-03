@@ -7,7 +7,8 @@
 // whose review gaps the person
 // ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
-// (reviewTry) to a review worker, both within the same tries, and so does a draft in conflict with
+// (reviewTry), or a ready PR whose §4 State check reading its verdict is red (verdictTry), to a review
+// worker, both within the same tries, and so does a draft in conflict with
 // its base that §3 lets a worker resolve (conflictFix). A draft whose screenshots were never taken goes
 // to a capture worker, once (captureTry).
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
@@ -20,7 +21,7 @@
 // A check §4 Checks workers can't fix or §4 Check builds names, or one failing at a step §4 Pre-merge
 // steps names, is never sent to a worker: on its own it is stuck with what clears it, and beside a
 // check a worker can fix it is named in the brief as not theirs.
-import { evaluateGate } from './gate.mjs';
+import { evaluateGate, stateFailing } from './gate.mjs';
 
 export const FIX_TRIES_MAX = 2;
 // merge-driver.sh's own cap and gap: reruns per check per head, and the seconds between them.
@@ -154,7 +155,8 @@ const conflictTry = (base, files, draft) => ({ kind: 'conflict', ...(draft ? { d
 const lastSaid = (t) => (t.fix?.kind === 'conflict' && t.fix.finished && t.result?.summary ? `; the last try said: ${t.result.summary}` : '');
 const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(done.length)}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
 
-// t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, operator, builds and
+// t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, stateChecks (§4 State
+// checks, parsed: never sent to a fix worker nor waited on for reruns), operator, builds and
 // premerge (§4 Checks workers can't fix, Check builds and Pre-merge steps, parsed), steps(check) ->
 // the step names its run failed at, reruns(name) -> reruns tried at s.head, cooledDown (the last rerun
 // has had its gap to report), waived(names) -> the driver merges past these as known flaky checks,
@@ -169,9 +171,20 @@ export function fixCall(t, s, ctx) {
   } else {
     const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
     if (gate.state !== 'fail' || gate.pending.length) return null;
-    split = splitFailing(gate.failing, ctx);
+    // A §4 State check is no worker's code to fix and the driver never reruns it: verdictTry and the
+    // driver's approval note take it.
+    const state = stateFailing(gate.failing, ctx.stateChecks);
+    split = splitFailing(gate.failing.filter((f) => !state.some((x) => x.name === f.name)), ctx);
     const { mine, notMine } = split;
-    if (!mine.length) return notMine.length ? operatorStuck(notMine, ctx) : null;
+    if (!mine.length && notMine.length) return operatorStuck(notMine, ctx);
+    if (!mine.length) {
+      // Red only on state checks. One reading the verdict or an approval has its route; one reading other
+      // state (a title) nothing reruns or fixes, so it is the person's, unless one of those may be its cause.
+      const bare = [...new Set(state.filter((x) => !x.kind).map((x) => `"${x.name}"`))];
+      return bare.length && !state.some((x) => x.kind)
+        ? { call: 'stuck', why: `red on ${bare.join(', ')}, a §4 State check: it reads the PR's state, not its code, so no rerun or fix try turns it green; a person clears what it reads` }
+        : null;
+    }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
     fix = checksFix(mine, notMine, ctx.repo);
@@ -372,6 +385,21 @@ export function reviewTry(t, { pr, head, why, base = null, baseMerge = null }) {
   return nextTry(done, pr, head, { kind: 'rereview', what: `review its head: ${why}` });
 }
 
+// A ready PR whose §4 State check of kind `verdict` is red, with no review at its head that reads as
+// not clean (that is reviewFix's), has a verdict the check rejects: none, one for an older head, or one
+// in a form the gate does not accept. The driver never reruns it, so it goes to a review worker under
+// reviewTry's tries, out of draft. s: its pr_status; ctx: { required, advisory, stateChecks }.
+export function verdictTry(t, s, ctx) {
+  if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
+  const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
+  if (gate.pending.length) return null;
+  const red = stateFailing(gate.failing, ctx.stateChecks).filter((f) => f.kind === 'verdict');
+  if (!red.length) return null;
+  const names = [...new Set(red.map((f) => `"${f.name}"`))].join(', ');
+  const c = reviewTry(t, { pr: s.pr, head: s.head, why: `its ${names} check is red, and a rerun reads the same verdict` });
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c;
+}
+
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
 // check's name and run, under the same tries as fixCall. There are no driver reruns to wait for: the
 // merge driver reruns only a PR out of draft. ctx: { repo, operator, premerge (parsed), steps }, as
@@ -430,7 +458,9 @@ export function fixBrief(t) {
   }
   if (f.kind === 'rereview') {
     return [f.extra ? `## Review try for a merge from the base: PR #${f.pr}` : `## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
-      `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`,
+      f.ready
+        ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not rerun the check that reads its review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
+        : `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`,
       'Review that head with desk-review and post the review on the PR (desk-review Phase 7), so its verdict marker is on the head. Change no code in this try: a P0, a P1 or a gap the review finds goes to a fix worker at the next pass.', '',
       f.extra ? `A merge from the base moved this head, so this try is not one of the ${f.of} fix tries. A PR with no verdict readable at its head after it goes to the person.`
         : `This is try ${f.try} of ${f.of}. A PR with no verdict readable at its head after this try goes to the person.`, ''].join('\n');
@@ -491,7 +521,7 @@ export function fixTask(t) {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
       `Your task is ${f.extra ? 'a review try after a merge from the base' : `review try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
       'Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code. ' +
-      `Open no new PR, leave the PR in draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
+      `Open no new PR, leave the PR ${f.ready ? 'out of' : 'in'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
   }
   if (f.kind === 'capture') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
