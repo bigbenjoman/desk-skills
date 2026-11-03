@@ -3,7 +3,7 @@
 // refuter results, and no results with an open finding, partial coverage or a dead seat can print
 // the clean verdict. Pure: no git, no GitHub, no codex.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -314,6 +314,7 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('DS-422 AC5 a vendor the gate does not take is rejected', /vendor=same-vendor, and the gate requires codex-cross/.test(gateRejects(body(clean({ vendor: 'same-vendor' })), H, gate, 'codex-cross')), true)
   t('DS-422 AC5 a heading contradicting a clean marker is rejected', /lists "1 P1"/.test(gateRejects(body(clean(), '## desk-review: 1 P1'), H, gate)), true)
   t('DS-422 AC5 counts handed on are no format fault', gateRejects(body(clean({ p1: 1 }), '## desk-review: 1 P1'), H, gate), null)
+  t('DS-422 AC5 a repo gate exporting only parseVerdict still checks the marker and its head', `${gateRejects(body(clean()), H, { parseVerdict: gate.parseVerdict })} ${/attests/.test(gateRejects(body(clean({ sha: 'c'.repeat(40) })), H, { parseVerdict: gate.parseVerdict }))}`, 'null true')
   const dir = mkdtempSync(join(tmpdir(), 'verdict-check-'))
   const f = join(dir, 'report.md')
   writeFileSync(f, body(clean({ sha: 'c'.repeat(40) })))
@@ -321,6 +322,10 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('DS-422 AC5 --check exits 1 naming why', `${r.status} ${/^REJECTED by .*review-gate\.mjs: its verdict marker attests/.test(r.stdout)}`, '1 true')
   writeFileSync(f, body(clean()))
   t('DS-422 AC5 --check exits 0 on a body the gate reads', spawnSync('node', [SCRIPT, '--check', f, H], { cwd: dir, encoding: 'utf8' }).status, 0)
+  mkdirSync(join(dir, 'scripts/desk'), { recursive: true })
+  writeFileSync(join(dir, 'scripts/desk/review-gate.mjs'), 'export const other = 1\n')
+  const r2 = spawnSync('node', [SCRIPT, '--check', f, H], { cwd: dir, encoding: 'utf8' })
+  t('DS-422 AC5 --check exits 2 on a repo gate it cannot read a verdict with', `${r2.status} ${/exports no parseVerdict/.test(r2.stderr)}`, '2 true')
   rmSync(dir, { recursive: true, force: true })
 }
 

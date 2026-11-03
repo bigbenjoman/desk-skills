@@ -39,8 +39,9 @@
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name]   one JSON object: title, sha, base, head, mergeState,
 //     reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory checks that are
-//     not §4 State checks, and stateFailing: the failing state checks, each { name, kind, runId, why }
-//     with why the first error its run annotated, or null), holds,
+//     not §4 State checks, failedJobs: [{ runId, jobId, name }] for those in a run that also holds a
+//     failing state check, rerun by job instead, and stateFailing: the failing state checks, each
+//     { name, kind, runId, why, rerunWith? } with why the first error its run annotated, or null), holds,
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
 //     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
@@ -544,9 +545,19 @@ if (isMain) {
         .map((x) => /\/job\/(\d+)/.exec(String(x.detailsUrl ?? ''))?.[1]).filter(Boolean).pop() ?? null;
       const state = stateFailing(gate.failing, stateChecks).map((f) => ({ ...f, why: failureMessage(repo, jobOf(f)) }));
       const toRerun = gate.failing.filter((f) => !state.some((s) => s.name === f.name));
+      // A run holding a red state check as well as a red check to rerun: `--failed` would rerun the state
+      // check too, so its other red jobs are rerun one by one. Where a job id cannot be read, the whole
+      // run is rerun and the state check is marked as rerun with it (rerunWith), so the log says so.
+      const failedJobs = [];
+      for (const r of new Set(state.map((s) => s.runId).filter((r) => r && toRerun.some((f) => f.runId === r)))) {
+        const js = toRerun.filter((f) => f.runId === r).map((f) => ({ runId: String(r), jobId: jobOf(f), name: f.name }));
+        if (js.every((j) => j.jobId)) failedJobs.push(...js);
+        else for (const s of state) if (s.runId === r) s.rerunWith = String(r);
+      }
+      const byJob = new Set(failedJobs.map((j) => j.runId));
       // Run ids of failing, non-advisory checks that are not state checks, for a bounded rerun. From the
       // check itself, else the failed completed runs for this commit.
-      const ids = new Set(toRerun.map((f) => f.runId).filter(Boolean));
+      const ids = new Set(toRerun.map((f) => f.runId).filter((r) => r && !byJob.has(String(r))));
       if (toRerun.some((f) => !f.runId)) {
         // Only the latest run of each workflow: rerunning a superseded one replays its old payload.
         const latest = new Map();
@@ -554,6 +565,7 @@ if (isMain) {
         for (const r of latest.values()) if (lc(r.status) === 'completed' && FAILED.has(lc(r.conclusion)) && !advisory.includes(r.name) && !advisory.includes(r.workflowName)) ids.add(String(r.databaseId));
         // A run whose only failures are state checks stays out.
         for (const s of state) if (s.runId && !toRerun.some((f) => f.runId === s.runId)) ids.delete(String(s.runId));
+        for (const r of byJob) ids.delete(r);
       }
       let files = [];
       let filesOk = true;
@@ -568,7 +580,7 @@ if (isMain) {
       console.log(JSON.stringify({
         number: pr.number, title: pr.title ?? '', sha: pr.headRefOid, head: pr.headRefName, base: pr.baseRefName, isDraft: pr.isDraft,
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
-        gate: { ...gate, failedRuns: [...ids], stateFailing: state },
+        gate: { ...gate, failedRuns: [...ids], failedJobs, stateFailing: state },
         holds: held.map((h) => ({ glob: h.glob, why: h.why, files: h.files.slice(0, 5), count: h.files.length })),
         defaultBranch, holdsApply: pr.baseRefName === defaultBranch,
         waiver,

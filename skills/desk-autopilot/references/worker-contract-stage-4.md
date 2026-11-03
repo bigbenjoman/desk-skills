@@ -206,9 +206,9 @@ finders read-only, and when and how to call `codex`. Read that section before th
 - **Nothing found**: say so with the count of files reviewed. It goes in the PR's Testing bullet
   per `desk-pr`, carrying the SHA and any `(same-vendor)` tag.
 
-**Before every push:** `node <DESK_SKILLS_DIR>/desk-review/bin/verdict.mjs --check <report> <HEAD
-SHA>`. Exit 1: the review gate rejects it and nothing reruns it, so don't push; review the head
-again, or park with the reason.
+**Before every push** (§4 Local review command `/desk-review`, or a `scripts/desk/review-gate.mjs`):
+run desk-review's `bin/verdict.mjs --check <report> <HEAD SHA>`. Exit 1: don't push; review the
+head again; still rejected, park. Exit 2: park.
 
 **Post the report to your PR** where config §3 `pr-self-review-comment` is `yes` (otherwise park
 with the report). After `gh pr create --draft`, submit it as one `COMMENTED` review. Where the review

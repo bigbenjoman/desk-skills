@@ -456,7 +456,9 @@ t('DS-419 AC2 its task leaves it out of draft and reviews the new head', /review
 // DS-422: a §4 State check reads the PR's state, so the driver never reruns it and no fix worker fixes it.
 const STATE = [{ name: '🌿 Local Adversarial Code Review', kind: 'verdict' }, { name: '🔐 Review gate', kind: 'approval' }, { name: '🏁 CI gate', kind: null }];
 const stateRed = pr([ok('tests'), red('🌿 Local Adversarial Code Review', '41439509032'), red('🔐 Review gate', '41439509055'), red('🏁 CI gate', '41439509055')]);
-t('DS-422 AC1 red only on state checks, no rerun ever made: no fix try waits on reruns, none is sent', fixCall(tk(), stateRed, ctx({ stateChecks: STATE, reruns: () => 0 })), null);
+t('DS-422 AC1 red only on state checks, reruns spent: no fix try is sent', fixCall(tk(), stateRed, ctx({ stateChecks: STATE })), null);
+const bareRed = fixCall(tk(), pr([ok('tests'), red('PR title', '77')]), ctx({ stateChecks: [...STATE, { name: 'PR title', kind: null }], reruns: () => 0 }));
+t('DS-422 AC1 red only on a state check of no kind, never rerun: put to the person as stuck', `${bareRed?.call} ${bareRed?.why}`, 'stuck red on "PR title", a §4 State check: it reads the PR\'s state, not its code, so no rerun or fix try turns it green; a person clears what it reads');
 const codeAndState = pr([...stateRed.checks, red('Backend tests', '901')]);
 t('DS-422 AC2 a red test beside them still waits on its own reruns', fixCall(tk(), codeAndState, ctx({ stateChecks: STATE, reruns: (n) => (n === 'Backend tests' ? 1 : 0) })), null);
 const c422 = fixCall(tk(), codeAndState, ctx({ stateChecks: STATE, reruns: (n) => (n === 'Backend tests' ? 2 : 0) }));

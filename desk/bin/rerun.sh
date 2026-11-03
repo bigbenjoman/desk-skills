@@ -2,8 +2,8 @@
 # CI reruns, one implementation for both callers: merge-driver.sh sources it for a ready PR, and
 # pass.mjs runs it for a draft whose red checks were all cancelled or timed out (undraft.mjs):
 #   RERUN_PERM=<§3 ci-rerun> rerun.sh <driver state dir> <owner/repo> <n> <sha>   with the gate JSON on stdin,
-#   { "gate": { "pending": [...], "failedRuns": [...], "failing": [{ name, runId }], "reasons": [...],
-#               "stateFailing": [{ name, kind, why }] } }
+#   { "gate": { "pending": [...], "failedRuns": [...], "failedJobs": [{ runId, jobId, name }],
+#               "failing": [{ name, runId }], "reasons": [...], "stateFailing": [{ name, kind, why, rerunWith? }] } }
 # RERUN_PERM unset reruns nothing, as `no` does. A check in stateFailing (§4 State checks) is logged and
 # never rerun: only the rest of `failing` counts here.
 #
@@ -14,12 +14,12 @@ RERUNS_MAX=2; RERUN_COOLDOWN=720
 reruns_at(){ grep -cxF "$3" "$SD/reruns${4:+-$4}-$1-$2" 2>/dev/null || true; }   # reruns_at <n> <sha> <check> [ok]
 
 rerun(){ # rerun <n> <sha> <gate json>
-  local g="$3" pend ids names rid name cnt cd_file now last all_ok=1 ok="" st states
+  local g="$3" pend ids jobs jid names rid name cnt cd_file now last all_ok=1 ok="" st states
   # A §4 State check reads the PR's reviews, approvals or title, so a rerun fails the same way: each is
   # logged with why, and never rerun, counted or cooled down for.
-  states=$(printf '%s' "$g" | jq -r '.gate.stateFailing[]? | "\"\(.name)\" failed (\(if .kind then "\(.kind) " else "" end)state)\(if .why then ": \(.why)" else "" end)"')
+  states=$(printf '%s' "$g" | jq -r '.gate.stateFailing[]? | "\"\(.name)\" failed (\(if .kind then "\(.kind) " else "" end)state)\(if .why then ": \(.why)" else "" end) — a state check: a rerun reads the same PR state, so \(if .rerunWith then "it is not rerun for itself, though rerunning run \(.rerunWith) for the check beside it reruns it too" else "it is not rerun" end)"')
   while IFS= read -r st; do
-    [ -n "$st" ] && log "#$1 $st — a state check: a rerun reads the same PR state, so it is not rerun"
+    [ -n "$st" ] && log "#$1 $st"
   done <<EOF_STATE
 $states
 EOF_STATE
@@ -30,7 +30,8 @@ EOF_STATE
   pend=$(printf '%s' "$g" | jq -r '.gate.pending | length')
   [ "$pend" = 0 ] || { log "#$1 red, but $pend check(s) still running — waiting for them before any rerun"; return; }
   ids=$(printf '%s' "$g" | jq -r '.gate.failedRuns[]?')
-  [ -n "$ids" ] || { log "#$1 red with nothing a rerun could fix ($(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')) — report it"; return; }
+  jobs=$(printf '%s' "$g" | jq -r '.gate.failedJobs[]? | "\(.runId)\t\(.jobId)\t\(.name)"')
+  [ -n "$ids" ] || [ -n "$jobs" ] || { log "#$1 red with nothing a rerun could fix ($(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')) — report it"; return; }
   # At most twice per check per head: a check red after two reruns is red, not flaky.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
@@ -50,6 +51,16 @@ EOF_NAMES
 "
     else log "#$1 rerun of $rid refused"; all_ok=""; fi
   done
+  # A run that also holds a red state check: each other red job on its own, so the state check is not rerun.
+  while IFS=$'\t' read -r rid jid name; do
+    [ -n "$jid" ] || continue
+    log "#$1 red + completed -> rerun job $jid of run $rid (\"$name\"), not the run, which holds a red state check"
+    if gh run rerun --job "$jid" --repo "$REPO" >/dev/null 2>&1; then echo "$now" > "$cd_file"; ok="$ok$name
+"
+    else log "#$1 rerun of job $jid refused"; all_ok=""; fi
+  done <<EOF_JOBS
+$jobs
+EOF_JOBS
   [ -n "$all_ok" ] && ok="$ok$(printf '%s' "$g" | jq -r '.gate.failing[] | select(.runId == null) | .name')"
   printf '%s\n' "$names" >> "$SD/reruns-$1-$2"
   ok=$(printf '%s\n' "$ok" | awk 'NF && !seen[$0]++')

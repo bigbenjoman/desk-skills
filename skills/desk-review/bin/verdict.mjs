@@ -278,8 +278,8 @@ export function gateRejects(body, head, gate, vendor = '') {
   if (!v) return 'the gate reads no verdict in it: its first line must be the local-review marker and its second the v=1 verdict marker'
   if (v.sha !== head) return `its verdict marker attests ${v.sha.slice(0, 9)}, not the head ${String(head).slice(0, 9)}`
   if (vendor && v.vendor !== vendor) return `its verdict marker says vendor=${v.vendor}, and the gate requires ${vendor}`
-  const clean = gate.COUNTS.every((k) => v[k] === 0)
-  if (clean) return gate.headingMismatch(v)
+  const clean = Array.isArray(gate.COUNTS) && gate.COUNTS.every((k) => v[k] === 0)
+  if (clean) return gate.headingMismatch?.(v) ?? null
   return v.heading ? null : 'the review has no visible heading under its markers'
 }
 
@@ -307,7 +307,9 @@ if (isMain && process.argv[2] === '--check') {
     : !path ? "no review-gate.mjs found: neither scripts/desk/review-gate.mjs here nor desk's template"
     : body instanceof Error ? `cannot read ${file}: ${body.message}` : null
   if (fail) { process.stderr.write(`verdict.mjs: ${fail}\n`); process.exit(2) }
-  const why = gateRejects(body, head, await import(pathToFileURL(resolve(path)).href), gateVendor())
+  const gate = await import(pathToFileURL(resolve(path)).href)
+  if (typeof gate.parseVerdict !== 'function') { process.stderr.write(`verdict.mjs: ${path} exports no parseVerdict, so its verdict format cannot be checked\n`); process.exit(2) }
+  const why = gateRejects(body, head, gate, gateVendor())
   process.stdout.write(why ? `REJECTED by ${path}: ${why}\n` : `ok: ${path} reads its verdict at ${head.slice(0, 9)}\n`)
   process.exit(why ? 1 : 0)
 } else if (isMain) {

@@ -176,7 +176,15 @@ export function fixCall(t, s, ctx) {
     const state = stateFailing(gate.failing, ctx.stateChecks);
     split = splitFailing(gate.failing.filter((f) => !state.some((x) => x.name === f.name)), ctx);
     const { mine, notMine } = split;
-    if (!mine.length) return notMine.length ? operatorStuck(notMine, ctx) : null;
+    if (!mine.length && notMine.length) return operatorStuck(notMine, ctx);
+    if (!mine.length) {
+      // Red only on state checks. One reading the verdict or an approval has its route; one reading other
+      // state (a title) nothing reruns or fixes, so it is the person's, unless one of those may be its cause.
+      const bare = [...new Set(state.filter((x) => !x.kind).map((x) => `"${x.name}"`))];
+      return bare.length && !state.some((x) => x.kind)
+        ? { call: 'stuck', why: `red on ${bare.join(', ')}, a §4 State check: it reads the PR's state, not its code, so no rerun or fix try turns it green; a person clears what it reads` }
+        : null;
+    }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
     fix = checksFix(mine, notMine, ctx.repo);
