@@ -28,6 +28,8 @@
 //   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>` -> [{ glob, path, key, why }]
 //   matchHolds(files, holds, contents) -> [{ glob, why, files }]
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
+//   codeOwnerHolds(held, { repo, base, merger, run }) -> { held, satisfied }: a code-owner hold whose
+//     every held file the base's CODEOWNERS gives to `merger` alone is satisfied
 //   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` -> { flaky, errors }
 //   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
 //   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
@@ -37,11 +39,12 @@
 //   isHuman(author, self)    one that is neither a bot nor `self`
 //
 // CLI (merge-driver.sh):
-//   node gate.mjs pr <number> [--repo owner/name]   one JSON object: title, sha, base, head, mergeState,
-//     reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory checks that are
-//     not §4 State checks, failedJobs: [{ runId, jobId, name }] for the one in a run that also holds a
-//     failing state check, rerun by job instead, and stateFailing: the failing state checks, each
-//     { name, kind, runId, why, rerunWith? } with why the first error its run annotated, or null), holds,
+//   node gate.mjs pr <number> [--repo owner/name] [--merger <login>]   one JSON object: title, sha, base,
+//     head, mergeState, reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory
+//     checks that are not §4 State checks, failedJobs: [{ runId, jobId, name }] for the one in a run that
+//     also holds a failing state check, rerun by job instead, and stateFailing: the failing state checks,
+//     each { name, kind, runId, why, rerunWith? } with why the first error its run annotated, or null),
+//     holds, holdsMet (the code-owner holds `merger` alone owns, so not holding it),
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
 //     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
@@ -326,6 +329,10 @@ export function globToRegExp(glob) {
   let g = glob.trim().replace(/^\.\//, '');
   if (g.endsWith('/')) g += '**';
   const anyDepth = !g.includes('/');
+  const re = globSource(g);
+  return new RegExp(anyDepth ? `(^|/)${re}$` : `^${re}$`);
+}
+function globSource(g) {
   let re = '';
   for (let i = 0; i < g.length; i++) {
     const c = g[i];
@@ -336,7 +343,7 @@ export function globToRegExp(glob) {
     else if (c === '?') re += '[^/]';
     else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
   }
-  return new RegExp(anyDepth ? `(^|/)${re}$` : `^${re}$`);
+  return re;
 }
 // A `#<key>` hold compares the key's value at the merge base and the head. A missing file reads as
 // an absent key; a file that does not parse counts as changed.
@@ -360,6 +367,68 @@ export function matchHolds(files, holds, contents) {
     });
     return { ...h, why: unread ? `${h.why} (${h.key} could not be compared, so held)` : h.why, files: hit };
   }).filter((h) => h.files.length);
+}
+
+// A hold whose reason is a code-owner approval stands for the approval GitHub asks of the paths' code
+// owners, which it reads from the base branch's CODEOWNERS, the first of these that exists.
+export const CODEOWNERS_PATHS = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+export const isCodeOwnerHold = (h) => /code.?owner/i.test(String(h?.why ?? ''));
+
+// One CODEOWNERS pattern: a leading or inner `/` anchors it to the root, a trailing `/` owns only what
+// is under that directory, and a pattern whose last segment has no `*` also owns everything under a
+// directory of that name.
+export function codeownersRegExp(pattern) {
+  let p = pattern.trim();
+  const dir = p.endsWith('/');
+  p = p.replace(/\/+$/, '');
+  const anchored = p.includes('/');
+  p = p.replace(/^\//, '');
+  const tail = dir ? '/.*' : /\*[^/]*$/.test(p) ? '' : '(?:/.*)?';
+  return new RegExp(`${anchored ? '^' : '(?:^|/)'}${globSource(p)}${tail}$`);
+}
+// CODEOWNERS text -> [{ re, owners }] in file order. A pattern with no owners leaves its paths unowned.
+export function parseCodeowners(text) {
+  const rules = [];
+  for (const raw of String(text ?? '').split('\n')) {
+    const [pattern, ...owners] = raw.replace(/(^|\s)#.*$/, '').trim().split(/\s+/).filter(Boolean);
+    if (pattern) rules.push({ re: codeownersRegExp(pattern), owners });
+  }
+  return rules;
+}
+// The owners of a file: the last matching pattern wins, as on GitHub. [] when none owns it.
+export const codeOwnersOf = (rules, file) => rules.findLast((r) => r.re.test(file))?.owners ?? [];
+
+// matchHolds' holds, split by whether a code-owner hold is already met: every owner of every file it
+// holds is `merger`, the account desk merges with. Nobody else's approval exists to give (an author
+// cannot approve their own PR), so GitHub's own review decision and merge state decide that merge.
+// Any other owner keeps it held, named in its reason; so does a file no pattern owns, or a CODEOWNERS
+// that cannot be read. run(ghArgs) as readKeyedFiles. -> { held, satisfied }
+export async function codeOwnerHolds(held, { repo, base, merger, run }) {
+  if (!merger || !held.some(isCodeOwnerHold)) return { held, satisfied: [] };
+  let text = null;
+  let unread = false;
+  for (const p of CODEOWNERS_PATHS) {
+    try { text = String(await run(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${p}?ref=${encodeURIComponent(base)}`])); break; }
+    catch (e) { if (!/HTTP 404/.test(String(e?.stderr ?? e?.message ?? e))) { unread = true; break; } }
+  }
+  const rules = parseCodeowners(text);
+  const me = `@${lc(merger).replace(/^@/, '')}`;
+  const out = { held: [], satisfied: [] };
+  for (const h of held) {
+    if (!isCodeOwnerHold(h)) { out.held.push(h); continue; }
+    if (text == null) { out.held.push({ ...h, why: `${h.why} (${unread ? 'CODEOWNERS could not be read' : `no CODEOWNERS on ${base}`}, so held)` }); continue; }
+    const others = new Set();
+    let unowned = null;
+    for (const f of h.files) {
+      const owners = codeOwnersOf(rules, f);
+      if (!owners.length) unowned ??= f;
+      for (const o of owners) if (lc(o) !== me) others.add(o);
+    }
+    if (others.size) out.held.push({ ...h, why: `${h.why} (code-owner approval from ${[...others].join(', ')})` });
+    else if (unowned) out.held.push({ ...h, why: `${h.why} (CODEOWNERS names no owner for ${unowned}, so held)` });
+    else out.satisfied.push({ ...h, why: `${h.why} (every code owner is ${me}, the merging account)` });
+  }
+  return out;
 }
 
 // The holds a batch's children carried into its base (merge-driver.sh records each as `promotion_hold`
@@ -573,7 +642,14 @@ if (isMain) {
       try { files = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean); }
       catch { filesOk = false; }
       const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
-      const held = filesOk ? matchHolds(files, holds, contents) : holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [];
+      // A code-owner hold is met only on the merge into the default branch, against its CODEOWNERS:
+      // into a batch base every hold is carried, for that base's own PR to be judged.
+      const mi = rest.indexOf('--merger');
+      const merger = mi >= 0 && pr.baseRefName === defaultBranch ? rest[mi + 1] : null;
+      const owned = filesOk
+        ? await codeOwnerHolds(matchHolds(files, holds, contents), { repo, base: pr.baseRefName, merger, run: gh })
+        : { held: holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [], satisfied: [] };
+      const held = owned.held;
       const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null });
       // The failing runs of the checks it would waive, for the ticket filed after the merge.
       if (waiver) waiver.runs = [...new Set(gate.failing.filter((f) => waiver.checks.includes(f.name)).map((f) => f.runId).filter(Boolean))];
@@ -583,6 +659,7 @@ if (isMain) {
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
         gate: { ...gate, failedRuns: [...ids], failedJobs, stateFailing: state },
         holds: held.map((h) => ({ glob: h.glob, why: h.why, files: h.files.slice(0, 5), count: h.files.length })),
+        holdsMet: owned.satisfied.map(({ glob, why }) => ({ glob, why })),
         defaultBranch, holdsApply: pr.baseRefName === defaultBranch,
         waiver,
       }));

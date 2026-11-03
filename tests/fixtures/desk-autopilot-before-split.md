@@ -794,7 +794,11 @@ accept a merge with red checks, so the rule is enforced only by you and the driv
 `<glob>#<key>` hold, changes that key of the file) is merged by a person, never by
 the driver or by you, whatever §3 grants: the repo needs a manual step first (the hold says which).
 The driver skips it and logs `HELD`; you put it under `WAITING ON YOU` with the hold's reason, the
-PR link and its head SHA, and it stays there until the user says they have merged it. A PR into any
+PR link and its head SHA, and it stays there until the user says they have merged it. The one hold
+that is met with no person is one whose reason is a code-owner approval (it matches `code owner` in
+any spelling) where the base's CODEOWNERS gives every held file to §1's handle alone: nobody else's
+approval exists to give, so GitHub's own review decision and the gate decide that merge. Any other
+owner keeps it held, and the hold's reason names them. A PR into any
 other base (a feature batch's) deploys nothing, so it merges as any other; the hold falls on that
 base's own PR into the default branch. The driver records it on the child's ticket as it merges, and
 each pass names it under `WAITING ON YOU` against the promotion PR until that PR merges.

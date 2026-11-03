@@ -359,7 +359,7 @@ async function derive({ withGit }) {
 
   if (withGit) await annotateGit(prs, REPO, base.branch)
   await annotateRest(prs)
-  await applyHolds(prs, holds, holdItems == null)
+  await applyHolds(prs, holds, holdItems == null, AUTHOR)
   overlaps(prs)
   await order(prs, withGit, REPO)
 
@@ -572,13 +572,15 @@ async function annotateRest(prs) {
 
 // §4 Merge holds: a PR touching a held path is never merged by clearance; a person merges it, after the
 // step the hold names. An unset row, or an unreadable file list, holds every PR rather than none.
-// A `<glob>#<key>` hold reads the file at the merge base and the head, as merge-driver.sh does.
-async function applyHolds(prs, holds, unset) {
+// A `<glob>#<key>` hold reads the file at the merge base and the head, and a code-owner hold the base's
+// CODEOWNERS, as merge-driver.sh does.
+async function applyHolds(prs, holds, unset, merger) {
   const run = async (args) => (await exec('gh', args, { maxBuffer: 16 * 1024 * 1024 })).stdout
   await Promise.all(prs.map(async (pr) => {
     if (unset) { pr.holds = []; pr.parkReasons.push('config §4 Merge holds is unset - run /desk-setup (`none` if no path needs a person)'); pr.mergeBlocked = true; return }
     const contents = await G.readKeyedFiles({ repo: GH.full, base: pr.base, head: pr.head, files: pr.files || [], holds, run })
-    pr.holds = G.matchHolds(pr.files || [], holds, contents).map((h) => ({ glob: h.glob, why: h.why, count: h.files.length, first: h.files[0] }))
+    const { held } = await G.codeOwnerHolds(G.matchHolds(pr.files || [], holds, contents), { repo: GH.full, base: pr.base, merger: pr.baseIsDefault ? merger : null, run })
+    pr.holds = held.map((h) => ({ glob: h.glob, why: h.why, count: h.files.length, first: h.files[0] }))
     for (const h of pr.holds) pr.parkReasons.push(`merge hold ${h.glob}: ${h.why} (${h.count} file${h.count > 1 ? 's' : ''}, e.g. ${h.first})`)
     if (pr.holds.length) pr.mergeBlocked = true
   }))

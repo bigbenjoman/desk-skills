@@ -650,13 +650,24 @@ t('DS-406 AC3 fix sends it to a worker on the PR with its finding quoted, outsid
   'true triaged review true 147 true [{"sev":"P0","text":"desk/bin/evidence.mjs:40 a code span splits the cell"}]');
 t('DS-406 AC3 its line says what follows', q7.line, 'psi Q-7: sent back to a worker on PR #147 for one more try at its findings; the review of its new head says whether they are gone.');
 t('DS-378 AC4 a merge hold says what holds it and what happens once it is merged', p0['Q-1']?.need,
-  'PR #141 touches files under a merge hold (touches billing — src/billing/**), so desk never merges it itself. Merge it on GitHub when you are ready; the ticket is then done.');
+  'PR #141 is under a merge hold, so desk never merges it itself: "touches billing" (src/billing/**). Do what it asks first, then merge it on GitHub; the ticket is then done.');
 t('DS-378 AC4 a PR with no readable review says what to do and what follows', p0['Q-4']?.need,
   'PR #144 has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.');
 t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
   'PR #145 is a draft, and its code review found 2 P1 findings that desk\'s own repairs did not fix. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
 t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,
   'PR #146 is in conflict with main, and desk\'s own repairs did not fix it. Resolve the conflict on its branch; desk then merges it once its checks are green.');
+// ---- a merge hold's item quotes its reason as the step to take, never only "merge it on GitHub".
+put('hold413', { port: 5413, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'H-1': greenPr(161, { merge_blocked: 'merge hold: legal copy sign-off — content/legal/**, 1 file(s), e.g. content/legal/terms.md' }),
+  'H-2': greenPr(162, { merge_blocked: 'merge hold: CODEOWNERS path, needs your code-owner approval (code-owner approval from @alice) — src/api/**, 2 file(s), e.g. src/api/a.ts' }),
+} });
+const h413 = Object.fromEntries(N.collect({ word: 'hold413' }).items.map((i) => [i.t.key, i]));
+t('DS-413 AC3 a hold that is not a code-owner approval quotes its reason as the step', h413['H-1']?.need,
+  'PR #161 is under a merge hold, so desk never merges it itself: "legal copy sign-off" (content/legal/**, 1 file(s), e.g. content/legal/terms.md). Do what it asks first, then merge it on GitHub; the ticket is then done.');
+t('DS-413 AC3 negative control: it never says only "merge it on GitHub"', /^PR #161 [^"]*\. Merge it on GitHub/.test(h413['H-1']?.need ?? ''), false);
+t('DS-413 AC2 a code-owner hold another person owns names that owner\'s approval', /"CODEOWNERS path, needs your code-owner approval \(code-owner approval from @alice\)"/.test(h413['H-2']?.need ?? ''), true);
+
 // ---- DS-415: drafts whose evidence run failed wait on one fix ticket: no PR item each, and the fix's
 // park, naming a setting only the person holds, is the one item.
 const evWhy = (n) => `its evidence workflow \`pr-evidence.yml\` failed at aaaaaaaaa and left 2 screenshot cell(s): "Error: did not set a _vercel_jwt cookie"; EV-9 fixes it for the repo, then the run is started again`;
@@ -690,7 +701,7 @@ const longHold = withHead(psiPr(147, { merge_blocked: `merge hold: ${'touches a 
 const qhl = queueOf('psi'); qhl.tickets['Q-7'] = { key: 'Q-7', ...longHold };
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 t('DS-378 AC4 a long merge hold still says what happens next on its listed line',
-  (cli('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Merge it on GitHub when you are ready; the ticket is then done. |'), true);
+  (cli('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Do what it asks first, then merge it on GitHub; the ticket is then done. |'), true);
 delete qhl.tickets['Q-7']; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 t('DS-378 AC1 the CLI shows it to the person', cli('record', 'psi', 'Q-1', 'done').code, 11);
 const qh = queueOf('psi'); qh.tickets['Q-1'].pr_status.head = sha(999);

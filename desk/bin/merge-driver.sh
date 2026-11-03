@@ -25,7 +25,10 @@
 # PR that cannot merge is skipped with its reason logged and never blocks the others:
 #   - touches a §4 Merge holds path          held for a person, with the hold's reason, when its base
 #                                            is §0 Default branch; into any other base it merges, and
-#                                            the hold falls on that base's own PR
+#                                            the hold falls on that base's own PR. A hold whose reason
+#                                            is a code-owner approval is met, and holds nothing, where
+#                                            the base's CODEOWNERS gives every held file to §1's handle
+#                                            alone (gate.mjs codeOwnerHolds); any other owner is named
 #   - review feedback outstanding            a CHANGES_REQUESTED decision or an unresolved thread,
 #                                            unless §3 merge-feedback-first is explicitly `no`
 #                                            (unset, ask and yes are all the strict default). A
@@ -513,13 +516,16 @@ close_merged(){
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds carried="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting
+  local n="$1" key="$2" g sha ms state holds met carried="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
-  g=$(node "$GATE" pr "$n" --repo "$REPO" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
+  g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$BASE_BRANCH" ] || { log "#$n is not based on $BASE_BRANCH — not the batch's to merge"; return 1; }
 
   holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
+  met=$(printf '%s' "$g" | jq -r '(.holdsMet // [])[] | "\(.why) — \(.glob)"' | paste -sd ';' -)
+  [ -n "$met" ] && log "#$n §4 Merge holds met with no person: $met"
+  [ -n "$holds" ] || blocked_clear "$key" "merge hold:"
   if [ -n "$holds" ] && [ "$(printf '%s' "$g" | jq -r .holdsApply)" = false ]; then
     carried=$(printf '%s' "$holds" | paste -sd ';' -)
     log "#$n touches §4 Merge holds ($carried), but its base $BASE_BRANCH is not $(printf '%s' "$g" | jq -r .defaultBranch), so merging it deploys nothing; once it merges, the hold is the pass's to report on $BASE_BRANCH's own PR"
