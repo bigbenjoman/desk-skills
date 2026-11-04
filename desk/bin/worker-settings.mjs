@@ -465,13 +465,22 @@ if (mode === 'triage') {
   // none by name, as it is no ticket's worker and the pass refreshes the clones only for those; in a
   // standing batch its state directory grant still covers them. The pass keeps the clones
   // (read-repos.mjs); a worker making or moving its own stays refused by name.
+  // A gh write takes its repo by flag or by URL, whatever directory it runs in. Each glob needs that
+  // shape and bounds the name on both sides, so `acme/web` is not `acme/web-admin` or `bigacme/web`,
+  // and a title merely naming it still runs. A rule is case-sensitive and gh is not, so this stops a
+  // slip, not a worker set on it: the contract and the reviewed PR are what hold the rest.
+  const ghNamesRepo = (name) => [
+    ...['--repo ', '--repo=', '-R ', '-R'].flatMap((f) => [`*${f}${name}`, `*${f}${name} *`, `*${f}"${name}"*`, `*${f}'${name}'*`]),
+    ...['/', ':'].flatMap((h) => ['', ' *', '/*', '"*', "'*", '.git', '.git *', '.git"*', ".git'*"].map((t) => `*${h}${name}${t}`)),
+  ];
   const readRepoLines = [];
   for (const { repo, path } of baseFix ? [] : E.readRepos()) {
     if (!path) { warns.push(`§4 Worker read-only repos item "${repo}" is not owner/name — nothing to read`); continue; }
     dirs.add(path);
     deny.push(`Edit(${abs(path)}/**)`);
-    // A gh write names its repo by flag or by URL, whatever directory it runs in.
-    deny.push(...bash('gh', ...[' pr create', ' pr edit', ' pr comment', ' pr review', ' pr update-branch', ' run rerun'].map((w) => `${w} *${repo}*`)));
+    // Listing this repo itself must not cost its workers their own PRs.
+    if (REPO && repo.toLowerCase() === REPO.toLowerCase()) warns.push(`§4 Worker read-only repos item "${repo}" is this repo — its workers' gh writes stay allowed`);
+    else deny.push(...bash('gh', ...[' pr create', ' pr edit', ' pr comment', ' pr review', ' pr update-branch', ' run rerun'].flatMap((w) => ghNamesRepo(repo).map((n) => `${w} ${n}`))));
     readRepoLines.push(`CONFIG_READ_REPO: ${repo} at ${path}`);
   }
   // git takes a subcommand after `remote -v`, and `remote -v add` would give a clone a remote to push to.

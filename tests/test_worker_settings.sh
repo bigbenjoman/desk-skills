@@ -473,5 +473,16 @@ check "DS-431 a measuring command in a runner form is allowed, and the runner st
 settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |' "$(rows3 pr-open=yes pr-reply=yes pr-self-review-comment=yes)"
 check "DS-431 AC2 with gh writes granted, one naming the listed repo is refused, by flag or by URL, and its own repo still works" \
   'no "gh pr comment 1 --repo studia/web --body x" "gh pr create --draft --repo studia/web --head b" "gh pr review https://github.com/studia/web/pull/1 --comment" && ok "gh pr comment 1 --repo acme/widgets --body x" "gh pr create --draft --repo acme/widgets --head b"'
+SQ="'"
+check "DS-431 AC2 every way gh takes the listed repo's name is refused" \
+  'no "gh pr edit 1 --repo=studia/web" "gh pr edit 1 --repo studia/web --title x" "gh pr comment 1 -R studia/web -b x" "gh pr comment 1 -Rstudia/web -b x" "gh pr comment 1 --repo \"studia/web\" -b x" "gh pr comment 1 -R ${SQ}studia/web${SQ} -b x" \
+      "gh pr comment 1 --repo github.com/studia/web -b x" "gh pr edit https://github.com/studia/web/pull/1 --title x" "gh pr edit \"https://github.com/studia/web\" --title x" "gh pr create --draft --repo https://github.com/studia/web.git --head b" "gh pr create --draft --repo git@github.com:studia/web.git --head b"'
+check "DS-431 a title naming the listed repo still runs" 'ok "gh pr create --draft --repo acme/widgets --title \"measure studia/web exclusions\" --body-file b.md" "gh pr edit 1 --title \"from studia/web\""'
+settings '`bash tests/run.sh`' '| Worker read-only repos | `acme/widget` `cme/widgets` |' "$(rows3 pr-open=yes pr-edit=yes pr-reply=yes pr-self-review-comment=yes)"
+check "DS-431 AC2 a listed name inside this repo's own does not refuse its gh writes" \
+  'ok "gh pr create --draft --repo acme/widgets --head b" "gh pr comment 1 --repo=acme/widgets -b x" "gh pr edit 1 -R acme/widgets --title x" "gh pr review https://github.com/acme/widgets/pull/1 --comment" "gh pr edit https://github.com/acme/widgets/pull/1 --title x" && no "gh pr edit 1 --repo acme/widget" "gh pr edit 1 --repo cme/widgets"'
+settings '`bash tests/run.sh`' '| Worker read-only repos | `acme/widgets` |' "$(rows3 pr-open=yes pr-edit=yes pr-reply=yes pr-self-review-comment=yes)"
+check "DS-431 AC2 a repo listing itself keeps its gh writes and is warned, and its clone stays read-only" \
+  '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Worker read-only repos item \"acme/widgets\" is this repo"* ]] && ok "gh pr create --draft --repo acme/widgets --head b" "gh pr edit https://github.com/acme/widgets/pull/1 --title x" && denies "Edit(/$HOME/.desk-autopilot/acme__widgets/ref/acme__widgets/**)"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
