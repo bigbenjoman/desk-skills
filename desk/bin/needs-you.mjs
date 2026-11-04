@@ -56,11 +56,11 @@ import { fileURLToPath } from 'node:url';
 import { gapsFix, personReviewFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTargetsOf, targetsText, moveOffer, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
-import { batchHolding, listBatches } from './batches.mjs';
+import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -221,15 +221,15 @@ export function runner(r) {
   return r.run?.by === 'supervisor' ? { by: 'supervisor' } : { by: 'session', name: r.q?.batch ?? null };
 }
 
-// The other batches of r's repo a parked or stopped ticket can be moved into, as queue.mjs transfer
-// judges them (queue.mjs running, in that repo's checkout). -> [{ name, base, word }], the standing
-// batch's name null.
+// The other batches of r's repo a parked or stopped ticket can be moved into, read here on every refresh
+// and judged finished from the queues alone; queue.mjs transfer asks GitHub when the move is made.
+// -> [{ name, base, word }], the standing batch's name null.
 const MOVABLE = ['parked', 'stopped'];
 export function moveTargets(r) {
   try {
-    const q = queueRun(r, ['running'], checkoutOf(r, 'list its batches'));
-    return q.ok ? moveTargetsOf(q.out) : [];
-  } catch { return []; /* no checkout to ask in: nothing to offer */ }
+    checkoutOf(r, 'list its batches');
+    return otherRunningBatches(r.slug, r.queuePath, () => repoConfigValue(r.slug, 'default-branch') ?? 'main', finishedOnRecord).map(moveTarget);
+  } catch { return []; /* no checkout to move it in: nothing to offer */ }
 }
 const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['move', null, moveOffer(ts)]] : []; };
 

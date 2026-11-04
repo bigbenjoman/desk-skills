@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -19,7 +19,7 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, HOME as E_HOME } from './desk-env.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
-import { belongsElsewhere, useTicketBatch, listBatches, finished } from './batches.mjs';
+import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -370,12 +370,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
 
 const batchWord = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 const baseOf = (bq) => bq.base ?? configValue('default-branch') ?? 'main';
-// The repo's batches other than this one that are running (listed, readable and not finished).
-function otherRunning() {
-  return listBatches(repoSlug()).filter((b) => resolve(b.queue) !== resolve(QUEUE) && existsSync(b.queue)).flatMap((b) => {
-    try { const bq = readQueue(b.queue); return finished(bq) ? [] : [{ ...b, base: baseOf(bq) }]; } catch { return []; }
-  });
-}
+const otherRunning = () => otherRunningBatches(repoSlug(), QUEUE, () => baseOf({}));
 
 // The worktree a worker of `key` was given, cut from `cut`: removed with its local branch when it holds
 // no work of its own, so the next worker's is cut from its new base. -> the path removed, or null when
@@ -953,7 +948,7 @@ function tableChanges(before, after) {
 // open is PR OPEN, and one whose PR was closed unmerged CLOSED.
 function doneLabel(t) {
   if (t.result?.pr == null || t.merged_at) return 'DONE';
-  const ps = t.pr_status?.pr === t.result.pr ? t.pr_status.state : null;
+  const ps = prStatusOf(t)?.state ?? null;
   return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : 'PR OPEN';
 }
 
