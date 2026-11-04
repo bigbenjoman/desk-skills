@@ -440,4 +440,32 @@ git -C "$T/lw" commit -q --amend --allow-empty -m c
 git -C "$T/lw" push -q --force-with-lease="fix/x:$L0" origin fix/x 2>/dev/null; second=$?
 check "DS-390 AC2 git takes the granted push once and refuses it the second time" '[ $first -eq 0 ] && [ $second -ne 0 ]'
 
+# ---- DS-431: §4 Worker read-only repos and Worker measuring commands ----
+denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
+readable(){ jq -e --arg d "$1" '.permissions.additionalDirectories | index($d)' "$T/ws.json" >/dev/null 2>&1; }
+CLONE="$HOME/.desk-autopilot/acme__widgets/ref/studia__web"
+settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-unset.json"; unset_out=$out
+settings '`bash tests/run.sh`' "$(grep -E '^\| Worker (read-only repos|measuring commands) \|' "$SRC/desk-config.md")"
+check "DS-431 AC4 the template's rows, left as they are, give settings identical to a config without them" 'diff -q "$T/ws.json" "$T/ws-unset.json" >/dev/null && [ "$out" = "$unset_out" ] && ! denies "Bash(git clone:*)"'
+settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |
+| Worker measuring commands | `python3 scripts/measure.py` `tools: python3 m.py --all` |'
+check "DS-431 AC1 a listed clone is readable, and its path is named for the worker" 'readable "$CLONE" && [[ "$out" == *"CONFIG_READ_REPO: studia/web at $CLONE"* ]]'
+check "DS-431 AC2 an edit to it is refused" 'denies "Edit(/$CLONE/**)" && ! allows "Edit(/$CLONE/**)"'
+check "DS-431 AC3 a repo not listed gets no grant" '[ "$(jq "[.permissions.additionalDirectories[] | select(contains(\"/ref/\"))] | length" "$T/ws.json")" = 1 ]'
+check "DS-431 AC6 git clone is refused, by name too" 'no "git clone https://github.com/studia/web" "git clone --depth 1 x y" "git -C $W clone x" && denies "Bash(git clone:*)"'
+check "DS-431 AC7 a measuring command runs, in its directory too" 'ok "python3 scripts/measure.py" "$L nolock --cwd tools -- python3 m.py --all"'
+check "DS-431 AC8 a different script, or added arguments, are refused" \
+  'no "python3 other.py" "python3 scripts/measure.py --more" "python3 -c print(1)" "python3 m.py --all" "python3" "$L browser python3 ./other.py"'
+check "DS-431 AC8 python is not allowed by name" '! allows "Bash(python3:*)" && ! allows "Bash(python:*)"'
+settings '`bash tests/run.sh`' '| Worker measuring commands | `python3 a.py; rm x` `python3 m*.py` `git status` |
+| Worker read-only repos | `not a repo` `../up/web` |'
+check "DS-431 an item that cannot be one exact rule, or is not owner/name, is skipped with a warning" \
+  '[ $rc -eq 0 ] && [ "$(grep -c "CONFIG_WARN: §4 Worker measuring commands" <<<"$out")" = 3 ] && [ "$(grep -c "CONFIG_WARN: §4 Worker read-only repos" <<<"$out")" = 2 ] && [[ "$out" != *CONFIG_READ_REPO* ]] && no "python3 m1.py" "python3 a.py"'
+# A base conflict fix worker is no ticket's, and the pass refreshes clones only for those.
+settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |'
+printf '{"base":"feat/x","tickets":{}}\n' > "$DESK_QUEUE"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket base-feat-x --wt "$T/repo" --branch feat/x --out "$T/ws.json" 2>&1)
+check "DS-431 a base conflict fix worker gets no clone" '! readable "$CLONE" && [[ "$out" != *CONFIG_READ_REPO* ]]'
+rm -f "$DESK_QUEUE"
+
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

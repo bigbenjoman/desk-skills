@@ -2330,4 +2330,63 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-419 the next pass resolves it, with no second reply, and starts no try" \
   '[ "$(grep -c "^PRRT_d" "$T/fb/replied.log")" = 1 ] && grep -qx PRRT_d "$T/fb/resolved.log" && [ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ]'
 
+# ---- DS-431: the clones behind §4 Worker read-only repos ------------------------------------------
+# acme/web's default branch is not main, and this repo's origin says where its neighbours are.
+mkdir -p "$T/remotes/acme"; git init -q --bare -b trunk "$T/remotes/acme/web.git"
+git clone -q "$T/remotes/acme/web.git" "$T/web-src" 2>/dev/null
+git -C "$T/web-src" checkout -q -b trunk
+echo one > "$T/web-src/f.txt"; git -C "$T/web-src" add f.txt; git -C "$T/web-src" commit -q -m one; git -C "$T/web-src" push -q origin trunk 2>/dev/null
+git -C "$T/repo" remote set-url origin "file://$T/remotes/acme/widgets.git"
+REF="$HOME/.desk-autopilot/acme__widgets/ref"
+listed(){ { cat "$T/config.md"; printf '\n## 4. Tracker, tools and team\n| Field | Value |\n|---|---|\n| Worker read-only repos | %s |\n' "$1"; } > "$T/config-rr.md"; }
+ready(){ q add "$1"; q set "$1" state=triaged lane=A "branch=fix/$1"; }
+finish(){ q set "$1" state=done session_id=null; }
+export DESK_CONFIG="$T/config-rr.md" DESK_QUEUE="$T/queue-rr.json" DESK_AUTOPILOT_STATE="$T/state-rr"
+q init rr; q set-batch concurrency=5
+: > "$T/spawns"
+
+listed '`acme/web`'; mkdir -p "$REF/acme__old"; ready R-1; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC1 a listed repo is cloned at its default branch's head before the worker spawns" \
+  '[ "$(field R-1 state)" = "\"running\"" ] && [ "$(cat "$REF/acme__web/f.txt")" = one ] && [ "$(git -C "$REF/acme__web" rev-parse HEAD)" = "$(git -C "$T/web-src" rev-parse HEAD)" ]'
+check "DS-431 AC3 a clone no longer listed is deleted, and nothing unlisted is made" '[ "$(ls "$REF")" = acme__web ]'
+finish R-1
+
+echo two > "$T/web-src/f.txt"; git -C "$T/web-src" commit -q -am two; git -C "$T/web-src" push -q origin trunk 2>/dev/null
+echo junk > "$REF/acme__web/stray.txt"
+ready R-2; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC1 the next spawn moves the clone to the new head, and drops anything else in it" \
+  '[ "$(field R-2 state)" = "\"running\"" ] && [ "$(cat "$REF/acme__web/f.txt")" = two ] && [ "$(git -C "$REF/acme__web" rev-parse HEAD)" = "$(git -C "$T/web-src" rev-parse HEAD)" ] && [ ! -e "$REF/acme__web/stray.txt" ]'
+finish R-2
+
+rm "$REF/acme__web/.git/HEAD"; ready R-3; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 a clone killed part way is made again" '[ "$(field R-3 state)" = "\"running\"" ] && [ "$(cat "$REF/acme__web/f.txt")" = two ]'
+finish R-3
+
+mv "$T/remotes/acme/web.git" "$T/remotes/acme/gone.git"
+mkdir -p "$T/state-rr/tickets"; echo text > "$T/state-rr/tickets/c-ticket.md"
+q add c-ticket; q set c-ticket state=triaged lane=A branch=fix/c-ticket location=cloud
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 a cloud ticket does not wait on a refresh" '! echo "$out" | grep -q "c-ticket: read-only repo" && ! field c-ticket park.question | grep -q "read-only repo"'
+q drop c-ticket
+ready R-4; ready R-5; q set R-5 handoff=pending handoff_stage=4b worktree="$T/wt/R-5"; : > "$T/spawns"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC5 a repo that cannot be refreshed parks the ticket, naming the repo and the failure" \
+  '[ "$(field R-4 state)" = "\"parked\"" ] && field R-4 park.question | grep -q "read-only repo could not be refreshed.*acme/web: fatal: " && echo "$out" | grep -q "R-4: read-only repo could not be refreshed"'
+check "DS-431 AC5 no worker is spawned to read the stale copy, whichever way it would have started" \
+  '[ ! -s "$T/spawns" ] && [ "$(field R-5 state)" = "\"parked\"" ] && [ "$(field R-5 handoff)" = null ] && [ "$(field R-5 handoff_stage)" = "\"4b\"" ]'
+mv "$T/remotes/acme/gone.git" "$T/remotes/acme/web.git"; q drop R-4; q drop R-5
+
+listed '`not a repo`'; ready R-6; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 an item that is not owner/name parks rather than dropping out" '[ "$(field R-6 state)" = "\"parked\"" ] && field R-6 park.question | grep -q "not a repo: it is not owner/name"'
+q drop R-6
+
+listed '`none`'; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC3 the row set back to none deletes the clone on a pass with nothing to spawn" '[ -z "$(ls "$REF")" ]'
+ready R-7; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC4 at none a spawn makes no clone" '[ "$(field R-7 state)" = "\"running\"" ] && [ -z "$(ls "$REF")" ]'
+
+url(){ node --input-type=module -e "import { cloneUrl } from '$B/read-repos.mjs'; console.log(cloneUrl(process.argv[1], 'acme/web'))" "$1"; }
+check "DS-431 a clone is addressed by this repo's own transport and host" \
+  '[ "$(url git@github.com:me/own.git)" = git@github.com:acme/web.git ] && [ "$(url https://github.com/me/own)" = https://github.com/acme/web ] && [ "$(url ssh://git@ghe.example/me/own.git)" = ssh://git@ghe.example/acme/web.git ] && [ "$(url "")" = https://github.com/acme/web.git ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

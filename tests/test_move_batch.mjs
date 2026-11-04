@@ -165,6 +165,7 @@ const moving = {
 const staying = {
   'intake.json': '{"seen":{}}',
   'supervisor.agent.log': 'agent\n',
+  'ref/acme__web/f.txt': 'a read-only clone is the repo\'s, not a batch\'s\n',
   'batches/OTHER/parks/O-1.json': '{"question":"other batch"}',
 };
 for (const [f, text] of Object.entries({ ...moving, ...staying })) put(join(standingS, f), text);

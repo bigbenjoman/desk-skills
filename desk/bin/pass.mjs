@@ -20,6 +20,7 @@ import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark,
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
+import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
@@ -2040,6 +2041,9 @@ function busyWorktree(t) {
 // A worktree held is kept on the ticket (`worktree_busy`), so desk-q and desk-needs-you show it as
 // needing the person (desk-q worktreeBusy) and not as ready; it is dropped once a pass finds it clean.
 const busyNow = new Set();
+for (const { name, why } of pruneReadRepos()) report.failed.push(`read-only clone ${name}: no longer listed in §4 Worker read-only repos, and could not be deleted — ${why}`);
+// Refreshed once a pass, and only by a pass about to start a local worker: a cloud session cannot read a clone.
+let readRepoFailures = null;
 for (const t of spawnable) {
   // usageStop: the base fix's preflight above was refused at the usage limit.
   if (baseHold || usageStop || !(attempts < slots)) break;
@@ -2061,6 +2065,16 @@ for (const t of spawnable) {
     if (!DRY && t.worktree_busy?.why !== busy) q('set', t.key, `worktree_busy=${JSON.stringify({ why: busy, at: PASS_AT })}`);
     report.waiting.push(`${t.key}: WORKTREE IN USE — ${busy}, so no worker was spawned. The next pass looks again`);
     continue;
+  }
+  if (t.location !== 'cloud') {
+    readRepoFailures ??= refreshReadRepos();
+    if (readRepoFailures.length) {
+      const line = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${readRepoFailures.map((f) => `${f.repo}: ${f.why}`).join('; ')}. Once it is reachable: queue.mjs requeue ${t.key}`;
+      q('set', t.key, 'resume=null', 'handoff=null');
+      q('park', t.key, line);
+      report.parked.push(`${t.key}: ${line}`);
+      continue;
+    }
   }
   attempts += 1;
   if (toResume(t)) {
