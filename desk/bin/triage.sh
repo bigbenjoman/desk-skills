@@ -139,11 +139,14 @@ Things that are not in that file and matter here:
   belongs in \`unknowns\`, never in the lane. A net-new endpoint or a security dimension is
   ordinary engineering, not lane C. Reserve C/D for their structural signals.
 - **Lane C means a person must agree something before code exists**: a feature sized L or XL (the
-  ticket's Size; with none, more than one sitting judged from the code), an intermittent bug, or
+  ticket's Size; with none, size the remaining work, judged from the code, against these meanings
+  of the scale. L: spans layers, or needs a decision first. XL: not one thing - split it. An item in
+  \`unknowns\` is judged as answered, so it is not that decision), an intermittent bug, or
   stated behaviour that looks wrong. Nothing else is lane C:
-  - **Spanning more than one app or package is not lane C at size M or smaller.** Pick A or B, and
-    name the packages in \`lane_reason\`.
-  - **Unmerged blockers are not "more than one sitting".** They hold the ticket until they merge and
+  - **Spanning more than one app or package is not lane C at size M or smaller.** With no Size,
+    spanning packages alone is not spanning layers: only work that crosses layers reads as L. Pick
+    A or B, and name the packages in \`lane_reason\`.
+  - **Unmerged blockers do not make a ticket L or XL.** They hold the ticket until they merge and
     never change its lane: name them in \`prior_art\`, not in \`unknowns\` or \`lane_reason\`.
   - **A step from the routing file's "Steps only the user can take" list** goes in \`ben_steps\`, one
     entry per step, each with a proposed blocker ticket for the user. It does not set the lane: the
@@ -181,7 +184,7 @@ Things that are not in that file and matter here:
 - **Size the ticket AFTER prior art, not before.** This is the step that gets skipped: prior art is
   researched, written into \`prior_art\`, and then the lane is chosen from the ticket description as
   though nothing had been found. Half-built is the common case here — a builder, route, model or
-  helper that already exists turns "new feature spanning more than one sitting" into an extension
+  helper that already exists turns "new feature that spans layers" into an extension
   you can name file by file, which is lane A. Before writing lane C or D on a size signal, state
   what is genuinely missing *given what already exists*. If \`prior_art\` is non-empty and the lane
   is still C or D, \`lane_reason\` must say why the prior art does not shrink it.
@@ -322,7 +325,7 @@ The ones that have actually been got wrong, all toward over-escalation:
   whether a design exists.
 - **An unanswered question read as complexity.** Missing information belongs in \`unknowns\`. Judge
   the lane as if every unknown were already answered.
-- **\`spans more than one sitting\` sized from the description instead of the code.** The most common
+- **An L or XL size judged from the description instead of the code.** The most common
   one. Check the first pass's own \`prior_art\`, and for each thing it counts as "new", look on
   $BASE for an existing pattern to copy (a token helper, an email template, an accept route, a
   repository already writing that relation). If one exists, the work is an extension, not a build
@@ -330,15 +333,18 @@ The ones that have actually been got wrong, all toward over-escalation:
   sequenced, independently-mergeable stages, size the FIRST stage — the batch runs that.
 - **Spanning more than one app or package read as lane C.** It is not a C signal on its own: a ticket
   sized M or smaller (its Size, \`desk-jira get\`'s \`Size\` line where it has one) whose only C
-  signal is that goes to A or B, with the packages named in your reason.
-- **Unmerged blockers read as "more than one sitting".** Blockers hold a ticket until they merge;
+  signal is that goes to A or B, with the packages named in your reason. With no Size, spanning
+  packages alone is not spanning layers: only work that crosses layers reads as L.
+- **Unmerged blockers read as L or XL.** Blockers hold a ticket until they merge;
   they never set its lane. A ticket whose only C signal is its blockers goes to A or B.
 - **A step only the user can take read as lane C** (the routing file's list). It is its own blocker
   ticket, and the rest of the ticket keeps its lane: list each one the first pass's \`ben_steps\`
   does not already hold in your \`ben_steps\`.
 
-Lane C stands only on its own signals: a feature sized L or XL (with no size, more than one sitting
-judged from the code), an intermittent bug, or stated behaviour that looks wrong. A ticket sized L or
+Lane C stands only on its own signals: a feature sized L or XL (with no size, size the remaining
+work, judged from the code, against these meanings of the scale. L: spans layers, or needs a decision
+first. XL: not one thing - split it. An item in \`unknowns\` is judged as answered, so it is not that
+decision), an intermittent bug, or stated behaviour that looks wrong. A ticket sized L or
 XL stays C. A lane C ticket with none of these fails the check: downgrade it to A or B.
 
 A change that adds or edits any file under \`.claude/\` stays C whatever its size: the harness

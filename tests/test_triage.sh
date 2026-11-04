@@ -192,7 +192,11 @@ out=$(STUB_LANE=A STUB_EXTRA=",$pkgs,$STEPS" bash "$B/triage.sh" fix-thing 2>&1)
 check "DS-242 AC1: the first pass is told multi-package work at M or smaller is A or B, packages named" \
   'P0 | grep -qF "Spanning more than one app or package is not lane C at size M or smaller" && P0 | grep -qF "name the packages in \`lane_reason\`"'
 check "DS-242 AC2: the first pass is told unmerged blockers hold the ticket and never change its lane" \
-  'P0 | grep -qF "Unmerged blockers are not \"more than one sitting\"" && P0 | grep -qF "never change its lane" && ! P0 | grep -qF "and \`unknowns\` (which base to use)"'
+  'P0 | grep -qF "Unmerged blockers do not make a ticket L or XL" && P0 | grep -qF "never change its lane" && ! P0 | grep -qF "and \`unknowns\` (which base to use)"'
+check "DS-430 AC3: with no Size, the first pass sizes the remaining work against the L and XL meanings" \
+  'P0 | grep -qF "size the remaining work" && P0 | grep -qF "L: spans layers, or needs a decision first." && P0 | grep -qF "XL: not one thing - split it." && ! P0 | grep -qF "more than one sitting"'
+check "DS-430: with no Size, the first pass does not read spanning packages as spanning layers" \
+  'P0 | grep -qF "spanning packages alone is not spanning layers"'
 check "DS-242 AC4: the first pass asks for ben_steps from the routing file list, the lane unchanged" \
   'P0 | grep -qF "\"ben_steps\": [{\"step\"" && P0 | grep -qF "Steps only the user can take" && P0 | grep -qF "rest of the ticket keeps the lane it would otherwise get"'
 check "DS-242 AC1/AC4: a lane A record naming its packages and a person-only step is kept as written, no challenge" \
@@ -208,7 +212,9 @@ done
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=C STUB_EXTRA=",$STEPS" STUB_CHAL='{"verdict":"DOWNGRADE","lane":"A","reason":"size M, only signal is two packages: apps/web, packages/ui"}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-242 AC5: the challenge prompt applies AC1 to AC3" \
-  'P1 | grep -qF "Spanning more than one app or package read as lane C" && P1 | grep -qF "Unmerged blockers read as \"more than one sitting\"" && P1 | grep -qF "A ticket sized L or" && P1 | grep -qF "downgrade it to A or B"'
+  'P1 | grep -qF "Spanning more than one app or package read as lane C" && P1 | grep -qF "Unmerged blockers read as L or XL" && P1 | grep -qF "A ticket sized L or" && P1 | grep -qF "downgrade it to A or B"'
+check "DS-430 AC4: with no Size, the challenge sizes the remaining work against the same L and XL meanings" \
+  'P1 | tr "\n" " " | grep -qF "size the remaining work, judged from the code" && P1 | grep -qF "L: spans layers, or needs a decision first." && P1 | grep -qF "XL: not one thing - split it." && ! P1 | grep -qF "more than one sitting"'
 check "DS-242 AC5: a lane C ticket failing AC1 is downgraded to A, ben_steps kept" \
   '[ $rc -eq 0 ] && lc_ok A && [ "$(lc .lane_original)" = C ] && [[ "$(lc .lane_reason)" == "downgraded from C at challenge: size M, only signal is two packages"* ]] && [ "$(lc ".ben_steps[0].step")" = "a cdk deploy" ]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
@@ -228,6 +234,8 @@ check "DS-242: with AUTOPILOT_SKIP_CHALLENGE set, no challenge runs and the reco
 RT="$SRC/skills/desk-ticket/references/desk-ticket-routing.md"; S2="$SRC/skills/desk-ticket/references/stage-2-understand.md"
 check "DS-242 AC6: lane C's row names L or XL, intermittent and wrong behaviour, and no package signal" \
   'row=$(grep "^| \*\*C\*\* |" "$RT") && [[ "$row" == *"sized L or XL"* ]] && [[ "$row" == *intermittent* ]] && [[ "$row" == *"looks wrong"* ]] && [[ "$row" != *package* ]]'
+check "DS-430 AC5: with no size, lane C's row uses the same L and XL meanings, not sittings" \
+  'row=$(grep "^| \*\*C\*\* |" "$RT") && [[ "$row" == *"remaining work"* ]] && [[ "$row" == *"spans layers, or needs a decision first"* ]] && [[ "$row" == *"not one thing - split it"* ]] && ! grep -q "one sitting" "$RT"'
 check "DS-242 AC6: the routing file lists the person-only steps and what is not lane C" \
   'grep -qF "### Steps only the user can take" "$RT" && grep -qF "a \`cdk deploy\`" "$RT" && grep -qF "**Blockers that have not merged.**" "$RT" && ! grep -qF "one spanning more than one app or package" "$RT"'
 check "DS-242 AC6: Stage 2 commits lane C on the same signals" \

@@ -20,13 +20,13 @@ The over-escalations that have actually happened, all named in the challenge pro
   tickets have one. A ticket triaged D on that basis can sit through a batch and turn out to be
   three files and one copy key.
 - **An unanswered question read as complexity.** Missing information belongs in `unknowns`.
-- **`spans more than one sitting` (lane C) sized from the description rather than the code.** The
+- **An L or XL size (lane C) judged from the description rather than the code.** The
   most common one. Triage researches `prior_art` and then sizes the ticket as though it had found
   nothing. Where a ticket defines sequenced, independently-mergeable stages, only the first stage is
   what runs.
-- **Spanning more than one package read as lane C.** At size M or smaller it is one sitting: lane A
-  or B, with the packages named.
-- **Unmerged blockers read as "more than one sitting".** They never set its lane: plan-batch holds the
+- **Spanning more than one package read as lane C.** At size M or smaller, or with no size, spanning
+  packages alone is not spanning layers: lane A or B, with the packages named.
+- **Unmerged blockers read as L or XL.** They never set its lane: plan-batch holds the
   ticket behind a Jira-linked blocker in the batch and asks about one outside it.
 - **A step only the user can take read as lane C** (`desk-ticket-routing.md`'s list: a production
   migration, a deploy, an IAM role or third-party app, a sign-off, a credential). Triage records it
@@ -51,6 +51,6 @@ INCONCLUSIVE park is also a `question`: put it to the user to confirm or re-lane
 **A lane is a proposal.** When the user rules that a park's lane is wrong (it is really A, B or E),
 re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`answer.mjs`), then
 `queue.mjs requeue <TICKET>`, and, where the ticket is
-genuinely big, scope it in the briefing so what runs really is one sitting. That is a new lane, not
+genuinely big, scope it in the briefing so what runs really is size M or smaller. That is a new lane, not
 a requeue of a C or D: a ticket that stays C, or D without its canvas saved on the base, is worked
 interactively, never by a worker.
