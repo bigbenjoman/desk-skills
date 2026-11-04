@@ -33,7 +33,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath } from './desk-env.mjs';
-import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession } from './batch-state.mjs';
+import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
@@ -405,9 +405,6 @@ function holdsReach(q, from, key, seen = new Set()) {
   return unmergedBlockers(q, ft).some((p) => holdsReach(q, p, key, seen));
 }
 
-// The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
-// Nothing here calls GitHub.
-const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
 // The open child PRs whose required checks only the default branch's copy of the workflow runs on the
 // base (pr_status.behind), as `PR #n`: syncing the base starts their CI.

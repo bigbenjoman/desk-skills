@@ -35,6 +35,10 @@ export const readQueue = (path) => readJsonOrRefuse(path,
   `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`);
 export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
 
+// The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
+// Nothing here calls GitHub.
+export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
+
 // A running batch as a ticket can be moved into it (queue.mjs transfer), and the batches `queue.mjs
 // running` printed as those: { name, base, word }, the standing batch's name null and its word
 // `standing`. needs-you's move action and the decider both offer these, in the one sentence moveOffer

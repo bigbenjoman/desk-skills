@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -948,7 +948,7 @@ function tableChanges(before, after) {
 // open is PR OPEN, and one whose PR was closed unmerged CLOSED.
 function doneLabel(t) {
   if (t.result?.pr == null || t.merged_at) return 'DONE';
-  const ps = t.pr_status?.pr === t.result.pr ? t.pr_status.state : null;
+  const ps = prStatusOf(t)?.state ?? null;
   return ps === 'MERGED' ? 'DONE' : ps === 'CLOSED' ? 'CLOSED' : 'PR OPEN';
 }
 

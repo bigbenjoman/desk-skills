@@ -5,7 +5,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
-import { readQueue } from './batch-state.mjs';
+import { readQueue, prStatusOf } from './batch-state.mjs';
 
 // The named batches' folders under a standing batch's queue or state folder `dir`, sorted. A name that
 // is not a safe id, `.done` included, is not a batch.
@@ -120,7 +120,7 @@ const finishedBy = (q, open) => {
 export const finished = (q) => finishedBy(q, (t) => prOpen(t.result.pr));
 // finished as the queue records it, asking GitHub nothing, for a caller that runs on every refresh: a PR
 // the queue does not record as merged or closed counts as open.
-export const finishedOnRecord = (q) => finishedBy(q, (t) => !t.merged_at && !['MERGED', 'CLOSED'].includes(t.pr_status?.state));
+export const finishedOnRecord = (q) => finishedBy(q, (t) => !t.merged_at && !['MERGED', 'CLOSED'].includes(prStatusOf(t)?.state));
 
 // The repo's batches other than the one whose queue is `own` that are running: listed, readable and not
 // finished, as `isFinished` judges. `defaultBase()` names the base of a batch that sets none.
@@ -129,7 +129,7 @@ export function otherRunningBatches(slug, own, defaultBase, isFinished = finishe
     try { const q = readQueue(b.queue); return isFinished(q) ? [] : [{ ...b, base: q.base ?? defaultBase() }]; } catch { return []; }
   });
 }
-const peek =(b) => { try { return { q: readQueue(b.queue) }; } catch (e) { return { unreadable: e.message }; } };
+const peek = (b) => { try { return { q: readQueue(b.queue) }; } catch (e) { return { unreadable: e.message }; } };
 const where = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 
 // Whether the named batch `name` is listed, readable and not finished.

@@ -184,7 +184,7 @@ t('AC9 the moved order shows on the next frame, the same ticket selected', `${ro
 // ---- AC6, AC7: the 2-second refresh
 const SLUG7 = put('sigma', 4100, { ...many('S', 3, () => parked('which copy?')) });
 writeQueue(SLUG7, 'G-1', { tickets: { 'G-2': { state: 'done', result: { pr: 7 } } } });
-writeQueue(SLUG7, 'G-3', { tickets: { 'G-4': { state: 'done', result: { pr: 8 }, pr_status: { state: 'MERGED' } } } });
+writeQueue(SLUG7, 'G-3', { tickets: { 'G-4': { state: 'done', result: { pr: 8 }, pr_status: { pr: 8, state: 'MERGED' } } } });
 const rf = screen({ kind: 'repo', slug: SLUG7 }, { refreshMs: 40 });
 await sleep(20);
 await rf.send('\x1b[B');
@@ -201,9 +201,10 @@ await sleep(200);
 t('AC7 the next refresh shows the new state, the selection on the same ticket', `${rf.selectedKey()} ${rf.selected().includes('which copy?')} ${rf.frame().some((x) => /^Ready|^ *Ready/.test(x))}`, `${sel7} false true`);
 
 // ---- finished on the queue's record: asks GitHub nothing
-t('a done batch with a PR the queue records as merged is finished', B.finishedOnRecord({ tickets: { a: { state: 'done', result: { pr: 1 }, pr_status: { state: 'MERGED' } } } }), true);
-t('a PR recorded closed, or merged_at set, counts as shut', B.finishedOnRecord({ tickets: { a: { state: 'done', result: { pr: 1 }, pr_status: { state: 'CLOSED' } }, b: { state: 'done', result: { pr: 2 }, merged_at: minsAgo(1) } } }), true);
+t('a done batch with a PR the queue records as merged is finished', B.finishedOnRecord({ tickets: { a: { state: 'done', result: { pr: 1 }, pr_status: { pr: 1, state: 'MERGED' } } } }), true);
+t('a PR recorded closed, or merged_at set, counts as shut', B.finishedOnRecord({ tickets: { a: { state: 'done', result: { pr: 1 }, pr_status: { pr: 1, state: 'CLOSED' } }, b: { state: 'done', result: { pr: 2 }, merged_at: minsAgo(1) } } }), true);
 t('a PR the queue does not record as shut counts as open', B.finishedOnRecord({ tickets: { a: { state: 'done', result: { pr: 1 } } } }), false);
+t('a shut state recorded for an earlier PR says nothing of the ticket\'s newer one', B.finishedOnRecord({ tickets: { a: { state: 'done', result: { pr: 2 }, pr_status: { pr: 1, state: 'CLOSED' } } } }), false);
 t('a batch on a base is never finished', B.finishedOnRecord({ base: 'feat/x', tickets: { a: { state: 'done' } } }), false);
 const rSigma = () => Q.loadRepos(NOW).find((r) => r.id === SLUG7);
 reset();
