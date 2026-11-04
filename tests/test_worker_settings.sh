@@ -453,6 +453,7 @@ check "DS-431 AC1 a listed clone is readable, and its path is named for the work
 check "DS-431 AC2 an edit to it is refused" 'denies "Edit(/$CLONE/**)" && ! allows "Edit(/$CLONE/**)"'
 check "DS-431 AC3 a repo not listed gets no grant" '[ "$(jq "[.permissions.additionalDirectories[] | select(contains(\"/ref/\"))] | length" "$T/ws.json")" = 1 ]'
 check "DS-431 AC6 git clone is refused, by name too" 'no "git clone https://github.com/studia/web" "git clone --depth 1 x y" "git -C $W clone x" && denies "Bash(git clone:*)"'
+check "DS-431 git remote -v reads, and takes no subcommand" 'ok "git remote -v" && no "git remote -v add origin x" "git remote -v set-url origin x"'
 check "DS-431 AC7 a measuring command runs, in its directory too" 'ok "python3 scripts/measure.py" "$L nolock --cwd tools -- python3 m.py --all"'
 check "DS-431 AC8 a different script, or added arguments, are refused" \
   'no "python3 other.py" "python3 scripts/measure.py --more" "python3 -c print(1)" "python3 m.py --all" "python3" "$L browser python3 ./other.py"'
@@ -469,5 +470,8 @@ check "DS-431 a base conflict fix worker is granted no clone by name" '! readabl
 rm -f "$DESK_QUEUE"
 settings '`bash tests/run.sh`' '| Worker measuring commands | `npm exec measure` |'
 check "DS-431 a measuring command in a runner form is allowed, and the runner stays closed to anything else" 'ok "npm exec measure" && no "npm exec other" "npm exec measure --more"'
+settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |' "$(rows3 pr-open=yes pr-reply=yes pr-self-review-comment=yes)"
+check "DS-431 AC2 with gh writes granted, one naming the listed repo is refused, by flag or by URL, and its own repo still works" \
+  'no "gh pr comment 1 --repo studia/web --body x" "gh pr create --draft --repo studia/web --head b" "gh pr review https://github.com/studia/web/pull/1 --comment" && ok "gh pr comment 1 --repo acme/widgets --body x" "gh pr create --draft --repo acme/widgets --head b"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

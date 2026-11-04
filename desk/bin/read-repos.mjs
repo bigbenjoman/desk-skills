@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 
 // The whole refresh, every repo together: well inside the supervisor's limit on a pass, so a hung remote
-// parks the ticket and does not take the pass down with it.
+// stops the spawn and does not take the pass down with it.
 const REFRESH_MS = Number(process.env.DESK_READ_REPO_REFRESH_MS) > 0 ? Number(process.env.DESK_READ_REPO_REFRESH_MS) : 300000;
 const OUT_OF_TIME = `the refresh ran past its ${REFRESH_MS / 1000} seconds`;
 

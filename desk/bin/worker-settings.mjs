@@ -470,9 +470,12 @@ if (mode === 'triage') {
     if (!path) { warns.push(`§4 Worker read-only repos item "${repo}" is not owner/name — nothing to read`); continue; }
     dirs.add(path);
     deny.push(`Edit(${abs(path)}/**)`);
+    // A gh write names its repo by flag or by URL, whatever directory it runs in.
+    deny.push(...bash('gh', ...[' pr create', ' pr edit', ' pr comment', ' pr review', ' pr update-branch', ' run rerun'].map((w) => `${w} *${repo}*`)));
     readRepoLines.push(`CONFIG_READ_REPO: ${repo} at ${path}`);
   }
-  if (readRepoLines.length) deny.push(...bash('git', ' clone', ...OWN_CS.map((c) => `${c} clone`)));
+  // git takes a subcommand after `remote -v`, and `remote -v add` would give a clone a remote to push to.
+  if (readRepoLines.length) deny.push(...bash('git', ...[' clone', ' remote -v *add*', ' remote -v *set-url*', ' remote -v *rename*'].flatMap((s) => [s, ...OWN_CS.map((c) => `${c}${s}`)])));
   opt.readRepoLines = readRepoLines;
 
   // A package manager's one-off runner fetches and executes an arbitrary package. Denied in every
