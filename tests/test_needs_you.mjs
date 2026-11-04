@@ -1,5 +1,5 @@
 // suite: needs-you (every item desk-q counts as needing the person, and recording each answer)
-// covers: desk/bin/needs-you.mjs skills/desk-needs-you/**
+// covers: desk/bin/needs-you.mjs desk/bin/decider.mjs skills/desk-needs-you/**
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
@@ -832,6 +832,50 @@ og('worktree', 'add', '-q', '-b', 'fix/M-5', wt('M-5'), 'main');
 writeFileSync(join(wt('M-5'), 'new.js'), 'work\n');
 const m5 = N.record({ word: 'omega', ticket: 'M-5', action: 'move', text: 'F-1' });
 t('DS-380 a worktree holding untracked files is never removed, and nothing moves', `${m5.ok} ${/holds work cut from main \(uncommitted changes or untracked files\)/.test(m5.line)} ${existsSync(join(wt('M-5'), 'new.js'))} ${'M-5' in queueOf('omega').tickets} ${'M-5' in fQueue().tickets}`, 'false true true true false');
+
+// ---- DS-425: the decider moves an answered park into the batch its answer names, through needs-you's move
+{
+  const D = await import('../desk/bin/decider.mjs');
+  const oState = join(env.HOME, '.desk-autopilot', 'acme__omega');
+  const BASE_Q = 'M-8 needs src/feature.js, which is only on the feat/f base: which base should it build on?';
+  const oq = queueOf('omega');
+  oq.tickets['M-8'] = { key: 'M-8', added_at: minsAgo(600), ...parked('A', 5, BASE_Q) };
+  oq.tickets['M-9'] = { key: 'M-9', added_at: minsAgo(600), ...parked('A', 4, 'M-9 needs the file on the feature base too') };
+  oq.tickets['M-10'] = { key: 'M-10', added_at: minsAgo(600), ...parked('A', 3, 'which fixture for tests/m10.js?') };
+  writeFileSync(omegaQ, JSON.stringify(oq));
+  for (const k of ['M-8', 'M-9']) writeFileSync(join(oState, 'triage', `${k}.json`), JSON.stringify({ ticket: k, epic: null, lane: 'A', size: 'S' }));
+  // As the supervisor finds them, in the standing batch's environment.
+  const targets = D.runningBatches(BIN, { cwd: omegaRoot, env: { ...process.env, DESK_REPO_DIR: omegaRoot, DESK_REPO_ROOT: omegaRoot, DESK_QUEUE: omegaQ, DESK_AUTOPILOT_STATE: oState } });
+  t('DS-425 the decider is given the batches running beside its own', JSON.stringify(targets), JSON.stringify([{ name: 'F-1', base: 'feat/f', word: 'F-1' }]));
+  const answer = (item, text) => ({ ...item, answers: [{ at: minsAgo(1), text }] });
+  const its = D.deciderItems({ parked: ['M-8', 'M-9', 'M-10'].map((key) => ({ key, question: queueOf('omega').tickets[key].park.question })) }, queueOf('omega'));
+  const [i8, i9, i10] = its;
+  const prompt = D.deciderPrompt({ slug: 'acme__omega', report: '', items: [answer(i8, 'run it in batch F-1'), i9], rules: '', bin: BIN, targets });
+  const moveCmd = `node ${join(BIN, 'needs-you.mjs')} move`;
+  t('DS-425 AC1 the prompt says to move an answer naming another batch, not requeue it, and names the batches running',
+    `${prompt.includes(`${moveCmd} acme__omega <TICKET> <batch>`)} ${prompt.includes('The batches running beside this one: F-1 (on feat/f)')} ${prompt.includes('move it there instead (a requeue would respawn it here, on this base)')}`, 'true true true');
+  const allow = D.deciderSettings({ bin: BIN, state: oState }).permissions.allow;
+  t('DS-425 AC1 the decider may run needs-you\'s move and no other needs-you action', JSON.stringify(allow.filter((a) => a.includes('needs-you.mjs'))), JSON.stringify([`Bash(${moveCmd}:*)`]));
+  // What the decider runs for M-8's answer, as its allow rule lets it.
+  const run = (...a) => spawnSync(process.execPath, [join(BIN, 'needs-you.mjs'), 'move', ...a], { encoding: 'utf8', env: process.env, cwd: T });
+  const mv8 = run('acme__omega', 'M-8', 'F-1');
+  const o8 = D.outcome({ items: [i8], targets }, { cost: 0, settled: { [i8.id]: 'moved M-8 to batch F-1' } }, queueOf('omega'));
+  t('DS-425 AC1 the ticket is moved to the feature batch and not requeued in the main batch',
+    `${mv8.status} ${'M-8' in queueOf('omega').tickets} ${'M-8' in fQueue().tickets} ${fQueue().tickets['M-8']?.moved_from?.base}`, '0 false true main');
+  t('DS-425 AC1 the decider\'s move counts as settled', `${o8.settled.map((x) => x.item.ticket).join()} ${o8.handed.length}`, 'M-8 0');
+  // M-9's answer names a batch that is not running: the move is refused, and the decider hands it on with that.
+  const mv9 = run('acme__omega', 'M-9', 'G-9');
+  const o9 = D.outcome({ items: [i9], targets }, { cost: 0, handed: { [i9.id]: mv9.stdout.trim() } }, queueOf('omega'));
+  t('DS-425 AC2 a move naming a batch that is not running is refused, and M-9 stays parked here',
+    `${mv9.status} ${queueOf('omega').tickets['M-9']?.state} ${'M-9' in fQueue().tickets}`, '11 parked false');
+  t('DS-425 AC2 its hand-on lists the batches that are running', o9.handed[0]?.why, 'omega M-9: G-9 is not a batch running in omega beside this one, so nothing was moved. The batches running are F-1 (on feat/f).; move <batch> takes it out of this batch and queues it in another, its next worker on that base: F-1 (on feat/f)');
+  // Unanswered and handed on: a park about the ticket's base offers the move; one about anything else does not.
+  const o3 = D.outcome({ items: [i8, i10], targets }, { cost: 0, handed: { [i8.id]: 'a call on the base only the person makes', [i10.id]: 'a product call' } }, oq);
+  t('DS-425 AC3 a park asking to change the base is handed on offering move <batch> with the running batches', o3.handed[0]?.why, 'a call on the base only the person makes; move <batch> takes it out of this batch and queues it in another, its next worker on that base: F-1 (on feat/f)');
+  t('DS-425 AC3 a park about something else offers no move', o3.handed[1]?.why, 'a product call');
+  // Taken back out, so the omega lists below read as before.
+  const oqb = queueOf('omega'); delete oqb.tickets['M-9']; delete oqb.tickets['M-10']; writeFileSync(omegaQ, JSON.stringify(oqb));
+}
 // ---- A put-off item comes back once it offers an action it did not offer when put off.
 const omegaState = join(env.HOME, '.desk-autopilot', 'acme__omega');
 // M-3 put off offering resume and not-now; M-2 by answer.mjs before entries recorded actions, so with

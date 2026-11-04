@@ -1,7 +1,7 @@
 // The decider: a fresh, small headless session the supervisor starts when a pass exits needing the
 // person. It is given that pass's report and the recovery rules, settles what the rules let the
-// orchestrator settle without asking (a requeue, mostly), and hands everything else to the check-in
-// digest. One runs at a time per repo, at low effort, and is stopped after DECIDER_TIMEOUT_MS.
+// orchestrator settle without asking (a requeue or a move to another batch, mostly), and hands
+// everything else to the check-in digest. One runs at a time per repo, at low effort, and is stopped after DECIDER_TIMEOUT_MS.
 //
 // What a pass lists becomes items, each with an id that stays the same while the item does:
 //   - an epic's feature-plan park, a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
@@ -15,12 +15,12 @@
 //     refused the session, which keeps every item for the next one.
 // Handed items live in <state>/handed.json, which the digest lists; one the pass no longer lists is dropped.
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, openSync, closeSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS, describeCond } from './clears-when.mjs';
-import { needsSession, planPark } from './batch-state.mjs';
+import { needsSession, planPark, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 
@@ -177,13 +177,24 @@ export function pruneHanded(state, items) {
   return kept;
 }
 
+// ---- moving a ticket to another batch --------------------------------------------------------------
+// The repo's other running batches a ticket of this batch can be moved into (batch-state.mjs
+// moveTargetsOf), asked of queue.mjs in the supervisor's checkout. None when queue.mjs cannot say.
+export function runningBatches(bin, { cwd, env = process.env } = {}) {
+  const r = spawnSync(process.execPath, [join(bin, 'queue.mjs'), 'running'], { cwd, env, encoding: 'utf8' });
+  try { return r.status === 0 ? moveTargetsOf(r.stdout) : []; } catch { return []; }
+}
+// A hand-on about a ticket's base or batch offers the person needs-you's move (batch-state.mjs moveOffer).
+const BASE_ASK = /\b(base|batch)\b/i;
+
 // ---- the session ---------------------------------------------------------------------------------
-// Only what settling needs: requeue and record, read the ticket and the PR, read the state directory.
+// Only what settling needs: requeue, move and record, read the ticket and the PR, read the state directory.
 export function deciderSettings({ bin, state }) {
   return {
     permissions: {
       allow: [
         `Bash(node ${join(bin, 'queue.mjs')} requeue:*)`,
+        `Bash(node ${join(bin, 'needs-you.mjs')} move:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} clears-when:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} render)`,
         `Bash(node ${join(bin, 'answer.mjs')}:*)`,
@@ -197,7 +208,7 @@ export function deciderSettings({ bin, state }) {
   };
 }
 
-export function deciderPrompt({ slug, report, items, rules, bin, webRead = false }) {
+export function deciderPrompt({ slug, report, items, rules, bin, webRead = false, targets = [] }) {
   const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
   const prevLines = (i) => (i.prev?.question ? [`  - park ${i.round}; the last requeue cleared park ${i.round - 1}: ${i.prev.question.replace(/\n/g, ' ')}`] : []);
   const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...prevLines(i), ...answerLines(i)]).join('\n');
@@ -207,7 +218,11 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
   ] : [];
   // Only when an item has answers, so a prompt without any reads as it always has.
   const onAnswers = items.some((i) => i.answers?.length) ? [
-    '- an item with an answer under it was answered by the person since it parked or was handed on: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B, D or E, and its park does not start `lane C` or `lane D` (one parked at triage), requeue it (its worker reads the answer from the briefing) and settle the item. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
+    '- an item with an answer under it was answered by the person since it parked or was handed on: act on the answer, and never hand the same question back. Where the answer lets the ticket carry on and it is lane A, B, D or E, and its park does not start `lane C` or `lane D` (one parked at triage), requeue it (its worker reads the answer from the briefing) and settle the item. Where the answer says to run it in another batch or on another base, move it there instead (a requeue would respawn it here, on this base): a batch that is not running cannot take it, so hand the item on naming the batches running. Where the step the answer asks for needs a config §3 row that is not `yes` (merging a green PR needs `pr-merge-green`, for one), hand the item on with that step and that row as its `why`, not the original question',
+  ] : [];
+  // Only when an item is parked, so a prompt without any reads as it always has.
+  const onMove = items.some((i) => i.kind === 'parked') ? [
+    `- move a parked ticket into another running batch of this repo, its next worker on that batch's base: \`node ${join(bin, 'needs-you.mjs')} move ${slug} <TICKET> <batch>\` (the standing batch is \`standing\`). The batches running beside this one: ${targetsText(targets)}`,
   ] : [];
   // Only where this repo's workers can read the web, so a prompt for any other repo reads as it always has.
   const onWeb = webRead ? [
@@ -218,6 +233,7 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
     '',
     'What you may do, and nothing else:',
     `- requeue a ticket whose worker parked asking for more agent work, on lane A, B, D or E:\`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
+    ...onMove,
     `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory`,
     '- never requeue a lane C ticket or a park that starts `lane C` or `lane D` (parked at triage on its lane), never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
@@ -245,13 +261,13 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
 
 // Starts the session detached, its JSON result written to <state>/decider/<id>.json. Returns the
 // record the supervisor keeps until the session ends.
-export function startDecider({ state, slug, bin, report, items, rules, webRead = false, cwd, env = process.env, claude = 'claude', now = new Date() }) {
+export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], cwd, env = process.env, claude = 'claude', now = new Date() }) {
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
   const settings = join(dir, `${id}.settings.json`);
   writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state }), null, 2)}\n`);
-  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead });
+  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead, targets });
   writeFileSync(join(dir, `${id}.prompt.md`), prompt);
   const out = join(dir, `${id}.json`);
   const fd = openSync(out, 'w');
@@ -262,7 +278,7 @@ export function startDecider({ state, slug, bin, report, items, rules, webRead =
   closeSync(fd);
   child.on('error', () => {});
   child.unref();
-  return { id, pid: child.pid ?? null, started: now.toISOString(), out, items };
+  return { id, pid: child.pid ?? null, started: now.toISOString(), out, items, targets };
 }
 
 // The payload on the last `mark` line of a headless session's `--output-format json` text:
@@ -293,11 +309,15 @@ export function readResult(out) {
 // the same question was not settled, unless it now waits on a clears-when it did not have, which each
 // pass checks, or is put off in the "not now" register (read from `state`): either is settled, whatever
 // the session called it. `q` is the queue as it stands now. A session the usage limit refused settled
-// and handed on nothing: its items are kept for the next one.
+// and handed on nothing: its items are kept for the next one. A park handed on that is about the
+// ticket's base or batch offers the move, with the batches running when the session started.
 export function outcome(rec, result, q = {}, { state = null } = {}) {
   if (result.limit) return { settled: [], handed: [], kept: rec.items, cost: result.cost ?? null };
   const settled = [];
   const handed = [];
+  const ts = rec.targets ?? [];
+  const offered = (item, why) => (item.kind === 'parked' && ts.length && (BASE_ASK.test(item.text) || BASE_ASK.test(why)) && !why.includes('move <batch>')
+    ? `${why}; ${moveOffer(ts)}` : why);
   let register = null;
   const putOff = (t) => {
     if (!state) return false;
@@ -312,8 +332,8 @@ export function outcome(rec, result, q = {}, { state = null } = {}) {
     if (waits) settled.push({ item, did: `recorded clears-when "${describeCond(t.park.clears_when)}", which a later pass checks` });
     else if (still && putOff(t)) settled.push({ item, did: 'put off with "not now": left parked until its inputs change' });
     else if (did != null && !still) settled.push({ item, did });
-    else if (did != null) handed.push({ item, why: `the decider said "${did}", but ${item.ticket} is still parked` });
-    else handed.push({ item, why: result.error ? `decider ${result.error}` : result.handed?.[item.id] || 'the decider handed it on' });
+    else if (did != null) handed.push({ item, why: offered(item, `the decider said "${did}", but ${item.ticket} is still parked`) });
+    else handed.push({ item, why: offered(item, result.error ? `decider ${result.error}` : result.handed?.[item.id] || 'the decider handed it on') });
   }
   return { settled, handed, cost: result.cost ?? null };
 }
