@@ -311,7 +311,6 @@ L: spans layers, or needs a decision first.
 XL: not one thing - split it.
 ```
 
-This wording is the `Size` dropdown's text in Jira: if either changes, the other changes with it.
 Autopilot runs XS, S and M. It parks L (split it first) and XL (make it an epic).
 
 The L to expect is UI, API and schema. A slice through UI and API with its decision clear is M.
