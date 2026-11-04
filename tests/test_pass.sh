@@ -161,7 +161,7 @@ out=$(node "$B/queue.mjs" requeue T-8 2>&1)
 check "requeue refuses a ticket parked at triage for size" '[ "$(field T-8 state)" = "\"parked\"" ] && echo "$out" | grep -q "parked at triage"'
 
 # T-9: a lane C park with a triage unknown that the user re-lanes: answer, then requeue.
-q add T-9; q set T-9 state=parked lane=C open_questions=1 'park={"question":"lane C — spans more than one sitting"}'
+q add T-9; q set T-9 state=parked lane=C open_questions=1 'park={"question":"lane C — spans layers"}'
 q set T-9 lane=A
 node "$B/answer.mjs" T-9 "use the existing helper" >/dev/null 2>&1
 check "an answer clears a parked ticket's questions and leaves it parked" '[ "$(field T-9 open_questions)" = 0 ] && [ "$(field T-9 state)" = "\"parked\"" ]'

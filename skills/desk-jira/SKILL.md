@@ -162,7 +162,7 @@ colleague, costs a public retraction. When unsure whether a write sits inside a 
 
 ## Epics
 
-A large feature is an epic whose children are each one sitting, so `desk-autopilot <EPIC>` can run
+A large feature is an epic whose children are each size M or smaller, so `desk-autopilot <EPIC>` can run
 them as a batch. The commands:
 
 ```bash
@@ -183,13 +183,19 @@ the Blocks links.
 
 **Size every ticket**, epic children included:
 
-| Size | Means | Autopilot |
-|---|---|---|
-| XS | a few lines in one place | runs |
-| S | one area, one PR, under half a day | runs |
-| M | one PR in one sitting: several areas, or a new piece in an existing pattern | runs |
-| L | more than one sitting, or more than one PR | parked: split it first |
-| XL | several independently mergeable parts | parked: make it an epic |
+```
+Size the remaining work, not the whole idea.
+XS: one obvious change, no decision to make.
+S: one change, one session, no new interface.
+M: several files, or one new component.
+L: spans layers, or needs a decision first.
+XL: not one thing - split it.
+```
+
+Autopilot runs XS, S and M. It parks L (split it first) and XL (make it an epic).
+
+The L to expect is UI, API and schema. A slice through UI and API with its decision clear is M.
+A worker ships one PR, so work that cannot ship as one PR is not one thing.
 
 Put it in the project's `Size` field where there is one (`desk-jira fields size` finds its id; set
 it in the `create`), otherwise as the description's first line, `Size: M`. Jira's API cannot add the
