@@ -62,6 +62,7 @@ function put(T, env, name, r) {
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${r.conc}\` |\n` +
     (r.runBy ? `| Batches run by | \`supervisor\` | \`${r.runBy}\` |\n` : '') +
+    (r.gate ? `| Spawn gate (available memory) | \`start work > 8 GiB\` | \`${r.gate}\` |\n` : '') +
     (r.jira ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Jira site | \`${r.jira}\` |\n` : '') +
     (r.perms ? `\n## 3. Permissions\n\n| Key | Your setting |\n|---|---|\n${Object.entries(r.perms).map(([k, v]) => `| \`${k}\` | \`${v}\` |\n`).join('')}` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -424,6 +425,18 @@ const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
   lines(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
+// The room uses the spawn gate the repos set, the highest of them, and 8 GiB only for a repo that sets none.
+const gateRoom = (over, avail) => {
+  const gw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null, ...over });
+  return lines(spawnSync('node', [BIN, '--plain', '--all'], { env: { ...gw.env, DESK_MEM_AVAIL_GB: String(avail) }, encoding: 'utf8' }).stdout)
+    .find((l) => l.startsWith('● ')).match(/room for (\d+) more/)[1];
+};
+const gated = (gate) => ({ port: 3100, conc: '2 / 3', beat: 1, gate, queue: { batch: 'b', concurrency: 2, tickets: { 'A-1': { state: 'triaged', open_questions: 0 } } } });
+const low = 'start work > 6 GiB · hold 4–6 · drop to 1 below 4', high = 'start work > 10 GiB · hold 4–10 · drop to 1 below 4';
+t('the room follows a spawn gate set below the default', gateRoom({ one: gated(low) }, 12), '2');
+t('the room follows a spawn gate set above the default', gateRoom({ one: gated(high) }, 12), '0');
+t('the room takes the highest gate the repos set', gateRoom({ one: gated(low), two: { ...gated(high), port: 3101 } }, 13), '1');
+t('a repo with no gate row counts as the default 8 GiB beside a lower one', gateRoom({ one: gated(low), two: { ...gated(), port: 3101 } }, 12), '1');
 t('DS-116 AC12 a batch with more ready than free slots says so', rowOf(room, 'pr-ninja')?.endsWith('2 of 2 · cap 4 · 1 ready with no free slot'), true);
 t('DS-116 AC12 a batch whose ready tickets fit says nothing extra', rowOf(room, 'voicepa')?.endsWith('0 of 5 · cap 5'), true);
 

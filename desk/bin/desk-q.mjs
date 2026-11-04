@@ -1542,8 +1542,9 @@ function workerGB() {
   return m ? Number(m[1]) : RULES.workerHeavyGB;
 }
 
-// Each pass gates on its own repo's §3b "Spawn gate", so the machine's is the highest of them.
-const gateGiB = (repos) => Math.max(...repos.map((r) => spawnGate(repoConfigValue(r.slug, 'spawn-gate')).start), spawnGate(null).start);
+// Each pass gates on its own repo's §3b "Spawn gate", so the machine's is the highest of them; a repo
+// with no row counts as the default, and so does a machine with no repos.
+const gateGiB = (repos) => (repos.length ? Math.max(...repos.map((r) => spawnGate(repoConfigValue(r.slug, 'spawn-gate')).start)) : spawnGate(null).start);
 
 // LAST PASS: who runs the batch while passes run on time, "● supervisor · 4m ago" or "● session ·
 // 4m ago" in green, amber when a session runs a batch the repo sets to the supervisor; red at once
