@@ -144,7 +144,8 @@ Things that are not in that file and matter here:
   \`unknowns\` is judged as answered, so it is not that decision), an intermittent bug, or
   stated behaviour that looks wrong. Nothing else is lane C:
   - **Spanning more than one app or package is not lane C at size M or smaller.** With no Size,
-    spanning packages alone is not spanning layers: only work that crosses layers reads as L. Pick
+    spanning packages alone is not spanning layers. The L to expect is UI, API and schema.
+    A slice through UI and API with its decision clear is M. Pick
     A or B, and name the packages in \`lane_reason\`.
   - **Unmerged blockers do not make a ticket L or XL.** They hold the ticket until they merge and
     never change its lane: name them in \`prior_art\`, not in \`unknowns\` or \`lane_reason\`.
@@ -333,8 +334,9 @@ The ones that have actually been got wrong, all toward over-escalation:
   sequenced, independently-mergeable stages, size the FIRST stage — the batch runs that.
 - **Spanning more than one app or package read as lane C.** It is not a C signal on its own: a ticket
   sized M or smaller (its Size, \`desk-jira get\`'s \`Size\` line where it has one) whose only C
-  signal is that goes to A or B, with the packages named in your reason. With no Size, spanning
-  packages alone is not spanning layers: only work that crosses layers reads as L.
+  signal is that goes to A or B, with the packages named in your reason. With no Size,
+  spanning packages alone is not spanning layers. The L to expect is UI, API and schema.
+  A slice through UI and API with its decision clear is M.
 - **Unmerged blockers read as L or XL.** Blockers hold a ticket until they merge;
   they never set its lane. A ticket whose only C signal is its blockers goes to A or B.
 - **A step only the user can take read as lane C** (the routing file's list). It is its own blocker
@@ -342,9 +344,9 @@ The ones that have actually been got wrong, all toward over-escalation:
   does not already hold in your \`ben_steps\`.
 
 Lane C stands only on its own signals: a feature sized L or XL (with no size, size the remaining
-work, judged from the code, against these meanings of the scale. L: spans layers, or needs a decision
-first. XL: not one thing - split it. An item in \`unknowns\` is judged as answered, so it is not that
-decision), an intermittent bug, or stated behaviour that looks wrong. A ticket sized L or
+work, judged from the code, against these meanings of the scale.
+L: spans layers, or needs a decision first. XL: not one thing - split it. An item in \`unknowns\` is
+judged as answered, so it is not that decision), an intermittent bug, or stated behaviour that looks wrong. A ticket sized L or
 XL stays C. A lane C ticket with none of these fails the check: downgrade it to A or B.
 
 A change that adds or edits any file under \`.claude/\` stays C whatever its size: the harness

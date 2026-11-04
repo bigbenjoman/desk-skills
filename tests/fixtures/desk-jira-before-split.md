@@ -314,6 +314,9 @@ XL: not one thing - split it.
 This wording is the `Size` dropdown's text in Jira: if either changes, the other changes with it.
 Autopilot runs XS, S and M. It parks L (split it first) and XL (make it an epic).
 
+The L to expect is UI, API and schema. A slice through UI and API with its decision clear is M.
+A worker ships one PR, so work that cannot ship as one PR is not one thing.
+
 Put it in the project's `Size` field where there is one (`desk-jira fields size` finds its id; set
 it in the `create`), otherwise as the description's first line, `Size: M`. Jira's API cannot add the
 field to a team-managed project: it is a manual step in the project (Project settings → Issue types

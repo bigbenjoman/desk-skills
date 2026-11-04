@@ -1028,7 +1028,8 @@ The over-escalations that have actually happened, all named in the challenge pro
   nothing. Where a ticket defines sequenced, independently-mergeable stages, only the first stage is
   what runs.
 - **Spanning more than one package read as lane C.** At size M or smaller, or with no size, spanning
-  packages alone is not spanning layers: lane A or B, with the packages named.
+  packages alone is not spanning layers, and a slice through UI and API with its decision clear is
+  M: lane A or B, with the packages named.
 - **Unmerged blockers read as L or XL.** They never set its lane: plan-batch holds the
   ticket behind a Jira-linked blocker in the batch and asks about one outside it.
 - **A step only the user can take read as lane C** (`desk-ticket-routing.md`'s list: a production

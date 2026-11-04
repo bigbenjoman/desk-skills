@@ -196,7 +196,7 @@ check "DS-242 AC2: the first pass is told unmerged blockers hold the ticket and 
 check "DS-430 AC3: with no Size, the first pass sizes the remaining work against the L and XL meanings" \
   'P0 | grep -qF "size the remaining work" && P0 | grep -qF "L: spans layers, or needs a decision first." && P0 | grep -qF "XL: not one thing - split it." && ! P0 | grep -qF "more than one sitting"'
 check "DS-430: with no Size, the first pass does not read spanning packages as spanning layers" \
-  'P0 | grep -qF "spanning packages alone is not spanning layers"'
+  'P0 | grep -qF "spanning packages alone is not spanning layers" && P0 | grep -qF "The L to expect is UI, API and schema." && P0 | grep -qF "A slice through UI and API with its decision clear is M." && ! P0 | grep -qF "crosses layers"'
 check "DS-242 AC4: the first pass asks for ben_steps from the routing file list, the lane unchanged" \
   'P0 | grep -qF "\"ben_steps\": [{\"step\"" && P0 | grep -qF "Steps only the user can take" && P0 | grep -qF "rest of the ticket keeps the lane it would otherwise get"'
 check "DS-242 AC1/AC4: a lane A record naming its packages and a person-only step is kept as written, no challenge" \
@@ -214,7 +214,7 @@ out=$(STUB_LANE=C STUB_EXTRA=",$STEPS" STUB_CHAL='{"verdict":"DOWNGRADE","lane":
 check "DS-242 AC5: the challenge prompt applies AC1 to AC3" \
   'P1 | grep -qF "Spanning more than one app or package read as lane C" && P1 | grep -qF "Unmerged blockers read as L or XL" && P1 | grep -qF "A ticket sized L or" && P1 | grep -qF "downgrade it to A or B"'
 check "DS-430 AC4: with no Size, the challenge sizes the remaining work against the same L and XL meanings" \
-  'P1 | tr "\n" " " | grep -qF "size the remaining work, judged from the code" && P1 | grep -qF "L: spans layers, or needs a decision first." && P1 | grep -qF "XL: not one thing - split it." && ! P1 | grep -qF "more than one sitting"'
+  'P1 | tr "\n" " " | grep -qF "size the remaining work, judged from the code" && P1 | grep -qF "L: spans layers, or needs a decision first." && P1 | grep -qF "XL: not one thing - split it." && ! P1 | grep -qF "more than one sitting" && P1 | grep -qF "The L to expect is UI, API and schema." && P1 | grep -qF "A slice through UI and API with its decision clear is M." && ! P1 | grep -qF "crosses layers"'
 check "DS-242 AC5: a lane C ticket failing AC1 is downgraded to A, ben_steps kept" \
   '[ $rc -eq 0 ] && lc_ok A && [ "$(lc .lane_original)" = C ] && [[ "$(lc .lane_reason)" == "downgraded from C at challenge: size M, only signal is two packages"* ]] && [ "$(lc ".ben_steps[0].step")" = "a cdk deploy" ]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"

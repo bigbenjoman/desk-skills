@@ -31,7 +31,8 @@ Ties break toward the cheaper lane, then state the doubt.
 **Not lane C on their own.** Each of these has been read as lane C and parked work a worker could do:
 
 - **Spanning more than one app or package of a monorepo**, at size M or smaller. With no size,
-  spanning packages alone is not spanning layers: lane A or B, with the packages named in the lane
+  spanning packages alone is not spanning layers. The L to expect is UI, API and schema, and a slice
+  through UI and API with its decision clear is M: lane A or B, with the packages named in the lane
   reason.
 - **Blockers that have not merged.** They hold the ticket until they merge (in a batch, plan-batch
   holds it behind a linked blocker it runs, and asks about one it does not); they do not make it L or XL and do not change its lane.
