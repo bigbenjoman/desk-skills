@@ -113,11 +113,23 @@ export function supervisorHolder(state) {
 // and promotion to come: none of those is finished. Only a batch on a base is archived (batch.mjs), so a
 // finished batch's queue stays listed, and must not keep its keys or its epic's children out of every
 // other batch.
-export function finished(q) {
+const finishedBy = (q, open) => {
   const rows = Object.values(q.tickets ?? {});
-  return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && prOpen(t.result.pr));
+  return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && open(t));
+};
+export const finished = (q) => finishedBy(q, (t) => prOpen(t.result.pr));
+// finished as the queue records it, asking GitHub nothing, for a caller that runs on every refresh: a PR
+// the queue does not record as merged or closed counts as open.
+export const finishedOnRecord = (q) => finishedBy(q, (t) => !t.merged_at && !['MERGED', 'CLOSED'].includes(t.pr_status?.state));
+
+// The repo's batches other than the one whose queue is `own` that are running: listed, readable and not
+// finished, as `isFinished` judges. `defaultBase()` names the base of a batch that sets none.
+export function otherRunningBatches(slug, own, defaultBase, isFinished = finished) {
+  return listBatches(slug).filter((b) => resolve(b.queue) !== resolve(own) && existsSync(b.queue)).flatMap((b) => {
+    try { const q = readQueue(b.queue); return isFinished(q) ? [] : [{ ...b, base: q.base ?? defaultBase() }]; } catch { return []; }
+  });
 }
-const peek = (b) => { try { return { q: readQueue(b.queue) }; } catch (e) { return { unreadable: e.message }; } };
+const peek =(b) => { try { return { q: readQueue(b.queue) }; } catch (e) { return { unreadable: e.message }; } };
 const where = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 
 // Whether the named batch `name` is listed, readable and not finished.

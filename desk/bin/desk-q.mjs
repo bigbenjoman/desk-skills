@@ -2763,8 +2763,10 @@ export function interactive({
   // `layout`: where the last draw put the breadcrumb, the tabs and the rows, for a click to find them.
   // `ask`: a change waiting on y or n, shown in place of the keys; nothing else acts until it is answered.
   // `unfold`: what a, y and f show in full on a ticket's page; folded again whenever the place changes.
-  let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, ask = null, screen = null, done = false, timer = null, probeTimer = null, checkin = false, zoom = 'auto', layout = null;
-  let unfold = new Set();
+  // `screen`, `crumbs`: what the last build made, which a frame writes without reading anything.
+  // `reading`, `held`: an input read is being handled, and the frame it will write when it ends.
+  let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, ask = null, screen = null, crumbs = [], done = false, timer = null, probeTimer = null, checkin = false, zoom = 'auto', layout = null;
+  let unfold = new Set(), reading = false, held = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -2859,9 +2861,18 @@ export function interactive({
     return { badge: badge([r]), ...s, keys };
   }
 
+  // Rebuilds the screen from disk, then writes it.
   function draw() {
     if (done) return;
     try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
+    crumbs = crumbParts();
+    frame();
+  }
+
+  // Writes the screen last built, reading nothing: all a change of selection, window or command line
+  // needs. Within one input read only the last frame is written (onData).
+  function frame() {
+    if (done) return;
     const { rows } = screen;
     if (selId != null) { const i = rows.findIndex((x) => x.id === selId); if (i >= 0) sel = i; }
     sel = Math.max(0, Math.min(sel, rows.length - 1));
@@ -2873,8 +2884,7 @@ export function interactive({
     // The breadcrumb and the tab line stay at the top while the rest scrolls. A ticket has no tab
     // line, so its parked note follows the breadcrumb. The breadcrumb's last part, where you are, is
     // bold and the parts above it dim.
-    const cp = crumbParts();
-    const crumbs = segLine([...cp.flatMap((p, i) => [...(i ? [[' › ', DIM]] : []), [p.label, i === cp.length - 1 ? BOLD : DIM]]), [' · ', DIM], [hhmm(clock()), null]]);
+    const crumbLine = segLine([...crumbs.flatMap((p, i) => [...(i ? [[' › ', DIM]] : []), [p.label, i === crumbs.length - 1 ? BOLD : DIM]]), [' · ', DIM], [hhmm(clock()), null]]);
     const pinned = [];
     if (hasTabs()) {
       const segs = tabParts().flatMap((p, i) => [...(i ? [['  ', null]] : []), [p.label, p.id === tab ? REVERSE : tabOk(p.id) ? null : DIM]]);
@@ -2882,8 +2892,8 @@ export function interactive({
       const tabsWide = segs.map((s) => s[0]).join('').length;
       const own = screen.badge && tabsWide + 4 + screen.badge.length > w;
       if (screen.badge && !own) segs.push([`    ${screen.badge}`, null]);
-      pinned.push(fit(crumbs), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false), ...(own ? [fit(screen.badge)] : []));
-    } else pinned.push(fit(screen.badge ? segLine([...crumbs.segs, [`    ${screen.badge}`, null]]) : crumbs));
+      pinned.push(fit(crumbLine), paint({ segs, line: segs.map((s) => s[0]).join('') }, w, false), ...(own ? [fit(screen.badge)] : []));
+    } else pinned.push(fit(screen.badge ? segLine([...crumbLine.segs, [`    ${screen.badge}`, null]]) : crumbLine));
     // A command to copy (`whole`) wider than the terminal is not cut: it runs on into the rows below,
     // which the terminal wraps it onto, so a copy takes it whole. Each row it runs on to is a SPILL.
     const lay = (l) => {
@@ -2925,7 +2935,8 @@ export function interactive({
         if (whole) i += l.n - 1;
       } else out.push(l);
     }
-    output.write(`${ESC}H${[...pinned, ...out, ...status].map((l) => (tinted(l) ? l : `${l}${ESC}K`)).join('\r\n')}${ESC}J`);
+    const text = `${ESC}H${[...pinned, ...out, ...status].map((l) => (tinted(l) ? l : `${l}${ESC}K`)).join('\r\n')}${ESC}J`;
+    if (reading) held = text; else output.write(text);
   }
 
   // A new place pushes the one you were on, so Esc comes back to it with its selection; the view
@@ -2998,7 +3009,7 @@ export function interactive({
   // Mouse reports are taken out of the input before readline reads it for keys, which would
   // otherwise split one into stray keypresses. A read ending in what may be the start of one (ESC,
   // ESC [, ESC [ < …) waits for the next read; with none within PARTIAL_MS it goes on to readline
-  // as keys, so a lone Esc still arrives.
+  // as keys, so a lone Esc still arrives. However many events one read holds, it writes one frame.
   const keys = new PassThrough();
   let partial = '', flush = null;
   function onData(chunk) {
@@ -3009,8 +3020,15 @@ export function interactive({
     if (cutAt >= 0) s = s.slice(0, cutAt);
     const clicks = [];
     s = s.replace(MOUSE, (_, b, x, y, m) => { if (m === 'M') clicks.push([Number(b), Number(x), Number(y)]); return ''; });
-    if (s) keys.write(s);
-    for (const c of clicks) onMouse(...c);
+    reading = true;
+    try {
+      if (s) keys.write(s);
+      for (const c of clicks) onMouse(...c);
+    } finally {
+      reading = false;
+      if (held != null && !done) output.write(held);
+      held = null;
+    }
     if (partial) flush = setTimeout(() => { const p = partial; partial = ''; if (!done) keys.write(p); }, PARTIAL_MS);
   }
 
@@ -3055,11 +3073,11 @@ export function interactive({
     if (key.ctrl && key.name === 'c') return finish(130);
     const rows = screen?.rows ?? [];
     if (cmd != null) {
-      if (key.name === 'return' || key.name === 'enter') { const line = cmd; cmd = null; runCommand(line); }
-      else if (key.name === 'escape') cmd = null;
+      if (key.name === 'return' || key.name === 'enter') { const line = cmd; cmd = null; runCommand(line); return draw(); }
+      if (key.name === 'escape') cmd = null;
       else if (key.name === 'backspace') cmd = cmd.slice(0, -1);
       else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ') cmd += str;
-      return draw();
+      return frame();
     }
     if (ask) {
       if (str === 'y') { const v = ask.v; ask = null; act(v); }
@@ -3093,14 +3111,18 @@ export function interactive({
       const r = repoOf(batchSlug);
       if (r?.q) act({ kind: 'workers', slug: r.id, n: String(r.workers + (str === '+' ? 1 : -1)) });
       else msg = `${r?.name ?? view.slug} has no batch yet.`;
-    } else if ((key.name === 'up' || key.name === 'down') && !rows.length) scroll = (scroll ?? 0) + (key.name === 'up' ? -1 : 1);
-    else if (key.name === 'up' && scroll > 0) scroll -= 1;
-    else if (key.name === 'down' && step(rows, sel, 1) == null) scroll = (scroll ?? 0) + 1;
-    else if (key.name === 'up' || key.name === 'down') { sel = step(rows, sel, key.name === 'up' ? -1 : 1) ?? sel; selId = rows[sel]?.id ?? null; }
-    else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
+    } else if (key.name === 'up' || key.name === 'down') {
+      const was = selId;
+      if (!rows.length) scroll = (scroll ?? 0) + (key.name === 'up' ? -1 : 1);
+      else if (key.name === 'up' && scroll > 0) scroll -= 1;
+      else if (key.name === 'down' && step(rows, sel, 1) == null) scroll = (scroll ?? 0) + 1;
+      else { sel = step(rows, sel, key.name === 'up' ? -1 : 1) ?? sel; selId = rows[sel]?.id ?? null; }
+      // A ticket's keys name the PR of its selected blocker, so a new selection there is a new screen.
+      return view.kind === 'ticket' && selId !== was ? draw() : frame();
+    } else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
     else if (key.name === 'escape') back();
     else if (str === 'q') return finish(0);
-    else if (str === ':') { cmd = ''; msg = ''; }
+    else if (str === ':') { cmd = ''; msg = ''; return frame(); }
     else if (str === 'a' && view.kind === 'overview' && tab === 'queue') view = { ...view, all: !view.all };
     else if (['a', 'y', 'f'].includes(str) && view.kind === 'ticket' && screen?.can?.[str]) { if (!unfold.delete(str)) unfold.add(str); msg = ''; }
     else if (str === 's' && view.kind === 'overview' && tab === 'queue') {
