@@ -2348,6 +2348,7 @@ q init rr; q set-batch concurrency=5
 listed '`acme/web`'; mkdir -p "$REF/acme__old"; ready R-1; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-431 AC1 a listed repo is cloned at its default branch's head before the worker spawns" \
   '[ "$(field R-1 state)" = "\"running\"" ] && [ "$(cat "$REF/acme__web/f.txt")" = one ] && [ "$(git -C "$REF/acme__web" rev-parse HEAD)" = "$(git -C "$T/web-src" rev-parse HEAD)" ]'
+check "DS-431 a clone has no remote, so a worker that cds in has nowhere to push" '[ -z "$(git -C "$REF/acme__web" remote)" ] && ! git -C "$REF/acme__web" push origin HEAD 2>/dev/null'
 check "DS-431 AC3 a clone no longer listed is deleted, and nothing unlisted is made" '[ "$(ls "$REF")" = acme__web ]'
 finish R-1
 
@@ -2373,16 +2374,28 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-431 AC5 a repo that cannot be refreshed parks the ticket, naming the repo and the failure" \
   '[ "$(field R-4 state)" = "\"parked\"" ] && field R-4 park.question | grep -q "read-only repo could not be refreshed.*acme/web: fatal: " && echo "$out" | grep -q "R-4: read-only repo could not be refreshed"'
 check "DS-431 AC5 no worker is spawned to read the stale copy, whichever way it would have started" \
-  '[ ! -s "$T/spawns" ] && [ "$(field R-5 state)" = "\"parked\"" ] && [ "$(field R-5 handoff)" = null ] && [ "$(field R-5 handoff_stage)" = "\"4b\"" ]'
-mv "$T/remotes/acme/gone.git" "$T/remotes/acme/web.git"; q drop R-4; q drop R-5
+  '[ ! -s "$T/spawns" ] && [ "$(field R-5 state)" = "\"parked\"" ] && field R-5 park.question | grep -q "read-only repo could not be refreshed" && [ "$(field R-5 handoff)" = null ] && [ "$(field R-5 handoff_stage)" = "\"4b\"" ]'
+q drop R-4; q drop R-5
+q set-batch concurrency=1; ready R-8; ready R-9; ready R-10; q set R-8 resume=pending resume_why=x
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 a killed worker waits with its session kept, and parks take the slots a worker would have" \
+  '[ ! -s "$T/spawns" ] && [ "$(field R-8 state)" = "\"triaged\"" ] && [ "$(field R-8 resume)" = "\"pending\"" ] && echo "$out" | grep -q "R-8: read-only repo could not be refreshed.*session is kept" && [ "$(field R-9 state)" = "\"parked\"" ] && [ "$(field R-10 state)" = "\"triaged\"" ]'
+q drop R-8; q drop R-9; q drop R-10; q set-batch concurrency=5
+mv "$T/remotes/acme/gone.git" "$T/remotes/acme/web.git"
+
+mkdir -p "$T/hung-git"; printf '#!/bin/sh\ncase "$*" in *fetch*) exec sleep 30;; esac\nexec "%s" "$@"\n' "$(command -v git)" > "$T/hung-git/git"; chmod +x "$T/hung-git/git"
+ready R-11; out=$(PATH="$T/hung-git:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1)
+check "DS-431 a hung remote parks within the refresh's own limit" '[ "$(field R-11 state)" = "\"parked\"" ] && field R-11 park.question | grep -q "acme/web: the refresh ran past its 1 seconds"'
+q drop R-11
+
+listed '`none`'; [ -d "$REF/acme__web" ] && had_clone=1; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC3 the row set back to none deletes the clone on a pass with nothing to spawn" '[ "$had_clone" = 1 ] && [ -z "$(ls "$REF")" ]'
 
 listed '`not a repo`'; ready R-6; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-431 an item that is not owner/name parks rather than dropping out" '[ "$(field R-6 state)" = "\"parked\"" ] && field R-6 park.question | grep -q "not a repo: it is not owner/name"'
 q drop R-6
 
-listed '`none`'; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-431 AC3 the row set back to none deletes the clone on a pass with nothing to spawn" '[ -z "$(ls "$REF")" ]'
-ready R-7; out=$(node "$B/pass.mjs" 2>&1)
+listed '`none`'; ready R-7; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-431 AC4 at none a spawn makes no clone" '[ "$(field R-7 state)" = "\"running\"" ] && [ -z "$(ls "$REF")" ]'
 
 url(){ node --input-type=module -e "import { cloneUrl } from '$B/read-repos.mjs'; console.log(cloneUrl(process.argv[1], 'acme/web'))" "$1"; }

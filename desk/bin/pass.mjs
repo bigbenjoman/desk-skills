@@ -2069,8 +2069,13 @@ for (const t of spawnable) {
   if (t.location !== 'cloud') {
     readRepoFailures ??= refreshReadRepos();
     if (readRepoFailures.length) {
-      const line = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${readRepoFailures.map((f) => `${f.repo}: ${f.why}`).join('; ')}. Once it is reachable: queue.mjs requeue ${t.key}`;
-      q('set', t.key, 'resume=null', 'handoff=null');
+      const failure = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${readRepoFailures.map((f) => `${f.repo}: ${f.why}`).join('; ')}`;
+      // A requeue starts a parked ticket's session afresh, so a killed worker's waits for the next pass.
+      if (toResume(t)) { report.waiting.push(`${t.key}: ${failure}. Its session is kept, and the next pass tries again`); continue; }
+      // Takes the slot its worker would have: a bad refresh parks no more tickets than the pass would have started.
+      attempts += 1;
+      const line = `${failure}. Once it is reachable: queue.mjs requeue ${t.key}`;
+      q('set', t.key, 'handoff=null');
       q('park', t.key, line);
       report.parked.push(`${t.key}: ${line}`);
       continue;

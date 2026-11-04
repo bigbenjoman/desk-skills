@@ -54,8 +54,11 @@ shared by the repo's batches, and the pass brings it to the head of that repo's 
 it starts a local worker. One that cannot be refreshed parks the ticket, naming the repo and the
 failure, so no worker reads a stale copy; requeue it once the repo is reachable. A clone delisted is
 deleted by the next pass. A worker gets each clone readable and `Edit`-denied, and `git clone`
-stays refused. A base conflict fix worker gets none, and a cloud session cannot read one: a ticket
-that needs a clone names it in `needs_local`, so it stays local. A script that measures a clone is
+stays refused. A clone has no remote, so a worker that `cd`s in has nowhere to push; a local change
+it makes there lasts until the next refresh. A long outage parks up to a pass's free slots at each
+pass, and a killed worker waits with its session kept instead. A base conflict fix worker is granted
+no clone by name, though in a standing batch its state directory covers `ref/`, and a cloud session
+cannot read one: a ticket that needs a clone names it in `needs_local`, so it stays local. A script that measures a clone is
 allowed by §4 Worker measuring commands, one exact rule per item with no arguments of the worker's. A
 script in the worktree can be edited by the worker, like the repo's tests, so such an item runs what
 the branch holds. A row left at `none` changes nothing in a worker's settings.

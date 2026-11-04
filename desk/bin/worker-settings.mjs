@@ -451,17 +451,20 @@ if (mode === 'triage') {
 
   // §4 Worker measuring commands: each item exactly as written, no arguments of the worker's, so a
   // different script stays refused. A `*` would turn the rule into a glob, so that item is skipped.
+  const measured = [];
   for (const raw of cfgList('worker-measure-cmds')) {
     const { dir, cmd } = E.parseCommandItem(raw);
     const why = E.commandItemProblem(cmd) ?? (cmd.includes('*') ? 'holds a *, which a permission rule reads as a wildcard' : null);
     if (why) { warns.push(`§4 Worker measuring commands item "${raw}" ${why}`); continue; }
+    measured.push(cmd);
     if (dir === '.') allow.push(...withPrefix(cmd).map((c) => `Bash(${c})`));
     allow.push(...lockForms('nolock', dir, cmd).map((c) => `Bash(${c})`));
   }
 
-  // §4 Worker read-only repos: each clone readable, never writable. A base conflict fix reads none:
-  // it is no ticket's worker, and the pass refreshes the clones only for those. The pass keeps the
-  // clones (read-repos.mjs); a worker making or moving its own stays refused by name.
+  // §4 Worker read-only repos: each clone readable, never writable. A base conflict fix is granted
+  // none by name, as it is no ticket's worker and the pass refreshes the clones only for those; in a
+  // standing batch its state directory grant still covers them. The pass keeps the clones
+  // (read-repos.mjs); a worker making or moving its own stays refused by name.
   const readRepoLines = [];
   for (const { repo, path } of baseFix ? [] : E.readRepos()) {
     if (!path) { warns.push(`§4 Worker read-only repos item "${repo}" is not owner/name — nothing to read`); continue; }
@@ -476,7 +479,7 @@ if (mode === 'triage') {
   // form this repo's config does not itself use (deny beats allow, so a used form is left to the
   // allow-list, which permits only the exact configured command).
   const RUNNERS = { npm: [' exec', ' x'], pnpm: [' exec', ' dlx'], yarn: [' dlx', ' exec'], bun: [' x'], uv: [' tool run', ' tool install'] };
-  const usesRunner = (pm, sub) => items.some((i) => new RegExp(`^${pm}(\\s+\\S+)*?${sub.replace(' ', '\\s+')}(\\s|$)`).test(i.cmd));
+  const usesRunner = (pm, sub) => [...items.map((i) => i.cmd), ...measured].some((cmd) => new RegExp(`^${pm}(\\s+\\S+)*?${sub.replace(' ', '\\s+')}(\\s|$)`).test(cmd));
   for (const [pm, subs] of Object.entries(RUNNERS)) {
     for (const sub of subs) {
       if (usesRunner(pm, sub)) continue;

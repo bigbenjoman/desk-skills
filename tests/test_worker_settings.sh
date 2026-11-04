@@ -465,7 +465,9 @@ check "DS-431 an item that cannot be one exact rule, or is not owner/name, is sk
 settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |'
 printf '{"base":"feat/x","tickets":{}}\n' > "$DESK_QUEUE"
 out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket base-feat-x --wt "$T/repo" --branch feat/x --out "$T/ws.json" 2>&1)
-check "DS-431 a base conflict fix worker gets no clone" '! readable "$CLONE" && [[ "$out" != *CONFIG_READ_REPO* ]]'
+check "DS-431 a base conflict fix worker is granted no clone by name" '! readable "$CLONE" && [[ "$out" != *CONFIG_READ_REPO* ]]'
 rm -f "$DESK_QUEUE"
+settings '`bash tests/run.sh`' '| Worker measuring commands | `npm exec measure` |'
+check "DS-431 a measuring command in a runner form is allowed, and the runner stays closed to anything else" 'ok "npm exec measure" && no "npm exec other" "npm exec measure --more"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
