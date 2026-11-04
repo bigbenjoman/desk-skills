@@ -54,7 +54,7 @@ paragraph, the `FINDING` format, the round rules on round 2+, and:
 Then one plain command, alongside the Claude finders:
 
 ```bash
-codex exec --sandbox read-only 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS.'
+codex exec --sandbox read-only --skip-git-repo-check 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS.'
 ```
 
 `<brief>` is the brief's full scratchpad path, or `desk-review-codex-brief-<run>.txt` in a worker, where

@@ -40,6 +40,7 @@ const REWRITTEN = [
     'without having run §4 Project subagents sync: they are all', 'while the ticket sits in §4 Review state', 'is the ticket still in §4 In-progress state',
     'Assuming the §3b dev-server port is yours',
   ].map((s) => ['DS-405', s, 1]),
+  ['DS-427', '```bash codex exec --sandbox read-only ', 1], // the probe skips the trusted-directory check
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

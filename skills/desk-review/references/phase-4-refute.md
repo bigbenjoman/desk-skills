@@ -14,7 +14,7 @@ and the mechanism stated flat. Codex reads the file itself; never paste a diff o
 Independent calls may run in parallel.
 
 ```bash
-codex exec --sandbox read-only 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
+codex exec --sandbox read-only --skip-git-repo-check 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
 ```
 
 - **On a PR, add `--cd <the PR's worktree>`** after `--sandbox read-only`, so codex reads the PR's
