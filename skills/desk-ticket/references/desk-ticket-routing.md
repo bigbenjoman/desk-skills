@@ -22,7 +22,7 @@ When Stage 2 contradicts the Stage-0 guess, say so and re-state the lane before 
 |---|---|---|---|
 | **A** | the change is mechanical once the cause is known · no product or design decision · repro reproduced or the change is cosmetic | direct minimal change | 0 |
 | **B** | the ticket is a bug (Jira type Bug, or with no tracker the type Stage 0 settled) · repro confirmed · cause not identified after reading the code | `superpowers:systematic-debugging`, then `superpowers:test-driven-development` | 0–1 |
-| **C** | a person must agree something before code exists: a feature sized L or XL, or with no size one that is more than one sitting judged from the code (so it is split first) · or the bug is intermittent · or the ticket's stated behaviour looks wrong rather than the code | **agree first**: a plan or the evidence at the end of Stage 2, then wait (below) | the area experts' design consults |
+| **C** | a person must agree something before code exists: a feature sized L or XL, or with no size one whose remaining work, judged from the code, reads as L (spans layers, or needs a decision first) or XL (not one thing - split it) · or the bug is intermittent · or the ticket's stated behaviour looks wrong rather than the code | **agree first**: a plan or the evidence at the end of Stage 2, then wait (below) | the area experts' design consults |
 | **D** | the deliverable is a screen, section or component built from a design (a Figma frame, a Claude Design artifact, or similar) | the project's design-build agent builds it, following whatever design-to-code skill the repo provides; Stages 4–9 stay here (below) | 1 |
 | **E** | data, catalog or staging-DB work · little or no application code · deliverable may be a one-off script rather than a PR | staging-write runbook (`desk-dev`, §3 `staging-write`) | 1 reviewer |
 
@@ -30,10 +30,12 @@ Ties break toward the cheaper lane, then state the doubt.
 
 **Not lane C on their own.** Each of these has been read as lane C and parked work a worker could do:
 
-- **Spanning more than one app or package of a monorepo**, at size M or smaller. That is still one
-  sitting: lane A or B, with the packages named in the lane reason.
+- **Spanning more than one app or package of a monorepo**, at size M or smaller. With no size,
+  spanning packages alone is not spanning layers. The L to expect is UI, API and schema, and a slice
+  through UI and API with its decision clear is M: lane A or B, with the packages named in the lane
+  reason.
 - **Blockers that have not merged.** They hold the ticket until they merge (in a batch, plan-batch
-  holds it behind a linked blocker it runs, and asks about one it does not); they do not make it more than one sitting and do not change its lane.
+  holds it behind a linked blocker it runs, and asks about one it does not); they do not make it L or XL and do not change its lane.
 - **A step only the user can take** (the list below). It becomes its own blocker ticket, and the rest
   of the ticket keeps the lane it would otherwise get.
 
@@ -92,7 +94,7 @@ feeling that the ticket seems important.
 C is the work where building the wrong thing is the expensive outcome, so Stage 2 ends in something
 the user can say yes to, not in code:
 
-- **A feature sized L or XL, too big for one sitting:** a plan naming
+- **A feature sized L or XL:** a plan naming
   the files each part touches, the order, and where it splits into independently mergeable stages,
   each its own PR. Get each area's design from its expert (`stage-3-implement.md`, Stage 3) and put it in the
   plan. Look for prior art first: an existing pattern on `origin/<default>` usually shrinks the work

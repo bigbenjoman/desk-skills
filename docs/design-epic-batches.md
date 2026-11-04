@@ -7,7 +7,7 @@ Both disposition tables are at the end.
 
 ## Why
 
-desk-ticket works well on a bug or a one-sitting ticket, and desk-autopilot on a batch of them. A
+desk-ticket works well on a bug or a ticket of size M or smaller, and desk-autopilot on a batch of them. A
 **large feature** has no path: autopilot takes only the keys you name, triage parks a big ticket as
 lane C, and the one pattern that has worked (PR Ninja KAN-389: one Story, one Subtask per milestone,
 a per-batch base branch) is a hand convention in one repo's `claude.md`.
@@ -215,11 +215,9 @@ DEPENDENCIES — from Jira links
   Design source: capture the build at every board width; check every visible string, colour and
   size the board states (or its copy key); a pixel diff needs the canvas runtime, so it is
   `UNVERIFIABLE` in a batch, never `PASS`. Figma's procedure is unchanged.
-- **Size scale** (desk-jira SKILL.md, *Epics*): XS a few lines in one place · S one area, one PR, under half
-  a day · M one PR in one sitting, several areas or a new piece in an existing pattern · L more than
-  one sitting or more than one PR (split before batching) · XL several independently mergeable
-  parts (an epic). Where the project has a `Size` field (`desk-jira fields size`), set it on every
-  create; otherwise the description's first line is `Size: <X>`. Adding the field is a manual,
+- **Size scale** (desk-jira SKILL.md, *Epics*, which holds the one definition): L is split before
+  batching and XL is made an epic. Where the project has a `Size` field (`desk-jira fields size`),
+  set it on every create; otherwise the description's first line is `Size: <X>`. Adding the field is a manual,
   per-project UI step (team-managed: Project settings → Issue types → Dropdown `Size`, XS–XL, on each
   type); desk-setup tells the user once if it is missing.
 
