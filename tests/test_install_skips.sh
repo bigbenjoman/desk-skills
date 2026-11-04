@@ -59,7 +59,24 @@ mkdir -p "$HOME/.claude/desk/bin" "$HOME/.local/bin" "$HOME/Library/LaunchAgents
 for f in "${OLD[@]}"; do case "$f" in */runner|*/memory-turns) mkdir -p "$f" ;; *) touch "$f" ;; esac; done
 printf '#!/bin/sh\necho "$@" >> "%s/launchctl.calls"\nexit 1\n' "$T" > "$T/bin/launchctl"; chmod +x "$T/bin/launchctl"
 # Its VM runs outside launchd, so the old tool's own down is what stops it.
-printf '#!/bin/sh\nexit 0\n' > "$T/bin/tart"; chmod +x "$T/bin/tart"
+# Tart holds the runner's VM and its base image by tag and by digest (deleting the tag takes the
+# digest with it), beside a VM and an image that are not the runner's. TART_REFUSE names one it won't delete.
+TV="$T/tart.vms"
+cat > "$T/bin/tart" <<EOF
+#!/bin/sh
+case "\$1" in
+  list) echo "Source Name Disk Size Accessed State"; cat "$TV" ;;
+  delete) echo "\$2" >> "$T/tart.deletes"
+    grep -qx "[a-zA-Z]* \$2" "$TV" || exit 1
+    [ "\$2" = "\${TART_REFUSE:-}" ] && exit 1
+    grep -vx "[a-zA-Z]* \$2" "$TV" > "$TV.n"; mv "$TV.n" "$TV"
+    case "\$2" in *:24.04) grep -v "ubuntu@" "$TV" > "$TV.n"; mv "$TV.n" "$TV" ;; esac ;;
+esac
+exit 0
+EOF
+chmod +x "$T/bin/tart"
+printf '%s\n' "local $VM" "local my-vm" "OCI ghcr.io/cirruslabs/ubuntu:24.04" \
+  "OCI ghcr.io/cirruslabs/ubuntu@sha256:94dbb9c4" "OCI ghcr.io/cirruslabs/macos-sonoma-base:latest" > "$TV"
 printf '#!/bin/sh\necho "$@" >> "%s/runner.calls"\n' "$T" > "$HOME/.claude/desk/bin/$VM"; chmod +x "$HOME/.claude/desk/bin/$VM"
 left(){ for f in "${OLD[@]}"; do [ -e "$f" ] && echo "$f"; done; }
 
@@ -93,7 +110,30 @@ check "DS-271 AC6: the retired runner's scripts, shim, state and plists are remo
 check "DS-271 AC6: its launchd jobs are unloaded" \
   '[ "$(grep -c "^bootout gui/[0-9]*/com.desk-skills.$VM" "$T/launchctl.calls")" = 2 ]'
 check "DS-271 AC6: the install says so in one line" \
-  '[ "$(printf "%s\n" "$out" | grep -c "ok    removed the local CI runner:.*tart delete $VM)$")" = 1 ]'
+  '[ "$(printf "%s\n" "$out" | grep -c "ok    removed the local CI runner:")" = 1 ]'
+check "DS-428 AC1, AC2: the runner VM and its base image are deleted and named in that line" \
+  '[ "$(printf "%s\n" "$out" | grep -c "ok    removed the local CI runner:.* $VM ghcr.io/cirruslabs/ubuntu:24.04$")" = 1 ]'
+check "DS-428 AC2: Tart keeps only what is not the runner's, with no warning" \
+  '[ "$(cat "$TV")" = "$(printf "local my-vm\nOCI ghcr.io/cirruslabs/macos-sonoma-base:latest")" ] && ! printf "%s\n" "$out" | grep -q "Tart image"'
+# The Tart purge on its own, for the states a full install run does not reach.
+eval "$(sed -n '/^purge_runner_tart() {/,/^}/p' "$S/../install.sh")"
+has(){ command -v "$1" >/dev/null 2>&1; }
+warn(){ echo "WARN $1"; }
+printf 'local my-vm\n' > "$TV"; : > "$T/tart.deletes"
+# shellcheck disable=SC2034  # w is read inside check's eval strings
+w="$(purge_runner_tart)"; purge_runner_tart >/dev/null
+check "DS-428 AC3: with neither in Tart, nothing is deleted or named" \
+  '[ -z "$RUNNER_TART_GONE$w" ] && [ ! -s "$T/tart.deletes" ]'
+printf 'local %s\n' "$VM" > "$TV"
+# shellcheck disable=SC2034
+w="$(TART_REFUSE=$VM purge_runner_tart)"
+check "DS-428 AC5: a delete that fails is a warning naming the command, and the VM is kept" \
+  '[ "$w" = "WARN the retired local CI runner'"'"'s Tart image $VM was not deleted: tart delete $VM" ] && grep -qx "local $VM" "$TV"'
+: > "$T/tart.deletes"
+# shellcheck disable=SC2034
+w="$(PATH=/usr/bin:/bin; purge_runner_tart; echo "gone=$RUNNER_TART_GONE")"
+check "DS-428 AC4: with no tart on PATH, nothing is called or named" \
+  '[ "$w" = "gone=" ] && [ ! -s "$T/tart.deletes" ] && grep -qx "local $VM" "$TV"'
 check "DS-340 AC1: every file under desk/templates is installed, dotfiles included" \
   '[ -n "$(find "$S/../desk/templates" -type f)" ] && [ -z "$(cd "$S/../desk/templates" && find . -type f | while read -r f; do cmp -s "$f" "$HOME/.claude/desk/templates/$f" || echo "$f"; done)" ]'
 check "codex skip carries the real call" '[[ "$summary" == *"apply: codex exec --sandbox read-only"* ]]'

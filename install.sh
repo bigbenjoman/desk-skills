@@ -62,6 +62,20 @@ WROTE=""
 RUNNING=""   # what installed.mjs restart said about running merge drivers and supervisor agents
 wrote()   { WROTE="$WROTE        $1
 "; }
+# retired local CI runner: Tart's copy of its VM and of the Ubuntu image the VM was cloned from.
+# Sets RUNNER_TART_GONE to the names deleted; one still listed after its delete is a warning.
+purge_runner_tart() {
+  RUNNER_TART_GONE=""
+  has tart || return 0
+  local n
+  for n in $(tart list 2>/dev/null | awk '($1 == "local" && $2 == "desk-runner") || ($1 == "OCI" && $2 ~ /^ghcr\.io\/cirruslabs\/ubuntu[:@]/) { print $2 }'); do
+    if tart delete "$n" >/dev/null 2>&1; then RUNNER_TART_GONE="$RUNNER_TART_GONE $n"
+    elif tart list 2>/dev/null | awk -v n="$n" '$2 == n { f = 1 } END { exit !f }'; then
+      warn "the retired local CI runner's Tart image $n was not deleted: tart delete $n"
+    fi
+  done
+}
+# end retired local CI runner
 # resolved <path> — the physical directory a path lands on, empty if it lands nowhere
 resolved() { (cd -P "$1" 2>/dev/null && pwd) || true; }
 SETTINGS_BACKED_UP=""
@@ -472,7 +486,7 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-gh"
   ok "desk-gh -> ~/.local/bin (desk-gh read: a read-only gh api call)"
   wrote "desk-gh  ~/.local/bin/desk-gh"
-  # retired local CI runner: its scripts, PATH shim, launchd jobs and state go, the VM image stays.
+  # retired local CI runner: its scripts, PATH shim, launchd jobs, state, Tart VM and base image go.
   gone=""
   # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.
   if [ -x "$DESKDIR/bin/desk-runner" ] && command -v tart >/dev/null 2>&1 \
@@ -495,9 +509,10 @@ if [ -d "$SRC/desk/bin" ]; then
       if command -v launchctl >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi
       rm -f "$plist"; gone="$gone $label"
     done
+    purge_runner_tart; gone="$gone$RUNNER_TART_GONE"
   fi
   if [ -n "$gone" ]; then
-    ok "removed the local CI runner:$gone (its VM image stays: tart delete desk-runner)"
+    ok "removed the local CI runner:$gone"
     wrote "removed  local CI runner:$gone"
   fi
   # end retired local CI runner
