@@ -153,6 +153,7 @@ const REWRITTEN = [
   ].map((s) => ['DS-405', s, 1]),
   ['DS-398', 'takes the read subcommands only', 1], // `git -C <worktree>` takes the local writes too
   ['DS-398', '`ps`, `pgrep`. **Not** `sed`', 1], // echo, printf and true join the reading tools
+  ['DS-427', '```bash codex exec --sandbox read-only ', 1], // the probe skips the trusted-directory check
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

@@ -71,6 +71,7 @@ const REWRITTEN = [
     'Match §4 Ticket key pattern against', '| §4 Other work id patterns |', 'If one of §4 Required checks reads this verdict',
   ].map((s) => ['DS-405', s, 1]),
   ['DS-398', 'It exits 3: there is none', 1], // desk-env model prints `none` and exits 0
+  ['DS-427', '```bash codex exec --sandbox read-only ', 3], // each codex command skips the trusted-directory check
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 
@@ -155,6 +156,17 @@ for (const [f, s, ptr] of FORWARDS) {
   t(`AC4 the old ${ptr.source.replace(/\\/g, '')} pointers are read (${ptrs})`, ptrs >= 1, true);
   t(`AC4 ${f} forwards to the core's *${s}*`, norm(read(f)).includes(`the core's *${s}*`), true);
 }
+
+// DS-427 AC2: every codex command a review runs in a worker worktree skips codex's trusted-directory
+// check, which refuses an untrusted worktree before the call reaches the model.
+const CODEX_DOCS = [
+  ...phaseFiles.map((f) => join(refs, f)),
+  join(root, 'skills/desk-autopilot/references/worker-contract-stage-3.md'),
+  join(root, 'skills/desk-ticket/references/stage-4b-self-review.md'),
+];
+const codexCalls = CODEX_DOCS.flatMap((p) => readFileSync(p, 'utf8').split('\n').filter((l) => /^\s*codex exec /.test(l)).map((l) => [label(p), l.trim()]));
+t(`DS-427 AC2 the documented codex commands are read (${codexCalls.length})`, codexCalls.length, 5);
+for (const [f, l] of codexCalls) t(`DS-427 AC2 ${f}: "${l.slice(0, 50)}…" carries --skip-git-repo-check`, l.startsWith('codex exec --sandbox read-only --skip-git-repo-check '), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

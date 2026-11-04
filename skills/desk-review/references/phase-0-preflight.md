@@ -31,7 +31,7 @@ workers deny it, and it is the pattern that posts to the wrong PR when a placeho
   refuses a compound command before the shell runs, printing nothing):
 
   ```bash
-  codex exec --sandbox read-only "Reply with exactly: CODEX_OK"
+  codex exec --sandbox read-only --skip-git-repo-check "Reply with exactly: CODEX_OK"
   ```
 
   Exit 0 with `CODEX_OK` is usable. `codex login status` proves nothing: it reports logged in on a

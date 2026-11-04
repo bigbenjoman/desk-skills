@@ -186,7 +186,7 @@ every part of it matches an allow rule, so the moment a call grows a `$(mktemp)`
 the shell runs, silently. That is the call being shaped wrong, not codex failing. The probe:
 
 ```bash
-codex exec --sandbox read-only "Reply with exactly: CODEX_OK"
+codex exec --sandbox read-only --skip-git-repo-check "Reply with exactly: CODEX_OK"
 ```
 
 - Exit 0: proceed, cross-vendor, untagged. `codex login status` proves nothing: it reports logged in

@@ -34,7 +34,7 @@ rather than assuming it, because a logged-out or out-of-usage CLI fails the same
 does:
 
 ```bash
-codex exec --sandbox read-only "Reply with exactly: CODEX_OK"
+codex exec --sandbox read-only --skip-git-repo-check "Reply with exactly: CODEX_OK"
 ```
 
 **Not `codex login status`**: it reports logged in on a seat that is out of usage, so it passes
