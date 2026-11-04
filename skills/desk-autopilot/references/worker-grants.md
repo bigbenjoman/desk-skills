@@ -55,10 +55,11 @@ it starts a local worker. One that cannot be refreshed parks the ticket, naming 
 failure, so no worker reads a stale copy; requeue it once the repo is reachable. A clone delisted is
 deleted by the next pass. A worker gets each clone readable and `Edit`-denied, and `git clone`
 stays refused. A clone has no remote, so a worker that `cd`s in has nowhere to push, and a `gh` write
-that names a listed repo by `--repo`, `-R` or URL is denied (so one with its URL in inline text is
-too: use `--body-file`). The name is matched whole, so `acme/web` listed leaves `acme/web-admin`
-alone, and a repo listing itself keeps its `gh` writes, with a warning. The match is case-sensitive,
-so it catches a slip, not a worker spelling the name differently. A local change a worker makes in a
+that names a listed repo by `--repo`, `-R` or URL is denied (so one with its URL, or a quoted title
+opening with its name, is too: use `--body-file` and word the title differently). The name is matched
+whole, so `acme/web` listed leaves `acme/web-admin` alone, and a repo listing itself keeps its `gh`
+writes, with a warning. The match is case-sensitive, so it catches a slip, not a worker spelling the
+name differently. A local change a worker makes in a
 clone lasts until the next refresh. A long outage parks up to a pass's free slots at each
 pass, and a killed worker waits with its session kept instead. A base conflict fix worker is granted
 no clone by name, though in a standing batch its state directory covers `ref/`, and a cloud session

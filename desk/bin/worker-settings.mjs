@@ -465,14 +465,19 @@ if (mode === 'triage') {
   // none by name, as it is no ticket's worker and the pass refreshes the clones only for those; in a
   // standing batch its state directory grant still covers them. The pass keeps the clones
   // (read-repos.mjs); a worker making or moving its own stays refused by name.
-  // A gh write takes its repo by flag or by URL, whatever directory it runs in. Each glob needs that
-  // shape and bounds the name on both sides, so `acme/web` is not `acme/web-admin` or `bigacme/web`,
-  // and a title merely naming it still runs. A rule is case-sensitive and gh is not, so this stops a
-  // slip, not a worker set on it: the contract and the reviewed PR are what hold the rest.
-  const ghNamesRepo = (name) => [
-    ...['--repo ', '--repo=', '-R ', '-R'].flatMap((f) => [`*${f}${name}`, `*${f}${name} *`, `*${f}"${name}"*`, `*${f}'${name}'*`]),
-    ...['/', ':'].flatMap((h) => ['', ' *', '/*', '"*', "'*", '.git', '.git *', '.git"*', ".git'*"].map((t) => `*${h}${name}${t}`)),
-  ];
+  // A gh write takes its repo by flag or by URL, whatever directory it runs in. Each glob bounds the
+  // name on both sides by a character no owner/name holds, so `acme/web` is not `acme/web-admin` or
+  // `bigacme/web`. `R` is -R's end, bundled (`-cR`) or attached (`-Racme/web`). A space counts only
+  // after a flag, so a title naming the repo mid-sentence still runs. A rule is case-sensitive and gh
+  // is not, so this stops a slip, not a worker set on it: the contract and the reviewed PR hold the rest.
+  const ghNamesRepo = (name) => {
+    const ends = ['', ' *', '/*', '"*', "'*", '?*', '#*'];
+    return [
+      ...['--repo ', 'R ', 'R', '=', '"', "'"].flatMap((h) => ends.map((e) => `*${h}${name}${e}`)),
+      // Only a URL takes `.git`: gh refuses it on a bare owner/name.
+      ...['/', ':'].flatMap((h) => [...ends, ...ends.map((e) => `.git${e}`)].map((e) => `*${h}${name}${e}`)),
+    ];
+  };
   const readRepoLines = [];
   for (const { repo, path } of baseFix ? [] : E.readRepos()) {
     if (!path) { warns.push(`§4 Worker read-only repos item "${repo}" is not owner/name — nothing to read`); continue; }
