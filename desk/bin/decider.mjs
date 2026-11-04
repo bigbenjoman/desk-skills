@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS, describeCond } from './clears-when.mjs';
-import { needsSession, planPark } from './batch-state.mjs';
+import { needsSession, planPark, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 
@@ -178,18 +178,14 @@ export function pruneHanded(state, items) {
 }
 
 // ---- moving a ticket to another batch --------------------------------------------------------------
-// The repo's other running batches a ticket of this batch can be moved into, as queue.mjs transfer
-// judges them: [{ name, base, word }], the standing batch's name null and its word `standing`. None
-// when queue.mjs cannot say.
+// The repo's other running batches a ticket of this batch can be moved into (batch-state.mjs
+// moveTargetsOf), asked of queue.mjs in the supervisor's checkout. None when queue.mjs cannot say.
 export function runningBatches(bin, { cwd, env = process.env } = {}) {
   const r = spawnSync(process.execPath, [join(bin, 'queue.mjs'), 'running'], { cwd, env, encoding: 'utf8' });
-  try { return r.status === 0 ? JSON.parse(r.stdout).map((b) => ({ ...b, word: b.name ?? 'standing' })) : []; } catch { return []; }
+  try { return r.status === 0 ? moveTargetsOf(r.stdout) : []; } catch { return []; }
 }
-const targetsText = (ts) => (ts.length ? ts.map((b) => `${b.word} (on ${b.base})`).join(', ') : 'none');
-// What a hand-on about a ticket's base or batch offers the person: needs-you's move, with the batches
-// it can move to.
+// A hand-on about a ticket's base or batch offers the person needs-you's move (batch-state.mjs moveOffer).
 const BASE_ASK = /\b(base|batch)\b/i;
-export const moveOffer = (ts) => `move <batch> runs it in another batch, its next worker on that base: ${targetsText(ts)}`;
 
 // ---- the session ---------------------------------------------------------------------------------
 // Only what settling needs: requeue, move and record, read the ticket and the PR, read the state directory.

@@ -35,6 +35,13 @@ export const readQueue = (path) => readJsonOrRefuse(path,
   `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`);
 export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
 
+// The batches `queue.mjs running` printed, as a ticket can be moved into them (queue.mjs transfer):
+// [{ name, base, word }], the standing batch's name null and its word `standing`. needs-you's move
+// action and the decider both offer these, in the one sentence moveOffer writes.
+export const moveTargetsOf = (out) => JSON.parse(out).map((b) => ({ ...b, word: b.name ?? 'standing' }));
+export const targetsText = (ts) => (ts.length ? ts.map((b) => `${b.word} (on ${b.base})`).join(', ') : 'none');
+export const moveOffer = (ts) => `move <batch> takes it out of this batch and queues it in another, its next worker on that base: ${targetsText(ts)}`;
+
 // The question a worker parked on and nobody has answered yet, or null: its park file's `question`
 // while no answer file sits beside it. A half-written park file is not an error.
 export function openQuestion(stateDir, t) {

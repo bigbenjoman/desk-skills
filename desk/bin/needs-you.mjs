@@ -56,7 +56,7 @@ import { fileURLToPath } from 'node:url';
 import { gapsFix, personReviewFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTargetsOf, targetsText, moveOffer, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
@@ -228,11 +228,10 @@ const MOVABLE = ['parked', 'stopped'];
 export function moveTargets(r) {
   try {
     const q = queueRun(r, ['running'], checkoutOf(r, 'list its batches'));
-    return q.ok ? JSON.parse(q.out).map((b) => ({ ...b, word: b.name ?? 'standing' })) : [];
+    return q.ok ? moveTargetsOf(q.out) : [];
   } catch { return []; /* no checkout to ask in: nothing to offer */ }
 }
-const targetsText = (ts) => ts.map((b) => `${b.word} (on ${b.base})`).join(', ');
-const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['move', null, `move <batch> takes it out of this batch and queues it in another, its next worker on that base: ${targetsText(ts)}`]] : []; };
+const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['move', null, moveOffer(ts)]] : []; };
 
 // The open blockers outside its batch the last pass recorded for a ticket (pass.mjs outside_blockers),
 // each with its Jira status category and the batch of this repo holding it: `standing`, a named

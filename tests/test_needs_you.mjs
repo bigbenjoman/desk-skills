@@ -868,10 +868,10 @@ t('DS-380 a worktree holding untracked files is never removed, and nothing moves
   const o9 = D.outcome({ items: [i9], targets }, { cost: 0, handed: { [i9.id]: mv9.stdout.trim() } }, queueOf('omega'));
   t('DS-425 AC2 a move naming a batch that is not running is refused, and M-9 stays parked here',
     `${mv9.status} ${queueOf('omega').tickets['M-9']?.state} ${'M-9' in fQueue().tickets}`, '11 parked false');
-  t('DS-425 AC2 its hand-on lists the batches that are running', o9.handed[0]?.why, 'omega M-9: G-9 is not a batch running in omega beside this one, so nothing was moved. The batches running are F-1 (on feat/f).; move <batch> runs it in another batch, its next worker on that base: F-1 (on feat/f)');
+  t('DS-425 AC2 its hand-on lists the batches that are running', o9.handed[0]?.why, 'omega M-9: G-9 is not a batch running in omega beside this one, so nothing was moved. The batches running are F-1 (on feat/f).; move <batch> takes it out of this batch and queues it in another, its next worker on that base: F-1 (on feat/f)');
   // Unanswered and handed on: a park about the ticket's base offers the move; one about anything else does not.
   const o3 = D.outcome({ items: [i8, i10], targets }, { cost: 0, handed: { [i8.id]: 'a call on the base only the person makes', [i10.id]: 'a product call' } }, oq);
-  t('DS-425 AC3 a park asking to change the base is handed on offering move <batch> with the running batches', o3.handed[0]?.why, 'a call on the base only the person makes; move <batch> runs it in another batch, its next worker on that base: F-1 (on feat/f)');
+  t('DS-425 AC3 a park asking to change the base is handed on offering move <batch> with the running batches', o3.handed[0]?.why, 'a call on the base only the person makes; move <batch> takes it out of this batch and queues it in another, its next worker on that base: F-1 (on feat/f)');
   t('DS-425 AC3 a park about something else offers no move', o3.handed[1]?.why, 'a product call');
   // Taken back out, so the omega lists below read as before.
   const oqb = queueOf('omega'); delete oqb.tickets['M-9']; delete oqb.tickets['M-10']; writeFileSync(omegaQ, JSON.stringify(oqb));
