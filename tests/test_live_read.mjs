@@ -20,6 +20,10 @@ t('a park naming one entry and the not-reached tail asks for it',
 t('two entries in one park ask for both', names('Need gateway-models and numbers.v2 run on the host.'), 'gateway-models numbers.v2');
 t('a name matches whatever its case', names('Need GATEWAY-MODELS.'), 'gateway-models');
 t('a name inside a longer word is not that entry', names('Need gateway-models-v2.'), null);
+const dotted = parseLiveReads(['gateway: ./g', 'gateway.models: ./gm', 'models: ./m']).reads;
+t('a dotted name is not also a shorter entry it starts or ends with',
+  liveReadPark('Need gateway.models.', dotted)?.map((r) => r.name).join(' '), 'gateway.models');
+t('while a full stop after a name still ends it', liveReadPark('Need gateway.', dotted)?.map((r) => r.name).join(' '), 'gateway');
 t('a park naming no entry is left as it is', names('Which price should the plan show? Not reached: the PR'), null);
 t('a question beside the entry is left for the person', names('Need gateway-models. Should the fallback model be gw-2?'), null);
 t('a tail clause holding an ask is not the tail', names('Need gateway-models. Not reached: the PR, so confirm the fee'), null);

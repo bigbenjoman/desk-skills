@@ -2040,6 +2040,14 @@ check "DS-426 AC3 a park naming no Live reads entry is parked as today" \
   '[ "$(field L-3 state)" = "\"parked\"" ] && [ "$(field L-3 park.question)" = "\"which price should the plan show? Not reached: the PR\"" ] && [ "$(field L-3 park.clears_when.kind)" = "\"none\"" ]'
 check "DS-426 AC3 and so is one that asks a question beside the entry: nothing runs for it" \
   '[ "$(field L-4 state)" = "\"parked\"" ] && [ "$(field L-4 park.clears_when.kind)" = "\"none\"" ] && ! ls "$T/state-l/live-reads" | grep -q "^L-4-"'
+# L-5's read has finished, but a session claimed its park: the session's, so nothing is requeued.
+git init -q -b fix/L-5 "$T/wt/L-5"; git -C "$T/wt/L-5" commit -q --allow-empty -m L-5; HL5=$(git -C "$T/wt/L-5" rev-parse HEAD)
+printf '{"name":"gateway-models","command":"x","pid":0}\n' > "$T/state-l/live-reads/L-5-$HL5-gateway-models.json"
+echo 0 > "$T/state-l/live-reads/L-5-$HL5-gateway-models.code"; echo '{}' > "$T/state-l/live-reads/L-5-$HL5-gateway-models.out"
+q add L-5; q set L-5 state=parked lane=A branch=fix/L-5 "worktree=$T/wt/L-5" "park={\"question\":\"need live read gateway-models.\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-models\"],\"head\":\"$HL5\"},\"claim\":{\"session\":\"s-gone\",\"at\":\"2026-11-04T00:00:00Z\"}}"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-426 a finished read on a park a session claimed is left to the session: not requeued, the claim kept" \
+  '[ "$(field L-5 state)" = "\"parked\"" ] && [ "$(field L-5 park.claim.session)" = "\"s-gone\"" ] && ! echo "$out" | grep -q "L-5: live read"'
 
 # ---- DS-271: no CI runner shares the memory ladder
 # A waiting marker an older desk left behind holds nothing, and the pass writes none of its own.

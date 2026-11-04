@@ -816,9 +816,10 @@ for (const c of readCloseouts(STATE)) {
 // A park waiting on the §4 Live reads it named (liveReadOf, at harvest): while one runs it is left;
 // once each has exited 0 its output is saved as the ticket's fixture and the ticket requeued, its
 // briefing naming the files; one that failed puts the park to the person with its command and its
-// last error line, and nothing is requeued.
+// last error line, and nothing is requeued. A park a session has claimed is the session's: it is left
+// until the claim is released, as the clears-when loop below leaves one.
 for (const t of Object.values(queue().tickets)) {
-  if (!waitingOnRead(t)) continue;
+  if (!waitingOnRead(t) || t.park?.claim?.session) continue;
   const c = t.park.clears_when;
   const at = String(c.head ?? '?').slice(0, 9);
   const reads = (c.reads ?? []).map((name) => ({ name, rec: readRecord(READ_DIR, t.key, c.head, name) }));
