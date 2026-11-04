@@ -36,6 +36,8 @@
 //       done                the person did the step themselves. On a PR it reads the PR from GitHub:
 //                           merged is recorded and leaves the list; unmerged is said, and noted on the
 //                           item until its head moves
+//   needs-you.mjs move <repo> <TICKET> <batch>        record's move alone: the one action the decider is
+//                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
 //
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
@@ -860,6 +862,11 @@ if (isMain) {
       console.log(res.line);
       if (res.message) console.log(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
       if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | left [<repo>]');
+    } else if (cmd === 'move' && rest.length === 3) {
+      const [word, ticket, to] = rest;
+      const res = record({ word, ticket, action: 'move', text: to });
+      console.log(res.line);
+      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
+    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>]');
   } catch (e) { refuse(e.message); }
 }
