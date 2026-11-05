@@ -2330,4 +2330,76 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-419 the next pass resolves it, with no second reply, and starts no try" \
   '[ "$(grep -c "^PRRT_d" "$T/fb/replied.log")" = 1 ] && grep -qx PRRT_d "$T/fb/resolved.log" && [ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ]'
 
+# ---- DS-431: the clones behind §4 Worker read-only repos ------------------------------------------
+# acme/web's default branch is not main, and this repo's origin says where its neighbours are.
+mkdir -p "$T/remotes/acme"; git init -q --bare -b trunk "$T/remotes/acme/web.git"
+git clone -q "$T/remotes/acme/web.git" "$T/web-src" 2>/dev/null
+git -C "$T/web-src" checkout -q -b trunk
+echo one > "$T/web-src/f.txt"; git -C "$T/web-src" add f.txt; git -C "$T/web-src" commit -q -m one; git -C "$T/web-src" push -q origin trunk 2>/dev/null
+git -C "$T/repo" remote set-url origin "file://$T/remotes/acme/widgets.git"
+REF="$HOME/.desk-autopilot/acme__widgets/ref"
+listed(){ { cat "$T/config.md"; printf '\n## 4. Tracker, tools and team\n| Field | Value |\n|---|---|\n| Worker read-only repos | %s |\n' "$1"; } > "$T/config-rr.md"; }
+ready(){ q add "$1"; q set "$1" state=triaged lane=A "branch=fix/$1"; }
+finish(){ q set "$1" state=done session_id=null; }
+export DESK_CONFIG="$T/config-rr.md" DESK_QUEUE="$T/queue-rr.json" DESK_AUTOPILOT_STATE="$T/state-rr"
+q init rr; q set-batch concurrency=5
+: > "$T/spawns"
+
+listed '`acme/web`'; mkdir -p "$REF/acme__old"; ready R-1; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC1 a listed repo is cloned at its default branch's head before the worker spawns" \
+  '[ "$(field R-1 state)" = "\"running\"" ] && [ "$(cat "$REF/acme__web/f.txt")" = one ] && [ "$(git -C "$REF/acme__web" rev-parse HEAD)" = "$(git -C "$T/web-src" rev-parse HEAD)" ]'
+check "DS-431 a clone has no remote, so a worker that cds in has nowhere to push" '[ -z "$(git -C "$REF/acme__web" remote)" ] && ! git -C "$REF/acme__web" push origin HEAD 2>/dev/null'
+check "DS-431 AC3 a clone no longer listed is deleted, and nothing unlisted is made" '[ "$(ls "$REF")" = acme__web ]'
+finish R-1
+
+echo two > "$T/web-src/f.txt"; git -C "$T/web-src" commit -q -am two; git -C "$T/web-src" push -q origin trunk 2>/dev/null
+echo junk > "$REF/acme__web/stray.txt"
+ready R-2; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC1 the next spawn moves the clone to the new head, and drops anything else in it" \
+  '[ "$(field R-2 state)" = "\"running\"" ] && [ "$(cat "$REF/acme__web/f.txt")" = two ] && [ "$(git -C "$REF/acme__web" rev-parse HEAD)" = "$(git -C "$T/web-src" rev-parse HEAD)" ] && [ ! -e "$REF/acme__web/stray.txt" ]'
+finish R-2
+
+rm "$REF/acme__web/.git/HEAD"; ready R-3; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 a clone killed part way is made again" '[ "$(field R-3 state)" = "\"running\"" ] && [ "$(cat "$REF/acme__web/f.txt")" = two ]'
+finish R-3
+
+mv "$T/remotes/acme/web.git" "$T/remotes/acme/gone.git"
+mkdir -p "$T/state-rr/tickets"; echo text > "$T/state-rr/tickets/c-ticket.md"
+q add c-ticket; q set c-ticket state=triaged lane=A branch=fix/c-ticket location=cloud
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 a cloud ticket does not wait on a refresh" '! echo "$out" | grep -q "c-ticket: read-only repo" && ! field c-ticket park.question | grep -q "read-only repo"'
+q drop c-ticket
+ready R-4; ready R-5; q set R-5 handoff=pending handoff_stage=4b worktree="$T/wt/R-5"; : > "$T/spawns"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC5 a repo that cannot be refreshed parks the ticket, naming the repo and the failure" \
+  '[ "$(field R-4 state)" = "\"parked\"" ] && field R-4 park.question | grep -q "read-only repo could not be refreshed.*acme/web: fatal: " && echo "$out" | grep -q "R-4: read-only repo could not be refreshed"'
+check "DS-431 AC5 no worker is spawned to read the stale copy, whichever way it would have started" \
+  '[ ! -s "$T/spawns" ] && [ "$(field R-5 state)" = "\"parked\"" ] && field R-5 park.question | grep -q "read-only repo could not be refreshed" && [ "$(field R-5 handoff)" = null ] && [ "$(field R-5 handoff_stage)" = "\"4b\"" ]'
+q drop R-4; q drop R-5
+q set-batch concurrency=1; ready R-8; ready R-9; ready R-10; q set R-8 resume=pending resume_why=x
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 a killed worker waits with its session kept, and parks take the slots a worker would have" \
+  '[ ! -s "$T/spawns" ] && [ "$(field R-8 state)" = "\"triaged\"" ] && [ "$(field R-8 resume)" = "\"pending\"" ] && echo "$out" | grep -q "R-8: read-only repo could not be refreshed.*session is kept" && [ "$(field R-9 state)" = "\"parked\"" ] && [ "$(field R-10 state)" = "\"triaged\"" ]'
+q drop R-8; q drop R-9; q drop R-10; q set-batch concurrency=5
+mv "$T/remotes/acme/gone.git" "$T/remotes/acme/web.git"
+
+mkdir -p "$T/hung-git"; printf '#!/bin/sh\ncase "$*" in *fetch*) exec sleep 30;; esac\nexec "%s" "$@"\n' "$(command -v git)" > "$T/hung-git/git"; chmod +x "$T/hung-git/git"
+ready R-11; out=$(PATH="$T/hung-git:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1)
+check "DS-431 a hung remote parks within the refresh's own limit" '[ "$(field R-11 state)" = "\"parked\"" ] && field R-11 park.question | grep -q "acme/web: the refresh ran past its 1 seconds"'
+q drop R-11
+
+listed '`none`'; [ -d "$REF/acme__web" ] && had_clone=1; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC3 the row set back to none deletes the clone on a pass with nothing to spawn" '[ "$had_clone" = 1 ] && [ -z "$(ls "$REF")" ]'
+
+listed '`not a repo`'; ready R-6; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 an item that is not owner/name parks rather than dropping out" '[ "$(field R-6 state)" = "\"parked\"" ] && field R-6 park.question | grep -q "not a repo: it is not owner/name"'
+q drop R-6
+
+listed '`none`'; ready R-7; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-431 AC4 at none a spawn makes no clone" '[ "$(field R-7 state)" = "\"running\"" ] && [ -z "$(ls "$REF")" ]'
+
+url(){ node --input-type=module -e "import { cloneUrl } from '$B/read-repos.mjs'; console.log(cloneUrl(process.argv[1], 'acme/web'))" "$1"; }
+check "DS-431 a clone is addressed by this repo's own transport and host" \
+  '[ "$(url git@github.com:me/own.git)" = git@github.com:acme/web.git ] && [ "$(url https://github.com/me/own)" = https://github.com/acme/web ] && [ "$(url ssh://git@ghe.example/me/own.git)" = ssh://git@ghe.example/acme/web.git ] && [ "$(url "")" = https://github.com/acme/web.git ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

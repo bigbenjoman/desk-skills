@@ -440,4 +440,51 @@ git -C "$T/lw" commit -q --amend --allow-empty -m c
 git -C "$T/lw" push -q --force-with-lease="fix/x:$L0" origin fix/x 2>/dev/null; second=$?
 check "DS-390 AC2 git takes the granted push once and refuses it the second time" '[ $first -eq 0 ] && [ $second -ne 0 ]'
 
+# ---- DS-431: §4 Worker read-only repos and Worker measuring commands ----
+denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
+readable(){ jq -e --arg d "$1" '.permissions.additionalDirectories | index($d)' "$T/ws.json" >/dev/null 2>&1; }
+CLONE="$HOME/.desk-autopilot/acme__widgets/ref/studia__web"
+settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-unset.json"; unset_out=$out
+settings '`bash tests/run.sh`' "$(grep -E '^\| Worker (read-only repos|measuring commands) \|' "$SRC/desk-config.md")"
+check "DS-431 AC4 the template's rows, left as they are, give settings identical to a config without them" 'diff -q "$T/ws.json" "$T/ws-unset.json" >/dev/null && [ "$out" = "$unset_out" ] && ! denies "Bash(git clone:*)"'
+settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |
+| Worker measuring commands | `python3 scripts/measure.py` `tools: python3 m.py --all` |'
+check "DS-431 AC1 a listed clone is readable, and its path is named for the worker" 'readable "$CLONE" && [[ "$out" == *"CONFIG_READ_REPO: studia/web at $CLONE"* ]]'
+check "DS-431 AC2 an edit to it is refused" 'denies "Edit(/$CLONE/**)" && ! allows "Edit(/$CLONE/**)"'
+check "DS-431 AC3 a repo not listed gets no grant" '[ "$(jq "[.permissions.additionalDirectories[] | select(contains(\"/ref/\"))] | length" "$T/ws.json")" = 1 ]'
+check "DS-431 AC6 git clone is refused, by name too" 'no "git clone https://github.com/studia/web" "git clone --depth 1 x y" "git -C $W clone x" && denies "Bash(git clone:*)"'
+check "DS-431 git remote -v reads, and takes no subcommand" 'ok "git remote -v" && no "git remote -v add origin x" "git remote -v set-url origin x"'
+check "DS-431 AC7 a measuring command runs, in its directory too" 'ok "python3 scripts/measure.py" "$L nolock --cwd tools -- python3 m.py --all"'
+check "DS-431 AC8 a different script, or added arguments, are refused" \
+  'no "python3 other.py" "python3 scripts/measure.py --more" "python3 -c print(1)" "python3 m.py --all" "python3" "$L browser python3 ./other.py"'
+check "DS-431 AC8 python is not allowed by name" '! allows "Bash(python3:*)" && ! allows "Bash(python:*)"'
+settings '`bash tests/run.sh`' '| Worker measuring commands | `python3 a.py; rm x` `python3 m*.py` `git status` |
+| Worker read-only repos | `not a repo` `../up/web` |'
+check "DS-431 an item that cannot be one exact rule, or is not owner/name, is skipped with a warning" \
+  '[ $rc -eq 0 ] && [ "$(grep -c "CONFIG_WARN: §4 Worker measuring commands" <<<"$out")" = 3 ] && [ "$(grep -c "CONFIG_WARN: §4 Worker read-only repos" <<<"$out")" = 2 ] && [[ "$out" != *CONFIG_READ_REPO* ]] && no "python3 m1.py" "python3 a.py"'
+# A base conflict fix worker is no ticket's, and the pass refreshes clones only for those.
+settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |'
+printf '{"base":"feat/x","tickets":{}}\n' > "$DESK_QUEUE"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket base-feat-x --wt "$T/repo" --branch feat/x --out "$T/ws.json" 2>&1)
+check "DS-431 a base conflict fix worker is granted no clone by name" '! readable "$CLONE" && [[ "$out" != *CONFIG_READ_REPO* ]]'
+rm -f "$DESK_QUEUE"
+settings '`bash tests/run.sh`' '| Worker measuring commands | `npm exec measure` |'
+check "DS-431 a measuring command in a runner form is allowed, and the runner stays closed to anything else" 'ok "npm exec measure" && no "npm exec other" "npm exec measure --more"'
+settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |' "$(rows3 pr-open=yes pr-edit=yes pr-reply=yes pr-self-review-comment=yes)"
+check "DS-431 AC2 with gh writes granted, one naming the listed repo is refused, by flag or by URL, and its own repo still works" \
+  'no "gh pr comment 1 --repo studia/web --body x" "gh pr create --draft --repo studia/web --head b" "gh pr review https://github.com/studia/web/pull/1 --comment" && ok "gh pr comment 1 --repo acme/widgets --body x" "gh pr create --draft --repo acme/widgets --head b"'
+SQ="'"
+check "DS-431 AC2 every way gh takes the listed repo's name is refused" \
+  'no "gh pr edit 1 --repo=studia/web" "gh pr edit 1 --repo studia/web --title x" "gh pr comment 1 -R studia/web -b x" "gh pr comment 1 -Rstudia/web -b x" "gh pr comment 1 --repo \"studia/web\" -b x" "gh pr comment 1 -R ${SQ}studia/web${SQ} -b x" \
+      "gh pr comment 1 -R=studia/web -b x" "gh pr review 1 -cR studia/web -b x" "gh pr review 1 -cRstudia/web -b x" "gh pr edit \"--repo=studia/web\" --title x" \
+      "gh pr edit 1 --repo https://github.com/studia/web?x=1 --title y" "gh pr edit 1 --repo \"https://github.com/studia/web#x\" --title y" "gh pr edit 1 --repo https://github.com/studia/web.git/ --title y" \
+      "gh pr comment 1 --repo github.com/studia/web -b x" "gh pr edit https://github.com/studia/web/pull/1 --title x" "gh pr edit \"https://github.com/studia/web\" --title x" "gh pr create --draft --repo https://github.com/studia/web.git --head b" "gh pr create --draft --repo git@github.com:studia/web.git --head b"'
+check "DS-431 a title naming the listed repo still runs" 'ok "gh pr create --draft --repo acme/widgets --title \"measure studia/web exclusions\" --body-file b.md" "gh pr edit 1 --title \"from studia/web\""'
+settings '`bash tests/run.sh`' '| Worker read-only repos | `acme/widget` `cme/widgets` |' "$(rows3 pr-open=yes pr-edit=yes pr-reply=yes pr-self-review-comment=yes)"
+check "DS-431 AC2 a listed name inside this repo's own does not refuse its gh writes" \
+  'ok "gh pr create --draft --repo acme/widgets --head b" "gh pr comment 1 --repo=acme/widgets -b x" "gh pr edit 1 -R acme/widgets --title x" "gh pr review https://github.com/acme/widgets/pull/1 --comment" "gh pr edit https://github.com/acme/widgets/pull/1 --title x" && no "gh pr edit 1 --repo acme/widget" "gh pr edit 1 --repo cme/widgets"'
+settings '`bash tests/run.sh`' '| Worker read-only repos | `acme/widgets` |' "$(rows3 pr-open=yes pr-edit=yes pr-reply=yes pr-self-review-comment=yes)"
+check "DS-431 AC2 a repo listing itself keeps its gh writes and is warned, and its clone stays read-only" \
+  '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Worker read-only repos item \"acme/widgets\" is this repo"* ]] && ok "gh pr create --draft --repo acme/widgets --head b" "gh pr edit https://github.com/acme/widgets/pull/1 --title x" && denies "Edit(/$HOME/.desk-autopilot/acme__widgets/ref/acme__widgets/**)"'
+
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
