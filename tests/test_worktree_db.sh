@@ -68,7 +68,8 @@ EOF
 cat > "$T/stub/docker" <<EOF
 #!/bin/sh
 case "\$1" in
-  port) cat "$T/port.line" 2>/dev/null; [ -s "$T/port.line" ] ;;
+  port) [ "\$2 \$3" = "pg 5432/tcp" ] || { echo "Error: No such container or port: \$2 \$3" >&2; exit 1; }
+    cat "$T/port.line" 2>/dev/null; [ -s "$T/port.line" ] ;;
   exec) case "\$*" in
     *"pg_database"*) echo 1 ;;
     *"information_schema"*) cat "$T/tables" ;;

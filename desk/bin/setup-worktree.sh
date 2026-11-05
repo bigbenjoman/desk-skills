@@ -27,7 +27,8 @@
 #
 # The port is the container's, asked of docker when the URLs are rewritten: the primary checkout's env
 # files may name another server on their own port (a Homebrew Postgres on localhost:5432, on purpose),
-# and a ticket's URL keeps the credentials and query but never that port.
+# and a ticket's URL keeps the credentials and query but takes the container's port. A container that
+# publishes no port, or a docker that cannot say, leaves the copied port in place, and a warning says so.
 #
 # A failed migrate does not fail setup: the output is kept in `.desk-migrate.log` in the worktree (URL
 # passwords masked), its tail is printed, `migrate=failed` is printed, and pass.mjs tells the worker.
