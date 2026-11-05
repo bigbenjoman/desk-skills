@@ -118,10 +118,11 @@ function headerOf(line, known) {
 }
 
 // A draft's parts: {summary, type, headers: [{key, value}], blocks: [KEY], body}. `keys` are the lower-case
-// names of the fields this spine carries, headers as well as the filing ones. `sizeField` says one of them is
-// a size field: without one a `Size:` line belongs to the body, as its first line, where triage reads it.
-export function parseDraft(draft, { sizeField = true, keys = [] } = {}) {
+// names of the fields this spine carries, headers as well as the filing ones. With no `size` among them a
+// `Size:` line belongs to the body, as its first line, where triage reads it.
+export function parseDraft(draft, { keys = [] } = {}) {
   const lines = String(draft).trim().split('\n');
+  const sizeField = keys.includes('size');
   const known = (k) => FILING_KEY.test(k) || keys.includes(k);
   const headers = [];
   const taken = new Set();
@@ -215,20 +216,23 @@ function fieldLine(id, catalog) {
 // line can come before its Type line, so every type's names are known to the one parse.
 function readSpine(draft, env) {
   const any = spineFields();
-  if (!any.length) return { ...parseDraft(draft, { sizeField: false }), fields: [], missing: [], unread: null };
+  if (!any.length) return { ...parseDraft(draft), fields: [], missing: [], unread: null };
   const catalog = fieldCatalog(null, env);
   const keys = any.flatMap((id) => fieldKeys(id, catalog));
-  const parsed = parseDraft(draft, { sizeField: keys.includes('size'), keys });
+  const parsed = parseDraft(draft, { keys });
   const fields = [];
   const absent = [];
+  let forType = null;
+  const typeCatalog = () => (forType ??= fieldCatalog(parsed.type, env));
+  // A placeholder such as `None` is a value where Jira offers it as one.
+  const offered = (id, v) => (typeCatalog().allowed[id] ?? []).some((a) => a.toLowerCase() === v.toLowerCase());
   for (const id of spineFields(parsed.type)) {
     const named = fieldKeys(id, catalog);
-    const value = parsed.headers.find((h) => named.includes(h.key) && !NO_VALUE.test(h.value))?.value;
+    const value = parsed.headers.find((h) => named.includes(h.key) && h.value && (!NO_VALUE.test(h.value) || offered(id, h.value)))?.value;
     if (value) fields.push(`${id}=${value}`);
     else absent.push(id);
   }
-  const forType = absent.length ? fieldCatalog(parsed.type, env) : null;
-  return { ...parsed, fields, missing: absent.map((id) => fieldLine(id, forType)), unread: catalog.why };
+  return { ...parsed, fields, missing: absent.map((id) => fieldLine(id, typeCatalog())), unread: catalog.why };
 }
 
 // What the person is asked when a spine lacks a field it must carry.
