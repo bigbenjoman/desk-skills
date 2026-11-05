@@ -24,6 +24,7 @@
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs list <config id>        print every item of a list row, one per line, exit 3 if unset
 //   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
+//   node desk-env.mjs required-fields <type>  print §4 Required fields for an issue type as JSON (requiredFields)
 //   node desk-env.mjs branch-check <name>     exit 1, saying why, if the name is no usable ticket branch
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
 //   node desk-env.mjs ticket-kind <id>        print tracker|work-id|base|issue|slug, exit 2 if the id is not accepted
@@ -553,6 +554,19 @@ export function memoryCeiling() {
 // can be called `Lint, Type Check & Build`. Unset is null; `none` is ['none'] (callers test isNone).
 export function configValues(id) {
   return configValuesIn(parseConfig(), id);
+}
+
+// §4 Required fields for an issue type: {need: [field id, in rule order], malformed: [item that is not
+// `<Type>[, <Type>…]: <field>[, <field>…]`]}. No config reads as no rules. The one reader of this row's grammar.
+export function requiredFields(type) {
+  let rules = [];
+  try { rules = [].concat(configValues('jira-required-fields') ?? []).filter((r) => r && !isNone(r)); } catch { /* no config: no rules */ }
+  const want = String(type).trim().toLowerCase();
+  const need = rules.flatMap((rule) => {
+    const m = /^([^:]+):(.+)$/.exec(rule);
+    return m && m[1].split(',').some((t) => t.trim().toLowerCase() === want) ? m[2].split(/[,\s]+/).filter(Boolean) : [];
+  });
+  return { need: [...new Set(need)], malformed: rules.filter((r) => !/^[^:]+:.*\S/.test(r)) };
 }
 
 // A table id's rows as `<first cell>: <second cell>`, or the first cell alone when the second is
@@ -1371,6 +1385,10 @@ if (isMain) {
         if (v == null) process.exit(3);
         if (isNone(v)) break;
         for (const x of v) { const c = parseCommandItem(x); console.log(`${c.dir}\t${c.cmd}`); }
+        break;
+      }
+      case 'required-fields': {
+        console.log(JSON.stringify(requiredFields(args[0] ?? '')));
         break;
       }
       case 'get': {

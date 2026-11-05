@@ -61,8 +61,8 @@ echo "\$*" >> "$T/jira.calls"
 [ "\$1" = get ] && [ -f "$T/get/\$2.fails" ] && { echo "desk-jira: HTTP 404 from Jira" >&2; exit 1; }
 [ "\$1" = link ] && [ -f "$T/link.fails" ] && { echo "desk-jira: HTTP 400 from Jira" >&2; exit 1; }
 [ "\$1" = link ] && { echo "linked: \$2 blocks \$4 (read back)"; exit 0; }
-[ "\$1" = fields ] && { [ -f "$T/fields.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }; printf 'customfield_10208\tT-shirt\toption\ncustomfield_10207\tLaunch Priority\toption\ncustomfield_10513\tSquad\toption\n'; exit 0; }
-[ "\$1" = meta ] && { printf '== %s\n  customfield_10207 (Launch Priority) allows: P0, P1, P2\n  customfield_10513 (Squad) allows: Core, Growth\n' "\$2"; exit 0; }
+[ "\$1" = fields ] && { [ -f "$T/fields.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }; printf 'customfield_10208\tT-shirt\toption\ncustomfield_10207\tLaunch Priority\toption\ncustomfield_10513\tTeam / Squad (owner)\toption\ncustomfield_10300\tSize\toption\n'; exit 0; }
+[ "\$1" = meta ] && { printf '== %s\n  customfield_10207 (Launch Priority) allows: P0, P1, P2\n  customfield_10513 (Team / Squad (owner)) allows: Core, Growth\n' "\$2"; exit 0; }
 [ -f "$T/search.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }
 cat "$T/search.json"
 EOF
@@ -601,6 +601,19 @@ check "DS-354: an edit to a spine already filed cannot be applied, and one to it
 
 # ---- DS-434: what a drafted spine files as ---------------------------------------------------------
 parsed(){ node --input-type=module -e "import { parseDraft } from '$B/epic-plan.mjs'; const p = parseDraft(process.argv[1], { sizeField: process.argv[2] !== 'nosize' }); console.log(JSON.stringify([p.summary, p.type, p.blocks, p.body]))" "$1" "${2:-}"; }
+check "DS-434: a labelled line that names no field stays in the body, in its place, and headers after it are still read" '[ "$(parsed "The spine
+
+Goal: specs first
+Type: Task
+
+Note: land it first
+Blocks: E-1
+
+## Outcome")" = "[\"The spine\",\"Task\",[\"E-1\"],\"Goal: specs first\\n\\nNote: land it first\\n\\n## Outcome\"]" ]'
+check "DS-434 AC5: a Blocks line per key links them all" '[ "$(parsed "The spine
+Blocks: E-1
+Blocks: E-2
+## Outcome")" = "[\"The spine\",\"Story\",[\"E-1\",\"E-2\"],\"## Outcome\"]" ]'
 check "DS-434: a first line naming no filing header is the summary, and a body with no headers is whole" '[ "$(parsed "Spine: the AC1 spec
 It lands the spec.")" = "[\"Spine: the AC1 spec\",\"Story\",[],\"It lands the spec.\"]" ]'
 check "DS-434: headers in bold, with a blank line before them, are read and stay out of the body" '[ "$(parsed "# The spine
@@ -645,7 +658,7 @@ Repository: acme/widgets
 Blocks: E-31, E-32
 Size: M
 Launch Priority: P2
-customfield_10513: Core
+Team / Squad (owner): Core
 
 _Context: under E-30_
 
@@ -654,7 +667,7 @@ The specs land first."
 
 config yes '`none`'; required; startepic E-30 E-31; drafted "$ALL" E-31; clear_calls
 out=$(admit E-30 --by ben)
-check "DS-434: the drafter is told each required field, without a priority only the person sets" 'grep -q "^- Launch Priority (customfield_10207), one of P1, P2$" "$ES/E-30/plan-draft.prompt.md" && grep -q "^- Squad (customfield_10513), one of Core, Growth$" "$ES/E-30/plan-draft.prompt.md" && grep -q "^- T-shirt (customfield_10208)$" "$ES/E-30/plan-draft.prompt.md"'
+check "DS-434: the drafter is told each required field, without a priority only the person sets" 'grep -q "^- Launch Priority (customfield_10207), one of P1, P2$" "$ES/E-30/plan-draft.prompt.md" && grep -qF -- "- Team / Squad (owner) (customfield_10513), one of Core, Growth" "$ES/E-30/plan-draft.prompt.md" && grep -q "^- T-shirt (customfield_10208)$" "$ES/E-30/plan-draft.prompt.md"'
 check "DS-434: a plan with every value asks nothing more than start, edit or discard" 'grep -q "held behind it: read .*, then start, edit or discard it$" <<< "$(eget E-30 tickets.E-30.park.question)" && ! grep -q "Before it can start" "$ES/E-30/plan.md"'
 clear_calls; answer E-30 start; out=$(btick)
 check "DS-434 AC1: the spine is filed with a value for each required field, read by Jira name, §4 row and id" 'grep -qF "create Task Spine: the AC1 spec $ES/E-30/spine.md parent=E-30 customfield_10208=M customfield_10207=P2 customfield_10513=Core" "$T/jira.calls"'
@@ -672,7 +685,7 @@ Launch Priority: TBD
 The specs land first."
 startepic E-33 E-34; drafted "$PART" E-34; clear_calls
 out=$(admit E-33 --by ben)
-check "DS-434 AC2: the plan asks for a required field with no value, naming its allowed values" 'grep -q "^feature plan awaiting your answer: the spine and owner table for E-33 are drafted, with 1 child held behind it, but its spine has no value for Launch Priority (customfield_10207), one of P1, P2 (config §4 Required fields): answer with an edit naming each: read $ES/E-33/plan.md, then edit or discard it$" <<< "$(eget E-33 tickets.E-33.park.question)" && grep -q "^Before it can start, its spine has no value for Launch Priority" "$ES/E-33/plan.md"'
+check "DS-434 AC2: the plan asks for a required field with no value, naming its allowed values" 'grep -q "^feature plan awaiting your answer: the spine and owner table for E-33 are drafted, with 1 child held behind it, but its spine has no value for Launch Priority (customfield_10207), one of P1, P2 (config §4 Required fields and Size field): answer with an edit naming each: read $ES/E-33/plan.md, then edit or discard it$" <<< "$(eget E-33 tickets.E-33.park.question)" && grep -q "^Before it can start, its spine has no value for Launch Priority" "$ES/E-33/plan.md"'
 check "DS-434 AC2: nothing is filed when the plan is drafted" '! grep -q "^create" "$T/jira.calls"'
 answer E-33 start; out=$(btick)
 check "DS-434 AC2: a start with the value still missing asks again, and files nothing" '[ "$(eget E-33 tickets.E-33.state)" = parked ] && grep -q "was not started, because its spine has no value for Launch Priority" <<< "$(pq E-33)" && ! grep -q "^create" "$T/jira.calls" && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).spine)" "$ES/E-33/feature.json")" = null ]'
@@ -686,7 +699,7 @@ startepic E-35 E-36; drafted "Spine: the AC1 spec
 T-shirt: M
 Priority: P2" E-36; touch "$T/fields.fails"
 out=$(admit E-35 --by ben)
-check "DS-434: a field name Jira could not give is a question naming why, not a refused create" 'grep -q "its spine has no value for customfield_10208 (config §4 Required fields, and Jira.s field names could not be read: desk-jira: HTTP 503 from Jira)" <<< "$(eget E-35 tickets.E-35.park.question)"'
+check "DS-434: a field name Jira could not give is a question naming why, not a refused create" 'grep -q "its spine has no value for customfield_10208 (config §4 Required fields and Size field, and Jira.s field names could not be read: desk-jira: HTTP 503 from Jira)" <<< "$(eget E-35 tickets.E-35.park.question)"'
 rm -f "$T/fields.fails"; cleared E-35
 
 # Blocks: refused before filing where it could never be linked, and retried after a failed link.
@@ -706,11 +719,34 @@ out=$(admit E-39 --by ben); answer E-39 start; out=$(btick)
 check "DS-434 AC5: a Blocks key that cannot be read asks again before anything is filed" 'grep -q "because its spine draft blocks E-38, which could not be read (desk-jira: HTTP 404 from Jira)" <<< "$(pq E-39)" && ! grep -q "^create" "$T/jira.calls"'
 rm -f "$T/get/E-38.fails"; touch "$T/link.fails"; clear_calls
 answer E-39 start; out=$(btick)
-check "DS-434 AC5: a refused link asks again, with the spine's key kept" 'grep -q "because its spine E-11 is filed, but its Blocks link to E-38 was refused (desk-jira: HTTP 400 from Jira): put the links right in Jira, then answer start" <<< "$(pq E-39)" && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).spine)" "$ES/E-39/feature.json")" = E-11 ]'
+check "DS-434 AC5: a refused link asks again, with the spine's key kept" 'grep -q "because its spine E-11 is filed, but its Blocks link to E-38 was refused (desk-jira: HTTP 400 from Jira): put the links right in Jira, then answer start" <<< "$(pq E-39)" && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).spine)" "$ES/E-39/feature.json")" = E-11 ] && [ ! -f "$ES/E-39/triage/E-11.json" ]'
 rm -f "$T/link.fails"; clear_calls
 answer E-39 start; out=$(btick)
 check "DS-434 AC5: the next start finishes the link and does not file a second spine" '! grep -q "^create" "$T/jira.calls" && grep -q "^link E-11 Blocks E-38$" "$T/jira.calls" && [ "$(eget E-39 tickets.E-39)" = undefined ]'
 cleared E-39
+
+# The §4 Size field is carried with no Required fields rule for it, and asked for like one.
+config yes '`none`'; printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Size field | `customfield_10208` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+startepic E-41 E-42; drafted "Spine: the AC1 spec
+Size: M
+
+## Outcome" E-42; out=$(admit E-41 --by ben); clear_calls; answer E-41 start; out=$(btick)
+check "DS-434: a Size line is sent as the §4 Size field, with no Required fields rule for it" 'grep -qF "create Story Spine: the AC1 spec $ES/E-41/spine.md parent=E-41 customfield_10208=M" "$T/jira.calls" && [ "$(cat "$ES/E-41/spine.md")" = "## Outcome" ]'
+cleared E-41
+startepic E-43 E-44; drafted "Spine: the AC1 spec
+
+## Outcome" E-44; clear_calls; out=$(admit E-43 --by ben)
+check "DS-434: a draft with no value for the §4 Size field asks for it" 'grep -q "but its spine has no value for T-shirt (customfield_10208)" <<< "$(eget E-43 tickets.E-43.park.question)" && ! grep -q "^create" "$T/jira.calls"'
+cleared E-43
+
+# A required field Jira names Size, on a repo with no §4 Size field row, is read by that name.
+config yes '`none`'; printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Required fields | `Story: customfield_10300` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+startepic E-45 E-46; drafted "Spine: the AC1 spec
+Size: M
+
+## Outcome" E-46; out=$(admit E-45 --by ben); clear_calls; answer E-45 start; out=$(btick)
+check "DS-434: a required field named Size is sent by that name, and stays out of the body" 'grep -qF "create Story Spine: the AC1 spec $ES/E-45/spine.md parent=E-45 customfield_10300=M" "$T/jira.calls" && [ "$(cat "$ES/E-45/spine.md")" = "## Outcome" ]'
+cleared E-45
 config yes '`none`'
 
 # ---- DS-380: a ticket whose files are only on a running batch's base joins that batch -------------
