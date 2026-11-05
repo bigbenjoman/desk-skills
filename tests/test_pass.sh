@@ -2330,6 +2330,38 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-419 the next pass resolves it, with no second reply, and starts no try" \
   '[ "$(grep -c "^PRRT_d" "$T/fb/replied.log")" = 1 ] && grep -qx PRRT_d "$T/fb/resolved.log" && [ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ]'
 
+# ---- DS-433: a green ready PR with no clean verdict at its head goes for review, where a driver may merge --
+# fix/C-1's head CB is a clean merge of main over CA, fix/C-2's head CC also has a commit of its own.
+node -e 'const fs = require("fs"); const [a, b] = process.argv.slice(1);
+  fs.writeFileSync(b, fs.readFileSync(a, "utf8").replace(/(\| `pr-ready` .*\n)/, "$1| `autopilot-merge` | Merge batch PRs | `yes` | `yes` |\n| `pr-merge-green` | Merge on green | `yes` | `yes` |\n"));' "$T/config-r.md" "$T/config-m0.md"
+sed "s#$T/repo#$T/carry#" "$T/config-m0.md" > "$T/config-m.md"
+export DESK_CONFIG="$T/config-m.md" DESK_QUEUE="$T/queue-m.json" DESK_AUTOPILOT_STATE="$T/state-m"
+mkdir -p "$T/state-m/logs"; q init m; q set-batch concurrency=6
+for k in 1 2 3 4 5; do q add "M-$k"; q set "M-$k" state=done lane=A "result.pr=82$k"; done
+q set M-1 branch=fix/C-1; q set M-2 branch=fix/C-2; q set M-3 branch=fix/M-3; q set M-4 branch=fix/M-4; q set M-5 branch=fix/M-5
+ffx 821 "$CB" "$CA p0=0 p1=0"
+ffx 822 "$CC" "$CA p0=0 p1=0"
+ffx 823 "$H1" -
+ffx 824 "$H1" "$H1 p0=0 p1=0"
+ffx 825 "$H1" "$H1 p0=0 p1=0"; sed 's/p2=0/p2=1/' "$T/fb/825.threads" > "$T/fb/825.tmp"; mv "$T/fb/825.tmp" "$T/fb/825.threads"
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-433 AC2 a clean verdict carried across a clean merge of the base sends no worker" \
+  '[ "$(field M-1 state)" = "\"done\"" ] && [ "$(field M-1 fix_tries)" = null ] && [ "$(field M-1 stuck)" = null ]'
+check "DS-433 AC2 a stale verdict its own commit moved past goes to a review worker, out of draft" \
+  '[ "$(field M-2 state)" = "\"triaged\"" ] && [ "$(field M-2 fix | jq -c "[.kind, .ready, .held]")" = "[\"rereview\",true,true]" ] && echo "$out" | grep -qF "review try 1 of 2: M-2 requeued for PR #822 — review its head: its review verdict is for ${CA:0:9}"'
+check "DS-433 no verdict at all goes to a review worker too" \
+  '[ "$(field M-3 state)" = "\"triaged\"" ] && [ "$(field M-3 fix.what)" = "\"review its head: no desk-review verdict is posted on it\"" ]'
+check "DS-433 AC1 a clean verdict at the head sends no worker and asks no one" \
+  '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 fix_tries)" = null ] && [ "$(field M-4 stuck)" = null ]'
+check "DS-433 an uncarried P2 at the head is put to the person, not left waiting" \
+  '[ "$(field M-5 state)" = "\"done\"" ] && field M-5 stuck.why | jq -r . | grep -qF "is not clean (p2=1)" && echo "$out" | grep -qF "M-5: STUCK — PR #825"'
+export DESK_CONFIG="$T/config-r.md" DESK_QUEUE="$T/queue-m2.json" DESK_AUTOPILOT_STATE="$T/state-m2"
+mkdir -p "$T/state-m2/logs"; q init m2; q set-batch concurrency=6
+q add M-6; q set M-6 state=done lane=A branch=fix/M-6 result.pr=826; ffx 826 "$H1" -
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-433 AC4 where no driver may merge, a PR with no verdict gets no review worker" \
+  '[ "$(field M-6 state)" = "\"done\"" ] && [ "$(field M-6 fix_tries)" = null ] && [ "$(field M-6 stuck)" = null ]'
+
 # ---- DS-431: the clones behind §4 Worker read-only repos ------------------------------------------
 # acme/web's default branch is not main, and this repo's origin says where its neighbours are.
 mkdir -p "$T/remotes/acme"; git init -q --bare -b trunk "$T/remotes/acme/web.git"

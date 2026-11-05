@@ -49,6 +49,13 @@
 #                                            (`review feedback: …`, naming the first thread); pass.mjs
 #                                            sends the feedback to a fix worker (fix-tries.mjs
 #                                            feedbackFix), and to the person once no try is left
+#   - no clean review at its head            where §4 Local review command is set, green is not enough:
+#                                            the latest desk-review verdict must be clean at the head
+#                                            (§4 Clean review verdict; review-threads.mjs verdict), or
+#                                            carried to it by clean merges of the base alone (undraft.mjs
+#                                            verdictCarries). A carried P2 does not hold it. Held, it is
+#                                            logged, and the pass sends it to a review worker
+#                                            (fix-tries.mjs verdictTry), or to the person
 #   - DIRTY                                  a conflict needs resolving and a fresh review: pass.mjs
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
@@ -241,6 +248,12 @@ THREADS="$DESK_BIN/review-threads.mjs"
 THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
 # §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
 CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
+# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
+REVIEW_HOLD=""
+case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
+  ''|todo|none) ;;
+  *) REVIEW_HOLD=1 ;;
+esac
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
@@ -292,6 +305,12 @@ feedback(){
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
     | node "$THREADS" read --handle "$AUTHOR" --clean "$CLEAN_ROW" 2>/dev/null
 }
+# Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
+# Nothing when GitHub could not be read.
+head_verdict(){
+  gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
+    | node "$THREADS" verdict --handle "$AUTHOR" --clean "$CLEAN_ROW" --base "$BASE_BRANCH" --pr "$1" 2>/dev/null
+}
 # Prints true once GitHub has resolved the thread.
 resolve_thread(){
   gh api graphql -f id="$1" -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
@@ -316,8 +335,7 @@ blocked_clear(){ # blocked_clear <key> <reason prefix>
 }
 feedback_clear(){ rm -f "$SD/feedback-$1"; blocked_clear "$2" "review feedback:"; }
 # An `approval:` note asks a person to approve a PR where GitHub requires a review or a §4 State check of
-# kind approval is red; it is cleared once that no longer holds the PR. (DS-411: a feature PR no longer
-# waits for one: green, with its clean desk-review verdict at the head, it merges.)
+# kind approval is red; it is cleared once that no longer holds the PR.
 approval_clear(){ blocked_clear "$1" "approval:"; }
 
 # Tickets join the batch after the driver starts, so each loop adds every queue ticket not yet in
@@ -580,7 +598,7 @@ EOF_ROUTINES
 }
 
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting
+  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
@@ -699,12 +717,22 @@ EOF_RESOLVE
     return 1
   fi
 
-  # DS-411: a feature PR merges like any other once it is green. Green includes the §4 State check
-  # `desk-review verdict`, so the clean verdict at the head is its approval. No hold on GitHub's
-  # reviewDecision: the author is the person's own account, which GitHub never lets approve its own
-  # PR, so that hold could not be cleared by anyone. A person's approval still holds a PR where
-  # GitHub requires one (REVIEW_REQUIRED, above) or a §4 State check of kind `approval` is red.
   approval_clear "$key"
+
+  # A clean review at the head stands in for a person's approval, for every PR whatever its title. Green
+  # alone does not show one: only a repo whose CI runs a §4 State check reading the verdict has it in green.
+  if [ -n "$REVIEW_HOLD" ]; then
+    verdict=$(head_verdict "$n")
+    if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
+    if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then
+      [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+      rm -f "$SD/green-$n"
+      log "#$n $label at ${sha:0:9}, HELD with no clean review at its head: $(printf '%s' "$verdict" | jq -r '.why // "the head moved as it was read"') — the pass sends it to a review worker, or the person"
+      return 1
+    fi
+    carried_from=$(printf '%s' "$verdict" | jq -r '.carried // empty')
+    [ -n "$carried_from" ] && log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $BASE_BRANCH came since"
+  fi
 
   # Green now. It must still be green at the same head on a later loop before it merges.
   green_at=$(awk -v s="$sha" '$1 == s { print $2 }' "$SD/green-$n" 2>/dev/null)

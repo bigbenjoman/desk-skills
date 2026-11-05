@@ -132,6 +132,24 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   return { clean: true, why: null, verdict: stated };
 }
 
+// The review verdict the handle has at this head, under a set §4 Clean review verdict row (`clean`), as
+// the undraft and the merge driver both read it: { plain, review, verdict, found, carried, v }, v being
+// what verdictAt or plainVerdictAt says. A verdict for an older head that only merges of the base have
+// moved past (carry(sha), as verdictCarries says) is read as at the head, and `carried` names its commit.
+export function verdictAtHead(reviews, handle, head, clean, carry) {
+  const plain = !Object.keys(pairs(clean)).length;
+  const review = latestReview(reviews, handle);
+  const verdict = plain ? null : review?.verdict ?? null;
+  let v = plain ? plainVerdictAt(reviews, handle, head, clean) : verdictAt(verdict, head, clean);
+  const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
+  let carried = null;
+  if (!v.clean && !v.settle && found?.sha && head && !head.startsWith(found.sha) && carry?.(found.sha)) {
+    v = { ...verdictAt(found, found.sha, plain ? DESK_REVIEW_CLEAN : clean), ...(plain ? { verdict: found } : {}) };
+    carried = found.sha;
+  }
+  return { plain, review, verdict, found, carried, v };
+}
+
 // Whether a review verdict posted on `from` still holds at `head`: `head` is reached from `from` by
 // merges of the base alone, each a two-parent merge whose second parent is on `base` and whose tree
 // is exactly the one git merges the two to (git merge-tree), so it resolved no conflict and added
@@ -339,23 +357,13 @@ export function undraftCall(t, pr, cfg) {
   if (!clean || /^(todo|none)\b/i.test(clean)) {
     return person('§4 Clean review verdict is not set, so no review can be read as clean', 'set it with /desk-setup');
   }
-  const plain = !Object.keys(pairs(clean)).length;
   if (!cfg.handle) return person('§1 GitHub handle is not set, so no review verdict can be attested', 'set it with /desk-setup');
   // A review at the head that found a P0 or a P1 is a code change for a fix worker, whatever else is
   // wrong with the PR: the pass sends it back (fix-tries.mjs reviewFix) with the review's body and
   // the inline comments it reads by the review's id.
   // Under a plain-text row the latest review may still be a desk-review verdict (plainVerdictAt reads
   // it against desk-review's own counts), and its P0s and P1s go the same way.
-  const review = latestReview(pr.reviews, cfg.handle);
-  const verdict = plain ? null : review?.verdict ?? null;
-  let v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
-  const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
-  // A verdict for an older head that only merges of the base have moved past is read as at the head.
-  let carried = null;
-  if (!v.clean && !v.settle && found?.sha && pr.head && !pr.head.startsWith(found.sha) && pr.carry?.(found.sha)) {
-    v = { ...verdictAt(found, found.sha, plain ? DESK_REVIEW_CLEAN : clean), ...(plain ? { verdict: found } : {}) };
-    carried = found.sha;
-  }
+  const { plain, review, verdict, v, found, carried } = verdictAtHead(pr.reviews, cfg.handle, pr.head, clean, pr.carry);
   const withCarried = (c) => (carried ? { ...c, carried } : c);
   // Under §3 autopilot-judgement yes, its requirement gaps go the same way: a worker makes the call.
   const gaps = cfg.judgement === 'yes' && Number(found?.gaps) > 0;

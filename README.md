@@ -689,7 +689,7 @@ already pins at the same commit, naming the new one, and leaves open any other. 
 | `desk-jira` says authentication failed | The token in the repo's folder is wrong or expired; rewrite `atlassian-token` (see [Jira login](#jira-login-per-repo)) |
 | The autopilot preflight fails `ESCAPE` | The worker was not isolated from your own settings: reinstall (`./install.sh`) and re-run the preflight |
 | Claude Code keeps asking before commands | Expected for anything you did not grant as `yes`; grant it per repo with `/desk-setup permissions` |
-| A green PR is never merged by autopilot | It touches a §4 Merge holds path, has outstanding review feedback, or `pr-merge-green`/`autopilot-merge` is not `yes` and merging was not approved for the batch at Stage 3 |
+| A green PR is never merged by autopilot | It touches a §4 Merge holds path, has outstanding review feedback, has no clean §4 Local review verdict at its head, needs an approving review GitHub requires, or `pr-merge-green`/`autopilot-merge` is not `yes` and merging was not approved for the batch at Stage 3 |
 
 ## Origin
 

@@ -42,7 +42,7 @@ import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, hu
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
-import { readThreads, THREADS_QUERY } from './review-threads.mjs';
+import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
@@ -2521,6 +2521,17 @@ const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
 // §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
 // applied to staging), so no fix worker is sent for it and the person is told the step.
 const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
+// What git says about a PR's head and the base, for a head of the ticket's branch: whether a verdict for
+// an older head still holds at it (carry), and whether a merge from the base last moved it (baseMerge):
+// such a head, since the last try's, gets its own review try, outside the fix tries.
+const baseMoves = (t, head) => {
+  const fetched = () => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok;
+  const git = (args) => shOut('git', ['-C', MAIN, ...args]);
+  return {
+    carry: (sha) => fetched() && verdictCarries({ from: sha, head, base: `origin/${DEFAULT_BRANCH}`, git }),
+    baseMerge: (from) => fetched() && movedByBase({ from, head, base: `origin/${DEFAULT_BRANCH}`, git }),
+  };
+};
 // §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
 // sends a review worker for one reading the verdict).
 const stateRow = parseStateChecks(E.configValues('state-checks'));
@@ -2570,11 +2581,7 @@ if (drafts.length) {
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
     // A verdict for an older head holds at this one when only clean merges of the base came since.
-    const fetched = () => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok;
-    const git = (args) => shOut('git', ['-C', MAIN, ...args]);
-    const carry = (sha) => fetched() && verdictCarries({ from: sha, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
-    // A head a merge from the base last moved, since the last try's, gets its own review try, outside the fix tries.
-    const baseMerge = (from) => fetched() && movedByBase({ from, head: v.headRefOid, base: `origin/${DEFAULT_BRANCH}`, git });
+    const { carry, baseMerge } = baseMoves(t, v.headRefOid);
     const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, shotsOf(t)) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
@@ -2877,7 +2884,8 @@ function reviewComments(id) {
 // A ready PR the merge driver cannot merge, red after its two reruns, in conflict with its base, held
 // for review feedback, or with a review at its head that is not clean, goes back to a fix worker on
 // the same branch, at most twice (fix-tries.mjs); one whose §4 State check reading its verdict is red,
-// which the driver never reruns, to a review worker (verdictTry). What no worker can
+// which the driver never reruns, or that it holds for want of a clean verdict at its head, to a review
+// worker (verdictTry). What no worker can
 // fix, a check a person clears (§4 Checks workers can't fix, Check builds or Pre-merge steps) or a third failure, is recorded on the ticket as `stuck`
 // and put to the person. The driver's per-head rerun record is read from its state directory.
 if (fixRowErrors.length && undrafted.length) {
@@ -2927,7 +2935,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
     },
     conflictFiles: () => conflictFiles(t.branch),
   };
-  const c = fixCall(t, s, ctx) ?? feedbackCall(t, s);
+  const c = fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
   if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
   applyFix(t, n, s.head, c);
 }
@@ -2937,7 +2945,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
 // The threads a finished feedback try worked are replied on and resolved first, once its worker has
 // pushed past them, so the next try quotes only what is still open. One GitHub would not settle holds
 // any new try until a later pass settles it: a new try would replace the record of what was worked.
-function feedbackCall(t, s) {
+function feedbackCall(t, s, waived) {
   if (s.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const n = s.pr;
   const fb = readFeedback(n);
@@ -2958,14 +2966,23 @@ function feedbackCall(t, s) {
   }
   const ff = E.permissionOrUnset('merge-feedback-first') === 'no' ? null
     : feedbackFix(t, { pr: n, head: s.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
-  // A red verdict state check with no unclean review at the head to fix: a review worker posts one.
-  return ff ?? (fb.review ? null : verdictTry(t, s, { ...gateLists(), stateChecks: stateRow.checks }));
+  if (ff) return ff;
+  // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
+  // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
+  const { carry, baseMerge } = baseMoves(t, s.head);
+  const atHead = () => (localReviewSet(E.configValue('local-review')) && E.mergeGrant(queue()).by
+    ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry }) : null);
+  return verdictTry(t, s, { ...gateLists(), stateChecks: stateRow.checks, settled: !!fb.review, atHead, waived, base: DEFAULT_BRANCH, baseMerge });
 }
 function readFeedback(n) {
   const [owner, name] = GH_REPO.split('/');
   const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`, '-f', `query=${THREADS_QUERY}`]);
   if (!r.ok) return null;
-  try { return readThreads(JSON.parse(r.out), { handle: conflictHandle, clean: E.configValue('clean-verdict') }); } catch { return null; }
+  try {
+    const payload = JSON.parse(r.out);
+    const read = readThreads(payload, { handle: conflictHandle, clean: E.configValue('clean-verdict') });
+    return read && { ...read, payload };
+  } catch { return null; }
 }
 // Replies on each thread a finished feedback try worked, then resolves it: -> the ids resolved. Each
 // step is recorded on the try (fix.replied, fix.resolved), so a pass that stops between them neither

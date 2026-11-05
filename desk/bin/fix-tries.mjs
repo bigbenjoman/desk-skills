@@ -7,7 +7,8 @@
 // whose review gaps the person
 // ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
-// (reviewTry), or a ready PR whose §4 State check reading its verdict is red (verdictTry), to a review
+// (reviewTry), or a ready PR whose §4 State check reading its verdict is red, or that the merge driver
+// holds for want of a clean verdict at its head (verdictTry), to a review
 // worker, both within the same tries, and so does a draft in conflict with
 // its base that §3 lets a worker resolve (conflictFix). A draft whose screenshots were never taken goes
 // to a capture worker, once (captureTry).
@@ -388,16 +389,31 @@ export function reviewTry(t, { pr, head, why, base = null, baseMerge = null }) {
 // A ready PR whose §4 State check of kind `verdict` is red, with no review at its head that reads as
 // not clean (that is reviewFix's), has a verdict the check rejects: none, one for an older head, or one
 // in a form the gate does not accept. The driver never reruns it, so it goes to a review worker under
-// reviewTry's tries, out of draft. s: its pr_status; ctx: { required, advisory, stateChecks }.
+// reviewTry's tries, out of draft. Where no such check runs, the merge driver holds a green PR the same
+// way, on what ctx.atHead() reads (review-threads.mjs readVerdict, null where nothing waits on a verdict):
+// no verdict or a stale one is a review worker's too, with `held` for its brief, and a review at the
+// head that is not clean and that no fix worker took (reviewFix: P2s, a deferred item) the person's.
+// s: its pr_status; ctx: { required, advisory, stateChecks, settled (a review at the head reads as not
+// clean), atHead, waived(names) (the driver waives these red checks), base, baseMerge }.
 export function verdictTry(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   if (gate.pending.length) return null;
   const red = stateFailing(gate.failing, ctx.stateChecks).filter((f) => f.kind === 'verdict');
-  if (!red.length) return null;
-  const names = [...new Set(red.map((f) => `"${f.name}"`))].join(', ');
-  const c = reviewTry(t, { pr: s.pr, head: s.head, why: `its ${names} check is red, and a rerun reads the same verdict` });
-  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c;
+  const asReady = (c) => (c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c);
+  if (red.length) {
+    if (ctx.settled) return null;
+    const names = [...new Set(red.map((f) => `"${f.name}"`))].join(', ');
+    return asReady(reviewTry(t, { pr: s.pr, head: s.head, why: `its ${names} check is red, and a rerun reads the same verdict` }));
+  }
+  // The driver reaches its hold only on a head it would otherwise merge: green, or red only on a waiver.
+  const failing = [...new Set(gate.failing.map((f) => f.name))];
+  if (gate.state !== 'pass' && !(failing.length && ctx.waived?.(failing))) return null;
+  const at = ctx.atHead?.();
+  if (!at || at.clean) return null;
+  if (at.settle || at.person) return { call: 'stuck', why: at.why };
+  const c = asReady(reviewTry(t, { pr: s.pr, head: s.head, why: at.why, base: ctx.base, baseMerge: ctx.baseMerge }));
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, held: true } } : c;
 }
 
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
@@ -458,7 +474,9 @@ export function fixBrief(t) {
   }
   if (f.kind === 'rereview') {
     return [f.extra ? `## Review try for a merge from the base: PR #${f.pr}` : `## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
-      f.ready
+      f.held
+        ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it without a clean review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
+        : f.ready
         ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not rerun the check that reads its review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
         : `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`,
       'Review that head with desk-review and post the review on the PR (desk-review Phase 7), so its verdict marker is on the head. Change no code in this try: a P0, a P1 or a gap the review finds goes to a fix worker at the next pass.', '',
