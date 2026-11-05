@@ -652,7 +652,7 @@ required(){ printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Required 
 drafted(){ printf '{"type":"result","total_cost_usd":0.12,"result":"Drafted.\\nPLAN_RESULT: %s"}\n' "$(node -e 'console.log(JSON.stringify(JSON.stringify({ draft: process.argv[1], owners: { AC1: process.argv[2] } })).slice(1, -1))' "$1" "$2")" > "$T/claude.out"; }
 startepic(){ rec "$1" A "\"type\":\"Epic\",\"branch\":\"feat/$1-required\""; rec "$2" A '"summary":"a child"'; printf '%s\n' "$2" > "$T/children/$1"; }
 clear_calls(){ : > "$T/jira.calls"; }
-cleared(){ rm -rf "$EB/$1" "$ES/$1"; }
+cleared(){ rm -rf "${EB:?}/${1:?}" "${ES:?}/${1:?}"; }
 ALL="Spine: the AC1 spec
 Type: Task
 Parent: E-30
