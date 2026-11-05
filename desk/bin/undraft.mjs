@@ -25,7 +25,7 @@
 //           it to a review worker (fix-tries.mjs reviewTry), and to the person once no try is left
 //   checks  a required check is red: the pass sends it to a fix worker (fix-tries.mjs draftChecksFix),
 //           and to the person once no try is left; `failing` is the gate's failing checks
-//   findings  the review at its head found a P0 or a P1, or a requirement gap where §3
+//   findings  the review at its head found a P0, a P1 or a listed P2 not deferred, or a requirement gap where §3
 //           autopilot-judgement is yes (cfg.judgement): the pass sends those to a fix worker
 //           (fix-tries.mjs reviewFix), and only once no try is left, or the review lists none of them
 //           (a P0 or P1 by file:line in its body or inline comments, a gap under its gaps heading), does
@@ -45,7 +45,7 @@
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
 import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, isHuman } from './gate.mjs';
-import { RERUNS_MAX } from './fix-tries.mjs';
+import { RERUNS_MAX, reviewFindings } from './fix-tries.mjs';
 import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
@@ -367,7 +367,9 @@ export function undraftCall(t, pr, cfg) {
   const withCarried = (c) => (carried ? { ...c, carried } : c);
   // Under §3 autopilot-judgement yes, its requirement gaps go the same way: a worker makes the call.
   const gaps = cfg.judgement === 'yes' && Number(found?.gaps) > 0;
-  if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0 || gaps)) {
+  // A P2 it lists is a fix worker's too; one deferred, or listed nowhere, is the person's.
+  const p2s = Number(found?.p2) > 0 && !(Number(found?.deferred) > 0) && reviewFindings(review?.body, ['P2']).length > 0;
+  if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0 || p2s || gaps)) {
     return { ...person(v.why, `settle the ${gaps ? 'findings or gaps' : 'findings'} on #${n}`), call: 'findings', verdict: found, review: review.body, reviewId: review.id };
   }
   if (pr.mergeState === 'DIRTY' || pr.mergeable === 'CONFLICTING') {

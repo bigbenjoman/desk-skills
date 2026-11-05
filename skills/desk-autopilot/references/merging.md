@@ -123,7 +123,8 @@ alone. It reads the verdict itself, since green holds one only where CI runs a �
 it. A P0, a P1 or an uncarried P2 blocks; a carried P2 does not. With no verdict or a stale one, it does
 not merge, and the pass sends it to a review worker out of draft (`fix-tries.mjs` `verdictTry`), and
 to the person once no try is left. A review at the head that is not clean goes to a fix worker where
-it lists a P0, a P1 or, under §3 `autopilot-judgement`, a gap (`reviewFix`), and otherwise to the person.
+it lists a P0, a P1, a P2 or, under §3 `autopilot-judgement`, a gap (`reviewFix`; P2s once nothing worse
+is left, and a later round may carry one), and otherwise to the person.
 
 The driver does not wait on GitHub's review decision: desk opens PRs from the person's own account,
 and GitHub never lets an author approve their own PR. A person's approval holds a PR in two cases only.

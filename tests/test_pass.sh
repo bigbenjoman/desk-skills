@@ -2353,7 +2353,7 @@ check "DS-433 no verdict at all goes to a review worker too" \
   '[ "$(field M-3 state)" = "\"triaged\"" ] && [ "$(field M-3 fix.what)" = "\"review its head: no desk-review verdict is posted on it\"" ]'
 check "DS-433 AC1 a clean verdict at the head sends no worker and asks no one" \
   '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 fix_tries)" = null ] && [ "$(field M-4 stuck)" = null ]'
-check "DS-433 an uncarried P2 at the head is put to the person, not left waiting" \
+check "DS-433 an uncarried P2 the review lists nowhere is put to the person, not left waiting" \
   '[ "$(field M-5 state)" = "\"done\"" ] && field M-5 stuck.why | jq -r . | grep -qF "is not clean (p2=1)" && echo "$out" | grep -qF "M-5: STUCK — PR #825"'
 export DESK_CONFIG="$T/config-r.md" DESK_QUEUE="$T/queue-m2.json" DESK_AUTOPILOT_STATE="$T/state-m2"
 mkdir -p "$T/state-m2/logs"; q init m2; q set-batch concurrency=6
