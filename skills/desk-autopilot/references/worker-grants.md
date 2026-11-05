@@ -48,6 +48,26 @@ a worker cannot:
 It may also write its resume file, `$DESK_STATE/resume/<TICKET>.json`: the harness write-protects its
 worktree's `.claude/`, where `desk-ticket` keeps one interactively.
 
+**A second repo a ticket depends on is read from a clone the pass keeps.** Each `owner/name` in §4
+Worker read-only repos gets one shallow clone at `~/.desk-autopilot/<slug>/ref/<owner>__<name>`,
+shared by the repo's batches, and the pass brings it to the head of that repo's default branch before
+it starts a local worker. One that cannot be refreshed parks the ticket, naming the repo and the
+failure, so no worker reads a stale copy; requeue it once the repo is reachable. A clone delisted is
+deleted by the next pass. A worker gets each clone readable and `Edit`-denied, and `git clone`
+stays refused. A clone has no remote, so a worker that `cd`s in has nowhere to push, and a `gh` write
+that names a listed repo by `--repo`, `-R` or URL is denied (so one with its URL, or a quoted title
+opening with its name, is too: use `--body-file` and word the title differently). The name is matched
+whole, so `acme/web` listed leaves `acme/web-admin` alone, and a repo listing itself keeps its `gh`
+writes, with a warning. The match is case-sensitive, so it catches a slip, not a worker spelling the
+name differently. A local change a worker makes in a
+clone lasts until the next refresh. A long outage parks up to a pass's free slots at each
+pass, and a killed worker waits with its session kept instead. A base conflict fix worker is granted
+no clone by name, though in a standing batch its state directory covers `ref/`, and a cloud session
+cannot read one: a ticket that needs a clone names it in `needs_local`, so it stays local. A script that measures a clone is
+allowed by §4 Worker measuring commands, one exact rule per item with no arguments of the worker's. A
+script in the worktree can be edited by the worker, like the repo's tests, so such an item runs what
+the branch holds. A row left at `none` changes nothing in a worker's settings.
+
 **An approved force-push is a one-off grant.** Where §3 `git-force-with-lease` is not `yes` and a
 worker parks asking to force-push its branch, an answer that approves it (one that is nothing but a
 yes, such as `yes` or `Yes, force-push it`, or `answer.mjs <TICKET> --approve "…"`) is recorded as the ticket's

@@ -300,6 +300,8 @@ export const CONFIG_ROWS = Object.freeze({
   'pre-merge-steps': { section: '4', row: 'Pre-merge steps' },
   'evidence-workflow': { section: '4', row: 'Evidence workflow' },
   'worker-workflows': { section: '4', row: 'Worker workflows' },
+  'worker-read-repos': { section: '4', row: 'Worker read-only repos' },
+  'worker-measure-cmds': { section: '4', row: 'Worker measuring commands' },
   'repo-merge-settings': { section: '4', row: 'Repo merge settings' },
   vercel: { section: '4', row: 'Vercel' },
   'staging-bypass': { section: '4', row: 'Staging bypass token location' },
@@ -818,6 +820,15 @@ export function batchPaths(slug, batch = null) {
 }
 export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? batchPaths(repoSlug(), batchName()).state);
 export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? batchPaths(repoSlug(), batchName()).queue);
+// The clones of §4 Worker read-only repos belong to the repo, not to a batch: they sit under the
+// standing batch's folder whichever batch this is, and DESK_AUTOPILOT_STATE, which names one batch, never moves them.
+export const readRepoDir = () => join(batchPaths(repoSlug()).state, 'ref');
+// §4 Worker read-only repos as [{ repo, path }]; `path` is null for an item that is not `owner/name`.
+export function readRepos() {
+  const items = configValues('worker-read-repos');
+  if (!items || isNone(items)) return [];
+  return items.map((repo) => ({ repo, path: /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes('..') ? join(readRepoDir(), slugOf(repo)) : null }));
+}
 
 // Move a ticket's last round aside so the next worker starts clean: its log (a kept AUTOPILOT_DONE
 // blocks the respawn, and a kept PR line sends screenshots to the old PR), its park record (an old
@@ -1245,7 +1256,7 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   const { mode, file } = defaultModeIn(root, home);
   // Command items a worker's settings cannot allow: every worker is refused them.
   const unlisted = [];
-  for (const id of WORKER_COMMAND_IDS) {
+  for (const id of [...WORKER_COMMAND_IDS, 'worker-measure-cmds']) {
     const values = configValuesIn(parsed, id);
     if (!values || isNone(values)) continue;
     for (const item of values) {

@@ -127,6 +127,12 @@ if [ -n "$GRANTED" ]; then
   CONFIG_NOTE="$CONFIG_NOTE The person approved this step in their answer to your ticket's last park, and it is allowed to you once, exactly as written: $(printf '%s' "$GRANTED" | paste -sd ';' - | sed 's/;/; /g'). Run it when your work reaches that step; it fails once origin's branch has moved, and nothing wider is allowed."
 fi
 
+# The clones of config §4 Worker read-only repos, which the pass refreshed before this spawn.
+READ_REPOS="$(printf '%s\n' "$WS_OUT" | sed -n 's/^CONFIG_READ_REPO: //p')"
+if [ -n "$READ_REPOS" ]; then
+  CONFIG_NOTE="$CONFIG_NOTE You may read these clones, each at the current head of its repo's default branch, with your reading tools and any measuring command your config names. Never edit one, and never clone or fetch a repo yourself: $(printf '%s' "$READ_REPOS" | paste -sd ';' - | sed 's/;/; /g')."
+fi
+
 ADD_DIRS=(--add-dir "$DESK_SKILLS_DIR" --add-dir "$STATE")
 # The model checks below need no tool; the worker and its preflight get the same list (worker-tools.mjs).
 desk_tool_args none || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }

@@ -8,7 +8,8 @@
 // Prints one `CONFIG_DENIED: <§3 key> (<setting>)` line per capability the user's config §3 does not
 // grant, so the spawner can tell the worker what it must park on instead of attempting; one
 // `CONFIG_GRANT: <command>` line per one-off grant the person approved in an answer (batch-state.mjs),
-// allowed exactly once; one `CONFIG_WARN: <text>` line per configured command that could not be allow-listed; and, in worker
+// allowed exactly once; one `CONFIG_WARN: <text>` line per configured command that could not be allow-listed;
+// one `CONFIG_READ_REPO: <owner/name> at <path>` line per clone the worker may read; and, in worker
 // mode, one `TOOLCHAIN_PROBE: <command>` line per toolchain binary: the harmless `<bin> --version`
 // (behind §4 Command prefix) the preflight runs to prove each allow rule actually executes.
 //
@@ -448,11 +449,54 @@ if (mode === 'triage') {
   // desk-pr's run of the committed pre-push script on HEAD, exactly: the checks it runs are §4 rows.
   if (cfgList('pre-push-checks').length) allow.push('Bash(bash scripts/desk/pre-push.sh --head)');
 
+  // §4 Worker measuring commands: each item exactly as written, no arguments of the worker's, so a
+  // different script stays refused. A `*` would turn the rule into a glob, so that item is skipped.
+  const measured = [];
+  for (const raw of cfgList('worker-measure-cmds')) {
+    const { dir, cmd } = E.parseCommandItem(raw);
+    const why = E.commandItemProblem(cmd) ?? (cmd.includes('*') ? 'holds a *, which a permission rule reads as a wildcard' : null);
+    if (why) { warns.push(`§4 Worker measuring commands item "${raw}" ${why}`); continue; }
+    measured.push(cmd);
+    if (dir === '.') allow.push(...withPrefix(cmd).map((c) => `Bash(${c})`));
+    allow.push(...lockForms('nolock', dir, cmd).map((c) => `Bash(${c})`));
+  }
+
+  // §4 Worker read-only repos: each clone readable, never writable. A base conflict fix is granted
+  // none by name, as it is no ticket's worker and the pass refreshes the clones only for those; in a
+  // standing batch its state directory grant still covers them. The pass keeps the clones
+  // (read-repos.mjs); a worker making or moving its own stays refused by name.
+  // A gh write takes its repo by flag or by URL, whatever directory it runs in. Each glob bounds the
+  // name on both sides by a character no owner/name holds, so `acme/web` is not `acme/web-admin` or
+  // `bigacme/web`. `R` is -R's end, bundled (`-cR`) or attached (`-Racme/web`). A space counts only
+  // after a flag, so a title naming the repo mid-sentence still runs. A rule is case-sensitive and gh
+  // is not, so this stops a slip, not a worker set on it: the contract and the reviewed PR hold the rest.
+  const ghNamesRepo = (name) => {
+    const ends = ['', ' *', '/*', '"*', "'*", '?*', '#*'];
+    return [
+      ...['--repo ', 'R ', 'R', '=', '"', "'"].flatMap((h) => ends.map((e) => `*${h}${name}${e}`)),
+      // Only a URL takes `.git`: gh refuses it on a bare owner/name.
+      ...['/', ':'].flatMap((h) => [...ends, ...ends.map((e) => `.git${e}`)].map((e) => `*${h}${name}${e}`)),
+    ];
+  };
+  const readRepoLines = [];
+  for (const { repo, path } of baseFix ? [] : E.readRepos()) {
+    if (!path) { warns.push(`§4 Worker read-only repos item "${repo}" is not owner/name — nothing to read`); continue; }
+    dirs.add(path);
+    deny.push(`Edit(${abs(path)}/**)`);
+    // Listing this repo itself must not cost its workers their own PRs.
+    if (REPO && repo.toLowerCase() === REPO.toLowerCase()) warns.push(`§4 Worker read-only repos item "${repo}" is this repo — its workers' gh writes stay allowed`);
+    else deny.push(...bash('gh', ...[' pr create', ' pr edit', ' pr comment', ' pr review', ' pr update-branch', ' run rerun'].flatMap((w) => ghNamesRepo(repo).map((n) => `${w} ${n}`))));
+    readRepoLines.push(`CONFIG_READ_REPO: ${repo} at ${path}`);
+  }
+  // git takes a subcommand after `remote -v`, and `remote -v add` would give a clone a remote to push to.
+  if (readRepoLines.length) deny.push(...bash('git', ...[' clone', ' remote -v *add*', ' remote -v *set-url*', ' remote -v *rename*'].flatMap((s) => [s, ...OWN_CS.map((c) => `${c}${s}`)])));
+  opt.readRepoLines = readRepoLines;
+
   // A package manager's one-off runner fetches and executes an arbitrary package. Denied in every
   // form this repo's config does not itself use (deny beats allow, so a used form is left to the
   // allow-list, which permits only the exact configured command).
   const RUNNERS = { npm: [' exec', ' x'], pnpm: [' exec', ' dlx'], yarn: [' dlx', ' exec'], bun: [' x'], uv: [' tool run', ' tool install'] };
-  const usesRunner = (pm, sub) => items.some((i) => new RegExp(`^${pm}(\\s+\\S+)*?${sub.replace(' ', '\\s+')}(\\s|$)`).test(i.cmd));
+  const usesRunner = (pm, sub) => [...items.map((i) => i.cmd), ...measured].some((cmd) => new RegExp(`^${pm}(\\s+\\S+)*?${sub.replace(' ', '\\s+')}(\\s|$)`).test(cmd));
   for (const [pm, subs] of Object.entries(RUNNERS)) {
     for (const sub of subs) {
       if (usesRunner(pm, sub)) continue;
@@ -703,4 +747,5 @@ writeFileSync(opt.out, `${JSON.stringify(settings, null, 2)}\n`);
 for (const d of denied) console.log(`CONFIG_DENIED: ${d}`);
 for (const g of granted) console.log(`CONFIG_GRANT: ${g}`);
 for (const w of warns) console.log(`CONFIG_WARN: ${w}`);
+for (const l of opt.readRepoLines ?? []) console.log(l);
 if (mode === 'worker') for (const pr of opt.probes) console.log(`TOOLCHAIN_PROBE: ${pr}`);

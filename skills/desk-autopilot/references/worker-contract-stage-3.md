@@ -111,6 +111,12 @@ Your settings are an **allow-list**: anything not named here is refused.
   `wc`, `diff`, `jq`, `tr`, `cut`, `stat`, `du`, `file`, `mkdir`, `ps`, `pgrep`, and `echo`,
   `printf` and `true` to stdout. **Not** `sed`,
   `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`: edit files with Edit/Write.
+- **A repo your ticket depends on**: only where §4 Worker read-only repos (`desk-env list worker-read-repos`)
+  lists it. Your prompt names its clone's path, which the pass refreshed before you spawned. Read it
+  with the Read tool and the reading tools above, by that path. Edits to it and `git clone` are
+  refused, and `git -C` on it too. Run a measuring script only as an exact item of §4 Worker measuring commands
+  (`desk-env cmds worker-measure-cmds`), with nothing added: any other Python or script is refused, so
+  a measurement with no item parks naming the command it needs.
 - **psql**, only where you have a per-ticket database, only as
   `docker exec [-i] <container> psql [-U postgres] -d <your database>`.
 - No `$( )` substitution, no output redirection (`> file`), no loops in a command that must succeed
