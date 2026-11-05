@@ -105,14 +105,16 @@ preview page.
 
 ## Signed in with a sign-in token (Clerk)
 
-For a page behind real auth, on a development instance only. It needs §4 Env files to hold the
-instance's key pair for the app under test, and a test user who already holds the app's grant.
+For a page behind real auth, on a development instance only. It needs §4 Env files
+(`desk-env list env-files`) to hold the instance's key pair for the app under test, and a test user
+who already holds the app's grant.
 
 1. **Start the right app.** `desk-env cmds dev-cmd` gives one `DIR<TAB>CMD` line per app, so in a
    multi-app repo pick the line whose directory holds the page. Run it through `with-lock.sh nolock
    --cwd <dir> -- <§4 Command prefix> <cmd>`, the only form a worker has for a directory item, and
    pass the port the way that row's note says: an app that ignores `PORT` takes `-p <port>` after the
-   command. Generate any client the app imports (§4 Codegen) first; a fresh worktree has none.
+   command. Generate any client the app imports (§4 Codegen, `desk-env cmds codegen-cmd`) first; a
+   fresh worktree has none.
 2. **Write the capture script at the worktree's root** and run it with `with-lock.sh browser node
    ./<script>.mjs <port> <path> <out.png>`. A script elsewhere, or an argument holding `..`, is
    refused. Delete the script afterwards.
