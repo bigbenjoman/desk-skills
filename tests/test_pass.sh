@@ -1499,7 +1499,7 @@ check "DS-278 ahead of pace, a fix try still waits for workers to be allowed" '[
 export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
 check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint\",true]" ]'
 
-# ---- DS-438: a pass held on pacing whose reading is older than the probe interval takes a new one.
+# ---- a pass held on pacing whose reading is older than the probe interval takes a new one.
 # pace_case <name> <7-day utilisation> <age of the reading in seconds>: a batch of its own, one triaged
 # N-1, nothing running, and its only reading a worker log that old. Pace is a day into the week, ~14%.
 seven_day_event(){ node -e 'const s = Math.round(Date.now() / 1000); console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: s + 3600, rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: s + 3600 }, seven_day: { utilization: Number(process.argv[1]), resetsAt: s + 6 * 86400 } } } }))' "$1"; }
