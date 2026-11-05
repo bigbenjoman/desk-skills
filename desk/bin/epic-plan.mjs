@@ -101,9 +101,10 @@ function untriggeredOn(base, branches) {
 // The names that are always headers, whatever the repo's fields. Any other `Name: text` line is the body's.
 const FILING_KEY = /^(summary|title|type|issue type|parent|assignee|impact|repository|blocks|size|labels|(\w+ )?priority)$/;
 const SUMMARY_KEY = /^(summary|title)$/;
-const LABELLED = /^\*{0,2}[A-Za-z][^:]{0,60}:/;
+const LABELLED = /^\*{0,2}[A-Za-z0-9][^:]*:/;
+const CONTEXT_LINE = /^[*_]{0,2}context[*_]{0,2}\s*:/i;
 // The ticket template's opening lines: the body's in any repo, and never a summary.
-const TEMPLATE_OPENING = /^(blocked by|context)\b/i;
+const TEMPLATE_OPENING = /^[*_]{0,2}(blocked by|context)[*_]{0,2}\s*:/i;
 const NO_VALUE = /^(|none|n\/a|tbd|todo|unknown|[-—–?]+|<.*>)$/i;
 const ISSUE_KEY = /\b[A-Z][A-Z0-9_]*-\d+\b/g;
 
@@ -135,16 +136,16 @@ export function parseDraft(draft, { sizeField = true, keys = [] } = {}) {
       if (h) {
         taken.add(i);
         if (h.key === 'size' && !sizeField) sizeLine = l; else headers.push(h);
-      } else if (/^context\b/i.test(l) || !LABELLED.test(l)) break;
+      } else if (CONTEXT_LINE.test(l) || !LABELLED.test(l)) break;
     }
     return i;
   };
   const next = walk(0);
   let summary = headers.find((h) => SUMMARY_KEY.test(h.key))?.value;
   if (summary == null) {
-    // The first line no header took. A `##` there is the body's first section, so the draft has no summary.
+    // The first line no header took. A `##` after headers is the body's first section, so the draft has no summary.
     const at = lines.findIndex((l, i) => l.trim() && !taken.has(i) && !TEMPLATE_OPENING.test(l.trim()));
-    summary = at < 0 || /^##/.test(lines[at].trim()) ? '' : lines[at];
+    summary = at < 0 || (at > 0 && /^##/.test(lines[at].trim())) ? '' : lines[at];
     if (summary) {
       taken.add(at);
       if (at >= next) walk(at + 1);
@@ -166,18 +167,19 @@ function sizeFieldId() {
   try { return /customfield_\d+/.exec(String(E.configValue('jira-size-field') ?? ''))?.[0] ?? null; } catch { return null; }
 }
 
-// The fields a spine of `type` is filed with: its §4 Required fields and the §4 Size field, which create's
-// lint asks of every ticket.
+// The fields a spine of `type` (of any type, with none named) is filed with: its §4 Required fields and the
+// §4 Size field, which create's lint asks of every ticket.
 const spineFields = (type) => [...new Set([...E.requiredFields(type).need, sizeFieldId()].filter(Boolean))];
 
-// Jira's names for fields and the values it allows on `type`: {names: {id: name}, allowed: {id: [value]}, why}.
-// `why` says the names could not be read. The allowed values are only ever a help to whoever is asked.
+// Jira's names for fields and the values it allows on `type`, or on any type with none named:
+// {names: {id: name}, allowed: {id: [value]}, why}. `why` says the names could not be read. The allowed
+// values are only ever a help to whoever is asked.
 function fieldCatalog(type, env) {
   const names = {};
   const allowed = {};
   const f = run('desk-jira', ['fields'], env);
   if (f.status === 0) for (const l of String(f.stdout).split('\n')) { const [id, name] = l.split('\t'); if (id && name) names[id] = name; }
-  const m = run('desk-jira', ['meta', type], env);
+  const m = run('desk-jira', ['meta', ...(type ? [type] : [])], env);
   if (m.status === 0) {
     for (const l of String(m.stdout).split('\n')) {
       const a = /^\s*(\S+) \((.+)\) allows: (.*)$/.exec(l);
@@ -209,24 +211,24 @@ function fieldLine(id, catalog) {
 }
 
 // What filing `draft` sends, and what it lacks: its parts, plus {fields: [`id=value`], missing: [line]}.
-// Reads Jira only where the spine's type has fields to carry. A type is a filing header, so it is read
-// before the field names are.
+// Reads Jira only where the repo has fields to carry. The draft's type decides which it needs, and a field
+// line can come before its Type line, so every type's names are known to the one parse.
 function readSpine(draft, env) {
-  const { type } = parseDraft(draft);
-  const need = spineFields(type);
-  if (!need.length) return { ...parseDraft(draft, { sizeField: false }), fields: [], missing: [], unread: null };
-  const catalog = fieldCatalog(type, env);
-  const keys = need.flatMap((id) => fieldKeys(id, catalog));
+  const any = spineFields();
+  if (!any.length) return { ...parseDraft(draft, { sizeField: false }), fields: [], missing: [], unread: null };
+  const catalog = fieldCatalog(null, env);
+  const keys = any.flatMap((id) => fieldKeys(id, catalog));
   const parsed = parseDraft(draft, { sizeField: keys.includes('size'), keys });
   const fields = [];
-  const missing = [];
-  for (const id of need) {
+  const absent = [];
+  for (const id of spineFields(parsed.type)) {
     const named = fieldKeys(id, catalog);
     const value = parsed.headers.find((h) => named.includes(h.key) && !NO_VALUE.test(h.value))?.value;
     if (value) fields.push(`${id}=${value}`);
-    else missing.push(fieldLine(id, catalog));
+    else absent.push(id);
   }
-  return { ...parsed, fields, missing, unread: catalog.why };
+  const forType = absent.length ? fieldCatalog(parsed.type, env) : null;
+  return { ...parsed, fields, missing: absent.map((id) => fieldLine(id, forType)), unread: catalog.why };
 }
 
 // What the person is asked when a spine lacks a field it must carry.
@@ -492,7 +494,7 @@ function fileSpine({ epic, state, env, draft }) {
 // Links the filed spine to each ticket its draft's Blocks line names: null, or why not. Run on every
 // start: desk-jira link leaves a link already there alone, so one cut short is finished by the next.
 function linkSpine({ spine, env, draft }) {
-  const { blocks } = parseDraft(draft);
+  const { blocks } = readSpine(draft, env);
   const refused = linkRefusal(blocks);
   if (refused) return refused;
   for (const other of blocks) {

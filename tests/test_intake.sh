@@ -61,7 +61,7 @@ echo "\$*" >> "$T/jira.calls"
 [ "\$1" = get ] && [ -f "$T/get/\$2.fails" ] && { echo "desk-jira: HTTP 404 from Jira" >&2; exit 1; }
 [ "\$1" = link ] && [ -f "$T/link.fails" ] && { echo "desk-jira: HTTP 400 from Jira" >&2; exit 1; }
 [ "\$1" = link ] && { echo "linked: \$2 blocks \$4 (read back)"; exit 0; }
-[ "\$1" = fields ] && { [ -f "$T/fields.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }; printf 'customfield_10208\tT-shirt\toption\ncustomfield_10207\tLaunch Priority\toption\ncustomfield_10513\tTeam / Squad (owner)\toption\ncustomfield_10300\tSize\toption\n'; exit 0; }
+[ "\$1" = fields ] && { [ -f "$T/fields.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }; printf 'customfield_10208\tT-shirt\toption\ncustomfield_10207\tLaunch Priority\toption\ncustomfield_10513\tTeam / Squad (owner)\toption\ncustomfield_10300\tSize\toption\ncustomfield_10301\t2nd Approver\tstring\n'; exit 0; }
 [ "\$1" = meta ] && { printf '== %s\n  customfield_10207 (Launch Priority) allows: P0, P1, P2\n  customfield_10513 (Team / Squad (owner)) allows: Core, Growth\n' "\$2"; exit 0; }
 [ -f "$T/search.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }
 cat "$T/search.json"
@@ -610,6 +610,10 @@ Note: land it first
 Blocks: E-1
 
 ## Outcome")" = "[\"The spine\",\"Task\",[\"E-1\"],\"Goal: specs first\\n\\nNote: land it first\\n\\n## Outcome\"]" ]'
+check "DS-434: a first line that only opens with a template word, or with a heading, is still the summary" '[ "$(parsed "Context menu specs land first
+Type: Task
+## Outcome")" = "[\"Context menu specs land first\",\"Task\",[],\"## Outcome\"]" ] && [ "$(parsed "## The spine
+Type: Task")" = "[\"The spine\",\"Task\",[],\"\"]" ]'
 check "DS-434 AC5: a Blocks line per key links them all" '[ "$(parsed "The spine
 Blocks: E-1
 Blocks: E-2
@@ -657,7 +661,7 @@ Impact: every child
 Repository: acme/widgets
 Blocks: E-31, E-32
 Size: M
-Launch Priority: P2
+customfield_10207: P2
 Team / Squad (owner): Core
 
 _Context: under E-30_
@@ -747,6 +751,17 @@ Size: M
 ## Outcome" E-46; out=$(admit E-45 --by ben); clear_calls; answer E-45 start; out=$(btick)
 check "DS-434: a required field named Size is sent by that name, and stays out of the body" 'grep -qF "create Story Spine: the AC1 spec $ES/E-45/spine.md parent=E-45 customfield_10300=M" "$T/jira.calls" && [ "$(cat "$ES/E-45/spine.md")" = "## Outcome" ]'
 cleared E-45
+
+# A field line above the Type and Blocks lines, on a name only that type's rule holds.
+config yes '`none`'; printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Required fields | `Task: customfield_10301` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+startepic E-47 E-48; drafted "2nd Approver: Ann
+The spine
+Type: Task
+Blocks: E-48
+
+## Outcome" E-48; out=$(admit E-47 --by ben); clear_calls; answer E-47 start; out=$(btick)
+check "DS-434: a field line above Type and Blocks is sent, and both are read when filing and when linking" 'grep -qF "create Task The spine $ES/E-47/spine.md parent=E-47 customfield_10301=Ann" "$T/jira.calls" && grep -q "^link E-11 Blocks E-48$" "$T/jira.calls"'
+cleared E-47
 config yes '`none`'
 
 # ---- DS-380: a ticket whose files are only on a running batch's base joins that batch -------------

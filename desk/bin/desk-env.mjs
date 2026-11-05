@@ -556,15 +556,16 @@ export function configValues(id) {
   return configValuesIn(parseConfig(), id);
 }
 
-// §4 Required fields for an issue type: {need: [field id, in rule order], malformed: [item that is not
-// `<Type>[, <Type>…]: <field>[, <field>…]`]}. No config reads as no rules. The one reader of this row's grammar.
+// §4 Required fields for an issue type, or for every type with none named: {need: [field id, in rule order],
+// malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}. No config reads as no rules. The
+// one reader of this row's grammar.
 export function requiredFields(type) {
   let rules = [];
   try { rules = [].concat(configValues('jira-required-fields') ?? []).filter((r) => r && !isNone(r)); } catch { /* no config: no rules */ }
-  const want = String(type).trim().toLowerCase();
+  const want = type == null ? null : String(type).trim().toLowerCase();
   const need = rules.flatMap((rule) => {
     const m = /^([^:]+):(.+)$/.exec(rule);
-    return m && m[1].split(',').some((t) => t.trim().toLowerCase() === want) ? m[2].split(/[,\s]+/).filter(Boolean) : [];
+    return m && (want == null || m[1].split(',').some((t) => t.trim().toLowerCase() === want)) ? m[2].split(/[,\s]+/).filter(Boolean) : [];
   });
   return { need: [...new Set(need)], malformed: rules.filter((r) => !/^[^:]+:.*\S/.test(r)) };
 }
