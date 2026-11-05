@@ -610,7 +610,7 @@ q set T-61 merge_after=null
 sloop; sloop
 check "DS-407 AC3: once the step is lifted, it merges with no other answer, pinned to its head" '[ "$(merged)" = 161 ] && grep -qx "161 main $SHA61" "$T/merges.log"'
 
-# ---- DS-419: a feature merges only once a person approves it; review feedback goes to a worker instead --
+# ---- DS-419 / DS-411: a green feature merges on its clean verdict, with no GitHub approval; review feedback goes to a worker --
 SHA71=a711111111111111111111111111111111111111; SHA72=a722222222222222222222222222222222222222
 cat > "$T/prs.json" <<EOF
 { "171": { "head": "feat/T-71", "base": "main", "sha": "$SHA71", "state": "open", "draft": false, "title": "feat(rail): T-71 live classes", "checks": [["test", "SUCCESS"]] },
@@ -623,16 +623,12 @@ q add T-72 Story A; q set T-72 branch=feat/T-72 state=done result.pr=172 "merge_
 aloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-71 T-72" 2>&1); rc=$?; }
 aloop
 check "DS-419 AC10: a feat PR with an unresolved thread is held for the feedback, and its approval request is cleared" 'echo "$out" | grep -q "#172 has outstanding review feedback (NONE, 1 unresolved)" && ! echo "$out" | grep -q "#172 .*a feature with no approval" && [ "$(qf T-72 .merge_blocked)" = null ]'
-aloop
-check "DS-419 AC9: a green feat PR with no thread open and no approval is not merged" '[ -z "$(merged)" ] && echo "$out" | grep -q "#171 green at a71111111, a feature with no approval — not merging until a person approves it"'
-check "DS-419 AC9: the queue asks the person for an approval" '[ "$(qf T-71 .merge_blocked)" = "approval: a feature, green at a71111111 with no approval: a person approves it before desk merges it" ]'
+# Loop 2 holds the confirm window open, so #171 (confirming, not held) is still open while #172 is read.
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=3600 bash "$B/merge-driver.sh" --tickets "T-71 T-72" 2>&1); rc=$?
+check "DS-411: a green feat PR with no thread open and no GitHub approval is not held for one" '! echo "$out" | grep -q "a feature with no approval" && echo "$out" | grep -q "#171 green at a71111111 — confirming" && [ "$(qf T-71 .merge_blocked)" = null ]'
 check "DS-419 AC10: held a second loop, its feedback is recorded for the fix worker, with no approval asked" '! echo "$out" | grep -q "#172 .*a feature with no approval" && qf T-72 .merge_blocked | grep -q "^review feedback: 1 unresolved thread on a green PR, first "'
-jq '."171".checks = [["test", "FAILURE"]]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 aloop
-check "DS-419: a feat PR that goes red no longer asks for an approval" '[ "$(qf T-71 .merge_blocked)" = null ] && [ -z "$(merged)" ]'
-jq '."171".checks = [["test", "SUCCESS"]] | ."171".feedback = "APPROVED 0"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
-aloop; aloop
-check "DS-419 AC9: once approved, the request is cleared and it merges, pinned to its head" '[ "$(merged)" = 171 ] && grep -qx "171 main $SHA71" "$T/merges.log" && [ "$(qf T-71 .merge_blocked)" = null ]'
+check "DS-411: confirmed green on the next loop, it merges, pinned to its head, with no approval asked" '[ "$(merged)" = 171 ] && grep -qx "171 main $SHA71" "$T/merges.log" && [ "$(qf T-71 .merge_blocked)" = null ]'
 
 # ---- DS-420: why the driver is not merging a red PR is recorded too: its review threads, or an approval --
 SHA81=b811111111111111111111111111111111111111; SHA82=b822222222222222222222222222222222222222

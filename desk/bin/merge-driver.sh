@@ -49,9 +49,6 @@
 #                                            (`review feedback: …`, naming the first thread); pass.mjs
 #                                            sends the feedback to a fix worker (fix-tries.mjs
 #                                            feedbackFix), and to the person once no try is left
-#   - a feature with no approval             a PR titled feat… merges only once a person approves it:
-#                                            green and past the feedback check, it is recorded as
-#                                            merge_blocked (`approval: …`) for the person
 #   - DIRTY                                  a conflict needs resolving and a fresh review: pass.mjs
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
@@ -318,11 +315,9 @@ blocked_clear(){ # blocked_clear <key> <reason prefix>
   esac
 }
 feedback_clear(){ rm -f "$SD/feedback-$1"; blocked_clear "$2" "review feedback:"; }
-# A feature (a PR titled feat…) merges only once a person has approved it. Green, past the feedback
-# check and with no approval, the queue asks the person for one; cleared once it is approved, or once it
-# is not green and past the feedback check (review feedback goes to a fix worker, a conflict or a red
-# check to the fix tries).
-is_feature(){ case "$1" in feat:*|feat\(*|feat!:*) return 0 ;; esac; return 1; }
+# An `approval:` note asks a person to approve a PR where GitHub requires a review or a §4 State check of
+# kind approval is red; it is cleared once that no longer holds the PR. (DS-411: a feature PR no longer
+# waits for one: green, with its clean desk-review verdict at the head, it merges.)
 approval_clear(){ blocked_clear "$1" "approval:"; }
 
 # Tickets join the batch after the driver starts, so each loop adds every queue ticket not yet in
@@ -704,13 +699,11 @@ EOF_RESOLVE
     return 1
   fi
 
-  if is_feature "$(printf '%s' "$g" | jq -r '.title // ""')" && [ "$(printf '%s' "$g" | jq -r .reviewDecision)" != APPROVED ]; then
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
-    rm -f "$SD/green-$n"
-    log "#$n $label at ${sha:0:9}, a feature with no approval — not merging until a person approves it"
-    queue_note "$key" "approval: a feature, $label at ${sha:0:9} with no approval: a person approves it before desk merges it"
-    return 1
-  fi
+  # DS-411: a feature PR merges like any other once it is green. Green includes the §4 State check
+  # `desk-review verdict`, so the clean verdict at the head is its approval. No hold on GitHub's
+  # reviewDecision: the author is the person's own account, which GitHub never lets approve its own
+  # PR, so that hold could not be cleared by anyone. A person's approval still holds a PR where
+  # GitHub requires one (REVIEW_REQUIRED, above) or a §4 State check of kind `approval` is red.
   approval_clear "$key"
 
   # Green now. It must still be green at the same head on a later loop before it merges.

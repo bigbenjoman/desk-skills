@@ -116,13 +116,15 @@ replies on each thread the try quoted and resolves it, so the next pass reads on
 open. A worker that cannot fix a thread parks naming it and what blocks it. Out of tries, the PR is
 `stuck` with `review feedback still open after 2 fix tries: <each thread>`.
 
-A PR titled `feat…` merges only once a person has approved it: green, past the feedback check and
-with no approval, the driver records `merge_blocked` `approval: …`, and desk-q and needs-you ask the person
-to approve it. One held for review feedback asks for no approval: the feedback goes to a fix worker.
-A request is cleared once the PR is approved, or once it conflicts or is not green, so the queue
-shows the conflict or the red check instead. Any PR whose GitHub review decision is `REVIEW_REQUIRED`
-(branch protection wants an approving review) is recorded the same way, red or green: no rerun or
-fix worker gives it the approval, though a red one is still rerun and repaired.
+A PR titled `feat…` merges like any other (DS-411). Green includes the §4 State check `desk-review
+verdict`, so a clean desk-review verdict at the head is its approval. The driver does not wait on
+GitHub's review decision as well: desk opens PRs from the person's own account, and GitHub never lets
+an author approve their own PR, so no one could clear that hold. A person's approval still holds a PR
+in two cases. One is a PR whose GitHub review decision is `REVIEW_REQUIRED`, because branch protection
+wants an approving review. The other is a red §4 State check of kind `approval`. Either is recorded as
+`merge_blocked` `approval: …`, red or green, and desk-q and needs-you ask the person. No rerun or fix
+worker gives it the approval, though a red one is still rerun and repaired. The request is cleared
+once that no longer holds the PR.
 
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
 handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is
