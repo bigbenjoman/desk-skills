@@ -1499,6 +1499,35 @@ check "DS-278 ahead of pace, a fix try still waits for workers to be allowed" '[
 export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
 check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint\",true]" ]'
 
+# ---- DS-438: a pass held on pacing whose reading is older than the probe interval takes a new one.
+# pace_case <name> <7-day utilisation> <age of the reading in seconds>: a batch of its own, one triaged
+# N-1, nothing running, and its only reading a worker log that old. Pace is a day into the week, ~14%.
+seven_day_event(){ node -e 'const s = Math.round(Date.now() / 1000); console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: s + 3600, rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: s + 3600 }, seven_day: { utilization: Number(process.argv[1]), resetsAt: s + 6 * 86400 } } } }))' "$1"; }
+pace_case(){ export DESK_QUEUE="$T/queue-$1.json" DESK_AUTOPILOT_STATE="$T/state-$1" DESK_USAGE_DIR="$T/usage-$1"
+  mkdir -p "$T/state-$1/logs"; seven_day_event "$2" > "$T/state-$1/logs/OLD-1.log"
+  node -e 'const t = Date.now() / 1000 - Number(process.argv[2]); require("fs").utimesSync(process.argv[1], t, t)' "$T/state-$1/logs/OLD-1.log" "$3"
+  q init "$1"; q set-batch concurrency=1; q add N-1; q set N-1 state=triaged lane=A branch=fix/N-1; : > "$T/probes"; }
+probes(){ wc -l < "$T/probes" | tr -d " "; }
+stub_claude '[{"sessionId": "live-1"}]'
+pace_case pa 0.99 600; { seven_day_event 0.10; echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; } > "$T/probe.out"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC1 held on a reading older than the probe interval, the pass makes one probe call and judges on its reading" '[ "$(probes)" = 1 ] && grep -qF "\"seven_day\":{\"utilization\":0.1," "$T/usage-pa/probe.log" && ! echo "$out" | grep -q "7-day 99%"'
+check "DS-438 AC2 a probe reading back within pace spawns the eligible ticket in the same pass" '[ "$(field N-1 state)" = "\"running\"" ]'
+pace_case pb 0.99 30
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC3 held on a reading newer than the probe interval, the pass makes no probe call" '[ "$(probes)" = 0 ] && [ "$(field N-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "usage: 7-day 99%, pace 14% + 5: holding spawns"'
+pace_case pc 0.05 600
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC4 not held on pacing, the pass makes no probe call" '[ "$(probes)" = 0 ] && [ "$(field N-1 state)" = "\"running\"" ]'
+pace_case pd 0.99 600; : > "$T/probe.out"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC5 a probe that fails keeps the hold, and the report names why" '[ "$(probes)" = 1 ] && [ "$(field N-1 state)" = "\"triaged\"" ] && echo "$out" | grep -qF "usage: 7-day 99%, pace 14% + 5: holding spawns (0 running carry on; fix tries still start; the probe call for a new reading failed (claude exited 0 with no answer), so the last reading stands)"'
+pace_case pe 0.99 600; probe_says limited $(( $(date +%s) + 3600 )) seven_day
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC5 a probe rejected at a usage limit keeps the hold, and the report names why" '[ "$(probes)" = 1 ] && [ "$(field N-1 state)" = "\"triaged\"" ] && echo "$out" | grep -qF "the probe call for a new reading failed (rejected at the usage limit), so the last reading stands"'
+unset DESK_USAGE_DIR; export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
+printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
+
 # ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker twice
 # The fake gh answers each PR from $T/fr/<n>.json, a green draft with one review by ben, and records
 # pr ready and pr comment. frx <n> <head> <reviewed sha> <counts> [inline]: a P1 count lists one P1
