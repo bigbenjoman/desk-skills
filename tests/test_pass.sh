@@ -2402,4 +2402,23 @@ url(){ node --input-type=module -e "import { cloneUrl } from '$B/read-repos.mjs'
 check "DS-431 a clone is addressed by this repo's own transport and host" \
   '[ "$(url git@github.com:me/own.git)" = git@github.com:acme/web.git ] && [ "$(url https://github.com/me/own)" = https://github.com/acme/web ] && [ "$(url ssh://git@ghe.example/me/own.git)" = ssh://git@ghe.example/acme/web.git ] && [ "$(url "")" = https://github.com/acme/web.git ]'
 
+# A migrate that failed in setup reaches the worker's briefing, and one that did not says nothing.
+cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+echo "[setup-worktree] database=widgets_x_70"
+EOF
+q --batch X-3 init x3; q --batch X-3 add X-70; q --batch X-3 set X-70 state=triaged
+out=$(node "$B/pass.mjs" --batch X-3 2>&1)
+X70B=$(find "$T" -path '*briefings/X-70.md' | head -n 1)
+check "a clean setup's briefing says nothing about the database" '[ -n "$X70B" ] && ! grep -q "Your database did not migrate" "$X70B"'
+cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+echo "[setup-worktree] database=widgets_x_8"; echo "[setup-worktree] migrate=failed"
+EOF
+q --batch X-2 init x2; q --batch X-2 add X-8; q --batch X-2 set X-8 state=triaged
+out=$(node "$B/pass.mjs" --batch X-2 2>&1)
+X8B=$(find "$T" -path '*briefings/X-8.md' | head -n 1)
+check "a failed migrate is in the worker's briefing, naming the database and the log" \
+  '[ -n "$X8B" ] && grep -q "Setup could not apply migrations to widgets_x_8" "$X8B" && grep -q ".desk-migrate.log" "$X8B"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

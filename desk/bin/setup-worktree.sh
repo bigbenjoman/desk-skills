@@ -25,6 +25,15 @@
 # production database) is never rewritten into a local one: it is blanked. So is every variable when
 # no per-ticket database was provisioned. No worktree can reach a shared database through its env files.
 #
+# The port is the container's, asked of docker when the URLs are rewritten: the primary checkout's env
+# files may name another server on their own port (a Homebrew Postgres on localhost:5432, on purpose),
+# and a ticket's URL keeps the credentials and query but takes the container's port. A container that
+# publishes no port, or a docker that cannot say, leaves the copied port in place, and a warning says so.
+#
+# A failed migrate does not fail setup: the output is kept in `.desk-migrate.log` in the worktree (URL
+# passwords masked), its tail is printed, `migrate=failed` is printed, and pass.mjs tells the worker.
+# A kept worktree whose database is empty, or whose last migrate failed, is migrated again.
+#
 # Atomic: a failure after `git worktree add` removes the worktree (and the branch and database, when
 # this run created them), so a half-built worktree is never mistaken for a ready one. A run killed
 # outright leaves `.desk-setup-incomplete` in the worktree, and the next run finishes the setup rather
@@ -34,7 +43,8 @@
 # code generation that hard-fails without them.
 #
 # The last lines printed are machine-read by pass.mjs: `worktree=`, `branch=`, `database=`
-# (`database=<name>` only when that per-ticket database exists; otherwise `database=none`).
+# (`database=<name>` only when that per-ticket database exists; otherwise `database=none`), and
+# `migrate=failed` only when migrations did not complete on this run.
 set -euo pipefail
 
 PG_CONTAINER_ENV="${DESK_PG_CONTAINER:-}"   # an explicit env override beats the config text below
@@ -206,13 +216,15 @@ is_none "$(printf '%s' "$ENV_FILES" | head -1)" && ENV_FILES=""
 # A non-local URL is blanked, never rewritten. Prints one line per change; exits 1 if the result is
 # not what the rule says.
 rewrite_env() { # rewrite_env ticket|blank
-  node - "$1" "$WT" "$DB" "$PG_CONTAINER" "$DB_VARS" "$ENV_FILES" <<'NODE'
+  node - "$1" "$WT" "$DB" "$PG_CONTAINER" "$DB_VARS" "$ENV_FILES" "${PG_PORT:-}" <<'NODE'
 const fs = require('fs');
 const path = require('path');
-const [mode, wt, db, container, varsRaw, filesRaw] = process.argv.slice(2);
+const [mode, wt, db, container, varsRaw, filesRaw, hostPort] = process.argv.slice(2);
 const vars = varsRaw.split('\n').filter(Boolean);
 const files = filesRaw.split('\n').filter(Boolean);
-const LOCAL = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', 'host.docker.internal', container].filter(Boolean).map((h) => h.toLowerCase()));
+// Every host but the container's own name reaches it through the port it publishes on this machine.
+const VIA_HOST = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', 'host.docker.internal']);
+const LOCAL = new Set([...VIA_HOST, container].filter(Boolean).map((h) => h.toLowerCase()));
 const URL_RE = /^([a-z][a-z0-9+.-]*):\/\/(?:([^@/]*)@)?(\[[^\]]*\]|[^/:?#]*)(:\d+)?(\/[^?#]*)?(\?[^#]*)?$/i;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // `(.*)` cannot match a trailing \r, so a CRLF file (common on WSL) would skip every line and keep
@@ -230,7 +242,8 @@ function target(value) {
   if (u) {
     const host = u[3].toLowerCase();
     if (!LOCAL.has(host)) return { out: '', what: `blanked (host ${u[3]} is not local, so it is never rewritten)` };
-    return { out: `${q}${u[1]}://${u[2] != null ? `${u[2]}@` : ''}${u[3]}${u[4] ?? ''}/${db}${u[6] ?? ''}${q}`, what: `repointed at ${db}` };
+    const port = hostPort && VIA_HOST.has(host) && (u[4] || hostPort !== '5432') ? `:${hostPort}` : (u[4] ?? '');
+    return { out: `${q}${u[1]}://${u[2] != null ? `${u[2]}@` : ''}${u[3]}${port}/${db}${u[6] ?? ''}${q}`, what: `repointed at ${db}${port ? ` on port ${port.slice(1)}` : ''}` };
   }
   if (/^[A-Za-z0-9_]+$/.test(v)) return { out: `${q}${db}${q}`, what: `set to ${db}` };
   return { out: '', what: 'blanked (not a URL or a database name)' };
@@ -240,7 +253,11 @@ function ok(value) {
   if (v === '') return true;
   if (mode === 'blank') return false;
   const u = URL_RE.exec(v);
-  if (u) return LOCAL.has(u[3].toLowerCase()) && (u[5] ?? '') === `/${db}`;
+  if (u) {
+    const host = u[3].toLowerCase();
+    const portOk = !hostPort || !VIA_HOST.has(host) || (u[4] ?? ':5432') === `:${hostPort}`;
+    return LOCAL.has(host) && portOk && (u[5] ?? '') === `/${db}`;
+  }
   return v === db;
 }
 if (vars.length) {
@@ -295,6 +312,13 @@ pg_why() { # pg_why <exit status>: what a failed pg call means, for the FAIL lin
     *)       printf 'psql in container %s exited %s' "$PG_CONTAINER" "$1" ;;
   esac
 }
+# The host port the container publishes its 5432 on, or nothing when it publishes none or docker cannot say.
+pg_host_port() {
+  local line
+  line="$(desk_timeout "$PSQL_LIMIT" docker port "$PG_CONTAINER" 5432/tcp 2>/dev/null | head -1)" || true
+  case "$line" in *:*) line="${line##*:}" ;; *) return 0 ;; esac
+  case "$line" in ''|*[!0-9]*) ;; *) printf '%s' "$line" ;; esac
+}
 CREATED_DB=""
 ensure_db() { # the per-ticket database exists, or setup fails
   command -v docker >/dev/null 2>&1 || fail "docker is not on PATH — cannot create $DB in $PG_CONTAINER"
@@ -313,11 +337,50 @@ databases() { # provision (or confirm) the database and make every env file foll
   if [ "$DB_MODE" = ticket ]; then
     say "per-ticket database $DB"
     ensure_db
+    PG_PORT="$(pg_host_port)"
+    if [ -n "$PG_PORT" ]; then say "  $PG_CONTAINER publishes Postgres on host port $PG_PORT"
+    else say "  WARNING: $PG_CONTAINER publishes no port for 5432 — database URLs keep the port the copied env files name"; fi
     rewrite_env ticket || fail "database variables could not be repointed at $DB"
   elif [ -n "$DB_VARS" ]; then
     say "blanking database variables (no per-ticket database)"
     rewrite_env blank || fail "database variables could not be blanked"
   fi
+}
+
+# ---- migrations -----------------------------------------------------------------------------------
+MIGRATE_LOG="$WT/.desk-migrate.log"
+MIGRATE_FAILED=""
+exclude_from_git() { # exclude_from_git <pattern>: out of `git status` without touching the repo's .gitignore
+  local excl
+  excl="$(git -C "$WT" rev-parse --git-path info/exclude)"
+  case "$excl" in /*) ;; *) excl="$WT/$excl" ;; esac
+  mkdir -p "$(dirname "$excl")"; grep -qxF "$1" "$excl" 2>/dev/null || echo "$1" >> "$excl"
+}
+mask_urls() { sed -E 's#(://[^:@/[:space:]]*):[^@/[:space:]]*@#\1:***@#g'; }
+migrate_db() { # a failure is kept, printed and reported on the machine-read lines, and setup carries on
+  if [ -z "$MIGRATE_CMDS" ]; then
+    say "note: no database migrate command configured — $DB is empty; a data-dependent ticket will need to migrate it"
+    return 0
+  fi
+  say "applying migrations to $DB"
+  exclude_from_git '/.desk-migrate.log'
+  if run_cmds "$MIGRATE_CMDS" 2>&1 | mask_urls > "$MIGRATE_LOG"; then
+    rm -f "$MIGRATE_LOG"; say "  migrated"
+  else
+    MIGRATE_FAILED=1
+    say "  WARNING: migrations did not complete — a data-dependent ticket will need to fix this. Full output: $MIGRATE_LOG"
+    tail -n 15 "$MIGRATE_LOG" | sed 's/^/[setup-worktree]   | /'
+  fi
+}
+db_table_count() { # the tables in the ticket's database, or nothing when psql cannot say
+  desk_timeout "$PSQL_LIMIT" docker exec "$PG_CONTAINER" psql -U "$(pg_user)" -d "$DB" -Atc \
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'" 2>/dev/null || true
+}
+# A kept worktree: only where the last migrate failed, or never ran. Worktrees made while the URLs
+# named the wrong server have an empty database and no log, so the empty database is what counts.
+remigrate_if_needed() {
+  [ "$DB_MODE" = ticket ] || return 0
+  if [ -f "$MIGRATE_LOG" ] || [ "$(db_table_count)" = 0 ]; then migrate_db; fi
 }
 
 # ---- failure cleanup -----------------------------------------------------------------------------
@@ -340,6 +403,7 @@ finish() {
   say "worktree=$WT"
   say "branch=$BRANCH"
   case "$DB_MODE" in ticket) say "database=$DB" ;; *) say "database=none" ;; esac
+  if [ -n "$MIGRATE_FAILED" ]; then say "migrate=failed"; fi
 }
 
 mkdir -p "$DESK_WORKTREES_DIR"
@@ -353,6 +417,7 @@ if [ -d "$WT" ] && [ ! -f "$MARKER" ]; then
   sync_local_settings
   sync_agents lenient
   databases
+  remigrate_if_needed
   finish
   exit 0
 fi
@@ -375,10 +440,7 @@ else
   fi
   CREATED_WT=1
   printf 'ticket=%s\nbranch=%s\ncreated_branch=%s\nstarted=%s\n' "$TICKET" "$BRANCH" "${CREATED_BRANCH:-0}" "$(date -u +%FT%TZ)" > "$MARKER"
-  # Keep the marker out of `git status` without touching the repo's .gitignore.
-  excl="$(git -C "$WT" rev-parse --git-path info/exclude)"
-  case "$excl" in /*) ;; *) excl="$WT/$excl" ;; esac
-  mkdir -p "$(dirname "$excl")"; grep -qxF '/.desk-setup-incomplete' "$excl" 2>/dev/null || echo '/.desk-setup-incomplete' >> "$excl"
+  exclude_from_git '/.desk-setup-incomplete'
 fi
 
 # copy-env.sh finds the primary checkout via the shared git common dir, so it is
@@ -399,14 +461,6 @@ fi
 say "linking subagents"
 sync_agents strict
 
-if [ "$DB_MODE" = ticket ]; then
-  if [ -z "$MIGRATE_CMDS" ]; then
-    say "note: no database migrate command configured — $DB is empty; a data-dependent ticket will need to migrate it"
-  else
-    say "applying migrations to $DB"
-    if run_cmds "$MIGRATE_CMDS" >/dev/null 2>&1; then say "  migrated"
-    else say "  WARNING: migrations did not complete — a data-dependent ticket will need to fix this"; fi
-  fi
-fi
+if [ "$DB_MODE" = ticket ]; then migrate_db; fi
 
 finish
