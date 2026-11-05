@@ -1750,7 +1750,7 @@ async function resumeKilled(t) {
 // answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
 // sibling notes: what it needs is what the session before it did, and paying for the notes again is
 // what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
-function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
+function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null } = {}) {
   const notesFile = join(STATE, 'batch-notes.md');
   const notesHead = `${SIBLING_HEAD} in this batch have found\n\n`;
   const answerFile = join(STATE, 'answers', `${t.key}.txt`);
@@ -1779,6 +1779,8 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff } = {}) {
     fixBrief(t),
     baselineBrief(),
     triageBrief(t),
+    migrateFailed && `## Your database did not migrate\n\nSetup could not apply migrations to ${migrateFailed}, so it is empty or partial. The output is in ${join(wt, '.desk-migrate.log')}. ` +
+      'Read it and run §4 Database migrate yourself before trusting anything that needs data; if it still fails, say so rather than reporting a data-dependent check as passed.\n',
     t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
@@ -2137,7 +2139,8 @@ for (const t of spawnable) {
   const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model };
 
   const resumed = resumeRound(t, { wt, kept, branch });
-  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true });
+  const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
+  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
   const pre = preflight(t.key, wt, workerEnv);
   if (pre.limit) { preflightHitLimit(t, pre.cost); break; }
