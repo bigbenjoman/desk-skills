@@ -180,7 +180,8 @@ t('DS-490 AC2 pending past the limit with its run in progress: the run is cancel
 t('DS-490 AC2 just under the limit it waits', stuckPr([{ ...ORPHAN, startedAt: at(5.9) }], { ...live, jobs: [{ ...live.jobs[0], startedAt: at(5.9) }] })?.call, 'wait');
 const second = stuckPr([ORPHAN], live, { cancels: (n) => (n === ORPHAN.name ? 1 : 0) });
 t('DS-490 AC2 on a second expiry it is the person\'s, naming the job', `${second?.call} | ${second?.job} | ${second?.action}`, `person | ${ORPHAN.name} | re-run job "${ORPHAN.name}" of run 41593194273 on #701 once a runner can take it`);
-t('DS-490 AC2 so is an orphan already re-run at this head', `${stuckPr([ORPHAN], doneRun, { reruns: (n) => (n === ORPHAN.name ? 1 : 0) })?.why}`, `"${ORPHAN.name}" is still in_progress though its run 41593194273 has completed, after it was re-run once at this head`);
+t('DS-490 AC2 a rerun for an earlier cancel is not this expiry\'s try: the run is still cancelled once', stuckPr([ORPHAN], live, { reruns: (n) => (n === ORPHAN.name ? 1 : 0) })?.call, 'cancel');
+t('DS-490 AC2 an orphan already re-run at this head is the person\'s', `${stuckPr([ORPHAN], doneRun, { reruns: (n) => (n === ORPHAN.name ? 1 : 0) })?.why}`, `"${ORPHAN.name}" is still in_progress though its run 41593194273 has completed, after it was re-run once at this head`);
 t('DS-490 with ci-rerun not yes a stuck check is the person\'s', stuckPr([ORPHAN], doneRun, { rerun: 'ask' })?.why.endsWith('config §3 ci-rerun is "ask"'), true);
 t('DS-490 a queued job with no start reads its age from the run', stuckPr([{ ...ORPHAN, status: 'queued', startedAt: '0001-01-01T00:00:00Z' }], { ...live, jobs: [{ ...live.jobs[0], status: 'queued', startedAt: '0001-01-01T00:00:00Z' }] })?.call, 'cancel');
 
@@ -197,7 +198,7 @@ t('DS-490 AC1 and logs the job and why', orphanRun.stdout.trim(), `#701 red + co
 t('DS-490 AC2 the rerun is recorded, so a second expiry is the person\'s', read490(`sd/reruns-701-${HEAD}`), `${ORPHAN.name}\n`);
 rmSync(tmp490, { recursive: true, force: true });
 
-// DS-327:a draft red only on checks §4 Check builds names gets that build, once per head, then a re-run.
+// DS-327: a draft red only on checks §4 Check builds names gets that build, once per head, then a re-run.
 const FLOWS = { name: 'Flows image', status: 'completed', conclusion: 'failure', runId: 21 };
 const builds = [{ name: 'Flows image', command: './scripts/ensure-flows-image.sh' }];
 const buildPr = (checks, built = null, more = {}) => rerunPr([{ name: 'tests', status: 'completed', conclusion: 'success' }, ...checks], { builds, built: (h) => (h === HEAD ? built : null), ...more });

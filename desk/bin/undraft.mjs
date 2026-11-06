@@ -47,7 +47,7 @@
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
-import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS } from './gate.mjs';
+import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
 import { RERUNS_MAX, reviewFindings } from './fix-tries.mjs';
 import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
@@ -235,7 +235,6 @@ function rerunCall(gate, cfg) {
 // (an orphan) or a `cancel` of its run (still in progress), and the person once one was tried at this
 // head or §3 ci-rerun is not yes. Null while every pending check may yet finish.
 const isoMs = (s) => (s && !String(s).startsWith('0001-') ? Date.parse(s) || null : null);
-const ageText = (ms) => (ms >= 864e5 ? `${Math.floor(ms / 864e5)}d ${Math.floor((ms % 864e5) / 36e5)}h` : `${Math.floor(ms / 36e5)}h ${Math.floor((ms % 36e5) / 6e4)}m`);
 function stuckCall(gate, checks, cfg, n) {
   if (!cfg.runOf || !gate.pending.length) return null;
   const now = cfg.now ?? Date.now();
@@ -251,10 +250,13 @@ function stuckCall(gate, checks, cfg, n) {
     const age = from == null ? null : now - from;
     if (!orphan && !(age >= PENDING_LIMIT_MS)) continue;
     const what = orphan ? `"${c.name}" is still ${c.status} though its run ${c.runId} has completed`
-      : `"${c.name}" has been ${c.status} for ${ageText(age)} with its run ${c.runId} still in progress, past the ${ageText(PENDING_LIMIT_MS)} limit`;
+      : `"${c.name}" has been ${c.status} for ${since(age)} with its run ${c.runId} still in progress, past the ${since(PENDING_LIMIT_MS)} limit`;
     const person = (why) => ({ call: 'person', why, action: `re-run job "${c.name}" of run ${c.runId} on #${n} once a runner can take it`, job: c.name });
     if (cfg.rerun !== 'yes') return person(`${what}, and config §3 ci-rerun is "${cfg.rerun ?? 'no'}"`);
-    if ((cfg.reruns?.(c.name) ?? 0) + (cfg.cancels?.(c.name) ?? 0) > 0) return person(`${what}, after it was re-run once at this head`);
+    // A run still in progress counts only its own cancels: a rerun of the check for an earlier cancel
+    // is not this expiry's one try. An orphan's job rerun is recorded as a rerun, so it counts those.
+    const tried = (cfg.cancels?.(c.name) ?? 0) + (orphan ? (cfg.reruns?.(c.name) ?? 0) : 0);
+    if (tried > 0) return person(`${what}, after it was re-run once at this head`);
     if (!orphan) return { call: 'cancel', why: `${what}, so the run is cancelled and its checks re-run`, runs: [String(c.runId)], checks: [c.name] };
     if (job?.databaseId == null) return person(`${what}, and its job id could not be read to re-run it`);
     return {
