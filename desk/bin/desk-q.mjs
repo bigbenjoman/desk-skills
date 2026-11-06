@@ -716,6 +716,8 @@ const startsCell = (F, x, now) => {
 };
 const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
+// The same under a note's repo tag, which already names the repo.
+const noHistoryText = (F) => `no ship estimate yet, with ${F.count} of the ${MIN_HISTORY} merged autopilot tickets an estimate needs (the last ${WINDOW_DAYS} days).`;
 // A stopped batch has no dates: the forecast assumes passes keep running.
 const stoppedNote = (r, now) => (r.last == null ? 'no pass yet, so no dates until passes start' : `passes stopped ${ago(now - r.last)}, so no dates until they resume`);
 export { needsSession };
@@ -811,7 +813,8 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
 // Why an epic has no date: its undated children, by what holds them.
 function epicWhy(r, F, e, checkin) {
   if (F.paused) return 'no date while passes are stopped';
-  if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
+  // Short: it is the last column of a row, cut at the window's edge.
+  if (r.workers === 0) return 'No date: 0 workers';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
   const needs = new Set(needsCount(r).rows);
@@ -927,16 +930,23 @@ const segRow = (id, segs, open) => {
 // other reasons plain lines in `notes`. With `width`, each line is wrapped to it.
 function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsage = false }) {
   const list = slug ? repos.filter((r) => r.id === slug) : repos.filter(hasBatch);
+  // `note` is the one-line form `desk-q ships` prints; `text` the same under a note's repo tag.
   const per = list.map((r) => {
-    if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
-    if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
+    const say = (note, text) => ({ r, note: `${r.name} · ${note}`, text });
+    if (r.error) return say(`queue unreadable: ${r.error}`, `queue unreadable: ${r.error}`);
+    if (!r.q) return say('no autopilot batch yet, so nothing to date.', 'no autopilot batch yet, so nothing to date.');
     const F = forecastOf(r, { now, checkin });
-    if (F.idle) return { r, note: `${r.name} · ${idleNote(r)}` };
-    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : F.paused ? { r, note: `${r.name} · ${stoppedNote(r, now)}.`, stopped: F } : { r, F };
+    if (F.idle) return say(idleNote(r), idleNote(r).replace(/^Nothing left for autopilot: /, 'nothing left for autopilot, as '));
+    return F.none ? say(noHistory(r, F), noHistoryText(F)) : F.paused ? { r, note: `${r.name} · ${stoppedNote(r, now)}.`, stopped: F } : { r, F };
   });
-  const fit = (s) => (width == null ? [s] : wrap(s, width));
   const dated = per.filter((p) => p.F);
-  const notes = per.filter((p) => p.note && !p.stopped).flatMap((p) => fit(p.note));
+  // Each note in the overview's template: a grey "note", the repo, then the text, a named batch first.
+  // A batch's full name carries its branch, too long for the tag column.
+  const tagOf = (r) => r.repo ?? r.name;
+  const lead = (r) => (r.batch ? `${batchName(r)}: ` : '');
+  const w = Math.max(12, ...per.map((p) => tagOf(p.r).length + 2));
+  const notes = noteLines(per.filter((p) => p.note && !p.stopped).map(({ r, text }) => ({ tag: tagOf(r), sgr: null,
+    text: [[`${lead(r)}${text.charAt(0).toLowerCase()}${text.slice(1)}`, null]] })), w, width);
   const items = per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => {
     const G = F ?? stopped;
     return r.rows.filter((x) => !epic || G.of[x.t.key] === epic).map((x) => ({ r, F: G, x, e: etaOf(G, x.t.key) }));
@@ -945,8 +955,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
   const head = [...tabHead(repos, slug, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list[0] : null)] : [])].flatMap(wrapped);
-  const w = Math.max(12, ...per.map((p) => p.r.name.length + 2));
-  const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[`${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
+  const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${tagOf(r)}`, sgr: WARN, text: [[`${lead(r)}${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
   return { list, per, notes, items, head, stopped };
 }
 
@@ -1154,7 +1163,7 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
     for (const i of list) {
       const [cell, left] = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, tw] : whyCell(why(i), 27, tw);
       const title = cut(tt(summaryOf(i)), left);
-      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.repo ?? i.r.name, 12) : ''}`), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -1184,7 +1193,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
     const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
-    return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(r.name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
+    return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(r.repo ?? r.name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
       [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: r.id, epic: e.key });
   });

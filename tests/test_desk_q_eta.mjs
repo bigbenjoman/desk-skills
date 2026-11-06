@@ -502,16 +502,18 @@ async function epicsView(slug, raw = false) {
 repo('idle', 4700, { tickets: { 'I-1': { state: 'parked', lane: 'C', park: { question: 'lane C: agree the plan first' } }, 'I-2': { state: 'parked', lane: 'C', park: { question: 'which copy?' } },
   'I-3': { state: 'done', result: { pr: 4 } } }, sizes: { 'I-1': 'M', 'I-2': 'M' }, history: hist12, pass: FIXED - 112 * MIN });
 const IDLE = 'idle · Nothing left for autopilot: 2 tickets need you (2 need an interactive session).';
+// The screens put it in the overview's note template: the repo tagged once, the text after it.
+const IDLE_NOTE = 'note  idle         nothing left for autopilot, as 2 tickets need you (2 need an interactive session).';
 const idleViews = { Timeline: Q.timelineScreen(Q.loadRepos(FIXED), 'acme__idle', { now: FIXED }), 'By day': Q.daysScreen(Q.loadRepos(FIXED), 'acme__idle', { now: FIXED }),
   Epics: await epicsView('acme__idle'), ships: Q.run(['ships', 'idle', '--plain'], { now: FIXED }) };
 t('DS-184 AC1-AC4: Timeline, By day, Epics and ships say nothing is left for autopilot, and not that dates are paused',
-  Object.fromEntries(Object.entries(idleViews).map(([k, s]) => [k, [s.split(/\r?\n/).includes(IDLE), /paused|passes stopped/i.test(s)]])),
+  Object.fromEntries(Object.entries(idleViews).map(([k, s]) => [k, [s.split(/\r?\n/).includes(k === 'ships' ? IDLE : IDLE_NOTE), /paused|passes stopped/i.test(s)]])),
   { Timeline: [true, false], 'By day': [true, false], Epics: [true, false], ships: [true, false] });
 t('DS-184 AC5: the overview\'s ALL DONE BY for it does not read paused',
   (Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true }).split('\n').find((l) => /^ {2}idle /.test(l)) ?? '').match(/\s(paused|nothing left)\s/)?.[1], 'nothing left');
 repo('idle1', 4710, { tickets: { 'J-1': { state: 'failed', park: { question: 'tests red' } } }, sizes: { 'J-1': 'M' }, history: hist12, pass: FIXED - 30 * MIN });
 t('DS-184 AC1: one ticket, none needing a session, reads in the singular with no session count',
-  Q.timelineScreen(Q.loadRepos(FIXED), 'acme__idle1', { now: FIXED }).split('\n').includes('idle1 · Nothing left for autopilot: 1 ticket needs you.'), true);
+  Q.timelineScreen(Q.loadRepos(FIXED), 'acme__idle1', { now: FIXED }).split('\n').includes('note  idle1        nothing left for autopilot, as 1 ticket needs you.'), true);
 
 repo('stalled', 4720, { tickets: { 'P-1': { state: 'running', stage: '3/9' }, 'P-2': { state: 'triaged' }, 'P-3': { state: 'parked', park: { question: 'which copy?' } } },
   sizes: { 'P-1': 'M', 'P-2': 'M', 'P-3': 'M' }, history: hist12, pass: FIXED - 20 * MIN });
@@ -541,11 +543,12 @@ const at7 = narrow.findIndex((l) => l.startsWith('note  ▲ '));
 const wrapped = narrow.slice(at7, at7 + narrow.slice(at7 + 1).findIndex((l) => !/^ {19}\S/.test(l)) + 1);
 t('DS-184 AC7: the paused note wraps within the width, every word whole', [wrapped.length > 1, wrapped.every((l) => l.length <= 50), wrapped.map((l, i) => (i ? l.trim() : l)).join(' ')], [true, true, stalledNote]);
 repo('fresh', 4740, { tickets: { 'N-1': { state: 'triaged' } }, sizes: { 'N-1': 'M' }, history: range(2, () => ['M', 3]) });
-const fromNote = (ls) => ls.slice(ls.findIndex((l) => l.startsWith('fresh · ')));
+const fromNote = (ls) => ls.slice(ls.findIndex((l) => l.startsWith('note  fresh ')));
 const freshNote = fromNote(Q.timelineScreen(Q.loadRepos(FIXED), 'acme__fresh', { now: FIXED }).split('\n'))[0];
 const freshNarrow = fromNote(Q.timelineScreen(Q.loadRepos(FIXED), 'acme__fresh', { now: FIXED, width: 40 }).split('\n')).filter(Boolean);
-t('DS-184 AC7: and so does the no-history note', [freshNarrow.length > 1, freshNarrow.every((l) => l.length <= 40), freshNarrow.join(' ')], [true, true, freshNote]);
-t('DS-184 AC8: --plain prints each note on one line, as before', [noteOf(stl), freshNote.startsWith('fresh · No ship estimate: fresh has 2 merged')], [stalledNote, true]);
+t('DS-184 AC7: and so does the no-history note', [freshNarrow.length > 1, freshNarrow.every((l) => l.length <= 40), freshNarrow.map((l, i) => (i ? l.trim() : l)).join(' ')], [true, true, freshNote]);
+t('DS-184 AC8: --plain prints each note on one line, as before', [noteOf(stl), freshNote], [stalledNote,
+  'note  fresh        no ship estimate yet, with 2 of the 10 merged autopilot tickets an estimate needs (the last 30 days).']);
 
 // ---- DS-190: a running ticket's stage is its worker's last marker, read from the end of its log
 const said = (text, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { content: [{ type: 'text', text }] } });
