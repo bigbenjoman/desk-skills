@@ -644,14 +644,17 @@ export function runningOn(repos, login) {
   }
   return n;
 }
-// The probes an open desk-q makes now: its own login's (its CLAUDE_CONFIG_DIR's, as a pass's is) while
-// no worker anywhere keeps that reading fresh, and each other login in rotation or on standby while
-// no worker runs on it, judged on that login's own probe reading.  -> [{ login }]
+// This desk-q's login, its CLAUDE_CONFIG_DIR's, as a pass's is. Null when the subscriptions file cannot
+// be read, which reads and probes as no login was named.
+const ownLogin = () => { try { return loginOf(process.env.CLAUDE_CONFIG_DIR); } catch { return null; } };
+// The probes an open desk-q makes now: its own login's while no worker anywhere keeps that reading
+// fresh, and each other login in rotation or on standby while no worker runs on it, judged on that
+// login's own probe reading.  -> [{ login }]
 export function probesDue(repos, { now } = {}) {
-  const own = loginOf(process.env.CLAUDE_CONFIG_DIR);
+  const own = ownLogin();
   const due = probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
   let others = [];
-  try { others = probeLogins().filter((l) => l.dir !== own.dir && (l.configDir || l.source === 'file')); } catch { /* an unreadable subscriptions file probes its own login only */ }
+  try { others = probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file')); } catch { /* an unreadable subscriptions file probes its own login only */ }
   for (const login of others) {
     if (probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })) due.push({ login });
   }
@@ -1683,7 +1686,7 @@ function machineLine(running, cap, room, avail) {
 // repo by its own §3b row, so a repo set to off is never held). A pass reads the same worker logs and
 // probe output (newestUsage), so the hold is judged on the 7-day figure shown.
 export function usageOf(repos, now, shown = repos) {
-  const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), now });
+  const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), login: ownLogin(), now });
   const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
   const heldBy = shown.filter((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))).map((r) => r.name);
   return { reading, running: machineRunning(repos), held: heldBy.length > 0, heldBy };

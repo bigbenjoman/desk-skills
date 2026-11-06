@@ -57,6 +57,20 @@ const one = L.readRegistry();
 t('AC14 one login: one registry read, with no CLAUDE_CONFIG_DIR', calls().join(), 'unset|agents');
 t('AC14 one login: its sessions', one.live.map((a) => `${a.sessionId}:${a.pid}`).join(), 'S-A:11');
 t('AC14 one login: its one probe is due, on the default login', Q.probesDue([], { now: Date.now() }).map((x) => x.login.name).join(), 'default');
+// One login reached through CLAUDE_CONFIG_DIR: the header reads the log its probe writes.
+const solo = { name: 'solo', configDir: join(T, 'solo') };
+mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
+writeFileSync(P.loginProbeLog(process.env.DESK_USAGE_DIR, solo), `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: {
+  five_hour: { utilization: 0.1, resetsAt: Math.round(Date.now() / 1000) + 3600 }, seven_day: { utilization: 0.2, resetsAt: Math.round(Date.now() / 1000) + 86400 } } } })}\n`);
+process.env.CLAUDE_CONFIG_DIR = join(T, 'solo');
+t('AC14 one login under CLAUDE_CONFIG_DIR: desk-q\'s header reads its own probe\'s log', Q.usageOf([], Date.now()).reading.at != null, true);
+// A subscriptions path that cannot be read: desk-q's probe timer carries on, as no login named.
+const subsPath = process.env.DESK_SUBSCRIPTIONS;
+process.env.DESK_SUBSCRIPTIONS = T;
+t('an unreadable subscriptions file: the probe is still due, as no login named', Q.probesDue([], { now: Date.now() }).map((x) => x.login).join(), '');
+process.env.DESK_SUBSCRIPTIONS = subsPath;
+delete process.env.CLAUDE_CONFIG_DIR;
+rmSync(process.env.DESK_USAGE_DIR, { recursive: true, force: true });
 
 // ---- AC1, AC6: a worker on login B is live, and the spawn lookup finds its pid
 subscriptions([['default', '~/.claude', 'in rotation'], ['b', '~/.claude-logins/b', 'standby']]);
