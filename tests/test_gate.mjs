@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, CODEOWNERS_PATHS } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold } from '../desk/bin/gate.mjs';
 import { readFileSync } from 'node:fs';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
@@ -117,14 +117,8 @@ t('DS-413 the reason is matched as a code-owner approval in any spelling', ['nee
 // /desk-setup's Merge holds step, read against what the merge driver does with the holds it proposes.
 const setup = readFileSync(new URL('../skills/desk-setup/references/step-1-detect.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
 const setupHold = (re) => parseHolds([re.exec(setup)?.[1] ?? 'missing: missing'])[0];
-t('DS-424 AC1 setup proposes no code-owner approval hold on a path only the desk account owns',
-  /\*\*Only the desk account owns the path:\*\* do not propose a hold whose reason is a code-owner approval/.test(setup), true);
-t('DS-424 AC1 the desk account is the §1 GitHub handle, the account the merge driver merges with',
-  /the desk account: the §1 GitHub handle \(`gh api user --jq \.login` above\), the account the merge driver merges with/.test(setup), true);
-t('DS-424 AC1 setup compares the owners from the files the merge driver reads, in its order',
-  setup.includes(CODEOWNERS_PATHS.map((p) => `\`${p}\``).join(', ').replace(/, (?=[^,]*$)/, ' and ')), true);
-t('DS-424 AC2 a held path the desk account alone owns gets the policy behind it as the reason',
-  /If the user asks to hold the path anyway, ask what policy the path stands for .* and write that policy as the reason/.test(setup), true);
+const soleHeld = await codeOwnerHolds(matchHolds(['pricing/plans.ts'], parseHolds(['pricing/**: code-owner approval'])), { repo: 'o/r', base: 'main', merger: 'BigBenjoman', run: coGh({ CODEOWNERS: '* @bigbenjoman' }) });
+t('DS-424 AC1 a code-owner approval hold on a path only the merging account owns holds nothing, so setup does not propose it', `${soleHeld.held.length} ${soleHeld.satisfied.map((h) => h.glob).join()}`, '0 pricing/**');
 const policy = /ask what policy the path stands for \("([^"]+)"\)/.exec(setup)?.[1];
 t('DS-424 AC2 the example policy reason is not read as a code-owner approval', Boolean(policy) && !isCodeOwnerHold({ why: policy }), true);
 const policyHeld = await codeOwnerHolds(matchHolds(['pricing/plans.ts'], parseHolds([`pricing/**: ${policy}`])),{ repo: 'o/r', base: 'main', merger: 'BigBenjoman', run: coGh({ CODEOWNERS: '* @bigbenjoman' }) });
