@@ -180,11 +180,11 @@ rm "$T/gh/refuse-feat_P-2" "$T/gh/refuse-feat_P-3"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 AC2 the 5xx over: the next pass pushes and requeues" 'on_origin P-2 && [ "$(field P-2 state)" = "\"triaged\"" ]'
 check "DS-496 AC3 a refusal is not tried again" '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ]'
-pushpark P-7 A; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
-check "DS-496 a dry run pushes nothing" '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ]'
 check "DS-269 AC3 C-1's PR merged: requeued, with one line naming the condition" '[ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(grep -c "C-1: \"PR #41 merged\" holds: requeued" <<< "$out")" = 1 ]'
 check "DS-269 AC6 a failed variable read leaves the park and is named" '[ "$(field V-2 state)" = "\"parked\"" ] && grep -q "V-2: could not check \"repo variable FOO set\" (gh variable list: gh: HTTP 401: Bad credentials): left parked" <<< "$out"'
 check "DS-269 AC4 still lane C: never requeued" '[ "$(field D-1 state)" = "\"parked\"" ]'
+pushpark P-7 A; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-496 a dry run pushes nothing" '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ]'
 
 # ---- the decider records a condition, and gets an answer to a park it was never handed --------------
 node "$B/answer.mjs" E-2 "go with the second option" >/dev/null 2>&1

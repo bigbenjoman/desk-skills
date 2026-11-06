@@ -50,19 +50,22 @@ user. One whose inputs changed is asked, with a line saying what changed since i
 - **A park can say what clears it**: a worker's `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` on the
   line after its park (`pr <n> merged`, `pr <n> ready` for out of draft, `ticket <KEY> done`,
   `variable <NAME> set` for a repo Actions variable, `run <id> completed` for a GitHub Actions run
-  to finish, `git push origin <branch> succeeds` for a push GitHub refused with a 5xx, or `none`), or
+  to finish, or `none`), or
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
   left out (or `none`) when only a person can settle it. Each pass checks it, and once it holds settles the park as
   `references/orchestrator-recovery.md` says, with no model: a lane C ticket, or a lane D parked at triage on its design, stays for a
   person, one whose own PR merged is recorded done, any other is requeued, its next worker told
-  what cleared it (a run's conclusion included). The push form is checked by pushing: another 5xx
-  waits for the next pass, and any other refusal, or a push §3 does not grant, sets it to `none` for
-  a person. Each outcome, a run still in progress, and any
+  what cleared it (a run's conclusion included). Each outcome, a run still in progress, and any
   check that could not run (the park left as it is), is one line under `clears-when:` in the report.
   An idle supervised batch with anything parked or failed still runs a pass every 30 minutes
   (`DESK_IDLE_RECHECK_MS`), so a condition cleared outside the queue is seen. A park with a recorded
   condition is settled by those checks, so neither the decider nor the digest takes it up.
+- **A park on a push GitHub refused with a 5xx clears by being pushed**: `git push origin <branch>
+  succeeds` (`git push --force-with-lease origin <branch> succeeds` for a lease push) is one more
+  condition, and its check is the push itself, from the ticket's worktree. Another 5xx waits for the
+  next pass. Any other refusal, or a push §3 does not grant, sets the condition to `none` for a
+  person, and a park left for a person is never pushed for.
 - **A park on a take call can carry its recommendation**: a worker that parks on a call outside the
   ask categories anyway (one that widens the ticket past its criteria, say) prints
   `AUTOPILOT_PARK_RECOMMENDS: {"options": ["…", "…"], "chose": "<recommended>", "category": "<category>"}`
