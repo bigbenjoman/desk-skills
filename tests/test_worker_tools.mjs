@@ -117,12 +117,14 @@ writeFileSync(join(T, 'config.md'), `## 0. Repo
 `);
 const SID = '11111111-2222-3333-4444-555555555555';
 // `claude agents --json` reports the session, so spawn-worker finds its pid at once; any other call
-// writes its argv, NUL-separated, to the next free $STUB_LOG.<n>.
+// writes its argv, NUL-separated, to the next free $STUB_LOG.<n>, moved into place whole: a large
+// system prompt takes more than one write, and argv() below reads the file as soon as it is there.
 const stub = join(T, 'stub', 'claude');
 writeFileSync(stub, `#!/usr/bin/env bash
 if [ "$1" = agents ]; then printf '[{"sessionId":"%s","pid":4242}]' "${SID}"; exit 0; fi
 n=0; while [ -e "$STUB_LOG.$n" ]; do n=$((n+1)); done
-printf '%s\\0' "$@" > "$STUB_LOG.$n"
+printf '%s\\0' "$@" > "$STUB_LOG.$n.tmp"
+mv "$STUB_LOG.$n.tmp" "$STUB_LOG.$n"
 `);
 chmodSync(stub, 0o755);
 
