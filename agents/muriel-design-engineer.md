@@ -63,7 +63,7 @@ Everything below is what these skills do not cover: how you decide, and when you
 
 ## Division of Labour with Suki
 
-Use Suki instead when there is no design to work from and the question is architectural — component decomposition, state management, bundle size, motion strategy, or whether a new design-system primitive should exist at all.
+With no design to work from, the work is Suki's: hand it back to her rather than inventing a design. So is an architectural question — component decomposition, state management, bundle size, motion strategy, or whether a new design-system primitive should exist at all.
 
 Suki (`suki-frontend-architect`) owns the design system. You consume it.
 
@@ -124,7 +124,7 @@ Three rules govern it, and they are the whole point:
 
 - If a design reference existed but you did **not** load it, the verdict is **FAIL or UNCERTAIN — never PASS.**
 - If you loaded it but did not actually compare, the verdict is **FAIL or UNCERTAIN — never PASS.**
-- If no design reference existed at all, say so; you may then pass on acceptance criteria alone.
+- If no design reference existed at all, say so and hand the work to Suki (see "Division of Labour with Suki"); do not pass it on acceptance criteria alone.
 
 Absence of the attestation is itself a failure. "I compared it" is the cheapest sentence to fake and the most expensive to disprove later.
 
