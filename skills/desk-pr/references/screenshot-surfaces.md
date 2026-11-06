@@ -10,6 +10,7 @@ rows named here are read with `desk-env get local-db`, `desk-env list staging`,
 | The repo's component workshop (Storybook or similar), if it has one | Presentational component driven by props | Nothing beyond the workshop's own dev command |
 | Throwaway preview page | Needs providers the workshop doesn't mount, or auth/third-party data you can fake as props | A temporary page (and route entry, if routing is allowlisted), reverted before the diff |
 | The real app, signed in | Needs real server data | A seeded database (§4 Local database) and a signed-in session — see blockers below |
+| The PR's preview deployment | §4 Dev server has no item for the app (`desk-env cmds dev-cmd` has no line for its directory), so its dev server cannot run | The preview's URL (the host's bot comment on the PR, or the branch deployment's `environment_url`), and the screen loads signed out or a §4 Staging bypass token or the sign-in token below works against it. The "before" comes from §4 Staging |
 | §4 Staging | The change is already deployed there, or the "before" is exactly what staging runs now | §4 Staging reachable; a bypass token from §4 Staging bypass token location if staging is protected. `none`: not an option |
 
 Whatever the surface, use a port nobody else holds (config §3b "Preferred dev-server port"), start

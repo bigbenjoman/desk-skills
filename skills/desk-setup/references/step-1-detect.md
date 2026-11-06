@@ -232,6 +232,15 @@ How to turn what you find into rows:
   there rather than proposing a command: a plain `uv sync` writes a new lockfile into every
   worktree, and `git status` is then never clean. Propose, then
   confirm; a guessed test command that does not exist wastes a worker's whole run.
+- **Dev server.** One item per app a ticket can change a screen in, not only the main one: for
+  every directory another command row names (Lint, Typecheck, Unit tests, Build, …) whose
+  `package.json` has a `dev` script, propose `` `<dir>: <its dev command>` `` through the package
+  manager as its scripts run it, with the port flag in the row's note, e.g.
+  `` `apps/portal/apps/web: bun run dev` `` (the app takes `-p <port>`). A worker is refused any
+  dev command the row does not hold, so a ticket in a missing app gets no local screenshots and
+  parks. A root item that filters to the app (`--filter <its package name or path>`) already serves
+  it, and the root itself is never a missing app. `desk-env drift` names each such directory `NODEV` after the row is written; propose its
+  item on every run, a re-run's included, and the user confirms or declines each.
 - **Related tests.** For each Unit tests item, the same runner in its related form, in the same
   directory: Vitest `vitest related --run --passWithNoTests`, Jest `jest --findRelatedTests
   --passWithNoTests` (through the package manager as the Unit tests item runs it, e.g.
