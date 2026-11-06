@@ -72,6 +72,8 @@ const REWRITTEN = [
   ].map((s) => ['DS-405', s, 1]),
   ['DS-398', 'It exits 3: there is none', 1], // desk-env model prints `none` and exits 0
   ['DS-427', '```bash codex exec --sandbox read-only ', 3], // each codex command skips the trusted-directory check
+  ['DS-456', 'Use when reviewing a branch, a PR or the open PR queue in this repo before a human', 1], // the description says when, not how
+  ['DS-456', 'Fix it with `! codex login`, or say', 1], // the preflight question leads with its recommended option
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

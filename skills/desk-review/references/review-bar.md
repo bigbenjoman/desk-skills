@@ -112,9 +112,9 @@ P2 to justify having found something. An empty report is the expected result for
 
 ## How this maps to the agents' own scales
 
-P0–P3 is the vocabulary `lena-code-reviewer`, `nadia-security-auditor` and `suki-frontend-architect`
-already use, so nothing needs translating. Lena's
-"Critical" is P0 or P1 by the tables above, her "Important" is P2, her "Minor" is P3 and dropped.
+P0–P3 is the scale `lena-code-reviewer`, `nadia-security-auditor` and `suki-frontend-architect`
+already use. Lena's *Critical Issues* section holds P0 and P1 and *Important Issues* P2; she drops
+P3 herself.
 Her *Scope Discipline* rule is live here as *Speculative generality*, *Scope creep with no consumer*
 and *Out of scope*.
 
