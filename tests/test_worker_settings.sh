@@ -440,7 +440,6 @@ git -C "$T/lw" commit -q --amend --allow-empty -m c
 git -C "$T/lw" push -q --force-with-lease="fix/x:$L0" origin fix/x 2>/dev/null; second=$?
 check "DS-390 AC2 git takes the granted push once and refuses it the second time" '[ $first -eq 0 ] && [ $second -ne 0 ]'
 
-<<<<<<< HEAD
 # ---- DS-431: §4 Worker read-only repos and Worker measuring commands ----
 denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
 readable(){ jq -e --arg d "$1" '.permissions.additionalDirectories | index($d)' "$T/ws.json" >/dev/null 2>&1; }
