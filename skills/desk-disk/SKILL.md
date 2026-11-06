@@ -11,14 +11,13 @@ description: >-
 
 ## Overview
 
-Each low-disk session used to rediscover the same offenders from scratch, and one lost about 4,700
-Docker volumes to a batched prune that ran after the user had rejected it. This skill measures
-first, explains, and changes nothing until the user picks a fix.
+Disk fixes are mostly irreversible, and a fix batched with others can run after the user rejected
+it, so this skill measures first, explains, and changes nothing until the user picks a fix.
 
 **Core principle: measure, explain, then one approved fix at a time, measured before and after.**
 
-It is about this computer, not a repo, so it needs no repo config. macOS only: the CI runner VM's
-disk is DS-62's, and a Linux machine is out of scope (say so and stop).
+It is about this computer, not a repo, so it needs no repo config. macOS only: a Linux machine
+is out of scope (say so and stop).
 
 ## 1. Scan
 
