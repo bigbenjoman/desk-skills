@@ -224,7 +224,7 @@ rm -f "$T/agents.json"
 # A worker at a usage limit: never stopped or failed for it, paused rather than wedged, and
 # resumed in its own session once the limit lifts, as a ticket's worker is. The claude stub answers the
 # pass's one probe call with no answer, so a probe never lifts a limit here unless probe_ok is set.
-limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.provisional.json" "$1" >> "$C/state/logs/base-feat-x.log"; }
+limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.json" "$1" >> "$C/state/logs/base-feat-x.log"; }
 : > "$T/kills"; fresh bpause; feature; fixrow yes
 conflict; pass; live; limit_event "$(( $(date +%s) + 3600 ))"
 for _ in 1 2 3 4 5 6 7; do pass; done

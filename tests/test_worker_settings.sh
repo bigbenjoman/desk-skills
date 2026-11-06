@@ -492,4 +492,15 @@ settings '`bash tests/run.sh`' '| Worker read-only repos | `acme/widgets` |' "$(
 check "DS-431 AC2 a repo listing itself keeps its gh writes and is warned, and its clone stays read-only" \
   '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Worker read-only repos item \"acme/widgets\" is this repo"* ]] && ok "gh pr create --draft --repo acme/widgets --head b" "gh pr edit https://github.com/acme/widgets/pull/1 --title x" && denies "Edit(/$HOME/.desk-autopilot/acme__widgets/ref/acme__widgets/**)"'
 
+# The memory lever (config §3b Phase 0 levers): on, auto-memory is off and the memory folder is neither
+# granted nor writable; off, the folder is granted as before.
+MEM="$HOME/.claude/projects/$(printf '%s' "$T/repo" | tr -c 'A-Za-z0-9' '-')/memory"; mkdir -p "$MEM"
+lever3b(){ printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `%s` |\n' "$1"; }
+settings '`bash tests/run.sh`' '' "$(lever3b memory)"
+check "DS-452 AC1 memory lever on: auto-memory is off" '[ $rc -eq 0 ] && [ "$(jq -c .autoMemoryEnabled "$T/ws.json")" = false ]'
+check "DS-452 AC1 memory lever on: the memory folder is not granted, and writing it is denied" '! readable "$MEM" && denies "Edit(/$MEM/**)"'
+settings '`bash tests/run.sh`' '' "$(lever3b codex)"
+check "DS-452 AC5 memory lever off: auto-memory is left as it is" '[ $rc -eq 0 ] && [ "$(jq -c .autoMemoryEnabled "$T/ws.json")" = null ]'
+check "DS-452 AC5 memory lever off: the memory folder is granted, and not denied" 'readable "$MEM" && ! denies "Edit(/$MEM/**)"'
+
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

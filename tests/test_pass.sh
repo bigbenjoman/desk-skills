@@ -321,11 +321,11 @@ spawn_one P-175
 check "DS-305 AC4 an unreadable named batch's queue does not stop the spawn, and the report names it" '[ "$(field P-175 state)" = "\"running\"" ] && [ "$(field P-175 port)" = 47501 ] && echo "$out" | grep -qF "ports: $X1/queue.json is not valid JSON ("'
 rm -rf "$T/desk/repos/acme__other/batches"; other '{"tickets": not json'
 
-# DS-121: a worker at the 5-hour usage limit. The event is built from the provisional fixture (the
-# real event at the limit has not been captured yet), with its reset moved to suit each case. Each
-# case is a running ticket whose log stopped growing five passes ago, one pass from the stall killer.
+# DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker,
+# with its reset moved to suit each case. Each case is a running ticket whose log stopped growing
+# five passes ago, one pass from the stall killer.
 export DESK_QUEUE="$T/queue-u.json" DESK_AUTOPILOT_STATE="$T/state-u" AUTOPILOT_PORT_FLOOR=47601; mkdir -p "$T/state-u/logs"
-limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); if (process.argv[3]) e.rate_limit_info.rateLimitType = process.argv[3]; console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.provisional.json" "$1" "${2:-}"; }
+limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); if (process.argv[3]) e.rate_limit_info.rateLimitType = process.argv[3]; console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.json" "$1" "${2:-}"; }
 # The registry stub also answers the probe call (claude -p): what the probe says is $T/probe.out.
 # probe_says limited <resetsAt> [type] | ok
 probe_says(){ if [ "$1" = ok ]; then { say "ok"; echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; } > "$T/probe.out"
@@ -381,6 +381,16 @@ quiet_running U-9 live-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-344 a rejection with no reset time is a pause, not a stall" '[ "$(field U-9 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: U-9 on the 5-hour usage limit, then it resumes"'
 q set U-9 state=done
+
+# U-10: the tail a real worker wrote at the limit, its reset moved an hour ahead. After the
+# rejection come the error messages written in the model's place and a subagent's reply to a request
+# already in flight; neither is the model answering, so the session's 429 is the same 5-hour limit.
+{ say "AUTOPILOT_STAGE: 4/9 verify"; node -e 'const fs = require("fs"); process.stdout.write(fs.readFileSync(process.argv[1], "utf8").replaceAll("1792768800", process.argv[2]))' "$S/fixtures/usage-limit-five-hour-session.jsonl" $((now + 3600)); } > "$T/state-u/logs/U-10.log"
+quiet_running U-10 live-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-174 AC2 a real worker's tail at the limit is paused on the 5-hour limit with its reset time" '[ "$(field U-10 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: U-10 on the 5-hour usage limit until $(date -u -r $((now + 3600)) "+%Y-%m-%d %H:%M" 2>/dev/null || date -u -d "@$((now + 3600))" "+%Y-%m-%d %H:%M") UTC, then it resumes"'
+check "DS-174 AC2 and is neither unrecognised nor recorded as resumed" '! echo "$out" | grep -q "unrecognised usage-limit event: U-10" && ! grep -q "^- \[U-10\] resumed" "$T/state-u/batch-notes.md"'
+q set U-10 state=done
 
 # U-4: a rate-limit event that is neither traffic under the limit nor a rejection is named, not
 # guessed at, and the stall check runs as before. U-5's only event is ordinary traffic, and the limit

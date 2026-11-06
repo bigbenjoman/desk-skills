@@ -139,7 +139,10 @@ desk_tool_args none || { echo "FAIL: could not read the tool list (worker-tools.
 NO_TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})
 desk_tool_args worker || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
 TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})
-[ -d "$DESK_MEMORY_DIR" ] && ADD_DIRS+=(--add-dir "$DESK_MEMORY_DIR")
+# With the memory lever on (config §3b Phase 0 levers), auto-memory is off for the worker and its
+# folder is not granted: a fresh session's brief carries a digest of the index instead (below).
+MEMORY_LEVER="$(node "$DESK_ENV_MJS" levers memory 2>/dev/null </dev/null || true)"
+[ "$MEMORY_LEVER" != on ] && [ -d "$DESK_MEMORY_DIR" ] && ADD_DIRS+=(--add-dir "$DESK_MEMORY_DIR")
 
 if [ -n "${AUTOPILOT_PREFLIGHT:-}" ]; then
   CANARY="$DESK_REPO_ROOT/.preflight-should-not-exist.tmp"
@@ -331,6 +334,17 @@ if [ -n "$BRIEFING" ] && [ -f "$BRIEFING" ] && [ -z "${AUTOPILOT_RESUME:-}" ]; t
 
 $(cat "$BRIEFING")"
   if [ -n "${AUTOPILOT_TASK:-}" ]; then SYSTEM="$SYSTEM$BRIEF_TEXT"; else PROMPT="$PROMPT$BRIEF_TEXT"; fi
+fi
+# The memory digest goes where the briefing does, and its size into the log after the preflight's
+# cost line. No index is no digest; a resumed session already holds the one it started with.
+if [ "$MEMORY_LEVER" = on ] && [ -z "${AUTOPILOT_RESUME:-}" ]; then
+  DIGEST="$(node "$BIN/memory-digest.mjs" "$DESK_MEMORY_DIR" --log "$LOG" 2>/dev/null </dev/null || true)"
+  if [ -n "$DIGEST" ]; then
+    DIGEST="
+
+$DIGEST"
+    if [ -n "${AUTOPILOT_TASK:-}" ]; then SYSTEM="$SYSTEM$DIGEST"; else PROMPT="$PROMPT$DIGEST"; fi
+  fi
 fi
 
 # The desk commit and levers this start runs on, and the bytes it is handed, one line per start for
