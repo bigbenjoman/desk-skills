@@ -924,14 +924,16 @@ check "DS-506 AC3: a failed triage refuses that ticket with its reason and admit
 for k in LA LB LC LD LE; do rec "$k" A; done; cp "$T/recs/U-1.limit" "$T/recs/LA.limit"; echo 1 > "$T/recs/LB.sleep"
 pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit LA LB LC LD LE --by ben); rc=$?
 check "DS-506 AC4: after a usage limit no triage starts, and the one in flight finishes and is admitted" \
-  '[ $rc -eq 11 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "LA LB " ] && [ "$(qget tickets.LB.state)" = triaged ]'
+  '[ $rc -eq 11 ] && [ "$(sort "$T/triage.calls" | tr "\n" " ")" = "LA LB " ] && [ "$(qget tickets.LB.state)" = triaged ]'
 check "DS-506 AC4: the tickets not triaged are named with the reset time and the command to run again" \
   'grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): LC LD LE: run /desk-admit LC LD LE again once the limit lifts" <<< "$out" && grep -q "^not admitted LA: triage stopped at the weekly usage limit" <<< "$out"'
 # AC5: killed once KA is admitted, while KB's triage runs.
 rec KA A; rec KB A; echo 3 > "$T/recs/KB.sleep"
 pool 1; (cd "$T/repo" && exec node "$T/bin/intake.mjs" admit KA KB --by ben >/dev/null 2>&1) & pid=$!
 i=0; while [ "$(qget tickets.KA.state)" != triaged ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; sleep 0.3; rm -f "$T/recs/KB.sleep"; : > "$T/triage.calls"
+kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+# KB's triage outlives the kill; let it end before a later test's events are read.
+i=0; while ! grep -q "^end KB" "$T/triage.events" && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; rm -f "$T/recs/KB.sleep"; : > "$T/triage.calls"
 out=$(admit KA KB --by ben); rc=$?
 check "DS-506 AC5: run again after a kill, an admitted ticket is already in the batch and only the rest are triaged" \
   '[ $rc -eq 0 ] && grep -qx "KA is already in batch b1 (triaged)" <<< "$out" && [ "$(tr "\n" " " < "$T/triage.calls")" = "KB " ] && [ "$(qget tickets.KB.state)" = triaged ]'
