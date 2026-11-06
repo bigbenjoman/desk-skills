@@ -333,6 +333,15 @@ $(cat "$BRIEFING")"
   if [ -n "${AUTOPILOT_TASK:-}" ]; then SYSTEM="$SYSTEM$BRIEF_TEXT"; else PROMPT="$PROMPT$BRIEF_TEXT"; fi
 fi
 
+# The desk commit and levers this start runs on, and the bytes it is handed, one line per start for
+# phase0-report.mjs. A record that cannot be written never stops a spawn.
+START="${AUTOPILOT_START_STAGE:-0}"
+[ -n "${AUTOPILOT_TASK:-}" ] && START=task
+[ -n "${AUTOPILOT_RESUME:-}" ] && START=resume
+node "$BIN/phase0-report.mjs" spawn-line --ticket "$TICKET" --session "$SID" --stage "$START" --model "${MODEL:-default}" \
+  --system-bytes "$(printf '%s' "$SYSTEM" | wc -c | tr -d ' ')" --prompt-bytes "$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')" \
+  >> "$STATE/workers/$TICKET.runs.jsonl" 2>/dev/null || true
+
 cd "$WT"
 # Marks the worker as headless for desk-jira, which then refuses config §4 Priorities only you set.
 # Its allow-list has no VAR=value prefix, env or unset to clear it with.
