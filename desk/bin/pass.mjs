@@ -1020,6 +1020,15 @@ for (const t of DRY ? [] : Object.values(queue().tickets)) {
   if (finishPush(t)) continue;
   takeRecommended(t);
 }
+// What a parked ticket's worktree holds that origin does not, kept on its park for needs-you's note:
+// listing what needs the person runs no git. Counted against every origin ref, so a branch never
+// pushed counts too.
+for (const t of DRY ? [] : Object.values(queue().tickets)) {
+  if (t.state !== 'parked' || isHeld(t) || t.location === 'cloud') continue;
+  const n = t.worktree && existsSync(t.worktree) ? shOut('git', ['-C', t.worktree, 'rev-list', '--count', 'HEAD', '--not', '--remotes=origin']) : null;
+  const unpushed = n?.ok && Number(n.out) > 0 ? `its worktree ${t.worktree} has ${n.out} commit(s) not on origin` : null;
+  if (unpushed !== (t.park?.unpushed ?? null)) q('set', t.key, `park.unpushed=${unpushed ?? 'null'}`);
+}
 
 // ---- claims by idle sessions ---------------------------------------------------
 // A ticket an interactive session claimed (queue.mjs park --claimed-by) goes back to the workers once

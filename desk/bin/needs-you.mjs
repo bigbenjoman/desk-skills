@@ -57,7 +57,7 @@ import { gapsFix, personReviewFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
+import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
@@ -384,6 +384,9 @@ function itemOf(r, x) {
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in
   // it, makes it clean, and the pass drops the record once it is.
   const wb = worktreeBusy(t);
+  // Requeued off a park and held here: the park says why its worker stopped, and the ticket is queued
+  // already, so a resume only records what the next worker should know.
+  if (busyPark(t)) return { kind: 'worktree', need: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
   if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', sessionWhy(parkText(r, t))], ['not-now']] };
   if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now'], ...moveAction(r)] };
@@ -407,19 +410,21 @@ function itemOf(r, x) {
   }
   if (t.state === 'parked' && !isHeld(t)) {
     const need = one(t.park?.question) || 'parked, with no question recorded';
-    if (planPark(t)) return { kind: 'plan', need, actions: [['answer', 'say start, discard, or the edit to make; the supervisor acts on it at its next tick: an edit is applied and the batch starts, and one it cannot apply comes back here naming why'], ['not-now']] };
+    // What its worktree holds that origin does not, as the last pass read it.
+    const note = t.park?.unpushed ? `${capital(t.park.unpushed)}.` : undefined;
+    if (planPark(t)) return { kind: 'plan', need, note, actions: [['answer', 'say start, discard, or the edit to make; the supervisor acts on it at its next tick: an edit is applied and the batch starts, and one it cannot apply comes back here naming why'], ['not-now']] };
     const sp = spinePark(t);
-    if (sp === 'approval') return { kind: 'spine', need, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
-    if (sp === 'specs') return { kind: 'spine', need, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
-    if (sessionPark(parkText(r, t))) return { kind: 'session', need, actions: [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), ['not-now']] };
-    if (needsSession(t)) return { kind: 'session', need, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), ['not-now']] };
-    if (triagePark(t)) return { kind: 'session', need, actions: [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']] };
+    if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
+    if (sp === 'specs') return { kind: 'spine', need, note, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
+    if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), ['not-now']] };
+    if (needsSession(t)) return { kind: 'session', need, note, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), ['not-now']] };
+    if (triagePark(t)) return { kind: 'session', need, note, actions: [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']] };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
     const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
-    return { kind: 'parked', need, actions: [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now'], ...moveAction(r), ...offer] };
+    return { kind: 'parked', need, note, actions: [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now'], ...moveAction(r), ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
   const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
@@ -439,6 +444,8 @@ function putOffKey(r, t, item) {
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
+  // A worktree item led by its park's reason holds the worktree's state in its note: a new hold brings it back.
+  if (item.kind === 'worktree' && item.note) inputs.hold = item.note;
   const blockers = blockerStates(r, t);
   if (blockers || item.kind === 'held') inputs.blockers = blockers;
   return { question: `${t.key} ${item.kind}`, inputs };
@@ -681,6 +688,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       }
       const a = ans();
       if (!a.ok) return say(false, a.why);
+      if (item.kind === 'worktree') return say(true, 'recorded for its next worker; the next pass that finds the worktree clean starts it.');
       if (w.by === 'session') {
         // Marked answered, so desk-q shows it waiting on that session rather than needing the person.
         const m = queueCmd(r, ['set', ticket, `park.answered=${new Date(now).toISOString()}`]);
