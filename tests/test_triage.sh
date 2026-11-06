@@ -50,6 +50,14 @@ cat > "$T/stub/claude" <<'EOF'
 #!/usr/bin/env bash
 n=$(ls "$STUB_LOG".* 2>/dev/null | wc -l | tr -d ' ')
 printf '%s\0' "$@" > "$STUB_LOG.$n"
+# Call STUB_LIMIT is refused at the weekly limit (its reset left out with STUB_NO_RESET); call STUB_NOREC
+# writes nothing and talks, as any other failure would.
+if [ "${STUB_LIMIT:-}" = "$n" ]; then
+  [ -n "${STUB_NO_RESET:-}" ] || echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day","resetsAt":1800000000}}'
+  echo '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"Claude AI usage limit reached"}'
+  exit 1
+fi
+[ "${STUB_NOREC:-}" = "$n" ] && { echo "STUB-STDOUT"; exit 1; }
 if [ "$n" = 0 ]; then
   printf '{"ticket":"fix-thing","lane":"%s","branch":"%s","change_kind":"%s"%s}' "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/fix-thing.json"
 else
@@ -74,7 +82,8 @@ flags_ok(){ local n="$1" budget="$2"
     && has "$n" --settings "$T/state/workers/fix-thing.triage.settings.json" \
     && has "$n" --permission-mode dontAsk \
     && has "$n" --add-dir "$T/state" && has "$n" --add-dir "$T/skills" \
-    && has "$n" --max-budget-usd "$budget" && has "$n" --output-format text; }
+    && has "$n" --max-budget-usd "$budget" && has "$n" --output-format stream-json && has "$n" --verbose; }
+TLOG="$T/state/triage/fix-thing.log"
 
 # The rendered triage settings decide every git call a prompt names. permits <settings> <command>:
 # each `|` stage matches an allow rule and no deny rule, read the way the harness reads them (a
@@ -117,7 +126,8 @@ out=$(bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "lane A: triage succeeds though claude exits non-zero (|| true)" '[ $rc -eq 0 ]'
 check "lane A: one claude call, no challenge"                           '[ -f "$STUB_LOG.0" ] && [ ! -f "$STUB_LOG.1" ]'
 check "first pass receives every flag"                                  'flags_ok 0 3'
-check "first pass output goes to /dev/null"                             '[ -f "$STUB_LOG.0" ] && [[ "$out" != *STUB-* ]]'
+check "DS-505 AC1: first pass output is kept in the triage log, not printed" '[ -f "$STUB_LOG.0" ] && [[ "$out" != *STUB-* ]] && grep -q STUB-STDOUT "$TLOG" && grep -q STUB-STDERR "$TLOG"'
+check "DS-505 AC1: a triage that succeeds keeps its record as written"   '[ "$(jq -r .lane "$T/state/triage/fix-thing.json")" = A ] && [ "$(jq -r .branch "$T/state/triage/fix-thing.json")" = fix/fix-thing ]'
 check "first pass: every git command it names runs under triage settings" 'prompt_git_ok 0'
 check "first pass: names no git -C or fetch"                            '! node "$T/match.js" prompt "$STUB_LOG.0" | grep -qE "^git (-C|fetch)"'
 check "AC1: the prompt asks for one of the four change kinds"           'tr "\0" "\n" < "$STUB_LOG.0" | grep -qF "\"change_kind\": \"relocate|schema|shared|surface\""'
@@ -161,7 +171,7 @@ export STUB_LANE=C
 out=$(bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "lane C: triage succeeds and challenges"                          '[ $rc -eq 0 ] && [ -f "$STUB_LOG.1" ]'
 check "challenge receives every flag"                                   'flags_ok 1 2'
-check "challenge output goes to /dev/null"                              '[ -f "$STUB_LOG.1" ] && [[ "$out" != *STUB-* ]]'
+check "DS-505 AC1: challenge output is appended to the same log, not printed" '[ -f "$STUB_LOG.1" ] && [[ "$out" != *STUB-* ]] && [ "$(grep -c STUB-STDOUT "$TLOG")" = 2 ]'
 check "challenge: every git command it names runs under triage settings"  'prompt_git_ok 1'
 check "challenge: names no git -C or fetch"                             '! node "$T/match.js" prompt "$STUB_LOG.1" | grep -qE "^git (-C|fetch)"'
 check "challenge: a CONFIRM with no failed reads stays CONFIRM"           '[ "$(jq -r .lane_challenge.verdict "$T/state/triage/fix-thing.json")" = CONFIRM ]'
@@ -178,6 +188,30 @@ for chal in '{"verdict":"INCONCLUSIVE","lane":"C","reason":"could not read","fai
 done
 check "challenge prompt asks for INCONCLUSIVE and failed_reads" \
   'node -e "const a=require(\"fs\").readFileSync(process.argv[1],\"utf8\").split(\"\\0\"); const p=a[a.indexOf(\"-p\")+1]; process.exit(/INCONCLUSIVE/.test(p) && /failed_reads/.test(p) ? 0 : 1)" "$STUB_LOG.1"'
+
+# DS-505: a pass Claude refuses at a usage limit exits 3, naming the limit and its reset; any other
+# failure is as before.
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+out=$(STUB_LANE=A STUB_LIMIT=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-505 AC2: a first pass refused at the weekly limit exits 3, naming it and its reset" \
+  '[ $rc -eq 3 ] && grep -qxF "USAGE LIMIT: fix-thing triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC (log: $TLOG)" <<< "$out" && [[ "$out" != *"produced no triage record"* ]]'
+check "DS-505 AC1: the refused pass's output is kept in the log" 'grep -q "\"api_error_status\":429" "$TLOG"'
+rm -f "$STUB_LOG".* "$TLOG"
+out=$(STUB_LANE=A STUB_LIMIT=0 STUB_NO_RESET=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-505 AC2: a limit that gives no reset time exits 3 naming the limit alone" \
+  '[ $rc -eq 3 ] && grep -qxF "USAGE LIMIT: fix-thing triage stopped at the usage limit (log: $TLOG)" <<< "$out"'
+rm -f "$STUB_LOG".* "$TLOG"
+out=$(STUB_LANE=C STUB_LIMIT=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-505 AC2: a challenge refused at the limit exits 3, and its record goes so the ticket is triaged again" \
+  '[ $rc -eq 3 ] && grep -qF "USAGE LIMIT: fix-thing triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC" <<< "$out" && [ ! -f "$T/state/triage/fix-thing.json" ] && [ "$(grep -c STUB-STDOUT "$TLOG")" = 1 ]'
+rm -f "$STUB_LOG".* "$TLOG"
+out=$(STUB_LANE=A STUB_NOREC=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-505 AC3: any other run that writes no record fails as before" \
+  '[ $rc -eq 1 ] && grep -qF "FAIL: fix-thing produced no triage record at $T/state/triage/fix-thing.json" <<< "$out" && [[ "$out" != *"USAGE LIMIT"* ]]'
+rm -f "$STUB_LOG".* "$TLOG"
+out=$(STUB_LANE=C STUB_NOREC=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-505 AC3: a challenge that writes nothing for another reason keeps the first-pass lane, as before" \
+  '[ $rc -eq 0 ] && [ "$(lc .lane_challenge.verdict)" = UNAVAILABLE ] && [ "$(lc .lane)" = C ]'
 
 # DS-242: lane C only when a person must agree first. The lanes are the model's call, so the prompts
 # carry the rules, and the record and the merge are checked against fixture outputs.

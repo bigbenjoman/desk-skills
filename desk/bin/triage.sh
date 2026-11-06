@@ -7,6 +7,9 @@
 #
 #   triage.sh <TICKET>
 #
+# Exits 3 when Claude refused a pass at a usage limit, with a USAGE LIMIT line naming it and its reset;
+# each pass's output is kept at $DESK_STATE/triage/<TICKET>.log.
+#
 # Which ids are accepted, and where each one's text comes from (desk-env ticket-kind):
 #   a key matching §4 Ticket key pattern          read from the tracker with desk-jira
 #   an id matching §4 Other work id patterns       (e.g. `P1-M14-FIX-1`, `BUG-119-5`) and, with §4
@@ -66,6 +69,7 @@ else
 fi
 ROUTING="$DESK_SKILLS_DIR/desk-ticket/references/desk-ticket-routing.md"
 OUT="$STATE/triage/$TICKET.json"
+LOG="$STATE/triage/$TICKET.log"   # both passes' stream-json output: the first pass starts it afresh
 SETTINGS="$STATE/workers/$TICKET.triage.settings.json"   # per repo, like the worker's
 mkdir -p "$STATE/triage" "$STATE/workers"
 
@@ -246,9 +250,27 @@ desk_timeout 600 claude -p "$PROMPT" \
   --permission-mode dontAsk \
   --add-dir "$STATE" --add-dir "$DESK_SKILLS_DIR" \
   --max-budget-usd "${AUTOPILOT_TRIAGE_BUDGET_USD:-3}" \
-  --output-format text > /dev/null 2>&1 < /dev/null || true
+  --output-format stream-json --verbose > "$LOG" 2>&1 < /dev/null || true
+
+# A pass Claude refused at a usage limit is not a failed triage: usage-limit.mjs reads the log, and a
+# limit the run never resumed from is said with its reset time, for exit 3.
+at_limit() {
+  node --input-type=module - "$LOG" "$DESK_BIN" "$TICKET" <<'LIMIT_END'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [log, bin, ticket] = process.argv.slice(2);
+const { usageLimit, limitName, resetText } = await import(pathToFileURL(join(bin, 'usage-limit.mjs')).href);
+let text = '';
+try { text = readFileSync(log, 'utf8'); } catch { /* no log: not a limit */ }
+const l = usageLimit(text).last;
+if (l?.kind !== 'limit' || l.resumed) process.exit(1);
+console.error(`USAGE LIMIT: ${ticket} triage stopped at ${limitName(l.type)}${l.resetsAt != null ? `, which resets at ${resetText(l.resetsAt)}` : ''} (log: ${log})`);
+LIMIT_END
+}
 
 if [ ! -f "$OUT" ]; then
+  at_limit && exit 3
   echo "FAIL: $TICKET produced no triage record at $OUT (an empty run can also be the account session limit)" >&2
   exit 1
 fi
@@ -381,7 +403,11 @@ CHALLENGE_END
     --permission-mode dontAsk \
     --add-dir "$STATE" --add-dir "$DESK_SKILLS_DIR" \
     --max-budget-usd "${AUTOPILOT_CHALLENGE_BUDGET_USD:-2}" \
-    --output-format text > /dev/null 2>&1 < /dev/null || true
+    --output-format stream-json --verbose >> "$LOG" 2>&1 < /dev/null || true
+
+  # A challenge cut off by a usage limit has not checked the lane: the record goes, so the ticket is
+  # triaged again once the limit lifts.
+  if [ ! -f "$CHAL" ] && at_limit; then rm -f "$OUT"; exit 3; fi
 
   # Merge defensively. A missing, malformed or upgrading challenge leaves the
   # first pass's lane exactly as it was — the record must survive a failed
