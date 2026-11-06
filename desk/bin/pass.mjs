@@ -24,7 +24,7 @@ import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
-import { batchCost, costTable, preflightLine, wallTime } from './worker-cost.mjs';
+import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
@@ -556,7 +556,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // long suite behind the test lock never did: six quiet passes is the margin for both.
   const bytes = statSync(log).size;
   let wedged = false;
-  if (bytes > (t.log_bytes ?? 0)) {
+  if (wroteSince(logText, t.log_bytes ?? 0)) {
     q('set', t.key, `log_bytes=${bytes}`, 'idle_passes=0');
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
@@ -1381,7 +1381,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     const atLimit = usage?.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
     const paused = pausedOn(atLimit);
     const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
-    const idle = bytes > (bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
+    const idle = wroteSince(text, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
     const sidLive = registryOk && liveSids.has(bf.running);
     const exited = registryOk && !sidLive && !(recent && !endedNormally(text));
     // A headless worker ends its session at the limit rather than waiting for it to lift. As a ticket's

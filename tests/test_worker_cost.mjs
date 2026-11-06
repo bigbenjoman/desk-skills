@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { logUsage, ticketCost, batchCost, costTable, wallTime, preflightLine, spawnEvent } from '../desk/bin/worker-cost.mjs';
+import { logUsage, ticketCost, batchCost, costTable, wallTime, preflightLine, spawnEvent, wroteSince } from '../desk/bin/worker-cost.mjs';
 import { parseWorkerLocation } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -115,6 +115,17 @@ t('effort AC3 the table shows default where no effort was passed', sessionRows[0
 t('effort AC3 and a resume beside the start it continues', sessionRows[1], 'session: start 4b, model opus, effort high; start resume, model opus, effort low: $3.00');
 t('effort a run with no record says so, never a default', sessionRows[2], 'session: start, model and effort not recorded: $1.00');
 t('effort a run with no result is cost unknown, not zero', sessionRows[3], 'session: start task, model default, effort medium: cost unknown');
+
+// The stall check's reading of a log: desk's own lines past the baseline are not the worker's output.
+const head = `${preflightLine({ usd: 0.1, turns: 2 })}`;
+const from = Buffer.byteLength(head);
+const digest = '{"type":"desk_memory_digest","bytes":1}\n';
+t('a start line past the baseline is not output', wroteSince(`${head}${start({})}\n`, from), false);
+t('nor is a digest line', wroteSince(`${head}${digest}${start({})}\n`, from), false);
+t('a worker\'s line past the baseline is', wroteSince(`${head}${start({})}\n${say('hello')}\n`, from), true);
+t('a line of stderr is', wroteSince(`${head}${start({})}\nError: died\n`, from), true);
+t('nothing past the baseline is not', wroteSince(head, from), false);
+t('the baseline counts bytes, not characters', wroteSince(`${say('é — é')}\n${start({})}\n`, Buffer.byteLength(`${say('é — é')}\n`)), false);
 
 // Tokens per stage. One model call as a worker's log holds it: an assistant event per content
 // block, each repeating the message's id and usage, whose output_tokens is an early snapshot; then,

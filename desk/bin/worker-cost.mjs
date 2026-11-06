@@ -24,6 +24,11 @@ const SPAWN_EVENT = 'desk_spawn';
 export const spawnEvent = ({ session, stage, model, effort }, at = new Date()) =>
   `${JSON.stringify({ type: SPAWN_EVENT, session, stage: stage || '0', model: model || 'default', effort: effort || 'default', at: at.toISOString() })}\n`;
 
+// Whether a worker wrote anything past byte `from` of its log text: the lines desk writes there itself
+// (the preflight, the start, the memory digest) are not its output, so they never read as it being live.
+export const wroteSince = (logText, from) => Buffer.from(logText).subarray(from).toString().split('\n')
+  .some((l) => l.trim() && !l.startsWith('{"type":"desk_'));
+
 // The starts in one log: a fresh session's, and each resume of it.
 function spawnStarts(logText) {
   const starts = [];
