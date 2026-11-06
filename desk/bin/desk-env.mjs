@@ -58,7 +58,8 @@
 //                                             the warning on stderr) when it is dontAsk
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
-//                                             may run (UNLISTED), a dontAsk settings file (DONTASK);
+//                                             may run (UNLISTED), an app directory other command rows
+//                                             name with no Dev server item (NODEV), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
@@ -1252,7 +1253,7 @@ export const STALLING_ROWS = Object.freeze({
 // Unprotected, nothing on GitHub stops a red merge, so these stay recommended at `ask` (desk-setup §2).
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 
-// -> { missing: [{section, label}], stalls: [{key, reason}], dontAsk: file | null }
+// -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, dontAsk: file | null }
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1279,14 +1280,37 @@ export function configDrift({ config, template = templatePath(), root = null, ho
       if (why) unlisted.push({ row: CONFIG_ROWS[id].row, item, why });
     }
   }
-  return { missing, stalls, unlisted, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], dontAsk: mode === 'dontAsk' ? file : null };
 }
 
-export function driftLines({ missing, stalls, unlisted = [], dontAsk }) {
+// App directories the other §4 command rows name, whose package.json has a `dev` script, that §4 Dev
+// server has no item for: a worker on a ticket there is refused that app's dev server.
+// -> [{ dir, rows: [row name] }]. None while the Dev server row is unset or `none`.
+export function devServerGaps(parsed, root) {
+  const dev = configValuesIn(parsed, 'dev-cmd');
+  if (!dev || isNone(dev)) return [];
+  const served = new Set(dev.map((item) => parseCommandItem(item).dir));
+  const named = new Map();
+  for (const id of WORKER_COMMAND_IDS.filter((x) => x !== 'dev-cmd')) {
+    const values = configValuesIn(parsed, id);
+    if (!values || isNone(values)) continue;
+    for (const item of values) {
+      const { dir } = parseCommandItem(item);
+      if (served.has(dir)) continue;
+      if (!named.has(dir)) named.set(dir, []);
+      if (!named.get(dir).includes(CONFIG_ROWS[id].row)) named.get(dir).push(CONFIG_ROWS[id].row);
+    }
+  }
+  const hasDev = (dir) => { try { return Boolean(JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')).scripts?.dev); } catch { return false; } };
+  return [...named].filter(([dir]) => hasDev(dir)).map(([dir, rows]) => ({ dir, rows }));
+}
+
+export function driftLines({ missing, stalls, unlisted = [], noDev = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
+    ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
   return lines.length ? lines : ['no drift'];

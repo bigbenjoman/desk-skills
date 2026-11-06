@@ -130,6 +130,10 @@ check "Codegen: root item allowed exactly"                '[ $rc -eq 0 ] && allo
 check "Codegen: probed with --version"                    '[[ "$out" == *"TOOLCHAIN_PROBE: pnpm --version"* ]]'
 check "Codegen: directory item runs nolock"               'allows "Bash($SRC/desk/bin/with-lock.sh nolock --cwd apps/api -- uv run gen-client:*)"'
 check "Codegen: no lock taken"                            '! jq -e ".permissions.allow[] | select(test(\"with-lock.sh (test|tsc) .*prisma generate\"))" "$T/ws.json" >/dev/null'
+PMROW='`bun`' settings '`bash tests/run.sh`' '| Dev server | `bun run --filter studia-web dev` `apps/portal/apps/web: bun run dev` |'
+check "DS-437 AC2 each Dev server item is allowed, the second app's in its directory with the port after it" \
+  '[ $rc -eq 0 ] && allows "Bash(bun run --filter studia-web dev:*)" && allows "Bash($B/with-lock.sh nolock --cwd apps/portal/apps/web -- bun run dev:*)" \
+     && ! allows "Bash(bun run dev:*)" && [[ "$out" != *CONFIG_WARN* ]]'
 settings '`bash tests/run.sh`' '| Codegen | `rm -rf generated` |'
 check "Codegen: rm refused"                               '[ $rc -eq 0 ] && [[ "$out" == *"Codegen item \"rm -rf generated\" starts with rm"* ]] && ! allows "Bash(rm -rf generated:*)"'
 

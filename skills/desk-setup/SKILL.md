@@ -185,6 +185,8 @@ location: a path only, never the token.
 - Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.
+- A `NODEV` line from `desk-env drift` is offered as a §4 Dev server item for that directory, as
+  step 1's *Dev server* proposes it, whether or not the user asked to change the row.
 - Re-detect §4 GitHub and CI on every re-run (protection and required checks change) and show any
   difference as a before/after.
 - Run §4 step 1 (the deny-only plan) on every re-run; it is a no-op when nothing is missing.
