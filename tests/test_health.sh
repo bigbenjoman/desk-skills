@@ -277,6 +277,11 @@ check "DS-463 AC7 and pushed under its own key"             '[[ "$(pushes)" =~ h
 rm -f "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
 pj
 check "DS-463 AC7 signed back in, nothing is said of it"    '! grep -q "Claude login b" <<< "$out" && [ -z "$(pushes)" ]'
+mv "$HOME/.claude-logins/b" "$HOME/.claude-logins/b.gone"; rm -f "$T/state/health.json"
+before=$(calls claude)
+pj
+check "DS-463 AC7 a listed login with no folder is told signed out, unasked" '[ "$(calls claude)" = $((before + 1)) ] && grep -qF "health: Claude login b (~/.claude-logins/b) is signed out (~/.claude-logins/b does not exist)" <<< "$out"'
+mv "$HOME/.claude-logins/b.gone" "$HOME/.claude-logins/b"
 unset DESK_SUBSCRIPTIONS
 
 echo "$PASS checks passed, $FAIL failed"

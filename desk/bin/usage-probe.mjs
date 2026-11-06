@@ -30,8 +30,8 @@ const probeStamp = (dir, login) => join(dir, `probe${forLogin(login)}.at`);
 // The newest reading of both windows: every repo's worker logs and the last probe's output, the same
 // sources a pass's newestUsage reads.
 //   -> { five_hour, seven_day, at, none }
-export const readUsage = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), now = Date.now() } = {}) =>
-  newestReading({ dirs, files: [probeLog(dir)], now });
+export const readUsage = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), login = null, now = Date.now() } = {}) =>
+  newestReading({ dirs, files: [loginProbeLog(dir, login)], now });
 
 // The newest reading of a login other than the default: its own probe's output and nothing else, as
 // no worker log is yet kept as a login's.

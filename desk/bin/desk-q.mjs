@@ -45,7 +45,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { probeLogins, workerLoginDir } from './claude-logins.mjs';
+import { loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -632,27 +632,28 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 export const machineRunning = (repos) => repos.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
 // The workers running on one Claude login other than the default, by the login spawn-worker.sh
 // recorded for each (claude-logins.mjs). A batch whose queue cannot be read counts at its repo's cap.
-export function runningOn(repos, login, { dirOf = workerLoginDir } = {}) {
+export function runningOn(repos, login) {
   let n = 0;
   for (const r of repos) {
     if (r.error) { n += r.cap ?? 0; continue; }
     for (const b of r.batches ?? [r]) {
       const keys = (b.rows ?? []).filter((x) => groupOf(x.k) === 'running').map((x) => x.t.key);
       if (b.q?.base_fix?.running) keys.push(baseFixKey(b.q.base ?? 'base'));
-      n += keys.filter((k) => dirOf(b.stateDir, k) === login.configDir).length;
+      n += keys.filter((k) => workerLoginDir(b.stateDir, k) === login.configDir).length;
     }
   }
   return n;
 }
-// The probes an open desk-q makes now: the default login's while no worker anywhere keeps its reading
-// fresh, and each other login in rotation or on standby while no worker runs on it, judged on that
-// login's own probe reading.  -> [{ login? }]
-export function probesDue(repos, { now, logins = probeLogins, dirOf } = {}) {
-  const due = probeDue({ running: machineRunning(repos), reading: readUsage({ now }), now }) ? [{}] : [];
+// The probes an open desk-q makes now: its own login's (its CLAUDE_CONFIG_DIR's, as a pass's is) while
+// no worker anywhere keeps that reading fresh, and each other login in rotation or on standby while
+// no worker runs on it, judged on that login's own probe reading.  -> [{ login }]
+export function probesDue(repos, { now } = {}) {
+  const own = loginOf(process.env.CLAUDE_CONFIG_DIR);
+  const due = probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
   let others = [];
-  try { others = logins().filter((l) => l.configDir); } catch { /* an unreadable subscriptions file probes the default only */ }
+  try { others = probeLogins().filter((l) => l.dir !== own.dir && (l.configDir || l.source === 'file')); } catch { /* an unreadable subscriptions file probes its own login only */ }
   for (const login of others) {
-    if (probeDue({ running: runningOn(repos, login, { dirOf }), reading: readLoginUsage({ login, now }), now })) due.push({ login });
+    if (probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })) due.push({ login });
   }
   return due;
 }

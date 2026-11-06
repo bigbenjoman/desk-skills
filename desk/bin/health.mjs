@@ -37,8 +37,8 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { loginState } from './find-playwright.mjs';
 import { parseDfAvailableGB } from './machine.mjs';
-import { loginEnv, signInCommand } from './logins.mjs';
-import { probeLogins, loginKey } from './claude-logins.mjs';
+import { isDir, loginEnv, readSubscriptions, signInCommand } from './logins.mjs';
+import { inUse, loginKey } from './claude-logins.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
@@ -177,9 +177,9 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const prev = readRecord(state);
   const age = prev ? now - Date.parse(prev.at) : Infinity;
   // Each other Claude login the file puts in rotation or on standby, checked as the default is, in its
-  // own folder. A folder the file does not list counts only once signed in (logins.mjs), so it is not
-  // told as signed out.
-  const others = (() => { try { return probeLogins({ env }).filter((l) => l.configDir && l.source === 'file'); } catch { return []; } })();
+  // own folder, and signed out when that folder is missing (logins.mjs). A folder the file does not
+  // list counts only once signed in, so it is not told as signed out.
+  const others = (() => { try { return readSubscriptions(E.subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.configDir && inUse(l)); } catch { return []; } })();
   const reusedLogins = others.every((l) => prev?.logins?.[loginKey(l)]?.ok);
   const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins;
   let results;
@@ -191,7 +191,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     const retryMs = env.DESK_HEALTH_RETRY_MS != null && Number(env.DESK_HEALTH_RETRY_MS) >= 0 ? Number(env.DESK_HEALTH_RETRY_MS) : RETRY_DELAY_MS;
     const [ran, ranLogins] = await Promise.all([
       Promise.all(wanted.map((id) => runCheck(id, env, timeoutMs, retryMs))),
-      Promise.all(others.map((l) => runCommand(byId.claude.cmd, timeoutMs, loginEnv(l, env)))),
+      Promise.all(others.map((l) => (isDir(l.dir) ? runCommand(byId.claude.cmd, timeoutMs, loginEnv(l, env)) : { ok: false, why: `${l.folder} does not exist` }))),
     ]);
     results = Object.fromEntries(wanted.map((id, i) => [id, ran[i]]));
     loginResults = Object.fromEntries(others.map((l, i) => [loginKey(l), ranLogins[i]]));
@@ -213,8 +213,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   // sign-in command once signed out, and a connection failure once it has lasted two runs.
   const loginsOut = others.filter((l) => !loginResults[loginKey(l)]?.ok);
   const loginStreak = reused ? prev.login_streak ?? {}
-    : Object.fromEntries(loginsOut.map((l) => [loginKey(l), (prev?.login_streak?.[loginKey(l)] ?? 0) + 1]));
-  const loginTold = loginsOut.filter((l) => loginResults[loginKey(l)].kind !== 'network' || loginStreak[loginKey(l)] >= 2);
+    : nextStreak({ streak: prev?.login_streak ?? {} }, loginsOut.map((l) => ({ key: loginKey(l), kind: loginResults[loginKey(l)].kind ?? 'auth' })));
+  const loginTold = loginsOut.filter((l) => loginResults[loginKey(l)].kind !== 'network' || loginStreak[loginKey(l)]?.n >= 2);
   if (!reused) {
     mkdirSync(state, { recursive: true });
     const kept = others.length ? { logins: loginResults, login_streak: loginStreak } : {};
@@ -245,6 +245,5 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     stalls.push(`health: Claude login ${l.name} (${l.folder}) ${out} — ${fix}; spawns are not held for it`);
     push.push({ key: `health:${slug}:claude:${loginKey(l)}`, text: `desk ${slug}: Claude login ${l.name} ${out}. Fix: ${fix}` });
   }
-  const logins = others.map((l) => ({ name: l.name, folder: l.folder, ok: !!loginResults[loginKey(l)]?.ok, why: loginResults[loginKey(l)]?.why ?? null, signIn: signInCommand(l) }));
-  return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push, logins };
+  return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push };
 }

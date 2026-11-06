@@ -1,7 +1,7 @@
 // suite: claude logins (every reader of Claude state covers each login: registry, probe, transcripts)
 // A fake claude whose `agents --json`, probe and sign-in answer per CLAUDE_CONFIG_DIR, under a scratch
 // HOME with a second login at ~/.claude-logins/b: the registry read across logins and its failure, a
-// worker's login from its log, the maintenance stop, the spawn lookup's CLI, the claim's transcript,
+// worker's login from its login file, the maintenance stop, the spawn lookup's CLI, the claim's transcript,
 // the check-out's session list, desk-q's probe scheduling and the pass's lift probe. Nothing reads
 // this computer's logins.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -49,7 +49,6 @@ const P = await import(join(BIN, 'usage-probe.mjs'));
 const Q = await import(join(BIN, 'desk-q.mjs'));
 const M = await import(join(BIN, 'maintenance.mjs'));
 const C = await import(join(BIN, 'claims.mjs'));
-const E = await import(join(BIN, 'desk-env.mjs'));
 
 // ---- AC14: one login behaves as today
 agents(join(H, '.claude'), [{ sessionId: 'S-A', pid: 11 }]);
@@ -57,7 +56,7 @@ resetCalls();
 const one = L.readRegistry();
 t('AC14 one login: one registry read, with no CLAUDE_CONFIG_DIR', calls().join(), 'unset|agents');
 t('AC14 one login: its sessions', one.live.map((a) => `${a.sessionId}:${a.pid}`).join(), 'S-A:11');
-t('AC14 one login: no other login is probed', L.probeLogins().filter((l) => l.configDir).length, 0);
+t('AC14 one login: its one probe is due, on the default login', Q.probesDue([], { now: Date.now() }).map((x) => x.login.name).join(), 'default');
 
 // ---- AC1, AC6: a worker on login B is live, and the spawn lookup finds its pid
 subscriptions([['default', '~/.claude', 'in rotation'], ['b', '~/.claude-logins/b', 'standby']]);
@@ -89,8 +88,10 @@ rmSync(join(B, 'broken'));
 
 // ---- AC3, AC5: stopping a worker on login B stops its process
 const killed = [];
-const stopped = M.stopForWindow({ key: 'W-1', session_id: 'S-B' }, { live: L.readRegistry().live, kill: (pid) => killed.push(pid), setQueue: () => ({ ok: true }) });
-t('AC5 the maintenance stop kills login B\'s worker and marks it to resume', `${stopped.ok} ${killed.join()}`, 'true 22');
+const marked = [];
+M.stopForWindow({ key: 'W-1', session_id: 'S-B' }, { live: L.readRegistry().live, kill: (pid) => killed.push(pid), setQueue: (key, fields) => { marked.push(key, ...fields); return { ok: true }; } });
+t('AC5 the maintenance stop kills login B\'s worker', killed.join(), '22');
+t('AC5 and marks it to resume', marked.slice(0, 3).join(), 'W-1,state=triaged,resume=maintenance');
 
 // ---- a worker's login, from the file spawn-worker.sh writes beside its settings
 const S = join(T, 'state');
@@ -118,8 +119,11 @@ rmSync(process.env.DESK_USAGE_DIR, { recursive: true, force: true });
 // ---- AC11, AC12: desk-q's scheduled probe, per login
 const repos = (running) => [{ rows: running.map((key) => ({ k: 'running', t: { key } })), prs: [], stateDir: S, q: {} }];
 const now = Date.now();
-const due = (r) => Q.probesDue(r, { now }).map((x) => x.login?.name ?? 'default').join() || 'none';
+const due = (r) => Q.probesDue(r, { now }).map((x) => x.login.name).join() || 'none';
 t('AC11 no worker running: the default and login B are each due', due(repos([])), 'default,b');
+process.env.CLAUDE_CONFIG_DIR = B;
+t('a desk-q started on login B probes B as its own, and the default as another login', due(repos([])), 'b,default');
+delete process.env.CLAUDE_CONFIG_DIR;
 writeFileSync(L.loginFile(S, 'W-1'), event);
 t('AC12 a worker on login B: no probe on B, and the default holds as today', due(repos(['W-1'])), 'none');
 rmSync(L.loginFile(S, 'W-1'));
@@ -128,9 +132,14 @@ mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
 writeFileSync(P.loginProbeLog(process.env.DESK_USAGE_DIR, lb), `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: {
   five_hour: { utilization: 0.1, resetsAt: Math.round(now / 1000) + 3600 }, seven_day: { utilization: 0.2, resetsAt: Math.round(now / 1000) + 86400 } } } })}\n`);
 t('AC11 login B with a fresh reading of its own is not due', due(repos(['W-1'])), 'none');
-const probes = [];
-await P.probe({ login: lb, claude: join(FB, 'claude'), now: now + 10 * 60000, done: () => {} }).then((r) => probes.push(r.ran));
-t('AC11 the scheduled probe on login B writes B\'s own start time', `${probes.join()} ${existsSync(join(process.env.DESK_USAGE_DIR, 'probe.b.at'))} ${existsSync(join(process.env.DESK_USAGE_DIR, 'probe.at'))}`, 'true true false');
+resetCalls();
+const keepAlive = setInterval(() => {}, 100); // the probe's child is unref'd, so nothing else holds the loop while it runs
+let scheduled;
+await new Promise((res) => { P.probe({ login: lb, claude: join(FB, 'claude'), now: now + 10 * 60000, done: res }).then((r) => { scheduled = r.ran; }); });
+clearInterval(keepAlive);
+const inUsage = (f) => join(process.env.DESK_USAGE_DIR, f);
+t('AC11 the scheduled probe runs with login B\'s config folder', `${scheduled} ${calls().join()}`, `true ${B}|-p`);
+t('AC11 its output and start time are kept as B\'s', `${readFileSync(inUsage('probe.b.log'), 'utf8').includes('"type":"result"')} ${existsSync(inUsage('probe.b.at'))} ${existsSync(inUsage('probe.log'))} ${existsSync(inUsage('probe.at'))}`, 'true true false false');
 
 // ---- AC9: an idle claim on login B reads that session's own transcript
 const tr = join(B, 'projects', '-repo', 'S-CLAIM.jsonl');
@@ -147,9 +156,6 @@ import claude_activity as a, os
 from datetime import datetime, timedelta
 print(sorted(os.path.basename(f) for f in a.find_files(datetime.now() - timedelta(days=1))))`], { encoding: 'utf8', env: process.env });
 t('AC10 both logins\' sessions are listed', py.stdout.trim(), "['S-CLAIM.jsonl', 'S-DEF.jsonl']");
-
-// ---- AC8: the repo memory a worker on login B is granted is the default login's
-t('AC8 the memory folder is the default login\'s whatever CLAUDE_CONFIG_DIR says', E.memoryDir('/r/x').startsWith(join(H, '.claude', 'projects')), true);
 
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all checks passed');

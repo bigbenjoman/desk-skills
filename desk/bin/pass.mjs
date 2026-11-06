@@ -187,7 +187,8 @@ const queue = () => readQueue(QUEUE_FILE);
 // A failed registry read must never look like "everything finished" — that would
 // re-spawn work already in flight — so a command that fails reads as no registry, not an empty one.
 // It covers every Claude login (claude-logins.mjs), and one login's failed read fails it.
-const live = readRegistry().live;
+const REGISTRY = readRegistry();
+const { live } = REGISTRY;
 const registryOk = Array.isArray(live);
 const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 
@@ -570,10 +571,11 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     q('set', t.key, `idle_passes=${idle}`);
-    if (idle >= WEDGE_PASSES && !done && !handoff) {
+    // With no registry the worker cannot be stopped, so it is left for the next pass, never parked as stopped.
+    if (idle >= WEDGE_PASSES && !done && !handoff && registryOk) {
       // Free the slot. The worker's session id survives, so it can be resumed later with
       // its context intact; leaving it wedged blocks the whole batch.
-      const pid = readRegistry().live?.find((a) => a.sessionId === t.session_id)?.pid;
+      const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
       if (pid) sh('kill', [String(pid)], { tolerant: true });
       wedged = true;
       q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
@@ -2364,7 +2366,7 @@ for (const t of Object.values(queue().tickets)) {
 
 // ---- report --------------------------------------------------------------
 const out = [];
-if (!registryOk) out.push('! could not read the session registry — no ticket was advanced this pass');
+if (!registryOk) out.push(`! could not read the session registry — no ticket was advanced this pass: ${REGISTRY.why}`);
 out.push(...baseLines);
 out.push(...MAINT.lines);
 for (const [label, items] of [['spawned', report.spawned], ['advanced', report.advanced], ['done', report.done], ['failed', report.failed]]) {

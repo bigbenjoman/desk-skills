@@ -502,5 +502,9 @@ check "DS-452 AC1 memory lever on: the memory folder is not granted, and writing
 settings '`bash tests/run.sh`' '' "$(lever3b codex)"
 check "DS-452 AC5 memory lever off: auto-memory is left as it is" '[ $rc -eq 0 ] && [ "$(jq -c .autoMemoryEnabled "$T/ws.json")" = null ]'
 check "DS-452 AC5 memory lever off: the memory folder is granted, and not denied" 'readable "$MEM" && ! denies "Edit(/$MEM/**)"'
+export CLAUDE_CONFIG_DIR="$HOME/.claude-logins/b"
+settings '`bash tests/run.sh`' '' "$(lever3b codex)"
+unset CLAUDE_CONFIG_DIR
+check "DS-463 AC8 a worker on another login is granted the default login's memory folder" '[ $rc -eq 0 ] && readable "$MEM"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
