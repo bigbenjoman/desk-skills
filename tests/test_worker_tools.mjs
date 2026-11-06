@@ -209,5 +209,31 @@ t('briefing AC5 a resumed worker resumes its session', resumed.argv.includes('--
 t('briefing AC5 and is not handed a second copy of the briefing', [resumed.prompt, resumed.system].some((s) => s.includes('Briefing for this ticket')), false);
 t('briefing AC5 its prompt is the resume text', resumed.prompt, RESUME);
 
+// The memory lever (config §3b Phase 0 levers): on, the memory folder is not added and the first
+// message carries the index's digest, its size logged; off, the folder is added and there is no digest.
+const MEM = join(T, 'home', '.claude', 'projects', join(T, 'repo').replace(/[^A-Za-z0-9]/g, '-'), 'memory');
+mkdirSync(MEM, { recursive: true });
+writeFileSync(join(MEM, 'MEMORY.md'), '- [One](one.md) — first rule\n- [Two](two.md) — second rule\n');
+const leverCfg = join(T, 'config-memory.md');
+writeFileSync(leverCfg, `${readFileSync(join(T, 'config.md'), 'utf8')}
+## 3b. Cost and autonomy
+| Field | Recommended | Your setting |
+|---|---|---|
+| Phase 0 levers | \`none\` | \`memory\` |
+`);
+const addsMem = (w) => w.argv.some((x, i) => x === MEM && w.argv[i - 1] === '--add-dir');
+const workerLog = join(T, 'state', 'logs', 'fix-one.log');
+const digestLines = () => (existsSync(workerLog) ? readFileSync(workerLog, 'utf8') : '').split('\n').filter((l) => l.includes('"desk_memory_digest"'));
+const memOn = launch('fix-one', 'memon', { DESK_CONFIG: leverCfg });
+t('memory AC1 lever on: the worker is not given the memory folder', [memOn.status, addsMem(memOn)], [0, false]);
+t('memory AC3 lever on: the first message ends with the whole index', memOn.prompt.endsWith('all 2 of its entries: nothing was cut. The files it links to are not loaded.\n\n- [One](one.md) — first rule\n- [Two](two.md) — second rule'), true);
+t('memory AC3 and it follows the briefing', memOn.prompt.indexOf('# Briefing for this ticket') < memOn.prompt.indexOf('# Memory digest'), true);
+t('memory AC2 the digest size is logged', digestLines().map((l) => JSON.parse(l).bytes), [Buffer.byteLength('- [One](one.md) — first rule\n- [Two](two.md) — second rule\n')]);
+t('memory the system prompt is unchanged', memOn.system === one.system, true);
+const memResumed = launch('fix-one', 'memresumed', { DESK_CONFIG: leverCfg, AUTOPILOT_RESUME: RESUME });
+t('memory a resumed worker gets no second digest', [memResumed.prompt, digestLines().length], [RESUME, 1]);
+const memOff = launch('fix-two', 'memoff');
+t('memory AC5 lever off: the worker is given the memory folder, with no digest', [memOff.status, addsMem(memOff), memOff.prompt.includes('# Memory digest')], [0, true, false]);
+
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
