@@ -76,9 +76,11 @@ const S = join(T, 'state');
 mkdirSync(join(S, 'logs'), { recursive: true });
 mkdirSync(join(S, 'workers'), { recursive: true });
 const log = (name, ...lines) => writeFileSync(join(S, 'logs', name), `${lines.join('\n')}\n`);
-log('A-1.log', say('AUTOPILOT_STAGE: 4b/9 self-review'), use('x', 'Bash', { command: 'git stash list' }), deniedEvent('x', 'Bash'),
+const init = (sid) => JSON.stringify({ type: 'system', subtype: 'init', session_id: sid });
+log('A-1.log', init('s1'), say('AUTOPILOT_STAGE: 4b/9 self-review'), use('x', 'Bash', { command: 'git stash list' }), deniedEvent('x', 'Bash'),
   say('AUTOPILOT_PARK: what copy?'), reading(0.30, RESET), reading(0.42, RESET), result(2, 1000, 100));
-log('A-2.log', say('AUTOPILOT_DONE: pr=2'), result(1, 3000, 300));
+// A-2's log holds a start from before records existed (s0) and a recorded one after it (s2).
+log('A-2.log', init('s0'), say('AUTOPILOT_STAGE: 3/9 implement'), init('s2'), say('AUTOPILOT_DONE: pr=2'), result(1, 3000, 300));
 log('A-3.log', say('AUTOPILOT_STAGE: 3/9 implement'));
 log('A-4.log', result(9, 9, 9));
 utimesSync(join(S, 'logs', 'A-4.log'), (NOW - 10 * DAY_MS) / 1000, (NOW - 10 * DAY_MS) / 1000);
@@ -98,7 +100,7 @@ const line = JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', stage: '4b', in
 t('AC8: the spawn line records the levers on', JSON.stringify(line.levers), '["effort"]');
 t('AC8: no installed commit is null, never a guess', line.desk_commit, null);
 t('AC8: an empty byte count is null', `${line.system_bytes} ${line.prompt_bytes} ${line.stage}`, '12 null 4b');
-t('AC8: records are read back for the window', spawnRecords(S, NOW - DAY_MS).length, 2);
+t('AC8: records are read back', spawnRecords(S).length, 2);
 
 const ghCalls = [];
 const gh = (args) => {
@@ -118,7 +120,8 @@ const batch = out.slice(out.indexOf('batch (standing):'), out.findIndex((l) => l
 const total = out.slice(out.findIndex((l) => l.startsWith('total')));
 console.log(out.map((l) => `      | ${l}`).join('\n'));
 has('AC1: tickets with work and accepted ones, a ticket outside the window left out', batch, /tickets with work or a merge in the window: 3, accepted \(PR merged\): 2$/);
-has('AC1: tokens and cost per accepted ticket, a run with no result named', batch, /per accepted ticket: 2,000 input tokens · 200 output tokens · \$1\.50 API-equivalent \(1 run\(s\) with no result event not counted\)/);
+has('AC1: spend in the window, a run with no result named', batch, /spent in the window: 4,000 input tokens · 400 output tokens · \$3\.00 API-equivalent \(1 run\(s\) with no result event not counted\)$/);
+has('AC1: tokens and cost per accepted ticket', batch, /per accepted ticket: 2,000 input tokens · 200 output tokens · \$1\.50 API-equivalent, over 2 of 2$/);
 has('AC1: fix tries per accepted ticket, in the window only', batch, /fix tries per accepted ticket: 1\.00 \(2 in all\)/);
 has('AC1: repair cycles by kind', batch, /repair cycles by kind: checks 1 · review 1$/);
 has('AC1: needs-you raised and answered, this repo and window only', batch, /needs-you items: 1 raised \(worker parks\) · 1 answered/);
@@ -129,9 +132,10 @@ has('AC1: red CI in total counts every failed run, a run whose jobs cannot be re
 has('AC1: quota used, from the readings in the logs', batch, /7-day window resetting .*: 30% to 42%, 12 point\(s\) used/);
 has('AC2: the installed desk commit', out, /^installed desk: abcdef123456, installed 2026-11-06T00:00:00Z$/);
 has('AC2: the instructions a worker loads now', out, /^instructions a worker loads now: worker contract core [\d,]+ bytes, memory index none$/);
-has('AC2 / AC9: the desk commit each run used, older runs not recorded', batch, /desk commit workers ran on: abcdef123456 \(2 start\(s\)\) · not recorded \(1 run\(s\)\)$/);
+has('AC2 / AC9: the desk commit each start used, a start before records, in a recorded log too, not recorded', batch, /desk commit workers ran on: abcdef123456 \(2 start\(s\)\) · not recorded \(2 start\(s\)\)$/);
 has('AC2: instruction bytes per start', batch, /instructions loaded at start: 3,000 bytes on average over 2 start\(s\) \(system prompt 2,000, first message 1,000\)/);
-has('AC7: the levers on for the batch', batch, /levers on: codex \(1 start\(s\)\) · none \(1 start\(s\)\) · not recorded \(1 run\(s\)\)$/);
+has('AC2: each session\'s desk commit and bytes on its own line', batch, /start A-1 session s1 at \S+ \(stage 0\): desk abcdef123456, levers codex, 1,500 bytes loaded$/);
+has('AC7: the levers on for the batch', batch, /levers on: codex \(1 start\(s\)\) · none \(1 start\(s\)\) · not recorded \(2 start\(s\)\)$/);
 has('AC6: the report names an unknown lever as off', out, /^levers row now: on none; unknown, read as off: turbo$/);
 t('the only gh calls are reads', ghCalls.every((c) => /^run (list|view) /.test(c)), true);
 
@@ -139,12 +143,21 @@ t('the only gh calls are reads', ghCalls.every((c) => /^run (list|view) /.test(c
 const S2 = join(T, 'state2');
 mkdirSync(join(S2, 'logs'), { recursive: true });
 writeFileSync(join(S2, 'logs', 'B-1.log'), `${result(1, 10, 10)}\n`);
-writeFileSync(join(S2, 'queue.json'), JSON.stringify({ tickets: { 'B-1': { key: 'B-1', state: 'running', added_at: iso(DAY_MS) } } }));
+// B-2 merged after a finished run and a retry that left no result event: its finished run still
+// counts in the spend, and it is left out of the per-ticket figure, said so, never a zero.
+writeFileSync(join(S2, 'logs', 'B-2.log'), `${result(1, 10, 10)}\n`);
+writeFileSync(join(S2, 'logs', 'B-2.log.round1'), `${say('AUTOPILOT_STAGE: 3/9 implement')}\n`);
+writeFileSync(join(S2, 'queue.json'), JSON.stringify({ tickets: {
+  'B-1': { key: 'B-1', state: 'running', added_at: iso(DAY_MS) },
+  'B-2': { key: 'B-2', state: 'done', added_at: iso(DAY_MS), merged_at: iso(DAY_MS / 24) },
+} }));
 const bare = report({ ...base, batches: [{ name: 'E-1', queue: join(S2, 'queue.json'), state: S2 }], ci: false });
+has('a ticket with one run unfinished keeps its finished run\'s spend', bare, /^ {2}spent in the window: 20 input tokens · 20 output tokens · \$2\.00 API-equivalent \(1 run\(s\) with no result event not counted\)$/);
+has('an accepted ticket with spend not fully recorded is left out, said so', bare, /^ {2}per accepted ticket: not recorded: no accepted ticket has its spend fully recorded; 1 accepted ticket\(s\) left out/);
 has('AC4: an account with no reading is unreadable with the reason', bare, /^ {2}quota, the signed-in login: unreadable: no 7-day usage reading in any worker log or usage probe output since /);
-has('AC9: a batch with no reading says not recorded', bare, /^ {2}quota, the signed-in login: not recorded in this batch's logs$/);
+has('AC4 / AC9: a batch with no reading is unreadable: not recorded', bare, /^ {2}quota, the signed-in login: unreadable: not recorded in this batch's logs$/);
 t('AC4: never a zero quota', bare.some((l) => /quota.*\b0%/.test(l)), false);
-has('AC9: no spawn record is not recorded, never zero', bare, /desk commit workers ran on: not recorded \(1 run\(s\)\)$/);
+has('AC9: no spawn record is not recorded, never zero', bare, /desk commit workers ran on: not recorded \(3 start\(s\)\)$/);
 has('AC9: no recorded bytes', bare, /instructions loaded at start: not recorded$/);
 has('red CI not read is said', bare, /red CI runs by failing job: not read \(--no-ci\)$/);
 const badGh = report({ ...base, gh: () => ({ status: 1, stderr: 'HTTP 401: Bad credentials' }) });
@@ -189,9 +202,29 @@ has('AC2: the main checkout\'s commit', checked, new RegExp(`^main checkout: .* 
 
 // ---- spawn-worker.sh appends the line for every start -------------------------------------
 const spawn = readFileSync(join(ROOT, 'desk', 'bin', 'spawn-worker.sh'), 'utf8');
-const at = spawn.indexOf('phase0-report.mjs" spawn-line');
-t('AC8: spawn-worker records each start in the worker\'s state file, before it launches', at > 0 && at < spawn.indexOf('desk_detach claude') && spawn.includes('>> "$STATE/workers/$TICKET.runs.jsonl" 2>/dev/null || true'), true);
-t('AC8: the record comes after the preflight exits, so a preflight is not a start', at > spawn.indexOf('[preflight] FAILED — refusing to spawn $TICKET" >&2\n  exit 1\nfi'), true);
+const from = spawn.indexOf('# The desk commit and levers this start runs on');
+const to = spawn.indexOf('\ncd "$WT"', from);
+t('AC8: the record comes before the worker launches', from > 0 && to > from && to < spawn.indexOf('desk_detach claude'), true);
+t('AC8: the record comes after the preflight exits, so a preflight is not a start', from > spawn.indexOf('[preflight] FAILED — refusing to spawn $TICKET" >&2\n  exit 1\nfi'), true);
+// Run spawn-worker.sh's own recording step, as it stands in the script, against a scratch state.
+const S3 = join(T, 'state3');
+mkdirSync(join(S3, 'workers'), { recursive: true });
+const step = spawn.slice(from, to);
+const spawnEnv = (extra) => {
+  const e = { ...env(mixed), BIN: join(ROOT, 'desk', 'bin'), TICKET: 'W-9', SID: 'sid-9', STATE: S3, SYSTEM: 'héllo', PROMPT: 'abc', MODEL: 'opus', ...extra };
+  for (const k of ['AUTOPILOT_TASK', 'AUTOPILOT_RESUME', 'AUTOPILOT_START_STAGE']) if (!(k in extra)) delete e[k];
+  return e;
+};
+execFileSync('bash', ['-c', step], { env: spawnEnv({ AUTOPILOT_START_STAGE: '4b' }) });
+execFileSync('bash', ['-c', step], { env: spawnEnv({ AUTOPILOT_RESUME: '1' }) });
+execFileSync('bash', ['-c', step], { env: spawnEnv({ BIN: join(T, 'no-bin') }) });
+const written = readFileSync(join(S3, 'workers', 'W-9.runs.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const [w1, w2] = written;
+t('AC8: a start writes one line per start, a failed record none and no error', written.length, 2);
+t('AC8: the line names the ticket, session, stage and model', `${w1.ticket} ${w1.session} ${w1.stage} ${w1.model} ${w2.stage}`, 'W-9 sid-9 4b opus resume');
+t('AC8: the line records the levers on and the unknown ones', `${JSON.stringify(w1.levers)} ${JSON.stringify(w1.unknown_levers)}`, '["codex","effort","memory"] ["turbo"]');
+t('AC8: the bytes handed over, counted in bytes', `${w1.system_bytes} ${w1.prompt_bytes}`, '6 3');
+t('AC8: the record is read back by the report', spawnRecords(S3).length, 2);
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');

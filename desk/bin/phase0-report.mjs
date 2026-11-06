@@ -20,14 +20,13 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { listBatches } from './batches.mjs';
 import { readLogFile, saidIn, markersIn } from './harvest.mjs';
-import { workerLogs, ticketCost } from './worker-cost.mjs';
+import { workerLogs, ticketCost, logUsage } from './worker-cost.mjs';
 import { windowEvents, probeLog } from './usage-pace.mjs';
 import { readInstalled } from './installed.mjs';
 import { digestDir } from './digest.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
-export const RUNS_FILE = (state, key) => join(state, 'workers', `${key}.runs.jsonl`);
 
 // ---- what spawn-worker.sh records ----------------------------------------------------------------
 // One worker start: when, which session and stage, the desk commit installed, the levers on, and the
@@ -42,8 +41,9 @@ export function spawnLine({ ticket, session, stage = null, model = null, systemB
   });
 }
 
-// Every start recorded in a batch's state directory at or after `since` (epoch ms).
-export function spawnRecords(state, since) {
+// Every start recorded in a batch's state directory. The report matches them to the starts its
+// window's logs show, by session, rather than by their own time.
+export function spawnRecords(state) {
   const dir = join(state, 'workers');
   let names = [];
   try { names = readdirSync(dir).filter((f) => f.endsWith('.runs.jsonl')); } catch { return []; }
@@ -54,7 +54,7 @@ export function spawnRecords(state, since) {
     for (const line of text.split('\n')) {
       let r;
       try { r = JSON.parse(line); } catch { continue; }
-      if (r && Date.parse(r.at) >= since) out.push(r);
+      if (r?.ticket && r.session) out.push(r);
     }
   }
   return out;
@@ -78,9 +78,11 @@ const DENIED = /Permission to use \S+.*\bdenied\b/;
 const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x?.text ?? '').join('\n') : '');
 
 // What one worker log shows: parks it printed, Stage 4b entries, permission denials by command, its
-// usage readings and the rate_limit_event lines that could not be read as one.
+// usage readings and the rate_limit_event lines that could not be read as one, the session of each
+// start it holds (one init event per `claude -p` start, a resume's under the same session), and
+// whether anything but preflights ran in it at all.
 export function logFacts(text) {
-  const out = { parks: 0, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0 };
+  const out = { parks: 0, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0, starts: [], ran: false };
   const tools = new Map();
   const denied = new Set();
   const deny = (id, tool) => {
@@ -93,7 +95,9 @@ export function logFacts(text) {
   for (const line of text.split('\n')) {
     if (line.startsWith('{"type":"rate_limit_event"')) events += 1;
     let d;
-    try { d = JSON.parse(line); } catch { continue; }
+    try { d = JSON.parse(line); } catch { if (line.trim()) out.ran = true; continue; }
+    if (d?.type !== 'desk_preflight') out.ran = true;
+    if (d?.type === 'system' && d.subtype === 'init') out.starts.push(d.session_id ?? null);
     if (d?.type === 'assistant') {
       for (const c of d.message?.content ?? []) {
         if (c?.type === 'tool_use') tools.set(c.id, { name: c.name, input: c.input });
@@ -127,9 +131,12 @@ const addQuota = (into, readings) => {
   }
 };
 
+// `input` `output` `cost` add up every run that recorded its spend, whatever else its ticket did;
+// `acc*` only the accepted tickets whose every run did, which is what the per-ticket figure divides.
 const emptyFigures = () => ({
-  tickets: 0, accepted: 0, runs: 0, unknownRuns: 0, input: 0, output: 0, cost: 0, fixTries: 0, repairs: {},
-  parks: 0, answered: 0, denials: {}, reviewRounds: 0, quota: {}, badReadings: 0, spawns: [], ci: {},
+  tickets: 0, accepted: 0, runs: 0, unknownRuns: 0, input: 0, output: 0, cost: 0,
+  accKnown: 0, accInput: 0, accOutput: 0, accCost: 0, fixTries: 0, repairs: {},
+  parks: 0, answered: 0, denials: {}, reviewRounds: 0, quota: {}, badReadings: 0, starts: 0, spawns: [], ci: {},
 });
 
 // One batch's figures for the window from `since` (epoch ms). `answered` is the digest's answered
@@ -141,33 +148,49 @@ export function batchFigures({ queue, state, slug, since, answered = {} }) {
   const sinceIso = new Date(since).toISOString();
   const inWindow = (at) => at != null && Date.parse(at) >= since;
   const keys = new Set();
+  const records = spawnRecords(state);
   for (const t of Object.values(q.tickets ?? {})) {
-    const logs = workerLogs(state, t.key, sinceIso);
+    const from = t.added_at && Date.parse(t.added_at) > since ? t.added_at : sinceIso;
+    const logs = workerLogs(state, t.key, from);
     const merged = inWindow(t.merged_at);
     if (!logs.length && !merged) continue;
     keys.add(t.key);
     f.tickets += 1;
     if (merged) f.accepted += 1;
-    const from = t.added_at && Date.parse(t.added_at) > since ? t.added_at : sinceIso;
     const c = logs.length ? ticketCost(state, { ...t, added_at: from }) : null;
-    if (c) {
-      f.runs += c.runs;
-      f.unknownRuns += c.unknown;
-      if (c.usage) { f.input += c.usage.input; f.output += c.usage.output; f.cost += c.usage.cost + c.preflight.cost; }
-    }
+    if (c) { f.runs += c.runs; f.unknownRuns += c.unknown; f.cost += c.preflight.cost; }
     for (const x of (t.fix_tries ?? []).filter((x) => inWindow(x.at))) {
       f.fixTries += 1;
       add(f.repairs, { [x.kind ?? 'unknown']: 1 });
     }
+    const spent = { input: 0, output: 0, cost: c?.preflight.cost ?? 0 };
+    const starts = {};
     for (const file of logs) {
       let text = '';
       try { text = readLogFile(file); } catch { continue; }
+      const u = logUsage(text);
+      if (u) for (const k of Object.keys(spent)) { spent[k] += u[k]; f[k] += u[k]; }
       const l = logFacts(text);
       f.parks += l.parks;
       f.reviewRounds += l.reviewRounds;
       add(f.denials, l.denials);
       addQuota(f.quota, l.readings);
       f.badReadings += l.badReadings;
+      // A log that ran with no init event (one cut off at once) is still a start, of no known session.
+      for (const s of l.starts.length ? l.starts : l.ran ? [null] : []) add(starts, { [s ?? '']: 1 });
+    }
+    // A start counts as recorded only against a record of its own session, one record per start.
+    for (const [sid, n] of Object.entries(starts)) {
+      f.starts += n;
+      if (sid) f.spawns.push(...records.filter((r) => r.ticket === t.key && r.session === sid).slice(-n));
+    }
+    // Spend fully recorded: a worker ran here, every run left a result event, and it is not a cloud
+    // worker, which reports none. Anything less leaves the ticket out of the per-ticket figure.
+    if (merged && c && !c.cloud && !c.unknown) {
+      f.accKnown += 1;
+      f.accInput += spent.input;
+      f.accOutput += spent.output;
+      f.accCost += spent.cost;
     }
     if (t.branch) f.branches = [...(f.branches ?? []), t.branch];
   }
@@ -175,7 +198,6 @@ export function batchFigures({ queue, state, slug, since, answered = {} }) {
     const [s, ticket] = k.split('/');
     if (s === slug && keys.has(ticket) && inWindow(at)) f.answered += 1;
   }
-  f.spawns = spawnRecords(state, since).filter((r) => keys.has(r.ticket));
   return f;
 }
 
@@ -183,7 +205,8 @@ export function totalOf(list) {
   const f = emptyFigures();
   for (const b of list) {
     if (b.unreadable) continue;
-    for (const k of ['tickets', 'accepted', 'runs', 'unknownRuns', 'input', 'output', 'cost', 'fixTries', 'parks', 'answered', 'reviewRounds', 'badReadings']) f[k] += b[k];
+    for (const k of ['tickets', 'accepted', 'runs', 'unknownRuns', 'input', 'output', 'cost', 'accKnown', 'accInput', 'accOutput', 'accCost',
+      'fixTries', 'parks', 'answered', 'reviewRounds', 'badReadings', 'starts']) f[k] += b[k];
     for (const k of ['repairs', 'denials', 'ci']) add(f[k], b[k]);
     for (const [r, q] of Object.entries(b.quota)) {
       const had = f.quota[r];
@@ -260,7 +283,6 @@ const pct = (u) => `${Math.round(u * 100)}%`;
 const byCount = (m) => Object.entries(m).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 const listOf = (m, none = 'none') => (Object.keys(m).length ? byCount(m).map(([k, v]) => `${k} ${v}`).join(' · ') : none);
 const resetIso = (s) => new Date(Number(s) * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
-const per = (n, f) => (f.accepted ? (n / f.accepted) : null);
 
 function quotaLines(f, { missing }) {
   const windows = Object.entries(f.quota).sort((a, b) => Number(a[0]) - Number(b[0]));
@@ -269,15 +291,22 @@ function quotaLines(f, { missing }) {
   return windows.map(([r, q]) => `quota, the signed-in login's 7-day window resetting ${resetIso(r)}: ${pct(q.min)} to ${pct(q.max)}, ${Math.round((q.max - q.min) * 100)} point(s) used in the readings seen${bad}`);
 }
 
-// The spread of one recorded field over the starts that recorded it, and the runs that did not.
+// The spread of one recorded field over the starts that recorded it, and the starts that did not.
 function recorded(f, label, valueOf) {
   const counts = {};
   for (const s of f.spawns) add(counts, { [valueOf(s)]: 1 });
-  const unrecorded = Math.max(0, f.runs - f.spawns.length);
+  const unrecorded = Math.max(0, f.starts - f.spawns.length);
   const parts = byCount(counts).map(([k, v]) => `${k} (${v} start(s))`);
-  if (unrecorded || !parts.length) parts.push(`${NR}${unrecorded ? ` (${unrecorded} run(s))` : ''}`);
+  if (unrecorded || !parts.length) parts.push(`${NR}${unrecorded ? ` (${unrecorded} start(s))` : ''}`);
   return `${label}: ${parts.join(' · ')}`;
 }
+
+const commitOf = (s) => (s.desk_commit ? short(s.desk_commit) : NR);
+const leversOf = (s) => (Array.isArray(s.levers) ? (s.levers.length ? s.levers.join(',') : 'none') : NR);
+const bytesOf = (s) => (s.system_bytes != null && s.prompt_bytes != null ? `${num(s.system_bytes + s.prompt_bytes)} bytes loaded` : `bytes loaded ${NR}`);
+// Each recorded start on its own line: which session ran on which desk commit, and what it loaded.
+const startLines = (f) => [...f.spawns].sort((a, b) => String(a.at).localeCompare(String(b.at)))
+  .map((s) => `  start ${s.ticket} session ${String(s.session).slice(0, 8)} at ${s.at} (stage ${s.stage}): desk ${commitOf(s)}, levers ${leversOf(s)}, ${bytesOf(s)}`);
 
 function bytesLine(f) {
   const s = f.spawns.filter((x) => x.system_bytes != null && x.prompt_bytes != null);
@@ -286,13 +315,16 @@ function bytesLine(f) {
   return `instructions loaded at start: ${num(avg('system_bytes') + avg('prompt_bytes'))} bytes on average over ${s.length} start(s) (system prompt ${num(avg('system_bytes'))}, first message ${num(avg('prompt_bytes'))})`;
 }
 
-export function figureLines(f, { ci, quotaMissing }) {
+export function figureLines(f, { ci, quotaMissing, perStart = false }) {
   if (f.unreadable) return [`queue unreadable: ${f.unreadable}`];
   const lines = [`tickets with work or a merge in the window: ${f.tickets}, accepted (PR merged): ${f.accepted}`];
   const unknown = f.unknownRuns ? ` (${f.unknownRuns} run(s) with no result event not counted)` : '';
-  lines.push(f.accepted
-    ? `per accepted ticket: ${num(per(f.input, f))} input tokens · ${num(per(f.output, f))} output tokens · ${usd(per(f.cost, f))} API-equivalent${unknown}`
-    : `per accepted ticket: no ticket accepted; spent ${num(f.input)} input tokens · ${num(f.output)} output tokens · ${usd(f.cost)} API-equivalent${unknown}`);
+  lines.push(`spent in the window: ${num(f.input)} input tokens · ${num(f.output)} output tokens · ${usd(f.cost)} API-equivalent${unknown}`);
+  const left = f.accepted - f.accKnown;
+  const leftOut = left ? `; ${left} accepted ticket(s) left out, their spend not fully recorded (a run with no result event, no log in the window, or a cloud worker)` : '';
+  lines.push(!f.accepted ? 'per accepted ticket: no ticket accepted'
+    : !f.accKnown ? `per accepted ticket: ${NR}: no accepted ticket has its spend fully recorded${leftOut}`
+      : `per accepted ticket: ${num(f.accInput / f.accKnown)} input tokens · ${num(f.accOutput / f.accKnown)} output tokens · ${usd(f.accCost / f.accKnown)} API-equivalent, over ${f.accKnown} of ${f.accepted}${leftOut}`);
   lines.push(`fix tries per accepted ticket: ${f.accepted ? (f.fixTries / f.accepted).toFixed(2) : 'no ticket accepted'} (${f.fixTries} in all)`);
   lines.push(`repair cycles by kind: ${listOf(f.repairs)}`);
   lines.push(`needs-you items: ${f.parks} raised (worker parks) · ${f.answered} answered (from the digest)`);
@@ -301,9 +333,10 @@ export function figureLines(f, { ci, quotaMissing }) {
   lines.push(`Stage 4b review rounds: ${f.reviewRounds}`);
   lines.push(`red CI runs by failing job: ${ci ?? listOf(f.ci)}`);
   lines.push(...quotaLines(f, { missing: quotaMissing }));
-  lines.push(recorded(f, 'desk commit workers ran on', (s) => (s.desk_commit ? short(s.desk_commit) : NR)));
-  lines.push(recorded(f, 'levers on', (s) => (Array.isArray(s.levers) ? (s.levers.length ? s.levers.join(',') : 'none') : NR)));
+  lines.push(recorded(f, 'desk commit workers ran on', commitOf));
+  lines.push(recorded(f, 'levers on', leversOf));
   lines.push(bytesLine(f));
+  if (perStart) lines.push(...startLines(f));
   return lines;
 }
 
@@ -344,7 +377,7 @@ export function report({
   for (const { b, f } of figures) {
     if (!f.unreadable && !f.tickets) continue;
     out.push('', `batch ${b.name ?? '(standing)'}:`);
-    out.push(...figureLines(f, { ci: ciNote, quotaMissing: `${NR} in this batch's logs` }).map((l) => `  ${l}`));
+    out.push(...figureLines(f, { ci: ciNote, quotaMissing: `unreadable: ${NR} in this batch's logs`, perStart: true }).map((l) => `  ${l}`));
   }
   const total = totalOf(figures.map((x) => x.f));
   if (ciRuns) total.ci = ciCounts(ciRuns);
