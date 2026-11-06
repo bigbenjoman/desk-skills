@@ -210,7 +210,9 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
     }
     target = login({ tool, name, folder: dir, rule, source: 'file' });
   }
-  if (rule === 'off' && tool === 'claude' && target.rule !== 'off') {
+  // Asked whatever the target's rule: a found folder is usable on standby before the file lists it,
+  // and a login already off is never in the usable list.
+  if (rule === 'off' && tool === 'claude') {
     const usable = check().usable.filter((l) => l.tool === 'claude');
     if (usable.length === 1 && usable[0].dir === target.dir) {
       throw new Error(`logins: claude ${name} is the only Claude login desk can use, and desk needs one login it can use: sign another in, or set its rule, before turning this one off`);
@@ -225,12 +227,23 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
 
 // ---- what the person is shown ----------------------------------------------------------------
 const STATE = { 'signed in': 'signed in', 'signed out': 'signed out', error: 'not checked', duplicate: 'refused' };
+
+// The file's status line, its unreadable rows, then the rows as aligned columns.
+function tableLines(subs, path, head, body) {
+  const w = head.map((h, i) => Math.max(h.length, ...body.map((row) => row[i].length)));
+  const fmt = (row) => row.map((c, i) => (i < row.length - 1 ? c.padEnd(w[i]) : c)).join('  ').trimEnd();
+  return [
+    subs.exists ? `subscriptions file: ${tilde(path)}` : `no subscriptions file at ${tilde(path)}: desk uses ~/.claude and ~/.codex`,
+    ...subs.errors.map((e) => `left out, ${e}`),
+    '',
+    fmt(head), ...body.map(fmt),
+  ];
+}
+
 export function checkLines(r, path) {
   const head = ['TOOL', 'NAME', 'FOLDER', 'STATE', 'ACCOUNT', 'PLAN', 'RULE'];
   const body = r.logins.map((l) => [l.tool, l.name, l.folder, STATE[l.state] ?? l.state,
     l.tool === 'claude' ? l.email ?? '-' : '-', l.tool === 'claude' ? l.plan ?? '-' : '-', l.rule ?? 'found, no rule']);
-  const w = head.map((h, i) => Math.max(h.length, ...body.map((row) => row[i].length)));
-  const fmt = (row) => row.map((c, i) => (i < row.length - 1 ? c.padEnd(w[i]) : c)).join('  ').trimEnd();
   const notes = [];
   for (const l of r.logins) {
     if (l.state === 'signed out') notes.push(`${l.tool} ${l.name} is signed out${l.why ? ` (${l.why})` : ''}: sign it in, in another terminal: ${signInCommand(l)}`);
@@ -241,10 +254,7 @@ export function checkLines(r, path) {
   if (found.length && !r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}: no rule until one is set (desk-env logins set <tool> <name> <rule>)`);
   if (found.length && r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}, not in the file: on standby`);
   return [
-    r.exists ? `subscriptions file: ${tilde(path)}` : `no subscriptions file at ${tilde(path)}: desk uses ~/.claude and ~/.codex`,
-    ...r.errors.map((e) => `left out, ${e}`),
-    '',
-    fmt(head), ...body.map(fmt),
+    ...tableLines(r, path, head, body),
     ...(notes.length ? ['', ...notes] : []),
     '',
     `usable: ${r.usable.map((l) => `${l.tool} ${l.name}`).join(', ') || 'none'}`,
@@ -252,16 +262,7 @@ export function checkLines(r, path) {
 }
 
 export function listLines(subs, path) {
-  const head = ['TOOL', 'NAME', 'FOLDER', 'RULE'];
-  const body = subs.logins.map((l) => [l.tool, l.name, l.folder, l.rule]);
-  const w = head.map((h, i) => Math.max(h.length, ...body.map((row) => row[i].length)));
-  const fmt = (row) => row.map((c, i) => (i < row.length - 1 ? c.padEnd(w[i]) : c)).join('  ').trimEnd();
-  return [
-    subs.exists ? `subscriptions file: ${tilde(path)}` : `no subscriptions file at ${tilde(path)}: desk uses ~/.claude and ~/.codex`,
-    ...subs.errors.map((e) => `left out, ${e}`),
-    '',
-    fmt(head), ...body.map(fmt),
-  ];
+  return tableLines(subs, path, ['TOOL', 'NAME', 'FOLDER', 'RULE'], subs.logins.map((l) => [l.tool, l.name, l.folder, l.rule]));
 }
 
 // The JSON a script reads: nothing from a status call but the fields above.
