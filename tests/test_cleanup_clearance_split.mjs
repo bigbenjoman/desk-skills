@@ -14,14 +14,18 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CAP = 20480;
 
 // Each skill: the word for its steps, their numbers, how many headings the old file had, and the
-// reference files it already had, which the split left alone.
+// reference files it already had, which the split left alone, plus what later tickets rewrote
+// (`split_check.mjs`'s `rewritten`).
 const SKILLS = {
-  'desk-cleanup': { unit: 'step', steps: ['1', '2', '3', '4', '5', '6'], headings: 19, kept: ['portable-checks.md'] },
+  'desk-cleanup': {
+    unit: 'step', steps: ['1', '2', '3', '4', '5', '6'], headings: 19, kept: ['portable-checks.md'],
+    rewritten: [['DS-460', 'the path with `/` turned into `-`', 1]], // the folder name maps every non-alphanumeric character
+  },
   'desk-clearance': { unit: 'phase', steps: ['1', '2', '3', '4', '5', '6', '7', '8'], headings: 30, kept: ['hazards.md', 'repo-facts.md', 'reviewer-patterns.md', 'subagent-briefs.md'] },
 };
 
 const loaded = {};
-for (const [name, { unit, steps, headings: headingCount, kept }] of Object.entries(SKILLS)) {
+for (const [name, { unit, steps, headings: headingCount, kept, rewritten = [] }] of Object.entries(SKILLS)) {
   const dir = join(root, 'skills', name);
   const refs = join(dir, 'references');
   const core = readFileSync(join(dir, 'SKILL.md'), 'utf8');
@@ -56,7 +60,7 @@ for (const [name, { unit, steps, headings: headingCount, kept }] of Object.entri
   t(`AC2 ${name} every reference file is named by the table or predates the split`, onDisk.filter((f) => !named.includes(f) && !kept.includes(f)), []);
   const files = ['SKILL.md', ...named];
   const read = (f) => (f === 'SKILL.md' ? core : readFileSync(join(refs, f), 'utf8'));
-  checkSplit({ t, label: `AC2 ${name}`, before, files, read, headings: headingCount, minRows: 15 });
+  checkSplit({ t, label: `AC2 ${name}`, before, files, read, headings: headingCount, minRows: 15, rewritten });
 
   // A name is at home where it is a heading, or a bold or italic lead at the start of a line or item.
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

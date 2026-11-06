@@ -46,10 +46,10 @@ parentheses at the end when it reads naturally (<TICKET>).>
 **The two marker lines are desk's fence.** `<!-- desk-pr: body -->` opens the body desk writes and
 `<!-- desk-pr: end -->` closes it, each on its own line; GitHub does not render them. Anything
 outside them belongs to someone else (a CI preview table, a bot's summary, the reviewer's own
-notes), and every later edit leaves it exactly as it is (see "Editing the body later" in §4). Keep
-them written exactly so, never as a `<!-- name -->` … `<!-- /name -->` pair: `desk-review` strips
-that shape as a generated block when it looks for author-written intent, and would read desk's own
-body as none.
+notes), and every later edit leaves it exactly as it is (see "Editing the body later" in §4, in
+`opening.md`). Keep them written exactly so, never as a `<!-- name -->` … `<!-- /name -->` pair:
+`desk-review` strips that shape as a generated block when it looks for author-written intent, and
+would read desk's own body as none.
 
 Only the sections §5 PR body names (plus `Not migrated`, `Carried review findings` and `Decisions
 taken` when they apply). No title in the body, and no headings §5 does not list.
