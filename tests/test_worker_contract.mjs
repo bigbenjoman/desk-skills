@@ -154,6 +154,8 @@ const REWRITTEN = [
   ['DS-398', 'takes the read subcommands only', 1], // `git -C <worktree>` takes the local writes too
   ['DS-398', '`ps`, `pgrep`. **Not** `sed`', 1], // echo, printf and true join the reading tools
   ['DS-427', '```bash codex exec --sandbox read-only ', 1], // the probe skips the trusted-directory check
+  ['DS-458', 'wording calls park as before.', 1], // the rule as it stands, not against an earlier behaviour
+  ['DS-458', 'Nobody is reading live, so drop the running commentary.', 1], // print a stage line, suppress nothing
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

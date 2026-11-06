@@ -27,7 +27,8 @@ parked work to wait. Workers see two deltas: `references/autopilot-worker-contra
 in every worker's system prompt; each stage's rules are a `references/worker-contract-*.md` file the
 worker reads when it reaches that stage, and a task worker gets them all up front), and the
 resource rules seeded into `batch-notes.md` from `references/batch-notes-header.md`. Both are
-deltas: where one and a skill disagree, the skill wins.
+deltas: each changes only what running unattended changes, and where one and a skill disagree
+about anything else, the skill wins.
 
 **A worker never waits and never guesses.** Anything needing a human is asked once, and parked if
 unanswered. `references/orchestrator-recovery.md` covers what happens after a park.
@@ -98,7 +99,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
 | §4 "Acceptance specs" | the spec directory and the command that runs some specs (`{ids}`); set, an epic on a batch base runs in feature mode (*Feature mode*); `none` keeps every epic an ordinary batch |
-| §4 "Baseline checks" | `on`: a batch with a base records the base's Typecheck and Lint errors before it spawns, and its workers fail only on errors they add (*A batch that targets a feature branch*); unset or `off`: workers check as before |
+| §4 "Baseline checks" | `on`: a batch with a base records the base's Typecheck and Lint errors before it spawns, and its workers fail only on errors they add (*A batch that targets a feature branch*); unset or `off`: workers run §4 Typecheck and Lint in full |
 | §4 "Local database", "Database URL variable", "Local services", "Vercel" | per-ticket databases (or blanked database variables); what workers must not rebuild; preview-build logs |
 | §5 "Branch names" | the branch each worker's worktree is created on |
 | §4 People | whose call a parked question is |
@@ -168,7 +169,7 @@ Idle = every ticket merged, parked or failed, none held waiting on a merge, and 
 base gate waiting on a merge or running (`pass.mjs` exits 11 with `status` `idle` only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
 transition a ticket to §4 Done state yourself** (and with no tracker, never close an issue): the
 merge driver moves a ticket whose last open PR it merged, under §3 `jira-close-own-merged`, and
-nothing else does. Never treat a triage "already fixed" as grounds to close one: a per-criterion
+nothing else in the batch does. Never treat a triage "already fixed" as grounds to close one: a per-criterion
 check once overturned four of six such verdicts.
 
 ### What a script's exit tells you
@@ -270,7 +271,7 @@ recommendation like any other.
 - Spawning workers before the peer handshake, or after a new session appeared without re-handshaking
 - Ran `queue.mjs init` and did not check the memory block is in `batch-notes.md`
 - About to kill a port, dev server or process another session owns
-- A worker quiet for 6+ passes: park it, do not wait
+- A batch gone quiet while a worker's log still grows, and you have not checked the log tail's newest `tool_progress` `elapsed_time_seconds` (a hung `codex exec` heartbeats into the log)
 - Answered a parked ticket and assumed a worker will pick it up
 - A ticket in the batch the user did not name (an epic names its expanded children; nothing else does)
 - Reporting a lane-C/D park as settled when its challenge line says the pass did not run

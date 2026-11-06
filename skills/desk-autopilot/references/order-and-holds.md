@@ -85,4 +85,4 @@ state.
 Every ticket should carry a size (desk-jira's scale: XS, S, M, L, XL), from the project's `Size`
 field or a first description line `Size: M`. **L and XL park** (`size L — split it before
 batching`): they are split into smaller tickets, not run. A ticket with no size is reported
-`! no size` and runs on its lane as before.
+`! no size` and runs on its lane.

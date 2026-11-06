@@ -49,8 +49,8 @@ fall under the merge holds proposed above, so a person merges it.
   git config core.hooksPath .githooks     # local to this clone and shared by its worktrees; a new clone needs it again
   ```
 
-  Git finds no hook there until the hook from offer 1 is checked out. That is harmless: the push
-  runs unchecked, as it does today.
+  Git finds no hook there until the hook from offer 1 is checked out. That is harmless: until
+  then the push runs unchecked.
 
 Once the script is in the checkout, run `bash scripts/desk/pre-push.sh --head` once and show each
 item's time. Over about 90 s: say so, and offer to move the slowest item out of the row (CI still

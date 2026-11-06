@@ -152,7 +152,7 @@ WRONG COPY    <name>: ~/.agents/skills/<name> is not the checkout's clone, or do
 UNVERIFIED    <dir>: git could not read the clone's origin (ownership, a corrupt config); check it by hand,
               never ./install.sh, which would move it aside
 UNTRACKED     <names>: no recorded source, so no update check
-SETTING       skills listed in full: name-only + skill-index cuts the listing ~30,000 -> ~9,600 chars a turn
+SETTING       skills listed in full: name-only + skill-index lists skills by name only; full descriptions move to skill-index
 SETTING       no update notice: a SessionStart hook would say once a day when desk-skills has new commits
 SETTING       no context handoff: past §2 Handoff at context % the session would write .handoffs/<date>.md,
               and the session after /clear or a compaction would pick it up
