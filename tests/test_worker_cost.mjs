@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { logUsage, ticketCost, batchCost, costTable, wallTime, preflightLine } from '../desk/bin/worker-cost.mjs';
+import { logUsage, ticketCost, batchCost, costTable, wallTime, preflightLine, spawnEvent } from '../desk/bin/worker-cost.mjs';
 import { parseWorkerLocation } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -92,6 +92,29 @@ t('DS-158 AC2 a worker\'s cost includes its preflights, shown apart, an unknown 
 t('DS-158 AC2 a worker whose preflights all reported', row(pTable, 'P-2'), 'P-2|1|1|1|$1.30|$0.30|0m 01s|unknown');
 t('DS-158 AC2 the total adds them', row(pTable, 'total').split('|').slice(0, 6).join('|'), 'total|3|31|4|$4.60|$0.60 + 1 unknown');
 t('DS-158 AC3 a preflight with no result is unknown, not zero', costTable([{ key: 'X', runs: 1, unknown: 0, usage: { input: 0, output: 0, cost: 0, ms: 0 }, preflight: { n: 1, cost: 0, unknown: 1 }, first: null, stages: null }]).split('\n').find((l) => l.startsWith('  X ')).includes(' unknown '), true);
+
+// Each run's start, model and effort, from the desk_spawn lines spawn-worker.sh writes. E-1 ran a
+// Stage 0 session with the lever off, then a resumed Stage 4b session at high in the next round.
+const start = (o) => spawnEvent({ session: 's', ...o }).trim();
+log('E-1.log.round1', preflightLine({ usd: 0.1, turns: 2 }).trim(), start({ stage: '0', model: 'default', effort: 'default' }), result({ cost: 1, ms: 1000, input: 1, output: 1 }));
+log('E-1.log', start({ stage: '4b', model: 'opus', effort: 'high' }), result({ cost: 2, ms: 1000, input: 1, output: 1 }),
+  start({ stage: 'resume', model: 'opus', effort: 'low' }), result({ cost: 3, ms: 1000, input: 1, output: 1 }));
+log('E-2.log', result({ cost: 1, ms: 1000, input: 1, output: 1 }));
+log('E-3.log', preflightLine({ usd: 0.1, turns: 2 }).trim(), start({ stage: 'task', effort: 'medium' }));
+const sessionsOf = (k) => JSON.stringify(ticketCost(S, tk(k)).sessions);
+t('effort AC3 each run records its start, model and effort, and its cost', sessionsOf('E-1'),
+  '[{"starts":[{"stage":"0","model":"default","effort":"default"}],"cost":1},{"starts":[{"stage":"4b","model":"opus","effort":"high"},{"stage":"resume","model":"opus","effort":"low"}],"cost":3}]');
+t('effort a log from before starts were recorded has none', sessionsOf('E-2'), '[{"starts":[],"cost":1}]');
+t('effort a launched worker that wrote nothing is a run with no result', JSON.stringify([ticketCost(S, tk('E-3')).runs, ticketCost(S, tk('E-3')).unknown, ticketCost(S, tk('E-3')).sessions[0].cost]), '[1,1,null]');
+t('effort a start line is not read as a worker\'s first timestamp', 'timestamp' in JSON.parse(start({})), false);
+t('effort no model or effort passed reads default', `${JSON.parse(start({})).model} ${JSON.parse(start({})).effort} ${JSON.parse(start({})).stage}`, 'default default 0');
+const eTable = costTable(batchCost(S, ['E-1', 'E-2', 'E-3'].map((k) => tk(k)))).split('\n');
+console.log(eTable.join('\n'));
+const sessionRows = eTable.filter((l) => l.startsWith('      session: ')).map((l) => l.trim());
+t('effort AC3 the table shows default where no effort was passed', sessionRows[0], 'session: start 0, model default, effort default: $1.00');
+t('effort AC3 and a resume beside the start it continues', sessionRows[1], 'session: start 4b, model opus, effort high; start resume, model opus, effort low: $3.00');
+t('effort a run with no record says so, never a default', sessionRows[2], 'session: start, model and effort not recorded: $1.00');
+t('effort a run with no result is cost unknown, not zero', sessionRows[3], 'session: start task, model default, effort medium: cost unknown');
 
 // Tokens per stage. One model call as a worker's log holds it: an assistant event per content
 // block, each repeating the message's id and usage, whose output_tokens is an early snapshot; then,

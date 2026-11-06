@@ -154,7 +154,10 @@ together then, as one page and one push. For worker models, say that the row can
 `finder=<alias>` for self-review finders and a `text=<model>` for the Stage 7 PR and Jira session,
 and that both are unset by default, so finders and that session run on the worker's model: another
 model is set only after the eval harness (`desk/bin/skill-eval.mjs`) has run a review task
-set on each model and the findings held. Never set either on the user's behalf. For worker location,
+set on each model and the findings held. Never set either on the user's behalf. For worker effort,
+Recommended is `none`: say that the row is read only with the `effort` lever on, when each session
+runs at the effort named for how it starts and at `medium` where none is named, and that the way in
+is every start at `medium`, then one start lowered at a time against the Phase 0 baseline. For worker location,
 Recommended is `local`; say that `cloud` runs each ticket that needs nothing on this computer in a
 Claude Code cloud session, whose tokens and cost are not reported, so its cost cannot be compared
 with local.

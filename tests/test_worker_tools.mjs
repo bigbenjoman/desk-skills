@@ -235,5 +235,45 @@ t('memory a resumed worker gets no second digest', [memResumed.prompt, digestLin
 const memOff = launch('fix-two', 'memoff');
 t('memory AC5 lever off: the worker is given the memory folder, with no digest', [memOff.status, addsMem(memOff), memOff.prompt.includes('# Memory digest')], [0, true, false]);
 
+// The effort lever (config §3b Phase 0 levers and Worker effort): on, each session is launched at the
+// effort named for how it starts, or medium; off, with no --effort. Either way its log records it.
+let cfgN = 0;
+const effortCfg = (row, levers = 'effort') => {
+  const p = join(T, `config-effort-${cfgN += 1}.md`);
+  writeFileSync(p, `${readFileSync(join(T, 'config.md'), 'utf8')}
+## 3b. Cost and autonomy
+| Field | Recommended | Your setting |
+|---|---|---|
+| Phase 0 levers | \`none\` | \`${levers}\` |
+${row ? `| Worker effort | \`none\` | \`${row}\` |\n` : ''}`);
+  return p;
+};
+const flagOf = (w) => (w.argv.includes('--effort') ? w.argv[w.argv.indexOf('--effort') + 1] : 'none');
+const TASK = 'Fix the review finding on $TICKET.';
+const startsOf = (key) => { const f = join(T, 'state', 'logs', `${key}.log`); return readFileSync(f, 'utf8').split('\n').filter((l) => l.includes('"desk_spawn"')).map((l) => JSON.parse(l)); };
+const row = '0=low 4b=high 7=xhigh task=max resume=low';
+const on = { DESK_CONFIG: effortCfg(row) };
+t('effort AC1 a Stage 0 session runs at the effort named', flagOf(launch('eff-a', 'e0', on)), 'low');
+t('effort AC1 a later start runs at its own', flagOf(launch('eff-a', 'e4b', { ...on, AUTOPILOT_START_STAGE: '4b' })), 'high');
+t('effort AC2 a start the row does not name runs at medium, passed', flagOf(launch('eff-a', 'e5', { ...on, AUTOPILOT_START_STAGE: '5' })), 'medium');
+t('effort AC2 with no row every start runs at medium', flagOf(launch('eff-a', 'enorow', { DESK_CONFIG: effortCfg('') })), 'medium');
+t('effort AC6 a task session runs at task', flagOf(launch('eff-a', 'etask', { ...on, AUTOPILOT_TASK: TASK })), 'max');
+t('effort AC6 a resume wins over a task, as its prompt does', flagOf(launch('eff-a', 'eres', { ...on, AUTOPILOT_RESUME: RESUME, AUTOPILOT_TASK: TASK })), 'low');
+const noTask = { DESK_CONFIG: effortCfg('0=low') };
+t('effort AC6 task and resume unnamed run at medium, passed',
+  [flagOf(launch('eff-a', 'etask2', { ...noTask, AUTOPILOT_TASK: TASK })), flagOf(launch('eff-a', 'eres2', { ...noTask, AUTOPILOT_RESUME: RESUME }))], ['medium', 'medium']);
+t('effort AC3 the log records each start, model and effort', startsOf('eff-a').slice(0, 2).map((s) => `${s.stage} ${s.model} ${s.effort}`), ['0 default low', '4b default high']);
+
+const badCfg = { DESK_CONFIG: effortCfg('0=low 7=turbo') };
+const bad = launch('eff-b', 'ebad', badCfg);
+t('effort AC4 an unknown value refuses the spawn, naming it', [bad.status, /^FAIL: .*Worker effort.*unknown effort `turbo`/m.test(bad.stderr), bad.argv.length], [1, true, 0]);
+r = spawnWorker('preflight', 'ebadpre', { AUTOPILOT_PREFLIGHT: '1', ...badCfg });
+t('effort AC4 it is refused before the preflight spends anything', [r.status, /unknown effort `turbo`/.test(r.stderr), argv('ebadpre', 0)], [1, true, null]);
+
+const off = launch('eff-c', 'eoff', { DESK_CONFIG: effortCfg('0=turbo', 'codex') });
+t('effort AC5 lever off: no --effort, and the row is not read', [off.status, flagOf(off)], [0, 'none']);
+t('effort AC5 lever off: the launch arguments match a config with neither row', off.argv, launch('eff-c', 'eplain').argv);
+t('effort AC3 lever off: the log shows effort default', startsOf('eff-c').map((s) => s.effort), ['default', 'default']);
+
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

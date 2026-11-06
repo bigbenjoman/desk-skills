@@ -102,6 +102,8 @@ t('AC8: the spawn line records the levers on', JSON.stringify(line.levers), '["e
 t('AC8: no installed commit is null, never a guess', line.desk_commit, null);
 t('AC8: an empty byte count is null', `${line.system_bytes} ${line.prompt_bytes} ${line.stage}`, '12 null 4b');
 t('AC8: records are read back', spawnRecords(S).length, 2);
+t('the spawn line records the effort', JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', effort: 'high', installed: null, levers: { on: [], unknown: [] } })).effort, 'high');
+t('the spawn line reads default with no effort passed', line.effort, 'default');
 
 const ghCalls = [];
 const gh = (args) => {
@@ -135,7 +137,7 @@ has('AC2: the installed desk commit', out, /^installed desk: abcdef123456, insta
 has('AC2: the instructions a worker loads now', out, /^instructions a worker loads now: worker contract core [\d,]+ bytes, memory index none$/);
 has('AC2 / AC9: the desk commit each start used, a start before records, in a recorded log too, not recorded', batch, /desk commit workers ran on: abcdef123456 \(2 start\(s\)\) · not recorded \(2 start\(s\)\)$/);
 has('AC2: instruction bytes per start', batch, /instructions loaded at start: 3,000 bytes on average over 2 start\(s\) \(system prompt 2,000, first message 1,000\)/);
-has('AC2: each session\'s desk commit and bytes on its own line', batch, /start A-1 session s1 at \S+ \(stage 0\): desk abcdef123456, levers codex, 1,500 bytes loaded$/);
+has('AC2: each session\'s desk commit and bytes on its own line', batch, /start A-1 session s1 at \S+ \(stage 0, effort default\): desk abcdef123456, levers codex, 1,500 bytes loaded$/);
 has('AC7: the levers on for the batch', batch, /levers on: codex \(1 start\(s\)\) · none \(1 start\(s\)\) · not recorded \(2 start\(s\)\)$/);
 has('AC6: the report names an unknown lever as off', out, /^levers row now: on none; unknown, read as off: turbo$/);
 t('the only gh calls are reads', ghCalls.every((c) => /^run (list|view) /.test(c)), true);
