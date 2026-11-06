@@ -111,8 +111,8 @@ A finding informs the merge decision; it never approves or blocks one on its own
 ### Tenant Isolation
 [Assessment of tenant scoping — or "N/A, single-tenant system"]
 
-### Verdict
-[BLOCK / APPROVE WITH CONDITIONS / APPROVE]
+### Counts
+[P0 n · P1 n · P2 n. The merge decision is the author's.]
 ```
 
 ## Critical Rules

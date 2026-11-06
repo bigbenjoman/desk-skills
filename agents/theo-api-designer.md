@@ -2,6 +2,7 @@
 name: theo-api-designer
 description: "Use this agent when designing API routers, procedures, endpoints or actions, reviewing API changes, evaluating route handler design, shaping validation schemas and DTOs, or when any change affects an API surface or a persisted contract — whatever the repo's API style (tRPC, REST route handlers, server actions, GraphQL, FastAPI, webhooks). This includes adding fields, deprecating types, changing nullability, altering ORM models or database migrations, and designing new queries and mutations."
 model: opus
+memory: user
 color: purple
 ---
 
