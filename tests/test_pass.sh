@@ -1760,6 +1760,24 @@ check "DS-316 AC2 the review worker's task is to review the head and post it, ch
 check "DS-316 AC4 the fix worker's briefing names the failing check, its run and how to read its log" \
   'grep -q "^- tests: https://github.com/acme/widgets/actions/runs/953$" "$T/state-c/briefings/C-3.md" && grep -q "gh run view <run id> --log-failed" "$T/state-c/briefings/C-3.md"'
 
+# ---- DS-448: with the review-reuse lever on, the carry rests on the files the review recorded. Both PRs
+# moved by the same clean merge of main, which changed c.txt: R-1's review rests on b.txt, R-2's on c.txt.
+{ cat "$T/config-c.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `review-reuse` |\n'; } > "$T/config-cr.md"
+export DESK_CONFIG="$T/config-cr.md" DESK_QUEUE="$T/queue-cr.json" DESK_AUTOPILOT_STATE="$T/state-cr"
+mkdir -p "$T/state-cr/logs"; q init cr; q set-batch concurrency=6
+for k in 1 2; do q add "R-$k"; q set "R-$k" state=done lane=A "branch=fix/C-1" "result.pr=76$k"; done
+restsfile(){ node -e 'const fs = require("fs"); const [f, file] = process.argv.slice(1); const j = JSON.parse(fs.readFileSync(f, "utf8")); j.reviews[0].body += `\n<!-- desk-review:rests-on v=1 files=["${file}"] -->`; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json" "$2"; }
+frx 761 "$CB" "$CA" 'p0=0 p1=0 p2=0'; restsfile 761 b.txt
+frx 762 "$CB" "$CA" 'p0=0 p1=0 p2=0'; restsfile 762 c.txt
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-448 AC2 lever on, a base merge over none of the recorded files carries the review, and the pass says over which range" \
+  'grep -q "^pr ready 761 --repo acme/widgets" "$T/gh-calls" && [ "$(field R-1 undraft.carried_from)" = "\"$CA\"" ] && echo "$out" | grep -qF "undrafted: PR #761 (R-1) at ${CB:0:12}; its review verdict is carried from ${CA:0:12}, as its own diff is unchanged and main'"'"'s range"'
+check "DS-448 AC6 its comment says no review has read the head, and the driver will not say so again" \
+  'grep -qF "is carried to this head (\`${CB:0:12}\`), which no review has read" "$T/gh-calls" && [ -e "$T/state-cr/merge-driver/carried-761-$CB" ]'
+check "DS-448 AC8 lever on, a clean merge over a recorded file sends the head to a review worker" \
+  '! grep -q "^pr ready 762" "$T/gh-calls" && [ "$(field R-2 fix.kind)" = "\"rereview\"" ] && [ "$(field R-2 undraft.carried_from)" = null ]'
+export DESK_CONFIG="$T/config-c.md"
+
 # ---- a review whose P0s and P1s are posted inline goes to a fix worker too
 export DESK_QUEUE="$T/queue-ri.json" DESK_AUTOPILOT_STATE="$T/state-ri"
 mkdir -p "$T/state-ri/logs"
