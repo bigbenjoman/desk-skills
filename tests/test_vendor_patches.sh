@@ -89,8 +89,12 @@ check "a missing patch file refuses the skill" \
 # `outdated` would compare against a file vendor/ was never built from.
 DRIVE="$T/drive_refused.py"
 cat > "$DRIVE" <<'PY'
-import contextlib, importlib.machinery, io, json, sys, zipfile
-m = importlib.machinery.SourceFileLoader("su", sys.argv[1]).load_module()
+import contextlib, importlib.machinery, importlib.util, io, json, sys, zipfile
+# exec_module, not load_module: Python 3.12 removed load_module.
+loader = importlib.machinery.SourceFileLoader("su", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("su", loader))
+sys.modules["su"] = m
+loader.exec_module(m)
 buf = io.BytesIO()
 with zipfile.ZipFile(buf, "w") as z:
     z.writestr("demo/SKILL.md", "line one\n")
@@ -112,8 +116,11 @@ check "a refused Drive skill keeps its source's file id and name" \
 # This repo: every recorded patch is applied in vendor/, and the hash is the patched tree's.
 HASH="$T/tree_hash.py"
 cat > "$HASH" <<'PY'
-import importlib.machinery, sys
-m = importlib.machinery.SourceFileLoader("su", sys.argv[1]).load_module()
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("su", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("su", loader))
+sys.modules["su"] = m
+loader.exec_module(m)
 print(m.tree_sha256(sys.argv[2]))
 PY
 REPO="$S/.."
