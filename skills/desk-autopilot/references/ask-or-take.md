@@ -105,7 +105,7 @@ the question.
 with a recommendation. Build or do the recommended option, carry on, and log the call so the
 check-in digest can list it. Taking it is not widening §3: a row that is not `yes` still parks or
 asks, so a take never makes a write the config did not grant. And `autopilot-judgement` decides it
-for workers: where that row is not `yes`, a worker parks as before.
+for workers: where that row is not `yes`, a worker parks on it.
 
 Each taken call is one entry in `<state>/decisions.jsonl` (time, repo, ticket, question, options,
 the option chosen, category, PR link):

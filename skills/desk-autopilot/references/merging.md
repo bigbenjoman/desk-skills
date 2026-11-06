@@ -64,7 +64,7 @@ put that under `WAITING ON YOU`. It never waives:
 - a §4 Required check, whatever the row says: branch protection enforces it, and merging past it
   would be a bypass (§3 `merge-bypass` is `never`). The driver records it as `merge_blocked` and you
   report the PR;
-- a check the row does not name: red, as it always was.
+- a check the row does not name: it stays red.
 
 A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
 Unset waives nothing.
@@ -207,7 +207,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   queue's `approved.undraft` is `true`), then do whatever is needed to merge it immediately. Under
   that batch approval, undraft without asking again, and add one line to `batch-notes.md` with the
   Edit tool each time: `- [<TICKET>] undrafted #<n> at <head sha>: §3 pr-ready is ask, batch approval
-  given at Stage 3`. Declined, or never asked, is today's rule: report the PR as ready to undraft. Done and reviewed means the review verdict on the PR's **current**
+  given at Stage 3`. Declined, or never asked: report the PR as ready to undraft. Done and reviewed means the review verdict on the PR's **current**
   `headRefOid` reads as §4 Clean review verdict with nothing deferred and no requirement gaps, the
   screenshots are uploaded (or the body says nothing renders differently), and `mergeStateStatus` is
   not `DIRTY`. Where §4 Clean review verdict is plain text (`no findings`) rather than counts, a

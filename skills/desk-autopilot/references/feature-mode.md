@@ -106,7 +106,7 @@ briefing, `Acceptance specs you own`, naming each owned spec (its title and file
 telling it to remove its expected-fail marker and make it pass, changing no other. When its worker
 is done, `pass.mjs` checks the branch and, only once the markers are clean, runs the §4 Acceptance
 specs command once for each id the child owns, and for no other, in its worktree under the test lock
-(the base gate runs them all). A clean check is done as today. Otherwise it parks
+(the base gate runs them all). A clean check leaves the child done, as for any ticket. Otherwise it parks
 `acceptance specs not done: <problems>`, its PR stays draft, and the check is on the ticket as
 `spec_check`. The problems it names:
 
@@ -116,7 +116,7 @@ specs command once for each id the child owns, and for no other, in its worktree
 - a spec another child owns that the branch added, removed or changed, with that spec's owner.
 
 Send it back with what to fix: `answer.mjs <KEY> "<note>" --batch <EPIC>`, then `queue.mjs requeue <KEY> --batch <EPIC>`. A child
-that owns nothing runs as before.
+that owns nothing runs as any batch ticket does.
 
 `answer.mjs` still never un-parks: approving is the orchestrator's decision, made on the person's
 word.
@@ -156,7 +156,7 @@ children. `pass.mjs` starts the gate on a **slice**:
   the count;
 - when every child has merged: the last slice, which the epic close-out follows.
 
-The report names the slice (`slice 2: 8 of 23 children`). A parked or failed child no longer stops a
+The report names the slice (`slice 2: 8 of 23 children`). A parked or failed child does not stop a
 slice: the report lists it as `not in this slice`, and it still stops the last slice and the
 close-out. Until a slice is due, the report says how many more children it waits for. Otherwise, at
 the end of the batch:

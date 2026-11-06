@@ -42,6 +42,15 @@ const REWRITTEN = [
   ['DS-419', 'marks the done row `merged`, so both wake you.', 1], // a done row with an open PR reads PR OPEN
   ['DS-411', 'a person merges: the driver and you never merge them', 1], // a hold's named routine is the driver's
   ['DS-433', 'pinned, the moment it is green (never a PR under a §4 Merge holds glob)', 1], // it also needs a clean review at its head
+  // the rule as it stands, not against an earlier behaviour
+  ...[
+    'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',
+    'and nothing else does. Never treat a triage', 'itself, as it always has.', 'runs on its lane as before.',
+    'A clean check is done as today.', 'that owns nothing runs as before.', 'A parked or failed child no longer stops a slice',
+    'the pre-push hook are unchanged.', 'red, as it always was.', 'reply in one line at most', 'Workers now run related tests',
+    'the D6 baseline', 'a worker parks as before.', 'an alias such as `haiku`', 'start at Stage 0 as before.',
+    'A worker quiet for 6+ passes: park it, do not wait',
+  ].map((s) => ['DS-458', s, 1]),
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));
