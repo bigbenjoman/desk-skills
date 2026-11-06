@@ -1,0 +1,78 @@
+{
+  "url": "https://claude.ai/artifact/G72NSJFg5MqFPiuVoehtkv",
+  "version": "1793956478-4992",
+  "fetched_at": "2026-11-06T09:53:57.439Z",
+  "dir": "DS-461",
+  "tickets": [
+    {
+      "key": "DS-461",
+      "boards": []
+    }
+  ],
+  "boards": [
+    {
+      "name": "Home: the login new workers start on",
+      "width": 880,
+      "file": "Main.dc.html"
+    },
+    {
+      "name": "/desk-setup: rotation rules, once per computer",
+      "width": 880,
+      "file": "Setup.dc.html"
+    },
+    {
+      "name": "/desk-setup on a second repo: rules already set",
+      "width": 880,
+      "file": "SetupDone.dc.html"
+    },
+    {
+      "name": "Every login at its limit",
+      "width": 880,
+      "file": "StateAllOut.dc.html"
+    },
+    {
+      "name": "A login benched at its limit",
+      "width": 880,
+      "file": "StateBenched.dc.html"
+    },
+    {
+      "name": "One login only: as today",
+      "width": 880,
+      "file": "StateOne.dc.html"
+    },
+    {
+      "name": "No reading yet, and a login signed out",
+      "width": 880,
+      "file": "StateSignIn.dc.html"
+    },
+    {
+      "name": "6 Usage: every login, 5h and 7d",
+      "width": 880,
+      "file": "Usage.dc.html"
+    },
+    {
+      "name": "6 Usage: adding a login",
+      "width": 880,
+      "file": "UsageAdd.dc.html"
+    },
+    {
+      "name": "6 Usage: changing a login's rule",
+      "width": 880,
+      "file": "UsageRule.dc.html"
+    }
+  ],
+  "files": [
+    "Main.dc.html",
+    "Setup.dc.html",
+    "SetupDone.dc.html",
+    "StateAllOut.dc.html",
+    "StateBenched.dc.html",
+    "StateOne.dc.html",
+    "StateSignIn.dc.html",
+    "Usage.dc.html",
+    "UsageAdd.dc.html",
+    "UsageRule.dc.html",
+    "canvas.json",
+    "support.js"
+  ]
+}

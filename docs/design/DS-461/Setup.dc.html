@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-setup rotation rules</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.t{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13px;line-height:18px;color:#abb2bf;white-space:pre}
+.g{color:#9e9e9e}.b{color:#dcdfe4;font-weight:700}.gr{color:#98c379}.am{color:#e5c07b}.rd{color:#f07c84}.mg{color:#d08be3}.tk{color:#4e4e4e}.bl{color:#61afef}.cy{color:#56b6c2}
+.ln{height:18px;white-space:pre}
+.c{display:inline-block;white-space:pre;overflow:hidden;vertical-align:top}
+</style>
+</helmet>
+<div style="width: 880px; height: 800px; box-sizing: border-box; background: #282c34; padding: 40px 34px; display: flex; flex-direction: column; font-family: 'JetBrains Mono', ui-monospace, monospace">
+<div class="t" style="height: 720px">
+<div class="ln"><span class="g">&gt; </span>/desk-setup</div>
+<div class="ln">&#160;</div>
+<div class="ln"><span class="b">⏺ Subscriptions on this computer</span></div>
+<div class="ln">  I found 4 Claude logins and 2 Codex logins signed in here:</div>
+<div class="ln">&#160;</div>
+<div class="ln"><span class="c g" style="width:12ch">    Claude</span><span class="c" style="width:26ch">ben.lavender@me.com</span><span class="c" style="width:10ch">Max 20x</span><span class="c g">~/.claude</span></div>
+<div class="ln"><span class="c g" style="width:12ch"> </span><span class="c" style="width:26ch">ben@voicepa.ai</span><span class="c" style="width:10ch">Max 5x</span><span class="c g">~/.claude-logins/login-2</span></div>
+<div class="ln"><span class="c g" style="width:12ch"> </span><span class="c" style="width:26ch">ben.lavender1@gmail.com</span><span class="c" style="width:10ch">Pro</span><span class="c g">~/.claude-logins/login-3</span></div>
+<div class="ln"><span class="c g" style="width:12ch"> </span><span class="c" style="width:26ch">ben@studia.io</span><span class="c" style="width:10ch">Pro</span><span class="c g">~/.claude-logins/login-4</span></div>
+<div class="ln"><span class="c g" style="width:12ch">    Codex</span><span class="c" style="width:26ch">ben@voicepa.ai</span><span class="c" style="width:10ch">Pro</span><span class="c g">~/.codex</span></div>
+<div class="ln"><span class="c g" style="width:12ch"> </span><span class="c" style="width:26ch">ben.lavender@me.com</span><span class="c" style="width:10ch">Plus</span><span class="c g">~/.codex-logins/login-2</span></div>
+<div class="ln">&#160;</div>
+<div class="ln">  desk can spread workers across them, so a batch keeps running when one reaches its limit.</div>
+<div class="ln">  These rules are for this computer: every repo here shares them. You can change them at any</div>
+<div class="ln">  time in desk-q, view 6.</div>
+<div class="ln">&#160;</div>
+<div class="ln"><span class="g">──────────────────────────────────────────────────────────────────────────────────────────────────</span></div>
+<div class="ln"> <span class="bl">☐ Rotation</span></div>
+<div class="ln">&#160;</div>
+<div class="ln"> <span class="b">Which Claude logins should new workers rotate between?</span></div>
+<div class="ln">&#160;</div>
+<div class="ln"> <span class="bl">❯ 1. All 4 in rotation (Recommended)</span></div>
+<div class="ln">      Each worker starts on whichever login has the most room. The most work before any limit.</div>
+<div class="ln">   2. Choose which rotate, the rest on standby</div>
+<div class="ln">      For logins you want kept back, for example a work account. Standby logins are used only</div>
+<div class="ln">      when every login in rotation is at its limit.</div>
+<div class="ln">   3. Only ben.lavender@me.com, as today</div>
+<div class="ln">      No rotation. The batch waits when this login reaches its limit.</div>
+<div class="ln">   4. Type something.</div>
+<div class="ln">&#160;</div>
+<div class="ln"><span class="g">──────────────────────────────────────────────────────────────────────────────────────────────────</span></div>
+<div class="ln"><span class="g"> Enter to select · ↑/↓ to navigate · Esc to cancel</span></div>
+<div class="ln">&#160;</div>
+<div class="ln">&#160;</div>
+<div class="ln">&#160;</div>
+<div class="ln">&#160;</div>
+<div class="ln">&#160;</div>
+<div class="ln">&#160;</div>
+<div class="ln">&#160;</div>
+<div class="ln">&#160;</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":880,"height":800}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
