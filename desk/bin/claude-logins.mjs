@@ -32,9 +32,8 @@ export function claudeLogins({ path = subscriptionsPath(), env = process.env } =
     if (isDir(dir)) add(folderLogin(dir, { name: n, rule: subs.exists ? 'standby' : null, source: 'found' }));
   }
   if (env.CLAUDE_CONFIG_DIR) add(folderLogin(resolve(env.CLAUDE_CONFIG_DIR), { source: 'env' }));
-  // The default login keeps its place whatever the file says about it, so the file's own entry for
-  // ~/.claude (a name, a rule) replaces it.
-  // A file that lists other Claude logins but not this one gives it no rule.
+  // The default login keeps its place: the file's own row for ~/.claude (a name, a rule) replaces it,
+  // and a file that lists other Claude logins but not this one gives it no rule.
   const fileDefault = subs.logins.find((l) => l.tool === 'claude' && l.dir === out[0].dir);
   out[0] = fileDefault ?? { ...out[0], rule: null };
   return out.filter((l, i) => i === 0 || isDir(l.dir));

@@ -5,9 +5,9 @@
 // Each check, and when it is required:
 //   gh       `gh auth status`                     always
 //   jira     `desk-jira whoami`                   where §4 Tracker is jira
-//   claude   `claude auth status`                 always; and in the folder of each other Claude login in
-//                                                 rotation or on standby (claude-logins.mjs), told with
-//                                                 its sign-in command but never holding a spawn
+//   claude   `claude auth status`                 always; and in the folder of each other Claude login the
+//                                                 subscriptions file puts in rotation or on standby,
+//                                                 told with its sign-in command but never holding a spawn
 //   codex    `codex login status`                 unless config §3 codex-review is no (it catches a
 //                                                 sign-out, not a seat out of usage: only a real call does)
 //   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no
@@ -176,8 +176,10 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const wanted = CHECKS.map((c) => c.id).filter((id) => !skip[id]);
   const prev = readRecord(state);
   const age = prev ? now - Date.parse(prev.at) : Infinity;
-  // Each other Claude login in rotation or on standby, checked as the default is, in its own folder.
-  const others = (() => { try { return probeLogins({ env }).filter((l) => l.configDir); } catch { return []; } })();
+  // Each other Claude login the file puts in rotation or on standby, checked as the default is, in its
+  // own folder. A folder the file does not list counts only once signed in (logins.mjs), so it is not
+  // told as signed out.
+  const others = (() => { try { return probeLogins({ env }).filter((l) => l.configDir && l.source === 'file'); } catch { return []; } })();
   const reusedLogins = others.every((l) => prev?.logins?.[loginKey(l)]?.ok);
   const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins;
   let results;
