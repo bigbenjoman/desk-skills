@@ -224,6 +224,20 @@ t('DS-327 AC4 so is any red check with no row', buildPr([FLOWS], null, { builds:
 t('DS-327 a named check still pending beside another waits', buildPr([FLOWS, { name: 'lint', status: 'in_progress', conclusion: null }])?.call, 'wait');
 for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'checks');
 
+// DS-440: a check build that failed at a head behind its base goes to a worker that merges the base.
+const behindTail = { ...ok, code: 1, tail: "main's backend/ has changed since this branch was cut" };
+const behind = buildPr([FLOWS], behindTail, { behind: (h) => (h === HEAD ? 'main' : null) });
+t('DS-440 AC1 a failed build behind the base is a sync, naming the base', `${behind?.call} | ${behind?.base} | ${behind?.why}`,
+  `sync | main | its check build \`./scripts/ensure-flows-image.sh\` exited 1 at ${HEAD.slice(0, 9)}: main's backend/ has changed since this branch was cut; its head is behind main`);
+t('DS-440 AC4 a failed build at a head up to date with its base is the person\'s, as before', buildPr([FLOWS], behindTail, { behind: () => null })?.call, 'person');
+t('DS-440 AC4 so is one where git cannot say', buildPr([FLOWS], behindTail)?.call, 'person');
+t('DS-440 a build that succeeded behind the base is re-run, not synced', buildPr([FLOWS], ok, { behind: () => 'main' })?.call, 'rebuilt');
+const afterSync = undraftCall({ key: 'T-1', fix: { try: 1, of: 2, kind: 'sync', base: 'main', finished: '2026-11-06T10:00:00Z' }, result: { summary: 'pr=701 jira=In Review said=renumbered migration 125 to 126' } },
+  { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'tests', status: 'completed', conclusion: 'success' }, FLOWS] },
+  { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], rerun: 'yes', reruns: () => 0, cooledDown: true, builds, built: () => behindTail, behind: () => null });
+t('DS-440 AC5 a build still failing at the head a sync try left names that try\'s outcome', afterSync?.why,
+  `its check build \`./scripts/ensure-flows-image.sh\` exited 1 at ${HEAD.slice(0, 9)}: main's backend/ has changed since this branch was cut, after sync try 1 of 2 merged main, which said: pr=701 jira=In Review said=renumbered migration 125 to 126`);
+
 // DS-327 AC5: /desk-setup proposes the row from the instructions, and the row is a config row.
 const doc = (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8');
 t('DS-327 AC5 setup step 1 proposes §4 Check builds, not prose only', /\*\*Check builds\.\*\*[\s\S]*propose it for §4 Check builds[\s\S]*Never leave it as prose only/.test(doc('../skills/desk-setup/references/step-1-detect.md')), true);
