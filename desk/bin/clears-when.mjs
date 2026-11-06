@@ -8,9 +8,12 @@
 //   ticket <KEY> done      the Jira ticket is in a done status category
 //   variable <NAME> set    the repo has an Actions variable of that name
 //   run <id> completed     the GitHub Actions run finished, whatever its conclusion
+//   git push origin <branch> succeeds
+//                          the push GitHub refused with a 5xx goes through; the check is the push
+//                          itself, and `--force-with-lease` may come before `origin`
 //   none                   nothing a script can read; the park waits for a person
-// Stored on the park as {kind, pr | ticket | name | run}: kind is pr-merged, pr-ready, ticket-done,
-// variable-set, run-completed or none.
+// Stored on the park as {kind, pr | ticket | name | run | branch}: kind is pr-merged, pr-ready,
+// ticket-done, variable-set, run-completed, push-ok (with lease: true for a lease push) or none.
 
 const FORMS = [
   [/^pr\s+#?(\d+)\s+merged$/i, (m) => ({ kind: 'pr-merged', pr: Number(m[1]) })],
@@ -18,9 +21,11 @@ const FORMS = [
   [/^ticket\s+([A-Za-z][A-Za-z0-9_]*-\d+)\s+done$/i, (m) => ({ kind: 'ticket-done', ticket: m[1].toUpperCase() })],
   [/^(?:repo\s+)?variable\s+([A-Za-z_][A-Za-z0-9_]*)\s+set$/i, (m) => ({ kind: 'variable-set', name: m[1] })],
   [/^run\s+#?(\d+)\s+completed$/i, (m) => ({ kind: 'run-completed', run: Number(m[1]) })],
+  [/^git\s+push\s+(--force-with-lease\s+)?(?:(?:-u|--set-upstream)\s+)?origin\s+([\w./-]+)\s+succeeds$/i,
+    (m) => ({ kind: 'push-ok', branch: m[2], ...(m[1] ? { lease: true } : {}) })],
   [/^none$/i, () => ({ kind: 'none' })],
 ];
-export const CLEARS_WHEN_FORMS = 'pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, or none';
+export const CLEARS_WHEN_FORMS = 'pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, or none';
 
 // {ok: true, cond} or {ok: false, why}. Nothing given is none.
 export function parseClearsWhen(raw) {
@@ -41,6 +46,7 @@ export function describeCond(c) {
     case 'ticket-done': return `${c.ticket} done`;
     case 'variable-set': return `repo variable ${c.name} set`;
     case 'run-completed': return `Actions run ${c.run} completed`;
+    case 'push-ok': return `git push ${c.lease ? '--force-with-lease ' : ''}origin ${c.branch} succeeds`;
     default: return 'none';
   }
 }
@@ -49,7 +55,7 @@ export function describeCond(c) {
 // needs beside the answer: a finished run's conclusion, or an unfinished one's status. The readers do
 // the reading and throw on any failure, so a check that could not run is never read as cleared:
 //   pr(n) → {state, isDraft}   ticket(key) → the status category key   variable(name) → bool
-//   run(id) → {status, conclusion}
+//   run(id) → {status, conclusion}   push(c) → {holds, note?}, having tried the push
 export function checkCond(c, read) {
   try {
     switch (c?.kind) {
@@ -64,6 +70,7 @@ export function checkCond(c, read) {
           ? { holds: true, note: `conclusion ${r.conclusion || 'none'}` }
           : { holds: false, note: `still ${r.status}` };
       }
+      case 'push-ok': return read.push(c);
       default: return { holds: false };
     }
   } catch (e) { return { error: String(e?.message ?? e).trim().split('\n').pop() || 'the check failed' }; }

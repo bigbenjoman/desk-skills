@@ -73,7 +73,9 @@ Your settings are an **allow-list**: anything not named here is refused.
 - **`git push`: only these exact commands** for your own recorded branch: `git push origin <branch>`,
   `git push -u origin <branch>`, `git push --set-upstream origin <branch>`, and, only where §3
   `git-force-with-lease` is `yes`, `git push --force-with-lease origin <branch>`. Bare `git push`,
-  `git push origin HEAD` and any other ref are refused. `git config`, `git -c …`, `git -C` with
+  `git push origin HEAD` and any other ref are refused. Each of those forms also runs as
+  `node ~/.claude/desk/bin/push-retry.mjs [--more] <its flag> origin <branch>`, which is how you push
+  (Stage 5 file, §4). `git config`, `git -c …`, `git -C` with
   any path but your own worktree's, aliases and `git stash` are refused; `git -C <your worktree>`
   (as given, or its real path) takes the read and local-write subcommands (`add`, `commit`,
   `restore`, …) under the same refusals, and never `push`. `git rm` and `git mv` are allowed for tracked files in your

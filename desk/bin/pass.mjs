@@ -35,6 +35,7 @@ import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs,
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
+import { transientPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows } from './gate.mjs';
@@ -854,13 +855,32 @@ function shippedElsewhere(t) {
   } catch { /* unread: spawn as before */ }
   return null;
 }
+// A park on a push GitHub refused with a 5xx: try the push. A server error waits for the next pass;
+// any other refusal, or a push this pass may not make, ends the tries and goes to a person.
+function pushParked(t, c) {
+  if (DRY) return { holds: false };
+  const stop = (why) => {
+    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`, `park.recovery=${JSON.stringify(why)}`);
+    throw new Error(why);
+  };
+  const rows = ['git-push', ...(c.lease ? ['git-force-with-lease'] : [])].filter((k) => E.permission(k) !== 'yes');
+  if (rows.length) stop(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
+  if (c.branch !== t.branch) stop(`it names ${c.branch}, and the ticket's branch is ${t.branch ?? 'not recorded'}`);
+  if (!t.worktree || !existsSync(t.worktree)) stop('it has no worktree to push from');
+  const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? ['--force-with-lease'] : []), 'origin', c.branch]);
+  if (push.ok) return { holds: true };
+  if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
+  return stop(`git refused it: ${push.out.split('\n').pop()}`);
+}
 for (const t of Object.values(queue().tickets)) {
   const c = t.park?.clears_when;
   // A claimed ticket is released only by the claims loop below, once its session is idle and its
   // worktree clean, so a condition that holds never hands it to a worker under a live session.
   if (t.state !== 'parked' || isHeld(t) || spinePark(t) || t.park?.claim?.session || !c || c.kind === 'none') continue;
   const cond = describeCond(c);
-  const r = checkCond(c, clearsRead);
+  // A lane left for a person never has its push made for it.
+  if (c.kind === 'push-ok' && needsSession(t)) { report.clears.push(`${t.key}: "${cond}" not tried, since it is lane ${t.lane}: left parked for a person`); continue; }
+  const r = checkCond(c, { ...clearsRead, push: (p) => pushParked(t, p) });
   if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); continue; }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
   if (!r.holds) { if (r.note) report.clears.push(`${t.key}: waiting on "${cond}" (${r.note}): left parked`); continue; }
@@ -978,6 +998,10 @@ function finishPush(t) {
   if (!open.ok) return false;
   if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
   const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
+  if (!push.ok && transientPush(push.out)) {
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and the next pass tries again`);
+    return true;
+  }
   if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);
   const title = prTitleIn(texts.join('\n')) || sh('git', ['-C', wt, 'log', '-1', '--format=%s', t.branch], { tolerant: true });
   const bodyFile = join(STATE, 'pr-bodies', `${t.key}.md`);

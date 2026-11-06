@@ -43,6 +43,28 @@ and choosing between them is a product or design decision. Park naming the files
 needed, with the remaining tail (core section 1). Which code shape keeps both is an engineering
 call, and yours.
 
+**Every push goes through `push-retry.mjs`**, whatever command a skill or prompt names, in the same
+shape the Stage 3 file's §6 allows, with your Bash timeout at its 600000 maximum:
+
+```bash
+node ~/.claude/desk/bin/push-retry.mjs origin <branch>   # or -u, --set-upstream, --force-with-lease before origin
+```
+
+It runs that `git push`, and while GitHub answers with a 5xx it retries with growing waits. Exit 0
+is pushed. **Exit 75** is GitHub still answering 5xx after about eight minutes: run the command it
+prints, the same one with `--more` first, which waits longer. **A second exit 75** is over ten
+minutes of 5xx: end with your park, naming the tail as ever, and the line after it says what clears it:
+
+```
+AUTOPILOT_PARK: GitHub refused the push of <branch> with a 5xx for over ten minutes
+AUTOPILOT_PARK_CLEARS_WHEN: git push origin <branch> succeeds
+```
+
+Write `git push --force-with-lease origin <branch> succeeds` for a lease push. Each pass tries that
+push and requeues you once it goes through, so you carry on from the steps you did not reach. **Any
+other exit is a refusal, not an outage** (a failed pre-push check, a non-fast-forward, a branch
+rule): it was not retried, so fix it or park on it as for any failed step.
+
 ## 5. What the orchestrator owns, not you
 
 - **Your port and your database** are assigned in your briefing. Never the user's own dev-server

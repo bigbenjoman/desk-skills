@@ -22,8 +22,8 @@ copy of your `.claude/settings.local.json`** and none of your own allows reach i
 a worker cannot:
 
 - push anything but the exact commands `git push [-u|--set-upstream] origin <its branch>` (and
-  `git push --force-with-lease origin <its branch>` where §3 `git-force-with-lease` is `yes`); bare
-  `git push` is refused;
+  `git push --force-with-lease origin <its branch>` where §3 `git-force-with-lease` is `yes`), or
+  those same pushes through `push-retry.mjs`, which retries a 5xx; bare `git push` is refused;
 - rebase onto the base a branch already on origin, unless §3 `git-force-with-lease` is `yes`: it
   takes `git merge origin/<base>` instead;
 - run `git config`, `git -c …`, `git -C` on anything but its own worktree (and there only the

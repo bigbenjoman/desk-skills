@@ -36,6 +36,8 @@ cat > "$T/config.md" <<EOF
 | Key | Capability | Recommended | Your setting |
 |---|---|---|---|
 | \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
+| \`git-push\` | Push the ticket's branch | \`yes\` | \`yes\` |
+| \`git-force-with-lease\` | Force-push with a lease | \`ask\` | \`ask\` |
 EOF
 
 for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
@@ -104,10 +106,35 @@ parked R-1 A "waiting on e2e run 41048026730" "run 41048026730 completed"; run 4
 parked R-2 A "waiting on e2e run 41048026731" "run 41048026731 completed"; run 41048026731 in_progress ""
 parked R-3 A "waiting on e2e run 41048026732" "run 41048026732 completed"
 parked W-1 B "waiting on review of #706" "pr 706 ready"; pr 706 OPEN false; echo 707 > "$T/gh/merged-feat_W-1"; pr 707 MERGED false
+# DS-496: a park on a refused push. A real origin, whose pre-receive hook prints $T/gh/refuse-<branch
+# with / as _> and refuses, so git reports it as a worker's push would see it.
+git init -q --bare "$T/origin.git"; git -C "$T/repo" remote add origin "$T/origin.git"
+cat > "$T/origin.git/hooks/pre-receive" <<EOF
+#!/bin/sh
+while read -r _ _ ref; do
+  f="$T/gh/refuse-\$(echo "\${ref#refs/heads/}" | tr / _)"
+  [ -f "\$f" ] && { cat "\$f" >&2; exit 1; }
+done
+exit 0
+EOF
+chmod +x "$T/origin.git/hooks/pre-receive"
+on_origin(){ git -C "$T/origin.git" rev-parse --verify -q "refs/heads/feat/$1" >/dev/null; }
+# pushpark <KEY> <lane> [<clears-when>]
+pushpark(){ parked "$1" "$2" "GitHub refused the push of feat/$1 with a 5xx" "${3:-git push origin feat/$1 succeeds}"; git -C "$T/repo" branch "feat/$1"; q set "$1" "worktree=$T/repo"; }
+pushpark P-1 A
+pushpark P-2 A; echo "Internal Server Error" > "$T/gh/refuse-feat_P-2"
+pushpark P-3 A; echo "branch is protected" > "$T/gh/refuse-feat_P-3"
+pushpark P-4 A "git push --force-with-lease origin feat/P-4 succeeds"
+pushpark P-5 C
+pushpark P-6 A "git push origin feat/other succeeds"
+q add C-4 Story A; q set C-4 state=running branch=feat/C-4 session_id=gone
+say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_PARK_CLEARS_WHEN: git push -u origin feat/C-4 succeeds" > "$T/state/logs/C-4.log"
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
-check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, or none" <<< "$out"'
+check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, or none" <<< "$out"'
+check "DS-496 queue.mjs clears-when stores a push" '[ "$(field P-1 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-1\"}" ]'
+check "DS-496 and a lease push" '[ "$(field P-4 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-4\",\"lease\":true}" ]'
 out=$(node "$B/queue.mjs" clears-when E-2 "run abc completed" 2>&1); rc=$?
-check "DS-349 AC10 a run id that is not a number is refused, naming the forms" '[ $rc -ne 0 ] && grep -q "\"run abc completed\" is not one of: .*run <id> completed, or none" <<< "$out"'
+check "DS-349 AC10 a run id that is not a number is refused, naming the forms" '[ $rc -ne 0 ] && grep -q "\"run abc completed\" is not one of: .*run <id> completed, .*or none" <<< "$out"'
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
 
@@ -131,11 +158,30 @@ check "DS-349 AC9 a run in progress: the park stays, and the report shows it wai
 check "DS-349 a run that cannot be read leaves the park and is named" \
   '[ "$(field R-3 state)" = "\"parked\"" ] && grep -q "R-3: could not check \"Actions run 41048026732 completed\" (gh run view 41048026732: gh: HTTP 404: run 41048026732 not found): left parked" <<< "$out"'
 check "DS-269 the report groups them under clears-when" 'grep -q "^clears-when:$" <<< "$out"'
+check "DS-496 AC2 the pass makes the push, requeues, and tells the next worker" \
+  'on_origin P-1 && [ "$(field P-1 state)" = "\"triaged\"" ] && [ "$(field P-1 branch)" = "\"feat/P-1\"" ] && [ "$(field P-1 cleared.what)" = "\"git push origin feat/P-1 succeeds\"" ] && grep -q "P-1: \"git push origin feat/P-1 succeeds\" holds: requeued" <<< "$out"'
+check "DS-496 AC2 another 5xx: the park stays, its condition kept for the next pass" \
+  '! on_origin P-2 && [ "$(field P-2 state)" = "\"parked\"" ] && [ "$(field P-2 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-2\"}" ] && grep -q "P-2: waiting on \"git push origin feat/P-2 succeeds\" (GitHub still answers 5xx): left parked" <<< "$out"'
+check "DS-496 AC3 any other refusal ends the tries and goes to a person" \
+  '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"none\"}" ] && [[ "$(field P-3 park.recovery)" == *"git refused it"* ]] && grep -q "P-3: could not check \"git push origin feat/P-3 succeeds\"" <<< "$out"'
+check "DS-496 a lease push §3 does not grant is not made, and says so" \
+  '! on_origin P-4 && [ "$(field P-4 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "P-4: could not check \"git push --force-with-lease origin feat/P-4 succeeds\" (config §3 git-force-with-lease is \"ask\"): left parked" <<< "$out"'
+check "DS-496 a lane C park is not pushed for" \
+  '! on_origin P-5 && [ "$(field P-5 state)" = "\"parked\"" ] && grep -q "P-5: \"git push origin feat/P-5 succeeds\" not tried, since it is lane C: left parked for a person" <<< "$out"'
+check "DS-496 a condition naming another branch is not pushed" \
+  '[ "$(field P-6 state)" = "\"parked\"" ] && ! git -C "$T/origin.git" rev-parse --verify -q refs/heads/feat/other >/dev/null && grep -q "P-6: could not check .*it names feat/other, and the ticket.s branch is feat/P-6" <<< "$out"'
+check "DS-496 a worker's park line records a push, -u dropped, and with no worktree it goes to a person" \
+  '[ "$(field C-4 state)" = "\"parked\"" ] && [ "$(field C-4 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "C-4: could not check \"git push origin feat/C-4 succeeds\" (it has no worktree to push from): left parked" <<< "$out"'
 
 # ---- AC3: a lane A ticket waiting on something else is requeued ------------------------------------
 pr 41 MERGED false
 q add V-2 Story A; q park V-2 "set FOO"; q clears-when V-2 "variable FOO set"; touch "$T/gh/vars.fail"
+rm "$T/gh/refuse-feat_P-2" "$T/gh/refuse-feat_P-3"
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-496 AC2 the 5xx over: the next pass pushes and requeues" 'on_origin P-2 && [ "$(field P-2 state)" = "\"triaged\"" ]'
+check "DS-496 AC3 a refusal is not tried again" '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ]'
+pushpark P-7 A; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-496 a dry run pushes nothing" '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ]'
 check "DS-269 AC3 C-1's PR merged: requeued, with one line naming the condition" '[ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(grep -c "C-1: \"PR #41 merged\" holds: requeued" <<< "$out")" = 1 ]'
 check "DS-269 AC6 a failed variable read leaves the park and is named" '[ "$(field V-2 state)" = "\"parked\"" ] && grep -q "V-2: could not check \"repo variable FOO set\" (gh variable list: gh: HTTP 401: Bad credentials): left parked" <<< "$out"'
 check "DS-269 AC4 still lane C: never requeued" '[ "$(field D-1 state)" = "\"parked\"" ]'

@@ -532,18 +532,20 @@ if (mode === 'triage') {
   // exact push of it, under the grant every base sync needs (§3 batch-base-push).
   const FORCE = [...[' push *--force', ' push *--force *', ' push *--force-if-includes*', ' push *--mirror*', ' push *--all*', ' push *--delete*',
     ' push +*', ' push * +*'], ...shortFlag(' push', '-f'), ...shortFlag(' push', '-d')];
+  // push-retry.mjs runs the same push, so it is allowed exactly where that push is.
+  const retried = (tail) => BIN_FORMS.flatMap((b) => ['', ' --more'].map((more) => `Bash(node ${b}/push-retry.mjs${more}${tail})`));
   if (baseFix) {
     const push = E.basePushGrant();
-    if (push.ok) allow.push(...exact('git', ` push origin ${BRANCH}`));
+    if (push.ok) allow.push(...exact('git', ` push origin ${BRANCH}`), ...retried(` origin ${BRANCH}`));
     else { deny.push(...bash('git', ' push')); denied.push(`${push.key} (${push.perm})`); }
   } else if (!branchOk) {
     deny.push(...bash('git', ' push'));
     denied.push(`${E.permissionKey('git-push')} (no usable branch for this ticket${BRANCH ? `: '${BRANCH}'` : ''})`);
   } else {
     const pushes = [` push -u origin ${BRANCH}`, ` push --set-upstream origin ${BRANCH}`, ` push origin ${BRANCH}`];
-    if (grant('git-push', pushes.flatMap((p) => exact('git', p)), bash('git', ' push'))) {
+    if (grant('git-push', pushes.flatMap((p) => [...exact('git', p), ...retried(p.slice(' push'.length))]), bash('git', ' push'))) {
       const lease = E.permission('git-force-with-lease');
-      if (lease === 'yes') allow.push(...exact('git', ` push --force-with-lease origin ${BRANCH}`), ...exact('git', ` push --force-with-lease -u origin ${BRANCH}`));
+      if (lease === 'yes') allow.push(...exact('git', ` push --force-with-lease origin ${BRANCH}`), ...exact('git', ` push --force-with-lease -u origin ${BRANCH}`), ...retried(` --force-with-lease origin ${BRANCH}`));
       else if (ONE_PUSH) {
         // The person's one-off grant: only the push naming its lease. The bare lease forms stay denied.
         allow.push(...exact('git', ONE_PUSH));

@@ -2283,6 +2283,15 @@ git -C "$T/wt/D-2" push -q origin fix/D-2 2>/dev/null; D2_REMOTE=$(git -C "$T/wt
 git -C "$T/wt/D-2" reset -q --hard HEAD~1; git -C "$T/repo" update-ref -d refs/remotes/origin/fix/D-2
 git -C "$T/repo" worktree add -q -b fix/P-2 "$T/wt/P-2" main
 echo p > "$T/wt/P-2/p.txt"; git -C "$T/wt/P-2" add p.txt; git -C "$T/wt/P-2" commit -q -m "fix(p): P-2 make p"
+# P-3's push is refused as a server error while $T/rc-503 is there.
+git -C "$T/repo" worktree add -q -b fix/P-3 "$T/wt/P-3" main
+echo q > "$T/wt/P-3/q.txt"; git -C "$T/wt/P-3" add q.txt; git -C "$T/wt/P-3" commit -q -m "fix(q): P-3 make q"
+cat > "$T/rc-origin.git/hooks/pre-receive" <<EOF
+#!/bin/sh
+while read -r _ _ ref; do [ "\$ref" = refs/heads/fix/P-3 ] && [ -f "$T/rc-503" ] && { echo "Internal Server Error" >&2; exit 1; }; done
+exit 0
+EOF
+chmod +x "$T/rc-origin.git/hooks/pre-receive"; touch "$T/rc-503"
 git clone -q -b main "$T/rc-origin.git" "$T/rc-other" 2>/dev/null
 echo x > "$T/rc-other/x.txt"; git -C "$T/rc-other" add x.txt; git -C "$T/rc-other" commit -q -m "fix(x): D-1 add x, again"; git -C "$T/rc-other" push -q origin HEAD:main 2>/dev/null
 q init rc; q set-batch concurrency=4
@@ -2291,6 +2300,8 @@ q add D-2; q set D-2 lane=A branch=fix/D-2 "worktree=$T/wt/D-2"; q park D-2 "D-2
 PQ='git push origin fix/P-2 was refused: push it and open the draft (gh pr create --repo acme/widgets --draft --base main --head fix/P-2 --title "fix(p): P-2 make p" --body-file pr-body.md), then post the review and the Jira comment'
 q add P-2; q set P-2 lane=A branch=fix/P-2 "worktree=$T/wt/P-2"; q park P-2 "$PQ"
 say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes p." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: $PQ" > "$T/state-rc/logs/P-2.log"
+q add P-3; q set P-3 lane=A branch=fix/P-3 "worktree=$T/wt/P-3"; q park P-3 "${PQ//P-2/P-3}"
+say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes q." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: ${PQ//P-2/P-3}" > "$T/state-rc/logs/P-3.log"
 RQ='R-1: widen this PR to cover the CSV export too (recommended), or split the export into a follow-up?'
 q add R-1; q set R-1 state=running lane=A branch=fix/R-1 session_id=gone
 say "AUTOPILOT_PARK: $RQ" 'AUTOPILOT_PARK_RECOMMENDS: {"options": ["widen this PR", "split it into a follow-up"], "chose": "widen this PR", "category": "scope"}' > "$T/state-rc/logs/R-1.log"
@@ -2314,6 +2325,10 @@ check "DS-397 AC3 a recommendation in an ask category is never taken" \
   '[ "$(field R-2 state)" = "\"parked\"" ] && [ "$(field R-2 park.recommends)" = null ] && ! grep -q "buy the paid plan" "$T/state-rc/briefings/R-2.md" 2>/dev/null && echo "$out" | grep -qF "R-2: unreadable park recommendation (money is an ask category: ask, never take it)"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-397 a second pass opens no second draft and takes nothing again" '[ "$(grep -c "^pr create" "$T/rc-gh.log")" = 1 ] && [ "$(grep -c "\"R-1\"" "$T/state-rc/decisions.jsonl")" = 1 ] && [ "$(field R-2 state)" = "\"parked\"" ]'
+check "DS-496 AC2 a 5xx on the pass's own push leaves the park to try again, with no recovery recorded" \
+  '[ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.recovery)" = null ] && echo "$out" | grep -qF "P-3: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and the next pass tries again"'
+rm "$T/rc-503"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-496 AC2 and the next pass finishes it" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-3)" = "$(git -C "$T/wt/P-3" rev-parse HEAD)" ] && [ "$(field P-3 state)" = "\"done\"" ]'
 
 # ---- DS-419: a ready PR held for review feedback, or with a review at its head that is not clean,
 # goes back to a fix worker; the threads a finished try worked are replied on and resolved.

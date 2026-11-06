@@ -432,6 +432,14 @@ check "DS-390 a grant for another branch allows nothing here" '[[ "$out" != *CON
 rm -f "$DESK_QUEUE"
 settings '`bash tests/run.sh`' '' "$(rows3 git-push=yes git-force-with-lease=yes)"
 check "DS-390 AC4 lease yes: a pushed branch still rebases" 'ok "git rebase origin/main" "git push --force-with-lease origin fix/fix-thing"'
+RETRY="node $B/push-retry.mjs"
+check "DS-496 push-retry runs each push the worker may make, and --more each of them" \
+  'ok "$RETRY origin fix/fix-thing" "$RETRY -u origin fix/fix-thing" "$RETRY --set-upstream origin fix/fix-thing" "$RETRY --force-with-lease origin fix/fix-thing" "$RETRY --more origin fix/fix-thing" "$RETRY --more --force-with-lease origin fix/fix-thing"'
+check "DS-496 and nothing wider" 'no "$RETRY origin main" "$RETRY origin fix/other" "$RETRY --force origin fix/fix-thing" "$RETRY origin fix/fix-thing --force" "$RETRY" "$RETRY --more"'
+settings '`bash tests/run.sh`' '' "$PUSH3"
+check "DS-496 no lease grant: push-retry's lease form is refused, its plain form is not" 'no "$RETRY --force-with-lease origin fix/fix-thing" && ok "$RETRY origin fix/fix-thing"'
+settings '`bash tests/run.sh`' '' "$(rows3 git-push=no)"
+check "DS-496 no git-push grant: push-retry is refused too" 'no "$RETRY origin fix/fix-thing" "$RETRY --more origin fix/fix-thing"'
 git -C "$T/repo" update-ref -d refs/remotes/origin/fix/fix-thing
 settings '`bash tests/run.sh`' '' "$PUSH3"
 check "DS-390 AC4 a branch not on origin yet rebases, lease ask or not" 'ok "git rebase origin/main"'
