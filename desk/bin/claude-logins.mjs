@@ -76,17 +76,12 @@ export function readRegistry({ claude = 'claude', env = process.env, logins = cl
   return { ok: true, live };
 }
 
-// The login a worker runs on, from the `desk_login` line spawn-worker.sh writes to its log at each
-// start: its config folder, or null for the default (and for a log with no such line).
-export const LOGIN_EVENT = 'desk_login';
-export function logLoginDir(path) {
-  try { return loginDirIn(readFileSync(path, 'utf8')); } catch { return null; }
-}
-export function loginDirIn(text) {
-  const at = String(text).lastIndexOf(`{"type":"${LOGIN_EVENT}"`);
-  if (at < 0) return null;
-  const end = text.indexOf('\n', at);
-  try { return JSON.parse(text.slice(at, end < 0 ? undefined : end)).config_dir || null; } catch { return null; }
+// The login a worker runs on, from the file spawn-worker.sh writes beside its settings at each start
+// (kept out of its log, whose growth is the worker's own output): its config folder, or null for the
+// default, and for a worker with no such file.
+export const loginFile = (stateDir, key) => join(stateDir, 'workers', `${key}.login.json`);
+export function workerLoginDir(stateDir, key) {
+  try { return JSON.parse(readFileSync(loginFile(stateDir, key), 'utf8')).config_dir || null; } catch { return null; }
 }
 
 // Where every login keeps its session transcripts: <folder>/projects.
@@ -94,7 +89,7 @@ export const projectsDirs = (opts) => claudeLogins(opts).map((l) => join(l.dir, 
 
 // ---- CLI ---------------------------------------------------------------------------------------
 //   agents          the registry across every login, one JSON list; exit 1 when a login cannot be read
-//   login-event     the `desk_login` log line for this process's CLAUDE_CONFIG_DIR
+//   login-event     the login file's JSON for this process's CLAUDE_CONFIG_DIR
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
@@ -107,7 +102,7 @@ if (isMain) {
     console.log(JSON.stringify(r.live));
   } else if (cmd === 'login-event') {
     const l = loginOf(process.env.CLAUDE_CONFIG_DIR);
-    console.log(JSON.stringify({ type: LOGIN_EVENT, login: l.name, config_dir: l.configDir, at: new Date().toISOString() }));
+    console.log(JSON.stringify({ login: l.name, config_dir: l.configDir, at: new Date().toISOString() }));
   } else {
     console.error('usage: claude-logins.mjs agents | login-event');
     process.exit(2);

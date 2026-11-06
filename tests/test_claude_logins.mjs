@@ -92,16 +92,16 @@ const killed = [];
 const stopped = M.stopForWindow({ key: 'W-1', session_id: 'S-B' }, { live: L.readRegistry().live, kill: (pid) => killed.push(pid), setQueue: () => ({ ok: true }) });
 t('AC5 the maintenance stop kills login B\'s worker and marks it to resume', `${stopped.ok} ${killed.join()}`, 'true 22');
 
-// ---- a worker's login, from its log
-const LOG = join(T, 'w.log');
-writeFileSync(LOG, '{"type":"desk_preflight"}\n');
-t('a log with no login line is the default login', L.logLoginDir(LOG), null);
+// ---- a worker's login, from the file spawn-worker.sh writes beside its settings
+const S = join(T, 'state');
+mkdirSync(join(S, 'workers'), { recursive: true });
+t('a worker with no login file is on the default login', L.workerLoginDir(S, 'W-1'), null);
 const event = execFileSync('node', [join(BIN, 'claude-logins.mjs'), 'login-event'], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: B } });
-writeFileSync(LOG, `{"type":"desk_preflight"}\n${event}{"type":"system"}\n`);
-t('spawn-worker\'s login line names login B', L.logLoginDir(LOG), B);
-t('and reads back as login B', L.loginOf(L.logLoginDir(LOG)).name, 'b');
-t('the default folder\'s login line reads as the default', L.loginDirIn(execFileSync('node', [join(BIN, 'claude-logins.mjs'), 'login-event'], { encoding: 'utf8' })), null);
-
+writeFileSync(L.loginFile(S, 'W-1'), event);
+t('spawn-worker\'s login file names login B', L.workerLoginDir(S, 'W-1'), B);
+t('and reads back as login B', L.loginOf(L.workerLoginDir(S, 'W-1')).name, 'b');
+writeFileSync(L.loginFile(S, 'W-1'), execFileSync('node', [join(BIN, 'claude-logins.mjs'), 'login-event'], { encoding: 'utf8' }));
+t('the default folder\'s login file reads as the default', L.workerLoginDir(S, 'W-1'), null);
 // ---- AC13: the lift probe for a hold on login B runs in B's folder and is kept as B's
 resetCalls();
 const lb = L.loginOf(B);
@@ -116,15 +116,13 @@ t('AC14 the default probe runs as before, into probe.log', `${calls().join()} ${
 rmSync(process.env.DESK_USAGE_DIR, { recursive: true, force: true });
 
 // ---- AC11, AC12: desk-q's scheduled probe, per login
-const S = join(T, 'state');
-mkdirSync(join(S, 'logs'), { recursive: true });
 const repos = (running) => [{ rows: running.map((key) => ({ k: 'running', t: { key } })), prs: [], stateDir: S, q: {} }];
 const now = Date.now();
 const due = (r) => Q.probesDue(r, { now }).map((x) => x.login?.name ?? 'default').join() || 'none';
 t('AC11 no worker running: the default and login B are each due', due(repos([])), 'default,b');
-writeFileSync(join(S, 'logs', 'W-1.log'), `${event}`);
+writeFileSync(L.loginFile(S, 'W-1'), event);
 t('AC12 a worker on login B: no probe on B, and the default holds as today', due(repos(['W-1'])), 'none');
-writeFileSync(join(S, 'logs', 'W-1.log'), '{"type":"system"}\n');
+rmSync(L.loginFile(S, 'W-1'));
 t('AC11 a worker on the default only: login B is still probed', due(repos(['W-1'])), 'b');
 mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
 writeFileSync(P.loginProbeLog(process.env.DESK_USAGE_DIR, lb), `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: {

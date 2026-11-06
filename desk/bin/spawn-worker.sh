@@ -363,8 +363,9 @@ export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
 # The login this worker runs on (its CLAUDE_CONFIG_DIR, or the default), read back by the pass and
-# desk-q (claude-logins.mjs) to probe that login's usage.
-node "$DESK_ENV_DIR/claude-logins.mjs" login-event >> "$LOG" 2>/dev/null < /dev/null || true
+# desk-q (claude-logins.mjs) to probe that login's usage. Beside its settings, never in its log, whose
+# growth is the worker's own output.
+node "$DESK_ENV_DIR/claude-logins.mjs" login-event > "$STATE/workers/$TICKET.login.json" 2>/dev/null < /dev/null || true
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
 desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \

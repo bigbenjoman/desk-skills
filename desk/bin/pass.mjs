@@ -31,7 +31,7 @@ import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText, limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
-import { readRegistry, loginDirIn, loginOf, loginKey } from './claude-logins.mjs';
+import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -211,7 +211,7 @@ const putOff = (t) => t.state === 'parked' && !!t.park?.question && !isHeld(t)
 // not wedged, until this long after the reset; then the stall check runs as before.
 const LIMIT_GRACE_MS = 30 * 60 * 1000;
 // The probe runs on the login the hold is on, its reading kept as that login's (usage-probe.mjs): a
-// worker's login is the one its log names, and a preflight's this pass's own.
+// worker's login is the one spawn-worker.sh recorded for it, and a preflight's this pass's own.
 const OWN_LOGIN = loginOf(process.env.CLAUDE_CONFIG_DIR);
 const PROBES = new Map();
 // At most one probe a login a pass, made only when something on that login is held on the limit.
@@ -552,7 +552,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   }
   const pausedOnLimit = pausedOn(limit);
   // Kept below only while the ticket is still running once the loop is done.
-  if (pausedOnLimit) usageHolds.push({ key: t.key, limit, was: t.usage_paused, login: loginOf(loginDirIn(logText)) });
+  if (pausedOnLimit) usageHolds.push({ key: t.key, limit, was: t.usage_paused, login: loginOf(workerLoginDir(STATE, t.key)) });
   else if (t.usage_paused) q('set', t.key, 'usage_paused=null');
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
@@ -689,7 +689,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // then is resumed in its own session, never failed or taken as done. Once per limit: a resume that
     // ends before the model answers, with no new rejection, leaves the same count of limits in the log,
     // and is then handled as any other exit below rather than resumed on every pass.
-    if (lifted(limit, loginOf(loginDirIn(logText)))) {
+    if (lifted(limit, loginOf(workerLoginDir(STATE, t.key)))) {
       const why = `exited at ${limitName(limit.type)}, which lifted (${liftedHow(limit)})`;
       q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`,
         `resume_limits=${usage.limits.length}`);
@@ -1403,7 +1403,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       }
       // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and
       // nothing else holds spawns: another limit, the maintenance window, the budget, memory.
-      const up = awaitsLift && lifted(atLimit, loginOf(loginDirIn(text)));
+      const up = awaitsLift && lifted(atLimit, loginOf(workerLoginDir(STATE, BASE_FIX_KEY)));
       const ended = up ? `exited at ${limitName(atLimit.type)}, which lifted (${liftedHow(atLimit)})` : null;
       if (up && !resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume_limits: usage.limits.length } };
       else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);

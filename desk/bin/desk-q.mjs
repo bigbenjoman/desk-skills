@@ -45,7 +45,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { probeLogins, logLoginDir } from './claude-logins.mjs';
+import { probeLogins, workerLoginDir } from './claude-logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -630,16 +630,16 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 export const machineRunning = (repos) => repos.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
-// The workers running on one Claude login other than the default, by the login each worker's log
-// names (claude-logins.mjs). A batch whose queue cannot be read counts at its repo's cap, as above.
-export function runningOn(repos, login, { dirOf = logLoginDir } = {}) {
+// The workers running on one Claude login other than the default, by the login spawn-worker.sh
+// recorded for each (claude-logins.mjs). A batch whose queue cannot be read counts at its repo's cap.
+export function runningOn(repos, login, { dirOf = workerLoginDir } = {}) {
   let n = 0;
   for (const r of repos) {
     if (r.error) { n += r.cap ?? 0; continue; }
     for (const b of r.batches ?? [r]) {
       const keys = (b.rows ?? []).filter((x) => groupOf(x.k) === 'running').map((x) => x.t.key);
       if (b.q?.base_fix?.running) keys.push(baseFixKey(b.q.base ?? 'base'));
-      n += keys.filter((k) => dirOf(join(b.stateDir, 'logs', `${k}.log`)) === login.configDir).length;
+      n += keys.filter((k) => dirOf(b.stateDir, k) === login.configDir).length;
     }
   }
   return n;
