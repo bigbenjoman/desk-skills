@@ -536,12 +536,12 @@ rec E-10 A '"epic":{"key":"E-5","summary":"a feature"}'
 out=$(admit E-10 --by ben); rc=$?
 check "DS-351 AC2: a child admitted later into the waiting batch is held behind the epic too" '[ $rc -eq 0 ] && [ "$(eget E-5 tickets.E-10.state)" = parked ] && [ "$(eget E-5 tickets.E-10.held_by)" = E-5 ]'
 # Triaged three at a time, the child's triage done long before its epic's: it still waits for the epic.
-rec E-30 A '"type":"Epic","branch":"feat/E-30-pool"'; rec E-32 A '"summary":"a listed child"'; printf 'E-32\n' > "$T/children/E-30"
-rec E-31 A '"epic":{"key":"E-30","summary":"a feature"}'; echo 1 > "$T/recs/E-30.sleep"
-out=$(TRIAGE_K=3 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit E-31 E-30 --by ben); rc=$?
+rec EP-1 A '"type":"Epic","branch":"feat/EP-1-pool"'; rec EP-3 A '"summary":"a listed child"'; printf 'EP-3\n' > "$T/children/EP-1"
+rec EP-2 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 1 > "$T/recs/EP-1.sleep"
+out=$(TRIAGE_K=3 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-2 EP-1 --by ben); rc=$?
 check "DS-506 AC7: an epic and its child in one call: the child joins the epic's feature batch, not the standing one" \
-  '[ $rc -eq 0 ] && [ "$(eget E-30 tickets.E-31.admitted_by)" = ben ] && [ "$(qget tickets.E-31)" = undefined ] && grep -q "^admitted E-31 by ben into feature batch E-30 " <<< "$out"'
-config yes '`none`'; rm -f "$T/recs/E-30.sleep"
+  '[ $rc -eq 0 ] && [ "$(eget EP-1 tickets.EP-2.admitted_by)" = ben ] && [ "$(qget tickets.EP-2)" = undefined ] && grep -q "^admitted EP-2 by ben into feature batch EP-1 " <<< "$out"'
+config yes '`none`'; rm -f "$T/recs/EP-1.sleep"
 config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-19 A '"summary":"the third epic child"'; printf 'E-19\n' > "$T/children/E-9"
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
 check "DS-352: standing intake starts another epic's feature batch beside a live one" '[ "$(eget E-9 base)" = feat/E-9-third ] && [ "$(eget E-5 base)" = feat/E-5-a-feature ] && grep -q "^intake: started feature batch E-9 on feat/E-9-third, beside the standing batch$" <<< "$out" && ! grep -q "E-9 not admitted" <<< "$out"'
@@ -923,10 +923,10 @@ pool ''; out=$(admit OA OB OC --by ben); rc=$?
 check "DS-506 AC6: at Triage concurrency 1, triages run one at a time in the order given" '[ "$(most)" = 1 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "OA OB OC " ]'
 check "DS-506 AC6: and the output is today's" '[ $rc -eq 0 ] && [ "$out" = "$(printf "admitted OB by ben into batch b1 (lane A, size S)\nadmitted OC by ben into batch b1 (lane A, size S)\nadmitted OA by ben into batch b1 (lane A, size S), held behind OC\nthe supervisor'\''s next tick picks them up")" ]'
 # Jira's links order the triages: a blocker Jira names is triaged before what it blocks.
-rec JA A '"blockers":[{"key":"JB","category":"new"}]'; rec JB A
-printf '{"key":"JA","fields":{"status":{"name":"To Do","statusCategory":{"key":"new"}},"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"JB","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}\n' > "$T/get/JA.json"
-pool ''; out=$(admit JA JB --by ben)
-check "DS-506: a blocker Jira links is triaged first" '[ "$(tr "\n" " " < "$T/triage.calls")" = "JB JA " ] && [ "$(qget tickets.JA.held_by)" = JB ]'
+rec JX-1 A '"blockers":[{"key":"JX-2","category":"new"}]'; rec JX-2 A
+printf '{"key":"JX-1","fields":{"status":{"name":"To Do","statusCategory":{"key":"new"}},"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"JX-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}\n' > "$T/get/JX-1.json"
+pool ''; out=$(admit JX-1 JX-2 --by ben)
+check "DS-506: a blocker Jira links is triaged first" '[ "$(tr "\n" " " < "$T/triage.calls")" = "JX-2 JX-1 " ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
 # AC8: the spawn gate holding brings the pool down to one.
 for k in MA MB MC; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
 pool 3; out=$(DESK_MEM_AVAIL_GB=2 admit MA MB MC --by ben); rc=$?
