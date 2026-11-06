@@ -192,6 +192,16 @@ t('fallback: none is 0, never left out', render(base()).split('\n')[3], '<!-- de
 t('fallback: the verdict line is unchanged', marker(fellBack), marker(base()))
 t('fallback: the heading names the seats', heading(fellBack).endsWith('refuted cross-vendor · 2 fallback seats (correctness, requirements)'), true)
 t('fallback: it never decides clean', reads(fellBack), true)
+
+// ---- the files the review rests on, on a line of their own after the method line
+const rests = base({ rests_on: ['src/b.ts', 'src/a.ts', 'src/b.ts'] })
+t('DS-448 AC1 the rests-on line follows the method line, sorted and once each', render(rests).split('\n').slice(3).join(' | '), '<!-- desk-review:method v=1 fallback=0 --> | <!-- desk-review:rests-on v=1 files=["src/a.ts","src/b.ts"] -->')
+t('DS-448 the verdict line is unchanged', marker(rests), marker(base()))
+t('DS-448 it never decides clean', reads(base({ rests_on: [] })), true)
+t('DS-448 no rests_on prints no line', render(base()).includes('rests-on'), false)
+t('DS-448 a path holding ">" cannot close the comment', render(base({ rests_on: ['a-->b'] })).split('\n').at(-1), '<!-- desk-review:rests-on v=1 files=["a--\\u003eb"] -->')
+t('DS-448 an absolute path is refused', refused(base({ rests_on: ['/etc/x'] })), 'rests_on[0] must be a repo-relative path on one line')
+t('DS-448 a list is required', refused(base({ rests_on: 'src/a.ts' })), 'rests_on must list the repo-relative paths the seats read')
 t('method line: rounds, vendor and fallback count', methodLine(fellBack), 'desk-review: 1 round, last at `0123456` · codex read the diff cold · refuted cross-vendor · fallback seats: 2 (correctness, requirements)')
 t('method line: same-vendor is said', methodLine(r2([], { seats: [seat('correctness')] })), 'desk-review: 2 rounds, last at `0123456` · same-vendor · codex did not read the diff · fallback seats: 0')
 

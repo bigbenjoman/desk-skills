@@ -38,7 +38,7 @@ import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows } from './gate.mjs';
-import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { undraftCall, buildPark, undraftComment, verdictCarries, restsOnCarries, restsOn, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
@@ -2542,12 +2542,17 @@ const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
 const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // What git says about a PR's head and the base, for a head of the ticket's branch: whether a verdict for
 // an older head still holds at it (carry), and whether a merge from the base last moved it (baseMerge):
-// such a head, since the last try's, gets its own review try, outside the fix tries.
+// such a head, since the last try's, gets its own review try, outside the fix tries. With the
+// review-reuse lever on, a verdict holds only while the files its review rests on are unchanged
+// (restsOnCarries), after a rebase or any base merge; off, across clean base merges alone.
+const reviewReuse = E.leverOn('review-reuse');
 const baseMoves = (t, head) => {
   const fetched = () => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok;
   const git = (args) => shOut('git', ['-C', MAIN, ...args]);
   return {
-    carry: (sha) => fetched() && verdictCarries({ from: sha, head, base: `origin/${DEFAULT_BRANCH}`, git }),
+    carry: (sha, body) => fetched() && (reviewReuse
+      ? restsOnCarries({ from: sha, head, base: `origin/${DEFAULT_BRANCH}`, files: restsOn(body), git })
+      : verdictCarries({ from: sha, head, base: `origin/${DEFAULT_BRANCH}`, git })),
     baseMerge: (from) => fetched() && movedByBase({ from, head, base: `origin/${DEFAULT_BRANCH}`, git }),
     // The base's name when it has commits the head lacks; null when the head has them or git cannot say.
     behind: () => {
@@ -2647,7 +2652,9 @@ if (drafts.length) {
     const stale = hold ? (c.call !== 'conflict' && /^still in conflict/.test(t.stuck?.why ?? '')) || (c.call !== 'capture' && /still not taken after a capture try/.test(t.stuck?.why ?? ''))
       : !rf && !(c.call === 'checks' && fixRowErrors.length);
     if (t.stuck && stale && !DRY) q('set', t.key, 'stuck=null');
-    const carried = c.carried ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since` : '';
+    const carried = !c.carried ? ''
+      : c.range ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as its own diff is unchanged and ${DEFAULT_BRANCH}'s range ${c.range} changed none of the files the review rests on`
+        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since`;
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
@@ -2664,8 +2671,10 @@ if (drafts.length) {
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
       if (r.ok) {
         out.push(`undrafted: PR #${n} (${t.key}) at ${String(v.headRefOid).slice(0, 12)}${carried}; the merge driver merges it once it is green`);
-        const said = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', undraftComment(c.verdict, v.headRefOid, cfg.clean, c.carried)]);
+        const said = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', undraftComment(c.verdict, v.headRefOid, cfg.clean, c.carried, c.range)]);
         if (!said.ok) out.push(`undraft: PR #${n} (${t.key}) left draft, but its comment was not posted (${said.out.split('\n').pop()})`);
+        // Said here, the merge driver need not say the carry again at this head.
+        else if (c.range) { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${n}-${v.headRefOid}`), ''); } catch { /* the driver says it once more */ } }
         if (c.note) {
           if (!existsSync(notesFile)) writeFileSync(notesFile, '# Batch notes\n\n');
           appendFileSync(notesFile, `${c.note}\n`);

@@ -43,7 +43,7 @@ the results file (`desk-review-results-<run>.json`, the core's *The verdict*). N
 two reviews running at once share a scratchpad, and one would overwrite or append to the other's
 files, so a seat reads the wrong diff and the verdict counts the wrong findings. The brief holds the
 resolved bar's text, the diff command from item 3, the changed-file list, the §5 Repo instructions paths, the intent
-paragraph, the `FINDING` format, the round rules on round 2+, and:
+paragraph, the `FINDING` format and its `FILES READ` line, the round rules on round 2+, and:
 
 > Argue that this change should not ship. Report only what would break production, or what should
 > not exist, at the bar's P0, P1 and P2, in the FINDING format. Every claim cites file:line in the
@@ -54,7 +54,7 @@ paragraph, the `FINDING` format, the round rules on round 2+, and:
 Then one plain command, alongside the Claude finders:
 
 ```bash
-codex exec --sandbox read-only --skip-git-repo-check 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS.'
+codex exec --sandbox read-only --skip-git-repo-check 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS, then its FILES READ line.'
 ```
 
 `<brief>` is the brief's full scratchpad path, or `desk-review-codex-brief-<run>.txt` in a worker, where
