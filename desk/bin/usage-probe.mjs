@@ -3,6 +3,10 @@
 // an open desk-q runs one Haiku call every PROBE_EVERY_MS whose event carries both windows, about 2 s
 // and 3.6k tokens. Its stream-json output is kept as <usage dir>/probe.log and read like a worker log.
 // Never billed to an API key: the call runs without ANTHROPIC_API_KEY, on the signed-in account.
+//
+// A probe given a login runs in that login's config folder, and its output and start time are kept as
+// that login's: probe.log and probe.at for the default login, probe.<login>.log and probe.<login>.at
+// for another, so another login's reading is never read as the default's.
 import { mkdirSync, openSync, closeSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -10,6 +14,8 @@ import * as E from './desk-env.mjs';
 import { newestReading, stateDirs, usageDir, probeLog } from './usage-pace.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { usageLimit } from './usage-limit.mjs';
+import { loginEnv } from './logins.mjs';
+import { loginKey } from './claude-logins.mjs';
 
 export const PROBE_EVERY_MS = 5 * 60 * 1000;
 // However many desk-q windows are open, at most one probe starts in this long.
@@ -17,6 +23,9 @@ export const PROBE_GAP_MS = 60 * 1000;
 export const PROBE_ARGS = ['-p', 'Reply with: ok', '--model', 'haiku', '--output-format', 'stream-json', '--verbose',
   '--setting-sources', '', '--strict-mcp-config', '--tools', ''];
 export { usageDir, probeLog };
+const forLogin = (login) => (login?.configDir ? `.${loginKey(login)}` : '');
+export const loginProbeLog = (dir = usageDir(), login = null) => (forLogin(login) ? join(dir, `probe${forLogin(login)}.log`) : probeLog(dir));
+const probeStamp = (dir, login) => join(dir, `probe${forLogin(login)}.at`);
 
 // The newest reading of both windows: every repo's worker logs and the last probe's output, the same
 // sources a pass's newestUsage reads.
@@ -24,22 +33,28 @@ export { usageDir, probeLog };
 export const readUsage = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), now = Date.now() } = {}) =>
   newestReading({ dirs, files: [probeLog(dir)], now });
 
+// The newest reading of a login other than the default: its own probe's output and nothing else, as
+// no worker log is yet kept as a login's.
+export const readLoginUsage = ({ login, dir = usageDir(), now = Date.now() }) =>
+  newestReading({ dirs: [], files: [loginProbeLog(dir, login)], now });
+
 // A probe is due only with no worker running anywhere and no reading in the last PROBE_EVERY_MS.
 export const probeDue = ({ running, reading, now }) => running === 0 && (reading?.at == null || now - reading.at > PROBE_EVERY_MS);
 
-// The probe's environment: the caller's without ANTHROPIC_API_KEY.
-export function probeEnv(env = process.env) {
+// The probe's environment: the caller's without ANTHROPIC_API_KEY, in the login's folder when given one.
+export function probeEnv(env = process.env, login = null) {
+  if (login) return loginEnv(login, env);
   const { ANTHROPIC_API_KEY: _key, ...rest } = env;
   return rest;
 }
 
-// Start one probe, unless another desk-q started one in the last PROBE_GAP_MS. The start time is
-// read and written under a lock, so two windows reaching a probe together start one between them.
-// `done` is called when it exits.  -> { ran: true } | { ran: false, why }
-export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 'claude', env = process.env, now = Date.now(), done = () => {} } = {}) {
+// Start one probe, unless another desk-q started one on the same login in the last PROBE_GAP_MS. The
+// start time is read and written under a lock, so two windows reaching a probe together start one
+// between them. `done` is called when it exits.  -> { ran: true } | { ran: false, why }
+export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 'claude', env = process.env, login = null, now = Date.now(), done = () => {} } = {}) {
   const lock = await takeBorrowLock({ dir: lockDir, name: 'desk-usage-probe.lock.d', waitMs: 0 });
   if (!lock.ok) return { ran: false, why: 'another desk-q is starting one' };
-  const stamp = join(dir, 'probe.at');
+  const stamp = probeStamp(dir, login);
   try {
     let last = 0;
     try { last = Number(readFileSync(stamp, 'utf8').trim()) || 0; } catch { /* never ran */ }
@@ -48,17 +63,18 @@ export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 
     writeFileSync(stamp, String(now));
   } finally { lock.release(); }
   // Written beside the last output and moved over it at exit, so the last reading stays while it runs.
-  const part = `${probeLog(dir)}.part`;
+  const out = loginProbeLog(dir, login);
+  const part = `${out}.part`;
   const fd = openSync(part, 'w');
   let ended = false;
   const end = (ok) => {
     if (ended) return;
     ended = true;
-    if (ok) { try { renameSync(part, probeLog(dir)); } catch { /* gone */ } }
+    if (ok) { try { renameSync(part, out); } catch { /* gone */ } }
     done();
   };
   try {
-    const child = spawn(claude, PROBE_ARGS, { env: probeEnv(env), stdio: ['ignore', fd, 'ignore'] });
+    const child = spawn(claude, PROBE_ARGS, { env: probeEnv(env, login), stdio: ['ignore', fd, 'ignore'] });
     child.on('error', () => end(false));
     child.on('exit', (code) => end(code === 0));
     child.unref();
@@ -68,15 +84,15 @@ export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 
 
 // One probe the caller waits for: has the usage limit lifted? A batch held on it asks once a pass,
 // whatever the limit's reset time says, since a switch to another subscription lifts it early. Its
-// output is kept as probe.log, so desk-q's reading is as fresh as the answer.
+// output is kept as the login's probe log, so desk-q's reading is as fresh as the answer.
 //   -> { ok: true } | { ok: false, limit: { type, resetsAt } | null, why }
-export function probeNow({ dir = usageDir(), claude = 'claude', env = process.env, timeoutMs = 120_000 } = {}) {
-  const r = spawnSync(claude, PROBE_ARGS, { env: probeEnv(env), encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
+export function probeNow({ dir = usageDir(), claude = 'claude', env = process.env, login = null, timeoutMs = 120_000 } = {}) {
+  const r = spawnSync(claude, PROBE_ARGS, { env: probeEnv(env, login), encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
   const out = r.stdout ?? '';
   try {
     mkdirSync(dir, { recursive: true });
-    if (out) writeFileSync(probeLog(dir), out);
-    writeFileSync(join(dir, 'probe.at'), String(Date.now()));
+    if (out) writeFileSync(loginProbeLog(dir, login), out);
+    writeFileSync(probeStamp(dir, login), String(Date.now()));
   } catch { /* the answer stands without the reading */ }
   const u = usageLimit(out);
   const limit = u.last?.kind === 'limit' && !u.last.resumed ? { type: u.last.type, resetsAt: u.last.resetsAt } : null;

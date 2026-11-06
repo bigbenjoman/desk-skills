@@ -75,6 +75,8 @@ case "\$1" in
   auth|login|whoami) echo "\$@" >> "$T/calls.$c" ;;
   *) exit 0 ;;
 esac
+# Another Claude login's folder holding signed-out is signed out, whatever the default's mode.
+[ -n "\${CLAUDE_CONFIG_DIR:-}" ] && [ -f "\$CLAUDE_CONFIG_DIR/signed-out" ] && { echo "Not logged in" >&2; exit 1; }
 case "\$(cat "$T/mode.$c" 2>/dev/null || echo ok)" in
   out) echo "You are not logged in to $c" >&2; exit 1 ;;
   net) printf '%s\n' "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" "- Active account: true" >&2; exit 1 ;;
@@ -259,6 +261,23 @@ check "AC4 still failing on the next pass: no second one"   '[ "$(notes)" = 1 ]'
 mode gh ok; sup
 mode gh out; rm -f "$T/state/health.json"; sup; sup
 check "failing again after a recovery notifies again"       '[ "$(notes)" = 2 ]'
+
+# ---- DS-463 AC7: a second Claude login signed out ----------------------------------------------
+q set-batch supervised=false
+mode gh ok; rm -f "$T/state/health.json"
+mkdir -p "$HOME/.claude-logins/b"; : > "$HOME/.claude-logins/b/signed-out"
+export DESK_SUBSCRIPTIONS="$T/subscriptions.md"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `standby` |\n' > "$DESK_SUBSCRIPTIONS"
+before=$(calls claude)
+pj
+check "DS-463 AC7 login b is checked in its own folder"     '[ "$(calls claude)" = $((before + 2)) ]'
+check "DS-463 AC7 the default login's result is unchanged"  'grep -q "health: all checks pass" <<< "$out"'
+check "DS-463 AC7 login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
+check "DS-463 AC7 and pushed under its own key"             '[[ "$(pushes)" =~ health:.+:claude:b ]]'
+rm -f "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
+pj
+check "DS-463 AC7 signed back in, nothing is said of it"    '! grep -q "Claude login b" <<< "$out" && [ -z "$(pushes)" ]'
+unset DESK_SUBSCRIPTIONS
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

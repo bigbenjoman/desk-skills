@@ -32,7 +32,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey } from './desk-env.mjs';
 import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -44,7 +44,8 @@ import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy, triesMade } from
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
-import { readUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { probeLogins, logLoginDir } from './claude-logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -629,6 +630,32 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 export const machineRunning = (repos) => repos.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
+// The workers running on one Claude login other than the default, by the login each worker's log
+// names (claude-logins.mjs). A batch whose queue cannot be read counts at its repo's cap, as above.
+export function runningOn(repos, login, { dirOf = logLoginDir } = {}) {
+  let n = 0;
+  for (const r of repos) {
+    if (r.error) { n += r.cap ?? 0; continue; }
+    for (const b of r.batches ?? [r]) {
+      const keys = (b.rows ?? []).filter((x) => groupOf(x.k) === 'running').map((x) => x.t.key);
+      if (b.q?.base_fix?.running) keys.push(baseFixKey(b.q.base ?? 'base'));
+      n += keys.filter((k) => dirOf(join(b.stateDir, 'logs', `${k}.log`)) === login.configDir).length;
+    }
+  }
+  return n;
+}
+// The probes an open desk-q makes now: the default login's while no worker anywhere keeps its reading
+// fresh, and each other login in rotation or on standby while no worker runs on it, judged on that
+// login's own probe reading.  -> [{ login? }]
+export function probesDue(repos, { now, logins = probeLogins, dirOf } = {}) {
+  const due = probeDue({ running: machineRunning(repos), reading: readUsage({ now }), now }) ? [{}] : [];
+  let others = [];
+  try { others = logins().filter((l) => l.configDir); } catch { /* an unreadable subscriptions file probes the default only */ }
+  for (const login of others) {
+    if (probeDue({ running: runningOn(repos, login, { dirOf }), reading: readLoginUsage({ login, now }), now })) due.push({ login });
+  }
+  return due;
+}
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
 const attention = (r) => (r.error || !r.q ? 0 : needsCount(r).shown);
@@ -3246,8 +3273,9 @@ export function interactive({
   // and the cost cache's reading, workers or not.
   probeTimer = setInterval(() => {
     const now = clock();
-    const running = machineRunning(repos);
-    if (probeDue({ running, reading: readUsage({ now }), now })) probeWith({ now, done: () => { if (!done) draw(); } }).catch(() => {});
+    // One at a time: the probe's start lock refuses a second caller in the same moment.
+    const due = probesDue(repos, { now });
+    (async () => { for (const p of due) await probeWith({ now, ...p, done: () => { if (!done) draw(); } }).catch(() => {}); })();
     try { costWith({ now }); } catch { /* the next check tries again */ }
   }, probeMs);
   draw();

@@ -17,8 +17,9 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, HOME as E_HOME } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir } from './desk-env.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
+import { projectsDirs } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
@@ -645,7 +646,7 @@ switch (cmd) {
     const [key, ...rest] = at < 0 ? args : args.filter((_, i) => i !== at && i !== at + 1);
     if (at >= 0 && !SESSION_ID.test(session ?? '')) throw new Error('usage: queue.mjs park <TICKET> --claimed-by <session id> [<question>]');
     // A session name, or a session from another computer, has no transcript to read idleness from.
-    if (session && !transcriptOf(session)) throw new Error(`no transcript for session ${session} under ${join(E_HOME, '.claude', 'projects')}: --claimed-by wants the session id of a session on this computer`);
+    if (session && !transcriptOf(session)) throw new Error(`no transcript for session ${session} under ${projectsDirs().join(' or ')}: --claimed-by wants the session id of a session on this computer`);
     const t = ticket(q, key);
     const now = new Date().toISOString();
     if (session && (isHeld(t) || spinePark(t))) throw new Error(`${key} is parked by the orchestrator (${t.park.question}): only its release or approval settles it, so it cannot be claimed`);
