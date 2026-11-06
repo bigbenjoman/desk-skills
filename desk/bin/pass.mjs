@@ -30,7 +30,7 @@ import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText, limitName } from './usage-limit.mjs';
-import { probeNow } from './usage-probe.mjs';
+import { probeNow, probeDue } from './usage-probe.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -44,7 +44,7 @@ import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCel
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
-import { usagePace } from './usage-pace.mjs';
+import { usagePace, newestReading, probeLog } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
@@ -1121,9 +1121,24 @@ for (const s of HEALTH.stalls) personStall(s);
 // Weekly usage pacing (usage-pace.mjs): new spawns hold while 7-day usage is ahead of an even pace by
 // more than §3b "Usage pacing headroom (points)". That drains as the week goes on; a row that does not
 // read holds every spawn until it is fixed, as a malformed budget does.
-const PACE = usagePace();
+// A held batch spawns nothing, so no worker log brings a new reading, and only an open desk-q runs its
+// probe: the hold would keep itself on its last figure, an old subscription's after a switch. So a pass
+// that would hold on a reading older than the probe interval, with nothing running, makes the one
+// probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
+const paceReading = () => newestReading({ files: [probeLog()] });
+let READING = paceReading();
+let PACE = usagePace({ usage: READING.seven_day });
+let paceProbe = '';
+if (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READING, now: Date.now() })) {
+  const p = probeOnce();
+  if (p.ok) {
+    READING = paceReading();
+    PACE = usagePace({ usage: READING.seven_day });
+    paceProbe = '; read by a probe call just now';
+  } else paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
+}
 if (PACE.bad) personStall(`${PACE.bad} — not spawning until it is fixed`);
-else if (PACE.hold) report.stalled.push(`${PACE.line} (${running.length} running carry on; fix tries still start)`);
+else if (PACE.hold) report.stalled.push(`${PACE.line} (${running.length} running carry on; fix tries still start${paceProbe})`);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {

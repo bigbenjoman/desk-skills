@@ -30,6 +30,12 @@ prints `FEATURE MODE — on` or `— off: <why>` for every epic batch; an ordina
 ```
 
 - **The spine** is a dedicated ticket, drafted in desk-jira's ticket template; nothing is filed yet.
+  Its first line is the summary, then `Name: value` header lines, then the body. An epic admitted with
+  no session files from the headers and keeps them out of the description: `Type:` (a Story when left
+  out), `Blocks:` (a link from the spine to each key, under §3 `jira-edit`), and a line for each §4
+  Required fields field and the §4 Size field, by its id or Jira name. Any other `Name: text` line stays
+  in the body. A field with no value is asked for in the plan, and no start files the spine until an edit
+  gives it.
 - **One owner per criterion**: the child whose PR makes that criterion's spec pass. Where several
   children contribute, the owner is the one that completes it, and the rest go under `contributors`:
   `plan-batch` holds the owner behind each of them.

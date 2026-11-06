@@ -283,6 +283,13 @@ cfg_list() {
   { node "$DESK_ENV_MJS" list "$1" 2>/dev/null || true; } | jq -Rsc 'split("\n") | map(select(length > 0 and (ascii_downcase != "none")))'
 }
 
+# config §4 Required fields for an issue type, as JSON (desk-env.mjs requiredFields); unset is no rules.
+cfg_required() {
+  local none='{"need":[],"malformed":[]}'
+  [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || { printf '%s' "$none"; return 0; }
+  node "$DESK_ENV_MJS" required-fields "$1" 2>/dev/null || printf '%s' "$none"
+}
+
 # Field rules from config §4, checked before create or edit sends anything:
 #   Required fields          one item per rule, `<Type>[, <Type>…]: <field>[, <field>…]`: what a type must carry
 #   Size field               the size field: an XL is refused on every type but Epic, which is split instead
@@ -306,17 +313,14 @@ PRIORITY_KEY="${PRIORITY_FIELD:-priority}"
 rule_errors() {
   load_rules
   jq -rn --arg mode "$1" --arg type "$2" --argjson f "$3" --arg approved "$4" \
-    --argjson req "$RULES_REQ" --argjson top "$RULES_TOP" --arg size "$RULES_SIZE" \
+    --argjson req "$(cfg_required "$2")" --argjson top "$RULES_TOP" --arg size "$RULES_SIZE" \
     --arg pf "$PRIORITY_KEY" --arg headless "${DESK_AUTOPILOT_WORKER:-}" '
     def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
     def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));
     def oname: if type == "string" then . elif byname then (.value // .name) else null end;
-    def trim: gsub("^\\s+|\\s+$"; "");
     ($type | ascii_downcase) as $t
-    | ([$req[] | capture("^(?<types>[^:]+):(?<fields>.+)$")?
-        | select([.types | split(",")[] | trim | ascii_downcase] | index($t))
-        | .fields | split("[,\\s]+"; null)[] | select(length > 0)] | unique) as $need
-    | ($req[] | select(test("^[^:]+:.*[^\\s]") | not)
+    | ($req.need | unique) as $need
+    | ($req.malformed[]
         | "desk-jira: config §4 Required fields item \"\(.)\" is not <Type>: <field>, so the rules cannot be checked"),
       ($need[] as $k
         | if $mode == "create" then
