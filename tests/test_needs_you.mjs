@@ -601,6 +601,35 @@ const uq = queueOf('upsilon'); delete uq.tickets['U-1'].worktree_busy; delete uq
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__upsilon', 'queue.json'), JSON.stringify(uq));
 t('once the pass drops the record it is ready again, and needs nobody', `${shownState(ur().q, ur().q.tickets['U-1'])} ${N.collect({ word: 'upsilon' }).items.length}`, 'ready 0');
 
+// ---- A ticket with a park and unpushed commits is one item, carrying the park's reason: still parked,
+// or requeued off the park and held by its worktree before any worker started.
+const refused = 'git push was refused: remote rejected (Internal Server Error) after three tries';
+const heldWhy = 'its branch fix/Y-1 is 1 commit(s) ahead of origin/fix/Y-1, not pushed';
+const unpushed = 'its worktree /w/Y-2 has 1 commit(s) not on origin';
+put('ypsilon', { port: 4950, beat: 1, supervised: true, tickets: {
+  'Y-1': { state: 'triaged', lane: 'A', session_id: null, worktree_busy: { why: heldWhy, at: minsAgo(10) }, prev_park: { question: refused, since: minsAgo(40), round: 1 }, fix: { try: 1, of: 2, pr: 141, kind: 'review', what: 'a finding' } },
+  'Y-2': { state: 'parked', lane: 'A', park: { question: refused, since: minsAgo(40), unpushed } },
+  'Y-3': { state: 'triaged', lane: 'A', session_id: 'sess-y3', worktree_busy: { why: heldWhy, at: minsAgo(10) }, prev_park: { question: refused, since: minsAgo(40), round: 1 } },
+  'Y-4': { state: 'parked', lane: 'A', park: { question: 'which plan?', since: minsAgo(40) } },
+} });
+const yr = () => loadRepos().find((x) => x.slug === 'acme__ypsilon');
+const yItems = () => Object.fromEntries(N.collect({ word: 'ypsilon' }).items.map((i) => [i.t.key, i]));
+const yList = N.listText(N.collect({ word: 'ypsilon' })).split('\n');
+const yLine = (k) => yList.find((l) => l.startsWith(`ypsilon ${k} `)) ?? '';
+t('DS-497 AC1 a ticket requeued off its park and held by its worktree is one item with the park\'s reason, the worktree state as its note, and resume',
+  `${yList.filter((l) => l.startsWith('ypsilon Y-1 ')).length} ${yItems()['Y-1'].need} | ${yItems()['Y-1'].note} | ${yItems()['Y-1'].actions.map(([a]) => a).join()}`,
+  `1 ${refused} | Worktree in use: ${heldWhy} · commit, push or discard it. | resume,not-now`);
+t('DS-497 AC1 a parked ticket with unpushed commits keeps its park\'s item, with them as its note',
+  `${yList.filter((l) => l.startsWith('ypsilon Y-2 ')).length} ${yItems()['Y-2'].kind} ${yLine('Y-2').includes(`${refused} Its worktree /w/Y-2 has 1 commit(s) not on origin.`)} ${yItems()['Y-2'].actions[0][0]}`, '1 parked true resume');
+t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
+t('DS-497 AC2 a park older than the last worker to start says nothing of the worktree hold', `${yItems()['Y-3'].need} ${yItems()['Y-3'].actions.map(([a]) => a).join()}`,
+  `worktree in use: ${heldWhy} · commit, push or discard it done,not-now`);
+t('DS-497 AC1 desk-q leads the row and the ticket page with the reason', `${/Y-1 +◆ needs you +git push was refused/.test(strip(repoScreen(yr())))} ${strip(ticketScreen(yr(), 'Y-1')).includes('Its last worker parked: git push was refused')}`, 'true true');
+const yResume = N.record({ word: 'ypsilon', ticket: 'Y-1', action: 'resume', text: 'pushed it by hand' });
+const y1 = queueOf('ypsilon').tickets['Y-1'];
+t('a resume on it records the note, and leaves it queued with its reason, not requeued again', `${yResume.ok} ${y1.state} ${y1.prev_park.question === refused}`, 'true triaged true');
+t('not-now puts it off, and it leaves the list', `${N.record({ word: 'ypsilon', ticket: 'Y-1', action: 'not-now' }).ok} ${'Y-1' in yItems()}`, 'true false');
+
 // ---- A ready ticket held back by a collision with a running one says so, fix try or not.
 put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
   'F-1': { state: 'running', lane: 'A', stage: '4/9', collides_with: 'F-2|F-3' },
