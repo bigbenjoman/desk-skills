@@ -2002,6 +2002,45 @@ check "DS-402 AC2 its screenshots are read as a DONE worker's: the directory it 
 check "DS-402 AC3 a park whose draft is red on a check the row does not name is parked as today" \
   '[ "$(field V-5 state)" = "\"parked\"" ] && [ ! -e "$T/state-b/check-builds/765-$HB5.json" ]'
 
+# ---- DS-426: a park naming only a §4 Live reads entry gets its command run on the host, then a requeue
+# L-1 parks on gateway-models (whose command records where it ran and prints a response), L-2 on
+# bad-read (which fails), L-3 on something no entry names, L-4 on gateway-models beside a question.
+# A read that ends before the pass reaches its live reads section is settled by that same pass.
+cat > "$T/read-ok.sh" <<EOF
+pwd -P >> "$T/read-at"
+echo '{"models":["gw-1"]}'
+EOF
+cat > "$T/read-fail.sh" <<'EOF'
+echo "fetching"
+echo "AccessDeniedException: not authorised to perform ssm:GetParameter" >&2; exit 4
+EOF
+sed -e '/^| Check builds /d' "$T/config-b.md" > "$T/config-l.md"
+printf '| Live reads | `gateway-models: sh %s/read-ok.sh` `bad-read: sh %s/read-fail.sh` |\n' "$T" "$T" >> "$T/config-l.md"
+export DESK_CONFIG="$T/config-l.md" DESK_QUEUE="$T/queue-l.json" DESK_AUTOPILOT_STATE="$T/state-l"
+mkdir -p "$T/state-l/logs"; q init l; q set-batch concurrency=5
+for k in 1 2 3 4; do git init -q -b "fix/L-$k" "$T/wt/L-$k"; git -C "$T/wt/L-$k" commit -q --allow-empty -m "L-$k"; done
+HL1=$(git -C "$T/wt/L-1" rev-parse HEAD); HL2=$(git -C "$T/wt/L-2" rev-parse HEAD)
+say "AUTOPILOT_PARK: need live read gateway-models for the recorded payload. Not reached: the PR and the Jira comment" > "$T/state-l/logs/L-1.log"
+say "AUTOPILOT_PARK: need live read bad-read. Not reached: the PR" > "$T/state-l/logs/L-2.log"
+say "AUTOPILOT_PARK: which price should the plan show? Not reached: the PR" > "$T/state-l/logs/L-3.log"
+say "AUTOPILOT_PARK: need live read gateway-models. Should the fallback model be gw-2?" > "$T/state-l/logs/L-4.log"
+for k in 1 2 3 4; do q add "L-$k"; q set "L-$k" state=running lane=A "branch=fix/L-$k" "worktree=$T/wt/L-$k" "session_id=run-L-$k"; done
+read_done(){ for _ in $(seq 1 100); do [ -f "$T/state-l/live-reads/$1-$2-$3.code" ] && return 0; sleep 0.1; done; return 1; }
+: > "$T/read-at"; out1=$(node "$B/pass.mjs" 2>&1); read_done L-1 "$HL1" gateway-models; read_done L-2 "$HL2" bad-read
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-426 AC1 a park naming only gateway-models runs its command once, in the ticket's worktree" \
+  '[ "$(cat "$T/read-at")" = "$(cd "$T/wt/L-1" && pwd -P)" ] && echo "$out1" | grep -qF "L-1: parked only on §4 Live reads gateway-models: started at ${HL1:0:9}"'
+check "DS-426 AC1 its stdout is saved as the ticket's fixture, and the ticket is requeued, its park cleared" \
+  '[ "$(cat "$T/state-l/fixtures/L-1/gateway-models.json")" = "{\"models\":[\"gw-1\"]}" ] && [ "$(field L-1 state)" != "\"parked\"" ] && [ "$(field L-1 prev_park.question)" != null ] && printf "%s\n%s\n" "$out1" "$out" | grep -qF "L-1: live read gateway-models ran on this computer at ${HL1:0:9}, and what it printed is in $T/state-l/fixtures/L-1/gateway-models.json: requeued"'
+check "DS-426 AC1 while it waits on the read, it is not put to the person" \
+  '! echo "$out1" | grep -q "NOTIFY:.*L-1"'
+check "DS-426 AC2 a read that exits non-zero goes to the person with its command and last error line, not requeued" \
+  '[ "$(field L-2 state)" = "\"parked\"" ] && [ "$(field L-2 park.clears_when.kind)" = "\"none\"" ] && [ ! -e "$T/state-l/fixtures/L-2" ] && field L-2 park.question | grep -qF "live read bad-read (\`sh $T/read-fail.sh\`) exited 4 at ${HL2:0:9}: AccessDeniedException: not authorised to perform ssm:GetParameter" && echo "$out" | grep -q "NOTIFY:.*L-2"'
+check "DS-426 AC3 a park naming no Live reads entry is parked as today" \
+  '[ "$(field L-3 state)" = "\"parked\"" ] && [ "$(field L-3 park.question)" = "\"which price should the plan show? Not reached: the PR\"" ] && [ "$(field L-3 park.clears_when.kind)" = "\"none\"" ]'
+check "DS-426 AC3 and so is one that asks a question beside the entry: nothing runs for it" \
+  '[ "$(field L-4 state)" = "\"parked\"" ] && [ "$(field L-4 park.clears_when.kind)" = "\"none\"" ] && ! ls "$T/state-l/live-reads" | grep -q "^L-4-"'
+
 # ---- DS-271: no CI runner shares the memory ladder
 # A waiting marker an older desk left behind holds nothing, and the pass writes none of its own.
 export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-mt.json" DESK_AUTOPILOT_STATE="$T/state-mt"

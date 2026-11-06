@@ -440,6 +440,7 @@ git -C "$T/lw" commit -q --amend --allow-empty -m c
 git -C "$T/lw" push -q --force-with-lease="fix/x:$L0" origin fix/x 2>/dev/null; second=$?
 check "DS-390 AC2 git takes the granted push once and refuses it the second time" '[ $first -eq 0 ] && [ $second -ne 0 ]'
 
+<<<<<<< HEAD
 # ---- DS-431: §4 Worker read-only repos and Worker measuring commands ----
 denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
 readable(){ jq -e --arg d "$1" '.permissions.additionalDirectories | index($d)' "$T/ws.json" >/dev/null 2>&1; }
@@ -486,5 +487,13 @@ check "DS-431 AC2 a listed name inside this repo's own does not refuse its gh wr
 settings '`bash tests/run.sh`' '| Worker read-only repos | `acme/widgets` |' "$(rows3 pr-open=yes pr-edit=yes pr-reply=yes pr-self-review-comment=yes)"
 check "DS-431 AC2 a repo listing itself keeps its gh writes and is warned, and its clone stays read-only" \
   '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Worker read-only repos item \"acme/widgets\" is this repo"* ]] && ok "gh pr create --draft --repo acme/widgets --head b" "gh pr edit https://github.com/acme/widgets/pull/1 --title x" && denies "Edit(/$HOME/.desk-autopilot/acme__widgets/ref/acme__widgets/**)"'
+
+# ---- DS-426: a §4 Live reads row is the pass's, run on the host; a worker's settings do not change with it
+settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-noreads.json"
+settings '`bash tests/run.sh`' '| Live reads | `gateway-models: aws ssm get-parameter --name /gw/key --with-decryption` |'
+check "DS-426 AC4 a Live reads row grants a worker nothing: its permissions are the same with and without it" \
+  '[ $rc -eq 0 ] && [ "$(jq -S .permissions "$T/ws.json")" = "$(jq -S .permissions "$T/ws-noreads.json")" ]'
+check "DS-426 AC4 and no allow rule names the entry, its command or aws" \
+  '! jq -r ".permissions.allow[]" "$T/ws.json" | grep -qE "gateway-models|ssm|^Bash\(aws"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

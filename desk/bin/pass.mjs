@@ -10,7 +10,7 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, waitingOnRead, LIVE_READ } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -40,6 +40,7 @@ import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows } from './gate.mjs';
 import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
+import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
@@ -495,6 +496,26 @@ function buildParkOf(t, question) {
   return b ? { ...b, pr: pr.number, head: pr.headRefOid } : null;
 }
 
+// §4 Live reads (live-read.mjs): run on this computer for a park that asks for nothing but entries the
+// row names, in the ticket's worktree at its head, once per head and entry. Their output is saved to
+// FIXTURES/<KEY>/<name>.json for the worker the "live reads" section below requeues.
+const readRow = parseLiveReads(E.configValues('live-reads'));
+const READ_DIR = join(STATE, 'live-reads');
+const FIXTURES = join(STATE, 'fixtures');
+if (readRow.errors.length) report.waiting.push(`live reads: none run this pass, since config §4 Live reads does not parse: ${readRow.errors.join(', ')} (want \`<name>: <command>\`). Run /desk-setup`);
+// The reads a park asks for, started now: { reads: [name], head }, or null, which leaves the park as
+// it is. An entry already read at this head is not run again: a worker that parks on it again after
+// its requeue is the person's.
+function liveReadOf(t, question) {
+  if (readRow.errors.length || !readRow.reads.length || !t.worktree || !existsSync(t.worktree) || isSpine(t) || needsSession(t)) return null;
+  const reads = liveReadPark(question, readRow.reads);
+  if (!reads?.length) return null;
+  const head = sh('git', ['-C', t.worktree, 'rev-parse', 'HEAD'], { tolerant: true });
+  if (!/^[0-9a-f]{40}$/.test(head) || reads.some((r) => readRecord(READ_DIR, t.key, head, r.name))) return null;
+  for (const r of reads) startRead(READ_DIR, { key: t.key, head, name: r.name, command: r.command, cwd: t.worktree });
+  return { reads: reads.map((r) => r.name), head };
+}
+
 // ---- advance running tickets --------------------------------------------
 for (const t of rows.filter((r) => r.state === 'running')) {
   if (t.location === 'cloud' && t.cloud) { advanceCloud(t); continue; }
@@ -662,9 +683,12 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: statSync(log).mtime.toISOString() })}`);
     const reg = againstRegister(t, park.trim(), log);
     const recommends = recommendsOf(t, park.trim(), log);
-    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(clearsWhenOf(t, log))}`,
+    // A park asking only for §4 Live reads waits on the pass, which runs them now and settles it below.
+    const read = wedged ? null : liveReadOf(t, park.trim());
+    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log))}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []));
-    if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
+    if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')}: started at ${read.head.slice(0, 9)} in ${t.worktree}; requeued once they finish. The park: ${park.trim()}`);
+    else if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
     else report.parked.push(`${t.key}: ${park.trim()}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
     logDecisions(t, log, null);
   }
@@ -788,6 +812,41 @@ for (const c of readCloseouts(STATE)) {
   try { unlinkSync(c.file); } catch { /* gone */ }
 }
 
+// ---- live reads ---------------------------------------------------------------------
+// A park waiting on the §4 Live reads it named (liveReadOf, at harvest): while one runs it is left;
+// once each has exited 0 its output is saved as the ticket's fixture and the ticket requeued, its
+// briefing naming the files; one that failed puts the park to the person with its command and its
+// last error line, and nothing is requeued.
+for (const t of Object.values(queue().tickets)) {
+  if (!waitingOnRead(t)) continue;
+  const c = t.park.clears_when;
+  const at = String(c.head ?? '?').slice(0, 9);
+  const reads = (c.reads ?? []).map((name) => ({ name, rec: readRecord(READ_DIR, t.key, c.head, name) }));
+  const toPerson = (why) => {
+    q('set', t.key, `park.question=${JSON.stringify(`${why}. Run it yourself or fix it in config §4 Live reads, then answer with what it printed. The park: ${t.park.question}`)}`, 'park.clears_when={"kind":"none"}');
+    report.parked.push(`${t.key}: ${why}`);
+  };
+  if (reads.some((x) => x.rec?.state === 'running')) {
+    report.clears.push(`${t.key}: live read ${reads.filter((x) => x.rec?.state === 'running').map((x) => x.name).join(', ')} running at ${at}: left parked`);
+    continue;
+  }
+  const failed = reads.filter((x) => x.rec?.code !== 0);
+  if (!reads.length || failed.length) {
+    toPerson(failed.map(({ name, rec }) => (rec
+      ? `live read ${name} (\`${rec.command}\`) ${rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`} at ${at}${rec.error ? `: ${rec.error}` : ''}`
+      : `live read ${name} has no record at ${at}`)).join('; ') || 'its live reads name no entry');
+    continue;
+  }
+  let saved;
+  try { saved = reads.map(({ name, rec }) => saveFixture(FIXTURES, t.key, name, rec.out)); } catch (e) { toPerson(`its live reads ran at ${at}, but their output could not be saved under ${FIXTURES}: ${e.message}`); continue; }
+  const what = `live read ${reads.map((x) => x.name).join(', ')} ran on this computer at ${at}, and what it printed is in ${saved.join(', ')}`;
+  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  if (!rq.ok) { toPerson(`${what}, but the requeue was refused (${rq.out.split('\n').pop()})`); continue; }
+  // The next worker's briefing says what cleared the park (writeBrief), so it reads the fixture.
+  q('set', t.key, `cleared=${JSON.stringify({ what })}`);
+  report.clears.push(`${t.key}: ${what}: requeued`);
+}
+
 // ---- parks whose condition cleared ---------------------------------------------
 // A park that recorded what clears it (clears-when.mjs) is checked each pass, and settled once that
 // holds, as the recovery rules say and with no model: left for a person on lane C or a lane D
@@ -858,7 +917,7 @@ for (const t of Object.values(queue().tickets)) {
   const c = t.park?.clears_when;
   // A claimed ticket is released only by the claims loop below, once its session is idle and its
   // worktree clean, so a condition that holds never hands it to a worker under a live session.
-  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || t.park?.claim?.session || !c || c.kind === 'none') continue;
+  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || t.park?.claim?.session || !c || c.kind === 'none' || c.kind === LIVE_READ) continue;
   const cond = describeCond(c);
   const r = checkCond(c, clearsRead);
   if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); continue; }
@@ -3394,7 +3453,7 @@ if (!DRY) {
 // ---- verdict -------------------------------------------------------------
 // Everything that waits on the person: this pass's failures, WAITING ON YOU, the stalls only they can
 // clear, unanswered questions, and every ticket parked for its own reason (a hold is not one: it
-// releases by itself).
+// releases by itself, nor is a park whose live reads the pass is running).
 const qEnd = queue();
 const waiting = [
   ...report.failed,
@@ -3402,7 +3461,7 @@ const waiting = [
   ...report.personStalls,
   ...blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
 ];
-const parked = Object.values(qEnd.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !putOff(t)).map((t) => ({ key: t.key, question: t.park?.question ?? '' }));
+const parked = Object.values(qEnd.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !putOff(t) && !waitingOnRead(t)).map((t) => ({ key: t.key, question: t.park?.question ?? '' }));
 const idle = batchIdle(qEnd, prState) && !gatePending;
 const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : report.spawned.length ? 'go_on' : 'nothing_yet';
 const lines = [];

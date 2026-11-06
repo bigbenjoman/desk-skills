@@ -10,7 +10,8 @@
 //   run <id> completed     the GitHub Actions run finished, whatever its conclusion
 //   none                   nothing a script can read; the park waits for a person
 // Stored on the park as {kind, pr | ticket | name | run}: kind is pr-merged, pr-ready, ticket-done,
-// variable-set, run-completed or none.
+// variable-set, run-completed or none. The pass records one more itself, live-read {reads, head}, for
+// a park waiting on §4 Live reads it runs (live-read.mjs), and settles it in its own section.
 
 const FORMS = [
   [/^pr\s+#?(\d+)\s+merged$/i, (m) => ({ kind: 'pr-merged', pr: Number(m[1]) })],
@@ -41,6 +42,7 @@ export function describeCond(c) {
     case 'ticket-done': return `${c.ticket} done`;
     case 'variable-set': return `repo variable ${c.name} set`;
     case 'run-completed': return `Actions run ${c.run} completed`;
+    case 'live-read': return `live read ${(c.reads ?? []).join(', ')} finished`;
     default: return 'none';
   }
 }

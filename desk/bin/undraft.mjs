@@ -258,17 +258,10 @@ const TAIL_WORDS = new Set(['the', 'a', 'its', 'and', 'or', 'then', 'to', 'on', 
   'pr', 'draft', 'body', 'self-review', 'review', 'reviews', 'desk-review', 'comment', 'comments', 'post', 'posting', 'posted',
   'jira', 'tracker', 'ticket', 'transition', 'transitions', 'state', 'status', 'progress', 'done', 'screenshots', 'images', 'upload']);
 
-// A worker's park whose only blocker is a red check §4 Check builds names: every clause of the park
-// names one of those checks or its command, or lists the steps it did not reach (the tail the worker
-// contract has every park name), so a park that asks anything else beside the build stays a park, and
-// the ticket's open draft PR is red on such checks and nothing else, with nothing still
-// running. buildCall then runs the build once the ticket is done, so the pass records it done rather
-// than parked. readPr() -> { state, isDraft, checks } is read only once the park names a build. cfg:
-// { builds, rerun (§3 ci-rerun), required, advisory }. Returns { checks: [name], command } or null, and
-// null leaves the park as it is.
-export function buildPark(question, readPr, cfg) {
-  const builds = cfg.builds ?? [];
-  const namesBuild = (s) => builds.some((b) => s.includes(b.name.toLowerCase()) || s.includes(b.command.toLowerCase()));
+// Whether a park asks for nothing but what `names(clause)` matches: some clause matches, and every
+// other one lists the steps it did not reach (the tail the worker contract has every park name). A
+// park that asks anything else beside it stays a park.
+export function parkOnlyNames(question, names) {
   // Clauses end at . ? ! ; followed by a space, or a line break, so a command's own dots stay whole.
   // Each keeps its own end mark, so a tail clause can tell a question from a list.
   const clauses = String(question ?? '').toLowerCase().split(/(?<=[.?!;])(?:\s+|$)|\n+/).map((s) => s.trim()).filter(Boolean);
@@ -280,7 +273,20 @@ export function buildPark(question, readPr, cfg) {
     const m = /^(?:steps? )?(?:not (?:yet )?reached|remaining steps?|steps? remaining)\b(.*?)[.!;]*$/.exec(s);
     return !!m && m[1].split(/[\s,:()]+/).map((w) => w.replace(/^[-–—]+|[-–—]+$/g, '')).filter(Boolean).every((w) => TAIL_WORDS.has(w) || /^#?\d+$/.test(w));
   };
-  if (cfg.rerun !== 'yes' || !clauses.some(namesBuild) || !clauses.every((s) => namesBuild(s) || tail(s))) return null;
+  return clauses.some(names) && clauses.every((s) => names(s) || tail(s));
+}
+
+// A worker's park whose only blocker is a red check §4 Check builds names: every clause of the park
+// names one of those checks or its command, or is the not-reached tail (parkOnlyNames), and the
+// ticket's open draft PR is red on such checks and nothing else, with nothing still
+// running. buildCall then runs the build once the ticket is done, so the pass records it done rather
+// than parked. readPr() -> { state, isDraft, checks } is read only once the park names a build. cfg:
+// { builds, rerun (§3 ci-rerun), required, advisory }. Returns { checks: [name], command } or null, and
+// null leaves the park as it is.
+export function buildPark(question, readPr, cfg) {
+  const builds = cfg.builds ?? [];
+  const namesBuild = (s) => builds.some((b) => s.includes(b.name.toLowerCase()) || s.includes(b.command.toLowerCase()));
+  if (cfg.rerun !== 'yes' || !parkOnlyNames(question, namesBuild)) return null;
   const pr = readPr();
   if (pr?.state !== 'OPEN' || pr.isDraft !== true) return null;
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });

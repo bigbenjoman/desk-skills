@@ -94,6 +94,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §4 "Merge holds" | PRs into §0 Default branch a person merges: you never merge them, and the driver does only after running a hold's named routine where §3 `merge-hold-routine` is `yes` (`references/merging.md`) |
 | §4 "Checks workers can't fix" | checks the pass never sends back to a fix worker: a PR red only on one is stuck, with what fixes it (*Fix tries*) |
 | §4 "Check builds" | a host-side command per check: a draft red only on these gets the command run once at its head, then the checks re-run (`references/merging.md`) |
+| §4 "Live reads" | a host-side command per live API response a worker cannot fetch: a park naming only these gets them run once per head in its worktree, the output saved to `<state>/fixtures/<ticket>/<name>.json`, and the ticket requeued; a failed one is the person's |
 | §4 "Pre-merge steps" | steps a person takes first (a staging migration), by the check or step that fails until then: never sent to a fix worker; stuck, naming the step |
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |

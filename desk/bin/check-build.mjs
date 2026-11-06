@@ -19,7 +19,7 @@ export const TAIL_LINES = 5;
 
 const file = (dir, n, head, ext) => join(dir, `${n}-${head}.${ext}`);
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
-const alive = (pid) => {
+export const alive = (pid) => {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 };
