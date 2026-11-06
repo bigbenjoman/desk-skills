@@ -2086,7 +2086,7 @@ t('DS-386 AC3 a review stuck whose head is not the PR\'s recorded head is gone',
 t('DS-386 AC2 at the PR\'s head it holds as written', Q.stuckOf(t386('a6e2ab4', 'a6e2ab4'))?.why, why386);
 t('DS-386 a stuck recorded with no head holds as written', Q.stuckOf(t386(null, 'a6e2ab4'))?.why, why386);
 
-// ---- DS-454: a repo's batches held for the same reason show one "nothing started or merged" note.
+// ---- A repo's batches held for the same reason show one "nothing started or merged" note.
 // Each live batch's last pass held for `held` with no progress for `quiet` minutes; `batch` null is the
 // standing batch.
 const put454 = (name, port, batch, held, quiet) => {
@@ -2104,7 +2104,7 @@ const put454 = (name, port, batch, held, quiet) => {
 const cap454 = (batches, self) => `the repo's shared cap: repo workers: 0 of the §3b cap of 0 running — ${[self, ...batches.filter((b) => b !== self)]
   .map((b, i) => `${b == null ? 'the standing batch' : `batch ${b}`}${i ? '' : ' (this pass)'} 0`).join(', ')}: nothing starts this pass`;
 const three454 = [null, 'KAN-1253', 'feat-epics-coverage-to-podcasts'];
-three454.forEach((b, i) => put454('cap3', 5800, b, cap454(three454, b), 185 + 10 * i));
+three454.forEach((b, i) => put454('cap3', 5800, b, cap454(three454, b), 205 - 10 * i));
 const mem454 = 'memory: 3.1G available, under the 4G spawn gate';
 put454('mixed', 5810, null, cap454([null, 'KAN-9'], null), 185);
 put454('mixed', 5810, 'KAN-9', mem454, 200);
