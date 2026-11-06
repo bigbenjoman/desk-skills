@@ -444,6 +444,8 @@ function putOffKey(r, t, item) {
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
+  // A worktree item led by its park's reason holds the worktree's state in its note: a new hold brings it back.
+  if (item.kind === 'worktree' && item.note) inputs.hold = item.note;
   const blockers = blockerStates(r, t);
   if (blockers || item.kind === 'held') inputs.blockers = blockers;
   return { question: `${t.key} ${item.kind}`, inputs };

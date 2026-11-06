@@ -1027,7 +1027,7 @@ for (const t of DRY ? [] : Object.values(queue().tickets)) {
   if (t.state !== 'parked' || isHeld(t) || t.location === 'cloud') continue;
   const n = t.worktree && existsSync(t.worktree) ? shOut('git', ['-C', t.worktree, 'rev-list', '--count', 'HEAD', '--not', '--remotes=origin']) : null;
   const unpushed = n?.ok && Number(n.out) > 0 ? `its worktree ${t.worktree} has ${n.out} commit(s) not on origin` : null;
-  if (unpushed !== (t.park?.unpushed ?? null)) q('set', t.key, `park.unpushed=${JSON.stringify(unpushed)}`);
+  if (unpushed !== (t.park?.unpushed ?? null)) q('set', t.key, `park.unpushed=${unpushed ?? 'null'}`);
 }
 
 // ---- claims by idle sessions ---------------------------------------------------

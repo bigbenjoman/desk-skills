@@ -2257,7 +2257,7 @@ git -C "$T/wt/W-7" commit -q --allow-empty -m "not pushed"
 q add W-7; q set W-7 lane=A branch=fix/W-7 "worktree=$T/wt/W-7"; q park W-7 "git push was refused: remote rejected"
 node "$B/pass.mjs" >/dev/null 2>&1
 check "DS-497 a pass keeps what a parked ticket's worktree holds that origin does not on its park" \
-  'field W-7 park.unpushed | grep -qF "its worktree $T/wt/W-7 has 1 commit(s) not on origin"'
+  '[ "$(field W-7 park.unpushed)" = "\"its worktree $T/wt/W-7 has 1 commit(s) not on origin\"" ]'
 git -C "$T/wt/W-7" push -q origin fix/W-7 2>/dev/null
 node "$B/pass.mjs" >/dev/null 2>&1
 check "DS-497 and drops it once they are pushed" '[ "$(field W-7 park.unpushed)" = null ] && [ "$(field W-7 state)" = "\"parked\"" ]'

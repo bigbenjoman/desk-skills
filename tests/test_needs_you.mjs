@@ -629,6 +629,9 @@ const yResume = N.record({ word: 'ypsilon', ticket: 'Y-1', action: 'resume', tex
 const y1 = queueOf('ypsilon').tickets['Y-1'];
 t('a resume on it records the note, and leaves it queued with its reason, not requeued again', `${yResume.ok} ${y1.state} ${y1.prev_park.question === refused}`, 'true triaged true');
 t('not-now puts it off, and it leaves the list', `${N.record({ word: 'ypsilon', ticket: 'Y-1', action: 'not-now' }).ok} ${'Y-1' in yItems()}`, 'true false');
+const yq = queueOf('ypsilon'); yq.tickets['Y-1'].worktree_busy.why = 'its worktree /w/Y-1 has uncommitted changes (a.txt)';
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__ypsilon', 'queue.json'), JSON.stringify(yq));
+t('a put-off item comes back once its worktree is held for a new reason', 'Y-1' in yItems(), true);
 
 // ---- A ready ticket held back by a collision with a running one says so, fix try or not.
 put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
