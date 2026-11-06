@@ -2440,9 +2440,10 @@ const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
 const viewRun = (id) => { try { return clearsRead.run(id); } catch { return null; } };
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
 // The driver's rerun record for PR n at head, as undraftCall and fixCall read it: the reruns tried per
-// check, and whether the last rerun has had its cooldown.
+// check, the runs the pass cancelled for a check stuck pending, and whether the last rerun has had its cooldown.
 const driverReruns = (n, head) => ({
   reruns: (name) => driverLines(`reruns-${n}-${head}`).filter((l) => l === name).length,
+  cancels: (name) => driverLines(`cancels-${n}-${head}`).filter((l) => l === name).length,
   cooledDown: Date.now() / 1000 - (Number(driverLines(`cooldown-${n}`)[0]) || 0) >= RERUN_COOLDOWN_S,
 });
 // What desk-q reads of a PR without a network call, beyond GitHub's own: the reruns the merge driver
@@ -2559,11 +2560,13 @@ const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <
 // The steps a red check's run failed at (fix-tries.mjs failedSteps), read once per run; none when gh cannot read it.
 const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'jobs']); return r.ok ? JSON.parse(r.out) : null; });
 const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
+// A run's status, start and jobs, for a draft's check stuck pending (undraft.mjs stuckCall); null when unread.
+const runOf = (id) => cached(`run:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,startedAt,jobs']); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } });
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
-const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture'];
+const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'rerun', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture'];
 // The screenshot files a ticket's directory holds: the one its worker was briefed with, or the one a
 // handed-off session printed (images_dir). Its `_drag <file>_` cells naming any other were never taken.
 const shotsOf = (t) => {
@@ -2579,6 +2582,7 @@ if (drafts.length) {
     ...gateLists(), builds: buildRow.checks, evidence: evidenceRow?.workflow ? evidenceRow : null,
   };
   cfg.untriggered = untriggeredOf;
+  cfg.runOf = runOf;
   // A reopen already made at this base head is not waited on again: the check is the person's then.
   cfg.stale = (base, head, branch, baseHead) => {
     let x;
@@ -2641,6 +2645,7 @@ if (drafts.length) {
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
     else if (c.call === 'rerun' && DRY) out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
+    else if (c.call === 'cancel') rec = cancelStuck(t, n, v.headRefOid, c, rec);
     else if (c.call === 'build') rec = startCheckBuild(t, n, v.headRefOid, c, rec);
     else if (c.call === 'rebuilt') rec = rerunBuilt(t, n, v.headRefOid, c, rec);
     else if (c.call === 'evidence') rec = startEvidence(t, n, v.headRefOid, c, rec);
@@ -2884,6 +2889,22 @@ function rerunDraft(t, n, head, c) {
   const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun') } });
   const said = r.out.split('\n').filter(Boolean).join('; ');
   out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${said ? ` (${said})` : ''}`);
+}
+
+// A draft's run that holds a check stuck pending past its limit: cancelled, so its check reads as
+// cancelled and the next pass re-runs it (rerunDraft). The check is recorded at this head whether or
+// not GitHub took the cancel, so a second expiry goes to the person rather than cancelling again.
+function cancelStuck(t, n, head, c, rec) {
+  if (DRY) { out.push(`undraft (dry run): would cancel run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`); return rec; }
+  const refused = [];
+  for (const id of c.runs) {
+    const r = shOut('gh', ['run', 'cancel', id, '--repo', GH_REPO]);
+    if (!r.ok) refused.push(`run ${id}: ${r.out.split('\n').pop()}`);
+  }
+  try { mkdirSync(DRIVER_DIR, { recursive: true }); appendFileSync(join(DRIVER_DIR, `cancels-${n}-${head}`), `${c.checks.join('\n')}\n`); }
+  catch (e) { out.push(`undraft: PR #${n} (${t.key}): its cancel could not be recorded (${e.message}), so the next expiry may cancel it again`); }
+  out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${refused.length ? `; the cancel was refused (${refused.join('; ')})` : ` (run(s) ${c.runs.join(', ')} cancelled)`}`);
+  return refused.length ? { ...rec, why: `${c.why}; the cancel was refused (${refused.join('; ')})` } : rec;
 }
 
 // A review's inline comments as fix-tries.mjs inlineFindings reads them, by the review's GraphQL node
