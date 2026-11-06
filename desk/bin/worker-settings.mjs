@@ -689,8 +689,13 @@ if (mode === 'triage') {
   const templates = join(E.deskHome(), 'templates');
   if (existsSync(templates)) dirs.add(templates);
 
+  // With the memory lever on, the worker's auto-memory is off (it gets a digest of the index in its
+  // brief instead) and the memory folder is neither granted nor writable.
   const mem = E.memoryDir();
-  if (existsSync(mem)) dirs.add(mem);
+  if (E.leverOn('memory')) {
+    opt.autoMemoryOff = true;
+    deny.push(`Edit(${abs(mem)}/**)`);
+  } else if (existsSync(mem)) dirs.add(mem);
   const lock = E.lockDir();
   dirs.add(lock);
   try { const real = realpathSync(lock); if (real !== lock) dirs.add(real); } catch { /* created on first lock */ }
@@ -699,6 +704,7 @@ if (mode === 'triage') {
 }
 
 const settings = { permissions: { allow: [...new Set(allow)], deny: [...new Set(deny)], additionalDirectories: [...dirs] } };
+if (opt.autoMemoryOff) settings.autoMemoryEnabled = false;
 // Claude Code's bundled skills are the only ones in a worker's skill listing (--setting-sources ""
 // drops the user's), and that listing is resent every turn: 13 skills, ~6,200 characters, measured
 // 2026-09-30. Hide the ones no worker uses, but keep any the §4 Local review command names (e.g.
