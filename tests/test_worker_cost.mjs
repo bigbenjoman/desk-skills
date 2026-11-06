@@ -173,7 +173,7 @@ t('DS-152 AC5 a log with no usage figures is unknown, not zero', JSON.stringify(
 
 const sTable = costTable(batchCost(S, ['S-1', 'S-2', 'S-3'].map((k) => tk(k)))).split('\n');
 console.log(sTable.join('\n'));
-const under = (key) => { const i = sTable.findIndex((l) => l.startsWith(`  ${key} `)); const out = []; for (let j = i + 1; sTable[j]?.startsWith('      '); j++) out.push(sTable[j].trim().replace(/\s+/g, ' ')); return out.join(' | '); };
+const under = (key) => { const i = sTable.findIndex((l) => l.startsWith(`  ${key} `)); const out = []; for (let j = i + 1; sTable[j]?.startsWith('      '); j++) if (!sTable[j].startsWith('      session: ')) out.push(sTable[j].trim().replace(/\s+/g, ' ')); return out.join(' | '); };
 t('DS-152 AC1 a worker row shows its first-turn input', row(sTable, 'S-1').split('|').at(-1), '50,002');
 t('DS-152 AC2 a per-stage line for each stage, under the worker\'s row', under('S-1'), 'start-up 50,002 in 127 out | 0/9 intake 101,002 in 15 out | 4/9 verify 60,001 in 320 out');
 t('DS-152 AC4 a two-round worker says its rounds', row(sTable, 'S-2').split('|')[1], '2');

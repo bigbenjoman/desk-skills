@@ -27,7 +27,7 @@ t('no record at all: high', modelTier(), 'high');
 // Config §3b "Worker effort"; the launch arguments it gives run in test_worker_tools.mjs.
 const effort = (...items) => { try { return JSON.stringify(parseWorkerEffort(items)); } catch (e) { return e.message; } };
 t('effort: none names no start', effort('none'), '{}');
-t('effort: pairs in one span', effort('0=medium 4b=high task=low resume=max 9=xhigh'), '{"0":"medium","4b":"high","task":"low","resume":"max","9":"xhigh"}');
+t('effort: pairs in one span', effort('0=medium 4b=high task=low resume=max 9=xhigh'), '{"0":"medium","9":"xhigh","4b":"high","task":"low","resume":"max"}');
 t('effort: pairs in two spans, or split by a comma', effort('0=low', '3=high, 7=low'), '{"0":"low","3":"high","7":"low"}');
 t('effort AC4: an unknown value is refused, naming it and the row', /Worker effort.*unknown effort `turbo`/.test(effort('0=medium 4b=turbo')), true);
 t('effort AC4: the CLI\'s case is not guessed at', /unknown effort `High`/.test(effort('0=High')), true);

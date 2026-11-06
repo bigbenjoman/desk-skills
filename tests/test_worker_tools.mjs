@@ -263,6 +263,7 @@ const noTask = { DESK_CONFIG: effortCfg('0=low') };
 t('effort AC6 task and resume unnamed run at medium, passed',
   [flagOf(launch('eff-a', 'etask2', { ...noTask, AUTOPILOT_TASK: TASK })), flagOf(launch('eff-a', 'eres2', { ...noTask, AUTOPILOT_RESUME: RESUME }))], ['medium', 'medium']);
 t('effort AC3 the log records each start, model and effort', startsOf('eff-a').slice(0, 2).map((s) => `${s.stage} ${s.model} ${s.effort}`), ['0 default low', '4b default high']);
+t('effort AC3 a task and a resume are recorded as those starts', startsOf('eff-a').map((s) => s.stage), ['0', '4b', '5', '0', 'task', 'resume', 'task', 'resume']);
 
 const badCfg = { DESK_CONFIG: effortCfg('0=low 7=turbo') };
 const bad = launch('eff-b', 'ebad', badCfg);
