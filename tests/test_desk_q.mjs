@@ -2086,5 +2086,43 @@ t('DS-386 AC3 a review stuck whose head is not the PR\'s recorded head is gone',
 t('DS-386 AC2 at the PR\'s head it holds as written', Q.stuckOf(t386('a6e2ab4', 'a6e2ab4'))?.why, why386);
 t('DS-386 a stuck recorded with no head holds as written', Q.stuckOf(t386(null, 'a6e2ab4'))?.why, why386);
 
+// ---- DS-454: a repo's batches held for the same reason show one "nothing started or merged" note.
+// Each live batch's last pass held for `held` with no progress for `quiet` minutes; `batch` null is the
+// standing batch.
+const put454 = (name, port, batch, held, quiet) => {
+  const pass = { at: minsAgo(1), by: 'session', held, errors: 0, progress_at: minsAgo(quiet) };
+  const tickets = { [`${name.toUpperCase()}-${batch ?? 'S'}`]: { state: 'triaged', open_questions: 0 } };
+  if (!batch) return put(I.T, I.env, name, { port, conc: '2 / 3', beat: 1, queue: { batch: name, concurrency: 2, pass, tickets } });
+  const q = join(I.env.DESK_HOME, 'repos', `acme__${name}`, 'batches', batch, 'queue.json');
+  const s = join(I.env.HOME, '.desk-autopilot', `acme__${name}`, 'batches', batch, 'orchestrators');
+  mkdirSync(dirname(q), { recursive: true });
+  mkdirSync(s, { recursive: true });
+  writeFileSync(q, JSON.stringify({ version: 1, batch, concurrency: 2, pass, tickets: Object.fromEntries(Object.entries(tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
+  writeFileSync(join(s, 'q.json'), JSON.stringify({ queue: q, batch, pid: 1, at: minsAgo(1) }));
+};
+// The shared-cap line as each batch's pass writes it: its own batch first, marked "(this pass)".
+const cap454 = (batches, self) => `the repo's shared cap: repo workers: 0 of the §3b cap of 0 running — ${[self, ...batches.filter((b) => b !== self)]
+  .map((b, i) => `${b == null ? 'the standing batch' : `batch ${b}`}${i ? '' : ' (this pass)'} 0`).join(', ')}: nothing starts this pass`;
+const three454 = [null, 'KAN-1253', 'feat-epics-coverage-to-podcasts'];
+three454.forEach((b, i) => put454('cap3', 5800, b, cap454(three454, b), 185 + 10 * i));
+const mem454 = 'memory: 3.1G available, under the 4G spawn gate';
+put454('mixed', 5810, null, cap454([null, 'KAN-9'], null), 185);
+put454('mixed', 5810, 'KAN-9', mem454, 200);
+put454('solo', 5820, null, mem454, 185);
+put454('one', 5830, null, mem454, 185);
+put454('two', 5840, null, mem454, 185);
+const ov454 = Q.overview(Q.loadRepos(NOW).filter((r) => ['cap3', 'mixed', 'solo', 'one', 'two'].includes(r.repo)), { now: NOW, avail: 30 });
+const notes454 = (name) => lines(ov454).filter((l) => new RegExp(`^(note| {4}) {2}▲ ${name} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${name} +`), ''));
+const cap3notes = notes454('cap3');
+t('DS-454 AC1 three batches held by the repo\'s shared cap: one note, timed from the repo\'s latest progress',
+  `${cap3notes.length} ${cap3notes[0]?.startsWith("nothing started or merged for 3h 5m. Last pass: the repo's shared cap: repo workers: 0 of the §3b cap of 0 running — ")}`, '1 true');
+t('DS-454 AC2 two batches held for different reasons: each reason once, each note naming its batch',
+  notes454('mixed').join(' / '),
+  `the standing batch: nothing started or merged for 3h 5m. Last pass: ${cap454([null, 'KAN-9'], null)}. / batch KAN-9: nothing started or merged for 3h 20m. Last pass: ${mem454}.`);
+t('DS-454 AC3 a single held batch reads as before', notes454('solo').join(' / '), `nothing started or merged for 3h 5m. Last pass: ${mem454}.`);
+t('DS-454 AC4 two repos held for the same reason each keep their note',
+  `${notes454('one').join(' / ')} | ${notes454('two').join(' / ')}`,
+  `nothing started or merged for 3h 5m. Last pass: ${mem454}. | nothing started or merged for 3h 5m. Last pass: ${mem454}.`);
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
