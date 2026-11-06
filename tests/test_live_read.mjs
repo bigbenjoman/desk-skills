@@ -1,8 +1,9 @@
 // suite: live-read (§4 Live reads: which parks the pass runs a read for, and how it records one)
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture } from '../desk/bin/live-read.mjs';
+import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout } from '../desk/bin/live-read.mjs';
 import { waitingOnRead, batchSettled } from '../desk/bin/batch-state.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
 import { describeCond } from '../desk/bin/clears-when.mjs';
@@ -53,6 +54,46 @@ t('desk-q shows it waiting while passes run', shownState({ tickets: { 'L-1': par
 t('and needing the person with passes stopped, since nothing runs it', shownState({ tickets: { 'L-1': parked } }, parked, { live: false }), 'needs');
 t('a batch with a park on its live reads is not settled', batchSettled({ tickets: { 'L-1': parked, 'L-2': other } }, () => null), false);
 t('the condition reads as the reads it waits on', describeCond(parked.park.clears_when), 'live read gateway-models finished');
+
+t('a saved fixture is mode 0644', (statSync(saved).mode & 0o777).toString(8), '644');
+t('a done read records how much it printed', ok.bytes, '{"a":1}\n'.length);
+
+// The pass's own checkout (prepareCheckout): cloned from origin, brought to its default branch.
+const git = (...a) => execFileSync('git', a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' } }).trim();
+const origin = join(dir, 'origin.git');
+const src = join(dir, 'src');
+git('init', '-q', '--bare', '-b', 'main', origin);
+git('init', '-q', '-b', 'main', src);
+git('-C', src, 'remote', 'add', 'origin', origin);
+writeFileSync(join(src, 'a.txt'), 'one\n');
+git('-C', src, 'add', '-A'); git('-C', src, 'commit', '-q', '-m', 'one'); git('-C', src, 'push', '-q', 'origin', 'main');
+const co = join(dir, 'checkout');
+const first = prepareCheckout(co, { origin, branch: 'main' });
+t('a first run clones origin and stands at its default branch', `${first.ok} ${first.sha === git('-C', src, 'rev-parse', 'HEAD')}`, 'true true');
+writeFileSync(join(src, 'a.txt'), 'two\n');
+git('-C', src, 'commit', '-q', '-am', 'two'); git('-C', src, 'push', '-q', 'origin', 'main');
+const second = prepareCheckout(co, { origin, branch: 'main' });
+t('a later run fetches, and stands detached at the new commit', `${second.sha === git('-C', src, 'rev-parse', 'HEAD')} ${git('-C', co, 'rev-parse', '--abbrev-ref', 'HEAD')} ${readFileSync(join(co, 'a.txt'), 'utf8').trim()}`, 'true HEAD two');
+writeFileSync(join(co, '.env'), 'X=1\n');
+const dirty = prepareCheckout(co, { origin, branch: 'main' });
+t('a checkout something wrote into is not used, and not wiped', `${dirty.ok} ${/is not clean \(\.env\)/.test(dirty.why)} ${existsSync(join(co, '.env'))}`, 'false true true');
+rmSync(join(co, '.env'));
+const lost = prepareCheckout(co, { origin: join(dir, 'gone.git'), branch: 'main' });
+t('nor is one whose fetch fails', `${lost.ok} ${/fetching origin's main/.test(lost.why)}`, 'false true');
+t('nor one with no origin to clone from', prepareCheckout(join(dir, 'none'), { origin: '', branch: 'main' }).ok, false);
+git('-C', co, 'remote', 'set-url', 'origin', join(dir, 'gone.git'));
+t('the origin given is fetched, not the one the clone recorded', prepareCheckout(co, { origin, branch: 'main' }).ok, true);
+
+// Every place that describes §4 Live reads says where the command runs: a clean checkout of the
+// default branch, never the ticket's worktree.
+const root = join(import.meta.dirname, '..');
+for (const f of ['desk-config.md', 'skills/desk-setup/references/step-1-detect.md', 'skills/desk-autopilot/references/worker-contract-stage-3.md', 'skills/desk-autopilot/SKILL.md', 'skills/desk-autopilot/references/orchestrator-recovery.md']) {
+  const text = readFileSync(join(root, f), 'utf8');
+  const at = text.search(/\*\*Live reads\.\*\*|\| Live reads \||\| §4 "Live reads" \||§4 Live reads entries \(|is a §4 Live reads entry/);
+  const para = at < 0 ? '' : text.slice(at).split(/\n\s*\n|\n- \*\*|\n\| /)[0].replace(/\s+/g, ' ');
+  t(`${f}: Live reads run from a clean checkout of the default branch, never the ticket's worktree`,
+    `${para.length > 0} ${/clean checkout of the default branch/.test(para)} ${/(?<!never (?:the )?|never your )(?:in|from) (?:the ticket's|its|your) worktree/.test(para)}`, 'true true false');
+}
 
 rmSync(dir, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'live-read: all checks passed');

@@ -173,9 +173,13 @@ How to turn what you find into rows:
 - **Live reads.** Detect nothing: ask the user for each read-only call to a live API whose response
   a worker needs but cannot fetch for want of a secret (a staging model list behind an SSM key),
   and record each as `` `<name>: <command>` ``, the command printing the response on stdout. `none`
-  is the default. Say that the pass runs one once per head on this computer, in the ticket's
-  worktree, for a worker that parks naming it, saves its output where the requeued worker reads it,
-  and that nothing that writes to a live system or places a call belongs here.
+  is the default. Say that the pass runs one once per head on this computer, for a worker that
+  parks naming it, from a clean checkout of the default branch it keeps under the state directory,
+  fetched before each run (never the ticket's worktree or the user's own checkout), exactly as
+  written with nothing from the park added; that it saves up to 1 MiB of its output where the
+  requeued worker reads it as an untrusted response; that the command must install and write
+  nothing in that checkout; and that nothing that writes to a live system or places a call belongs
+  here.
 - **Pre-merge steps.** Search the repo instructions and the workflows for a step a person must take
   before a PR can go green, that a check or a step in one tests ("apply the migration to staging
   before merging": a schema check run against the real staging database). Propose each for §4
