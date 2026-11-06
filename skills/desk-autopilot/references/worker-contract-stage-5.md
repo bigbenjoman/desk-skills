@@ -91,5 +91,5 @@ call, and yours.
   park, at Stage 6 or 7. The pass runs that build on the host for a draft red only on such checks,
   then re-runs them: never ask anyone to run it, and never run it yourself. Finish your remaining
   steps and print `AUTOPILOT_DONE`, naming the check and saying the pass builds it. A red check it
-  does not name is handled as before.
+  does not name is handled as any red check is.
 - **Merging.** Never. Your terminal state is a draft PR with its review posted.

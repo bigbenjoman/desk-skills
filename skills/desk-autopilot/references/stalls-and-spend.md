@@ -25,11 +25,11 @@ stopped as stalled, and says so in the table; a requeue after a park with a ques
 failed preflight or spawn (no worker ran), keeps the model. A malformed row, an unknown key
 included, holds spawns under `STALLED`.
 
-Either form may add `finder=<alias>` (an alias such as `haiku`: the Agent tool takes no full model
+Either form may add `finder=<alias>` (an Agent-tool model alias: the Agent tool takes no full model
 name) and `text=<model>`, both unset by default. A worker launches
 every self-review finder on the finder model (`desk-env model finder`; desk-review names it in its
 header), and a Stage 7 session spawned from a handoff runs on the text model, which the queue's
-`model` and the report's `spawned` line show. Unset, finders run on the model they do today and the
+`model` and the report's `spawned` line show. Unset, finders run on the worker's model and the
 Stage 7 session on the ticket's tier. Every
 preflight also asks each one set for one word on its own, so a value the CLI rejects fails the
 preflight with a `FINDER` or `TEXT` line naming the row and the value, and no worker spawns. Neither
@@ -77,6 +77,6 @@ records the stage it reached and its question on the ticket (`last_round`). The 
 requeue starts at that stage, with a summary of the round in its briefing: the stage, the park
 question and the answers recorded since, and the branch and its commits (`spawned: … resumed at
 Stage 4, where its last round parked`). A park before Stage 3, a worktree removed for a fresh branch,
-and a stalled or failed worker start at Stage 0 as before. So does a worktree on another branch, or
+and a stalled or failed worker start at Stage 0. So does a worktree on another branch, or
 a resume file there that records another branch: the briefing says why, and the worker's first stage
 line repeats it.
