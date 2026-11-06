@@ -58,6 +58,7 @@ U upgrade demo
 check "AC3 upgrade re-applies the patch to the new upstream" \
   '[ $rc -eq 0 ] && grep -qx "Infer and state the assumption." "$R/vendor/demo/SKILL.md" && ! grep -q "Ask first" "$R/vendor/demo/SKILL.md"'
 check "AC3 the pin moves" '[ "$(pin)" = bbbbbbbbb ]'
+# shellcheck disable=SC2034
 before=$(hash)
 U rehash
 check "AC3 tree_sha256 is recorded after patching (rehash of vendor/ agrees)" '[ -n "$before" ] && [ "$(hash)" = "$before" ]'
