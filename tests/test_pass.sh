@@ -2088,6 +2088,20 @@ q add L-8; q set L-8 state=running lane=A branch=fix/L-8 "worktree=$T/wt/L-8" se
 : > "$T/read-at"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-426 AC9 a checkout that cannot be brought to origin's main runs nothing and goes to the person with the reason" \
   '[ "$(field L-8 state)" = "\"parked\"" ] && [ "$(field L-8 park.clears_when.kind)" = "\"none\"" ] && [ ! -s "$T/read-at" ] && ! ls "$T/state-l/live-reads" | grep -q "^L-8-" && field L-8 park.question | grep -qF "live read gateway-models did not run: the pass'"'"'s checkout could not be brought to origin'"'"'s main: $LCO is not clean (stray.txt)"'
+# L-9 is in a batch whose base is a feature branch, feat/x, whose script a worker's merged PR changed:
+# the read still runs §0 Default branch's script, not the batch base's.
+git -C "$LCO" clean -fq stray.txt
+git -C "$T/lrepo" checkout -q -b feat/x
+printf 'touch "%s/feat-ran"\necho %s\n' "$T" "'{\"models\":[\"from-feat\"]}'" > "$T/lrepo/scripts/fetch-gateway-models.sh"
+git -C "$T/lrepo" commit -q -am "a merged worker PR changes the script"; git -C "$T/lrepo" push -q origin feat/x 2>/dev/null; git -C "$T/lrepo" checkout -q main
+q set-batch base=feat/x
+git init -q -b fix/L-9 "$T/wt/L-9"; git -C "$T/wt/L-9" commit -q --allow-empty -m L-9; HL9=$(git -C "$T/wt/L-9" rev-parse HEAD)
+say "AUTOPILOT_PARK: need live read gateway-models. Not reached: the PR" > "$T/state-l/logs/L-9.log"
+q add L-9; q set L-9 state=running lane=A branch=fix/L-9 "worktree=$T/wt/L-9" session_id=run-L-9
+out1=$(node "$B/pass.mjs" 2>&1); read_done L-9 "$HL9" gateway-models; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-426 a batch based on a feature branch still reads from §0 Default branch, never the batch base" \
+  '[ ! -e "$T/feat-ran" ] && [ "$(cat "$T/state-l/fixtures/L-9/gateway-models.json")" = "{\"models\":[\"gw-1\"]}" ] && [ "$(jq -r .base "$T/state-l/live-reads/L-9-$HL9-gateway-models.json")" = "$LBASE" ]'
+q set-batch base=
 
 # ---- DS-271: no CI runner shares the memory ladder
 # A waiting marker an older desk left behind holds nothing, and the pass writes none of its own.

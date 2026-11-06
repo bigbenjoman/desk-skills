@@ -503,6 +503,9 @@ function buildParkOf(t, question) {
 const readRow = parseLiveReads(E.configValues('live-reads'));
 const READ_DIR = join(STATE, 'live-reads');
 const READ_CHECKOUT = join(STATE, 'live-read-checkout');
+// §0 Default branch, never DEFAULT_BRANCH, which a named batch sets to its base: workers' PRs merge
+// into a batch base unreviewed as one change, so its scripts are not the merged code a read may run.
+const READ_BRANCH = E.configValue('default-branch') || 'main';
 const FIXTURES = join(STATE, 'fixtures');
 if (readRow.errors.length) report.waiting.push(`live reads: none run this pass, since config §4 Live reads does not parse: ${readRow.errors.join(', ')} (want \`<name>: <command>\`). Run /desk-setup`);
 // The reads a park asks for: { reads: [name], head (the ticket's) }, or null, which leaves the park as
@@ -689,7 +692,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     const read = wedged ? null : liveReadOf(t, park.trim());
     q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log))}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []));
-    if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${DEFAULT_BRANCH} (${READ_CHECKOUT}), never the ticket's worktree; requeued once they finish. The park: ${park.trim()}`);
+    if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${READ_BRANCH} (${READ_CHECKOUT}), never the ticket's worktree; requeued once they finish. The park: ${park.trim()}`);
     else if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
     else report.parked.push(`${t.key}: ${park.trim()}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
     logDecisions(t, log, null);
@@ -839,17 +842,17 @@ for (const t of Object.values(queue().tickets)) {
       report.clears.push(`${t.key}: live read ${names} waits for the pass's checkout, where another read still runs: left parked`);
       continue;
     }
-    readCheckout ??= prepareCheckout(READ_CHECKOUT, { origin: originUrl(), branch: DEFAULT_BRANCH });
-    if (!readCheckout.ok) { toPerson(`live read ${names} did not run: the pass's checkout could not be brought to origin's ${DEFAULT_BRANCH}: ${readCheckout.why}`); continue; }
+    readCheckout ??= prepareCheckout(READ_CHECKOUT, { origin: originUrl(), branch: READ_BRANCH });
+    if (!readCheckout.ok) { toPerson(`live read ${names} did not run: the pass's checkout could not be brought to origin's ${READ_BRANCH}: ${readCheckout.why}`); continue; }
     const entries = (c.reads ?? []).map((name) => readRow.reads.find((r) => r.name === name) ?? { name });
     const gone = entries.filter((r) => !r.command);
     if (!entries.length || gone.length) { toPerson(gone.length ? `live read ${gone.map((r) => r.name).join(', ')} is no longer in config §4 Live reads` : 'its live reads name no entry'); continue; }
     for (const r of entries) startRead(READ_DIR, { key: t.key, head: c.head, name: r.name, command: r.command, cwd: READ_CHECKOUT, base: readCheckout.sha });
     q('set', t.key, `park.clears_when=${JSON.stringify({ ...c, base: readCheckout.sha })}`);
-    report.clears.push(`${t.key}: live read ${names} started from the pass's clean checkout of origin/${DEFAULT_BRANCH} at ${readCheckout.sha.slice(0, 9)}: left parked`);
+    report.clears.push(`${t.key}: live read ${names} started from the pass's clean checkout of origin/${READ_BRANCH} at ${readCheckout.sha.slice(0, 9)}: left parked`);
     continue;
   }
-  const at = `origin/${DEFAULT_BRANCH} ${String(c.base).slice(0, 9)}`;
+  const at = `origin/${READ_BRANCH} ${String(c.base).slice(0, 9)}`;
   const reads = (c.reads ?? []).map((name) => ({ name, rec: readRecord(READ_DIR, t.key, c.head, name) }));
   if (reads.some((x) => x.rec?.state === 'running')) {
     report.clears.push(`${t.key}: live read ${reads.filter((x) => x.rec?.state === 'running').map((x) => x.name).join(', ')} running at ${at}: left parked`);
