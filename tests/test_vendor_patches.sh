@@ -85,6 +85,30 @@ U upgrade demo
 check "a missing patch file refuses the skill" \
   '[ $rc -eq 1 ] && [[ "$out" == *"REFUSED  demo: patch vendor-patches/demo.patch is missing"* ]] && [ "$(pin)" = ccccccccc ]'
 
+# A refused Drive skill keeps its whole entry: the new file's id and name are not saved either, or
+# `outdated` would compare against a file vendor/ was never built from.
+DRIVE="$T/drive_refused.py"
+cat > "$DRIVE" <<'PY'
+import contextlib, importlib.machinery, io, json, sys, zipfile
+m = importlib.machinery.SourceFileLoader("su", sys.argv[1]).load_module()
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("demo/SKILL.md", "line one\n")
+m.drive_listing = lambda _folder: [{"file_id": "new", "file_name": "new.zip", "modified": "Nov 1"}]
+m.drive_download = lambda _id: buf.getvalue()
+saved = []
+m.save = lambda data: saved.append(json.loads(json.dumps(data)))
+data = {"skills": {"demo": {"source": {"type": "drive", "folder_id": "f", "file_id": "old",
+        "file_name": "old.zip", "skill_subdir": "demo"}, "pin": {"drive_modified": "Oct 1"},
+        "patches": ["vendor-patches/absent.patch"]}}}
+with contextlib.redirect_stdout(sys.stderr):
+    rc = m.cmd_upgrade(data, ["demo"])
+print(rc, json.dumps(saved[-1]["skills"]["demo"]["source"], sort_keys=True))
+PY
+out=$(TMPDIR="$T/outer/tmp" python3 "$DRIVE" "$R/bin/skills-upstream" 2>/dev/null); rc=$?
+check "a refused Drive skill keeps its source's file id and name" \
+  '[ "$out" = "1 {\"file_id\": \"old\", \"file_name\": \"old.zip\", \"folder_id\": \"f\", \"skill_subdir\": \"demo\", \"type\": \"drive\"}" ]'
+
 # This repo: every recorded patch is applied in vendor/, and the hash is the patched tree's.
 HASH="$T/tree_hash.py"
 cat > "$HASH" <<'PY'

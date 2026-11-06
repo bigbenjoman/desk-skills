@@ -370,6 +370,7 @@ def cmd_upgrade(data, names):
             continue
         tmp = tempfile.mkdtemp(prefix=f"skills-upstream-{name}-")
         try:
+            new_src = src
             if src["type"] == "github":
                 latest = github_latest(src)
                 github_fetch(src, latest["commit"], tmp)
@@ -380,8 +381,8 @@ def cmd_upgrade(data, names):
                 if row["file_id"] not in zips:
                     zips[row["file_id"]] = drive_download(row["file_id"])
                 blob = zips[row["file_id"]]
-                drive_extract(blob, {**src, "file_name": row["file_name"]}, tmp)
-                src.update({"file_id": row["file_id"], "file_name": row["file_name"]})
+                new_src = {**src, "file_id": row["file_id"], "file_name": row["file_name"]}
+                drive_extract(blob, new_src, tmp)
                 new_pin = {**pin, "drive_modified": row["modified"], "zip_sha256": hashlib.sha256(blob).hexdigest()}
                 new_pin["version"] = f"{row['file_name']} ({row['modified']})"
                 label = f"{pin.get('version')} -> {new_pin['version']}"
@@ -399,7 +400,7 @@ def cmd_upgrade(data, names):
                 shutil.rmtree(dest, ignore_errors=True)
                 shutil.copytree(tmp, dest)
                 print(f"{name}: {label}")
-            e["pin"] = new_pin
+            e["source"], e["pin"] = new_src, new_pin
             e["tree_sha256"] = tree_sha256(dest)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
