@@ -321,9 +321,9 @@ spawn_one P-175
 check "DS-305 AC4 an unreadable named batch's queue does not stop the spawn, and the report names it" '[ "$(field P-175 state)" = "\"running\"" ] && [ "$(field P-175 port)" = 47501 ] && echo "$out" | grep -qF "ports: $X1/queue.json is not valid JSON ("'
 rm -rf "$T/desk/repos/acme__other/batches"; other '{"tickets": not json'
 
-# DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker
-# (DS-174), with its reset moved to suit each case. Each case is a running ticket whose log stopped
-# growing five passes ago, one pass from the stall killer.
+# DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker,
+# with its reset moved to suit each case. Each case is a running ticket whose log stopped growing
+# five passes ago, one pass from the stall killer.
 export DESK_QUEUE="$T/queue-u.json" DESK_AUTOPILOT_STATE="$T/state-u" AUTOPILOT_PORT_FLOOR=47601; mkdir -p "$T/state-u/logs"
 limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); if (process.argv[3]) e.rate_limit_info.rateLimitType = process.argv[3]; console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.json" "$1" "${2:-}"; }
 # The registry stub also answers the probe call (claude -p): what the probe says is $T/probe.out.
@@ -382,7 +382,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-344 a rejection with no reset time is a pause, not a stall" '[ "$(field U-9 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: U-9 on the 5-hour usage limit, then it resumes"'
 q set U-9 state=done
 
-# U-10: the tail a real worker wrote at the limit (DS-174), its reset moved an hour ahead. After the
+# U-10: the tail a real worker wrote at the limit, its reset moved an hour ahead. After the
 # rejection come the error messages written in the model's place and a subagent's reply to a request
 # already in flight; neither is the model answering, so the session's 429 is the same 5-hour limit.
 { say "AUTOPILOT_STAGE: 4/9 verify"; node -e 'const fs = require("fs"); process.stdout.write(fs.readFileSync(process.argv[1], "utf8").replaceAll("1792768800", process.argv[2]))' "$S/fixtures/usage-limit-five-hour-session.jsonl" $((now + 3600)); } > "$T/state-u/logs/U-10.log"
