@@ -14,7 +14,7 @@
 // figure a run never recorded (a quota reading, a desk commit, the levers) is "not recorded", never a
 // zero or a guess.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
@@ -24,6 +24,7 @@ import { workerLogs, ticketCost, logUsage } from './worker-cost.mjs';
 import { windowEvents, probeLog } from './usage-pace.mjs';
 import { readInstalled } from './installed.mjs';
 import { digestDir } from './digest.mjs';
+import { triesMade } from './fix-tries.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
@@ -159,10 +160,10 @@ export function batchFigures({ queue, state, slug, since, answered = {} }) {
     if (merged) f.accepted += 1;
     const c = logs.length ? ticketCost(state, { ...t, added_at: from }) : null;
     if (c) { f.runs += c.runs; f.unknownRuns += c.unknown; f.cost += c.preflight.cost; }
-    for (const x of (t.fix_tries ?? []).filter((x) => inWindow(x.at))) {
-      f.fixTries += 1;
-      add(f.repairs, { [x.kind ?? 'unknown']: 1 });
-    }
+    const tries = (t.fix_tries ?? []).filter((x) => inWindow(x.at));
+    for (const x of tries) add(f.repairs, { [x.kind ?? 'unknown']: 1 });
+    // Per accepted ticket counts only accepted tickets' tries, as fix-tries.mjs counts a try.
+    if (merged) f.fixTries += triesMade(tries);
     const spent = { input: 0, output: 0, cost: c?.preflight.cost ?? 0 };
     const starts = {};
     for (const file of logs) {
@@ -325,7 +326,7 @@ export function figureLines(f, { ci, quotaMissing, perStart = false }) {
   lines.push(!f.accepted ? 'per accepted ticket: no ticket accepted'
     : !f.accKnown ? `per accepted ticket: ${NR}: no accepted ticket has its spend fully recorded${leftOut}`
       : `per accepted ticket: ${num(f.accInput / f.accKnown)} input tokens · ${num(f.accOutput / f.accKnown)} output tokens · ${usd(f.accCost / f.accKnown)} API-equivalent, over ${f.accKnown} of ${f.accepted}${leftOut}`);
-  lines.push(`fix tries per accepted ticket: ${f.accepted ? (f.fixTries / f.accepted).toFixed(2) : 'no ticket accepted'} (${f.fixTries} in all)`);
+  lines.push(`fix tries per accepted ticket: ${f.accepted ? (f.fixTries / f.accepted).toFixed(2) : 'no ticket accepted'} (${f.fixTries} made by accepted tickets)`);
   lines.push(`repair cycles by kind: ${listOf(f.repairs)}`);
   lines.push(`needs-you items: ${f.parks} raised (worker parks) · ${f.answered} answered (from the digest)`);
   const denials = Object.values(f.denials).reduce((n, v) => n + v, 0);
@@ -340,9 +341,23 @@ export function figureLines(f, { ci, quotaMissing, perStart = false }) {
   return lines;
 }
 
+// The archived named batches: batch.mjs moves a batch's queue folder and its state folder into
+// batches/.done/ under the same name, so a batch archived inside the window still counts.
+export function archivedBatches({ queueRoot, stateRoot }) {
+  const qdone = join(queueRoot, E.BATCHES_DIR, '.done');
+  let names = [];
+  try { names = readdirSync(qdone, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
+  return names.filter((n) => existsSync(join(qdone, n, 'queue.json')))
+    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n) }));
+}
+const allBatches = (slug) => {
+  const standing = E.batchPaths(slug);
+  return [...listBatches(slug), ...archivedBatches({ queueRoot: dirname(standing.queue), stateRoot: standing.state })];
+};
+
 // The whole report, as lines. Every input is a parameter so a test can point it at fixtures.
 export function report({
-  slug = E.repoSlug(), batches = listBatches(slug), days = 7, now = Date.now(), ci = true, gh = runGh,
+  slug = E.repoSlug(), batches = allBatches(slug), days = 7, now = Date.now(), ci = true, gh = runGh,
   repo = (() => { try { return E.ghRepo(); } catch { return null; } })(),
   root = (() => { try { return E.repoRoot(); } catch { return null; } })(),
   defaultBranch = (() => { try { return E.defaultBranch(); } catch { return 'main'; } })(),

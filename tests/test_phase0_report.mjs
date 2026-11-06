@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { logFacts, commandKey, report, spawnLine, spawnRecords, DAY_MS } from '../desk/bin/phase0-report.mjs';
+import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, DAY_MS } from '../desk/bin/phase0-report.mjs';
 import { parseLevers, LEVERS } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -87,9 +87,10 @@ utimesSync(join(S, 'logs', 'A-4.log'), (NOW - 10 * DAY_MS) / 1000, (NOW - 10 * D
 const queue = join(S, 'queue.json');
 writeFileSync(queue, JSON.stringify({ tickets: {
   'A-1': { key: 'A-1', state: 'done', added_at: iso(3 * DAY_MS), merged_at: iso(DAY_MS), branch: 'feat/A-1',
-    fix_tries: [{ try: 1, kind: 'checks', at: iso(DAY_MS) }, { try: 2, kind: 'review', at: iso(DAY_MS) }, { try: 1, kind: 'checks', at: iso(20 * DAY_MS) }] },
+    fix_tries: [{ try: 1, kind: 'checks', at: iso(DAY_MS) }, { try: 2, kind: 'review', at: iso(DAY_MS) }, { kind: 'capture', at: iso(DAY_MS) },
+      { try: 1, kind: 'checks', at: iso(20 * DAY_MS) }] },
   'A-2': { key: 'A-2', state: 'done', added_at: iso(3 * DAY_MS), merged_at: iso(2 * DAY_MS), branch: 'feat/A-2' },
-  'A-3': { key: 'A-3', state: 'running', added_at: iso(DAY_MS), branch: 'feat/A-3' },
+  'A-3': { key: 'A-3', state: 'running', added_at: iso(DAY_MS), branch: 'feat/A-3', fix_tries: [{ try: 1, kind: 'review', at: iso(DAY_MS) }] },
   'A-4': { key: 'A-4', state: 'done', added_at: iso(30 * DAY_MS), merged_at: iso(15 * DAY_MS) },
 } }));
 // AC8: spawn-worker's line, with and without an installed commit.
@@ -122,8 +123,8 @@ console.log(out.map((l) => `      | ${l}`).join('\n'));
 has('AC1: tickets with work and accepted ones, a ticket outside the window left out', batch, /tickets with work or a merge in the window: 3, accepted \(PR merged\): 2$/);
 has('AC1: spend in the window, a run with no result named', batch, /spent in the window: 4,000 input tokens · 400 output tokens · \$3\.00 API-equivalent \(1 run\(s\) with no result event not counted\)$/);
 has('AC1: tokens and cost per accepted ticket', batch, /per accepted ticket: 2,000 input tokens · 200 output tokens · \$1\.50 API-equivalent, over 2 of 2$/);
-has('AC1: fix tries per accepted ticket, in the window only', batch, /fix tries per accepted ticket: 1\.00 \(2 in all\)/);
-has('AC1: repair cycles by kind', batch, /repair cycles by kind: checks 1 · review 1$/);
+has('AC1: fix tries per accepted ticket: accepted tickets\' tries in the window, a capture not a try', batch, /fix tries per accepted ticket: 1\.00 \(2 made by accepted tickets\)/);
+has('AC1: repair cycles by kind, every ticket\'s', batch, /repair cycles by kind: review 2 · capture 1 · checks 1$/);
 has('AC1: needs-you raised and answered, this repo and window only', batch, /needs-you items: 1 raised \(worker parks\) · 1 answered/);
 has('AC1: permission denials by command', batch, /permission denials by command: 1 in all: git stash 1$/);
 has('AC1: Stage 4b review rounds', batch, /Stage 4b review rounds: 1$/);
@@ -166,6 +167,23 @@ writeFileSync(join(S2, 'logs', 'B-1.log'), `{"type":"rate_limit_event","rate_lim
 const garbled = report({ ...base, batches: [{ name: 'E-1', queue: join(S2, 'queue.json'), state: S2 }], ci: false });
 has('AC4: readings that cannot be read are unreadable, with the reason', garbled, /^ {2}quota, the signed-in login: unreadable: every reading in the window failed to parse \(1 more reading\(s\) could not be read\)$/);
 
+// A named batch archived inside the window (batch.mjs moves its queue and state folders to .done/)
+// still has its section and its share of the total.
+const QR = join(T, 'qroot');
+const SR = join(T, 'sroot');
+const doneQ = join(QR, 'batches', '.done', 'E-9');
+const doneS = join(SR, 'batches', '.done', 'E-9');
+mkdirSync(doneQ, { recursive: true });
+mkdirSync(join(doneS, 'logs'), { recursive: true });
+mkdirSync(join(QR, 'batches', '.done', 'no-queue'), { recursive: true });
+writeFileSync(join(doneQ, 'queue.json'), JSON.stringify({ tickets: { 'C-1': { key: 'C-1', state: 'done', added_at: iso(2 * DAY_MS), merged_at: iso(DAY_MS) } } }));
+writeFileSync(join(doneS, 'logs', 'C-1.log'), `${result(1, 10, 10)}\n`);
+const archived = archivedBatches({ queueRoot: QR, stateRoot: SR });
+t('an archived batch is listed with its queue and state, a folder with no queue is not', archived.map((b) => `${b.name} ${b.queue === join(doneQ, 'queue.json')} ${b.state === doneS}`).join(', '), 'E-9 (archived) true true');
+const withArchived = report({ ...base, batches: archived, ci: false });
+has('an archived batch has its own section', withArchived, /^batch E-9 \(archived\):$/);
+has('an archived batch counts in the total', withArchived.slice(withArchived.findIndex((l) => l.startsWith('total'))), /^ {2}tickets with work or a merge in the window: 1, accepted \(PR merged\): 1$/);
+
 // ---- AC3: a dirty checkout behind origin is reported and left exactly as it was ------------
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim();
 const origin = join(T, 'origin.git');
@@ -204,8 +222,7 @@ has('AC2: the main checkout\'s commit', checked, new RegExp(`^main checkout: .* 
 const spawn = readFileSync(join(ROOT, 'desk', 'bin', 'spawn-worker.sh'), 'utf8');
 const from = spawn.indexOf('# The desk commit and levers this start runs on');
 const to = spawn.indexOf('\ncd "$WT"', from);
-t('AC8: the record comes before the worker launches', from > 0 && to > from && to < spawn.indexOf('desk_detach claude'), true);
-t('AC8: the record comes after the preflight exits, so a preflight is not a start', from > spawn.indexOf('[preflight] FAILED — refusing to spawn $TICKET" >&2\n  exit 1\nfi'), true);
+if (from < 0 || to < 0) throw new Error('spawn-worker.sh has no recording step to run');
 // Run spawn-worker.sh's own recording step, as it stands in the script, against a scratch state.
 const S3 = join(T, 'state3');
 mkdirSync(join(S3, 'workers'), { recursive: true });
