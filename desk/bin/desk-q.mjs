@@ -276,8 +276,8 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const fb = /^review feedback: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (fb && triesLeft) return merging([fb[1], WARN], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);
   if (fb) return needs({ code: 'feedback', text: fb[1] }, [fb[1], WARN], [' · resolve or answer it', null]);
-  // A feat PR green and past the feedback check, or one GitHub's review decision says needs an approving
-  // review, waits on a person's approval before the driver merges it.
+  // One GitHub's review decision says needs an approving review, or with a red §4 State check of kind
+  // approval, waits on a person's approval before the driver merges it.
   const approval = /^approval: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (approval) return needs({ code: 'approval', text: approval[1] }, [approval[1], WARN], [' · approve it', null]);
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {

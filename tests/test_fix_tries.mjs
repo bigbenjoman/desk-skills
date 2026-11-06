@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
+import { readVerdict, localReviewSet } from '../desk/bin/review-threads.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -113,8 +114,23 @@ t('DS-335 AC1 a worker\'s round-3 review with a P1 at the head goes to a fix try
 const r335 = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1' }, body: p1Body });
 t('DS-335 AC2 once the tries are spent, the stuck text names each finding with its file:line', r335?.why, 'review not clean after 2 fix tries (2 review): 1 P1 — P1: packages/core/src/money.ts:12         second currency formatter — packages/core/src/format.ts:8 is the original');
 const p2only = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=2')), ucfg);
-t('DS-281 AC6 only P2s: not a findings call, the person settles them as today', `${p2only?.call} ${p2only?.action}`, 'person settle the findings or gaps on #702');
-t('DS-281 AC6 and reviewFix leaves it alone', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '0', p2: '2' } }), null);
+t('DS-281 AC6 only P2s it lists nowhere: not a findings call, the person settles them as today', `${p2only?.call} ${p2only?.action}`, 'person settle the findings or gaps on #702');
+t('DS-433 a review counting P2s it lists nowhere is left to the person', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '0', p2: '2' } }), null);
+const p1p2 = reviewBody('p0=0 p1=1 p2=1', ['P1 (1)', ' src/a.ts:3  second formatter', 'P2 (1)', ' src/pager.ts:1  no consumer']);
+const p2Listed = reviewBody('p0=0 p1=0 p2=1', ['P2 (1)', ' src/pager.ts:1   no consumer outside its own story']);
+const p2Verdict = { p0: '0', p1: '0', p2: '1', deferred: '0' };
+t('DS-433 only P2s it lists: a findings call, for a fix worker, reversing DS-281 AC6', undraftCall(tk(), draft(p2Listed), ucfg)?.call, 'findings');
+const p2Fix = reviewFix(tk(), { pr: 702, head: HEAD, verdict: p2Verdict, body: p2Listed });
+t('DS-433 an uncarried P2 it lists goes to a fix worker, quoted', `${p2Fix?.call} ${p2Fix?.fix.kind} ${p2Fix?.fix.what} ${p2Fix?.fix.findings[0].sev}`, 'requeue review review not clean: 1 P2 P2');
+t('DS-433 its brief says fix it, or carry it in the next round', fixBrief(tk({ fix: p2Fix.fix })).includes('Fix each P2 finding it lists, or carry one in your next review'), true);
+t('DS-433 and does not take that back', fixBrief(tk({ fix: p2Fix.fix })).includes('not part of this try'), false);
+t('DS-433 a P1 try\'s brief still leaves its P2s out', fixBrief(tk({ fix: reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', p2: '1' }, body: p1p2 }).fix })).includes('Its P2 findings are not part of this try.'), true);
+t('DS-433 its task names the P2, not a P0 or P1, and offers the same carry', /fix each P2 finding it quotes, or carry one in your review of the new head/.test(fixTask(tk({ fix: p2Fix.fix }))), true);
+const deferredBody = p2Listed.replace('deferred=0', 'deferred=1');
+t('DS-433 a P2 deferred on purpose is the person\'s', `${reviewFix(tk(), { pr: 702, head: HEAD, verdict: { ...p2Verdict, deferred: '1' }, body: p2Listed })} ${undraftCall(tk(), draft(deferredBody), ucfg)?.call}`, 'null person');
+t('DS-433 beside a P1, only the P1 is quoted: P2s wait for nothing worse', JSON.stringify(reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', p2: '1' }, body: p1p2 })?.fix.findings.map((x) => x.sev)), '["P1"]');
+const p2Spent = reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, verdict: p2Verdict, body: p2Listed });
+t('DS-433 once the tries are spent, it is the person\'s, naming the P2', /^review not clean after 2 fix tries \(2 review\): 1 P2 — P2: src\/pager\.ts:1/.test(p2Spent?.why ?? ''), true);
 const mixedTries = [{ try: 1, head: 'b'.repeat(40), kind: 'checks', what: 'red: Lint' }];
 t('DS-384 a checks try leaves a review fix its own tries: the review try is try 1', reviewFix(tk({ fix_tries: mixedTries }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: p1Body })?.fix.try, 1);
 t('DS-281 AC7 and a review try counts toward a checks try', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), both, ctx())?.why, 'still red after 2 fix tries: Backend tests, Lint');
@@ -470,5 +486,50 @@ t('DS-422 AC3 its task reviews the head and leaves it out of draft', /desk-revie
 t('DS-422 AC3 one review try per head: tried here, it is the person\'s', verdictTry(tk({ fix_tries: [{ ...vt.fix }] }), stateRed, { required: ['tests'], stateChecks: STATE })?.call, 'stuck');
 t('DS-422 AC4 a red approval check alone sends no worker', verdictTry(tk(), pr([ok('tests'), red('🔐 Review gate', '7')]), { required: ['tests'], stateChecks: STATE }), null);
 t('DS-422 a draft is undraft.mjs\'s, not this', verdictTry(tk(), { ...stateRed, isDraft: true }, { required: ['tests'], stateChecks: STATE }), null);
+t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
+
+// DS-433 AC2: a green PR the merge driver holds for want of a clean review at its head goes back for review.
+const green433 = pr([ok('tests')]);
+const stale = { head: HEAD, clean: false, carried: null, why: 'its review verdict is for bbbbbbbbb, not the head aaaaaaaaa', settle: false, person: false };
+const ctx433 = (atHead, o = {}) => ({ required: ['tests'], stateChecks: STATE, atHead: () => atHead, ...o });
+const vs = verdictTry(tk(), green433, ctx433(stale));
+t('DS-433 AC2 a stale verdict on a green PR goes to a review worker, out of draft', `${vs?.call} ${vs?.fix.kind} ${vs?.fix.ready} ${vs?.fix.held}`, 'requeue rereview true true');
+t('DS-433 AC2 its brief says the driver will not merge it, and why', fixBrief(tk({ fix: vs.fix })).includes('Your PR #697 is open and out of draft on this branch, and the merge driver will not merge it without a clean review at its head aaaaaaaaaaaa: its review verdict is for bbbbbbbbb, not the head aaaaaaaaa.'), true);
+t('DS-433 AC2 its task reviews the head and leaves it out of draft', /desk-review.*leave the PR out of draft/.test(fixTask(tk({ fix: vs.fix }))), true);
+t('DS-433 AC2 one review try per head: tried here, it is the person\'s', verdictTry(tk({ fix_tries: [{ ...vs.fix }] }), green433, ctx433(stale))?.why, `no review verdict readable at its head after 1 fix try: ${stale.why}`);
+const movedTry = [{ try: 1, head: 'c'.repeat(40), kind: 'checks' }, { try: 2, head: 'd'.repeat(40), kind: 'checks' }];
+t('DS-433 AC2 tries spent, a head a base merge moved still gets its extra try', verdictTry(tk({ fix_tries: movedTry }), green433, ctx433(stale, { base: 'main', baseMerge: () => true }))?.fix.extra, true);
+t('DS-433 a clean review at the head sends no worker', verdictTry(tk(), green433, ctx433({ ...stale, clean: true, why: null })), null);
+t('DS-433 nothing waiting on a verdict (no §4 Local review command, or no driver) sends no worker', verdictTry(tk(), green433, ctx433(null)), null);
+t('DS-433 no atHead at all is as it was', verdictTry(tk(), green433, { required: ['tests'], stateChecks: STATE }), null);
+const askedNot = () => { throw new Error('asked'); };
+t('DS-433 checks still running: the head is not read yet', verdictTry(tk(), pr([{ name: 'tests', status: 'in_progress', conclusion: null }]), { required: ['tests'], atHead: askedNot }), null);
+t('DS-433 a red check is the fix tries\', not a review', verdictTry(tk(), pr([red('tests', '9')]), { required: ['tests'], stateChecks: STATE, atHead: askedNot }), null);
+t('DS-433 red only on a waived flake, the driver reaches its hold, so it goes for review', verdictTry(tk(), pr([ok('tests'), red('Flaky', '9')]), ctx433(stale, { waived: () => true }))?.fix.kind, 'rereview');
+t('DS-433 a review at the head that no fix worker took is the person\'s', JSON.stringify(verdictTry(tk(), green433, ctx433({ ...stale, why: 'its review verdict at aaaaaaaaa is not clean (p2=1)', settle: true }))), JSON.stringify({ call: 'stuck', why: 'its review verdict at aaaaaaaaa is not clean (p2=1)' }));
+t('DS-433 so is an unset row, which no worker can set', verdictTry(tk(), green433, ctx433({ ...stale, why: 'row', person: true }))?.call, 'stuck');
+
+// What the driver holds on (review-threads.mjs readVerdict).
+{
+const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
+const marked = (sha, counts = CLEAN, login = 'ben', tail = []) => ({ id: `R${sha[0]}`, author: { login }, commit: { oid: sha }, body: ['<!-- desk-review:local -->', `<!-- desk-review:verdict v=1 sha=${sha} ${counts} vendor=codex round=1 -->`, '**desk-review**', ...tail].join('\n') });
+const pl = (head, ...reviews) => ({ data: { repository: { pullRequest: { headRefOid: head, reviews: { nodes: reviews } } } } });
+const OLD = 'b'.repeat(40);
+const read433 = (payload, o = {}) => readVerdict(payload, { handle: 'ben', clean: CLEAN, ...o });
+t('DS-433 clean at the head reads clean', read433(pl(HEAD, marked(HEAD))).clean, true);
+t('DS-433 no payload is no answer', readVerdict({}, { handle: 'ben', clean: CLEAN }), null);
+t('DS-433 no verdict is a review worker\'s', JSON.stringify(read433(pl(HEAD))), JSON.stringify({ head: HEAD, clean: false, carried: null, why: 'no desk-review verdict is posted on it', settle: false, person: false }));
+t('DS-433 a stale verdict is too', `${read433(pl(HEAD, marked(OLD))).clean} ${read433(pl(HEAD, marked(OLD))).settle}`, 'false false');
+t('DS-433 someone else\'s clean verdict attests nothing', read433(pl(HEAD, marked(HEAD, CLEAN, 'mallory'))).clean, false);
+t('DS-433 the latest verdict counts: a dirty one after a clean one holds it', read433(pl(HEAD, marked(HEAD), marked(HEAD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'))).settle, true);
+t('DS-433 an uncarried P2 at the head is not clean', read433(pl(HEAD, marked(HEAD, 'p0=0 p1=0 p2=1 deferred=0 gaps=0 unrefuted=0 partial=0'))).clean, false);
+t('DS-433 a carried P2 is not in the counts, so it is clean', read433(pl(HEAD, marked(HEAD, CLEAN, 'ben', ['<!-- desk-review:carried v=1 p2=1 since=x -->']))).clean, true);
+const carriedRead = read433(pl(HEAD, marked(OLD)), { carry: (sha) => sha === OLD });
+t('DS-433 a clean verdict carried to the head reads clean, naming its commit', `${carriedRead.clean} ${carriedRead.carried === OLD}`, 'true true');
+const carriedDirty = read433(pl(HEAD, marked(OLD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { carry: () => true });
+t('DS-433 an unclean verdict carried to the head is not clean, and is a review worker\'s to post at it', `${carriedDirty.clean} ${carriedDirty.settle} ${carriedDirty.carried}`, 'false false null');
+t('DS-433 an unset row is the person\'s', read433(pl(HEAD), { clean: 'TODO' }).person, true);
+t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');
+}
 
 process.exit(fails ? 1 : 0);

@@ -7,7 +7,8 @@
 // whose review gaps the person
 // ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
-// (reviewTry), or a ready PR whose §4 State check reading its verdict is red (verdictTry), to a review
+// (reviewTry), or a ready PR whose §4 State check reading its verdict is red, or that the merge driver
+// holds for want of a clean verdict at its head (verdictTry), to a review
 // worker, both within the same tries, and so does a draft in conflict with
 // its base that §3 lets a worker resolve (conflictFix). A draft whose screenshots were never taken goes
 // to a capture worker, once (captureTry).
@@ -205,12 +206,12 @@ export function reviewCounts(v) {
   return ['p0', 'p1'].filter((k) => Number(v?.[k]) > 0).map((k) => `${Number(v[k])} ${k.toUpperCase()}`).join(', ');
 }
 
-// The P0 and P1 findings a posted desk-review body lists, one line each with its file:line, as
-// { sev, text }. A finding sits under a `P0 (n)` or `P1 (n)` heading, or opens with its own
-// severity; a heading of anything else (P2, REQUIREMENT GAPS, a `###` section) ends that run. A line
+// The findings of these severities (P0 and P1 unless `sevs` says) a posted desk-review body lists, one
+// line each with its file:line, as { sev, text }. A finding sits under a `P0 (n)` or `P1 (n)` heading, or
+// opens with its own severity; a heading of anything else (REQUIREMENT GAPS, a `###` section) ends that run. A line
 // opening with an em dash, or a bullet indented deeper than the finding's own line, continues the
 // finding above it, and a line saying `None` (`None.`, `P1: None`) is no finding.
-export function reviewFindings(body) {
+export function reviewFindings(body, sevs = ['P0', 'P1']) {
   const found = [];
   // open: the indent of the finding a deeper bullet continues, null when none is open.
   let sev = null, open = null;
@@ -218,7 +219,7 @@ export function reviewFindings(body) {
     const text = line.trim();
     const own = /^[#>*_\s-]*(?:F\d+\s*·\s*)?(P[0-3])\b/.exec(line);
     if (own) { sev = own[1]; open = null; } else if (isHeading(text)) { sev = null; open = null; }
-    if (sev !== 'P0' && sev !== 'P1') continue;
+    if (!sevs.includes(sev)) continue;
     if (text.startsWith('—') && found.length) { found[found.length - 1].text += ` ${text}`; continue; }
     const indent = /^\s*/.exec(line)[0].length;
     if (open != null && indent > open && /^[-*]\s/.test(text)) { found[found.length - 1].text += ` ${text}`; continue; }
@@ -279,15 +280,19 @@ const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 // the tries made by kind. Where
 // config §3 autopilot-judgement is yes (opts.judgement), so do its requirement gaps: closing one is a
 // call the worker may make and record, or park when it needs a product or another person's ruling.
-// P2s are left as they are (null), and so is a review that counts a P0 or P1 but lists none with its
-// file:line in its body or its inline comments, or counts only gaps and lists none under its gaps
-// heading: the person settles those.
+// A P2 blocks a merge unless carried, so a review with nothing worse sends its P2s the same way, and the
+// fix's next round carries one where fixing it would mean another. One deferred on purpose is the
+// person's. So is a review that counts a finding but lists none with its file:line in its body or its
+// inline comments, or counts only gaps and lists none under its gaps heading (null).
 // An inline finding the body also lists at the same file:line is quoted once, from the body.
 // review: { pr, head, verdict, body, comments } (comments as inlineFindings reads them, or a function
 // returning them, called only once a try is left; null when they could not be read, so only the body
 // counts).
 export function reviewFix(t, review, opts = {}) {
-  const counts = reviewCounts(review.verdict);
+  const v = review.verdict;
+  const p2s = !reviewCounts(v) && Number(v?.p2) > 0 && !(Number(v?.deferred) > 0) ? Number(v.p2) : 0;
+  const counts = reviewCounts(v) || (p2s ? `${p2s} P2` : '');
+  const sevs = p2s ? ['P2'] : undefined;
   const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
   const what = [counts, gapsOpen ? gapCount(gapsOpen) : ''].filter(Boolean).join(', ');
   if (!what || !review.head) return null;
@@ -299,13 +304,14 @@ export function reviewFix(t, review, opts = {}) {
   if (room <= 0 || fixedAt(done, review.head)) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
-    const left = [...(counts ? reviewFindings(review.body).map((x) => `${x.sev}: ${x.text}`) : []), ...(gapsOpen ? reviewGaps(review.body) : [])];
+    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...(gapsOpen ? reviewGaps(review.body) : [])];
     const lead = made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
       ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
     return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
-  const listed = counts ? reviewFindings(review.body) : [];
-  const comments = !counts ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
+  const listed = counts ? reviewFindings(review.body, sevs) : [];
+  // A P2 is never posted inline.
+  const comments = !counts || p2s ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
   const gaps = gapsOpen ? reviewGaps(review.body) : [];
@@ -388,16 +394,32 @@ export function reviewTry(t, { pr, head, why, base = null, baseMerge = null }) {
 // A ready PR whose §4 State check of kind `verdict` is red, with no review at its head that reads as
 // not clean (that is reviewFix's), has a verdict the check rejects: none, one for an older head, or one
 // in a form the gate does not accept. The driver never reruns it, so it goes to a review worker under
-// reviewTry's tries, out of draft. s: its pr_status; ctx: { required, advisory, stateChecks }.
+// reviewTry's tries, out of draft. Where no such check runs, the merge driver holds a green PR the same
+// way, on what ctx.atHead() reads (review-threads.mjs readVerdict, null where nothing waits on a verdict):
+// no verdict or a stale one is a review worker's too, with `held` for its brief, and a review at the
+// head that is not clean and that no fix worker took (reviewFix: a deferred item, findings it does not
+// list) the person's.
+// s: its pr_status; ctx: { required, advisory, stateChecks, settled (a review at the head reads as not
+// clean), atHead, waived(names) (the driver waives these red checks), base, baseMerge }.
 export function verdictTry(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   if (gate.pending.length) return null;
   const red = stateFailing(gate.failing, ctx.stateChecks).filter((f) => f.kind === 'verdict');
-  if (!red.length) return null;
-  const names = [...new Set(red.map((f) => `"${f.name}"`))].join(', ');
-  const c = reviewTry(t, { pr: s.pr, head: s.head, why: `its ${names} check is red, and a rerun reads the same verdict` });
-  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c;
+  const asReady = (c) => (c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c);
+  if (red.length) {
+    if (ctx.settled) return null;
+    const names = [...new Set(red.map((f) => `"${f.name}"`))].join(', ');
+    return asReady(reviewTry(t, { pr: s.pr, head: s.head, why: `its ${names} check is red, and a rerun reads the same verdict` }));
+  }
+  // The driver reaches its hold only on a head it would otherwise merge: green, or red only on a waiver.
+  const failing = [...new Set(gate.failing.map((f) => f.name))];
+  if (gate.state !== 'pass' && !(failing.length && ctx.waived?.(failing))) return null;
+  const at = ctx.atHead?.();
+  if (!at || at.clean) return null;
+  if (at.settle || at.person) return { call: 'stuck', why: at.why };
+  const c = asReady(reviewTry(t, { pr: s.pr, head: s.head, why: at.why, base: ctx.base, baseMerge: ctx.baseMerge }));
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, held: true } } : c;
 }
 
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
@@ -458,10 +480,12 @@ export function fixBrief(t) {
   }
   if (f.kind === 'rereview') {
     return [f.extra ? `## Review try for a merge from the base: PR #${f.pr}` : `## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
-      f.ready
+      f.held
+        ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it without a clean review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
+        : f.ready
         ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not rerun the check that reads its review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
         : `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`,
-      'Review that head with desk-review and post the review on the PR (desk-review Phase 7), so its verdict marker is on the head. Change no code in this try: a P0, a P1 or a gap the review finds goes to a fix worker at the next pass.', '',
+      'Review that head with desk-review and post the review on the PR (desk-review Phase 7), so its verdict marker is on the head. Change no code in this try: a P0, a P1, a listed P2 or a gap the review finds goes to a fix worker at the next pass.', '',
       f.extra ? `A merge from the base moved this head, so this try is not one of the ${f.of} fix tries. A PR with no verdict readable at its head after it goes to the person.`
         : `This is try ${f.try} of ${f.of}. A PR with no verdict readable at its head after this try goes to the person.`, ''].join('\n');
   }
@@ -484,7 +508,7 @@ export function fixBrief(t) {
   } else if (f.kind === 'review') {
     lines.push(`Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean${f.verdict ? ` (\`${f.verdict}\`)` : ''}.`);
     if (f.findings?.length) {
-      lines.push('Fix each P0 and P1 finding it lists:', '');
+      lines.push(`Fix each ${findingKinds(f.findings)} finding it lists${f.findings.some((x) => x.sev === 'P2') ? ', or carry one in your next review where fixing it would mean another round (worker contract Stage 4)' : ''}:`, '');
       for (const x of f.findings) lines.push(`- ${x.sev}: ${x.text}`);
       lines.push('');
     }
@@ -496,7 +520,7 @@ export function fixBrief(t) {
       for (const g of f.gaps) lines.push(`- Gap: ${g}`);
       lines.push('');
     }
-    lines.push('Its P2 findings are not part of this try.');
+    if (!f.findings?.some((x) => x.sev === 'P2')) lines.push('Its P2 findings are not part of this try.');
   } else {
     lines.push(f.draft
       ? `Your PR #${f.pr} is a draft on this branch, and these required checks are red at ${String(f.head).slice(0, 12)}, so it cannot leave draft:`
@@ -513,6 +537,8 @@ export function fixBrief(t) {
   lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${left} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
 }
+
+const findingKinds = (findings) => (findings?.some((x) => x.sev === 'P2') ? 'P2' : 'P0 and P1');
 
 // The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK).
 export function fixTask(t) {
@@ -540,8 +566,8 @@ export function fixTask(t) {
     : f.kind === 'feedback' ? 'validate each review thread it quotes (desk-review-response), fix what is right, answer every thread with gh pr comment naming it, and park on one you cannot fix, naming it and what blocks it'
     : gaps ? 'do what the call says about each gap, and nothing else'
       : f.kind === 'review' ? (f.gaps?.length
-        ? `${f.findings?.length ? 'fix each P0 and P1 finding it quotes and ' : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
-        : 'fix each P0 and P1 finding it quotes, and nothing else')
+        ? `${f.findings?.length ? `fix each ${findingKinds(f.findings)} finding it quotes and ` : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
+        : `fix each ${findingKinds(f.findings)} finding it quotes${f.findings?.some((x) => x.sev === 'P2') ? ', or carry one in your review of the new head where fixing it would mean another round' : ''}, and nothing else`)
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
   const after = review ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : '';

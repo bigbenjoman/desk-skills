@@ -25,7 +25,7 @@
 //           it to a review worker (fix-tries.mjs reviewTry), and to the person once no try is left
 //   checks  a required check is red: the pass sends it to a fix worker (fix-tries.mjs draftChecksFix),
 //           and to the person once no try is left; `failing` is the gate's failing checks
-//   findings  the review at its head found a P0 or a P1, or a requirement gap where §3
+//   findings  the review at its head found a P0, a P1 or a listed P2 not deferred, or a requirement gap where §3
 //           autopilot-judgement is yes (cfg.judgement): the pass sends those to a fix worker
 //           (fix-tries.mjs reviewFix), and only once no try is left, or the review lists none of them
 //           (a P0 or P1 by file:line in its body or inline comments, a gap under its gaps heading), does
@@ -45,7 +45,7 @@
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
 import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, isHuman } from './gate.mjs';
-import { RERUNS_MAX } from './fix-tries.mjs';
+import { RERUNS_MAX, reviewFindings } from './fix-tries.mjs';
 import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
@@ -130,6 +130,24 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   if (left.length) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but leaves items open, deferred or carried: ${left.map((l) => `"${l}"`).join('; ')}` };
   if (!plainLines(r.body).some((l) => l.replace(NOTHING_LEFT, '') !== l)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
   return { clean: true, why: null, verdict: stated };
+}
+
+// The review verdict the handle has at this head, under a set §4 Clean review verdict row (`clean`), as
+// the undraft and the merge driver both read it: { plain, review, verdict, found, carried, v }, v being
+// what verdictAt or plainVerdictAt says. A verdict for an older head that only merges of the base have
+// moved past (carry(sha), as verdictCarries says) is read as at the head, and `carried` names its commit.
+export function verdictAtHead(reviews, handle, head, clean, carry) {
+  const plain = !Object.keys(pairs(clean)).length;
+  const review = latestReview(reviews, handle);
+  const verdict = plain ? null : review?.verdict ?? null;
+  let v = plain ? plainVerdictAt(reviews, handle, head, clean) : verdictAt(verdict, head, clean);
+  const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
+  let carried = null;
+  if (!v.clean && !v.settle && found?.sha && head && !head.startsWith(found.sha) && carry?.(found.sha)) {
+    v = { ...verdictAt(found, found.sha, plain ? DESK_REVIEW_CLEAN : clean), ...(plain ? { verdict: found } : {}) };
+    carried = found.sha;
+  }
+  return { plain, review, verdict, found, carried, v };
 }
 
 // Whether a review verdict posted on `from` still holds at `head`: `head` is reached from `from` by
@@ -339,27 +357,19 @@ export function undraftCall(t, pr, cfg) {
   if (!clean || /^(todo|none)\b/i.test(clean)) {
     return person('§4 Clean review verdict is not set, so no review can be read as clean', 'set it with /desk-setup');
   }
-  const plain = !Object.keys(pairs(clean)).length;
   if (!cfg.handle) return person('§1 GitHub handle is not set, so no review verdict can be attested', 'set it with /desk-setup');
   // A review at the head that found a P0 or a P1 is a code change for a fix worker, whatever else is
   // wrong with the PR: the pass sends it back (fix-tries.mjs reviewFix) with the review's body and
   // the inline comments it reads by the review's id.
   // Under a plain-text row the latest review may still be a desk-review verdict (plainVerdictAt reads
   // it against desk-review's own counts), and its P0s and P1s go the same way.
-  const review = latestReview(pr.reviews, cfg.handle);
-  const verdict = plain ? null : review?.verdict ?? null;
-  let v = plain ? plainVerdictAt(pr.reviews, cfg.handle, pr.head, clean) : verdictAt(verdict, pr.head, clean);
-  const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
-  // A verdict for an older head that only merges of the base have moved past is read as at the head.
-  let carried = null;
-  if (!v.clean && !v.settle && found?.sha && pr.head && !pr.head.startsWith(found.sha) && pr.carry?.(found.sha)) {
-    v = { ...verdictAt(found, found.sha, plain ? DESK_REVIEW_CLEAN : clean), ...(plain ? { verdict: found } : {}) };
-    carried = found.sha;
-  }
+  const { plain, review, verdict, v, found, carried } = verdictAtHead(pr.reviews, cfg.handle, pr.head, clean, pr.carry);
   const withCarried = (c) => (carried ? { ...c, carried } : c);
   // Under §3 autopilot-judgement yes, its requirement gaps go the same way: a worker makes the call.
   const gaps = cfg.judgement === 'yes' && Number(found?.gaps) > 0;
-  if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0 || gaps)) {
+  // A P2 it lists is a fix worker's too; one deferred, or listed nowhere, is the person's.
+  const p2s = Number(found?.p2) > 0 && !(Number(found?.deferred) > 0) && reviewFindings(review?.body, ['P2']).length > 0;
+  if (v.settle && found && (Number(found.p0) > 0 || Number(found.p1) > 0 || p2s || gaps)) {
     return { ...person(v.why, `settle the ${gaps ? 'findings or gaps' : 'findings'} on #${n}`), call: 'findings', verdict: found, review: review.body, reviewId: review.id };
   }
   if (pr.mergeState === 'DIRTY' || pr.mergeable === 'CONFLICTING') {

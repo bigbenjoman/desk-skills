@@ -474,7 +474,7 @@ put('xi', { port: 4300, beat: 1, supervised: true, merge: 'yes', tickets: {
   'X-1': greenPr(91),
   'X-2': greenPr(92, { merge_blocked: held347, fix_tries: spentTries }),
   'X-3': greenPr(93, { merge_blocked: held347 }),
-  'X-4': greenPr(94, { merge_blocked: 'approval: a feature, green at a71111111 with no approval: a person approves it before desk merges it' }),
+  'X-4': greenPr(94, { merge_blocked: 'approval: an approving review is required at a71111111: a person approves it before desk merges it' }),
   'X-5': greenPr(95, { fix_tries: spentTries, stuck: { why: 'review feedback still open after 2 fix tries: 1 unresolved thread — src/auth.ts:9 "P0 a hung DOB probe"', pr: 95, head: 'h95' } }),
 } });
 const xi = N.collect({ word: 'xi' }).items;
@@ -482,7 +482,8 @@ t('DS-419 AC7 a PR out of fix tries for its feedback is the person\'s, naming th
 t('DS-347 AC3 a green PR the driver merges is not an item, and one it holds for a thread with no try left is', xi.filter((i) => !['X-4', 'X-5'].includes(i.t.key)).map((i) => `${i.t.key} ${i.kind}`).join(), 'X-2 pr');
 t('DS-347 AC3 its need names the PR, the thread\'s path and its first line', xi.find((i) => i.t.key === 'X-2')?.need, 'PR #92 is held for review: 1 unresolved thread on a green PR, first desk/bin/pass.mjs:970 "Why does this hold not show in desk-q?". Resolve or answer it; desk then merges it.');
 t('DS-419 AC1 a held thread with a fix try left is not the person\'s: a worker takes it', xi.some((i) => i.t.key === 'X-3'), false);
-t('DS-419 AC9 a feat PR green with no thread open and no approval asks the person for one', xi.find((i) => i.t.key === 'X-4')?.need, 'PR #94 waits on a person\'s approval: a feature, green with no approval. Review and approve it on GitHub; desk then merges it.');
+t('DS-433 AC3 a green PR GitHub requires an approving review on asks the person for one', xi.find((i) => i.t.key === 'X-4')?.need, 'PR #94 waits on a person\'s approval: an approving review is required. Review and approve it on GitHub; desk then merges it.');
+t('DS-433 AC1 a green PR with no merge note, the driver\'s to merge, lists nothing', xi.some((i) => i.t.key === 'X-1'), false);
 
 // ---- DS-420: a red PR the merge driver declined is the person's as its reason says, never called green.
 const redPr = (pr, more = {}) => { const g = greenPr(pr, more); return { ...g, pr_status: { ...g.pr_status, checks: [{ name: 'build', status: 'completed', conclusion: 'failure' }] } }; };

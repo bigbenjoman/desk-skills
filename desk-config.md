@@ -166,7 +166,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `pr-request-review` | Request review, hand a PR back to its reviewer, add the infra/security owner (§4) | `yes` | `TODO` |
 | `pr-ready` | Undraft your PR once its self-review is clean at head | `yes` | `TODO` |
 | `pr-auto-merge` | Arm auto-merge (`gh pr merge --auto`), where the repo allows it | `ask` | `TODO` |
-| `pr-merge-green` | Merge a PR once §4 Required checks are green (no approval wait) | `yes` (`ask` where §4 Branch protection is `none`) | `TODO` |
+| `pr-merge-green` | Merge a PR once §4 Required checks are green and its §4 Local review is clean at head (no approval wait, unless GitHub requires an approving review or a §4 State check of kind `approval` is red) | `yes` (`ask` where §4 Branch protection is `none`) | `TODO` |
 | `merge-feedback-first` | Work outstanding review feedback before merging | `yes` | `TODO` |
 | `pr-update-branch` | Update your PR branch from the default branch (`gh pr update-branch`) | `yes` | `TODO` |
 | `pr-conflict-unreviewed` | Resolve a merge conflict on your PR before any human has reviewed it | `yes` | `TODO` |
