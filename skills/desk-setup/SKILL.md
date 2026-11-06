@@ -129,7 +129,10 @@ done. Both are here, read by every run that reaches them:
 rows to an `AskUserQuestion` call, as many calls as it takes. Read the rows from the template, never
 from a list here. The Recommended option is the template's Recommended value unless a rule here
 names another. A value this repo's config already holds for a row, `off` and `none` included, is the
-first option, as it stands; the memory ceiling above is the one exception. For resume a killed
+first option, as it stands; the memory ceiling above is the one exception. The preferred
+dev-server port is the one row asked out of order: it is left out of these calls and asked after
+them, once the autopilot worker concurrency answer is in (*The dev-server port is read, not
+recalled*, below). For resume a killed
 worker, Recommended is `2`: a pass resumes a worker a reboot or crash killed, in its own session, up
 to that many times; `0` marks it failed instead. For the
 orchestrator status table, offer `full` (Recommended: the orchestrator session shows the whole
