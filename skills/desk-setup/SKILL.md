@@ -124,13 +124,19 @@ done. Both are here, read by every run that reaches them:
   every repo to <machine> GB (memory less 8 for the OS), and a repo
   row may be lower but never higher". A figure at or below the machine's stays as it is.
 
-**Then §3b** (five rounds): subagents without asking, autopilot worker concurrency, memory ceiling,
-spawn gate; test worker cap, preferred dev-server port, park-after minutes, per-worker budget; batch
-budget, worker models, worker location, stage reports; push notification, check-in times, killed-worker
-resumes (Recommended `2`: a pass resumes a worker a reboot or crash killed, in its own session, up to
-that many times; `0` marks it failed instead), batches run by; orchestrator status table. For the
+**Then §3b**: every row the config template's §3b table holds
+(`~/.agents/skills/desk-setup/references/desk-config.template.md`), in the template's order, four
+rows to an `AskUserQuestion` call, as many calls as it takes. Read the rows from the template, never
+from a list here. The Recommended option is the template's Recommended value unless a rule here
+names another. A value this repo's config already holds for a row, `off` and `none` included, is the
+first option, as it stands; the memory ceiling above is the one exception. The preferred
+dev-server port is the one row asked out of order: it is left out of these calls and asked after
+them, once the autopilot worker concurrency answer is in (*The dev-server port is read, not
+recalled*, below). For resume a killed
+worker, Recommended is `2`: a pass resumes a worker a reboot or crash killed, in its own session, up
+to that many times; `0` marks it failed instead. For the
 orchestrator status table, offer `full` (Recommended: the orchestrator session shows the whole
-status table on every spawn and stage step, as it always has) and `quiet` (for anyone who keeps
+status table on every spawn and stage step) and `quiet` (for anyone who keeps
 desk-q open beside a batch run in the session: the status watch prints one line per ticket that
 changed and the orchestrator answers a spawn or stage step in a line or less, so the session spends
 fewer tokens; parks, questions, PRs, merges and failures are still reported, and the Stage 8 report
@@ -138,19 +144,20 @@ and any status you ask for carry the full table), and record the answer. For bat
 `node ~/.claude/desk/bin/run-by.mjs offer` first. On macOS (`ask: true`) offer `supervisor`
 (Recommended: once Stage 3 has asked, the supervisor runs the batch from launchd, the session ends,
 and you follow it in desk-q, opening a session only when it needs you) and `session` (the batch runs
-in the interactive session through `/loop`, as before). Off macOS (`ask: false`) don't ask: record
+in the interactive session through `/loop`). Off macOS (`ask: false`) don't ask: record
 `session` and say its `line` in one sentence. Once the config is written with `supervisor`, run
 `node ~/.claude/desk/bin/run-by.mjs ensure` in the repo, which installs and loads the supervisor, and
 report its result; on exit 11 give its `error` and `retry` command, and leave the row at
 `supervisor` (Stage 4 tries the install again). For
 check-in times, Recommended is `08:00, 17:00`: questions and logged decisions from every repo arrive
 together then, as one page and one push. For worker models, say that the row can also name a
-`finder=<alias>` (`sonnet`, `haiku`) for self-review finders and a `text=<model>` for the Stage 7 PR and Jira session,
-and that both are unset by default, so finders and that session run on the models they do today: a
-cheaper model is set only after the eval harness (`desk/bin/skill-eval.mjs`) has run a review task
+`finder=<alias>` for self-review finders and a `text=<model>` for the Stage 7 PR and Jira session,
+and that both are unset by default, so finders and that session run on the worker's model: another
+model is set only after the eval harness (`desk/bin/skill-eval.mjs`) has run a review task
 set on each model and the findings held. Never set either on the user's behalf. For worker location,
 Recommended is `local`; say that `cloud` runs each ticket that needs nothing on this computer in a
-Claude Code cloud session, whose tokens and cost are not reported, and is not yet compared with local.
+Claude Code cloud session, whose tokens and cost are not reported, so its cost cannot be compared
+with local.
 
 **The dev-server port is read, not recalled.** Run `desk-env ports --cap <the cap half of the
 autopilot worker concurrency answer>` (not the test worker cap): it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block
