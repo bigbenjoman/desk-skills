@@ -73,7 +73,7 @@ cat > "$T/bin/triage.sh" <<EOF
 echo "\$1" >> "$T/triage.calls"
 [ -n "\${DESK_BATCH:-}" ] && echo "\$1 \$DESK_BATCH \${DESK_DEFAULT_BRANCH:-unpinned}" >> "$T/triage.batch"
 [ -f "$T/recs/\$1.fails" ] && { echo "triage: claude exited 1" >&2; exit 1; }
-[ -f "$T/recs/\$1.limit" ] && { mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.limit" "\$DESK_AUTOPILOT_STATE/triage/\$1.log"; echo "USAGE LIMIT: \$1 triage stopped" >&2; exit 3; }
+[ -f "$T/recs/\$1.limit" ] && { echo "[triage] reading \$1" >&2; echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.limit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
 mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"
 EOF
 cat > "$T/bin/pass.mjs" <<EOF
@@ -231,8 +231,8 @@ out=$(intake)
 check "a triage that fails is not admitted, and is tried again next run" '[ "$(qget tickets.F-1)" = undefined ] && grep -q "F-1 not admitted: triage failed: triage: claude exited 1; the next intake tries again" <<< "$out"'
 out=$(intake); out=$(intake)
 check "after three failed triages it goes to the digest" 'grep -q "^handed: triage failed" <<< "$(handed F-1)"'
-# DS-505 AC4: triage's exit 3 is the usage limit, named with its reset time from triage's log.
-echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day","resetsAt":1800000000}}' > "$T/recs/U-1.limit"
+# Triage's exit 3 is the usage limit, named as triage's USAGE LIMIT line names it, with its reset time.
+echo 'triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC' > "$T/recs/U-1.limit"
 search U-1; out=$(intake)
 check "DS-505 AC4: a triage stopped at the usage limit says so with its reset, not as a failed triage" \
   'grep -q "U-1 not admitted: triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC; the next intake tries again" <<< "$out" && ! grep -q "produced no triage record\|triage failed" <<< "$out" && [ "$(qget tickets.U-1)" = undefined ]'
@@ -321,12 +321,12 @@ rec H-2 A '"unknowns":["which tier?"]'; rec H-3 C
 out=$(admit H-2 H-3); rc=$?
 check "admit: a ticket failing a check is refused to the person with why, exit 11" '[ $rc -eq 11 ] && grep -q "^not admitted H-2: open question(s): which tier?$" <<< "$out" && grep -q "^not admitted H-3: lane C: needs a plan$" <<< "$out"'
 check "admit: a refused ticket is not queued or handed to the digest" '[ "$(qget tickets.H-2)" = undefined ] && [ "$(handed H-2)" = none ]'
-printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"api_error_status":429}' > "$T/recs/U-2.limit"
+echo 'triage stopped at the usage limit' > "$T/recs/U-2.limit"
 cp "$T/recs/U-1.limit" "$T/recs/U-3.limit"
 out=$(admit U-3 U-2); rc=$?
 check "DS-505 AC4: /desk-admit refuses a ticket stopped at the usage limit with the limit, its reset, and to try once it lifts" \
   '[ $rc -eq 11 ] && grep -qx "not admitted U-3: triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC: run /desk-admit U-3 again once the limit lifts" <<< "$out"'
-check "DS-505 AC4: a limit with no reset time in the log names the limit alone" \
+check "DS-505 AC4: a limit with no reset time names the limit alone" \
   'grep -qx "not admitted U-2: triage stopped at the usage limit: run /desk-admit U-2 again once the limit lifts" <<< "$out"'
 rec H-5 A '"blockers":[{"key":"H-4","category":"new"}]'; rec H-4 A
 out=$(admit H-5 H-4 --front)

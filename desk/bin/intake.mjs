@@ -60,7 +60,6 @@ import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as re
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 import { startEpic, clearAbandoned } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
-import { usageLimit, limitName, resetText } from './usage-limit.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -224,17 +223,15 @@ function blockersFirst(recs) {
 }
 
 // Run triage.sh for one ticket, in the batch `env` names: its record, or why there is none. Exit 3 is
-// a usage limit, read from triage's log: `limit` is {type, resetsAt} (usage-limit.mjs).
+// a usage limit (`limit`), said as triage's own USAGE LIMIT line words it, less its key and log path.
 function triage(key, state, env = process.env) {
   const t = spawnSync(join(HERE, 'triage.sh'), [key], { encoding: 'utf8', env, maxBuffer: 64 << 20 });
   const rec = t.status === 0 ? readJson(join(state, 'triage', `${key}.json`), null) : null;
   if (rec) return { rec };
   if (t.status === 3) {
-    let text = '';
-    try { text = readFileSync(join(state, 'triage', `${key}.log`), 'utf8'); } catch { /* no log: no type or reset to name */ }
-    const l = usageLimit(text).last;
-    const limit = { type: l?.type ?? 'unknown', resetsAt: l?.resetsAt ?? null };
-    return { why: `triage stopped at ${limitName(limit.type)}${limit.resetsAt != null ? `, which resets at ${resetText(limit.resetsAt)}` : ''}`, limit };
+    const line = (t.stderr ?? '').split('\n').find((s) => s.startsWith('USAGE LIMIT: ')) ?? '';
+    const said = line.replace(/^USAGE LIMIT: \S+ /, '').replace(/ \(log: .*\)$/, '');
+    return { why: said || 'triage stopped at the usage limit', limit: true };
   }
   return { why: t.status === 0 ? 'triage wrote no record' : `triage failed: ${lastLine(t)}` };
 }

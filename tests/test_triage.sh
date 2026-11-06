@@ -189,12 +189,14 @@ done
 check "challenge prompt asks for INCONCLUSIVE and failed_reads" \
   'node -e "const a=require(\"fs\").readFileSync(process.argv[1],\"utf8\").split(\"\\0\"); const p=a[a.indexOf(\"-p\")+1]; process.exit(/INCONCLUSIVE/.test(p) && /failed_reads/.test(p) ? 0 : 1)" "$STUB_LOG.1"'
 
-# DS-505: a pass Claude refuses at a usage limit exits 3, naming the limit and its reset; any other
-# failure is as before.
-rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+# A pass Claude refuses at a usage limit exits 3, naming the limit and its reset; any other failure is
+# as before. A first pass that writes nothing starts with an earlier triage's record on disk, which must
+# not read as this pass's.
+stale(){ printf '{"ticket":"fix-thing","lane":"A","branch":"fix/fix-thing","change_kind":"surface"}' > "$T/state/triage/fix-thing.json"; }
+rm -f "$STUB_LOG".* "$TLOG"; stale
 out=$(STUB_LANE=A STUB_LIMIT=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-505 AC2: a first pass refused at the weekly limit exits 3, naming it and its reset" \
-  '[ $rc -eq 3 ] && grep -qxF "USAGE LIMIT: fix-thing triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC (log: $TLOG)" <<< "$out" && [[ "$out" != *"produced no triage record"* ]]'
+check "DS-505 AC2: a first pass refused at the weekly limit exits 3, naming it and its reset, though an earlier record was on disk" \
+  '[ $rc -eq 3 ] && grep -qxF "USAGE LIMIT: fix-thing triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC (log: $TLOG)" <<< "$out" && [[ "$out" != *"produced no triage record"* ]] && [ ! -f "$T/state/triage/fix-thing.json" ]'
 check "DS-505 AC1: the refused pass's output is kept in the log" 'grep -q "\"api_error_status\":429" "$TLOG"'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
 out=$(STUB_LANE=A STUB_LIMIT=0 STUB_NO_RESET=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
@@ -204,10 +206,10 @@ rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
 out=$(STUB_LANE=C STUB_LIMIT=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC2: a challenge refused at the limit exits 3, and its record goes so the ticket is triaged again" \
   '[ $rc -eq 3 ] && grep -qF "USAGE LIMIT: fix-thing triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC" <<< "$out" && [ ! -f "$T/state/triage/fix-thing.json" ] && [ "$(grep -c STUB-STDOUT "$TLOG")" = 1 ]'
-rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+rm -f "$STUB_LOG".* "$TLOG"; stale
 out=$(STUB_LANE=A STUB_NOREC=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-505 AC3: any other run that writes no record fails as before" \
-  '[ $rc -eq 1 ] && grep -qF "FAIL: fix-thing produced no triage record at $T/state/triage/fix-thing.json" <<< "$out" && [[ "$out" != *"USAGE LIMIT"* ]]'
+check "DS-505 AC3: any other run that writes no record fails as before, though an earlier record was on disk" \
+  '[ $rc -eq 1 ] && [ ! -f "$T/state/triage/fix-thing.json" ] && grep -qF "FAIL: fix-thing produced no triage record at $T/state/triage/fix-thing.json" <<< "$out" && [[ "$out" != *"USAGE LIMIT"* ]]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
 out=$(STUB_LANE=C STUB_NOREC=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC3: a challenge that writes nothing for another reason keeps the first-pass lane, as before" \

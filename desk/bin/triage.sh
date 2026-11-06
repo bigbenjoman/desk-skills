@@ -241,6 +241,8 @@ ben_steps is [] when the ticket needs no step only the user can take.
 PROMPT_END
 
 cd "$MAIN"
+# An earlier triage's record would read as this pass's, and hide a pass that wrote nothing.
+rm -f "$OUT"
 # No --allowedTools: it would grant every Bash command and Write outright, overriding the
 # read-only triage settings. The settings file alone decides what triage may run.
 desk_timeout 600 claude -p "$PROMPT" \
