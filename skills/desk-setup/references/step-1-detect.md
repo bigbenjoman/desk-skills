@@ -214,6 +214,24 @@ How to turn what you find into rows:
   `` `<the lockfile>: dependency changes are merged by a person` ``. The key form reads JSON only,
   so a TOML or INI file holding check config is held whole: for `pyproject.toml` that includes every
   dependency bump, which the user weighs before confirming.
+
+  **A hold on a code-owner approval is proposed only where someone other than desk owns the path.**
+  The merge driver reads any reason naming a code owner (`code owner`, `codeowner`, `CODEOWNERS`, in
+  any spelling) as that approval, and treats it as met when every owner of every held file is the
+  desk account: the §1 GitHub handle (`gh api user --jq .login` above), the account the merge driver
+  merges with. So before proposing one, read the whole CODEOWNERS (the first of `.github/CODEOWNERS`,
+  `CODEOWNERS` and `docs/CODEOWNERS`; the last matching pattern owns a file) and compare each path's
+  owners with that account. A team counts as someone else.
+
+  - **Only the desk account owns the path:** do not propose a hold whose reason is a code-owner
+    approval. Nobody else can give it (an author cannot approve their own PR), so it would hold
+    nothing. If the user asks to hold the path anyway, ask what policy the path stands for ("pricing
+    changes are signed off by finance") and write that policy as the reason,
+    `` `<glob>: <the policy>` ``, with no mention of code owners or CODEOWNERS: a reason that names
+    one is read as the approval and met, and the PR merges unheld.
+  - **Someone else owns the path:** a code-owner approval hold naming that owner may be proposed,
+    e.g. `` `billing/**: code-owner approval from @acme/finance` ``. The merge driver holds it,
+    naming the owners other than the desk account.
 - **Merge method.** From the repo's allowed methods (`allow_squash_merge`, `allow_merge_commit`,
   `allow_rebase_merge`) and the merged-PR history: a merge commit with **two parents** is `merge`;
   one parent is `squash` (or `rebase`, when only rebase is allowed). Propose the method the last 20
