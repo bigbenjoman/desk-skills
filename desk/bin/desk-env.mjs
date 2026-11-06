@@ -799,7 +799,8 @@ export const leverOn = (name, l = levers()) => l.on.includes(name);
 // not know is refused, naming it, whichever session is starting.
 //   -> { <start>: <effort> }, or throws DeskConfigError
 export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const EFFORT_STARTS = Object.freeze(['0', '3', '4', '4b', '5', '6', '7', '8', '9', 'task', 'resume']);
+export const RESUME_STAGES = Object.freeze(['3', '4', '4b', '5', '6', '7', '8', '9']);
+export const EFFORT_STARTS = Object.freeze(['0', ...RESUME_STAGES, 'task', 'resume']);
 export const DEFAULT_EFFORT = 'medium';
 export const NO_EFFORT = 'default';
 export function parseWorkerEffort(items) {
