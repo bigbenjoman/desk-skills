@@ -593,12 +593,12 @@ export async function admitByHand(keys, { state = E.stateDir(), by = 'hand', fro
 // reads it. Held behind the spine until it is done (as plan-batch holds every child it seeds), its
 // blockers there, and every unfinished ticket there whose files it shares, so it waits for their PRs
 // to merge, and its blockers in no batch until each is Done and on the batch's base.
-// -> {batch, base, held, outside, rec} or {why}.
+// -> {batch, base, held, outside, rec} or {why}, with `limit` when that triage stopped at a usage limit.
 function joinFeature(key, epic, { by }) {
   const b = liveFeatureBatches().find((x) => x.name === epic);
   if (!b) return { why: `batch ${epic} is no longer live: run /desk-admit ${key} again` };
   const t = triage(key, b.state, batchEnv(b));
-  if (!t.rec) return { why: `${t.why} in feature batch ${epic}: ${triageAgain(t, key)}` };
+  if (!t.rec) return { why: `${t.why} in feature batch ${epic}: ${triageAgain(t, key)}`, limit: t.limit ?? null };
   let fq;
   try { fq = readQueueAt(b.queue); } catch (e) { return { why: `feature batch ${epic}'s queue cannot be read (${e.message})` }; }
   const base = fq.base ?? (E.configValue('default-branch') || 'main');
@@ -663,6 +663,11 @@ async function byHand(keys, { state, by, front, now }) {
   const unsettled = new Set(Object.keys(links));
   // Triaged records waiting to be placed.
   const recs = {};
+  // The first usage limit any triage stopped at, and the tickets whose next triage it put off: an
+  // epic's children are triaged in its feature batch, and a ticket joining one is triaged again there.
+  let limit = null;
+  const later = [];
+  const putOff = (key) => { refused.push(key); later.push(key); };
   // One finished triage: refused, an epic started or left to plan, or its record left to place.
   const triaged = (key, t) => {
     if (!t.rec) return refuse(key, `${t.why}: ${triageAgain(t, key)}`);
@@ -675,6 +680,7 @@ async function byHand(keys, { state, by, front, now }) {
         lines.push(`plan ${key} as a feature batch beside the standing batch: /desk-autopilot ${key}`);
         return;
       }
+      if (limit) return putOff(key);
       const s = startEpic(key, t.rec, { by });
       if (s.why) return refuse(key, `an epic, and its feature batch was not started: ${s.why}`);
       noteEpic(state, key, s, by, now);
@@ -700,7 +706,9 @@ async function byHand(keys, { state, by, front, now }) {
     let took = null;
     const joinTo = r.elsewhere?.epic ?? r.elsewhere?.route;
     if (joinTo) {
+      if (limit) return putOff(key);
       const j = joinFeature(key, joinTo, { by });
+      limit ??= j.limit ?? null;
       const why = r.elsewhere.epic ? `${key} is a child of epic ${joinTo}, but not admitted into its feature batch` : `${r.elsewhere.why}, but it was not admitted there`;
       r = j.why ? { admitFailed: `${why}: ${j.why}` } : j;
       feature = j.batch ?? null;
@@ -742,7 +750,6 @@ async function byHand(keys, { state, by, front, now }) {
   if (fewer) lines.push(`triaging one at a time: ${fewer}`);
   const toTriage = [...order];
   const inFlight = new Map();
-  let limit = null;
   for (;;) {
     while (!limit && inFlight.size < k && toTriage.length) {
       const key = toTriage.shift();
@@ -757,12 +764,13 @@ async function byHand(keys, { state, by, front, now }) {
     if (!recs[key]) unsettled.delete(key);
     placeReady();
   }
-  if (toTriage.length) {
-    for (const key of toTriage) { refused.push(key); unsettled.delete(key); }
-    const these = toTriage.join(' ');
+  for (const key of toTriage) { refused.push(key); unsettled.delete(key); }
+  placeReady(true);
+  const untriaged = [...later, ...toTriage];
+  if (untriaged.length) {
+    const these = untriaged.join(' ');
     lines.push(`not triaged (usage limit${limit.resets ? `, resets ${limit.resets}` : ''}): ${these}: run /desk-admit ${these} again once the limit lifts`);
   }
-  placeReady(true);
   if (admitted.length || epics.length) lines.push(`the supervisor's next tick picks ${admitted.length + epics.length === 1 ? 'it' : 'them'} up`);
   // Open blockers in no batch are admitted next, by the same command, with no question: the person
   // naming what they block is the approval.

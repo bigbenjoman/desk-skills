@@ -70,7 +70,8 @@ EOF
 # Triage: copies the set record for the ticket into the state of the batch it runs in, or fails while
 # $T/recs/<KEY>.fails exists. A run in a named batch is logged with that batch in $T/triage.batch.
 # It takes the seconds in $T/recs/<KEY>.sleep, and logs `start <KEY> <tickets admitted so far>` and
-# `end <KEY>` in $T/triage.events.
+# `end <KEY>` in $T/triage.events. It stops at the usage limit in $T/recs/<KEY>.limit, or in a named
+# batch only, in $T/recs/<KEY>.batchlimit.
 cat > "$T/bin/triage.sh" <<EOF
 #!/bin/sh
 echo "\$1" >> "$T/triage.calls"
@@ -80,6 +81,7 @@ trap 'echo "end \$1" >> "$T/triage.events"' EXIT
 [ -n "\${DESK_BATCH:-}" ] && echo "\$1 \$DESK_BATCH \${DESK_DEFAULT_BRANCH:-unpinned}" >> "$T/triage.batch"
 [ -f "$T/recs/\$1.fails" ] && { echo "triage: claude exited 1" >&2; exit 1; }
 [ -f "$T/recs/\$1.limit" ] && { echo "[triage] reading \$1" >&2; echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.limit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
+[ -n "\${DESK_BATCH:-}" ] && [ -f "$T/recs/\$1.batchlimit" ] && { echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.batchlimit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
 mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"
 EOF
 cat > "$T/bin/pass.mjs" <<EOF
@@ -541,7 +543,17 @@ rec EP-2 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 1 > "$T/recs/EP-1
 out=$(TRIAGE_K=3 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-2 EP-1 --by ben); rc=$?
 check "DS-506 AC7: an epic and its child in one call: the child joins the epic's feature batch, not the standing one" \
   '[ $rc -eq 0 ] && [ "$(eget EP-1 tickets.EP-2.admitted_by)" = ben ] && [ "$(qget tickets.EP-2)" = undefined ] && grep -q "^admitted EP-2 by ben into feature batch EP-1 " <<< "$out"'
-config yes '`none`'; rm -f "$T/recs/EP-1.sleep"
+# A child's second triage, in its epic's feature batch, stops at the usage limit: no triage starts after it.
+rec EP-4 A '"epic":{"key":"EP-1","summary":"a feature"}'; rec EP-5 A; rec EP-6 A; cp "$T/recs/U-1.limit" "$T/recs/EP-4.batchlimit"
+rm -f "$T/triage.calls"; out=$(TRIAGE_K=1 config yes '`none`'; admit EP-4 EP-5 EP-6 --by ben); rc=$?
+check "DS-506 AC4: a usage limit in a feature batch's triage starts no more triages" \
+  '[ $rc -eq 11 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "EP-4 EP-4 " ] && grep -q "^not admitted EP-4: .*weekly usage limit.* in feature batch EP-1: run /desk-admit EP-4 again once the limit lifts$" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EP-5 EP-6: run /desk-admit EP-5 EP-6 again once the limit lifts" <<< "$out"'
+# After a usage limit, a child in flight is not triaged again to join its epic's feature batch.
+rec EP-7 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 0.5 > "$T/recs/EP-7.sleep"; rec EP-8 A; cp "$T/recs/U-1.limit" "$T/recs/EP-8.limit"
+rm -f "$T/triage.calls"; out=$(TRIAGE_K=2 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-7 EP-8 --by ben); rc=$?
+check "DS-506 AC4: after a usage limit, a child is not triaged again to join its epic's feature batch, and is named to admit again" \
+  '[ $rc -eq 11 ] && [ "$(count "$T/triage.calls")" = 2 ] && [ "$(eget EP-1 tickets.EP-7)" = undefined ] && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EP-7: run /desk-admit EP-7 again once the limit lifts" <<< "$out"'
+config yes '`none`'; rm -f "$T/recs/EP-1.sleep" "$T/recs/EP-7.sleep"
 config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-19 A '"summary":"the third epic child"'; printf 'E-19\n' > "$T/children/E-9"
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
 check "DS-352: standing intake starts another epic's feature batch beside a live one" '[ "$(eget E-9 base)" = feat/E-9-third ] && [ "$(eget E-5 base)" = feat/E-5-a-feature ] && grep -q "^intake: started feature batch E-9 on feat/E-9-third, beside the standing batch$" <<< "$out" && ! grep -q "E-9 not admitted" <<< "$out"'
