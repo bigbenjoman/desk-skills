@@ -32,6 +32,10 @@ blob "$W/wt/DS-1/node_modules/m.js"
 blob "$W/sys/opt/homebrew/var/postgresql@16/base/1"
 blob "$W/sys/Library/Backblaze.bzpkg/bzdata/bzlogs/l.log"
 mkdir -p "$W/sys/Volumes/Backup" "$W/backup"
+# macOS's own mount point for local snapshots: a folder when no snapshot is mounted, never stale.
+mkdir -p "$W/sys/Volumes/com.apple.TimeMachine.localsnapshots"
+# OrbStack's group container is named after its signing team, which is not the same on every install.
+blob "$HOME/Library/Group Containers/ZZTEAM1234.dev.orbstack/data/data.img.raw"
 ln -s / "$W/sys/Volumes/Macintosh HD"
 
 # ---- fakes: log every call, answer the read forms, refuse anything else ----
@@ -101,6 +105,8 @@ check "AC6 an iCloud folder holding a git repository is marked by path" 'row icl
 check "AC6 a git repository deep in an iCloud folder still keeps it from eviction" 'row icloud-folder | grep -q "CloudDocs/Deep  holds a git repository"'
 check "AC1 local snapshots, a stale /Volumes folder and the backup drive are reported" 'row local-snapshots | grep -qE "^local-snapshots +2 " && row stale-volume-folder | grep -q "Volumes/Backup" && row time-machine | grep -q "2 backups"'
 check "AC1 the Macintosh HD symlink in /Volumes is not a stale folder" '! row stale-volume-folder | grep -q "Macintosh HD"'
+check "AC1 a macOS com.apple.* mount point in /Volumes is not a stale folder" '! row stale-volume-folder | grep -q "com.apple."'
+check "AC1 OrbStack's disk image is found whatever its team id" 'row orbstack-image | grep -q "ZZTEAM1234.dev.orbstack/data" && ! row orbstack-image | grep -q "not present"'
 out=$(diff "$T/before" <(listing); changed)
 check "AC7 the scan wrote, moved and deleted nothing outside its scratch directory" 'untouched'
 out=$(grep -vE '^(docker (info|system df|volume ls)|tmutil (listlocalsnapshots|listbackups)|getconf DARWIN_USER_CACHE_DIR)' "$CALLS")

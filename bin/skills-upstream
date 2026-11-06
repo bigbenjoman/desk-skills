@@ -38,6 +38,10 @@ Sources (vendor/sources.json):
   checkout {repo, branch}              your own skills: ~/.agents/skills/<name> IS a git clone of the repo
                                        (no copy in vendor/); outdated = commits on origin/<branch> not yet
                                        pulled; upgrade = `git pull --ff-only` after showing them
+  patches [<file>...]                  on a github or drive skill: local changes kept outside vendor/ (paths
+                                       from the repo root, diffs relative to the skill folder); `upgrade`
+                                       re-applies them to the new upstream and refuses that skill if one no
+                                       longer applies, leaving vendor/<name> and its pin as they were
   tools: github {repo, path "", installer}
                                        not skills: a whole repo, newest commit vs pin.commit; upgrade moves the
                                        pin only, and install.sh installs it with `statusline install`
@@ -281,6 +285,20 @@ def check_one(name, entry):
     raise RuntimeError(f"unknown source type {src['type']}")
 
 
+def apply_patches(entry, folder):
+    """Apply each of entry's patches to folder, in order. Raises RuntimeError naming the first that is
+    missing or no longer applies. The ceiling stops git treating a repo above folder as the root, where
+    it would silently skip paths outside the current directory."""
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": os.path.dirname(os.path.realpath(folder))}
+    for rel in entry.get("patches", []):
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            raise RuntimeError(f"patch {rel} is missing")
+        r = subprocess.run(["git", "apply", path], cwd=folder, env=env, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"patch {rel} no longer applies: {(r.stderr or r.stdout).strip()[:300]}")
+
+
 def tracked(data):
     """Every pinned entry `outdated`, `list` and `upgrade` handle: the skills, then the tools (a whole
     repo installed by its own installer, with no vendor/ copy and no ~/.agents/skills folder)."""
@@ -331,7 +349,7 @@ def cmd_upgrade(data, names):
         if not names:
             print("everything is up to date")
             return 0
-    zips = {}
+    zips, refused = {}, []
     for name in names:
         if name not in entries:
             die(f"{name} is not in vendor/sources.json (see `skills-upstream list`)")
@@ -352,6 +370,7 @@ def cmd_upgrade(data, names):
             continue
         tmp = tempfile.mkdtemp(prefix=f"skills-upstream-{name}-")
         try:
+            new_src = src
             if src["type"] == "github":
                 latest = github_latest(src)
                 github_fetch(src, latest["commit"], tmp)
@@ -362,11 +381,18 @@ def cmd_upgrade(data, names):
                 if row["file_id"] not in zips:
                     zips[row["file_id"]] = drive_download(row["file_id"])
                 blob = zips[row["file_id"]]
-                drive_extract(blob, {**src, "file_name": row["file_name"]}, tmp)
-                src.update({"file_id": row["file_id"], "file_name": row["file_name"]})
+                new_src = {**src, "file_id": row["file_id"], "file_name": row["file_name"]}
+                drive_extract(blob, new_src, tmp)
                 new_pin = {**pin, "drive_modified": row["modified"], "zip_sha256": hashlib.sha256(blob).hexdigest()}
                 new_pin["version"] = f"{row['file_name']} ({row['modified']})"
                 label = f"{pin.get('version')} -> {new_pin['version']}"
+            try:
+                apply_patches(e, tmp)
+            except RuntimeError as ex:
+                print(f"REFUSED  {name}: {ex}; vendor/{name} and its pin are unchanged. "
+                      f"Rework the patch against {label.split(' -> ')[-1]}, then upgrade again", file=sys.stderr)
+                refused.append(name)
+                continue
             dest = os.path.join(VENDOR, name)
             if tree_sha256(tmp) == (tree_sha256(dest) if os.path.isdir(dest) else ""):
                 print(f"{name}: upstream content is identical to vendor/{name}; pin updated only")
@@ -374,12 +400,15 @@ def cmd_upgrade(data, names):
                 shutil.rmtree(dest, ignore_errors=True)
                 shutil.copytree(tmp, dest)
                 print(f"{name}: {label}")
-            e["pin"] = new_pin
+            e["source"], e["pin"] = new_src, new_pin
             e["tree_sha256"] = tree_sha256(dest)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     save(data)
     print("\nReview:  git -C", ROOT, "diff --stat -- vendor/   then install with ./install.sh")
+    if refused:
+        print(f"\nNOT UPGRADED: {', '.join(refused)} (a local patch no longer applies; see above)", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -1026,7 +1055,7 @@ def cmd_index(quiet=False, only_names=None):
             "---\n\n"
             f"# Skill index\n\nGenerated by `skills-upstream index` on {today} from {total} skills. Do not edit: "
             "change `desk/skill-areas.json` in desk-skills and re-run.\n\n"
-            "1. Pick the area below that fits the request. If none fits, no skill applies: say so and carry on.\n"
+            "1. Pick the area below that fits the request. Skills bundled with Claude Code (claude-api, update-config, dataviz, loop, schedule, run, init, code-review, workflow-authoring) are not catalogued here: check your skill listing before concluding no skill applies.\n"
             "2. Read only that area's file (the path is relative to this skill's directory).\n"
             "3. Load the one skill whose description matches, by its exact name. A skill a rule or the user names is loaded regardless.\n"
             "4. This index is machine-wide; a repo can switch plugins off (`/desk-setup` step 4b). A skill that is not in your\n"

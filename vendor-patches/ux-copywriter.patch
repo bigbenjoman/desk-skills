@@ -1,0 +1,30 @@
+diff --git a/SKILL.md b/SKILL.md
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -14,11 +14,11 @@ user who reads it.
+
+ ---
+
+-## CRITICAL: Understand Before Writing (MANDATORY GATE)
++## Understand Before Writing
+
+-Never produce copy without understanding context first. Claude's default
+-instinct is to be helpful immediately. Resist it. Bad copy written fast is worse
+-than good copy written after asking two questions.
++For a single string (one button label, one error message), infer the context
++from the conversation and state your assumption. For audits, flows or voice
++guides, ask first.
+
+ ### The 4 Things You Must Know
+
+@@ -36,10 +36,6 @@ than good copy written after asking two questions.
+    marketplace? Each shifts vocabulary, formality, and trust signals — see
+    `references/product-type-guide.md`.
+
+-For quick tasks (single button label, one error message), infer context from
+-the conversation and state your assumptions. For larger tasks (copy audit, full
+-onboarding flow, voice guide), ask before proceeding.
+-
+ ### Examples of Getting This Right
+
+ **BAD — jumping to copy:**

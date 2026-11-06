@@ -248,7 +248,7 @@ as reviewed.
 
 Self-review and the PR stage each start in a new session, so neither pays to re-read the context
 the build grew. Hand off at two points, and only at the end of a stage that passed (a stage that
-parks parks as before):
+parks just parks):
 
 - **At the end of Stage 4**, before Stage 4b, unless your session started at Stage 4b or later.
 - **At the end of Stage 6**, before Stage 7, unless your session started at Stage 7.

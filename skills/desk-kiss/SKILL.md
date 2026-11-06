@@ -72,8 +72,6 @@ every *Never report* item below is that file's, never a copy of it.
 | `/desk-kiss 460` | One PR (number, `#460`, or URL) |
 | `/desk-kiss main...feat/x` | A ref range |
 
-Phase 7 asks per finding and takes "no" for an answer, so there is no `--fix` or `--no-fix` flag.
-
 ## Phase 1: target
 
 Set `RANGE` and `TIP`. All three shapes are first class.

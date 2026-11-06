@@ -1659,15 +1659,38 @@ const bandsOf = (r) => [
   ...(r.stall?.errors ? [band(`${r.name}: the last ${r.stall.errors.n} passes errored: ${r.stall.errors.error}`)] : []),
 ];
 
+// A pass's hold reason with the order of its listed batches and its "(this pass)" mark left out, so
+// two batches of a repo held for the same reason read the same.
+const holdKey = (held) => String(held).replace(/ \(this pass\)/g, '').split(/[,;:—] /).sort().join('\n');
+const batchName = (r) => (r.batch ? `batch ${r.batch}` : 'the standing batch');
+
+// Each "nothing started or merged" note, keyed by the batch it shows under: one per repo and hold
+// reason, timed from the repo's latest progress, its text the first batch's. Where a repo's batches
+// are held for different reasons, each note names its batches.
+function quietNotes(shown) {
+  const groups = new Map();
+  for (const r of shown) {
+    if (r.stall?.noProgress == null || usageHoldOf(r)) continue;
+    const k = `${r.slug}\n${holdKey(r.stall.held)}`;
+    groups.set(k, [...(groups.get(k) ?? []), r]);
+  }
+  const reasons = (slug) => [...groups.values()].filter((g) => g[0].slug === slug).length;
+  return new Map([...groups.values()].map((g) => {
+    const named = reasons(g[0].slug) > 1 ? `${andList(g.map(batchName))}: ` : '';
+    return [g[0], `${named}nothing started or merged for ${since(Math.min(...g.map((r) => r.stall.noProgress)))}. Last pass: ${g[0].stall.held}.`];
+  }));
+}
+
 // The amber notes for a batch that runs but does not move, each with its fix where there is one.
-function stallNotes(r) {
+// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note.
+function stallNotes(r, quiet) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
   const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
   const out = [];
   const u = usageHoldOf(r);
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
-  if (s.noProgress != null && !u) out.push(note(`nothing started or merged for ${since(s.noProgress)}. Last pass: ${s.held}.`));
+  if (quiet.has(r)) out.push(note(quiet.get(r)));
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver) {
     const what = s.driver.start ? 'the merge driver could not start' : `the merge driver stopped${s.driver.at == null ? '' : ` at ${clock(s.driver.at)}`}`;
@@ -1781,8 +1804,9 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
+  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable);
   const notes = [...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
-    ...shown.filter((r) => !r.error).flatMap(stallNotes), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+    ...readable.flatMap((r) => stallNotes(r, quiet)), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   const seen = new Set();
   // Ports are claimed per repo, so each repo is checked once, as its standing batch.
   const standing = repos.filter((r) => !r.batch);

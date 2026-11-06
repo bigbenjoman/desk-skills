@@ -172,8 +172,8 @@ re-running a ticket from scratch.
   session on its own model, and held tickets spawn as normal: never requeue one by hand. A worker
   whose session is still live and quiet half an hour after its reset falls back to the stall check.
   An `unrecognised usage-limit event` line means the log held a rate-limit event that was neither
-  traffic under the limit nor a rejection: it was not read as a pause, so that ticket is under the
-  stall check as before.
+  traffic under the limit nor a rejection: it was not read as a pause, so that ticket stays under the
+  stall check.
 - **A preflight refused at the usage limit fails nothing.** `spawn-worker.sh` prints
   `[preflight] usage-limit` when its call gets HTTP 429. The pass leaves that ticket as it was, spawns
   and preflights nothing more that pass, and records the hold on the queue (`usage_hold`), which

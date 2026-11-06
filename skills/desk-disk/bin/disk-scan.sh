@@ -65,7 +65,15 @@ scan_docker() {
         Containers)      row docker-containers "$size" "docker containers" "report only" ;;
       esac
     done
-  sized_row orbstack-image "$HOME/Library/Group Containers/HUQAFE2P5L.dev.orbstack/data" "OrbStack's disk image: the docker rows above live inside it"
+  # The group container is named after OrbStack's signing team (<team id>.dev.orbstack), which has
+  # differed between installs, so it is globbed rather than spelled out. The image is sparse: du
+  # gives the blocks it holds on this Mac, which is far less than the docker rows above can claim.
+  local d found=0
+  for d in "$HOME"/Library/Group\ Containers/*.dev.orbstack/data; do
+    [ -d "$d" ] || continue
+    found=1; sized_row orbstack-image "$d" "OrbStack's disk image: the docker rows above live inside it, and this is what they hold on this Mac"
+  done
+  [ "$found" = 1 ] || row orbstack-image "-" "$HOME/Library/Group Containers/*.dev.orbstack/data" "not present"
 }
 
 scan_chrome_clones() {
@@ -132,6 +140,9 @@ scan_time_machine() {
     v="${v%/}"
     # /Volumes/Macintosh HD is a symlink to /, not a stale folder.
     [ -d "$v" ] && [ ! -L "$v" ] || continue
+    # com.apple.* folders (com.apple.TimeMachine.localsnapshots) are macOS's own mount points: never
+    # a drive's name, and empty whenever nothing is mounted on them.
+    case "${v##*/}" in com.apple.*) continue ;; esac
     m=$(mount_of "$v")
     [ "$m" = "$v" ] || row stale-volume-folder "-" "$v" "a folder, not a mounted drive"
   done

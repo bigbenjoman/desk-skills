@@ -89,7 +89,7 @@ The pass logs it when it harvests your finished run. Never print one for an ask-
 parks and logs nothing. A call you have no recommendation for that you can defend parks too, with
 "no recommendation" in the question. Taking a call never widens §3: a step your config does not grant
 still parks (section 2). Where `autopilot-judgement` is not `yes`, product, design and wording calls
-park as before.
+park.
 
 **Check a step before asking if it was done**, and after a park print
 `AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok), plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>`
@@ -179,7 +179,7 @@ you could not run.
 
 ## 7. Reporting
 
-Nobody is reading live, so drop the running commentary. One line at each stage boundary, at the
+Nobody reads your output live; the orchestrator greps it. Print one line at each stage boundary, at the
 **start of a line** and never inside a code fence: the orchestrator greps for these:
 
 ```
