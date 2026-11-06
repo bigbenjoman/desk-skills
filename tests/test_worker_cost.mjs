@@ -126,6 +126,7 @@ t('a worker\'s line past the baseline is', wroteSince(`${head}${start({})}\n${sa
 t('a line of stderr is', wroteSince(`${head}${start({})}\nError: died\n`, from), true);
 t('nothing past the baseline is not', wroteSince(head, from), false);
 t('the baseline counts bytes, not characters', wroteSince(`${say('é — é')}\n${start({})}\n`, Buffer.byteLength(`${say('é — é')}\n`)), false);
+t('a byte that is not UTF-8 moves nothing in a log read from disk', wroteSince(Buffer.concat([Buffer.from([0xff, 0x0a]), Buffer.from(`${start({})}\n`)]), 2), false);
 
 // Tokens per stage. One model call as a worker's log holds it: an assistant event per content
 // block, each repeating the message's id and usage, whose output_tokens is an early snapshot; then,

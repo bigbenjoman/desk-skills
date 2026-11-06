@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { listBatches } from './batches.mjs';
 import { readLogFile, saidIn, markersIn } from './harvest.mjs';
-import { workerLogs, ticketCost, logUsage, spawnEvent } from './worker-cost.mjs';
+import { workerLogs, ticketCost, logUsage, spawnEvent, startFields } from './worker-cost.mjs';
 import { windowEvents, probeLog } from './usage-pace.mjs';
 import { readInstalled } from './installed.mjs';
 import { digestDir } from './digest.mjs';
@@ -37,7 +37,7 @@ export function spawnLine({ ticket, session, stage = null, model = null, effort 
   installed = readInstalled(), levers = E.levers() }) {
   const n = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
   return JSON.stringify({
-    at: now.toISOString(), ticket, session, stage: stage || '0', model: model || 'default', effort: effort || 'default',
+    at: now.toISOString(), ticket, session, ...startFields({ stage, model, effort }),
     desk_commit: installed?.commit ?? null, levers: levers.on, unknown_levers: levers.unknown,
     system_bytes: n(systemBytes), prompt_bytes: n(promptBytes),
   });

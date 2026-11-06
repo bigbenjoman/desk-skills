@@ -534,7 +534,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 
   // A worker at a usage limit (usage-limit.mjs decides; nothing here reads the event). Only a worker
   // that has neither parked nor finished, and has not answered since the limit, is acted on.
-  const logText = readFileSync(log, 'utf8');
+  const logRaw = readFileSync(log);
+  const logText = logRaw.toString();
   const usage = usageLimit(logText);
   const limit = !park && !done && !handoff && usage.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
   if (usage.unrecognised.length > (t.usage_unrecognised ?? 0)) {
@@ -556,7 +557,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // long suite behind the test lock never did: six quiet passes is the margin for both.
   const bytes = statSync(log).size;
   let wedged = false;
-  if (wroteSince(logText, t.log_bytes ?? 0)) {
+  if (wroteSince(logRaw, t.log_bytes ?? 0)) {
     q('set', t.key, `log_bytes=${bytes}`, 'idle_passes=0');
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
@@ -1370,8 +1371,9 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     else report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
   } else if (bf?.running) {
     const log = join(STATE, 'logs', `${BASE_FIX_KEY}.log`);
-    let text = '';
-    try { text = readFileSync(log, 'utf8'); } catch { /* no log yet: read as ended */ }
+    let raw = Buffer.alloc(0);
+    try { raw = readFileSync(log); } catch { /* no log yet: read as ended */ }
+    const text = raw.toString();
     const recent = (() => { try { return Date.now() - statSync(log).mtimeMs < 120_000; } catch { return false; } })();
     const markers = workerMarkers(text);
     const said = markers.some(([k]) => k === 'AUTOPILOT_DONE' || k === 'AUTOPILOT_PARK');
@@ -1381,7 +1383,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     const atLimit = usage?.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
     const paused = pausedOn(atLimit);
     const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
-    const idle = wroteSince(text, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
+    const idle = wroteSince(raw, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
     const sidLive = registryOk && liveSids.has(bf.running);
     const exited = registryOk && !sidLive && !(recent && !endedNormally(text));
     // A headless worker ends its session at the limit rather than waiting for it to lift. As a ticket's

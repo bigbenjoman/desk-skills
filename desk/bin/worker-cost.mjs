@@ -7,6 +7,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { markersIn, saidIn, readLogFile } from './harvest.mjs';
 import { cloudWall } from './cloud-worker.mjs';
+import { NO_EFFORT } from './desk-env.mjs';
 
 export const START_UP = 'start-up';
 
@@ -21,12 +22,15 @@ export const preflightLine = ({ usd, turns }, at = new Date()) =>
 // spawn-worker.sh writes one of these into the log before each launch: what the session starts as, on
 // which model and at which effort, `default` where it passes neither. Timed by `at` for the same reason.
 const SPAWN_EVENT = 'desk_spawn';
-export const spawnEvent = ({ session, stage, model, effort }, at = new Date()) =>
-  `${JSON.stringify({ type: SPAWN_EVENT, session, stage: stage || '0', model: model || 'default', effort: effort || 'default', at: at.toISOString() })}\n`;
+export const startFields = ({ stage, model, effort }) => ({ stage: stage || '0', model: model || 'default', effort: effort || NO_EFFORT });
+export const spawnEvent = ({ session, ...start }, at = new Date()) =>
+  `${JSON.stringify({ type: SPAWN_EVENT, session, ...startFields(start), at: at.toISOString() })}\n`;
 
-// Whether a worker wrote anything past byte `from` of its log text: the lines desk writes there itself
-// (the preflight, the start, the memory digest) are not its output, so they never read as it being live.
-export const wroteSince = (logText, from) => Buffer.from(logText).subarray(from).toString().split('\n')
+// Whether a worker wrote anything past byte `from` of its log: the lines desk writes there itself (the
+// preflight, the start, the memory digest) are not its output, so they never read as it being live.
+// Pass the log as read from disk: `from` is a file size, and text decoded from a log holding a byte
+// that is not UTF-8 is longer than the file, which would read as output on every pass.
+export const wroteSince = (log, from) => Buffer.from(log).subarray(from).toString().split('\n')
   .some((l) => l.trim() && !l.startsWith('{"type":"desk_'));
 
 // The starts in one log: a fresh session's, and each resume of it.
