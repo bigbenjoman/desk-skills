@@ -139,22 +139,23 @@ const heldBy = (by) => ({ state: 'parked', held_by: by, park: { question: `held 
 
 // One repo: its config, queue, triage sizes and history. `history` is [size, hours] per merged
 // ticket, each merged an hour before the last, counting back from `at`. Its last pass is `pass`
-// (default `at`, so it is live then); null means no pass yet.
-function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null, tracker = null }) {
+// (default `at`, so it is live then); null means no pass yet. With `batch`, it is that named batch.
+function repo(name, port, { workers = 2, tickets, sizes = {}, epics = {}, history, at = FIXED, pass = at, next = null, tracker = null, batch = null }) {
   const slug = `acme__${name}`;
   mkdirSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(zenv.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`${workers} / 3\` |\n`
     + (tracker ? `\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`${tracker}\` |\n` : ''));
-  const qp = join(zenv.DESK_HOME, 'repos', slug, 'queue.json');
+  const tail = batch ? ['batches', batch] : [];
+  const qp = join(zenv.DESK_HOME, 'repos', slug, ...tail, 'queue.json');
   mkdirSync(dirname(qp), { recursive: true });
-  writeFileSync(qp, JSON.stringify({ version: 1, batch: name, concurrency: workers, tickets: Object.fromEntries(Object.entries(tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
-  const state = join(zenv.HOME, '.desk-autopilot', slug);
+  writeFileSync(qp, JSON.stringify({ version: 1, batch: batch ?? name, concurrency: workers, tickets: Object.fromEntries(Object.entries(tickets).map(([k, v]) => [k, { key: k, ...v }])) }));
+  const state = join(zenv.HOME, '.desk-autopilot', slug, ...tail);
   mkdirSync(join(state, 'triage'), { recursive: true });
   for (const [k, size] of Object.entries(sizes)) writeFileSync(join(state, 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: `${k} title`, size, epic: epics[k] ?? null }));
   if (pass != null) {
     mkdirSync(join(state, 'orchestrators'), { recursive: true });
-    writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: qp, batch: name, pid: 1, at: new Date(pass).toISOString(),
+    writeFileSync(join(state, 'orchestrators', 'q.json'), JSON.stringify({ queue: qp, batch: batch ?? name, pid: 1, at: new Date(pass).toISOString(),
       ...(next == null ? {} : { next: new Date(next).toISOString() }) }));
   }
   writeFileSync(join(state, 'eta-history.jsonl'), history.map(([size, hours], i) => {
@@ -598,6 +599,67 @@ t('DS-191: a non-tracker key, which never records an epic, is not counted as unr
 writeFileSync(join(stateOf('predates'), 'triage', 'R-1.json'), JSON.stringify({ ticket: 'R-1', summary: 'R-1 title', size: 'M', epic: null }));
 const postView = await epicsView('acme__predates');
 t('DS-191: once read with no epic, the view says none belongs to an epic again', [postView.includes('No queued ticket here belongs to an epic.'), postView.includes('not read yet')], [true, false]);
+
+// ---- DS-504: an epic whose children sit in two batches of one repo is one row on home's Epics view
+const { utimesSync } = await import('node:fs');
+// Home's Epics view: every repo's open epics, one line each, plain or with its colours (`raw`).
+async function homeEpics(raw = false) {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
+  const output = { buf: '', columns: 200, rows: 200, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+  Q.interactive({ input, output, start: { kind: 'overview' }, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
+  input.write('4');
+  await new Promise((res) => setTimeout(res, 20));
+  const frame = output.buf.split('\x1b[H').at(-1);
+  input.write('q');
+  return (raw ? frame : frame.replace(ANSI_ETA, '')).split('\r\n');
+}
+const epicRows = (lines, key) => lines.filter((l) => new RegExp(`^[ ›] {1,2}\\S.*?\\s${key}\\s`).test(l)).map((l) => l.slice(1).trim().replace(/\s{2,}/g, ' | '));
+// When a batch read the epic's children: its triage records' times.
+const readAt = (name, batch, keys, ms) => keys.forEach((k) => utimesSync(join(stateOf(name), ...(batch ? ['batches', batch] : []), 'triage', `${k}.json`), ms / 1000, ms / 1000));
+const EP7old = ep('EP-7', 'Twin epic', [['T-1'], ['T-2', true], ['T-3'], ['T-4']]);
+const EP7new = ep('EP-7', 'Twin epic', [['T-1'], ['T-2', true], ['T-3'], ['T-4'], ['T-5', true]]);
+repo('twin', 4800, { tickets: { 'T-1': { state: 'triaged' }, 'T-2': { state: 'done', merged_at: iso(FIXED - 3 * HOUR) } }, sizes: { 'T-1': 'M', 'T-2': 'M' }, epics: { 'T-1': EP7old, 'T-2': EP7old }, history: hist12 });
+repo('twin', 4800, { batch: 'feat', tickets: { 'T-3': { state: 'triaged' }, 'T-4': heldBy('T-3') }, sizes: { 'T-3': 'M', 'T-4': 'M' }, epics: { 'T-3': EP7new, 'T-4': EP7new }, history: range(12, (i) => ['M', 6 + (i % 5)]) });
+readAt('twin', null, ['T-1', 'T-2'], Date.now() - 2 * HOUR);
+readAt('twin', 'feat', ['T-3', 'T-4'], Date.now() - HOUR);
+// Another repo with an epic of the same key, in one batch.
+repo('other', 4810, { tickets: { 'O-1': { state: 'triaged' } }, sizes: { 'O-1': 'M' }, epics: { 'O-1': ep('EP-7', 'Other epic', [['O-1'], ['O-2', true]]) }, history: hist12 });
+// A repo whose second batch cannot date the epic: its child there needs an answer.
+const EP8 = ep('EP-8', 'Half dated', [['W-1'], ['W-2']]);
+repo('pair', 4820, { tickets: { 'W-1': { state: 'triaged' } }, sizes: { 'W-1': 'M' }, epics: { 'W-1': EP8 }, history: hist12 });
+repo('pair', 4820, { batch: 'side', tickets: { 'W-2': { state: 'parked', park: { question: 'which copy?' } } }, sizes: { 'W-2': 'M' }, epics: { 'W-2': EP8 }, history: hist12 });
+// A repo whose newer read could not load the epic's children list: the older read that did sets the counts.
+repo('listed', 4830, { tickets: { 'L-1': { state: 'triaged' } }, sizes: { 'L-1': 'M' }, epics: { 'L-1': ep('EP-9', 'Listed epic', [['L-1'], ['L-2'], ['L-3']]) }, history: hist12 });
+repo('listed', 4830, { batch: 'feat', tickets: { 'L-2': { state: 'triaged' } }, sizes: { 'L-2': 'M' }, epics: { 'L-2': { key: 'EP-9', summary: 'Listed epic' } }, history: hist12 });
+readAt('listed', null, ['L-1'], Date.now() - 2 * HOUR);
+readAt('listed', 'feat', ['L-2'], Date.now() - HOUR);
+// A repo whose second batch has too little history to date anything, and holds a child of a dated epic.
+const EP10 = ep('EP-10', 'Thin epic', [['N-1'], ['N-2']]);
+repo('thin', 4840, { tickets: { 'N-1': { state: 'triaged' } }, sizes: { 'N-1': 'M' }, epics: { 'N-1': EP10 }, history: hist12 });
+repo('thin', 4840, { batch: 'new', tickets: { 'N-2': { state: 'triaged' } }, sizes: { 'N-2': 'M' }, epics: { 'N-2': EP10 }, history: range(3, (i) => ['M', 2 + i]) });
+const byId = (id) => Q.loadRepos(FIXED).find((r) => r.id === id);
+const home = await homeEpics();
+const twinRows = epicRows(home, 'EP-7').filter((l) => l.startsWith('twin'));
+t('DS-504 AC1: an epic with children in two batches of one repo is one row, named for the repo', twinRows.map((l) => l.split(' | ').slice(0, 2)), [['twin', 'EP-7']]);
+t('DS-504 AC2: its done/total is the most recent read\'s, and the other batch\'s queued child counts as queued, not as not queued',
+  twinRows.map((l) => [l.split(' | ').slice(3, 5).join(' '), /provisional/.test(l)]), [['■■■■■■■■■■■■■■■■ 2/5', false]]);
+// On screen not-queued children are grey squares, the same glyph as the rest: none may be grey.
+const twinRaw = (await homeEpics(true)).filter((l) => /^[ ›] {1,2}twin\s+EP-7\s/.test(l.replace(ANSI_ETA, '')));
+t('DS-504 AC2: the bar draws the other batch\'s queued children as queued, so no square is the not-queued grey', [twinRaw.length, twinRaw.some((l) => /\x1b\[38;5;247m■/.test(l))], [1, false]);
+t('DS-504 AC2: a newer read without the children list does not set the counts; the read that has it does, with the other batch\'s child queued',
+  epicRows(home, 'EP-9').map((l) => [l.split(' | ').slice(0, 2).join(' '), l.split(' | ')[4], l.split(' | ').at(-1)]), [['listed EP-9', '0/3', 'provisional: 1 not queued']]);
+t('DS-504 AC4: a batch with too little history leaves the row undated, with its reason',
+  epicRows(home, 'EP-10').map((l) => [l.split(' | ').slice(0, 2).join(' '), l.split(' | ')[4], /^No date: thin · new.* has 3 of the 10 merged tickets dates need$/.test(l.split(' | ').at(-1))]), [['thin EP-10', '0/2', true]]);
+const twinShips = Math.max(...['acme__twin', 'acme__twin:feat'].map((id) => Q.forecastOf(byId(id), { now: FIXED }).E['EP-7'].likely));
+t('DS-504 AC3: SHIPS is the later of the two batches\' dates', [twinRows[0]?.split(' | ')[5], Q.forecastOf(byId('acme__twin'), { now: FIXED }).E['EP-7'].likely !== Q.forecastOf(byId('acme__twin:feat'), { now: FIXED }).E['EP-7'].likely],
+  [when(twinShips, FIXED), true]);
+const pairRows = epicRows(home, 'EP-8');
+t('DS-504 AC4: a batch that cannot date its children leaves the row undated, with that batch\'s reason',
+  [pairRows.length, pairRows[0]?.startsWith('pair | EP-8'), pairRows[0]?.endsWith('No date: 1 needs you · c: date them as if answered at the next check-in'), Q.forecastOf(byId('acme__pair'), { now: FIXED }).E['EP-8'] != null], [1, true, true, true]);
+t('DS-504 AC5: another repo\'s epic with the same key keeps its own row', epicRows(home, 'EP-7').map((l) => l.split(' | ').slice(0, 2).join(' ')).sort(), ['other EP-7', 'twin EP-7']);
+const otherF = Q.forecastOf(byId('acme__other'), { now: FIXED });
+t('DS-504 AC6: a repo with one batch reads as it did: its own counts, date and note', epicRows(home, 'EP-7').find((l) => l.startsWith('other')),
+  `other | EP-7 | Other epic | ■■■■■■■■■■■■■■■■ | 1/2 | ${when(otherF.E['EP-7'].likely, FIXED)} | set by O-1`);
 
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 

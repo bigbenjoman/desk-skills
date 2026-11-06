@@ -352,6 +352,7 @@ export const CONFIG_ROWS = Object.freeze({
   'borrow-idle': { section: '3b', row: 'Borrow idle workers' },
   'batches-run-by': { section: '3b', row: 'Batches run by' },
   'status-table': { section: '3b', row: 'Orchestrator status table' },
+  levers: { section: '3b', row: 'Phase 0 levers' },
 });
 
 export class DeskConfigError extends Error {}
@@ -783,6 +784,21 @@ export function parseWorkerLocation(raw) {
   throw new DeskConfigError(`desk: config §3b "Worker location" is "${raw}" — want \`local\` or \`cloud\`. Refusing to guess.`);
 }
 export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: 'local' }));
+
+// Config §3b "Phase 0 levers": the Phase 0 changes switched on, one name per backtick span (a span may
+// hold several, split on commas and spaces). No row, an unset row or `none` is every lever off, and so
+// is no config at all: off is the side that changes nothing. A name desk does not know is kept in
+// `unknown`, for the caller to name, and is never on.
+//   -> { on: [lever], unknown: [name] }
+export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers']);
+export function parseLevers(items) {
+  const names = [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter((x) => x && !isNone(x)))];
+  return { on: names.filter((n) => LEVERS.includes(n)), unknown: names.filter((n) => !LEVERS.includes(n)) };
+}
+export function levers() {
+  try { return parseLevers(configValues('levers')); } catch (e) { if (e instanceof NoRepoConfigError) return parseLevers(null); throw e; }
+}
+export const leverOn = (name, l = levers()) => l.on.includes(name);
 
 // Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
 // `standard`; lane B, size M and an unsized ticket are `high`.
@@ -1444,6 +1460,19 @@ if (isMain) {
         console.log(expandHome(v));
         break;
       }
+      case 'levers': {
+        // `levers <name>` prints on or off; bare, every lever on and every name desk does not know.
+        const l = levers();
+        const known = `known: ${LEVERS.join(', ')}`;
+        if (args[0]) {
+          console.log(leverOn(args[0], l) ? 'on' : 'off');
+          if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
+          break;
+        }
+        console.log(`on: ${l.on.join(' ') || 'none'}`);
+        if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (config §3b "${CONFIG_ROWS.levers.row}" names levers desk does not know; each is read as off; ${known})`);
+        break;
+      }
       case 'batch-base': {
         const b = batchBase();
         if (!b) process.exit(3);
@@ -1761,7 +1790,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
+        console.error('usage: desk-env.mjs where|get|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
         process.exit(2);
     }
   } catch (e) {

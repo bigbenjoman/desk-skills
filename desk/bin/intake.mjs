@@ -222,12 +222,21 @@ function blockersFirst(recs) {
   return order;
 }
 
-// Run triage.sh for one ticket, in the batch `env` names: its record, or why there is none.
+// Run triage.sh for one ticket, in the batch `env` names: its record, or why there is none. Exit 3 is
+// a usage limit (`limit`), said as triage's own USAGE LIMIT line words it, less its key and log path.
 function triage(key, state, env = process.env) {
   const t = spawnSync(join(HERE, 'triage.sh'), [key], { encoding: 'utf8', env, maxBuffer: 64 << 20 });
   const rec = t.status === 0 ? readJson(join(state, 'triage', `${key}.json`), null) : null;
-  return rec ? { rec } : { why: t.status === 0 ? 'triage wrote no record' : `triage failed: ${lastLine(t)}` };
+  if (rec) return { rec };
+  if (t.status === 3) {
+    const line = (t.stderr ?? '').split('\n').find((s) => s.startsWith('USAGE LIMIT: ')) ?? '';
+    const said = line.replace(/^USAGE LIMIT: \S+ /, '').replace(/ \(log: .*\)$/, '');
+    return { why: said || 'triage stopped at the usage limit', limit: true };
+  }
+  return { why: t.status === 0 ? 'triage wrote no record' : `triage failed: ${lastLine(t)}` };
 }
+// What the person does next about a triage that left no record.
+const triageAgain = (t, key) => (t.limit ? `run /desk-admit ${key} again once the limit lifts` : `fix it and run /desk-admit ${key} again`);
 
 // Every reason a triaged ticket stays out of this batch, given its holds (holdsFor): [] admits it. A
 // blocker that failed in the batch leaves nothing to release the ticket.
@@ -553,7 +562,7 @@ function joinFeature(key, epic, { by }) {
   const b = liveFeatureBatches().find((x) => x.name === epic);
   if (!b) return { why: `batch ${epic} is no longer live: run /desk-admit ${key} again` };
   const t = triage(key, b.state, batchEnv(b));
-  if (!t.rec) return { why: `${t.why} in feature batch ${epic}: fix it and run /desk-admit ${key} again` };
+  if (!t.rec) return { why: `${t.why} in feature batch ${epic}: ${triageAgain(t, key)}` };
   let fq;
   try { fq = readQueueAt(b.queue); } catch (e) { return { why: `feature batch ${epic}'s queue cannot be read (${e.message})` }; }
   const base = fq.base ?? (E.configValue('default-branch') || 'main');
@@ -607,7 +616,7 @@ function byHand(keys, { state, by, front, now }) {
     if (away?.held && placedThere(key, away.held, q)) { lines.push(`${key} is already in batch ${away.batch} (${away.held.ticket})`); continue; }
     if (away) { refuse(key, away.why); continue; }
     const t = triage(key, state);
-    if (!t.rec) { refuse(key, `${t.why}: fix it and run /desk-admit ${key} again`); continue; }
+    if (!t.rec) { refuse(key, `${t.why}: ${triageAgain(t, key)}`); continue; }
     if (isEpic({ name: t.rec.type })) {
       // Each epic runs as its own feature batch, beside the standing batch and any other epic's.
       if (liveFeatureBatches().some((b) => b.name === key)) { refuse(key, `an epic, and its feature batch ${key} is already running: admit its children, which join that batch`); continue; }

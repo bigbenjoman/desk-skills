@@ -819,6 +819,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
 // Why an epic has no date: its undated children, by what holds them.
 function epicWhy(r, F, e, checkin) {
   if (F.paused) return 'no date while passes are stopped';
+  if (F.none) return `No date: ${r.name} has ${F.count} of the ${MIN_HISTORY} merged tickets dates need`;
   if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
@@ -1176,23 +1177,57 @@ export const daysScreen = (repos, slug, opts) => joined(daysParts(repos, slug, o
 // The Epics view: each open epic, soonest first, with a bar of its children done, queued and not
 // queued yet, its SHIPS and the child that sets it. Enter opens the epic.
 const EP_BAR = 16;
+// When a batch last read epic `key`'s children: the newest of its triage records for them.
+function epicReadAt(r, F, key) {
+  let at = -Infinity;
+  for (const k of Object.keys(r.q?.tickets ?? {})) {
+    if (F.of[k] !== key && triageOf(r.stateDir, k)?.epic?.key !== key) continue;
+    try { at = Math.max(at, statSync(join(r.stateDir, 'triage', `${k}.json`)).mtimeMs); } catch { /* no record */ }
+  }
+  return at;
+}
+// One row per repo and epic. Where several of a repo's batches hold its children, the counts are the
+// latest read of its children list, with the other batches' queued children counted as queued (with
+// no list read, every batch's children summed); the date is the latest, since an epic ships when its
+// last child merges, or none, with the reason of a batch that has none. `undated` are the epics of
+// batches that cannot date anything: each joins a row another batch lists, and adds none of its own.
+function epicPerRepo(list, undated = []) {
+  const groups = new Map();
+  const idOf = (x) => `${x.r.slug}\0${x.e.key}`;
+  for (const x of list) groups.set(idOf(x), [...(groups.get(idOf(x)) ?? []), x]);
+  for (const x of undated) groups.get(idOf(x))?.push(x);
+  return [...groups.values()].map((g) => {
+    if (g.length === 1) return g[0];
+    const read = g.filter((x) => x.e.missing != null);
+    const fresh = (read.length ? read : g).map((x) => ({ x, at: epicReadAt(x.r, x.F, x.e.key) })).reduce((a, b) => (b.at > a.at ? b : a)).x;
+    const sum = (f) => g.reduce((n, x) => n + x.e[f], 0);
+    const elsewhere = sum('queued') - fresh.e.queued;
+    const e = fresh.e.missing == null ? { ...fresh.e, total: sum('total'), done: sum('done'), queued: sum('queued') }
+      : { ...fresh.e, queued: Math.min(fresh.e.total - fresh.e.done, fresh.e.queued + elsewhere), missing: Math.max(0, fresh.e.missing - elsewhere) };
+    const by = g.find((x) => !x.d) ?? g.reduce((a, b) => (b.d.likely > a.d.likely ? b : a));
+    return { r: by.r, F: by.F, e, d: by.d, name: by.r.repo };
+  });
+}
 function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = null, pinUsage = false } = {}) {
   const s = etaScope(repos, slug, { now, checkin, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   const all = !slug;
-  // A paused batch's epics are listed undated, under its note.
-  const list = s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null })))
+  // A paused batch's epics are listed undated, under its note. A batch with too little history, or
+  // nothing left for autopilot, lists none, but leaves undated an epic whose children it still holds.
+  const undated = s.per.filter((p) => p.note && !p.stopped && p.r.q && !p.r.error).map(({ r }) => ({ r, F: forecastOf(r, { now, checkin }) }))
+    .filter(({ F }) => F?.none || F?.idle).flatMap(({ r, F }) => Object.values(F.epics).filter((e) => e.queued).map((e) => ({ r, F, e, d: null })));
+  const list = epicPerRepo(s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null }))), undated)
     .sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
   const head = [...s.head, ''];
   if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
   // The children bar is solid on screen, not-yet-queued children grey; with no colour, □ tells them apart.
   const notYet = solidBars(width) ? '■' : '□';
-  const rows = list.map(({ r, F, e, d }) => {
+  const rows = list.map(({ r, F, e, d, name = r.name }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
     const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
-    return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(r.name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
+    return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
       [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: r.id, epic: e.key });
   });
