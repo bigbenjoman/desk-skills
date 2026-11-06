@@ -39,7 +39,7 @@ import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -262,7 +262,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // What no fix try can move: a check only a person clears, or one still red after both tries.
   const stuck = stuckOf(t, ctx);
   if (stuck) return needs({ code: 'stuck', stuck }, [stuck.why, null]);
-  if (ps.isDraft === true) return draftNeed(q, t, needs, merging);
+  if (ps.isDraft === true) return draftNeed(q, t, needs, merging, now);
   // The merge driver records a PR into the default branch under §4 Merge holds (`merge hold: <why> —
   // <glob>, …`, then `; routine `<command>` not run: …` or `… failed at <sha> (exit <n>): <step>` where
   // the hold names one) and leaves it for a person, so the item says the hold's step.
@@ -362,11 +362,21 @@ function runningCheck(checks, now) {
   return [`${c.name} ${c.runner ? 'running' : 'queued'}${age}`, null];
 }
 
+// The unfinished check pending longest, as { name, age }, once that is PENDING_LIMIT_MS or more; else null.
+function pendingPast(checks, now) {
+  const ages = (checks ?? []).filter((c) => c.status !== 'completed' && startedMs(c) != null).map((c) => ({ name: c.name, age: now - startedMs(c) }));
+  const c = ages.sort((a, b) => b.age - a.age)[0];
+  return c && c.age >= PENDING_LIMIT_MS ? c : null;
+}
+
 // A draft PR: merging while the pass takes it out of draft (checks still running, or out of draft at
 // its next pass), else what the person has to do first, as the pass recorded it (undraft.mjs).
-function draftNeed(q, t, needs, merging) {
+function draftNeed(q, t, needs, merging, now = Date.now()) {
   const u = t.undraft;
   if (heldDraft(t)) return needs({ code: 'held' }, ['held by you in draft', null], [' · undraft it to release it', null]);
+  // A check stuck pending: its job re-run, or its run cancelled so the next pass re-runs it.
+  if (u?.call === 'cancel') return merging(['draft', null], [' · stuck check\'s run cancelled to re-run it, out of draft once green', null]);
+  if (u?.call === 'rerun' && /so that job is re-run$/.test(u.why ?? '')) return merging(['draft', null], [' · stuck job re-run, out of draft once green', null]);
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
@@ -374,6 +384,9 @@ function draftNeed(q, t, needs, merging) {
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
   // Its evidence run failed for the repo, and a fix ticket in the batch takes it on for every PR it failed.
   if (u?.call === 'evidence-fix') return merging(['draft', null], [` · evidence workflow broken, ${/; (\S+) fixes it/.exec(u.why ?? '')?.[1] ?? 'a fix ticket'} fixes it, then screenshots are taken again`, null]);
+  // A check pending past the limit says how long, rather than reading as checks running.
+  const old = u?.call === 'wait' && /^checks/.test(u.why ?? '') ? pendingPast(prStatusOf(t)?.checks, now) : null;
+  if (old) return merging([`${old.name} pending ${since(old.age)}`, WARN], [' · stuck: the next pass re-runs it', null]);
   if (u?.call === 'wait') return merging(['draft', null], [` · ${/^checks/.test(u.why ?? '') ? 'checks running' : 'GitHub is still checking for conflicts'}, out of draft once green`, null]);
   if (u?.call === 'ready' || u?.call === 'failed') return merging(['draft', null], [' · out of draft at the next pass', null]);
   if (t.key === q?.spine) return needs({ code: 'spine' }, ['draft', null], [' · feature spine: approve its specs', null]);

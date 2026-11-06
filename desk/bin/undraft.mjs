@@ -8,8 +8,11 @@
 //           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
 //   rerun   every red check was cancelled or timed out, so it never tested the code: where §3 ci-rerun
 //           is yes the pass reruns `runs` through rerun.sh, within the merge driver's per-head cap
-//           and cooldown (`gate` is what rerun.sh reads)
-//   build   every red check is one §4 Check builds names, and no build has run at this head: the pass
+//           and cooldown (`gate` is what rerun.sh reads); or a check stuck pending whose run has
+//           completed, re-run as that one job (stuckCall)
+//   cancel  a check pending past PENDING_LIMIT_MS while its run is still in progress: the pass cancels
+//           the run, once per check per head, so the next pass re-runs it as a cancelled check
+//   build  every red check is one §4 Check builds names, and no build has run at this head: the pass
 //           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
 //   evidence  screenshot cells are left and §4 Evidence workflow names the workflow that fills them:
@@ -44,7 +47,7 @@
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
-import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, isHuman } from './gate.mjs';
+import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS } from './gate.mjs';
 import { RERUNS_MAX, reviewFindings } from './fix-tries.mjs';
 import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
@@ -225,6 +228,43 @@ function rerunCall(gate, cfg) {
   };
 }
 
+// A pending check that will never finish on its own: its run completed without it (an orphaned job, no
+// runner), or it has been pending past PENDING_LIMIT_MS. cfg.runOf(runId) -> { status, startedAt, jobs:
+// [{ databaseId, name, status, startedAt }] } or null (gh run view), cfg.now, and cfg.reruns(name) and
+// cfg.cancels(name), what was tried for it at this head. The first stuck check gives a `rerun` of its job
+// (an orphan) or a `cancel` of its run (still in progress), and the person once one was tried at this
+// head or §3 ci-rerun is not yes. Null while every pending check may yet finish.
+const isoMs = (s) => (s && !String(s).startsWith('0001-') ? Date.parse(s) || null : null);
+const ageText = (ms) => (ms >= 864e5 ? `${Math.floor(ms / 864e5)}d ${Math.floor((ms % 864e5) / 36e5)}h` : `${Math.floor(ms / 36e5)}h ${Math.floor((ms % 36e5) / 6e4)}m`);
+function stuckCall(gate, checks, cfg, n) {
+  if (!cfg.runOf || !gate.pending.length) return null;
+  const now = cfg.now ?? Date.now();
+  const open = latestPerCheck(checks ?? []).filter((c) => c.status !== 'completed' && c.runId && gate.pending.includes(c.name));
+  for (const c of open) {
+    const run = cfg.runOf(String(c.runId));
+    if (!run) continue;
+    const job = (run.jobs ?? []).find((j) => j.name === c.name);
+    // The run's own record of the job is newer than the PR's rollup: finished there, it is not stuck.
+    if (String(job?.status ?? '').toLowerCase() === 'completed') continue;
+    const orphan = String(run.status ?? '').toLowerCase() === 'completed';
+    const from = isoMs(job?.startedAt) ?? isoMs(c.startedAt) ?? isoMs(run.startedAt);
+    const age = from == null ? null : now - from;
+    if (!orphan && !(age >= PENDING_LIMIT_MS)) continue;
+    const what = orphan ? `"${c.name}" is still ${c.status} though its run ${c.runId} has completed`
+      : `"${c.name}" has been ${c.status} for ${ageText(age)} with its run ${c.runId} still in progress, past the ${ageText(PENDING_LIMIT_MS)} limit`;
+    const person = (why) => ({ call: 'person', why, action: `re-run job "${c.name}" of run ${c.runId} on #${n} once a runner can take it`, job: c.name });
+    if (cfg.rerun !== 'yes') return person(`${what}, and config §3 ci-rerun is "${cfg.rerun ?? 'no'}"`);
+    if ((cfg.reruns?.(c.name) ?? 0) + (cfg.cancels?.(c.name) ?? 0) > 0) return person(`${what}, after it was re-run once at this head`);
+    if (!orphan) return { call: 'cancel', why: `${what}, so the run is cancelled and its checks re-run`, runs: [String(c.runId)], checks: [c.name] };
+    if (job?.databaseId == null) return person(`${what}, and its job id could not be read to re-run it`);
+    return {
+      call: 'rerun', why: `${what}, so that job is re-run`, runs: [String(c.runId)],
+      gate: { pending: [], failedRuns: [], failedJobs: [{ runId: String(c.runId), jobId: String(job.databaseId), name: c.name, why: 'whose run completed without it' }], reasons: gate.reasons, failing: [{ name: c.name, runId: String(c.runId) }] },
+    };
+  }
+  return null;
+}
+
 // A red gate whose every failing check §4 Check builds names (cfg.builds, [{ name, command }]), while
 // §3 ci-rerun is yes: the build that clears it, once per head (cfg.built(head), check-build.mjs
 // buildRecord). `build` starts it, `wait` while it or another check runs, `rebuilt` re-runs the checks with --failed once
@@ -345,7 +385,8 @@ export function personHold(t, n, redrafts = []) {
 // the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
 // pr-conflict-unreviewed and -reviewed), untriggered(base, head, branch) -> gate.mjs untriggeredChecks's map
 // for a required check that never reported, stale(base, head, branch, baseHead) -> staleTriggers's
-// { behind, reopen } for one the pass's base sync or reopen starts }.
+// { behind, reopen } for one the pass's base sync or reopen starts, runOf(runId), cancels(name) and now
+// for a check stuck pending (stuckCall) }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -383,7 +424,9 @@ export function undraftCall(t, pr, cfg) {
     const untriggered = cfg.untriggered(pr.base, pr.head, pr.branch ?? null) ?? {};
     if (Object.keys(untriggered).length) gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [], untriggered });
   }
-  if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  // A wait on a check that will never finish is no wait: it is re-run, or put to the person.
+  const stuck = () => stuckCall(gate, pr.checks, cfg, n);
+  if (gate.state === 'pending') return stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   // One the base's or the default branch's copy of the workflow runs waits for the pass, which syncs the
   // base and reopens the PR so it gets a run.
   if (gate.state === 'absent' && !gate.failing.length && pr.base && cfg.stale) {
@@ -402,9 +445,9 @@ export function undraftCall(t, pr, cfg) {
   const red = gate.state !== 'pass' && !skipped;
   if (red) {
     const rr = rerunCall(gate, cfg);
-    if (rr) return rr;
+    if (rr) return (rr.call === 'wait' && stuck()) || rr;
     const bc = buildCall(gate, cfg, n, pr.head);
-    if (bc) return bc;
+    if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
   const codeRed = gate.failing.filter((f) => f.name !== VERDICT_CHECK);
   // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.

@@ -38,6 +38,7 @@
 //   skippedOnly(checks)      every check finished, at least one was skipped, and the rest passed
 //   isBot(author)            a PR author, reviewer or commenter ({ login, __typename? }) that is a bot
 //   isHuman(author, self)    one that is neither a bot nor `self`
+//   PENDING_LIMIT_MS         how long a check may stay pending before it is taken as stuck
 //
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name] [--merger <login>]   one JSON object: title, sha, base,
@@ -61,6 +62,9 @@ import { fileURLToPath } from 'node:url';
 import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
+// How long a check may stay queued or running before it is taken as stuck: GitHub Actions' default
+// job timeout-minutes (360), past which a job that is still running has lost its runner.
+export const PENDING_LIMIT_MS = 6 * 60 * 60 * 1000;
 // A required check passes as branch protection passes it: success, or a job its workflow skipped by
 // `if:`. A head whose every check was skipped still fails clause 3 (no success).
 const REQUIRED_PASS = new Set(['success', 'skipped']);
