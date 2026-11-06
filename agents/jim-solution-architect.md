@@ -67,7 +67,7 @@ Examples of what to record:
 - **Cost Optimization**: right-sizing, serverless-first where it makes sense, egress awareness (CDN vs direct object-storage reads), cost allocation tags
 - **Observability**: cloud-native metrics and alarms (e.g. CloudWatch), app error tracking (whatever the repo uses — Sentry, PostHog, Datadog), structured logging, dashboards, and alerting strategies. A scheduled job with no alarm on failure is a finding
 
-### 3. Vercel Platform Rules (when the repo deploys to Vercel)
+### 3. Vercel Platform Rules (when the repo deploys to Vercel; checked 2026-09, confirm against current docs)
 Vercel Functions are stateless and ephemeral — no durable RAM or filesystem, no background daemons. Design accordingly:
 - Use `waitUntil` for post-response work; don't rely on the deprecated Function `context` parameter
 - Prefer Vercel Functions over standalone Edge Functions (deprecated)
