@@ -630,8 +630,9 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 export const machineRunning = (repos) => repos.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
-// The workers running on one Claude login other than the default, by the login spawn-worker.sh
-// recorded for each (claude-logins.mjs). A batch whose queue cannot be read counts at its repo's cap.
+// The workers running on one Claude login, by the login spawn-worker.sh recorded for each
+// (claude-logins.mjs), a worker with no record on the default. A batch whose queue cannot be read
+// counts at its repo's cap.
 export function runningOn(repos, login) {
   let n = 0;
   for (const r of repos) {
@@ -647,18 +648,16 @@ export function runningOn(repos, login) {
 // This desk-q's login, its CLAUDE_CONFIG_DIR's, as a pass's is. Null when the subscriptions file cannot
 // be read, which reads and probes as no login was named.
 const ownLogin = () => { try { return loginOf(process.env.CLAUDE_CONFIG_DIR); } catch { return null; } };
-// The probes an open desk-q makes now: its own login's while no worker anywhere keeps that reading
-// fresh, and each other login in rotation or on standby while no worker runs on it, judged on that
-// login's own probe reading.  -> [{ login }]
+// The probes an open desk-q makes now. With one login, its probe while no worker anywhere keeps the
+// reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
+// worker runs on it, judged on that login's own probe reading: a worker log could be any login's.
+//   -> [{ login }]
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
-  const due = probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
   let others = [];
   try { others = probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file')); } catch { /* an unreadable subscriptions file probes its own login only */ }
-  for (const login of others) {
-    if (probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })) due.push({ login });
-  }
-  return due;
+  if (!own || !others.length) return probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
+  return [own, ...others].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
 }
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
@@ -3273,7 +3272,7 @@ export function interactive({
     try { repos = loadOrRefuse(clock()); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
   }, refreshMs);
-  // Only while this screen is open: the usage probe, when no worker anywhere keeps the reading fresh,
+  // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
   // and the cost cache's reading, workers or not.
   probeTimer = setInterval(() => {
     const now = clock();

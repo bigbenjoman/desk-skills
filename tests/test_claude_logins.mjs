@@ -57,11 +57,17 @@ const one = L.readRegistry();
 t('AC14 one login: one registry read, with no CLAUDE_CONFIG_DIR', calls().join(), 'unset|agents');
 t('AC14 one login: its sessions', one.live.map((a) => `${a.sessionId}:${a.pid}`).join(), 'S-A:11');
 t('AC14 one login: its one probe is due, on the default login', Q.probesDue([], { now: Date.now() }).map((x) => x.login.name).join(), 'default');
+t('AC14 one login: a worker anywhere holds its probe', Q.probesDue([{ rows: [{ k: 'running', t: { key: 'W-0' } }], prs: [], q: {} }], { now: Date.now() }).length, 0);
+const usageEvent = () => `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: {
+  five_hour: { utilization: 0.1, resetsAt: Math.round(Date.now() / 1000) + 3600 }, seven_day: { utilization: 0.2, resetsAt: Math.round(Date.now() / 1000) + 86400 } } } })}\n`;
+const workerLog = join(process.env.DESK_USAGE_DIR, 'logs', 'W-1.log');
+mkdirSync(dirname(workerLog), { recursive: true });
+writeFileSync(workerLog, usageEvent());
+t('AC14 one login: a fresh worker log holds its probe', Q.probesDue([], { now: Date.now() }).length, 0);
+rmSync(workerLog);
 // One login reached through CLAUDE_CONFIG_DIR: the header reads the log its probe writes.
 const solo = { name: 'solo', configDir: join(T, 'solo') };
-mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
-writeFileSync(P.loginProbeLog(process.env.DESK_USAGE_DIR, solo), `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: {
-  five_hour: { utilization: 0.1, resetsAt: Math.round(Date.now() / 1000) + 3600 }, seven_day: { utilization: 0.2, resetsAt: Math.round(Date.now() / 1000) + 86400 } } } })}\n`);
+writeFileSync(P.loginProbeLog(process.env.DESK_USAGE_DIR, solo), usageEvent());
 process.env.CLAUDE_CONFIG_DIR = join(T, 'solo');
 t('AC14 one login under CLAUDE_CONFIG_DIR: desk-q\'s header reads its own probe\'s log', Q.usageOf([], Date.now()).reading.at != null, true);
 // A subscriptions path that cannot be read: desk-q's probe timer carries on, as no login named.
@@ -139,12 +145,23 @@ process.env.CLAUDE_CONFIG_DIR = B;
 t('a desk-q started on login B probes B as its own, and the default as another login', due(repos([])), 'b,default');
 delete process.env.CLAUDE_CONFIG_DIR;
 writeFileSync(L.loginFile(S, 'W-1'), event);
-t('AC12 a worker on login B: no probe on B, and the default holds as today', due(repos(['W-1'])), 'none');
+t('AC11 AC12 a worker on login B only: no probe on B, and desk-q\'s own login is due', due(repos(['W-1'])), 'default');
+mkdirSync(dirname(workerLog), { recursive: true });
+writeFileSync(workerLog, usageEvent());
+t('AC11 a fresh worker log is no reading of desk-q\'s own login', due(repos(['W-1'])), 'default');
+rmSync(workerLog);
+process.env.CLAUDE_CONFIG_DIR = B;
+t('AC12 a desk-q on login B with a worker on B: no probe on its own login', due(repos(['W-1'])), 'default');
+delete process.env.CLAUDE_CONFIG_DIR;
+writeFileSync(P.probeLog(process.env.DESK_USAGE_DIR), usageEvent());
+t('AC11 desk-q\'s own login with a fresh probe reading is not due', due(repos(['W-1'])), 'none');
+rmSync(P.probeLog(process.env.DESK_USAGE_DIR));
 rmSync(L.loginFile(S, 'W-1'));
 t('AC11 a worker on the default only: login B is still probed', due(repos(['W-1'])), 'b');
-mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
-writeFileSync(P.loginProbeLog(process.env.DESK_USAGE_DIR, lb), `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: {
-  five_hour: { utilization: 0.1, resetsAt: Math.round(now / 1000) + 3600 }, seven_day: { utilization: 0.2, resetsAt: Math.round(now / 1000) + 86400 } } } })}\n`);
+process.env.CLAUDE_CONFIG_DIR = B;
+t('AC11 a desk-q on login B with a worker on the default only: its own login is due', due(repos(['W-1'])), 'b');
+delete process.env.CLAUDE_CONFIG_DIR;
+writeFileSync(P.loginProbeLog(process.env.DESK_USAGE_DIR, lb), usageEvent());
 t('AC11 login B with a fresh reading of its own is not due', due(repos(['W-1'])), 'none');
 resetCalls();
 const keepAlive = setInterval(() => {}, 100); // the probe's child is unref'd, so nothing else holds the loop while it runs

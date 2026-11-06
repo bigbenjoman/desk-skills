@@ -38,7 +38,7 @@ export const readUsage = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), l
 export const readLoginUsage = ({ login, dir = usageDir(), now = Date.now() }) =>
   newestReading({ dirs: [], files: [loginProbeLog(dir, login)], now });
 
-// A probe is due only with no worker running anywhere and no reading in the last PROBE_EVERY_MS.
+// A probe is due only with no worker running on what it reads and no reading in the last PROBE_EVERY_MS.
 export const probeDue = ({ running, reading, now }) => running === 0 && (reading?.at == null || now - reading.at > PROBE_EVERY_MS);
 
 // The probe's environment: the caller's without ANTHROPIC_API_KEY, in the login's folder when given one.
