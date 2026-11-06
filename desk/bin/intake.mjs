@@ -682,7 +682,9 @@ async function byHand(keys, { state, by, front, now }) {
       }
       if (limit) return putOff(key);
       const s = startEpic(key, t.rec, { by });
-      if (s.why) return refuse(key, `an epic, and its feature batch was not started: ${s.why}`);
+      // A child's triage at a usage limit stops the pool as the epic's own would.
+      if (s.limited) limit ??= triageOutcome(key, state, s.limited).limit;
+      if (s.why) return refuse(key, `an epic, and its feature batch was not started: ${s.why}${s.limited ? `: run /desk-admit ${key} again once the limit lifts` : ''}`);
       noteEpic(state, key, s, by, now);
       epics.push(key);
       lines.push(...s.lines);

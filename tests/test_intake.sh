@@ -553,6 +553,12 @@ rec EP-7 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 0.5 > "$T/recs/EP
 rm -f "$T/triage.calls"; out=$(TRIAGE_K=2 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-7 EP-8 --by ben); rc=$?
 check "DS-506 AC4: after a usage limit, a child is not triaged again to join its epic's feature batch, and is named to admit again" \
   '[ $rc -eq 11 ] && [ "$(count "$T/triage.calls")" = 2 ] && [ "$(eget EP-1 tickets.EP-7)" = undefined ] && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EP-7: run /desk-admit EP-7 again once the limit lifts" <<< "$out"'
+# An epic's child, triaged in its new feature batch, stops at the usage limit: no triage starts after it.
+rec EQ-1 A '"type":"Epic","branch":"feat/EQ-1-limited"'; rec EQ-2 A; printf 'EQ-2\n' > "$T/children/EQ-1"; cp "$T/recs/U-1.limit" "$T/recs/EQ-2.batchlimit"
+rec EQ-3 A; rec EQ-4 A
+rm -f "$T/triage.calls"; out=$(TRIAGE_K=1 config yes '`none`'; admit EQ-1 EQ-3 EQ-4 --by ben); rc=$?
+check "DS-506 AC4: a usage limit in an epic's child triage starts no more triages, and the epic is named to admit again" \
+  '[ $rc -eq 11 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "EQ-1 EQ-2 " ] && [ ! -e "$EB/EQ-1" ] && grep -q "^not admitted EQ-1: an epic, and its feature batch was not started: child EQ-2 could not be triaged (.*weekly usage limit.*); batch EQ-1 discarded: run /desk-admit EQ-1 again once the limit lifts$" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EQ-3 EQ-4: run /desk-admit EQ-3 EQ-4 again once the limit lifts" <<< "$out"'
 config yes '`none`'; rm -f "$T/recs/EP-1.sleep" "$T/recs/EP-7.sleep"
 config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-19 A '"summary":"the third epic child"'; printf 'E-19\n' > "$T/children/E-9"
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)

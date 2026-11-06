@@ -336,7 +336,8 @@ export const planFile = (state) => join(state, 'plan.md');
 export const planQuestion = (epic, n, path, feature, ask = null) => `${FEATURE_PLAN_PREFIX}: ${feature ? 'the spine and owner table' : 'the plan'} for ${epic} ${feature ? 'are' : 'is'} drafted, with ${n} ${n === 1 ? 'child' : 'children'} held behind it${ask ? `, but ${ask}` : ''}: read ${path}, then ${ask ? 'edit or discard it' : 'start, edit or discard it'}`;
 
 // Starts epic `key`'s feature batch, triaged rec `rec` (its `branch` is the feature branch), and leaves
-// its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind.
+// its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind, and
+// carries `limited`, the child's triage.sh run, when that triage stopped at a usage limit (exit 3).
 export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   const branch = rec?.branch;
   if (!branch) return { why: `its triage record names no branch for the feature batch: run /desk-autopilot ${key}` };
@@ -364,7 +365,7 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   for (const c of children) {
     const t = run(join(HERE, 'triage.sh'), [c], env);
     const r = t.status === 0 ? readJson(join(state, 'triage', `${c}.json`), null) : null;
-    if (!r) return discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`);
+    if (!r) return { ...discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`), ...(t.status === 3 ? { limited: t } : {}) };
     recs[c] = r;
   }
   const never = untriggeredOn(branch, children.map((c) => recs[c].branch ?? null));
