@@ -2,13 +2,8 @@
 name: desk-review
 description: >-
   Use when reviewing a branch, a PR or the open PR queue in this repo before a human does: "review
-  my branch", "review this PR", "review #460", "what needs reviewing", "sweep the open PRs",
-  "/desk-review". Finds P0, P1 and P2 only, against this repo's review bar, in read-only finder
-  subagents routed by path, plus codex reading the diff cold. The other vendor refutes each finding:
-  codex refutes Claude's, Claude refutes codex's. A tested script computes the verdict. Checks the diff
-  against its ticket in both directions: work it is missing, and work nothing asked for. Posts one
-  COMMENTED review with a machine-readable verdict where config allows. It is also the §4 Local
-  review command desk-ticket, desk-review-response and autopilot workers run at Stage 4b.
+  my branch", "review #460", "sweep the open PRs", "/desk-review". Also the §4 Local review command
+  desk-ticket, desk-review-response and autopilot workers run at Stage 4b.
 ---
 
 # desk-review

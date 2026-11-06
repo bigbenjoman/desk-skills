@@ -1,8 +1,8 @@
 # Uploading PR images by hand-driven browser
 
 Read this when `~/.claude/desk/bin/upload-images.mjs` is not installed, or when it fails and you
-have to work out why. Every rule below cost at least one failed run. The permission gate in
-`SKILL.md` §3 applies unchanged, and each re-run is a fresh use of it — get the wait right first time.
+have to work out why. Every rule below cost at least one failed run. The `pr-images` gate in
+`screenshots.md` (*Upload the images automatically*) applies unchanged, and each re-run is a fresh use of it — get the wait right first time.
 
 ## Setup
 
@@ -75,7 +75,7 @@ Playwright reads `PLAYWRIGHT_BROWSERS_PATH` once, on first import.
 7. **Set the body with `gh pr edit <n> --repo <§0 GitHub repo> --body-file`**, not the browser
    editor — the file on disk is your undo. Write that file from the **live** body
    (`gh pr view <n> --repo <§0 GitHub repo> --json body --jq .body`) fetched just before the edit, never from your local draft, so whatever CI or a bot added since
-   the PR opened survives; swap only the `_drag <file>_` cells (SKILL.md §4, "Editing the body
+   the PR opened survives; swap only the `_drag <file>_` cells (`opening.md`, "Editing the body
    later"). `<img alt="…" src="…" width="400">` in the cells keeps a multi-row table readable.
 8. **Verify.** Reload with `domcontentloaded`, `window.scrollTo(0, 400)`, wait a few seconds so the
    description images load, then select images **by alt** and read `naturalWidth`. On a private repo

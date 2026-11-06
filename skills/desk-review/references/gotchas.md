@@ -147,8 +147,8 @@ The security finder fires on `$prod` (test-excluded), the same set HIGH is compu
 ## Bot comments
 
 ```bash
-gh api "repos/<owner>/<repo>/pulls/<n>/comments" --paginate --jq \
-  '[.[] | select(.user.type == "Bot" or (.user.login | test("\\[bot\\]$")))
+gh api "repos/<owner>/<repo>/pulls/<n>/comments" --paginate --slurp | jq \
+  '[add[] | select(.user.type == "Bot" or (.user.login | test("\\[bot\\]$")))
         | {path, login: .user.login,
            start_line: (.start_line // .original_start_line // .line // .original_line),
            line: (.line // .original_line), body}]'

@@ -116,7 +116,7 @@ who already holds the app's grant.
    command. Generate any client the app imports (§4 Codegen, `desk-env cmds codegen-cmd`) first; a
    fresh worktree has none.
 2. **Write the capture script at the worktree's root** and run it with `with-lock.sh browser node
-   ./<script>.mjs <port> <path> <out.png>`. A script elsewhere, or an argument holding `..`, is
+   ./<script>.mjs <port> <path> <out.png> <test user email> <env file holding the instance's keys>`. A script elsewhere, or an argument holding `..`, is
    refused. Delete the script afterwards.
 3. **Refuse any key but a development one.** Mint the token server-side, sign in from a page where
    ClerkJS has loaded, and print what the session token carries before looking at the page:
