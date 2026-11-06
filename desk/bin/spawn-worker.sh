@@ -362,6 +362,10 @@ cd "$WT"
 export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
+# The login this worker runs on (its CLAUDE_CONFIG_DIR, or the default), read back by the pass and
+# desk-q (claude-logins.mjs) to probe that login's usage. Beside its settings, never in its log, whose
+# growth is the worker's own output.
+node "$DESK_ENV_DIR/claude-logins.mjs" login-event > "$STATE/workers/$TICKET.login.json" 2>/dev/null < /dev/null || true
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
 desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
@@ -380,8 +384,9 @@ desk_detach claude -p "$PROMPT" \
 disown $! 2>/dev/null || true
 
 PID="?"
+# The registry across every Claude login, so a worker on another login is found too.
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  FOUND=$(claude agents --json 2>/dev/null | SID="$SID" node -e '
+  FOUND=$(node "$DESK_ENV_DIR/claude-logins.mjs" agents 2>/dev/null < /dev/null | SID="$SID" node -e '
     let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
       try { const a = JSON.parse(s).find((x) => x.sessionId === process.env.SID); if (a?.pid) console.log(a.pid); } catch {}
     });' 2>/dev/null || true)
@@ -394,4 +399,4 @@ printf '[spawn] ticket=%s pid=%s port=%s model=%s session=%s%s\n' \
 printf '[spawn] log=%s\n' "$LOG"
 [ -n "$DENIED" ] && printf '[spawn] %s\n' "$DENIED"
 [ -n "$GRANTED" ] && printf '[spawn] CONFIG_GRANT: %s\n' "$GRANTED"
-printf '[spawn] wait: until ! claude agents --json | grep -q %s; do sleep 20; done\n' "$SID"
+printf '[spawn] wait: until ! %sclaude agents --json | grep -q %s; do sleep 20; done\n' "${CLAUDE_CONFIG_DIR:+CLAUDE_CONFIG_DIR=$(printf '%q' "$CLAUDE_CONFIG_DIR") }" "$SID"

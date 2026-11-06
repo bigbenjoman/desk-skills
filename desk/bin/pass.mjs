@@ -30,7 +30,8 @@ import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText, limitName } from './usage-limit.mjs';
-import { probeNow, probeDue } from './usage-probe.mjs';
+import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
+import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -44,7 +45,7 @@ import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCel
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
-import { usagePace, newestReading, probeLog } from './usage-pace.mjs';
+import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
@@ -127,8 +128,7 @@ function orchestratorName() {
   try {
     const sid = process.env.CLAUDE_CODE_SESSION_ID;
     if (sid) {
-      const live = JSON.parse(execFileSync('claude', ['agents', '--json'], { encoding: 'utf8' }));
-      const me = Array.isArray(live) && live.find((a) => a.sessionId === sid);
+      const me = readRegistry().live?.find((a) => a.sessionId === sid);
       if (me?.name) return me.name;
     }
   } catch { /* fall through to the honest answer below */ }
@@ -186,9 +186,9 @@ const queue = () => readQueue(QUEUE_FILE);
 // ---- liveness ------------------------------------------------------------
 // A failed registry read must never look like "everything finished" — that would
 // re-spawn work already in flight — so a command that fails reads as no registry, not an empty one.
-let live = null;
-const registry = shOut('claude', ['agents', '--json']);
-if (registry.ok) { try { live = JSON.parse(registry.out || '[]'); } catch { live = null; } }
+// It covers every Claude login (claude-logins.mjs), and one login's failed read fails it.
+const REGISTRY = readRegistry();
+const { live } = REGISTRY;
 const registryOk = Array.isArray(live);
 const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
 
@@ -211,10 +211,17 @@ const putOff = (t) => t.state === 'parked' && !!t.park?.question && !isHeld(t)
 // it does once the person switches subscription. A paused worker whose session is still live is quiet,
 // not wedged, until this long after the reset; then the stall check runs as before.
 const LIMIT_GRACE_MS = 30 * 60 * 1000;
-let PROBE = null;
-// At most one probe a pass, made only when something is held on the limit.
-const probeOnce = () => (PROBE ??= probeNow());
-const lifted = (l) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1000) || probeOnce().ok;
+// The probe runs on the login the hold is on, its reading kept as that login's (usage-probe.mjs): a
+// worker's login is the one spawn-worker.sh recorded for it, and a preflight's this pass's own.
+const OWN_LOGIN = loginOf(process.env.CLAUDE_CONFIG_DIR);
+const PROBES = new Map();
+// At most one probe a login a pass, made only when something on that login is held on the limit.
+const probeOnce = (login = OWN_LOGIN) => {
+  const k = loginKey(login);
+  if (!PROBES.has(k)) PROBES.set(k, probeNow({ login }));
+  return PROBES.get(k);
+};
+const lifted = (l, login) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1000) || probeOnce(login).ok;
 const liftedHow = (l) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1000 ? `its reset at ${resetText(l.resetsAt)} passed` : 'a probe call succeeded');
 const untilText = (l) => (l.resetsAt != null ? ` until ${resetText(l.resetsAt)}` : '');
 // The limits that hold this pass's spawns: each paused worker's, and the batch's own from a preflight
@@ -546,7 +553,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   }
   const pausedOnLimit = pausedOn(limit);
   // Kept below only while the ticket is still running once the loop is done.
-  if (pausedOnLimit) usageHolds.push({ key: t.key, limit, was: t.usage_paused });
+  if (pausedOnLimit) usageHolds.push({ key: t.key, limit, was: t.usage_paused, login: loginOf(workerLoginDir(STATE, t.key)) });
   else if (t.usage_paused) q('set', t.key, 'usage_paused=null');
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
@@ -564,11 +571,11 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     q('set', t.key, `idle_passes=${idle}`);
-    if (idle >= WEDGE_PASSES && !done && !handoff) {
+    // With no registry the worker cannot be stopped, so it is left for the next pass, never parked as stopped.
+    if (idle >= WEDGE_PASSES && !done && !handoff && registryOk) {
       // Free the slot. The worker's session id survives, so it can be resumed later with
       // its context intact; leaving it wedged blocks the whole batch.
-      const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
-        .find((a) => a.sessionId === t.session_id) ?? {}).pid;
+      const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
       if (pid) sh('kill', [String(pid)], { tolerant: true });
       wedged = true;
       q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
@@ -684,7 +691,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // then is resumed in its own session, never failed or taken as done. Once per limit: a resume that
     // ends before the model answers, with no new rejection, leaves the same count of limits in the log,
     // and is then handled as any other exit below rather than resumed on every pass.
-    if (lifted(limit)) {
+    if (lifted(limit, loginOf(workerLoginDir(STATE, t.key)))) {
       const why = `exited at ${limitName(limit.type)}, which lifted (${liftedHow(limit)})`;
       q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`,
         `resume_limits=${usage.limits.length}`);
@@ -750,8 +757,8 @@ let USAGE_HOLD = null;
   }
   const stored = queue().usage_hold;
   const pre = stored?.preflight ? { key: stored.preflight, limit: { type: stored.type ?? 'unknown', resetsAt: stored.resets_at ?? null } } : null;
-  const holding = [...(pre ? [pre] : []), ...usageHolds].find((h) => !lifted(h.limit));
-  if (holding) USAGE_HOLD = { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: pre && !lifted(pre.limit) ? pre.key : null };
+  const holding = [...(pre ? [pre] : []), ...usageHolds].find((h) => !lifted(h.limit, h.login));
+  if (holding) USAGE_HOLD = { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: pre && !lifted(pre.limit, pre.login) ? pre.key : null };
   else if (pre) report.advanced.push(`${limitName(pre.limit.type)} lifted (${liftedHow(pre.limit)}): spawns and resumes go ahead`);
 }
 
@@ -1125,7 +1132,7 @@ for (const s of HEALTH.stalls) personStall(s);
 // probe: the hold would keep itself on its last figure, an old subscription's after a switch. So a pass
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
-const paceReading = () => newestReading({ files: [probeLog()] });
+const paceReading = () => newestReading({ files: [loginProbeLog(usageDir(), OWN_LOGIN)] });
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
 let paceProbe = '';
@@ -1228,7 +1235,7 @@ const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
 const PACE_HELD = '7-day usage ahead of pace holds every spawn';
 const usageHeldText = (h) => `${limitName(h.type)}${untilText(h)} holds every spawn and resume, until it lifts or a probe call succeeds`;
-if (USAGE_HOLD) report.stalled.push(`${usageHeldText(USAGE_HOLD)} (probe: ${PROBE?.why ?? 'not run'})`);
+if (USAGE_HOLD) report.stalled.push(`${usageHeldText(USAGE_HOLD)} (probe: ${[...PROBES.values()].map((p) => p.why).filter(Boolean).join('; ') || 'not run'})`);
 const held = MAINT.hold ? 'the maintenance window holds every spawn' : USAGE_HOLD ? usageHeldText(USAGE_HOLD) : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
   : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
@@ -1398,7 +1405,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       }
       // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and
       // nothing else holds spawns: another limit, the maintenance window, the budget, memory.
-      const up = awaitsLift && lifted(atLimit);
+      const up = awaitsLift && lifted(atLimit, loginOf(workerLoginDir(STATE, BASE_FIX_KEY)));
       const ended = up ? `exited at ${limitName(atLimit.type)}, which lifted (${liftedHow(atLimit)})` : null;
       if (up && !resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume_limits: usage.limits.length } };
       else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
@@ -2359,7 +2366,7 @@ for (const t of Object.values(queue().tickets)) {
 
 // ---- report --------------------------------------------------------------
 const out = [];
-if (!registryOk) out.push('! could not read the session registry — no ticket was advanced this pass');
+if (!registryOk) out.push(`! could not read the session registry — no ticket was advanced this pass: ${REGISTRY.why}`);
 out.push(...baseLines);
 out.push(...MAINT.lines);
 for (const [label, items] of [['spawned', report.spawned], ['advanced', report.advanced], ['done', report.done], ['failed', report.failed]]) {

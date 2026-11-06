@@ -48,7 +48,7 @@ export const ruleError = (v) => `"${v}" is not a rule: use one of ${RULES.map((r
 
 // A login as every reader gets it. configDir is the folder to point the tool at, or null for the
 // tool's own default folder (no override).
-function login({ tool, name, folder, rule, source }) {
+export function login({ tool, name, folder, rule, source }) {
   const dir = resolve(expand(folder));
   return { tool, name, folder: tilde(dir), dir, configDir: dir === TOOL[tool].dir() ? null : dir, rule, source };
 }
@@ -123,7 +123,7 @@ export function renderSubscriptions(logins) {
 
 // ---- the account check -----------------------------------------------------------------------
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
-const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
+export const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
 function run(bin, args, env) {
   const r = spawnSync(bin, args, { env, encoding: 'utf8', timeout: CHECK_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -157,13 +157,15 @@ export function checkLogin(l, { claude = 'claude', codex = 'codex', env = proces
 }
 
 // Folders under a tool's logins folder that no login in `listed` points at.
-function unlistedFolders(tool, listed) {
+export function unlistedFolders(tool, listed) {
   const root = loginsFolder(tool);
   let names = [];
   try { names = readdirSync(root).sort(); } catch { return []; }
   const taken = new Set(listed.filter((l) => l.tool === tool).map((l) => l.dir));
   return names.map((n) => join(root, n)).filter((d) => isDir(d) && !taken.has(d));
 }
+// A folder the file does not list, as a login: on standby when there is a file, with no rule without one.
+export const foundLogin = (tool, dir, subs) => login({ tool, name: basename(dir), folder: dir, rule: subs.exists ? 'standby' : null, source: 'found' });
 
 // Every login checked, the found ones added, duplicates refused, and the usable ones named.
 //   -> { exists, errors, logins: [{ ...login, state, email, plan, why, duplicateOf }], usable: [login] }
@@ -173,7 +175,7 @@ export function checkLogins(subs, opts = {}) {
   const checked = subs.logins.map((l) => ({ ...l, ...checkLogin(l, opts), duplicateOf: null }));
   for (const tool of TOOLS) {
     for (const dir of unlistedFolders(tool, subs.logins)) {
-      const l = login({ tool, name: basename(dir), folder: dir, rule: subs.exists ? 'standby' : null, source: 'found' });
+      const l = foundLogin(tool, dir, subs);
       const c = checkLogin(l, opts);
       if (c.state === 'signed in') checked.push({ ...l, ...c, duplicateOf: null });
     }

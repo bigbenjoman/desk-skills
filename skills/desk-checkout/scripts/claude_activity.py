@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Summarise Claude Code sessions active on the check-out day.
 
-Reads ~/.claude/projects/*/*.jsonl (top-level session transcripts only; subagent
+Reads <folder>/projects/*/*.jsonl for every Claude login's config folder, ~/.claude
+first (top-level session transcripts only; subagent
 transcripts are skipped because their parent session already carries the work)
 and prints one compact block per session: repo, branches, what the human asked,
 and how the session ended. The output is evidence for a check-out, not the
@@ -10,7 +11,7 @@ check-out itself, so it stays terse.
 A session that loads the desk-checkout skill is cut off at that point, so the
 drafting session never reports itself and needs no session ID.
 
-Every session under ~/.claude/projects is considered, whatever repo it ran in. Its scope
+Every session under those folders is considered, whatever repo it ran in. Its scope
 comes from the per-repo desk configs (see desk_repos.py): a session whose directory is under
 a configured repo's §2 Primary repo root or Worktrees directory takes that repo's scope
 (this check-out, other desk repo), the current repo's checkout counts as this check-out
@@ -216,8 +217,30 @@ def read_session(path, since, until):
     return s
 
 
+def claude_folders():
+    """Every Claude login's config folder: ~/.claude, each one the subscriptions file lists, those
+    under ~/.claude-logins, and this session's own CLAUDE_CONFIG_DIR, each once."""
+    dirs = [os.path.join(HOME, ".claude")]
+    cmd = desk_repos.desk_env_cmd()
+    out, rc = desk_repos._run(cmd + ["logins", "list", "--json"]) if cmd else (None, 1)
+    if rc == 0 and out:
+        try:
+            dirs += [os.path.expanduser(l["folder"]) for l in json.loads(out)["logins"] if l.get("tool") == "claude"]
+        except (ValueError, KeyError, TypeError):
+            pass
+    dirs += sorted(glob.glob(os.path.join(HOME, ".claude-logins", "*")))
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        dirs.append(os.environ["CLAUDE_CONFIG_DIR"])
+    seen = []
+    for d in dirs:
+        r = os.path.realpath(d)
+        if os.path.isdir(r) and r not in seen:
+            seen.append(r)
+    return seen
+
+
 def find_files(since):
-    files = glob.glob(os.path.join(HOME, ".claude/projects/*/*.jsonl"))
+    files = [f for d in claude_folders() for f in glob.glob(os.path.join(d, "projects/*/*.jsonl"))]
     return [f for f in files if os.path.getmtime(f) >= since.timestamp()]
 
 

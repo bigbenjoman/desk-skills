@@ -5,7 +5,9 @@
 // Each check, and when it is required:
 //   gh       `gh auth status`                     always
 //   jira     `desk-jira whoami`                   where §4 Tracker is jira
-//   claude   `claude auth status`                 always
+//   claude   `claude auth status`                 always; and in the folder of each other Claude login the
+//                                                 subscriptions file puts in rotation or on standby,
+//                                                 told with its sign-in command but never holding a spawn
 //   codex    `codex login status`                 unless config §3 codex-review is no (it catches a
 //                                                 sign-out, not a seat out of usage: only a real call does)
 //   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no
@@ -35,6 +37,8 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { loginState } from './find-playwright.mjs';
 import { parseDfAvailableGB } from './machine.mjs';
+import { isDir, loginEnv, readSubscriptions, signInCommand } from './logins.mjs';
+import { inUse, loginKey } from './claude-logins.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
@@ -82,7 +86,7 @@ export function diskFloor(raw = E.configValue('disk-floor')) {
 }
 
 // One command, failed on a non-zero exit, a missing binary or no answer within the timeout.
-function runCommand([cmd, ...args], timeoutMs) {
+function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined) {
   return new Promise((resolve) => {
     let out = '';
     let done = false;
@@ -90,7 +94,7 @@ function runCommand([cmd, ...args], timeoutMs) {
     let child;
     // Its own process group, so a timeout kills whatever it started too: a grandchild left holding the
     // pipes would keep the pass from exiting.
-    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true }); } catch (e) { finish({ ok: false, why: e.message }); return; }
+    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, ...(cmdEnv ? { env: cmdEnv } : {}) }); } catch (e) { finish({ ok: false, why: e.message }); return; }
     const timer = setTimeout(() => {
       try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } }
       child.stdout.destroy(); child.stderr.destroy(); child.unref();
@@ -172,15 +176,25 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const wanted = CHECKS.map((c) => c.id).filter((id) => !skip[id]);
   const prev = readRecord(state);
   const age = prev ? now - Date.parse(prev.at) : Infinity;
-  const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok);
+  // Each other Claude login the file puts in rotation or on standby, checked as the default is, in its
+  // own folder, and signed out when that folder is missing (logins.mjs). A folder the file does not
+  // list counts only once signed in, so it is not told as signed out.
+  const others = (() => { try { return readSubscriptions(E.subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.configDir && inUse(l)); } catch { return []; } })();
+  const reusedLogins = others.every((l) => prev?.logins?.[loginKey(l)]?.ok);
+  const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins;
   let results;
+  let loginResults;
   let at;
-  if (reused) ({ results, at } = prev);
+  if (reused) ({ results, at, logins: loginResults = {} } = prev);
   else {
     const timeoutMs = Number(env.DESK_HEALTH_TIMEOUT_MS) > 0 ? Number(env.DESK_HEALTH_TIMEOUT_MS) : CHECK_TIMEOUT_MS;
     const retryMs = env.DESK_HEALTH_RETRY_MS != null && Number(env.DESK_HEALTH_RETRY_MS) >= 0 ? Number(env.DESK_HEALTH_RETRY_MS) : RETRY_DELAY_MS;
-    const ran = await Promise.all(wanted.map((id) => runCheck(id, env, timeoutMs, retryMs)));
+    const [ran, ranLogins] = await Promise.all([
+      Promise.all(wanted.map((id) => runCheck(id, env, timeoutMs, retryMs))),
+      Promise.all(others.map((l) => (isDir(l.dir) ? runCommand(byId.claude.cmd, timeoutMs, loginEnv(l, env)) : { ok: false, why: `${l.folder} does not exist` }))),
+    ]);
     results = Object.fromEntries(wanted.map((id, i) => [id, ran[i]]));
+    loginResults = Object.fromEntries(others.map((l, i) => [loginKey(l), ranLogins[i]]));
     at = new Date(now).toISOString();
   }
   const failing = wanted.filter((id) => !results[id].ok);
@@ -195,9 +209,16 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const unconfirmed = units.filter((u) => !told(u)).map((u) => u.key);
   // Recovery is news only from a fresh run: a reused one is the run that reported the failure.
   const recovered = reused ? [] : (prev?.failing ?? []).filter((id) => byId[id] && !failing.includes(id));
+  // Another login failing holds no spawn, as workers start on the default login. It is told with its
+  // sign-in command once signed out, and a connection failure once it has lasted two runs.
+  const loginsOut = others.filter((l) => !loginResults[loginKey(l)]?.ok);
+  const loginStreak = reused ? prev.login_streak ?? {}
+    : nextStreak({ streak: prev?.login_streak ?? {} }, loginsOut.map((l) => ({ key: loginKey(l), kind: loginResults[loginKey(l)].kind ?? 'auth' })));
+  const loginTold = loginsOut.filter((l) => loginResults[loginKey(l)].kind !== 'network' || loginStreak[loginKey(l)]?.n >= 2);
   if (!reused) {
     mkdirSync(state, { recursive: true });
-    writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing, streak }, null, 2)}\n`);
+    const kept = others.length ? { logins: loginResults, login_streak: loginStreak } : {};
+    writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing, streak, ...kept }, null, 2)}\n`);
   }
 
   const when = reused ? `checked ${Math.round(age / 60000)} min ago, reused` : 'checked now';
@@ -206,6 +227,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   if (unconfirmed.length) notes.push(`rechecking before telling you: ${unconfirmed.join(', ')}`);
   const skipped = Object.entries(skip).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
+  if (loginsOut.length) notes.push(`claude login${loginsOut.length > 1 ? 's' : ''} ${loginsOut.map((l) => l.name).join(', ')} failing, not holding spawns`);
   const line = failing.length
     ? `health: ${failing.length} check(s) failing — ${failing.join(', ')}${network ? ', every remote check: the network' : ''} — holding new spawns (${notes.join('; ')})`
     : `health: all checks pass (${notes.join('; ')})`;
@@ -216,5 +238,12 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const push = shown.map((u) => (u.key === 'network'
     ? { key: `health:${slug}:network`, text: `desk ${slug}: every remote check is failing (${u.ids.join(', ')}), so this machine looks offline rather than signed out, and no new worker starts. Fix: check its network connection` }
     : { key: `health:${slug}:${u.key}`, text: `desk ${slug}: the ${byId[u.key].name} check is failing (${results[u.key].why}), so no new worker starts. Fix: ${fixOf(u.key, results[u.key])}` }));
+  for (const l of loginTold) {
+    const r = loginResults[loginKey(l)];
+    const out = r.kind === 'network' ? `could not reach Claude (${r.why})` : `is signed out (${r.why})`;
+    const fix = r.kind === 'network' ? "check this machine's connection to Claude" : `sign it in, in another terminal: ${signInCommand(l)}`;
+    stalls.push(`health: Claude login ${l.name} (${l.folder}) ${out} — ${fix}; spawns are not held for it`);
+    push.push({ key: `health:${slug}:claude:${loginKey(l)}`, text: `desk ${slug}: Claude login ${l.name} ${out}. Fix: ${fix}` });
+  }
   return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push };
 }

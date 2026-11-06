@@ -690,6 +690,7 @@ if (mode === 'triage') {
   const templates = join(E.deskHome(), 'templates');
   if (existsSync(templates)) dirs.add(templates);
 
+  // The repo memory the user's own sessions write: the default login's, whatever login the worker runs on.
   // With the memory lever on, the worker's auto-memory is off (it gets a digest of the index in its
   // brief instead) and the memory folder is neither granted nor writable.
   const mem = E.memoryDir();
