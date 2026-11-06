@@ -819,6 +819,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
 // Why an epic has no date: its undated children, by what holds them.
 function epicWhy(r, F, e, checkin) {
   if (F.paused) return 'no date while passes are stopped';
+  if (F.none) return `No date: ${r.name} has ${F.count} of the ${MIN_HISTORY} merged tickets dates need`;
   if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
@@ -1186,17 +1187,23 @@ function epicReadAt(r, F, key) {
   return at;
 }
 // One row per repo and epic. Where several of a repo's batches hold its children, the counts are the
-// latest read's, with the other batches' queued children counted as queued; the date is the latest,
-// since an epic ships when its last child merges, or none, with the reason of a batch that has none.
-function epicPerRepo(list) {
+// latest read of its children list, with the other batches' queued children counted as queued (with
+// no list read, every batch's children summed); the date is the latest, since an epic ships when its
+// last child merges, or none, with the reason of a batch that has none. `undated` are the epics of
+// batches that cannot date anything: each joins a row another batch lists, and adds none of its own.
+function epicPerRepo(list, undated = []) {
   const groups = new Map();
-  for (const x of list) { const id = `${x.r.slug}\0${x.e.key}`; groups.set(id, [...(groups.get(id) ?? []), x]); }
+  const idOf = (x) => `${x.r.slug}\0${x.e.key}`;
+  for (const x of list) groups.set(idOf(x), [...(groups.get(idOf(x)) ?? []), x]);
+  for (const x of undated) groups.get(idOf(x))?.push(x);
   return [...groups.values()].map((g) => {
     if (g.length === 1) return g[0];
-    const fresh = g.map((x) => ({ x, at: epicReadAt(x.r, x.F, x.e.key) })).reduce((a, b) => (b.at > a.at ? b : a)).x;
-    const elsewhere = g.filter((x) => x !== fresh).reduce((n, x) => n + x.e.queued, 0);
-    const e = { ...fresh.e, queued: Math.min(fresh.e.total - fresh.e.done, fresh.e.queued + elsewhere),
-      missing: fresh.e.missing == null ? null : Math.max(0, fresh.e.missing - elsewhere) };
+    const read = g.filter((x) => x.e.missing != null);
+    const fresh = (read.length ? read : g).map((x) => ({ x, at: epicReadAt(x.r, x.F, x.e.key) })).reduce((a, b) => (b.at > a.at ? b : a)).x;
+    const sum = (f) => g.reduce((n, x) => n + x.e[f], 0);
+    const elsewhere = sum('queued') - fresh.e.queued;
+    const e = fresh.e.missing == null ? { ...fresh.e, total: sum('total'), done: sum('done'), queued: sum('queued') }
+      : { ...fresh.e, queued: Math.min(fresh.e.total - fresh.e.done, fresh.e.queued + elsewhere), missing: Math.max(0, fresh.e.missing - elsewhere) };
     const by = g.find((x) => !x.d) ?? g.reduce((a, b) => (b.d.likely > a.d.likely ? b : a));
     return { r: by.r, F: by.F, e, d: by.d, name: by.r.repo };
   });
@@ -1205,8 +1212,11 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   const s = etaScope(repos, slug, { now, checkin, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   const all = !slug;
-  // A paused batch's epics are listed undated, under its note.
-  const list = epicPerRepo(s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null }))))
+  // A paused batch's epics are listed undated, under its note. A batch with too little history, or
+  // nothing left for autopilot, lists none, but leaves undated an epic whose children it still holds.
+  const undated = s.per.filter((p) => p.note && !p.stopped && p.r.q && !p.r.error).map(({ r }) => ({ r, F: forecastOf(r, { now, checkin }) }))
+    .filter(({ F }) => F?.none || F?.idle).flatMap(({ r, F }) => Object.values(F.epics).filter((e) => e.queued).map((e) => ({ r, F, e, d: null })));
+  const list = epicPerRepo(s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null }))), undated)
     .sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
   const head = [...s.head, ''];
   if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));

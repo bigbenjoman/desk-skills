@@ -602,16 +602,16 @@ t('DS-191: once read with no epic, the view says none belongs to an epic again',
 
 // ---- DS-504: an epic whose children sit in two batches of one repo is one row on home's Epics view
 const { utimesSync } = await import('node:fs');
-// Home's Epics view: every repo's open epics, one line each.
-async function homeEpics() {
+// Home's Epics view: every repo's open epics, one line each, plain or with its colours (`raw`).
+async function homeEpics(raw = false) {
   const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
   const output = { buf: '', columns: 200, rows: 200, write(s) { this.buf += s; }, on() {}, removeListener() {} };
   Q.interactive({ input, output, start: { kind: 'overview' }, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
   input.write('4');
   await new Promise((res) => setTimeout(res, 20));
-  const frame = output.buf.split('\x1b[H').at(-1).replace(ANSI_ETA, '');
+  const frame = output.buf.split('\x1b[H').at(-1);
   input.write('q');
-  return frame.split('\r\n');
+  return (raw ? frame : frame.replace(ANSI_ETA, '')).split('\r\n');
 }
 const epicRows = (lines, key) => lines.filter((l) => new RegExp(`^[ ›] {1,2}\\S.*?\\s${key}\\s`).test(l)).map((l) => l.slice(1).trim().replace(/\s{2,}/g, ' | '));
 // When a batch read the epic's children: its triage records' times.
@@ -628,12 +628,28 @@ repo('other', 4810, { tickets: { 'O-1': { state: 'triaged' } }, sizes: { 'O-1': 
 const EP8 = ep('EP-8', 'Half dated', [['W-1'], ['W-2']]);
 repo('pair', 4820, { tickets: { 'W-1': { state: 'triaged' } }, sizes: { 'W-1': 'M' }, epics: { 'W-1': EP8 }, history: hist12 });
 repo('pair', 4820, { batch: 'side', tickets: { 'W-2': { state: 'parked', park: { question: 'which copy?' } } }, sizes: { 'W-2': 'M' }, epics: { 'W-2': EP8 }, history: hist12 });
+// A repo whose newer read could not load the epic's children list: the older read that did sets the counts.
+repo('listed', 4830, { tickets: { 'L-1': { state: 'triaged' } }, sizes: { 'L-1': 'M' }, epics: { 'L-1': ep('EP-9', 'Listed epic', [['L-1'], ['L-2'], ['L-3']]) }, history: hist12 });
+repo('listed', 4830, { batch: 'feat', tickets: { 'L-2': { state: 'triaged' } }, sizes: { 'L-2': 'M' }, epics: { 'L-2': { key: 'EP-9', summary: 'Listed epic' } }, history: hist12 });
+readAt('listed', null, ['L-1'], Date.now() - 2 * HOUR);
+readAt('listed', 'feat', ['L-2'], Date.now() - HOUR);
+// A repo whose second batch has too little history to date anything, and holds a child of a dated epic.
+const EP10 = ep('EP-10', 'Thin epic', [['N-1'], ['N-2']]);
+repo('thin', 4840, { tickets: { 'N-1': { state: 'triaged' } }, sizes: { 'N-1': 'M' }, epics: { 'N-1': EP10 }, history: hist12 });
+repo('thin', 4840, { batch: 'new', tickets: { 'N-2': { state: 'triaged' } }, sizes: { 'N-2': 'M' }, epics: { 'N-2': EP10 }, history: range(3, (i) => ['M', 2 + i]) });
 const byId = (id) => Q.loadRepos(FIXED).find((r) => r.id === id);
 const home = await homeEpics();
 const twinRows = epicRows(home, 'EP-7').filter((l) => l.startsWith('twin'));
 t('DS-504 AC1: an epic with children in two batches of one repo is one row, named for the repo', twinRows.map((l) => l.split(' | ').slice(0, 2)), [['twin', 'EP-7']]);
 t('DS-504 AC2: its done/total is the most recent read\'s, and the other batch\'s queued child counts as queued, not as not queued',
   twinRows.map((l) => [l.split(' | ').slice(3, 5).join(' '), /provisional/.test(l)]), [['■■■■■■■■■■■■■■■■ 2/5', false]]);
+// On screen not-queued children are grey squares, the same glyph as the rest: none may be grey.
+const twinRaw = (await homeEpics(true)).filter((l) => /^[ ›] {1,2}twin\s+EP-7\s/.test(l.replace(ANSI_ETA, '')));
+t('DS-504 AC2: the bar draws the other batch\'s queued children as queued, so no square is the not-queued grey', [twinRaw.length, twinRaw.some((l) => /\x1b\[38;5;247m■/.test(l))], [1, false]);
+t('DS-504 AC2: a newer read without the children list does not set the counts; the read that has it does, with the other batch\'s child queued',
+  epicRows(home, 'EP-9').map((l) => [l.split(' | ').slice(0, 2).join(' '), l.split(' | ')[4], l.split(' | ').at(-1)]), [['listed EP-9', '0/3', 'provisional: 1 not queued']]);
+t('DS-504 AC4: a batch with too little history leaves the row undated, with its reason',
+  epicRows(home, 'EP-10').map((l) => [l.split(' | ').slice(0, 2).join(' '), l.split(' | ')[4], /^No date: thin · new.* has 3 of the 10 merged tickets dates need$/.test(l.split(' | ').at(-1))]), [['thin EP-10', '0/2', true]]);
 const twinShips = Math.max(...['acme__twin', 'acme__twin:feat'].map((id) => Q.forecastOf(byId(id), { now: FIXED }).E['EP-7'].likely));
 t('DS-504 AC3: SHIPS is the later of the two batches\' dates', [twinRows[0]?.split(' | ')[5], Q.forecastOf(byId('acme__twin'), { now: FIXED }).E['EP-7'].likely !== Q.forecastOf(byId('acme__twin:feat'), { now: FIXED }).E['EP-7'].likely],
   [when(twinShips, FIXED), true]);
