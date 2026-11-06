@@ -196,6 +196,9 @@ git -C "$D" diff --stat -- vendor/
 git -C "$D" diff -- vendor/<name>/SKILL.md # summarise the substance for the user
 ```
 
+A `REFUSED` line means a local patch in that entry's `patches` no longer applies: that skill is not
+upgraded; tell the user, and never drop the patch to get past it.
+
 Commit on that branch: `chore(vendor): upgrade <name> to <new pin>` (one commit per skill). Then
 go back to where the run started, with `git -C "$D" checkout -q -` (it returns to the previous
 branch, or the detached commit, without needing a variable from an earlier call), and report the

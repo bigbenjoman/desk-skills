@@ -367,8 +367,12 @@ which version is installed, as one of three source types:
 | `checkout` | your own skills, and upstreams you want to track live | a git clone at `~/.agents/skills/<name>`; nothing in `vendor/`. A repo holding several skills (`subskills`, e.g. `clerk/skills`) is cloned once to `~/.agents/sources/<name>` and each listed sub-skill linked in | `origin/<branch>` has commits you have not pulled |
 
 `vendor/<name>/` is never edited by hand: its `tree_sha256` in `sources.json` is checked by
-`skills-upstream verify`. A local change belongs upstream, or in a repo-level override
-(`<repo>/.claude/skills/<name>`, which Claude Code prefers).
+`skills-upstream verify`. A local change belongs upstream, in a repo-level override
+(`<repo>/.claude/skills/<name>`, which Claude Code prefers), or, for one every machine should get,
+in a patch: a diff relative to the skill folder under `vendor-patches/`, named in the entry's
+`patches` list. `upgrade` re-applies each patch to the new upstream before it reaches `vendor/`, and
+records the hash after patching; a patch that no longer applies refuses that skill (exit 1) and
+leaves `vendor/<name>` and its pin as they were, so rework the patch and upgrade again.
 
 Claude Code only sees a skill through `~/.claude/skills/<name>/SKILL.md`; an installed copy with no
 link there is "Unknown skill". `skills-upstream links` checks every skill desk installs (`desk-*`,
