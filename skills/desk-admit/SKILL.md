@@ -67,8 +67,9 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 - `--by`: the user's first name, lower case, no spaces (from `git config user.name`).
 - `--front`: only when the user asks for it first, or calls it urgent ("ASAP", "next").
 
-It triages each ticket afresh, which takes a minute or two each, and admits none until every triage
-is done: give the call your longest foreground timeout, and if it moves to the background, wait for
+It triages each ticket afresh, which takes a minute or two each, as many at once as config §3b
+"Triage concurrency" allows, and admits each one as soon as it and its blockers in the call are
+triaged: give the call your longest foreground timeout, and if it moves to the background, wait for
 its notification rather than running it again. Exit 0: every ticket was admitted
 or was already where it belongs (`<TICKET> is already in batch <B> (<state>)`, its epic's feature
 batch included: ask nothing about it), any epic had its feature batch started, and any other epic is one to
@@ -141,6 +142,10 @@ below as `(Recommended)`, with its reason as the description:
 | `is run by a session, not the supervisor` | Send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session asks and admits | Admit nothing here |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
+
+A `not triaged (usage limit, resets <time>): <TICKET>...` line is not a question: a triage hit the
+usage limit, so the rest were never started. Tell the user the reset time and the command the line
+names, and run nothing for them until then.
 
 Do what each answer says, then run step 1 again only for the tickets now ready. A `plan <EPIC> …`
 line in the same output is not refused: run step 1b for it once these are settled.
