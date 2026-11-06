@@ -37,6 +37,7 @@ const REWRITTEN = [
   ['DS-405', '**Capturing.** Playwright at the chosen widths', 1],
   ['DS-405', 'letting CI judge the body', 1],
   ['DS-405', "Merging with `--squash` because it's the usual", 1],
+  ['DS-460', 'see "Editing the body later" in §4). Keep', 1], // names opening.md, the file holding it
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 23, minRows: 35, rewritten: REWRITTEN });
 
