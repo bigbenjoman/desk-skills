@@ -165,6 +165,12 @@ t('DS-437 AC1 a second app the other rows name is named NODEV with those rows', 
 t('DS-437 AC1 and exits 1', d.code, 1);
 t('DS-437 AC1 an item for that directory clears it', drift(`${conf()}${rows4('`bun run --filter studia-web dev` `apps/portal/apps/web: bun run dev`')}`).out, 'no drift');
 t('DS-437 AC1 a Dev server row of none is a decision, not drift', drift(`${conf()}${rows4('`none`')}`).out, 'no drift');
+writeFileSync(join(repoDir, 'apps/portal/apps/web/package.json'), JSON.stringify({ name: 'portal-web', scripts: { dev: 'next dev' } }));
+t('DS-437 AC1 a root item filtering to that package by name serves it', drift(`${conf()}${rows4('`bun run --filter portal-web dev`')}`).out, 'no drift');
+t('DS-437 AC1 a root item filtering to that directory by path serves it', drift(`${conf()}${rows4('`pnpm --filter=./apps/portal/apps/web dev`')}`).out, 'no drift');
+writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ scripts: { dev: 'turbo dev' } }));
+t('DS-437 AC1 the root is never a gap, though its package.json has a dev script', drift(`${conf()}${rows4('`apps/portal/apps/web: bun run dev`')}`).out, 'no drift');
+rmSync(join(repoDir, 'package.json'), { force: true });
 rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 
 // --all: every repo under DESK_CONFIG_ROOT, by slug.

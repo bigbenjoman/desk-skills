@@ -1284,25 +1284,35 @@ export function configDrift({ config, template = templatePath(), root = null, ho
 }
 
 // App directories the other §4 command rows name, whose package.json has a `dev` script, that §4 Dev
-// server has no item for: a worker on a ticket there is refused that app's dev server.
+// server has no item for: a worker on a ticket there is refused that app's dev server. A Dev server
+// item's own directory serves it, and so does a `--filter`/`-F` naming its package or path. The root
+// is never a gap: its `dev` script runs the workspace, not a second app.
 // -> [{ dir, rows: [row name] }]. None while the Dev server row is unset or `none`.
 export function devServerGaps(parsed, root) {
   const dev = configValuesIn(parsed, 'dev-cmd');
   if (!dev || isNone(dev)) return [];
-  const served = new Set(dev.map((item) => parseCommandItem(item).dir));
+  const served = new Set();
+  for (const item of dev) {
+    const { dir, cmd } = parseCommandItem(item);
+    served.add(dir);
+    for (const m of cmd.matchAll(/(?:--filter[=\s]|-F\s)\s*['"]?([^\s'"]+)/g)) served.add(m[1].replace(/^\.\//, '').replace(/\/+$/, ''));
+  }
+  const pkg = (dir) => { try { return JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')); } catch { return null; } };
   const named = new Map();
   for (const id of WORKER_COMMAND_IDS.filter((x) => x !== 'dev-cmd')) {
     const values = configValuesIn(parsed, id);
     if (!values || isNone(values)) continue;
     for (const item of values) {
       const { dir } = parseCommandItem(item);
-      if (served.has(dir)) continue;
+      if (dir === '.' || served.has(dir)) continue;
       if (!named.has(dir)) named.set(dir, []);
       if (!named.get(dir).includes(CONFIG_ROWS[id].row)) named.get(dir).push(CONFIG_ROWS[id].row);
     }
   }
-  const hasDev = (dir) => { try { return Boolean(JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')).scripts?.dev); } catch { return false; } };
-  return [...named].filter(([dir]) => hasDev(dir)).map(([dir, rows]) => ({ dir, rows }));
+  return [...named]
+    .map(([dir, rows]) => ({ dir, rows, p: pkg(dir) }))
+    .filter(({ p }) => p?.scripts?.dev && !served.has(p.name))
+    .map(({ dir, rows }) => ({ dir, rows }));
 }
 
 export function driftLines({ missing, stalls, unlisted = [], noDev = [], dontAsk }) {

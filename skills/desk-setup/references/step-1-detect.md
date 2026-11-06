@@ -238,7 +238,8 @@ How to turn what you find into rows:
   manager as its scripts run it, with the port flag in the row's note, e.g.
   `` `apps/portal/apps/web: bun run dev` `` (the app takes `-p <port>`). A worker is refused any
   dev command the row does not hold, so a ticket in a missing app gets no local screenshots and
-  parks. `desk-env drift` names each such directory `NODEV` after the row is written; propose its
+  parks. A root item that filters to the app (`--filter <its package name or path>`) already serves
+  it, and the root itself is never a missing app. `desk-env drift` names each such directory `NODEV` after the row is written; propose its
   item on every run, a re-run's included, and the user confirms or declines each.
 - **Related tests.** For each Unit tests item, the same runner in its related form, in the same
   directory: Vitest `vitest related --run --passWithNoTests`, Jest `jest --findRelatedTests
