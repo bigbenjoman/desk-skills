@@ -246,8 +246,11 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, in the
   ticket's worktree at the PR's head, detached so a pass that ends leaves it running, with its output
   and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
-  `--failed`. A command that fails, or a check still red after the re-run, goes to the person with the
-  command, its exit code and its last lines; it is not run again at that head. A worker never runs it,
+  `--failed`. A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
+  `syncFix`, one of the fix tries): its worker merges the base, fixes what the merge breaks in a commit
+  of its own and pushes, and the pass builds the new head. A command that fails at a head up to date
+  with its base, or a check still red after the re-run, goes to the person with the command, its exit
+  code and its last lines; it is not run again at that head. A worker never runs it,
   and never parks on it: a worker whose park asks only for that build (every clause names the check or
   its command, or lists the steps it did not reach), while its open draft is red on those checks alone, is recorded done at harvest
   (`undraft.mjs` `buildPark`), so this step builds it. A park that asks anything else stays a park.
