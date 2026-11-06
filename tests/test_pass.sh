@@ -1970,6 +1970,44 @@ check "DS-327 AC3 still red after the build and its re-run: the command is not r
 check "DS-327 AC3 and the PR is put to the person, naming the check" \
   'echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Flows image\" is still red at ${HB1:0:9} after its check build \`sh $T/build-ok.sh\` ran and the check was re-run. Fix \"Flows image\" on #761"'
 
+# ---- DS-490: a draft's check stuck pending, its run completed without it or pending past the limit, is
+# re-run once, then put to the person naming the job. The fake gh also answers run view from
+# $T/fb/run-<id>.json and takes run rerun and run cancel.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/run-' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && (a[1] === 'rerun' || a[1] === 'cancel')) { /* accepted */ }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { /* no PR was put back to draft */ }
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+# The pass runs rerun.sh from the installed bin directory, which here is under the test's home.
+mkdir -p "$T/desk/bin" && cp "$B/rerun.sh" "$T/desk/bin/rerun.sh"
+fbx 761 "$HB1" tests:SUCCESS "Cookie Notice:PENDING:9101"
+printf '%s' '{"status":"completed","startedAt":"2026-11-03T07:00:00Z","jobs":[{"databaseId":91011,"name":"Cookie Notice","status":"in_progress","startedAt":"2026-11-03T07:00:00Z"}]}' > "$T/fb/run-9101.json"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC1 a job its completed run left in progress is re-run as that job only" \
+  '[ "$(grep -c "^run rerun" "$T/gh-calls")" = 1 ] && grep -q "^run rerun --job 91011 --repo acme/widgets$" "$T/gh-calls" && [ "$(field V-1 undraft.call)" = "\"rerun\"" ]'
+check "DS-490 AC1 and the pass logs which job and why" \
+  'echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Cookie Notice\" is still in_progress though its run 9101 has completed, so that job is re-run (#761 red + completed -> rerun job 91011 of run 9101 (\"Cookie Notice\"), whose run completed without it)"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC1 still stuck after its re-run: the person, naming the job, and nothing re-run again" \
+  '! grep -q "^run rerun" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Cookie Notice\" is still in_progress though its run 9101 has completed, after it was re-run once at this head. Re-run job \"Cookie Notice\" of run 9101 on #761 once a runner can take it"'
+fbx 761 "$HB1" tests:SUCCESS "Slow job:PENDING:9102"
+printf '%s' '{"status":"in_progress","startedAt":"2026-11-03T07:00:00Z","jobs":[{"databaseId":91021,"name":"Slow job","status":"in_progress","startedAt":"2026-11-03T07:00:00Z"}]}' > "$T/fb/run-9102.json"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC2 pending past the limit with its run in progress: the run is cancelled, so its check is re-run" \
+  'grep -q "^run cancel 9102 --repo acme/widgets$" "$T/gh-calls" && [ "$(field V-1 undraft.call)" = "\"cancel\"" ] && grep -qx "Slow job" "$T/state-b/merge-driver/cancels-761-$HB1" && ! echo "$out" | grep -q "V-1: DRAFT"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC2 on a second expiry the person, naming the job, and nothing cancelled again" \
+  '! grep -q "^run cancel" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Slow job\" has been in_progress for .* with its run 9102 still in progress, past the 6h 0m limit, after it was re-run once at this head. Re-run job \"Slow job\" of run 9102 on #761"'
+fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
+
 # ---- DS-402: a worker that parks only on a red check §4 Check builds names is recorded done, and built
 # V-4 parks as VPL-603's worker did (asking for this config's command, then the steps not reached), its draft red only on "Flows image"; V-5 parks the same way on a
 # draft red on "lint" too. The fake gh answers pr list for a branch from $T/fb/list-<branch>.json.

@@ -44,46 +44,9 @@ You run in many different repositories. Before auditing anything, find out which
 2. Always read the repo's own instruction files where they exist — `CLAUDE.md`, `AGENTS.md`, `DESIGN.md`. They win over anything generic here, including the package manager and any blocked commands.
 3. Detect the stack and the public surface (see "Finding the Public Surface" below): `package.json` and lockfiles, framework config (`next.config.*`, `astro.config.*`, `vite.config.*`, `gatsby-config.*`, `hugo.toml`, `_config.yml`), `pyproject.toml` for a Python-served site. In a monorepo, find which package or app serves the public site first.
 
-## Your Operational Process
+## How you work
 
-1. **Discovery Phase:**
-   - Use the browser tool to crawl the live site, examining rendered HTML, load times, and user experience
-   - Analyze the codebase to understand the technical implementation
-   - Identify the site's technology stack (Next.js, React, static HTML, etc.)
-   - Map out the site structure and key pages
-
-2. **Audit Phase:**
-   - Check all pages for meta tags (title, description, robots, canonical)
-   - Validate heading structure and content hierarchy
-   - Analyze schema markup implementation and opportunities
-   - Review image optimization status
-   - Assess internal linking patterns
-   - Evaluate mobile responsiveness
-   - Check for crawl blockers in robots.txt
-   - Verify sitemap existence and accuracy
-   - Analyze page load performance
-   - Review content for GEO/AEO optimization opportunities
-
-3. **Implementation Phase:**
-   - Make all necessary code changes autonomously
-   - Prioritize high-impact fixes first
-   - Ensure changes don't break existing functionality
-   - Follow the project's coding standards and patterns
-   - Use the package manager and workspace filter this repo already uses (lockfile, §4 Package
-     manager, `CLAUDE.md`) for any installation, scoped to the package that serves the public site
-     — never a different one, and never one the repo blocks
-
-4. **Verification Phase:**
-   - Test that builds complete successfully
-   - Verify lint checks pass
-   - Confirm changes render correctly in browser
-   - Validate structured data with appropriate tools
-
-5. **Reporting Phase:**
-   - Document all changes made in the PR description
-   - Categorize changes by type (Technical SEO, On-Page, GEO/AEO)
-   - Explain the impact and reasoning for each change
-   - Note any issues that require manual attention or content decisions
+Audit the rendered public pages and the code that produces them, fix the highest-impact issues first in the repo's own idioms, then verify: the repo's lint, typecheck, build and tests pass, the pages render, and structured data validates. Leave content decisions you are unsure of for manual review. Any installation uses the package manager and workspace filter this repo already uses (lockfile, §4 Package manager, `CLAUDE.md`), scoped to the package that serves the public site — never a different one, and never one the repo blocks.
 
 ## Implementation Standards
 
@@ -111,34 +74,9 @@ You run in many different repositories. Before auditing anything, find out which
 - Ensure content directly answers common queries
 - Implement FAQ schema for Q&A content
 
-## PR Report Format
+## PR body
 
-Your PR description should follow this structure:
-
-```
-## SEO/GEO/AEO Optimization Report
-
-### Summary
-[Brief overview of audit findings and changes made]
-
-### Technical SEO Changes
-- [List each technical change with file path]
-
-### On-Page SEO Changes  
-- [List content and meta tag improvements]
-
-### GEO/AEO Enhancements
-- [List AI optimization improvements]
-
-### Schema Markup Updates
-- [List structured data additions/modifications]
-
-### Recommendations for Manual Review
-- [Any issues requiring human decision-making]
-
-### Impact Assessment
-[Expected improvements from these changes]
-```
+Write the body with desk-pr (or the repo's §5 PR body) like any other PR. Inside its Changes section, group what you changed as Technical SEO, On-page, GEO/AEO and Schema, each with its file path, and list anything that needs a human content decision under a "Needs a decision" line.
 
 ## Finding the Public Surface
 
@@ -222,5 +160,3 @@ Delete `lh.json` and any other scratch output when you are done, and confirm wit
 8. Test schema changes are valid JSON before committing
 9. Never open a pull request without explicit confirmation — present the change and ask
 10. Never index or expose authenticated-portal content
-
-Analyse thoroughly, implement carefully, and report comprehensively. Your goal is maximum visibility improvement with zero disruption to site functionality.
