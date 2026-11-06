@@ -76,6 +76,13 @@
 //                                             edits: --name <supplier>:<key>=<name>, --drop <supplier>:<key>,
 //                                             --actions-budget <usd>, --credit <profile>=<usd>@<YYYY-MM-DD>
 //   node desk-env.mjs costs show [--json]     print the saved cost sources; a missing file is "no cost sources"
+//   node desk-env.mjs logins list [--json]    print the Claude and Codex logins in ~/.config/desk/subscriptions.md,
+//                                             each with its folder and rule; a missing file is ~/.claude and ~/.codex
+//   node desk-env.mjs logins check [--json]   as list, with each login's sign-in, account and plan, the signed-in
+//                                             folders under ~/.claude-logins and ~/.codex-logins it does not list,
+//                                             and the usable ones (logins.mjs)
+//   node desk-env.mjs logins set <claude|codex> <name> <in rotation|standby|off>
+//                                             change one login's rule, keeping the previous file as .bak
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
@@ -489,6 +496,9 @@ export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
 // reads as no cost sources. costs.mjs is imported only by the `costs` command, so the scripts that
 // copy this file on its own need nothing new.
 export const costsPath = () => expandHome(process.env.DESK_COSTS ?? join(deskConfigRoot(), 'costs.md'));
+// The Claude and Codex logins desk may use, one file per computer beside costs.md: read and change
+// it with logins.mjs, which only the `logins` command imports. A missing file is the default logins.
+export const subscriptionsPath = () => expandHome(process.env.DESK_SUBSCRIPTIONS ?? join(deskConfigRoot(), 'subscriptions.md'));
 // Every configured repo: its config file and §0 GitHub repo (the slug's, where the row is unset).
 export function configuredRepos(root = deskConfigRoot()) {
   let slugs = [];
@@ -1721,8 +1731,37 @@ if (isMain) {
         console.log(writeWithBackup(path, C.renderCosts(proposal)));
         break;
       }
+      case 'logins': {
+        // The subcommand is always the first word, so a worker's `logins set` deny rule holds.
+        const [sub, ...rest] = args;
+        const L = await import('./logins.mjs');
+        const path = subscriptionsPath();
+        const subs = L.readSubscriptions(path);
+        const json = rest.includes('--json');
+        if (sub === 'list') {
+          if (json) console.log(JSON.stringify({ file: path, exists: subs.exists, errors: subs.errors, logins: subs.logins.map(L.loginJson) }, null, 2));
+          else for (const l of L.listLines(subs, path)) console.log(l);
+          break;
+        }
+        if (sub === 'check') {
+          const r = L.checkLogins(subs);
+          if (json) console.log(JSON.stringify({ file: path, exists: r.exists, errors: r.errors, logins: r.logins.map(L.loginJson), usable: r.usable.map((l) => `${l.tool}:${l.name}`) }, null, 2));
+          else for (const l of L.checkLines(r, path)) console.log(l);
+          break;
+        }
+        if (sub === 'set' && rest.length >= 3) {
+          const [tool, name, ...rule] = rest;
+          const r = L.setRule(subs, { tool, name, rule: rule.join(' '), check: () => L.checkLogins(subs) });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`${tool} ${name}: ${r.login.rule}`);
+          break;
+        }
+        console.error(`usage: desk-env.mjs logins list|check [--json] | set <claude|codex> <name> <${L.RULES.join('|')}>`);
+        process.exit(2);
+        break;
+      }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs');
+        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
         process.exit(2);
     }
   } catch (e) {
