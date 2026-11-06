@@ -15,6 +15,8 @@
 //   build  every red check is one §4 Check builds names, and no build has run at this head: the pass
 //           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
+//   sync    that build failed at a head behind its base (cfg.behind): the pass sends it to a fix worker
+//           that merges the base (fix-tries.mjs syncFix), and to the person once no try is left
 //   evidence  screenshot cells are left and §4 Evidence workflow names the workflow that fills them:
 //           the pass starts it, once per head (evidence.mjs), and the next pass reads the body again
 //   evidence-failed  that run failed, or filled no cell: the pass groups the same failure across PRs
@@ -48,7 +50,7 @@
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { RERUNS_MAX, reviewFindings } from './fix-tries.mjs';
+import { RERUNS_MAX, reviewFindings, syncSaid } from './fix-tries.mjs';
 import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
@@ -270,9 +272,10 @@ function stuckCall(gate, checks, cfg, n) {
 // A red gate whose every failing check §4 Check builds names (cfg.builds, [{ name, command }]), while
 // §3 ci-rerun is yes: the build that clears it, once per head (cfg.built(head), check-build.mjs
 // buildRecord). `build` starts it, `wait` while it or another check runs, `rebuilt` re-runs the checks with --failed once
-// it succeeded, and `person` when it failed, its re-run was refused, or the checks are still red after
-// it. Anything else is null, handled as any red check.
-function buildCall(gate, cfg, n, head) {
+// it succeeded, `sync` when it failed at a head behind its base (cfg.behind(head) -> the base's name, or
+// null when the head has it or git cannot say), and `person` when it failed at a head up to date with its base,
+// its re-run was refused, or the checks are still red after it. Anything else is null, handled as any red check.
+function buildCall(gate, cfg, n, head, t) {
   const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
   const failing = gate.failing;
   if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
@@ -287,7 +290,10 @@ function buildCall(gate, cfg, n, head) {
   if (rec.state === 'running') return { call: 'wait', why: `its check build \`${command}\` is running at ${at}, then ${checks} is re-run` };
   if (rec.code !== 0) {
     const exit = rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`;
-    return { call: 'person', why: `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}` };
+    const failed = `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`;
+    const base = cfg.behind?.(head) ?? null;
+    if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base };
+    return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}` };
   }
   if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, checks: names, runs };
   if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}` };
@@ -382,7 +388,7 @@ export function personHold(t, n, redrafts = []) {
 // the head, as verdictCarries does). cfg: { spine, perm, approved, localReview, clean, handle, required,
 // advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
 // cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
-// check build recorded at that head, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
+// check build recorded at that head, behind(head) -> the base's name when the head is behind it, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
 // evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
 // the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
 // pr-conflict-unreviewed and -reviewed), untriggered(base, head, branch) -> gate.mjs untriggeredChecks's map
@@ -448,7 +454,7 @@ export function undraftCall(t, pr, cfg) {
   if (red) {
     const rr = rerunCall(gate, cfg);
     if (rr) return (rr.call === 'wait' && stuck()) || rr;
-    const bc = buildCall(gate, cfg, n, pr.head);
+    const bc = buildCall(gate, cfg, n, pr.head, t);
     if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
   const codeRed = gate.failing.filter((f) => f.name !== VERDICT_CHECK);
