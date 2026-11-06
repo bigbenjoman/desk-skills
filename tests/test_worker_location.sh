@@ -85,7 +85,7 @@ config clod; plan
 check "a value that is neither local nor cloud refuses the plan, naming the row" '[ "$rc" != 0 ] && echo "$out" | grep -q "Worker location\" is \"clod\""'
 
 check "AC5 the config template has the row, recommended local"              'grep -qE "^\| Worker location \| \`local\` \| \`TODO\` " "$SRC/desk-config.md"'
-check "AC5 desk-setup asks it in the §3b rounds, recommending local"        'grep -q "worker models, worker location," "$SRC/skills/desk-setup/SKILL.md" && grep -q "For worker location,$" "$SRC/skills/desk-setup/SKILL.md" && grep -q "^Recommended is \`local\`" "$SRC/skills/desk-setup/SKILL.md"'
+check "AC5 desk-setup asks it in the §3b rounds, recommending local"        'grep -q "every row the config template.s §3b table holds" "$SRC/skills/desk-setup/SKILL.md" && grep -q "For worker location,$" "$SRC/skills/desk-setup/SKILL.md" && grep -q "^Recommended is \`local\`" "$SRC/skills/desk-setup/SKILL.md"'
 
 echo; [ "$FAIL" = 0 ] && echo "worker location: $PASS checks passed" || echo "worker location: $FAIL failed"
 exit "$FAIL"
