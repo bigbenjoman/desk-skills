@@ -26,7 +26,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, verdictCarries, restsOnCarries, restsOn, pairs, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { latestReview, verdictAt, verdictAtHead, verdictCarries, restsOnCarries, restsOn, carryComment, pairs, DESK_REVIEW_CLEAN } from './undraft.mjs';
 import { LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
@@ -73,10 +73,10 @@ export function readThreads(payload, { handle, clean }) {
 // Whether §4 Local review command names a review, so that a merge waits on its clean verdict.
 export const localReviewSet = rowSet;
 
-// Whether a clean review stands at the PR's head, for a merge: { head, clean, carried, range, why,
-// settle, person }. A clean verdict for an older head counts where it still holds at the head
+// Whether a clean review stands at the PR's head, for a merge: { head, clean, carried, range, said,
+// why, settle, person }. A clean verdict for an older head counts where it still holds at the head
 // (carry(sha, body), as verdictCarries or restsOnCarries says; `range` is the base range the latter
-// checked). Not clean, `settle` is a review at the head that says so, and
+// checked, and `said` the comment that tells the PR). Not clean, `settle` is a review at the head that says so, and
 // `person` a row only the person can set; with neither, a review worker has what it needs: there is
 // no verdict, a stale one, or one the gate cannot read.
 export function readVerdict(payload, { handle, clean, carry }) {
@@ -86,7 +86,7 @@ export function readVerdict(payload, { handle, clean, carry }) {
   const row = String(clean ?? '').trim();
   if (!rowSet(row)) return { head, clean: false, carried: null, why: '§4 Clean review verdict is not set, so no review can be read as clean', settle: false, person: true };
   const { v, carried, range } = verdictAtHead(pr.reviews?.nodes ?? [], handle, head, row, carry);
-  if (v.clean) return { head, clean: true, carried, range, why: null, settle: false, person: false };
+  if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false };
   // An unclean verdict carried from an older head is not at this one: reviewing the head posts it there.
   return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false };
 }
@@ -120,8 +120,7 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
     // Fetched only for a verdict at an older head, as the pass does before it asks the same thing, and
     // carried as the pass carries it: under the review-reuse lever, only while what it rests on holds.
     const { leverOn } = await import('./desk-env.mjs');
-    let reuse = false;
-    try { reuse = leverOn('review-reuse'); } catch { /* no config: the lever is off */ }
+    const reuse = leverOn('review-reuse');
     const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && (reuse
       ? restsOnCarries({ from: sha, head, base: `origin/${base}`, files: restsOn(body), git })
       : verdictCarries({ from: sha, head, base: `origin/${base}`, git }));

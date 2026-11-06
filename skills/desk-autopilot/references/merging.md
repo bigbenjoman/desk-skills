@@ -131,7 +131,9 @@ instead: after a rebase or any merge of the base, a verdict holds at the new hea
 own diff is unchanged and the base changed none of the files its `rests-on` line names, no dependency
 manifest or lockfile and no repo configuration (`undraft.mjs` `restsOnCarries`). The undraft comment
 and the driver's log name the base range checked, and say the head itself was not reviewed. Otherwise
-the head is reviewed again, as with no verdict.
+the head is reviewed again, as with no verdict. A repo running desk-gate's `desk-review verdict` check
+gets no saving from a carry, as with the carry above: that check reads only a verdict posted on the
+head, so a head it holds red is reviewed again.
 
 The driver does not wait on GitHub's review decision: desk opens PRs from the person's own account,
 and GitHub never lets an author approve their own PR. A person's approval holds a PR in two cases only.

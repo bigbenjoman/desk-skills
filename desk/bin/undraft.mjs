@@ -53,6 +53,7 @@
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
 import { RERUNS_MAX, reviewFindings, syncSaid } from './fix-tries.mjs';
 import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
+import { isLockfile, isConfig } from './test-scope.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
@@ -216,20 +217,23 @@ export function restsOn(body) {
 
 // Whether a path is a dependency manifest, a lockfile or repo configuration, which every review rests
 // on whatever its seats read: a change to one can change what the code does without touching it.
-const MANIFESTS = [/^package\.json$/, /(?:^|[.-])lock(?:b|file)?(?:\.|$)/i,/^requirements.*\.txt$/, /^pyproject\.toml$/, /^go\.(?:mod|sum)$/, /^Cargo\./, /^tsconfig/];
+// test-scope.mjs owns lockfiles and test or build config, any root file but documentation included;
+// these are the manifests and build files it does not name, wherever they sit.
+const MANIFESTS = /^(?:requirements.*\.txt|go\.mod|Cargo\.toml|Gemfile|Pipfile|composer\.json|pom\.xml|build\.gradle(?:\.kts)?|Makefile|Dockerfile.*|(?:docker-)?compose(?:\.[^.]+)?\.ya?ml|vercel\.json|.+\.lockb?)$/;
 export function restsOnAlways(path) {
-  const parts = String(path).split('/');
+  const p = String(path);
+  const parts = p.split('/');
   const name = parts.at(-1);
-  // Anything under a top-level dot directory (.github/**, .claude/**) or a root dotfile.
-  if (parts[0].startsWith('.')) return true;
+  // Anything under a top-level dot directory (.github/**, .claude/**), or a dotfile anywhere.
+  if (parts[0].startsWith('.') || name.startsWith('.')) return true;
   if (parts[0] === 'scripts' && parts[1] === 'desk') return true;
-  return MANIFESTS.some((re) => re.test(name));
+  return isLockfile(p) || isConfig(p) || MANIFESTS.test(name);
 }
 
 // Whether a review posted on `from` still holds at `head`, after a rebase or any merge of the base:
 // the PR's own diff against the base is unchanged, and the base moved past none of the files the
-// review rests on (`files`, restsOn's list, plus the PR's own files and every restsOnAlways path).
-// Returns { range } naming the base range checked, or null whenever any of that fails or git cannot
+// review rests on (`files`, restsOn's list, and every restsOnAlways path). A file of the PR's own the
+// base moved fails the first test: its blob before the PR's change differs. Returns { range } naming the base range checked, or null whenever any of that fails or git cannot
 // say. git(args) runs git and returns { ok, out }.
 export function restsOnCarries({ from, head, base, files, git }) {
   if (!from || !head || !base || !Array.isArray(files)) return null;
@@ -246,14 +250,19 @@ export function restsOnCarries({ from, head, base, files, git }) {
   const before = own(was.out, at.out);
   const after = own(now.out, tip.out);
   if (!before.ok || !after.ok || before.out !== after.out) return null;
-  const names = (a, b) => { const r = git(['diff', '--no-renames', '--name-only', a, b]); return r.ok ? r.out.split('\n').filter(Boolean) : null; };
-  const ownFiles = names(was.out, at.out);
-  const moved = names(was.out, now.out);
-  if (!ownFiles || !moved) return null;
-  const rests = new Set([...files, ...ownFiles]);
-  if (moved.some((f) => rests.has(f) || restsOnAlways(f))) return null;
+  // NUL-separated, as git would otherwise quote a non-ASCII path and it would match no recorded file.
+  const moved = git(['diff', '-z', '--no-renames', '--name-only', was.out, now.out]);
+  if (!moved.ok) return null;
+  const rests = new Set(files);
+  if (moved.out.split('\0').filter(Boolean).some((f) => rests.has(f) || restsOnAlways(f))) return null;
   return { range: `${was.out.slice(0, 12)}..${now.out.slice(0, 12)}` };
 }
+
+const short = (sha) => `\`${String(sha ?? '').slice(0, 12)}\``;
+// What a carry under the review-reuse lever tells the PR, so that nothing reads as a review of the head.
+const carriedTo = (head, range) => `carried to this head (${short(head)}), which no review has read: the PR's own diff is unchanged, and the base range \`${range}\` changed none of the files the review rests on, no dependency manifest, lockfile or configuration file`;
+// The merge driver's comment on such a carry, for a PR that left draft before its head moved.
+export const carryComment = (from, head, range) => `The review posted on ${short(from)} is ${carriedTo(head, range)}.`;
 
 // The comment on a PR the pass took out of draft: why, and the verdict it read, quoted (a plain
 // review's line stating the §4 value, as a string). `carried` is the commit the verdict was posted on
@@ -261,9 +270,8 @@ export function restsOnCarries({ from, head, base, files, git }) {
 export function undraftComment(verdict, head, clean, carried = null, range = null) {
   const line = typeof verdict === 'string' ? verdict : Object.entries(verdict ?? {}).map(([k, x]) => `${k}=${x}`).join(' ');
   const what = typeof verdict === 'string' ? 'review' : 'desk-review verdict';
-  const short = (sha) => `\`${String(sha ?? '').slice(0, 12)}\``;
   if (carried && range) {
-    return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it is carried to this head (${short(head)}), which no review has read: the PR's own diff is unchanged, and the base range \`${range}\` changed none of the files the review rests on, no dependency manifest, lockfile or configuration file.\n\n> \`${line}\``;
+    return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it is ${carriedTo(head, range)}.\n\n> \`${line}\``;
   }
   if (carried) {
     return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it holds on this head (${short(head)}): every commit since is a clean merge of the base.\n\n> \`${line}\``;

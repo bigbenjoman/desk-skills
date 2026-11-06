@@ -798,7 +798,7 @@ check "DS-433: a clean verdict carried across a clean merge of the base merges, 
 rvloop
 check "DS-433: one its own commits moved past is held for a review" '! grep -q "^212 " "$T/merges.log" && echo "$out" | grep -q "#212 green at ${RC:0:9}, HELD with no clean review at its head: its review verdict is for ${RA:0:9}"'
 
-# DS-448: with the review-reuse lever on, the same clean merge carries only while the base moved none
+# With the review-reuse lever on, the same clean merge carries only while the base moved none
 # of the files the review rests on, and the PR says so once. moved.txt is what the base changed.
 { cat "$T/config-rv.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `review-reuse` |\n'; } > "$T/config-rv-reuse.md"
 vp 211 "$RA" "$CLEAN" '<!-- desk-review:rests-on v=1 files=["own.txt"] -->'

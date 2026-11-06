@@ -1760,7 +1760,7 @@ check "DS-316 AC2 the review worker's task is to review the head and post it, ch
 check "DS-316 AC4 the fix worker's briefing names the failing check, its run and how to read its log" \
   'grep -q "^- tests: https://github.com/acme/widgets/actions/runs/953$" "$T/state-c/briefings/C-3.md" && grep -q "gh run view <run id> --log-failed" "$T/state-c/briefings/C-3.md"'
 
-# ---- DS-448: with the review-reuse lever on, the carry rests on the files the review recorded. Both PRs
+# ---- with the review-reuse lever on, the carry rests on the files the review recorded. Both PRs
 # moved by the same clean merge of main, which changed c.txt: R-1's review rests on b.txt, R-2's on c.txt.
 { cat "$T/config-c.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `review-reuse` |\n'; } > "$T/config-cr.md"
 export DESK_CONFIG="$T/config-cr.md" DESK_QUEUE="$T/queue-cr.json" DESK_AUTOPILOT_STATE="$T/state-cr"

@@ -738,7 +738,7 @@ EOF_RESOLVE
       log "#$n its clean review at ${carried_from:0:9} is carried to ${sha:0:9}, not reviewed there: its own diff is unchanged, and $BASE_BRANCH's range $carried_range changed none of the files it rests on"
       # The PR says so once per head; the pass records one it said on leaving draft.
       if [ ! -e "$SD/carried-$n-$sha" ]; then
-        if gh pr comment "$n" --repo "$REPO" --body "The review posted on \`${carried_from:0:12}\` is carried to this head (\`${sha:0:12}\`), which no review has read: the PR's own diff is unchanged, and the base range \`$carried_range\` changed none of the files the review rests on, no dependency manifest, lockfile or configuration file." >/dev/null 2>&1; then
+        if gh pr comment "$n" --repo "$REPO" --body "$(printf '%s' "$verdict" | jq -r .said)" >/dev/null 2>&1; then
           touch "$SD/carried-$n-$sha"
         else
           log "#$n could not say on the PR that its review is carried — not merging it this loop"; return 1

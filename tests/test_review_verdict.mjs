@@ -193,7 +193,7 @@ t('fallback: the verdict line is unchanged', marker(fellBack), marker(base()))
 t('fallback: the heading names the seats', heading(fellBack).endsWith('refuted cross-vendor · 2 fallback seats (correctness, requirements)'), true)
 t('fallback: it never decides clean', reads(fellBack), true)
 
-// ---- DS-448: the files the review rests on, on a line of their own after the method line
+// ---- the files the review rests on, on a line of their own after the method line
 const rests = base({ rests_on: ['src/b.ts', 'src/a.ts', 'src/b.ts'] })
 t('DS-448 AC1 the rests-on line follows the method line, sorted and once each', render(rests).split('\n').slice(3).join(' | '), '<!-- desk-review:method v=1 fallback=0 --> | <!-- desk-review:rests-on v=1 files=["src/a.ts","src/b.ts"] -->')
 t('DS-448 the verdict line is unchanged', marker(rests), marker(base()))
