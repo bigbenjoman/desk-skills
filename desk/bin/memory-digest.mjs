@@ -18,7 +18,7 @@ export const indexEntries = (text) => String(text).split('\n').map((l) => l.trim
 
 // -> null when the folder or its index is missing or holds no entry, else
 //    { text, entries, kept, cut, bytes }, `bytes` being the kept entries' size, newlines included.
-export function memoryDigest(dir, { cap = DIGEST_CAP } = {}) {
+export function memoryDigest(dir) {
   let index;
   try { index = readFileSync(join(dir, 'MEMORY.md'), 'utf8'); } catch { return null; }
   const all = indexEntries(index);
@@ -27,13 +27,13 @@ export function memoryDigest(dir, { cap = DIGEST_CAP } = {}) {
   let bytes = 0;
   for (const e of all) {
     const b = Buffer.byteLength(e) + 1;
-    if (bytes + b > cap) break;
+    if (bytes + b > DIGEST_CAP) break;
     kept.push(e);
     bytes += b;
   }
   const cut = all.length - kept.length;
   const said = cut
-    ? `${kept.length} of its ${all.length} entries, cut at ${cap} bytes: ${cut} ${cut === 1 ? 'entry was' : 'entries were'} cut.`
+    ? `${kept.length} of its ${all.length} entries, cut at ${DIGEST_CAP} bytes: ${cut} ${cut === 1 ? 'entry was' : 'entries were'} cut.`
     : `all ${all.length} of its entries: nothing was cut.`;
   const text = `# Memory digest
 
