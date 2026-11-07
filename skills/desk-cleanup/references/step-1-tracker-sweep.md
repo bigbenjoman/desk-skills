@@ -49,4 +49,6 @@ them with that list as the record, `ask` waits for agreement, `no` or `TODO` rep
 changes nothing. The comment posts under §3 `jira-comment`, following §5 Ticket comment. Any other
 close is `jira-close`, a decision, and is never proposed from a sweep. Each ticket moved to Done then
 gets `node ~/.claude/desk/bin/closeout.mjs <TICKET> --pr <n>`, so a batch still holding it parked
-records it done at its next pass (`desk-ticket` Stage 7); a ticket in no batch prints nothing.
+records it done at its next pass (`desk-ticket` Stage 7); a ticket in no batch prints nothing. Then
+`node ~/.claude/desk/bin/linked-issues.mjs <TICKET>` closes the GitHub issues its web links name
+once every ticket linking each is done (§3 `gh-close-linked-issue`); relay what it prints.
