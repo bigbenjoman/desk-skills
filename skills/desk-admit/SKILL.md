@@ -69,7 +69,8 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 
 It triages each ticket afresh, which takes a minute or two each, as many at once as config §3b
 "Triage concurrency" allows, and admits each one as soon as it and its blockers in the call are
-triaged: give the call your longest foreground timeout, and if it moves to the background, wait for
+triaged (at one at a time, a ticket behind another in the call waits for the last triage): give the
+call your longest foreground timeout, and if it moves to the background, wait for
 its notification rather than running it again. Exit 0: every ticket was admitted
 or was already where it belongs (`<TICKET> is already in batch <B> (<state>)`, its epic's feature
 batch included: ask nothing about it), any epic had its feature batch started, and any other epic is one to

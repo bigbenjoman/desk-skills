@@ -613,19 +613,23 @@ function joinFeature(key, epic, { by }) {
   return { batch: b, base, held, outside: holds.outside, merge: holds.merge, rec: t.rec, took: logTaken(key, t.rec, b.state) };
 }
 
-// The checks that need no triage run first, in the order given. Then up to triageConcurrency() triages
-// run at once, a ticket's Jira blockers dispatched before it, and each ticket is placed as soon as its
-// triage is done and every blocker its record names in this call is placed or refused. A triage at a
-// usage limit starts no more: those in flight finish, and the rest are named to admit again.
+// Up to triageConcurrency() triages run at once, a ticket's Jira blockers dispatched before it, and each
+// ticket is placed as soon as its triage is done and every blocker its record names in this call is
+// placed or refused. One at a time keeps a run in sequence: triages in the order given, and a ticket
+// behind another in this call placed after the last triage, so only a free ticket is placed early. A
+// triage at a usage limit starts no more: those in flight finish, and the rest are named to admit again.
+// Whichever finishes first, the lines read in the order given, then what placement said.
 async function byHand(keys, { state, by, front, now }) {
   const lines = [];
+  const early = new Map(keys.map((key) => [key, []]));
+  const late = [];
   const admitted = [];
   const refused = [];
   // Epics to plan as a feature batch beside the standing batch in a session (the /desk-autopilot epic
   // flow), and epics whose feature batch was started here, their plans waiting in needs-you.
   const plan = [];
   const epics = [];
-  const refuse = (key, text) => { refused.push(key); lines.push(`not admitted ${key}: ${text}`); };
+  const refuse = (key, text, to = early.get(key)) => { refused.push(key); to.push(`not admitted ${key}: ${text}`); };
   const done = (extra = {}) => ({ ran: true, lines, admitted, refused, plan, epics, ...extra });
   // Starting a standing batch has no plan approval, so it needs what standing intake needs.
   const mayStart = E.permission('autopilot-workers') === 'yes';
@@ -650,14 +654,22 @@ async function byHand(keys, { state, by, front, now }) {
   const links = {};
   for (const key of keys) {
     if (!E.SAFE_ID.test(key)) { refuse(key, 'not a ticket id'); continue; }
-    if (q?.tickets?.[key]) { lines.push(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`); continue; }
+    if (q?.tickets?.[key]) { early.get(key).push(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`); continue; }
     const jira = readJira(key);
-    if (jira.done) { lines.push(`${key} is already done in Jira (${jira.done}): nothing triaged or admitted`); continue; }
-    const away = belongsElsewhere(key, null, E.queueFile());
-    if (away?.held && placedThere(key, away.held, q)) { lines.push(`${key} is already in batch ${away.batch} (${away.held.ticket})`); continue; }
-    if (away) { refuse(key, away.why); continue; }
+    if (jira.done) { early.get(key).push(`${key} is already done in Jira (${jira.done}): nothing triaged or admitted`); continue; }
     links[key] = { blockers: jira.blockers };
   }
+  // Whether `key` needs no triage, being in another batch: asked when its turn comes, since an epic
+  // started in this call may have just taken it into its feature batch.
+  const inBatch = (key, held, batch) => held && placedThere(key, held, q) && `${key} is already in batch ${batch} (${held.ticket})`;
+  const taken = (key) => {
+    const away = belongsElsewhere(key, null, E.queueFile());
+    if (!away) return false;
+    const there = inBatch(key, away.held, away.batch);
+    if (there) early.get(key).push(there);
+    else refuse(key, away.why);
+    return true;
+  };
 
   // Tickets of this call not yet placed or refused: what a triaged ticket's blockers wait for.
   const unsettled = new Set(Object.keys(links));
@@ -677,7 +689,7 @@ async function byHand(keys, { state, by, front, now }) {
       // Without a standing grant for headless workers, a session plans it with the person.
       if (!mayStart) {
         plan.push(key);
-        lines.push(`plan ${key} as a feature batch beside the standing batch: /desk-autopilot ${key}`);
+        early.get(key).push(`plan ${key} as a feature batch beside the standing batch: /desk-autopilot ${key}`);
         return;
       }
       if (limit) return putOff(key);
@@ -687,7 +699,7 @@ async function byHand(keys, { state, by, front, now }) {
       if (s.why) return refuse(key, `an epic, and its feature batch was not started: ${s.why}${s.limited ? `: run /desk-admit ${key} again once the limit lifts` : ''}`);
       noteEpic(state, key, s, by, now);
       epics.push(key);
-      lines.push(...s.lines);
+      early.get(key).push(...s.lines);
       return;
     }
     // A design no worker can read is snapshotted by the person's session before the admit, never after.
@@ -701,7 +713,10 @@ async function byHand(keys, { state, by, front, now }) {
   const place = (key) => {
     let rec = recs[key];
     let r = placeOne(key, rec, { started, by, now, mayStart });
-    if (r.started) { started = r.started; lines.push(`started standing batch ${started}, handed to the supervisor`); }
+    if (r.started) { started = r.started; late.push(`started standing batch ${started}, handed to the supervisor`); }
+    // An epic started while this ticket was in triage took it into its feature batch.
+    const there = inBatch(key, r.elsewhere?.held, r.elsewhere?.batch);
+    if (there) return late.push(there);
     // A child of an epic whose feature batch is live joins that batch, and so does a ticket whose files
     // are on another running batch's base: the standing queue is untouched.
     let feature = null;
@@ -719,43 +734,43 @@ async function byHand(keys, { state, by, front, now }) {
     }
     const fail = r.unreadable ?? (r.closed && said(r.closed, r.cur)) ?? r.elsewhere?.why ?? r.reasons?.join('; ')
       ?? (r.startFailed && `a standing batch could not be started (${r.startFailed})`) ?? r.admitFailed;
-    if (fail) return refuse(key, fail);
+    if (fail) return refuse(key, fail, late);
     took ??= logTaken(key, rec, state);
     const reg = readIntake(state);
     reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}, by ${by}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}`);
+    late.push(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}`);
     const open = new Set(openBlockers(rec));
     for (const b of r.outside ?? []) if (open.has(b) && !keys.includes(b)) next.add(b);
     if (front) {
       const f = feature ? queueCmdIn(batchEnv(feature), ['front', key]) : queueCmd('front', key);
-      lines.push(f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`);
+      late.push(f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`);
     }
   };
-  const order = blockersFirst(links);
+  const { k, why: fewer } = Object.keys(links).length > 1 ? triageConcurrency() : { k: 1, why: null };
+  if (fewer) lines.push(`triaging one at a time: ${fewer}`);
+  const order = k === 1 ? Object.keys(links) : blockersFirst(links);
+  // Tickets placement has taken, whether it admitted them or not.
+  const tried = new Set();
   // A child waits for its epic in this call too, whose feature batch it joins once that is started.
-  const waits = (k) => [...openBlockers(recs[k]), ...(recs[k].epic?.key ? [recs[k].epic.key] : [])].some((b) => b !== k && unsettled.has(b));
+  const waits = (key) => [...openBlockers(recs[key]), ...(recs[key].epic?.key ? [recs[key].epic.key] : [])]
+    .some((b) => b !== key && (unsettled.has(b) || (k === 1 && tried.has(b))));
+  const settle = (key) => { tried.add(key); place(key); delete recs[key]; unsettled.delete(key); };
   // Places every triaged ticket with nothing in this call left to wait for, in triage order, until
   // none is left; with `all`, once no triage is left to wait for, the rest too, a cycle as found.
   const placeReady = (all = false) => {
-    for (let key; (key = order.find((k) => recs[k] && !waits(k)));) {
-      place(key);
-      delete recs[key];
-      unsettled.delete(key);
-    }
-    if (!all) return;
-    for (const key of blockersFirst(recs)) { place(key); delete recs[key]; unsettled.delete(key); }
+    for (let key; (key = order.find((x) => recs[x] && !waits(x)));) settle(key);
+    if (all) blockersFirst(recs).forEach(settle);
   };
 
-  const { k, why: fewer } = order.length > 1 ? triageConcurrency() : { k: 1, why: null };
-  if (fewer) lines.push(`triaging one at a time: ${fewer}`);
   const toTriage = [...order];
   const inFlight = new Map();
   for (;;) {
     while (!limit && inFlight.size < k && toTriage.length) {
       const key = toTriage.shift();
-      inFlight.set(key, triageLater(key, state).then((t) => [key, t]));
+      if (taken(key)) unsettled.delete(key);
+      else inFlight.set(key, triageLater(key, state).then((t) => [key, t]));
     }
     if (!inFlight.size) break;
     // eslint-disable-next-line no-await-in-loop
@@ -766,9 +781,12 @@ async function byHand(keys, { state, by, front, now }) {
     if (!recs[key]) unsettled.delete(key);
     placeReady();
   }
-  for (const key of toTriage) { refused.push(key); unsettled.delete(key); }
+  const unstarted = toTriage.filter((key) => !taken(key));
+  refused.push(...unstarted);
+  for (const key of toTriage) unsettled.delete(key);
   placeReady(true);
-  const untriaged = [...later, ...toTriage];
+  lines.push(...keys.flatMap((key) => early.get(key)), ...late);
+  const untriaged = [...later, ...unstarted];
   if (untriaged.length) {
     const these = untriaged.join(' ');
     lines.push(`not triaged (usage limit${limit.resets ? `, resets ${limit.resets}` : ''}): ${these}: run /desk-admit ${these} again once the limit lifts`);

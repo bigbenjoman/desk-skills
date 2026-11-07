@@ -543,6 +543,17 @@ rec EP-2 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 1 > "$T/recs/EP-1
 out=$(TRIAGE_K=3 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-2 EP-1 --by ben); rc=$?
 check "DS-506 AC7: an epic and its child in one call: the child joins the epic's feature batch, not the standing one" \
   '[ $rc -eq 0 ] && [ "$(eget EP-1 tickets.EP-2.admitted_by)" = ben ] && [ "$(qget tickets.EP-2)" = undefined ] && grep -q "^admitted EP-2 by ben into feature batch EP-1 " <<< "$out"'
+# A child the epic's own start takes into its feature batch: listed by expand-parent, and named in the call too.
+listed(){ rec "$1" A "\"type\":\"Epic\",\"branch\":\"feat/$1-listed\""; rec "$2" A "\"epic\":{\"key\":\"$1\",\"summary\":\"a feature\"}"; printf '%s\n' "$2" > "$T/children/$1"; rm -f "$T/triage.calls"; }
+listed ER-1 ER-2; out=$(TRIAGE_K=1 config yes '`none`'; admit ER-1 ER-2 --by ben); rc=$?
+check "DS-506 AC7: an epic named before its listed child: the child is already in its batch, exit 0, and not triaged a second time" \
+  '[ $rc -eq 0 ] && grep -qx "ER-2 is already in batch ER-1 (parked)" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(tr "\n" " " < "$T/triage.calls")" = "ER-1 ER-2 " ]'
+listed ES-1 ES-2; out=$(TRIAGE_K=1 config yes '`none`'; admit ES-2 ES-1 --by ben); rc=$?
+check "DS-506 AC7: a listed child named before its epic is said to be there too, exit 0" \
+  '[ $rc -eq 0 ] && grep -qx "ES-2 is already in batch ES-1 (parked)" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(eget ES-1 tickets.ES-2.admitted_by)" = ben ]'
+listed ET-1 ET-2; out=$(TRIAGE_K=3 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit ET-1 ET-2 --by ben); rc=$?
+check "DS-506 AC7: a listed child in triage while its epic starts is said to be there too, exit 0" \
+  '[ $rc -eq 0 ] && grep -qx "ET-2 is already in batch ET-1 (parked)" <<< "$out" && ! grep -q "not admitted" <<< "$out"'
 # A child's second triage, in its epic's feature batch, stops at the usage limit: no triage starts after it.
 rec EP-4 A '"epic":{"key":"EP-1","summary":"a feature"}'; rec EP-5 A; rec EP-6 A; cp "$T/recs/U-1.limit" "$T/recs/EP-4.batchlimit"
 rm -f "$T/triage.calls"; out=$(TRIAGE_K=1 config yes '`none`'; admit EP-4 EP-5 EP-6 --by ben); rc=$?
@@ -559,6 +570,11 @@ rec EQ-3 A; rec EQ-4 A
 rm -f "$T/triage.calls"; out=$(TRIAGE_K=1 config yes '`none`'; admit EQ-1 EQ-3 EQ-4 --by ben); rc=$?
 check "DS-506 AC4: a usage limit in an epic's child triage starts no more triages, and the epic is named to admit again" \
   '[ $rc -eq 11 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "EQ-1 EQ-2 " ] && [ ! -e "$EB/EQ-1" ] && grep -q "^not admitted EQ-1: an epic, and its feature batch was not started: child EQ-2 could not be triaged (.*weekly usage limit.*); batch EQ-1 discarded: run /desk-admit EQ-1 again once the limit lifts$" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EQ-3 EQ-4: run /desk-admit EQ-3 EQ-4 again once the limit lifts" <<< "$out"'
+# Past a usage limit, a ticket another batch holds is still said to be there, not named to triage again.
+rec EQ-5 A; rec EQ-6 A; cp "$T/recs/U-1.limit" "$T/recs/EQ-5.limit"
+out=$(TRIAGE_K=1 config yes '`none`'; admit EQ-5 EP-3 EQ-6 --by ben); rc=$?
+check "DS-506 AC4: after a usage limit, a ticket in another batch is told as ever, and only the rest are named" \
+  '[ $rc -eq 11 ] && grep -q "^not admitted EP-3: EP-3 is in batch EP-1" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EQ-6: run /desk-admit EQ-6 again once the limit lifts" <<< "$out"'
 config yes '`none`'; rm -f "$T/recs/EP-1.sleep" "$T/recs/EP-7.sleep"
 config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-19 A '"summary":"the third epic child"'; printf 'E-19\n' > "$T/children/E-9"
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
@@ -942,11 +958,20 @@ rec OA A '"blockers":[{"key":"OC","category":"new"}]'; rec OB A; rec OC A
 pool ''; out=$(admit OA OB OC --by ben); rc=$?
 check "DS-506 AC6: at Triage concurrency 1, triages run one at a time in the order given" '[ "$(most)" = 1 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "OA OB OC " ]'
 check "DS-506 AC6: and the output is today's" '[ $rc -eq 0 ] && [ "$out" = "$(printf "admitted OB by ben into batch b1 (lane A, size S)\nadmitted OC by ben into batch b1 (lane A, size S)\nadmitted OA by ben into batch b1 (lane A, size S), held behind OC\nthe supervisor'\''s next tick picks them up")" ]'
-# Jira's links order the triages: a blocker Jira names is triaged before what it blocks.
-rec JX-1 A '"blockers":[{"key":"JX-2","category":"new"}]'; rec JX-2 A
+rec OD A; rec OE A; touch "$T/recs/OE.fails"
+pool ''; out=$(admit OD OE R --by ben); rc=$?
+check "DS-506 AC6: every line before placement comes first, in the order given, as today" \
+  '[ $rc -eq 11 ] && [ "$out" = "$(printf "not admitted OE: triage failed: triage: claude exited 1: fix it and run /desk-admit OE again\nR is already in batch b1 (running)\nadmitted OD by ben into batch b1 (lane A, size S)\nthe supervisor'\''s next tick picks it up")" ]'
+# A blocker Jira links, and one more ticket after it. One at a time keeps today's order; more than one
+# triages the blocker first, to free what it blocks sooner.
+rec JX-1 A '"blockers":[{"key":"JX-2","category":"new"}]'; rec JX-2 A; rec JX-3 A
 printf '{"key":"JX-1","fields":{"status":{"name":"To Do","statusCategory":{"key":"new"}},"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"JX-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}\n' > "$T/get/JX-1.json"
-pool ''; out=$(admit JX-1 JX-2 --by ben)
-check "DS-506: a blocker Jira links is triaged first" '[ "$(tr "\n" " " < "$T/triage.calls")" = "JX-2 JX-1 " ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
+pool ''; out=$(admit JX-1 JX-2 JX-3 --by ben)
+check "DS-506 AC6: at Triage concurrency 1, a blocker Jira links is triaged in the order given" '[ "$(tr "\n" " " < "$T/triage.calls")" = "JX-1 JX-2 JX-3 " ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
+check "DS-506 AC6: and a ticket behind another is placed after the free ones, as today" '[ "$(grep "^admitted" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "JX-2 JX-3 JX-1 " ]'
+echo 0.3 > "$T/recs/JX-2.sleep"; echo 0.3 > "$T/recs/JX-3.sleep"
+pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit JX-1 JX-3 JX-2 --by ben)
+check "DS-506: with more than one at once, a blocker Jira links is triaged before what it blocks" '[ "$(tail -1 "$T/triage.calls")" = JX-1 ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
 # AC8: the spawn gate holding brings the pool down to one.
 for k in MA MB MC; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
 pool 3; out=$(DESK_MEM_AVAIL_GB=2 admit MA MB MC --by ben); rc=$?
