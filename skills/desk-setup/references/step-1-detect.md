@@ -171,7 +171,9 @@ How to turn what you find into rows:
   default branch the pass owns (never the ticket's worktree, so a worker's change to the script does
   not run), for a draft whose only red checks it names, then re-runs them; that the command receives
   the PR's tree as `DESK_CHECK_TREE` (a clean checkout of the head, whose SHA is `DESK_CHECK_HEAD`)
-  and must build from that, or it builds the default branch; and that it needs whatever that command
+  and must build from that, or it builds the default branch; that it must install and write nothing
+  in the default-branch checkout it runs from, which a file left there (an ignored one included)
+  makes every later check build and live read refuse until it is clean; and that it needs whatever that command
   needs in the supervisor's environment (a Docker context, cloud credentials).
 - **Live reads.** Detect nothing: ask the user for each read-only call to a live API whose response
   a worker needs but cannot fetch for want of a secret (a staging model list behind an SSM key),

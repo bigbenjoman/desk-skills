@@ -2089,7 +2089,7 @@ fbx(){
 }
 # The primary checkout $T/brepo has an origin, $T/bo-origin.git, whose main holds scripts/ensure.sh;
 # each V-<k> worktree is a clone of it with its branch pushed. A build runs from the pass's checkout
-# of origin's main ($BCO), with the head as DESK_CHECK_HEAD and DESK_CHECK_TREE (DS-489).
+# of origin's main ($BCO), with the head as DESK_CHECK_HEAD and DESK_CHECK_TREE.
 git init -q --bare -b main "$T/bo-origin.git"
 git init -q -b main "$T/brepo"; git -C "$T/brepo" remote add origin "$T/bo-origin.git"; mkdir -p "$T/brepo/scripts"
 cat > "$T/brepo/scripts/ensure.sh" <<EOF

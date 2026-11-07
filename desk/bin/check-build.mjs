@@ -29,6 +29,16 @@ const alive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 };
 
+// The pass's own checkouts (prepareTree here, live-read.mjs prepareCheckout) run git through these:
+// a runner under which no hook runs, whatever the checkout's own config says; the last line a failed
+// run printed; and the paths `git status --porcelain` listed, the first five named.
+export const hooklessGit = (timeout) => (...a) => spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...a], { encoding: 'utf8', timeout });
+export const lastLine = (r) => String(r.stderr || r.stdout || r.error?.message || '').trim().split('\n').pop() || `exit ${r.status}`;
+export const dirtyPaths = (out) => {
+  const lines = String(out).split('\n').filter(Boolean);
+  return `${lines.slice(0, 5).map((l) => l.slice(3)).join(', ')}${lines.length > 5 ? `, and ${lines.length - 5} more` : ''}`;
+};
+
 // Starts `command` with sh in cwd, detached, as <dir>/<stem>: its record { ...record, command, cwd,
 // pid, started } to .json, stdout and stderr to the one file `streams` names, or to each of two, and
 // its exit code to .code once it ends. `label` is the process's name, and `env` is added to the
@@ -93,8 +103,8 @@ export function startBuild(dir, { n, head, command, checks, cwd, tree, base }) {
 // unlike prepareCheckout it is reset rather than refused: nothing a build left there reaches the next.
 // { ok: true } or { ok: false, why }.
 export function prepareTree(dir, { origin, seed, head, branch, base }) {
-  const git = (...a) => spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...a], { encoding: 'utf8', timeout: 300000 });
-  const tail = (r) => String(r.stderr || r.stdout || r.error?.message || '').trim().split('\n').pop() || `exit ${r.status}`;
+  const git = hooklessGit(300000);
+  const tail = lastLine;
   if (!origin) return { ok: false, why: 'the primary checkout has no origin remote to fetch the head from' };
   if (!/^[0-9a-f]{40}$/.test(String(head))) return { ok: false, why: `the head ${head} is not a commit SHA` };
   if (!existsSync(join(dir, '.git'))) {
@@ -114,7 +124,7 @@ export function prepareTree(dir, { origin, seed, head, branch, base }) {
   const cl = git('-C', dir, 'clean', '-ffdxq');
   if (cl.status !== 0) return { ok: false, why: `cleaning ${dir} failed: ${tail(cl)}` };
   const s = git('-C', dir, 'status', '--porcelain', '--ignored', '--untracked-files=all');
-  if (s.status !== 0 || s.stdout.trim()) return { ok: false, why: `${dir} is not clean at the head ${head.slice(0, 9)}${s.stdout.trim() ? ` (${s.stdout.trim().split('\n').slice(0, 5).map((l) => l.slice(3)).join(', ')})` : ''}` };
+  if (s.status !== 0 || s.stdout.trim()) return { ok: false, why: `${dir} is not clean at the head ${head.slice(0, 9)}${s.stdout.trim() ? ` (${dirtyPaths(s.stdout)})` : ''}` };
   const at = git('-C', dir, 'rev-parse', 'HEAD').stdout.trim();
   if (at !== head) return { ok: false, why: `${dir} is at ${at.slice(0, 9) || 'no commit'}, not the head ${head.slice(0, 9)}` };
   return { ok: true };

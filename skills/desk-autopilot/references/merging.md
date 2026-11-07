@@ -249,8 +249,10 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   PR's tree as `DESK_CHECK_TREE`, a clean checkout of the head the pass owns
   (`<state>/check-trees/<n>`, reset to the head before each build and removed once the PR merges or
   closes), with the head's SHA as `DESK_CHECK_HEAD`; a command that ignores them builds the default
-  branch. Where either checkout cannot be made (a failed fetch, a dirty checkout), nothing runs and the
-  draft goes to the person with the reason. It runs detached so a pass that ends leaves it running,
+  branch. The command must install and write nothing in the default-branch checkout: a file left
+  there, an ignored one included, makes it dirty for every later check build and live read. Where
+  either checkout cannot be made (a failed fetch, a dirty checkout), nothing runs and the draft goes
+  to the person with the reason. It runs detached so a pass that ends leaves it running,
   with its output and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
   `--failed`. A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
   `syncFix`, one of the fix tries): its worker merges the base, fixes what the merge breaks in a commit
