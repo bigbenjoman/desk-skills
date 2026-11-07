@@ -872,13 +872,18 @@ export function readRepos() {
   return items.map((repo) => ({ repo, path: /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes('..') ? join(readRepoDir(), slugOf(repo)) : null }));
 }
 
+// The file naming the login a worker runs on (claude-logins.mjs reads it).
+export const loginFile = (state, key) => join(state, 'workers', `${key}.login.json`);
+
 // Move a ticket's last round aside so the next worker starts clean: its log (a kept AUTOPILOT_DONE
 // blocks the respawn, and a kept PR line sends screenshots to the old PR), its park record (an old
 // question reads as the new worker's) and, with `answers`, its mailbox (a stale answer satisfies the
 // next park instantly). All take one suffix, the first `.round<n>` free for every one of them, so a
 // round's files stay together. The log is gzipped as it moves (`.round<n>.gz`, its time kept, since a
 // batch's cost and spawn history read a round's time); one that fails to compress stays as it was,
-// and every reader of round logs takes both. An empty log is left in place. Returns the files moved.
+// and every reader of round logs takes both. An empty log is left in place. The worker's login file
+// is copied to the same suffix, as the next round's start overwrites it and a round's usage readings
+// stay its login's. Returns the files moved.
 export function rotateRound(key, { answers = false } = {}) {
   const state = stateDir();
   const files = [join(state, 'logs', `${key}.log`), join(state, 'parks', `${key}.json`)];
@@ -887,6 +892,8 @@ export function rotateRound(key, { answers = false } = {}) {
   if (!present.length) return [];
   let n = 1;
   while (files.some((f) => existsSync(`${f}.round${n}`) || existsSync(`${f}.round${n}.gz`))) n += 1;
+  const login = loginFile(state, key);
+  if (existsSync(login)) copyFileSync(login, `${login}.round${n}`);
   return present.map((f) => {
     const to = `${f}.round${n}`;
     renameSync(f, to);

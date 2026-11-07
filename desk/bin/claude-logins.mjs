@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { subscriptionsPath } from './desk-env.mjs';
+import { loginFile, subscriptionsPath } from './desk-env.mjs';
 import { CHECK_TIMEOUT_MS, defaultLogin, foundLogin, isDir, login, loginEnv, readSubscriptions, unlistedFolders } from './logins.mjs';
 
 // A login for a folder no subscriptions row names.
@@ -21,7 +21,7 @@ const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: d
 // and is always read, as is the caller's own CLAUDE_CONFIG_DIR, so a session or worker started under
 // a folder the file does not name is never missed. Only folders that exist.
 //   -> [login]
-function claudeLogins(env = process.env) {
+export function claudeLogins(env = process.env) {
   const subs = readSubscriptions(subscriptionsPath());
   const out = [defaultLogin('claude')];
   const add = (l) => { if (!out.some((o) => o.dir === l.dir)) out.push(l); };
@@ -72,9 +72,18 @@ export function readRegistry({ env = process.env } = {}) {
 // The login a worker runs on, from the file spawn-worker.sh writes beside its settings at each start
 // (kept out of its log, whose growth is the worker's own output): its config folder, or null for the
 // default, and for a worker with no such file.
-export const loginFile = (stateDir, key) => join(stateDir, 'workers', `${key}.login.json`);
-export function workerLoginDir(stateDir, key) {
-  try { return JSON.parse(readFileSync(loginFile(stateDir, key), 'utf8')).config_dir || null; } catch { return null; }
+export { loginFile };
+const readLoginFile = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
+export const workerLoginDir = (stateDir, key) => readLoginFile(loginFile(stateDir, key))?.config_dir || null;
+
+// The login a worker log ran on, by its name in <state>/logs: `<key>.log` is the worker's latest start,
+// and `<key>.log.round<n>[.gz]` the login file kept with that round, or the latest with none kept.
+const WORKER_LOG = /^(.+)\.log(?:\.round(\d+)(?:\.gz)?)?$/;
+export function logLoginDir(stateDir, name) {
+  const [, key, round] = WORKER_LOG.exec(name) ?? [];
+  if (!key) return null;
+  const file = loginFile(stateDir, key);
+  return ((round && readLoginFile(`${file}.round${round}`)) ?? readLoginFile(file))?.config_dir || null;
 }
 
 // Where every login keeps its session transcripts: <folder>/projects.

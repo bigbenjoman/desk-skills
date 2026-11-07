@@ -1141,7 +1141,7 @@ for (const s of HEALTH.stalls) personStall(s);
 // probe: the hold would keep itself on its last figure, an old subscription's after a switch. So a pass
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
-const paceReading = () => newestReading({ files: [loginProbeLog(usageDir(), OWN_LOGIN)] });
+const paceReading = () => newestReading({ files: [loginProbeLog(usageDir(), OWN_LOGIN)], login: OWN_LOGIN });
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
 let paceProbe = '';

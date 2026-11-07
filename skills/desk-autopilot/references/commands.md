@@ -83,3 +83,6 @@ a command acts on the standing batch.
 
 `pass.mjs` re-reads `concurrency` from the queue on every pass, so the ladder is applied by editing
 that one field between passes: never by hand-spawning, and never by holding tickets out of the batch.
+
+`node ~/.claude/desk/bin/usage-probe.mjs readings` prints each Claude login by name, with its 5-hour
+and 7-day use and reset times.
