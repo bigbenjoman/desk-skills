@@ -57,8 +57,9 @@ breakpoint.
 `project/slides/<id>.html`) is snapshotted the same way: `deck.json`, every slide, and each
 `/_blob/<id>` image the slides name. `save` copies them and writes an `index.html` beside them that
 shows every slide in order offline; `render` does not draw a deck. `write` and `save` record the
-kind (`canvas`, `deck` or `page`) in `source.json`, and `check` reads it from the saved copy or the
-snapshot: a page is advisory, never blocking, and a link with neither is blocking, its kind unknown.
+kind (`canvas`, `deck` or `page`) in `source.json`. A link saved in the repo does not block, whatever
+its kind; for one only snapshotted, `check` reads the kind from the snapshot: a page is advisory,
+never blocking, and a link with neither a saved copy nor a snapshot is blocking, its kind unknown.
 
 **Every way into a batch takes the snapshot first.** `/desk-admit` snapshots in its own session
 before it admits (its step 0), from the same list as above. Where no session can (standing intake, a

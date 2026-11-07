@@ -140,11 +140,11 @@ function walkFiles(dir, base = dir) {
 export function collect(src) {
   const all = walkFiles(src);
   const shallowest = (name) => all.filter(name).sort((a, b) => a.split(sep).length - b.split(sep).length || a.length - b.length)[0];
-  const canvasRel = shallowest((f) => basename(f) === 'canvas.json') ?? null;
-  const deckRel = canvasRel ? null : shallowest((f) => basename(f) === 'deck.json') ?? null;
-  const page = canvasRel || deckRel ? null : shallowest((f) => /\.html?$/i.test(f));
-  if (!canvasRel && !deckRel && !page) fail(`no canvas.json, deck.json or page under ${src}: read the artifact's project/canvas.json, project/deck.json, or its page, first`);
-  const kind = canvasRel ? 'canvas' : deckRel ? 'deck' : 'page';
+  const kind = kindOfFiles(all);
+  if (!kind) fail(`no canvas.json, deck.json or page under ${src}: read the artifact's project/canvas.json, project/deck.json, or its page, first`);
+  const canvasRel = kind === 'canvas' ? shallowest((f) => basename(f) === 'canvas.json') : null;
+  const deckRel = kind === 'deck' ? shallowest((f) => basename(f) === 'deck.json') : null;
+  const page = kind === 'page' ? shallowest((f) => /\.html?$/i.test(f)) : null;
   const home = dirname(canvasRel ?? deckRel ?? page);
   const files = new Set([canvasRel, deckRel].filter(Boolean));
   const queue = all.filter((f) => /\.html?$/i.test(f) && (home === '.' || f.startsWith(home + sep)));
@@ -902,17 +902,12 @@ export function kindAt(dir) {
   try { return kindOfFiles(walkFiles(dir)); } catch { return null; }
 }
 
-// Every saved design under <dir> as committed at <ref>: [{path, url, version, kind}].
+// Every saved canvas under <dir> as committed at <ref>: [{path, url, version}].
 export function savedAt(root, dir, ref) {
   const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 });
-  const all = git('ls-tree', '-r', '--name-only', ref, '--', `${dir}/`).split('\n');
-  return all
+  return git('ls-tree', '-r', '--name-only', ref, '--', `${dir}/`).split('\n')
     .filter((f) => f.slice(dir.length + 1).split('/').length === 2 && f.endsWith('/source.json'))
-    .map((f) => {
-      let s = null; try { s = JSON.parse(git('show', `${ref}:${f}`)); } catch { /* unreadable */ }
-      const path = `${dirname(f)}/`;
-      return { path, url: s?.url, version: s?.version, kind: s?.kind ?? kindOfFiles(all.filter((x) => x.startsWith(path))) };
-    })
+    .map((f) => { let s = null; try { s = JSON.parse(git('show', `${ref}:${f}`)); } catch { /* unreadable */ } return { path: `${dirname(f)}/`, url: s?.url, version: s?.version }; })
     .filter((c) => c.url);
 }
 

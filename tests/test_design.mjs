@@ -9,7 +9,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles, savedAt } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
@@ -448,6 +448,12 @@ const DOT = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 const deckSnap = join(T, 'deck-snap');
 cpSync(join(FIX, 'deck'), deckSnap, { recursive: true });
 for (const id of [IMG1, IMG2]) put(join(deckSnap, `_blob/${id}`), DOT);
+// The real deck's images also set object-position; one here has only its data-crop, off-centre.
+const gapsAt = join(deckSnap, 'project/slides/gaps.html');
+const gapsHtml = read(gapsAt);
+const IMG2_TAG = `${IMG2}" alt="Sarah Pritchard home page" data-crop="1 50% 0%" style="object-position:50% 0%;`;
+t('deck fixture: the second gaps image has its crop in both places', gapsHtml.includes(IMG2_TAG), true);
+put(gapsAt, gapsHtml.replace(IMG2_TAG, `${IMG2}" alt="Sarah Pritchard home page" data-crop="1 30% 70%" style="`));
 const cd = collect(deckSnap);
 t('deck collect: a deck, its slides in deck.json order', `${cd.kind} ${cd.deck} ${cd.slides.join(',')}`, 'deck project/deck.json short,who,gaps');
 t('deck collect: deck.json, every slide and each image', cd.files.join(' '),
@@ -475,6 +481,7 @@ t('AC2 deck viewer: speaker notes are hidden', viewer.includes('section aside{di
 t('AC2 deck viewer: images load from the saved folder', viewer.includes(`src="project/assets/${IMG2}.png"`) && !viewer.includes('/_blob/'), true);
 t('AC2 deck viewer: the deck\'s fonts are linked', viewer.includes('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader'), true);
 t('AC3 deck viewer: a data-crop image keeps its focal point', viewer.includes(`data-crop="1 50% 0%" style="object-position:50% 0%;`), true);
+t('AC3 deck viewer: an image with only a data-crop gets it as object-position', viewer.includes(`data-crop="1 30% 70%" style="object-position:30% 70%;width:440px`), true);
 t('AC3 applyCrops: a style with no object-position gets the crop\'s', applyCrops('<img src="a.png" data-crop="1.4 30% 70%" style="width:10px">'), '<img src="a.png" data-crop="1.4 30% 70%" style="object-position:30% 70%;width:10px">');
 t('AC3 applyCrops: an image with no style gets one', applyCrops("<img data-crop='1 0% 100%' src=a.png>"), "<img data-crop='1 0% 100%' src=a.png style=\"object-position:0% 100%;\">");
 t('AC3 applyCrops: an object-position already set is kept', applyCrops('<img data-crop="1 10% 10%" style="object-position: 50% 0%">'), '<img data-crop="1 10% 10%" style="object-position: 50% 0%">');
@@ -492,7 +499,6 @@ t('deck write: a snapshot records its kind', `${cliW.status} ${json(join(deckSna
 // AC4: a deck saved on the base is no blocking finding; AC5: a page is advisory; an unknown kind blocks.
 git(rD, 'add', '-A'); git(rD, 'commit', '-q', '-m', 'deck');
 const pmIssue = (desc) => ({ key: 'PM-3', fields: { description: desc, parent: { key: 'PM-2', fields: { issuetype: { name: 'Epic', hierarchyLevel: 1 } } } } });
-t('AC4 deck: savedAt reads its kind', savedAt(rD, DIR, 'main').map((c) => `${c.path} ${c.kind}`).join(' '), 'docs/design/PM-2/ deck');
 t('AC4 deck check: a saved deck named in the Design section is clean', checkTicket(pmIssue(`h2. Design\n${DECK_URL} · docs/design/PM-2/`), { root: rD, dir: DIR, ref: 'main' }).length, 0);
 t('AC4 deck check: a saved deck not named is advisory, not blocking', checkTicket(pmIssue(`h2. Design\n${DECK_URL}`), { root: rD, dir: DIR, ref: 'main' }).map((f) => f.severity).join(' '), 'advisory');
 t('kindOfFiles: a hand-made deck with no kind recorded', `${kindOfFiles(['x/deck.json', 'x/index.html'])} ${kindOfFiles(['x/project/canvas.json'])} ${kindOfFiles(['x/project/index.html'])} ${kindOfFiles(['x/README.md'])}`, 'deck canvas page null');
@@ -640,7 +646,7 @@ else document.getElementById('storybook-root').innerHTML = '<main style="height:
     t('AC2 deck in a browser: each slide at 16:9', seen.every((s) => s.ratio === Math.round((16 / 9) * 1000) / 1000), true);
     t('AC2 deck in a browser: speaker notes hidden', seen[0].notes, 'none');
     t('AC2 deck in a browser: images load from file://', seen.every((s) => s.images), true);
-    t('AC3 deck in a browser: the data-crop focal point', seen[2].crops, '50% 0%,50% 0%');
+    t('AC3 deck in a browser: the data-crop focal point', seen[2].crops, '50% 0%,30% 70%');
   } finally {
     await deckBrowser.close();
   }
