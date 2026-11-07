@@ -1298,6 +1298,8 @@ const CEILING = E.memoryCeiling();
 // the feature's children are built and tested against the base as one.
 const BASE = E.batchBase();
 const SOURCE = E.configValue('default-branch');
+// §0 Default branch, not DEFAULT_BRANCH, which a named batch sets to its base.
+const REPO_DEFAULT = String(SOURCE ?? '').trim() || 'main';
 // Config §3b "Promotion slice size (children)": how many children merge into the base between base
 // gates in feature mode. Unset is 8; anything but a whole number from 5 to 10 is said and read as 8.
 const SLICE_ROW = E.CONFIG_ROWS['promotion-slice'].row;
@@ -2432,9 +2434,7 @@ const workflowsAt = (ref) => cached(`workflows:${ref}`, () => readWorkflows({
 const triggersOf = (base, head, branch) => {
   const atHead = untriggeredChecks(gateLists().required, base, workflowsAt(head), { branch });
   if (!Object.keys(atHead).length) return { untriggered: {}, behind: {}, reopen: {} };
-  // §0 Default branch, not DEFAULT_BRANCH, which a named batch sets to its base.
-  const main = String(SOURCE ?? '').trim() || 'main';
-  return staleTriggers(atHead, base, { branch, defaultBranch: main, atBase: workflowsAt(base), atDefault: workflowsAt(main) });
+  return staleTriggers(atHead, base, { branch, defaultBranch: REPO_DEFAULT, atBase: workflowsAt(base), atDefault: workflowsAt(REPO_DEFAULT) });
 };
 const untriggeredOf = (base, head, branch) => triggersOf(base, head, branch).untriggered;
 // An open PR whose gate is absent keeps those maps on pr_status as `untriggered`, `behind` and
@@ -2744,7 +2744,7 @@ function startCheckBuild(t, n, head, c, rec) {
 // A draft whose screenshot cells §4 Evidence workflow fills gets that workflow, on the default branch,
 // once per head (evidence.mjs). Where it cannot start, the cells are the person's.
 function startEvidence(t, n, head, c, rec) {
-  const cmd = ['workflow', 'run', c.workflow, '--repo', GH_REPO, '--ref', DEFAULT_BRANCH, '-f', `pr=${n}`];
+  const cmd = ['workflow', 'run', c.workflow, '--repo', GH_REPO, '--ref', REPO_DEFAULT, '-f', `pr=${n}`];
   if (DRY) { out.push(`undraft (dry run): would run \`gh ${cmd.join(' ')}\` for PR #${n} (${t.key}): ${c.why}`); return rec; }
   const r = shOut('gh', cmd);
   if (r.ok) {
@@ -2861,7 +2861,7 @@ function evidenceFixState(key) {
 // Files the fix for one failure (desk-jira's gate, §3 jira-create; with no tracker, a ticket file) and
 // admits it: { fix, why } (why: it was filed but not admitted), or { why } when nothing was filed.
 function fileEvidenceFix(g) {
-  const { summary, body } = fixTicket(g, { repo: GH_REPO, base: DEFAULT_BRANCH });
+  const { summary, body } = fixTicket(g, { repo: GH_REPO, base: REPO_DEFAULT });
   // A failure that comes back after its fix is filed again, so the id is this filing's, not the key's.
   const id = createHash('sha1').update(`${g.key}\n${PASS_AT}`).digest('hex').slice(0, 8);
   let fix;
