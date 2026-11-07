@@ -45,7 +45,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
+import { claudeLogins, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -651,17 +651,20 @@ export function runningOn(repos, login) {
 // This desk-q's login, its CLAUDE_CONFIG_DIR's, as a pass's is. Null when the subscriptions file cannot
 // be read, which reads and probes as no login was named.
 const ownLogin = () => { try { return loginOf(process.env.CLAUDE_CONFIG_DIR); } catch { return null; } };
-// The logins in rotation or on standby besides desk-q's own. None when the subscriptions file cannot be
-// read, so desk-q then treats its own login as the only one.
-const otherLogins = (own) => { try { return probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file')); } catch { return []; } };
-// The login the usage line shows: the default, named by null, whichever login this desk-q started on
-// while there are others, as there are with a folder under the logins folder and no subscriptions file
-// to rule on either. With no others, its own: one login under CLAUDE_CONFIG_DIR still shows its probe's
-// reading, and so does the one login a subscriptions file leaves in use.
-const lineLogin = () => {
-  const own = ownLogin();
-  return own?.configDir && (otherLogins(own).length || (own.source === 'found' && !own.rule)) ? null : own;
+// The logins in rotation or on standby besides desk-q's own. The default no file lists counts only
+// beside a folder under the logins folder: alone, it is the fallback for one login kept elsewhere under
+// CLAUDE_CONFIG_DIR. None when the subscriptions file cannot be read, so desk-q then treats its own
+// login as the only one.
+const otherLogins = (own) => {
+  try {
+    const folders = claudeLogins().some((l) => l.source === 'found');
+    return probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file' || folders));
+  } catch { return []; }
 };
+// The login the usage line shows: the default, named by null, whichever login this desk-q started on
+// while there are others. With none, its own: one login under CLAUDE_CONFIG_DIR still shows its probe's
+// reading, and so does the one login a subscriptions file leaves in use.
+const lineLogin = () => { const own = ownLogin(); return own?.configDir && otherLogins(own).length ? null : own; };
 // The probes an open desk-q makes now. With one login, its probe while no worker anywhere keeps the
 // reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
 // worker runs on it, judged on that login's own probe reading.

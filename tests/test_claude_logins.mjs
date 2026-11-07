@@ -251,13 +251,18 @@ written(uLog('B-1.log'), JSON.stringify({ type: 'rate_limit_event', rate_limit_i
 t('a window past its reset reads 0%', /^b {8}5h 0%, reset /.test(lines(P.usageByLogin({ now: nowU }))[1]), true);
 
 // Which login a desk-q on login B draws, by what the subscriptions file says of the default.
-const lineOnB = () => { process.env.CLAUDE_CONFIG_DIR = B; const u = Q.usageOf([], nowU).reading.seven_day?.utilization; delete process.env.CLAUDE_CONFIG_DIR; return u; };
+const startedOn = (dir, read) => { process.env.CLAUDE_CONFIG_DIR = dir; const r = read(); delete process.env.CLAUDE_CONFIG_DIR; return r; };
+const lineOn = (dir) => startedOn(dir, () => Q.usageOf([], nowU).reading.seven_day?.utilization);
 subscriptions([['default', '~/.claude', 'off'], ['b', '~/.claude-logins/b', 'in rotation']]);
-t('AC6 a file leaving B the one login in use: a desk-q on B shows B\'s', lineOnB(), 0.4);
+t('AC6 a file leaving B the one login in use: a desk-q on B shows B\'s', lineOn(B), 0.4);
 subscriptions([['b', '~/.claude-logins/b', 'in rotation']]);
-t('AC6 a file listing only B: a desk-q on B shows B\'s', lineOnB(), 0.4);
+t('AC6 a file listing only B: a desk-q on B shows B\'s', lineOn(B), 0.4);
+subscriptions([]);
+t('AC5 a file with no Claude rows, with a folder for login B: a desk-q on B shows the default login\'s', lineOn(B), 0.2);
 rmSync(process.env.DESK_SUBSCRIPTIONS);
-t('AC5 no file, with a folder for login B: a desk-q on B shows the default login\'s', lineOnB(), 0.2);
+t('AC5 no file, with a folder for login B: a desk-q on B shows the default login\'s', lineOn(B), 0.2);
+t('AC5 and a desk-q on a folder outside the logins folder shows it too', lineOn(join(T, 'elsewhere')), 0.2);
+t('AC5 and the default its line shows is probed', startedOn(B, () => Q.probesDue([], { now: nowU }).map((x) => x.login.name).join()), 'b,default');
 
 // AC6: one login. Every worker log is its, with no login file, and the line is the one it always was.
 rmSync(join(H, '.claude-logins'), { recursive: true });
