@@ -729,11 +729,11 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     if (no) return say(false, `posted on PR #${pr} and in its briefing, but ${no}`);
     return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
   };
-  // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err }.
+  // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err, repo }.
   const readPr = (pr, more = '') => {
     const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
-    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', `state,mergedAt,isDraft,headRefOid${more}`],{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '' }; }
-    catch (e) { return { v: null, err: one(e.stderr || e.message) }; }
+    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', `state,mergedAt,isDraft,headRefOid${more}`],{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '', repo }; }
+    catch (e) { return { v: null, err: one(e.stderr || e.message), repo }; }
   };
   // The person's instruction on an open PR: kept in the briefing and as the fix its next worker starts
   // on, then requeued whoever runs the batch, as a gaps answer is. Read from GitHub first: a worker
@@ -754,7 +754,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // as it does any merge) and leaves the list; anything else is said, and noted on the item.
   const prDone = () => {
     const pr = x.t.result.pr;
-    const { v, err } = readPr(pr, ',body');
+    const { v, err, repo } = readPr(pr, ',body');
     if (!v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not marked done and stays on your list.`);
     if (v.state === 'MERGED') {
       const at = v.mergedAt && !String(v.mergedAt).startsWith('0001-') ? v.mergedAt : new Date(now).toISOString();
