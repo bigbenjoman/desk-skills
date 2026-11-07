@@ -43,6 +43,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT } from './suite-wait.mjs';
@@ -2769,6 +2770,31 @@ const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); 
 const runOf = (id) => cached(`run:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,startedAt,jobs']); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } });
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
+// With the failure-class lever on, a red check is read against the default branch before a fix try is
+// spent on it (fix-tries.mjs againstBase): the job's check runs at the PR's exact merge base, and,
+// for a base red hold, its newest completed run among the default branch's last ten commits. Each read
+// once per pass; one gh cannot read is unknown.
+const FAILURE_CLASS = E.leverOn('failure-class');
+const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
+  const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
+  try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
+});
+const mergeBaseOf = (head) => cached(`merge-base:${head}`, () => {
+  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${encodeURIComponent(DEFAULT_BRANCH)}...${head}`, '--jq', '.merge_base_commit.sha']);
+  return r.ok && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null;
+});
+const baseCommits = () => cached('base-commits', () => {
+  const r = shOut('gh', ['api', `repos/${GH_REPO}/commits?sha=${encodeURIComponent(DEFAULT_BRANCH)}&per_page=10`, '--jq', '.[].sha']);
+  return r.ok ? r.out.split('\n').filter(Boolean) : [];
+});
+const baseReads = (head) => (FAILURE_CLASS && head ? { baseRead: {
+  mergeBase: () => mergeBaseOf(head),
+  atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
+  latestOnBase: (name) => {
+    for (const sha of baseCommits()) { const state = runsState(checkRunsAt(sha, name)); if (state) return state; }
+    return null;
+  },
+} } : {});
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
 const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'sync', 'rerun', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture'];
@@ -2827,7 +2853,7 @@ if (drafts.length) {
     };
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold ? null : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
-      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, ...clearsRows, builds: [] })
+      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, builds: [], ...baseReads(v.headRefOid) })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) })
             // A check build that failed behind the base goes to a worker that merges it.
@@ -3187,6 +3213,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
       return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files: files.split('\n').filter(Boolean) })?.applies === true;
     },
     conflictFiles: () => conflictFiles(t.branch),
+    ...baseReads(s.head),
   };
   const c = fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
   if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
@@ -3262,8 +3289,16 @@ function settleWorked(t, n, head, worked) {
   return now.map((x) => x.id);
 }
 // A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
-// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`.
+// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`. With the
+// failure-class lever on, `held` (base red) waits with no try, a requeue records its try's class
+// (failure-class.mjs fixClass) before the worker spawns, and one classed missing decision or
+// dependency wait is not requeued: the item says what it waits for.
 function applyFix(t, n, head, c) {
+  if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(c.base_red ?? null)) {
+    if (!DRY) q('set', t.key, `base_red=${JSON.stringify(c.base_red ?? null)}`);
+    t.base_red = c.base_red ?? null;
+  }
+  if (c.call === 'held') { report.waiting.push(`${t.key}: BASE RED — PR #${n}: ${c.why}`); return; }
   if (c.call === 'stuck') {
     report.waiting.push(`${t.key}: STUCK — PR #${n}: ${c.why}`);
     // Its checks are kept by name, so desk-q drops one from the reason once it is green.
@@ -3271,7 +3306,12 @@ function applyFix(t, n, head, c) {
     if (!DRY && (t.stuck?.why !== c.why || t.stuck?.head !== head)) q('set', t.key, `stuck=${JSON.stringify({ why: c.why, pr: n, head, at: PASS_AT, ...checks })}`);
     return;
   }
-  const f = c.fix;
+  let f = c.fix;
+  if (FAILURE_CLASS) {
+    const fc = fixClass(f, t);
+    if (WAITING_CLASSES.includes(fc.class)) { report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${f.what}, classed ${fc.class}: ${fc.waiting}`); return; }
+    f = { ...f, class: fc.class, class_rule: fc.class_rule };
+  }
   if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? 'an extra review try' : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
   q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
@@ -3283,7 +3323,7 @@ function applyFix(t, n, head, c) {
   }
   // A review try keeps what it quoted, so a later review can tell a finding it cleared from one that survived it.
   const quoted = f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) } : {};
-  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), at: PASS_AT }])}`, 'stuck=null');
+  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), ...(f.class ? { class: f.class } : {}), at: PASS_AT }])}`, 'stuck=null');
   out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? 'extra review try' : `${f.kind === 'rereview' ? 'review' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
