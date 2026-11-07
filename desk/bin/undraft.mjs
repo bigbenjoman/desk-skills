@@ -49,10 +49,12 @@
 // batch's Stage 3 approval (queue approved.undraft). A feature spine is never undrafted here:
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
-// commit that verdict was posted on when it was carried to the head (verdictCarries).
+// commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
+// review-reuse lever on restsOnCarries, whose base range checked is `range`).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
 import { RERUNS_MAX, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
+import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
@@ -135,21 +137,25 @@ export function plainVerdictAt(reviews, handle, head, clean) {
 }
 
 // The review verdict the handle has at this head, under a set §4 Clean review verdict row (`clean`), as
-// the undraft and the merge driver both read it: { plain, review, verdict, found, carried, v }, v being
-// what verdictAt or plainVerdictAt says. A verdict for an older head that only merges of the base have
-// moved past (carry(sha), as verdictCarries says) is read as at the head, and `carried` names its commit.
+// the undraft and the merge driver both read it: { plain, review, verdict, found, carried, range, v }, v
+// being what verdictAt or plainVerdictAt says. A verdict for an older head that still holds at this one
+// (carry(sha, body), given the review's body: verdictCarries, or restsOnCarries with the review-reuse
+// lever on) is read as at the head; `carried` names its commit, and `range` the base range checked when
+// carry returns one.
 export function verdictAtHead(reviews, handle, head, clean, carry) {
   const plain = !Object.keys(pairs(clean)).length;
   const review = latestReview(reviews, handle);
   const verdict = plain ? null : review?.verdict ?? null;
   let v = plain ? plainVerdictAt(reviews, handle, head, clean) : verdictAt(verdict, head, clean);
   const found = plain ? (typeof v.verdict === 'object' ? v.verdict : null) : verdict;
-  let carried = null;
-  if (!v.clean && !v.settle && found?.sha && head && !head.startsWith(found.sha) && carry?.(found.sha)) {
+  let carried = null, range = null;
+  const held = !v.clean && !v.settle && found?.sha && head && !head.startsWith(found.sha) ? carry?.(found.sha, review?.body) : null;
+  if (held) {
     v = { ...verdictAt(found, found.sha, plain ? DESK_REVIEW_CLEAN : clean), ...(plain ? { verdict: found } : {}) };
     carried = found.sha;
+    range = held.range ?? null;
   }
-  return { plain, review, verdict, found, carried, v };
+  return { plain, review, verdict, found, carried, range, v };
 }
 
 // Whether a review verdict posted on `from` still holds at `head`: `head` is reached from `from` by
@@ -194,13 +200,84 @@ export const movedByBase = ({ from, head, base, git }) => {
   return !!chain && isBaseMerge(chain[0], base, git);
 };
 
+// The files a desk-review rests on, as verdict.mjs records them on a line of their own after the method
+// marker: the files its seats read. null when the body records none, or not in that form.
+const RESTS_ON = /^<!-- desk-review:rests-on v=1 files=(\[.*\]) -->$/m;
+export function restsOn(body) {
+  const m = RESTS_ON.exec(String(body ?? ''));
+  if (!m) return null;
+  try {
+    const files = JSON.parse(m[1]);
+    return Array.isArray(files) && files.length && files.every((f) => typeof f === 'string' && f) ? files : null;
+  } catch { return null; }
+}
+
+// Whether a path is a dependency manifest, a lockfile or repo configuration, which every review rests
+// on whatever its seats read: a change to one can change what the code does without touching it.
+// test-scope.mjs owns lockfiles and test or build config, any root file but documentation included;
+// these are the manifests and build files it does not name, wherever they sit.
+const MANIFESTS = /^(?:requirements.*\.txt|go\.mod|Cargo\.toml|Gemfile|Pipfile|composer\.json|pom\.xml|build\.gradle(?:\.kts)?|Makefile|Dockerfile.*|(?:docker-)?compose(?:\.[^.]+)?\.ya?ml|vercel\.json|.+\.lockb?)$/;
+export function restsOnAlways(path) {
+  const p = String(path);
+  const parts = p.split('/');
+  const name = parts.at(-1);
+  // Anything under a top-level dot directory (.github/**, .claude/**), or a dotfile anywhere.
+  if (parts[0].startsWith('.') || name.startsWith('.')) return true;
+  if (parts[0] === 'scripts' && parts[1] === 'desk') return true;
+  return isLockfile(p) || isConfig(p) || MANIFESTS.test(name);
+}
+
+// Whether a review posted on `from` still holds at `head`, after a rebase or any merge of the base:
+// the PR's own diff against the base is unchanged, and the base moved past none of the files the
+// review rests on (`files`, restsOn's list, and every restsOnAlways path). A file of the PR's own the
+// base moved fails the first test: its blob before the PR's change differs. Returns { range } naming the base range checked, or null whenever any of that fails or git cannot
+// say. git(args) runs git and returns { ok, out }.
+export function restsOnCarries({ from, head, base, files, git }) {
+  if (!from || !head || !base || !Array.isArray(files)) return null;
+  let at = git(['rev-parse', '--verify', '--quiet', `${from}^{commit}`]);
+  // A rebased-away commit may not be local yet: GitHub serves it by its full SHA.
+  if (!at.ok && /^[0-9a-f]{40}$/.test(from) && git(['fetch', '-q', 'origin', from]).ok) at = git(['rev-parse', '--verify', '--quiet', `${from}^{commit}`]);
+  const tip = git(['rev-parse', '--verify', '--quiet', `${head}^{commit}`]);
+  if (!at.ok || !tip.ok) return null;
+  const was = git(['merge-base', at.out, base]);
+  const now = git(['merge-base', tip.out, base]);
+  if (!was.ok || !now.ok || !git(['merge-base', '--is-ancestor', was.out, now.out]).ok) return null;
+  // Each changed file's modes and blobs, before and after: exact, and small on any size of PR.
+  const own = (mb, tipSha) => git(['diff', '--raw', '--no-renames', '--no-abbrev', mb, tipSha]);
+  const before = own(was.out, at.out);
+  const after = own(now.out, tip.out);
+  if (!before.ok || !after.ok || before.out !== after.out) return null;
+  // NUL-separated, as git would otherwise quote a non-ASCII path and it would match no recorded file.
+  const moved = git(['diff', '-z', '--no-renames', '--name-only', was.out, now.out]);
+  if (!moved.ok) return null;
+  const rests = new Set(files);
+  if (moved.out.split('\0').filter(Boolean).some((f) => rests.has(f) || restsOnAlways(f))) return null;
+  return { range: `${was.out.slice(0, 12)}..${now.out.slice(0, 12)}` };
+}
+
+// Whether a review posted on `from` holds at `head`, as every carry reads it, so the pass and the merge
+// driver never disagree: with the review-reuse lever on (`reuse`), only while the files it rests on
+// (from the review's `body`) are unchanged (restsOnCarries); off, across clean merges of the base alone
+// (verdictCarries).
+export const reviewCarries = ({ reuse, from, head, base, body, git }) => (reuse
+  ? restsOnCarries({ from, head, base, files: restsOn(body), git })
+  : verdictCarries({ from, head, base, git }));
+
+const short = (sha) => `\`${String(sha ?? '').slice(0, 12)}\``;
+// What a carry under the review-reuse lever tells the PR, so that nothing reads as a review of the head.
+const carriedTo = (head, range) => `carried to this head (${short(head)}), which no review has read: the PR's own diff is unchanged, and the base range \`${range}\` changed none of the files the review rests on, no dependency manifest, lockfile or configuration file`;
+// The merge driver's comment on such a carry, for a PR that left draft before its head moved.
+export const carryComment = (from, head, range) => `The review posted on ${short(from)} is ${carriedTo(head, range)}.`;
+
 // The comment on a PR the pass took out of draft: why, and the verdict it read, quoted (a plain
 // review's line stating the §4 value, as a string). `carried` is the commit the verdict was posted on
-// when it was carried to this head.
-export function undraftComment(verdict, head, clean, carried = null) {
+// when it was carried to this head, and `range` the base range restsOnCarries checked to carry it.
+export function undraftComment(verdict, head, clean, carried = null, range = null) {
   const line = typeof verdict === 'string' ? verdict : Object.entries(verdict ?? {}).map(([k, x]) => `${k}=${x}`).join(' ');
   const what = typeof verdict === 'string' ? 'review' : 'desk-review verdict';
-  const short = (sha) => `\`${String(sha ?? '').slice(0, 12)}\``;
+  if (carried && range) {
+    return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it is ${carriedTo(head, range)}.\n\n> \`${line}\``;
+  }
   if (carried) {
     return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it holds on this head (${short(head)}): every commit since is a clean merge of the base.\n\n> \`${line}\``;
   }
@@ -460,8 +537,8 @@ export function undraftCall(t, pr, cfg) {
   // the inline comments it reads by the review's id.
   // Under a plain-text row the latest review may still be a desk-review verdict (plainVerdictAt reads
   // it against desk-review's own counts), and its P0s and P1s go the same way.
-  const { plain, review, verdict, v, found, carried } = verdictAtHead(pr.reviews, cfg.handle, pr.head, clean, pr.carry);
-  const withCarried = (c) => (carried ? { ...c, carried } : c);
+  const { plain, review, verdict, v, found, carried, range } = verdictAtHead(pr.reviews, cfg.handle, pr.head, clean, pr.carry);
+  const withCarried = (c) => (carried ? { ...c, carried, ...(range ? { range } : {}) } : c);
   // Under §3 autopilot-judgement yes, its requirement gaps go the same way: a worker makes the call.
   const gaps = cfg.judgement === 'yes' && Number(found?.gaps) > 0;
   // A P2 it lists is a fix worker's too; one deferred, or listed nowhere, is the person's.

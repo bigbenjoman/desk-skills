@@ -55,7 +55,9 @@
 #                                            the latest desk-review verdict must be clean at the head
 #                                            (§4 Clean review verdict; review-threads.mjs verdict), or
 #                                            carried to it by clean merges of the base alone (undraft.mjs
-#                                            verdictCarries). A carried P2 does not hold it. Held, it is
+#                                            verdictCarries), or with the review-reuse lever on by a
+#                                            rebase or base merge that moved none of the files its review
+#                                            rests on (restsOnCarries). A carried P2 does not hold it. Held, it is
 #                                            logged, and the pass sends it to a review worker
 #                                            (fix-tries.mjs verdictTry), or to the person
 #   - DIRTY                                  a conflict needs resolving and a fresh review: pass.mjs
@@ -673,7 +675,7 @@ EOF_EPIC
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from want="$BASE_BRANCH"
+  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
@@ -811,7 +813,20 @@ EOF_RESOLVE
       return 1
     fi
     carried_from=$(printf '%s' "$verdict" | jq -r '.carried // empty')
-    [ -n "$carried_from" ] && log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $BASE_BRANCH came since"
+    carried_range=$(printf '%s' "$verdict" | jq -r '.range // empty')
+    if [ -n "$carried_from" ] && [ -n "$carried_range" ]; then
+      log "#$n its clean review at ${carried_from:0:9} is carried to ${sha:0:9}, not reviewed there: its own diff is unchanged, and $want's range $carried_range changed none of the files it rests on"
+      # The PR says so once per head; the pass records one it said on leaving draft.
+      if [ ! -e "$SD/carried-$n-$sha" ]; then
+        if gh pr comment "$n" --repo "$REPO" --body "$(printf '%s' "$verdict" | jq -r .said)" >/dev/null 2>&1; then
+          touch "$SD/carried-$n-$sha"
+        else
+          log "#$n could not say on the PR that its review is carried — not merging it this loop"; return 1
+        fi
+      fi
+    elif [ -n "$carried_from" ]; then
+      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $want came since"
+    fi
   fi
 
   # Green now. It must still be green at the same head on a later loop before it merges.
