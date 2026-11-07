@@ -140,6 +140,10 @@ rule is now, because its session lives in that login's folder. If that login has
 ticket parks naming the login and its sign-in command, and no session starts. A new session,
 handoffs and requeues included, starts on the login with the most room.
 
+**A worker on the person's instruction is never recorded done on an open PR alone.** Ended with no
+marker, or killed past the limit, it parks with the fix left open, so the merge driver keeps holding
+the PR. A requeue sends the same instruction to a new worker.
+
 ## Resuming a dead worker's half-finished worktree
 
 For a worker the pass did not resume (failed, wedged, or over the limit), setting `AUTOPILOT_RESUME`

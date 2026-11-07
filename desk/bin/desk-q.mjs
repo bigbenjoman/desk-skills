@@ -40,7 +40,7 @@ import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy, triesMade } from './fix-tries.mjs';
+import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
@@ -2057,7 +2057,7 @@ function prSegs(r, t, now) {
 function fixSegs(f, running, wait = null) {
   const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
   const who = running ? 'a worker' : wait ? `${wait}, then a worker` : 'next free worker';
-  if (f.kind === 'gaps') return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
+  if (personCall(f)) return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
   if (f.kind === 'capture') return [[`#${f.pr}`, PR_SGR], [' · ', null], [`${f.files?.length ?? 0} screenshot(s) never taken`, WARN], [` · ${who} takes them`, null]];
   return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, FAIL], [` · ${who} repairs it, try ${f.try} of ${f.of}`, null]];
 }
@@ -2474,7 +2474,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   if (row && !row.pr) { for (const [label, segs] of timingFields(r, forecastOf(r, { now, checkin }), row, h, now)) field(label, segs); out.push(''); }
   // The PR's fix try and what no fix try can move, as the last pass recorded them on the ticket.
   const stuck = t.stuck && !t.merged_at ? stuckOf(t, r.ctx) : null;
-  if (t.fix?.kind === 'gaps') field('Your call', [[t.fix.what, null]]);
+  if (personCall(t.fix)) field('Your call', [[t.fix.what, null]]);
   else if (t.fix) field('Fix try', [[`${t.fix.try} of ${t.fix.of} · ${t.fix.what}`, null]]);
   if (stuck) field('For you', [[stuck.why, WARN]]);
   if (t.fix || stuck) out.push('');

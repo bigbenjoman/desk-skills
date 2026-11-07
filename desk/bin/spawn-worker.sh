@@ -91,6 +91,19 @@ if [ -n "${AUTOPILOT_LOGIN_DIR+set}" ]; then
   if [ -n "$AUTOPILOT_LOGIN_DIR" ]; then export CLAUDE_CONFIG_DIR="$AUTOPILOT_LOGIN_DIR"; else unset CLAUDE_CONFIG_DIR; fi
 fi
 
+# What this session starts as, and the effort config §3b Worker effort names for it. With the effort
+# lever off it is `default` and no --effort is passed. A malformed row is refused here, before the
+# preflight, naming the value, whichever session is starting: the preflight sets no start of its own.
+START="${AUTOPILOT_START_STAGE:-0}"
+[ -n "${AUTOPILOT_TASK:-}" ] && START=task
+[ -n "${AUTOPILOT_RESUME:-}" ] && START=resume
+if ! EFFORT="$(node "$DESK_ENV_MJS" effort "$START" 2>/dev/null </dev/null)"; then
+  echo "FAIL: $(node "$DESK_ENV_MJS" effort "$START" 2>&1 >/dev/null </dev/null) — refusing to spawn $TICKET" >&2
+  exit 1
+fi
+EFFORT_ARGS=()
+[ "$EFFORT" != default ] && EFFORT_ARGS=(--effort "$EFFORT")
+
 DRY_NOTE=""
 if [ -n "${AUTOPILOT_DRY_RUN:-}" ]; then
   DRY_NOTE=" This is a DRY RUN: pushing, opening a PR, posting a review and every Jira write are blocked on purpose. Commit locally, do everything else in full, then print AUTOPILOT_DONE saying what you would have pushed. Do not treat those blocks as errors to work around."
@@ -356,12 +369,10 @@ $DIGEST"
 fi
 
 # The desk commit and levers this start runs on, and the bytes it is handed, one line per start for
-# phase0-report.mjs. A record that cannot be written never stops a spawn.
-START="${AUTOPILOT_START_STAGE:-0}"
-[ -n "${AUTOPILOT_TASK:-}" ] && START=task
-[ -n "${AUTOPILOT_RESUME:-}" ] && START=resume
+# phase0-report.mjs, and its start, model and effort into the log for worker-cost.mjs. A record that
+# cannot be written never stops a spawn.
 node "$BIN/phase0-report.mjs" spawn-line --ticket "$TICKET" --session "$SID" --stage "$START" --model "${MODEL:-default}" \
-  --system-bytes "$(printf '%s' "$SYSTEM" | wc -c | tr -d ' ')" --prompt-bytes "$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')" \
+  --effort "$EFFORT" --log "$LOG" --system-bytes "$(printf '%s' "$SYSTEM" | wc -c | tr -d ' ')" --prompt-bytes "$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')" \
   >> "$STATE/workers/$TICKET.runs.jsonl" 2>/dev/null || true
 
 cd "$WT"
@@ -388,6 +399,7 @@ desk_detach claude -p "$PROMPT" \
   --exclude-dynamic-system-prompt-sections \
   ${BUDGET_ARGS[@]+"${BUDGET_ARGS[@]}"} \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+  ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} \
   >> "$LOG" 2>&1 < /dev/null &
 disown $! 2>/dev/null || true
 

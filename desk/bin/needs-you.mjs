@@ -10,8 +10,10 @@
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
 //                           person has done, "<what was done>": handed back to a worker that starts at
-//                           self-review, with it in its briefing (queue.mjs handback)
-//       answer "<answer>"   answer it only (digest.mjs answer): triage questions, and an epic's drafted
+//                           self-review, with it in its briefing (queue.mjs handback). On a PR open on
+//                           GitHub, "<instruction>": kept for its next worker and requeued for a worker
+//                           on the PR, whoever runs the batch; a merged or closed PR is refused, saying so
+//       answer "<answer>"  answer it only (digest.mjs answer): triage questions, and an epic's drafted
 //                           plan (start, discard, or an edit), recorded on the epic for the supervisor to
 //                           act on (epic-plan.mjs actOnPlan). On a draft PR whose
 //                           review left gaps, the call on them: posted on the PR, kept for its next
@@ -55,10 +57,10 @@ import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { gapsFix, personReviewFix } from './fix-tries.mjs';
+import { gapsFix, instructionFix, personReviewFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
@@ -89,6 +91,11 @@ const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stat
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
 const reviewGaps = (t) => t.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
 const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
+// Every open PR takes an instruction for a worker on it, whatever else the item offers.
+const SEND_BACK = ['resume', null, 'resume "<instruction>" keeps it for the next worker and sends the ticket back to a worker on the PR'];
+// Why a PR in this state takes no instruction, or null for an open one.
+const prShut = (pr, state) => (state === 'MERGED' ? `PR #${pr} is merged, so no worker can carry out an instruction on it, and nothing was recorded.`
+  : state === 'CLOSED' ? `PR #${pr} was closed without merging, so no worker can carry out an instruction on it, and nothing was recorded. Drop the ticket, or requeue it for a worker that opens a new PR.` : null);
 
 // ---- A PR item in the person's words: what is wrong, then what to do and what happens once they have.
 // No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
@@ -415,22 +422,23 @@ function itemOf(r, x) {
     const need = prPlain(r, t), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
     if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
-    if (reviewGaps(t)) return { kind: 'pr', need, note, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
+    const openPr = (...actions) => ({ kind: 'pr', need, note, actions: [...actions, SEND_BACK, ['not-now']] });
+    if (reviewGaps(t)) return openPr(['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done']);
     // Held by nothing but a person's approval: once asked for, there is nothing to do but wait for it.
     const ask = approvalAsk(t, prWhy(r, t) ?? {});
-    if (ask && !ask.left.length) return { kind: 'pr', approval: true, need, note, actions: [['waiting', 'once the approval is asked for, waiting keeps it off this list until it gets one or its head moves'], ['done'], ['not-now']] };
+    if (ask && !ask.left.length) return { ...openPr(['waiting', 'once the approval is asked for, waiting keeps it off this list until it gets one or its head moves'], ['done']), approval: true };
     // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
     // and the item leaves the list once every check it is still stuck on is green.
     const outside = stuck?.outside ?? [];
     if (outside.length) {
       const checks = `${stuck.checks.map((c) => `"${c.name}"`).join(', ')} ${stuck.checks.length === 1 ? 'is' : 'are'} green`;
-      return { kind: 'pr', need, note, actions: [['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`], ['not-now']] };
+      return openPr(['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`]);
     }
     // Review findings in the code are a worker's to fix, so one more try goes to a worker on the PR.
     if (stuck && personReviewFix(t, { why: stuck.why })) {
-      return { kind: 'pr', need, note, actions: [['fix', "its findings are in the code, which a worker can fix: fix sends it to a worker on the PR for one more try, and the review of its new head says whether they are gone"], ['done'], ['not-now']] };
+      return openPr(['fix', "its findings are in the code, which a worker can fix: fix sends it to a worker on the PR for one more try, and the review of its new head says whether they are gone"], ['done']);
     }
-    return { kind: 'pr', need, note, actions: [['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then'], ['not-now']] };
+    return openPr(['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then']);
   }
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in
   // it, makes it clean, and the pass drops the record once it is.
@@ -660,10 +668,14 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
+  const [verb, id] = action.split(/\s+/);
+  // A resume on a PR the queue already has shut says why, not that the verb or the item is unknown.
+  const queued = r.q?.tickets?.[ticket], status = prStatusOf(queued);
+  const shut = verb === 'resume' && status ? prShut(status.pr, queued.merged_at ? 'MERGED' : status.state) : null;
+  if (shut) return { ok: false, line: `${r.name} ${ticket}: ${shut}` };
   const x = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
   if (!x) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const item = itemOf(r, x);
-  const [verb, id] = action.split(/\s+/);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
   // refused naming those that are.
   const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : [])];
@@ -698,14 +710,32 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     if (no) return say(false, `posted on PR #${pr} and in its briefing, but ${no}`);
     return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
   };
+  // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err }.
+  const readPr = (pr) => {
+    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
+    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'state,mergedAt,isDraft,headRefOid'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '' }; }
+    catch (e) { return { v: null, err: one(e.stderr || e.message) }; }
+  };
+  // The person's instruction on an open PR: kept in the briefing and as the fix its next worker starts
+  // on, then requeued whoever runs the batch, as a gaps answer is. Read from GitHub first: a worker
+  // sent to a PR merged or closed since the last pass has nothing to push to.
+  const prResume = () => {
+    const pr = x.t.result.pr;
+    const { v, err } = readPr(pr);
+    if (!v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so nothing was recorded and it stays on your list.`);
+    const gone = prShut(pr, v.state);
+    if (gone) return say(false, gone);
+    const a = ans();
+    if (!a.ok) return say(false, a.why);
+    const no = sendFix(instructionFix(x.t, { pr, head: v.headRefOid ?? x.t.pr_status?.head, ready: v.isDraft === false, answer: text }));
+    if (no) return say(false, `kept in its briefing, but ${no}`);
+    return say(true, `kept for its next worker and requeued; the next pass sends it to a worker on PR #${pr}.`);
+  };
   // Done on a PR: read it from GitHub now. Merged is recorded (the next pass records the merge in full,
   // as it does any merge) and leaves the list; anything else is said, and noted on the item.
   const prDone = () => {
     const pr = x.t.result.pr;
-    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
-    let v = null, err = '';
-    try { v = JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'state,mergedAt,isDraft,headRefOid'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); }
-    catch (e) { err = one(e.stderr || e.message); }
+    const { v, err } = readPr(pr);
     if (!v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not marked done and stays on your list.`);
     if (v.state === 'MERGED') {
       const at = v.mergedAt && !String(v.mergedAt).startsWith('0001-') ? v.mergedAt : new Date(now).toISOString();
@@ -739,6 +769,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
         const h = queueCmd(r, ['handback', ticket, text]);
         return h.ok ? say(true, 'handed back to a worker that starts at self-review, with your note in its briefing; the next pass can spawn it.') : say(false, `not handed back: ${h.out}`);
       }
+      if (item.kind === 'pr') return prResume();
       const a = ans();
       if (!a.ok) return say(false, a.why);
       if (item.kind === 'worktree') return say(true, 'recorded for its next worker; the next pass that finds the worktree clean starts it.');

@@ -656,6 +656,22 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: PR #88"'
 check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: PR #88 (no marker printed"'
 q set Y-7 state=done
+# The same exits on the person's instruction: an open PR does not show it was carried out, and a ticket
+# recorded done has its fix closed in that pass, which frees the merge.
+instruction_fix='fix={"try":1,"of":1,"kind":"instruction","pr":88,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}'
+killed Y-61 sess-y61; q set Y-61 "$instruction_fix"; result_event >> "$T/state-k/logs/Y-61.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-501 a worker on the person's instruction that ended with no marker parks, its fix left open" '[ "$(field Y-61 state)" = "\"parked\"" ] && [ "$(field Y-61 fix.finished)" = null ] && [ "$(field Y-61 result)" = null ] && field Y-61 park.question | grep -q "your instruction on PR #88 may not be carried out" && ! echo "$out" | grep -q "Y-61: PR #88 (no marker printed"'
+q requeue Y-61
+check "DS-501 a requeue of that park keeps the instruction for its next worker" '[ "$(field Y-61 state)" = "\"triaged\"" ] && [ "$(field Y-61 fix.answer)" = "\"rename it\"" ] && [ "$(field Y-61 fix.finished)" = null ]'
+q set Y-61 state=done
+killed Y-62 sess-y62; q set Y-62 "$instruction_fix" resumes=2
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-501 so does a worker on the instruction killed past its resumes" '[ "$(field Y-62 state)" = "\"parked\"" ] && [ "$(field Y-62 fix.finished)" = null ] && field Y-62 park.question | grep -q "your instruction on PR #88"'
+q set Y-62 state=done
+killed Y-63 sess-y63; q set Y-63 "$instruction_fix" fix.finished=2026-01-01T00:00:00Z; result_event >> "$T/state-k/logs/Y-63.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: PR #88 (no marker printed"'
 probe_says limited $(( $(date +%s) + 3600 ))
 killed Y-6 sess-y6; usage_exit Y-6 $(( $(date +%s) + 3600 ))
 out=$(node "$B/pass.mjs" 2>&1)
@@ -2202,6 +2218,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field CW-3 state)" = "\"parked\"" ] && field CW-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
 check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
 check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
+# DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
+# an effort, so it parks rather than run at the session default, and a malformed row names its value.
+effort_cfg(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `effort` |\n| Worker effort | `none` | `%s` |\n' "$1"; } > "$T/config-ef.md"; }
+effort_cfg 0=low; cloud_ticket CW-4
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "DS-450 AC1 with the effort lever on, a cloud ticket parks and says why" '[ "$(field CW-4 state)" = "\"parked\"" ] && field CW-4 park.question | grep -q "the effort lever is on, and a cloud session cannot be given an effort"'
+check "DS-450 AC1 and no session starts for it, here or in the cloud" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-4" ] && ! echo "$out" | grep -q "CW-4 port="'
+effort_cfg 0=turbo; cloud_ticket CW-5
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
 
 # ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
 # W-1's worktree is another process's working directory. W-2 and W-3 are fix tries: W-2's worktree

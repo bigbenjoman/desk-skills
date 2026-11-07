@@ -49,8 +49,7 @@ comes back as a new `plan` item naming why), `triage`
 `worktree` (no worker spawns into its worktree until it is clean), `usage` (a usage limit holds the batch:
 one item, `usage-limit`, that lifts by itself or sooner after a subscription
 switch) or `base-push` (approve the sync); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
-outside GitHub has none: its need names the step, and it leaves the
-list once its check is green.
+outside GitHub has none: its need names the step, and it leaves once its check is green.
 
 ## 2. Ask, four at a time
 
@@ -59,17 +58,16 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
 - **header**: the ticket key.
 - **question**: `<repo> <TICKET>: <what is needed>`, in one line.
 - **options**: the recommendation first, labelled `(Recommended)` with its reason as the
-  description, then the other actions. With no recommendation, none is labelled. You get four options at most, and the free-text "Other"
-  is always added.
-- For `resume`, `answer` and `reject`, the answer text is what gets recorded. Where the question
-  offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Where it does
-  not, the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
+  description, then the other actions. With no recommendation, none is labelled. At most four options; free-text "Other" is always added.
+- For `resume`, `answer` and `reject`, the answer text is recorded. Where the question
+  offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Otherwise
+  the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
   resume, so it never stays parked once answered. A `session` item has none either: once its step
   is done, `resume` takes what was done and hands it to a worker. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
-  `record` posts on the PR and sends to a worker on it.
-- An `override <id>` action takes the user's choice as its text.
-- A `move` takes the batch's name (`standing` for the standing batch). An answer to move the
-  ticket to another batch is a `move`, never a `resume`.
+  `record` posts on the PR and sends to a worker on it. An open PR's `resume` sends a worker an instruction, unposted.
+- `override <id>` takes the user's choice as its text.
+- A `move` takes the batch's name (`standing` for the standing batch). Moving a ticket to another
+  batch is a `move`, never a `resume`.
 
 Ask the next round only after recording this one.
 

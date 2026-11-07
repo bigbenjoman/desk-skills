@@ -24,8 +24,8 @@ import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
-import { batchCost, costTable, preflightLine, wallTime } from './worker-cost.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall } from './cloud-worker.mjs';
+import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
@@ -546,7 +546,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 
   // A worker at a usage limit (usage-limit.mjs decides; nothing here reads the event). Only a worker
   // that has neither parked nor finished, and has not answered since the limit, is acted on.
-  const logText = readFileSync(log, 'utf8');
+  const logRaw = readFileSync(log);
+  const logText = logRaw.toString();
   const usage = usageLimit(logText);
   const limit = !park && !done && !handoff && usage.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
   if (usage.unrecognised.length > (t.usage_unrecognised ?? 0)) {
@@ -568,7 +569,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // long suite behind the test lock never did: six quiet passes is the margin for both.
   const bytes = statSync(log).size;
   let wedged = false;
-  if (bytes > (t.log_bytes ?? 0)) {
+  if (wroteSince(logRaw, t.log_bytes ?? 0)) {
     q('set', t.key, `log_bytes=${bytes}`, 'idle_passes=0');
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
@@ -723,11 +724,19 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // means a PR exists, NOT that the review posted or that it merged — verify those separately.
     const pr = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch ?? '',
       '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
-    if (/^\d+$/.test(pr)) {
+    const prOpen = /^\d+$/.test(pr);
+    // The person's instruction is the exception: an open PR says nothing about whether it was carried
+    // out, and done would close the fix that holds the merge (merge-driver.sh instruction_held).
+    const instruction = t.fix?.kind === 'instruction' && !t.fix.finished;
+    if (prOpen && !instruction) {
       recordDone(t, { log, h, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)` });
     } else {
       logDecisions(t, log, null);
-      if (stop?.fail) {
+      if (prOpen) {
+        const why = `its worker ended with no marker, so your instruction on PR #${pr} may not be carried out, and the PR stays held from merging. Requeue it for a new worker on the same instruction — check ${log}`;
+        q('park', t.key, why);
+        report.parked.push(`${t.key}: ${why}`);
+      } else if (stop?.fail) {
         q('set', t.key, 'state=failed');
         report.failed.push(`${t.key}: killed before it finished (${killed}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
       } else if (stop?.park) {
@@ -1384,8 +1393,9 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     else report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
   } else if (bf?.running) {
     const log = join(STATE, 'logs', `${BASE_FIX_KEY}.log`);
-    let text = '';
-    try { text = readFileSync(log, 'utf8'); } catch { /* no log yet: read as ended */ }
+    let raw = Buffer.alloc(0);
+    try { raw = readFileSync(log); } catch { /* no log yet: read as ended */ }
+    const text = raw.toString();
     const recent = (() => { try { return Date.now() - statSync(log).mtimeMs < 120_000; } catch { return false; } })();
     const markers = workerMarkers(text);
     const said = markers.some(([k]) => k === 'AUTOPILOT_DONE' || k === 'AUTOPILOT_PARK');
@@ -1395,7 +1405,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     const atLimit = usage?.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
     const paused = pausedOn(atLimit);
     const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
-    const idle = bytes > (bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
+    const idle = wroteSince(raw, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
     const sidLive = registryOk && liveSids.has(bf.running);
     const exited = registryOk && !sidLive && !(recent && !endedNormally(text));
     // A headless worker ends its session at the limit rather than waiting for it to lift. As a ticket's
@@ -1930,6 +1940,10 @@ function spawnCloud(t) {
     report.parked.push(`${t.key}: ${line}`);
     return;
   }
+  // Placed before the effort lever went on, or with a malformed row: the plan keeps these local now.
+  let effort;
+  try { effort = E.workerEffort('0'); } catch (e) { park(e.message); return; }
+  if (effort !== E.NO_EFFORT) { park(CLOUD_NO_EFFORT); return; }
   let text;
   try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }

@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
+import { RESUME_STAGES } from './desk-env.mjs';
 
 // The stages a session may start at, and the stage each one follows.
 export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
@@ -82,8 +83,6 @@ export function branchCommits(worktree, base) {
 // stages before it only read the ticket and the code again. pass.mjs records `last_round` on the queue
 // when a worker parks and reads it at the next fresh spawn. A stage before 3, or a stage it cannot
 // read, starts at Stage 0.
-export const RESUME_STAGES = ['3', '4', '4b', '5', '6', '7', '8', '9'];
-
 // "4/9" or "4b" as the stage a session starts at, or null for one before Stage 3 or none.
 export function roundStage(v) {
   const s = /^\s*(4b|\d)(?:\/9)?\b/i.exec(String(v ?? ''))?.[1]?.toLowerCase();
