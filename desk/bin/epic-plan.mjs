@@ -43,18 +43,19 @@ function batchEnv(epic) {
 }
 const run = (cmd, args, env, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', env, maxBuffer: 64 << 20, ...opts });
 const node = (script, args, env) => run(process.execPath, [join(HERE, script), ...args], env);
-// One triage.sh run that leaves the event loop free, so what else is in flight can say it finished: a
-// promise of its result, as spawnSync gives it.
-export function triageRun(key, env) {
+// A run that leaves the event loop free, so what else is in flight can say it finished: a promise of
+// its result, as spawnSync gives it.
+function runLater(cmd, args, env, opts = {}) {
   return new Promise((resolve) => {
     const out = { stdout: '', stderr: '' };
-    const c = spawn(join(HERE, 'triage.sh'), [key], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    c.stdout.setEncoding('utf8').on('data', (d) => { out.stdout += d; });
-    c.stderr.setEncoding('utf8').on('data', (d) => { out.stderr += d; });
+    const c = spawn(cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    c.stdout?.setEncoding('utf8').on('data', (d) => { out.stdout += d; });
+    c.stderr?.setEncoding('utf8').on('data', (d) => { out.stderr += d; });
     c.on('error', (error) => resolve({ ...out, status: null, error }));
     c.on('close', (status, signal) => resolve({ ...out, status, signal }));
   });
 }
+export const triageRun = (key, env) => runLater(join(HERE, 'triage.sh'), [key], env);
 
 // In a batch's state from its start until it is handed to the supervisor. A start killed in between
 // (the supervisor's intake timeout) never reaches its discard, so the next one finds this left behind
@@ -315,16 +316,17 @@ export function readDraft(text) {
 }
 
 // One headless session with no tools, answering `prompt`: the spawn result.
-const headless = (claude, prompt, env) => run(claude, ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
-  '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)], env, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+const headlessArgs = (prompt) => ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
+  '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)];
+const headless = (claude, prompt, env) => run(claude, headlessArgs(prompt), env, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
 
 // One headless session drafts the plan: {plan} or {why}.
-function draft({ epic, state, children, env, claude }) {
+async function draft({ epic, state, children, env, claude }) {
   const epicText = run('desk-jira', ['get', epic], env);
   const expansion = readJson(join(state, 'expansion.json'), {});
   const prompt = draftPrompt({ epic, epicText: epicText.status === 0 ? epicText.stdout : '', criteria: expansion.criteria, children, fields: fieldsSection(DRAFT_FIELDS, env) });
   writeFileSync(join(state, 'plan-draft.prompt.md'), prompt);
-  const r = headless(claude, prompt, env);
+  const r = await runLater(claude, headlessArgs(prompt), env, { timeout: DRAFT_TIMEOUT_MS });
   if (r.error || r.status !== 0) return { why: `the plan drafter failed (${lastLine(r)})` };
   const p = readDraft(r.stdout);
   return p.why ? p : { plan: { epic, spine: null, draft: p.draft, owners: p.owners, contributors: p.contributors, untestable: p.untestable }, cost: p.cost };
@@ -398,7 +400,7 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
   const wantsPlan = wantsSpine(v, key);
   let ask = null;
   if (wantsPlan) {
-    const d = draft({ epic: key, state, env, claude, children: children.map((c) => ({ key: c, summary: recs[c].summary, files: recs[c].files_in_scope })) });
+    const d = await draft({ epic: key, state, env, claude, children: children.map((c) => ({ key: c, summary: recs[c].summary, files: recs[c].files_in_scope })) });
     if (d.why) return discard(d.why);
     writeFileSync(join(state, 'feature.json'), `${JSON.stringify(d.plan, null, 2)}\n`);
     tell(`drafted ${key}'s spine and owner table headless${d.cost != null ? ` ($${d.cost.toFixed(2)})` : ''}`);

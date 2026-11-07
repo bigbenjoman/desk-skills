@@ -492,7 +492,7 @@ EOF
 cat > "$T/claude.out" <<'EOF'
 {"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: one strict expected-fail spec for AC1\", \"owners\": {\"AC1\": \"E-6\"}}"}
 EOF
-printf '#!/bin/sh\nprintf "%%s\\n" "$1 $2" | head -1 >> "%s/claude.calls"\n[ -f "%s/claude.fails" ] && { echo "claude: session limit" >&2; exit 1; }\ncat "%s/claude.out"\n' "$T" "$T" "$T" > "$T/fakes/claude"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1 $2" | head -1 >> "%s/claude.calls"\n[ -f "%s/claude.sleep" ] && sleep "$(cat "%s/claude.sleep")"\n[ -f "%s/claude.fails" ] && { echo "claude: session limit" >&2; exit 1; }\ncat "%s/claude.out"\n' "$T" "$T" "$T" "$T" "$T" > "$T/fakes/claude"
 chmod +x "$T/fakes/claude"
 EB="$DESK_HOME/repos/acme__widgets/batches"; ES="$HOME/.desk-autopilot/acme__widgets/batches"
 eget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],q); console.log(typeof v==="object"?JSON.stringify(v):String(v))' "$EB/$1/queue.json" "$2"; }
@@ -1034,6 +1034,10 @@ rec SG-1 A '"type":"Epic","branch":"feat/SG-1-lines"'; epicget SG-1; rec SG-2 A;
 printf 'SG-3\n' > "$T/children/SG-1"
 pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit SG-1 SG-2 --by ben); rc=$?
 check "DS-507 AC2: a ticket's triage that ends while an epic's child is in triage says so at once" '[ $rc -eq 0 ] && after SG-2 SG-3'
+rec SD-1 A '"type":"Epic","branch":"feat/SD-1-lines"'; epicget SD-1; rec SD-2 A; rec SD-3 A; echo 1 > "$T/recs/SD-2.sleep"; echo 3 > "$T/claude.sleep"
+printf 'SD-3\n' > "$T/children/SD-1"
+out=$(DESK_MEM_AVAIL_GB=64 admit SD-1 SD-2 --by ben); rc=$?; rm -f "$T/claude.sleep"
+check "DS-507 AC2: a ticket's triage that ends while an epic's plan is drafted says so at once" '[ $rc -eq 0 ] && sed -n "/^triage: done SD-2 /,\$p" <<< "$out" | grep -q "^drafted SD-1"'
 rec SJ-1 A '"epic":{"key":"SC-1","summary":"a feature"}'; rec SJ-2 A; echo 2 > "$T/recs/SJ-1.sleep"; echo 3 > "$T/recs/SJ-2.sleep"
 out=$(DESK_MEM_AVAIL_GB=64 admit SJ-1 SJ-2 --by ben); rc=$?
 check "DS-507 AC2: a ticket's triage that ends while another joins a batch says so at once" \
