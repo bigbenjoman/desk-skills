@@ -96,6 +96,18 @@ one line saying so. A ticket in no batch writes nothing and prints nothing, so s
 queues. The orchestrator's own merge flow already records its merges (`queue.mjs merged`), so this
 is for interactive sessions only.
 
+**Once the ticket is in §4 Done state, close the GitHub issues it was filed for** (Jira only):
+
+```bash
+node ~/.claude/desk/bin/linked-issues.mjs <TICKET>
+```
+
+Each GitHub issue in this repo that the ticket's web links name is closed, with a comment naming
+every ticket linking it and their merged PRs, once all of those tickets are done (§3
+`gh-close-linked-issue`; short of `yes` it names the issue as ready to close instead). An issue
+another ticket still holds open stays open. Relay each line it prints. A ticket with no such link
+prints nothing. The merge driver runs this itself after its own move to Done.
+
 - **Green is the config's one definition** (desk-config "Green", the same in `desk-autopilot`,
   `desk-clearance` and the merge driver): on the exact head commit being merged, every §4 Required
   checks entry (`desk-env list required-checks`) completed with success (a skipped one passes, as branch protection counts it); no other check failed, errored, timed out

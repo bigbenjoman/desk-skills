@@ -174,6 +174,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `ci-rerun` | Re-run a completed CI run that was cancelled or hit a known flake | `yes` | `TODO` |
 | `codex-review` | Send diffs to OpenAI Codex for cross-vendor refutation | `yes` | `TODO` |
 | `ci-protection` | Change branch protection, rulesets or the default workflow token (`/desk-ci protection restore`, `pin`, `token`), after showing the exact change | `ask` | `TODO` |
+| `gh-close-linked-issue` | Close a GitHub issue in this repo that your tickets' web links name, with a comment naming them and their PRs, once every ticket linking it is done | `yes` | `TODO` |
 
 `pr-auto-merge` merges on green by itself, so it needs `pr-merge-green` as well; setup asks again
 if the two differ. `pr-merge-green` `no` means you merge: skills report a PR ready at `APPROVED` +

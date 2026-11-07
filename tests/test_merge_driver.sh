@@ -131,6 +131,13 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'api') {
   const n = /pulls\/(\d+)\/files/.exec(a.join(' '))?.[1];
   out(((n && prs[n]?.files) || ['src/a.txt']).join('\n'));
+} else if (a[0] === 'issue' && a[1] === 'view') {
+  // An issue's state: issues.json maps a number to OPEN or CLOSED; any other issue is open.
+  const f = '$T/issues.json', is = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
+  out({ state: is[a[2]] ?? 'OPEN' });
+} else if (a[0] === 'issue' && a[1] === 'close') {
+  const f = '$T/issues.json', is = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
+  is[a[2]] = 'CLOSED'; fs.writeFileSync(f, JSON.stringify(is));
 } else if (a[0] === 'pr' && a[1] === 'ready') {
   prs[a[2]].draft = false;
   fs.writeFileSync(F, JSON.stringify(prs));
@@ -412,10 +419,11 @@ check "DS-203 AC6: a new batch carries no approval, so it is asked again" '[ $rc
 
 # ---- DS-336: a ticket whose last open PR the driver merges goes to §4 Done state -------------------
 sed -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \
-  | awk '{ print } /^\| `pr-ready`/ { print "| `jira-close-own-merged` | Close own merged | `yes` | `yes` |" } /^\| Tracker/ { print "| Done state | `Done` |" }' > "$T/config-close.md"
+  | awk '{ print } /^\| `pr-ready`/ { print "| `jira-close-own-merged` | Close own merged | `yes` | `yes` |"; print "| `gh-close-linked-issue` | Close linked issue | `yes` | `yes` |" } /^\| Tracker/ { print "| Done state | `Done` |"; print "| Jira project | `T` |" }' > "$T/config-close.md"
 sed -e 's/| `jira-close-own-merged` | Close own merged | `yes` | `yes` |/| `jira-close-own-merged` | Close own merged | `yes` | `ask` |/' "$T/config-close.md" > "$T/config-noclose.md"
-# The fake desk-jira: each ticket's status in jira-status/<key>, In Progress until a transition moves it.
-mkdir -p "$T/jira-status"
+# The fake desk-jira: each ticket's status in jira-status/<key>, In Progress until a transition moves it;
+# its web links in jira-links/<key> (none without one). A search finds no other ticket.
+mkdir -p "$T/jira-status" "$T/jira-links"
 cat > "$T/stub/desk-jira" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$T/jira-close.log"
@@ -423,9 +431,17 @@ f="$T/jira-status/\$2"
 case "\$1" in
   get) st="In Progress"; [ -f "\$f" ] && st="\$(cat "\$f")"; jq -n --arg s "\$st" '{fields: {status: {name: \$s}}}' ;;
   transition) printf '%s' "\$3" > "\$f"; echo "\$2 -> \$3" ;;
+  api) k="\${2#api/2/issue/}"
+    case "\$k" in
+      *'?fields=status') k="\${k%%\?*}"; st="In Progress"; [ -f "$T/jira-status/\$k" ] && st="\$(cat "$T/jira-status/\$k")"
+        jq -n --arg k "\$k" --arg s "\$st" '{key: \$k, fields: {status: {name: \$s, statusCategory: {key: (if \$s == "Done" then "done" else "indeterminate" end)}}}}' ;;
+      *) k="\${k%%/*}"; if [ -f "$T/jira-links/\$k" ]; then cat "$T/jira-links/\$k"; else echo '[]'; fi ;;
+    esac ;;
+  search) echo '{"issues": []}' ;;
   *) exit 1 ;;
 esac
 EOF
+printf '[{"object": {"url": "https://github.com/acme/widgets/issues/7"}}, {"object": {"url": "https://github.com/other/repo/issues/8"}}]' > "$T/jira-links/T-31"
 chmod +x "$T/stub/desk-jira"
 SHA31=c111111111111111111111111111111111111111; SHA32=c222222222222222222222222222222222222222
 SHA33=c333333333333333333333333333333333333333; SHA34=c444444444444444444444444444444444444444
@@ -444,6 +460,8 @@ cloop(){ out=$(DESK_CONFIG="$1" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=
 cloop "$T/config-close.md"; cloop "$T/config-close.md"
 check "DS-336 AC1: the merged ticket is moved to Done and read back"  '[ "$(merged)" = 131 ] && grep -qx "transition T-31 Done" "$T/jira-close.log" && [ "$(cat "$T/jira-status/T-31")" = Done ] && echo "$out" | grep -q "#131 T-31 moved to Done (read back; §3 jira-close-own-merged)"'
 check "DS-336 AC1: the status is read again after the transition"     '[ "$(grep -c "^get T-31 --json" "$T/jira-close.log")" = 2 ]'
+check "DS-502 AC1: once Done, the issue the ticket links is closed naming it and its PR" 'grep -qxF "issue close 7 --repo acme/widgets --comment Closed by desk: every ticket filed for this issue is done: T-31 (#131)." "$T/gh.log" && echo "$out" | grep -qF "#131 T-31 acme/widgets#7 closed: "'
+check "DS-502 AC4: the issue it links in another repo is not touched" '! grep -qE "issue (view|close) 8" "$T/gh.log"'
 cloop "$T/config-close.md"
 check "DS-336 AC2: another PR open on the key, by anyone and on any base, leaves the ticket as it is" '[ "$(merged)" = "131 132" ] && ! grep -q "transition T-32" "$T/jira-close.log" && echo "$out" | grep -q "#132 T-32 left as it is: #133 still open on the key"'
 jq --arg s "$SHA34" '. + { "134": { head: "fix/T-34", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"

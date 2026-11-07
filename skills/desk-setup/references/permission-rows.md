@@ -95,7 +95,8 @@ a row changes, say which of these applies.
 |---|---|
 | `worker-settings.mjs` (a worker's own settings) | `git-push`, `git-force-with-lease`, `pr-open`, `pr-edit`, `pr-self-review-comment` (`gh pr review` and `gh pr comment`; `--approve` and `--request-changes` stay denied), `pr-reply` (`gh pr comment` only; never `gh api`), `pr-update-branch`, `ci-rerun`, `jira-comment`, `jira-transition`, `jira-create`, `jira-edit`, `codex-review`, `read-figma`, `worker-dependency-install`, `worker-screenshots`, `worker-local-services`, `worker-web-read`, `worker-workflow-dispatch` (with §4 Worker workflows): anything short of `yes`, unset included, is denied to the worker |
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
-| `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first`, `merge-hold-routine` (it never arms auto-merge, so `pr-auto-merge` does not reach it) |
+| `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first`, `merge-hold-routine` (it never arms auto-merge, so `pr-auto-merge` does not reach it); through `linked-issues.mjs`, `gh-close-linked-issue` |
+| `linked-issues.mjs` | `gh-close-linked-issue` (unset reads as `no`: the issue is named as ready to close) |
 | `pass.mjs` | `autopilot-workers`, `pr-images`, `ci-rerun` (a draft's cancelled or timed-out runs), `batch-base-push` (unset is `ask`); through `maintenance.mjs`, `machine-reboot` (unset is `ask`) |
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
@@ -182,6 +183,7 @@ rows).
 | `pr-conflict-unreviewed` | yes | DIRTY PRs fixed and re-reviewed without a round-trip | a resolution nobody else has read yet | ask | — |
 | `pr-conflict-reviewed` | ask | — | a silent resolution can revert a reviewer's merged work | yes | — |
 | `ci-rerun` | yes | a cancelled run or known flake retried, completed runs only | CI minutes; a rerun on a live run cancels it. _Reach_: any run; the skill checks it completed | ask | `Bash(gh run rerun *)` |
+| `gh-close-linked-issue` | yes | a GitHub issue a ticket's web link names closes, with a comment naming its tickets and their merged PRs, once every ticket linking it is done; `no` when §4 Tracker is `none` | a closed issue and a comment under your name. _Reach_: issues in this repo only, and only one every linking ticket has finished | ask · no (closeout names the issue as ready to close) | — (`linked-issues.mjs` reads the row and runs `gh issue close` itself) |
 | `ci-protection` | ask | `/desk-ci protection` restores a snapshot, pins required checks to GitHub Actions and makes the default workflow token read-only; each change is printed in full first and applies only by its plan id | a wrong protection write can block every merge or let one through unchecked; a snapshot taken first restores it | yes · no (the plans still print; nothing applies) | — (the script reads the row; `node desk-ci.mjs` keeps prompting) |
 
 ## Round 9 — autopilot (say the plain explanation first)

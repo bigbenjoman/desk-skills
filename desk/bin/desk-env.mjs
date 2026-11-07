@@ -208,6 +208,7 @@ export const PERMISSION_KEYS = Object.freeze({
   'ci-rerun': 'ci-rerun',
   'codex-review': 'codex-review',
   'ci-protection': 'ci-protection',
+  'gh-close-linked-issue': 'gh-close-linked-issue',
   'autopilot-workers': 'autopilot-workers',
   'autopilot-worker-mode': 'autopilot-worker-mode',
   'autopilot-merge': 'autopilot-merge',
