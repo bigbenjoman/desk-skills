@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 // A worker's push, retried while GitHub answers with a 5xx. A worker's Bash call stops at ten
 // minutes, so one run stays inside that and a second run, `--more`, carries on with the long waits:
-//   node push-retry.mjs [--more] [-u | --set-upstream | --force-with-lease] origin <branch>
+//   node push-retry.mjs [--more] [-u | --set-upstream | --force-with-lease[=<branch>:<sha>]] origin <branch>
 // Exit 0 pushed; 75 GitHub still answers 5xx; anything else is git's own refusal, never retried.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { describeCond } from './clears-when.mjs';
 
 export const TRANSIENT_EXIT = 75;
 const FIRST_WAITS = [30, 60, 120, 240];
 const MORE_WAITS = [240, 240];
-// Past this no wait starts, which leaves a slow pre-push hook room inside the Bash call's ten minutes.
-const RUN_LIMIT_S = 540;
+// No wait starts that, with a try as long as the last one after it, would end past this: a slow
+// pre-push hook stays inside the Bash call's ten minutes.
+const RUN_LIMIT_S = 570;
 
 const REASON = '(?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)';
 // Only the lines git and the remote write: a failing pre-push check can print anything.
@@ -29,15 +31,33 @@ export function transientPush(out) {
   return !HOOK_FAILED.test(s) && s.split('\n').some((l) => GIT_5XX.some((re) => re.test(l)));
 }
 
+// A push that never got an answer: no network, or a remote that could not be reached. A 4xx is an answer.
+const UNREACHED = /^(?:ssh: |fatal: (?:unable to access (?!.*The requested URL returned error)|Could not read from remote|the remote end hung up))/m;
+export const unreachedPush = (out) => UNREACHED.test(String(out ?? ''));
+
+const PINNED = /^--force-with-lease=([^:]+):([0-9a-f]{40})$/;
+
 // {more, push} from the CLI's arguments, or null for any other shape: this runs only the pushes a
 // worker's settings allow.
 export function parseArgs(argv) {
   const a = [...argv];
   const more = a[0] === '--more';
   if (more) a.shift();
-  const flag = ['-u', '--set-upstream', '--force-with-lease'].includes(a[0]) ? [a.shift()] : [];
+  const flag = ['-u', '--set-upstream', '--force-with-lease'].includes(a[0]) || PINNED.test(a[0] ?? '') ? [a.shift()] : [];
   if (a.length !== 2 || a[0] !== 'origin' || !a[1] || a[1].startsWith('-') || a[1].startsWith('+')) return null;
+  const pinned = PINNED.exec(flag[0] ?? '');
+  if (pinned && pinned[1] !== a[1]) return null;
   return { more, push: ['push', ...flag, ...a] };
+}
+
+// The condition a park on this push records. A lease push names the SHA it may overwrite, since a
+// pass makes the push long after, when origin's tracking ref may have moved onto someone else's commit.
+function parkCond(push, git) {
+  const branch = push.at(-1);
+  const lease = push[1] === '--force-with-lease'
+    ? git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`]).out.trim()
+    : PINNED.exec(push[1])?.[2];
+  return describeCond({ kind: 'push-ok', branch, ...(/^[0-9a-f]{40}$/.test(lease ?? '') ? { lease } : {}) });
 }
 
 // git(args) → {status, out}; sleep(ms), now() and say(line) as the CLI gives them. → the exit code.
@@ -45,15 +65,17 @@ export async function pushWithRetry({ more, push }, { git, sleep, now, say }) {
   const waits = more ? MORE_WAITS : FIRST_WAITS;
   const began = now();
   for (let tries = 1; ; tries += 1) {
+    const tried = now();
     const r = git(push);
     if (r.status === 0) return 0;
     if (!transientPush(r.out)) return r.status || 1;
     const secs = waits[tries - 1];
     const spent = Math.round((now() - began) / 1000);
-    if (secs == null || spent + secs > RUN_LIMIT_S) {
+    const last = Math.round((now() - tried) / 1000);
+    if (secs == null || spent + secs + last > RUN_LIMIT_S) {
       const again = ['node', process.argv[1], '--more', ...push.slice(1)].join(' ');
       say(more
-        ? `push-retry: GitHub still answers 5xx after ${tries} tries in ${spent}s. Park with AUTOPILOT_PARK_CLEARS_WHEN: git ${push.filter((p) => !/^-u$|^--set-upstream$/.test(p)).join(' ')} succeeds`
+        ? `push-retry: GitHub still answers 5xx after ${tries} tries in ${spent}s. Park with AUTOPILOT_PARK_CLEARS_WHEN: ${parkCond(push, git)}`
         : `push-retry: GitHub still answers 5xx after ${tries} tries in ${spent}s. Run this next, with the same ten-minute timeout: ${again}`);
       return TRANSIENT_EXIT;
     }
@@ -69,7 +91,7 @@ function isMain() {
 if (isMain()) {
   const args = parseArgs(process.argv.slice(2));
   if (!args) {
-    console.error('usage: push-retry.mjs [--more] [-u | --set-upstream | --force-with-lease] origin <branch>');
+    console.error('usage: push-retry.mjs [--more] [-u | --set-upstream | --force-with-lease[=<branch>:<sha>]] origin <branch>');
     process.exit(2);
   }
   const git = (a) => {

@@ -35,7 +35,7 @@ import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs,
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
-import { transientPush } from './push-retry.mjs';
+import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows } from './gate.mjs';
@@ -855,8 +855,9 @@ function shippedElsewhere(t) {
   } catch { /* unread: spawn as before */ }
   return null;
 }
-// A park on a push GitHub refused with a 5xx: try the push. A server error waits for the next pass;
-// any other refusal, or a push this pass may not make, ends the tries and goes to a person.
+// A park on a push GitHub refused with a 5xx: try the push. A server error waits for the next pass,
+// and a push that reached nothing is a check that could not run; any other refusal, or a push this
+// pass may not make, ends the tries and goes to a person.
 function pushParked(t, c) {
   if (DRY) return { holds: false };
   const stop = (why) => {
@@ -867,9 +868,10 @@ function pushParked(t, c) {
   if (rows.length) stop(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
   if (c.branch !== t.branch) stop(`it names ${c.branch}, and the ticket's branch is ${t.branch ?? 'not recorded'}`);
   if (!t.worktree || !existsSync(t.worktree)) stop('it has no worktree to push from');
-  const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? ['--force-with-lease'] : []), 'origin', c.branch]);
+  const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? [`--force-with-lease=${c.branch}:${c.lease}`] : []), 'origin', c.branch]);
   if (push.ok) return { holds: true };
   if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
+  if (unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
   return stop(`git refused it: ${push.out.split('\n').pop()}`);
 }
 for (const t of Object.values(queue().tickets)) {
@@ -912,7 +914,8 @@ for (const t of Object.values(queue().tickets)) {
 // finished from the worker's payload; a take call parked with a recommended option is answered with it
 // and requeued. A park only a session may take (needsSession), a hold, a spine, an epic's plan, a claim
 // or one put off is never touched. The push and the take are tried once a park (park.recovery says
-// why one was not done); the merged-PR check once per base and branch head (park.dup_checked).
+// why one was not done), and a push answered with a 5xx becomes a park the clears-when check tries
+// each pass; the merged-PR check runs once per base and branch head (park.dup_checked).
 const lastLine = (s) => String(s ?? '').trim().split('\n').pop();
 const shortQ = (s) => (String(s).length > 160 ? `${String(s).slice(0, 159)}…` : String(s));
 let baseFetched = false;
@@ -999,7 +1002,8 @@ function finishPush(t) {
   if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
   const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
   if (!push.ok && transientPush(push.out)) {
-    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and the next pass tries again`);
+    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and each pass tries the push until it can requeue it`);
     return true;
   }
   if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);

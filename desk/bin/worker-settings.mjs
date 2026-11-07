@@ -532,8 +532,9 @@ if (mode === 'triage') {
   // exact push of it, under the grant every base sync needs (§3 batch-base-push).
   const FORCE = [...[' push *--force', ' push *--force *', ' push *--force-if-includes*', ' push *--mirror*', ' push *--all*', ' push *--delete*',
     ' push +*', ' push * +*'], ...shortFlag(' push', '-f'), ...shortFlag(' push', '-d')];
-  // push-retry.mjs runs the same push, so it is allowed exactly where that push is.
-  const retried = (tail) => BIN_FORMS.flatMap((b) => ['', ' --more'].map((more) => `Bash(node ${b}/push-retry.mjs${more}${tail})`));
+  // push-retry.mjs runs the same push, so it is allowed exactly where that push is. A dry run's
+  // `git push` deny cannot reach a push the helper makes, so a dry run gets no helper at all.
+  const retried = (tail) => (opt.dry ? [] : BIN_FORMS.flatMap((b) => ['', ' --more'].map((more) => `Bash(node ${b}/push-retry.mjs${more}${tail})`)));
   if (baseFix) {
     const push = E.basePushGrant();
     if (push.ok) allow.push(...exact('git', ` push origin ${BRANCH}`), ...retried(` origin ${BRANCH}`));
@@ -548,7 +549,7 @@ if (mode === 'triage') {
       if (lease === 'yes') allow.push(...exact('git', ` push --force-with-lease origin ${BRANCH}`), ...exact('git', ` push --force-with-lease -u origin ${BRANCH}`), ...retried(` --force-with-lease origin ${BRANCH}`));
       else if (ONE_PUSH) {
         // The person's one-off grant: only the push naming its lease. The bare lease forms stay denied.
-        allow.push(...exact('git', ONE_PUSH));
+        allow.push(...exact('git', ONE_PUSH), ...retried(ONE_PUSH.slice(' push'.length)));
         FORCE.push(' push *--force-with-lease', ' push *--force-with-lease *');
         granted.push(`git${ONE_PUSH}`);
       } else { FORCE.push(' push *--force-with-lease*'); denied.push(`${E.permissionKey('git-force-with-lease')} (${setting('git-force-with-lease')})`); }

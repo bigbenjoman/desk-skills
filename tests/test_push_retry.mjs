@@ -4,7 +4,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TRANSIENT_EXIT, parseArgs, pushWithRetry, transientPush } from '../desk/bin/push-retry.mjs';
+import { parseClearsWhen } from '../desk/bin/clears-when.mjs';
+import { TRANSIENT_EXIT, parseArgs, pushWithRetry, transientPush, unreachedPush } from '../desk/bin/push-retry.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -34,11 +35,27 @@ t('--more and a flag', parseArgs(['--more', '-u', 'origin', 'fix/A-1']), { more:
 t('a lease push', parseArgs(['--force-with-lease', 'origin', 'fix/A-1']).push, ['push', '--force-with-lease', 'origin', 'fix/A-1']);
 for (const a of [[], ['origin'], ['--force', 'origin', 'b'], ['upstream', 'b'], ['origin', '+b'], ['origin', '--delete'], ['origin', 'a', 'b']]) t(`refused: ${a.join(' ') || 'nothing'}`, parseArgs(a), null);
 
+const TRACKED = 'a'.repeat(40);
+const PIN = `--force-with-lease=b:${'c'.repeat(40)}`;
+t('a one-off lease', parseArgs([PIN, 'origin', 'b']).push, ['push', PIN, 'origin', 'b']);
+t('refused: a lease naming another branch', parseArgs([PIN, 'origin', 'other']), null);
+t('refused: a lease with no full SHA', parseArgs(['--force-with-lease=b:abc', 'origin', 'b']), null);
+for (const [name, out, want] of [
+  ['no DNS', "fatal: unable to access 'https://github.com/a/b.git/': Could not resolve host: github.com", true],
+  ['an ssh timeout', 'ssh: connect to host github.com port 22: Operation timed out\nfatal: Could not read from remote repository.', true],
+  ['a hung-up remote', 'fatal: the remote end hung up unexpectedly', true],
+  ['a 403 is an answer', "fatal: unable to access 'https://github.com/a/b.git/': The requested URL returned error: 403", false],
+  ['a non-fast-forward is an answer', ' ! [rejected] b -> b (non-fast-forward)\nerror: failed to push some refs', false],
+]) t(`unreached: ${name}`, unreachedPush(out), want);
+
 // A stubbed git answering from `answers`, its last repeating, on a clock only sleep and `took` move.
 async function run(args, answers, took = 0) {
   let clock = 0;
   const calls = []; const slept = []; const said = [];
-  const git = (a) => { calls.push(a.join(' ')); clock += took * 1000; return answers[Math.min(calls.length - 1, answers.length - 1)]; };
+  const git = (a) => {
+    if (a[0] === 'rev-parse') return { status: 0, out: `${TRACKED}\n` };
+    calls.push(a.join(' ')); clock += took * 1000; return answers[Math.min(calls.length - 1, answers.length - 1)];
+  };
   const sleep = async (ms) => { slept.push(ms / 1000); clock += ms; };
   const code = await pushWithRetry(parseArgs(args), { git, sleep, now: () => clock, say: (l) => said.push(l) });
   return { code, calls, slept, said, secs: clock / 1000 };
@@ -61,12 +78,16 @@ t('AC1 then it says what clears the park', /AUTOPILOT_PARK_CLEARS_WHEN: git push
 r = await run(['--more', '-u', 'origin', 'b'], [E5]);
 t('the park line drops -u', /git push origin b succeeds$/.test(r.said.at(-1)), true);
 r = await run(['--more', '--force-with-lease', 'origin', 'b'], [E5]);
-t('the park line keeps a lease', /git push --force-with-lease origin b succeeds$/.test(r.said.at(-1)), true);
+const parkLine = (run) => run.said.at(-1).split('AUTOPILOT_PARK_CLEARS_WHEN: ')[1];
+t('a lease park pins what origin held, as the parser reads it', parseClearsWhen(parkLine(r)).cond, { kind: 'push-ok', branch: 'b', lease: TRACKED });
+r = await run(['--more', PIN, 'origin', 'b'], [E5]);
+t('a one-off lease park keeps its own SHA', parseClearsWhen(parkLine(r)).cond, { kind: 'push-ok', branch: 'b', lease: 'c'.repeat(40) });
 r = await run(['origin', 'b'], [E5], 200);
-t('AC1 a slow push still stays inside the limit', [r.code, r.secs < 900, r.slept.length < 4], [TRANSIENT_EXIT, true, true]);
+t('AC1 a slow push ends inside the ten minutes', [r.code, r.secs < 600], [TRANSIENT_EXIT, true]);
 const slowFirst = r;
 r = await run(['--more', 'origin', 'b'], [E5], 200);
-t('AC1 and a slow push passes ten minutes over the two runs', slowFirst.secs + r.secs >= 600, true);
+t('AC1 --more with a slow push ends inside them too', [r.code, r.secs < 600], [TRANSIENT_EXIT, true]);
+t('AC1 and a slow push needs both runs to pass ten minutes', [slowFirst.secs < 600, slowFirst.secs + r.secs >= 600], [true, true]);
 r = await run(['origin', 'b'], [NFF]);
 t('AC3 a non-fast-forward: one try, no wait, git\'s exit', [r.code, r.calls.length, r.slept], [1, 1, []]);
 r = await run(['origin', 'b'], [{ status: 128, out: 'fatal: could not read Username' }]);

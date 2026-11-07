@@ -10,10 +10,12 @@
 //   run <id> completed     the GitHub Actions run finished, whatever its conclusion
 //   git push origin <branch> succeeds
 //                          the push GitHub refused with a 5xx goes through; the check is the push
-//                          itself, and `--force-with-lease` may come before `origin`
+//                          itself, and `--force-with-lease=<branch>:<sha>` may come before `origin`.
+//                          A lease with no SHA is not read: a pass pushes long after the worker did,
+//                          so it must name what it may overwrite
 //   none                   nothing a script can read; the park waits for a person
 // Stored on the park as {kind, pr | ticket | name | run | branch}: kind is pr-merged, pr-ready,
-// ticket-done, variable-set, run-completed, push-ok (with lease: true for a lease push) or none.
+// ticket-done, variable-set, run-completed, push-ok (with lease: <sha> for a lease push) or none.
 
 const FORMS = [
   [/^pr\s+#?(\d+)\s+merged$/i, (m) => ({ kind: 'pr-merged', pr: Number(m[1]) })],
@@ -21,8 +23,8 @@ const FORMS = [
   [/^ticket\s+([A-Za-z][A-Za-z0-9_]*-\d+)\s+done$/i, (m) => ({ kind: 'ticket-done', ticket: m[1].toUpperCase() })],
   [/^(?:repo\s+)?variable\s+([A-Za-z_][A-Za-z0-9_]*)\s+set$/i, (m) => ({ kind: 'variable-set', name: m[1] })],
   [/^run\s+#?(\d+)\s+completed$/i, (m) => ({ kind: 'run-completed', run: Number(m[1]) })],
-  [/^git\s+push\s+(--force-with-lease\s+)?(?:(?:-u|--set-upstream)\s+)?origin\s+([\w./-]+)\s+succeeds$/i,
-    (m) => ({ kind: 'push-ok', branch: m[2], ...(m[1] ? { lease: true } : {}) })],
+  [/^git\s+push\s+(?:(?:-u|--set-upstream)\s+)?origin\s+([\w./-]+)\s+succeeds$/i, (m) => ({ kind: 'push-ok', branch: m[1] })],
+  [/^git\s+push\s+--force-with-lease=([\w./-]+):([0-9a-f]{40})\s+origin\s+\1\s+succeeds$/, (m) => ({ kind: 'push-ok', branch: m[1], lease: m[2] })],
   [/^none$/i, () => ({ kind: 'none' })],
 ];
 export const CLEARS_WHEN_FORMS = 'pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, or none';
@@ -46,7 +48,7 @@ export function describeCond(c) {
     case 'ticket-done': return `${c.ticket} done`;
     case 'variable-set': return `repo variable ${c.name} set`;
     case 'run-completed': return `Actions run ${c.run} completed`;
-    case 'push-ok': return `git push ${c.lease ? '--force-with-lease ' : ''}origin ${c.branch} succeeds`;
+    case 'push-ok': return `git push ${c.lease ? `--force-with-lease=${c.branch}:${c.lease} ` : ''}origin ${c.branch} succeeds`;
     default: return 'none';
   }
 }

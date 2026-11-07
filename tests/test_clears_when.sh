@@ -124,7 +124,8 @@ pushpark(){ parked "$1" "$2" "GitHub refused the push of feat/$1 with a 5xx" "${
 pushpark P-1 A
 pushpark P-2 A; echo "Internal Server Error" > "$T/gh/refuse-feat_P-2"
 pushpark P-3 A; echo "branch is protected" > "$T/gh/refuse-feat_P-3"
-pushpark P-4 A "git push --force-with-lease origin feat/P-4 succeeds"
+PIN=$(printf a%.0s {1..40})
+pushpark P-4 A "git push --force-with-lease=feat/P-4:$PIN origin feat/P-4 succeeds"
 pushpark P-5 C
 pushpark P-6 A "git push origin feat/other succeeds"
 q add C-4 Story A; q set C-4 state=running branch=feat/C-4 session_id=gone
@@ -132,7 +133,11 @@ say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
 check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, or none" <<< "$out"'
 check "DS-496 queue.mjs clears-when stores a push" '[ "$(field P-1 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-1\"}" ]'
-check "DS-496 and a lease push" '[ "$(field P-4 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-4\",\"lease\":true}" ]'
+check "DS-496 and a lease push, with the SHA it may overwrite" '[ "$(field P-4 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-4\",\"lease\":\"$PIN\"}" ]'
+out=$(node "$B/queue.mjs" clears-when E-2 "git push --force-with-lease origin feat/P-4 succeeds" 2>&1); rc=$?
+check "DS-496 a lease naming no SHA is refused: a pass would overwrite whatever the tracking ref says" '[ $rc -ne 0 ]'
+out=$(node "$B/queue.mjs" clears-when E-2 "git push --force-with-lease=feat/other:$PIN origin feat/P-4 succeeds" 2>&1); rc=$?
+check "DS-496 and one whose lease names another branch" '[ $rc -ne 0 ]'
 out=$(node "$B/queue.mjs" clears-when E-2 "run abc completed" 2>&1); rc=$?
 check "DS-349 AC10 a run id that is not a number is refused, naming the forms" '[ $rc -ne 0 ] && grep -q "\"run abc completed\" is not one of: .*run <id> completed, .*or none" <<< "$out"'
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
@@ -165,7 +170,7 @@ check "DS-496 AC2 another 5xx: the park stays, its condition kept for the next p
 check "DS-496 AC3 any other refusal ends the tries and goes to a person" \
   '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"none\"}" ] && [[ "$(field P-3 park.recovery)" == *"git refused it"* ]] && grep -q "P-3: could not check \"git push origin feat/P-3 succeeds\"" <<< "$out"'
 check "DS-496 a lease push §3 does not grant is not made, and says so" \
-  '! on_origin P-4 && [ "$(field P-4 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "P-4: could not check \"git push --force-with-lease origin feat/P-4 succeeds\" (config §3 git-force-with-lease is \"ask\"): left parked" <<< "$out"'
+  '! on_origin P-4 && [ "$(field P-4 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "P-4: could not check \"git push --force-with-lease=feat/P-4:$PIN origin feat/P-4 succeeds\" (config §3 git-force-with-lease is \"ask\"): left parked" <<< "$out"'
 check "DS-496 a lane C park is not pushed for" \
   '! on_origin P-5 && [ "$(field P-5 state)" = "\"parked\"" ] && grep -q "P-5: \"git push origin feat/P-5 succeeds\" not tried, since it is lane C: left parked for a person" <<< "$out"'
 check "DS-496 a condition naming another branch is not pushed" \
@@ -185,6 +190,11 @@ check "DS-269 AC6 a failed variable read leaves the park and is named" '[ "$(fie
 check "DS-269 AC4 still lane C: never requeued" '[ "$(field D-1 state)" = "\"parked\"" ]'
 pushpark P-7 A; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
 check "DS-496 a dry run pushes nothing" '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ]'
+mv "$T/origin.git" "$T/origin.away"; out=$(node "$B/pass.mjs" 2>&1); mv "$T/origin.away" "$T/origin.git"
+check "DS-496 a push that reached nothing keeps the park and its condition" \
+  '[ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\"" <<< "$out"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-496 and the next pass that reaches origin pushes it" 'on_origin P-7 && [ "$(field P-7 state)" = "\"triaged\"" ]'
 
 # ---- the decider records a condition, and gets an answer to a park it was never handed --------------
 node "$B/answer.mjs" E-2 "go with the second option" >/dev/null 2>&1

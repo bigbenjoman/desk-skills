@@ -2323,12 +2323,12 @@ check "DS-397 AC3 a take call with a recommended option is answered with it and 
 check "DS-397 AC3 and the decision is logged as taken by the pass" 'jq -e "select(.ticket == \"R-1\" and .chose == \"widen this PR\" and .category == \"scope\" and .source == \"pass\")" "$T/state-rc/decisions.jsonl" >/dev/null'
 check "DS-397 AC3 a recommendation in an ask category is never taken" \
   '[ "$(field R-2 state)" = "\"parked\"" ] && [ "$(field R-2 park.recommends)" = null ] && ! grep -q "buy the paid plan" "$T/state-rc/briefings/R-2.md" 2>/dev/null && echo "$out" | grep -qF "R-2: unreadable park recommendation (money is an ask category: ask, never take it)"'
-out=$(node "$B/pass.mjs" 2>&1)
+first=$out; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-397 a second pass opens no second draft and takes nothing again" '[ "$(grep -c "^pr create" "$T/rc-gh.log")" = 1 ] && [ "$(grep -c "\"R-1\"" "$T/state-rc/decisions.jsonl")" = 1 ] && [ "$(field R-2 state)" = "\"parked\"" ]'
-check "DS-496 AC2 a 5xx on the pass's own push leaves the park to try again, with no recovery recorded" \
-  '[ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.recovery)" = null ] && echo "$out" | grep -qF "P-3: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and the next pass tries again"'
+check "DS-496 AC2 a 5xx on the pass's own push records the push as what clears the park, with no recovery" \
+  '[ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.recovery)" = null ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"fix/P-3\"}" ] && echo "$first" | grep -qF "P-3: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and each pass tries the push until it can requeue it" && echo "$out" | grep -qF "P-3: waiting on \"git push origin fix/P-3 succeeds\" (GitHub still answers 5xx): left parked"'
 rm "$T/rc-503"; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-496 AC2 and the next pass finishes it" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-3)" = "$(git -C "$T/wt/P-3" rev-parse HEAD)" ] && [ "$(field P-3 state)" = "\"done\"" ]'
+check "DS-496 AC2 and the next pass pushes it and requeues it for the steps its park named" '[ "$(git -C "$T/rc-origin.git" rev-parse refs/heads/fix/P-3)" = "$(git -C "$T/wt/P-3" rev-parse HEAD)" ] && [ "$(field P-3 state)" != "\"parked\"" ] && [ "$(field P-3 state)" != "\"done\"" ] && echo "$out" | grep -qF "P-3: \"git push origin fix/P-3 succeeds\" holds: requeued"'
 
 # ---- DS-419: a ready PR held for review feedback, or with a review at its head that is not clean,
 # goes back to a fix worker; the threads a finished try worked are replied on and resolved.

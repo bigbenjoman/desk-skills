@@ -21,7 +21,7 @@ an already-pushed branch with `git push --force-with-lease origin <branch>`. A b
 origin with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase,
 no force push. Your settings refuse that rebase. Where your prompt names a force-push the person
 approved once, your branch was rebased before that park: bring a moved base in with
-`git merge origin/<default>`, then push with exactly that command.
+`git merge origin/<default>`, then push with exactly that lease, through `push-retry.mjs` as below.
 
 **A conflict is yours to resolve, not a park.** Resolve each conflicted file keeping both sides'
 intent: their change lands, and so does yours. Where their side renamed, moved or reshaped
@@ -47,7 +47,7 @@ call, and yours.
 shape the Stage 3 file's §6 allows, with your Bash timeout at its 600000 maximum:
 
 ```bash
-node ~/.claude/desk/bin/push-retry.mjs origin <branch>   # or -u, --set-upstream, --force-with-lease before origin
+node ~/.claude/desk/bin/push-retry.mjs origin <branch>   # or -u, --set-upstream, or your lease flag before origin
 ```
 
 It runs that `git push`, and while GitHub answers with a 5xx it retries with growing waits. Exit 0
@@ -56,12 +56,15 @@ prints, the same one with `--more` first, which waits longer. **A second exit 75
 minutes of 5xx: end with your park, naming the tail as ever, and the line after it says what clears it:
 
 ```
-AUTOPILOT_PARK: GitHub refused the push of <branch> with a 5xx for over ten minutes
+AUTOPILOT_PARK: GitHub answered the push of <branch> with a 5xx for over ten minutes
 AUTOPILOT_PARK_CLEARS_WHEN: git push origin <branch> succeeds
 ```
 
-Write `git push --force-with-lease origin <branch> succeeds` for a lease push. Each pass tries that
-push and requeues you once it goes through, so you carry on from the steps you did not reach. **Any
+Copy the condition `push-retry.mjs` printed: for a lease push it is
+`git push --force-with-lease=<branch>:<sha> origin <branch> succeeds`, naming the SHA that push may
+overwrite. Keep "answered": a park saying "refused" beside a branch named with `aws` or `curl` reads
+as a step no worker may run, and no pass tries it. Each pass tries that push and requeues you once it
+goes through, so you carry on from the steps you did not reach. **Any
 other exit is a refusal, not an outage** (a failed pre-push check, a non-fast-forward, a branch
 rule): it was not retried, so fix it or park on it as for any failed step.
 
