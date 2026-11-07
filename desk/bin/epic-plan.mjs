@@ -18,6 +18,7 @@ import { listBatches } from './batches.mjs';
 import { markedResult, answers } from './decider.mjs';
 import { NOT_NOW } from './not-now.mjs';
 import { admissionRefusal } from './gate.mjs';
+import { callLogin } from './call-login.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -315,10 +316,12 @@ export function readDraft(text) {
   return s ? { ...s, cost } : { why: 'the drafter gave no spine draft or owner table' };
 }
 
-// One headless session with no tools, answering `prompt`: the spawn result.
+// One headless session with no tools, answering `prompt`: the spawn result. It runs on a Claude login
+// that is not benched (call-login.mjs), or as the caller does when every one is.
 const headlessArgs = (prompt) => ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
   '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)];
-const headless = (claude, prompt, env) => run(claude, headlessArgs(prompt), env, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+export const headlessEnv = (env) => callLogin({ env }).env;
+const headless = (claude, prompt, env) => run(claude, headlessArgs(prompt), headlessEnv(env), { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
 
 // One headless session drafts the plan: {plan} or {why}.
 async function draft({ epic, state, children, env, claude }) {
@@ -326,7 +329,7 @@ async function draft({ epic, state, children, env, claude }) {
   const expansion = readJson(join(state, 'expansion.json'), {});
   const prompt = draftPrompt({ epic, epicText: epicText.status === 0 ? epicText.stdout : '', criteria: expansion.criteria, children, fields: fieldsSection(DRAFT_FIELDS, env) });
   writeFileSync(join(state, 'plan-draft.prompt.md'), prompt);
-  const r = await runLater(claude, headlessArgs(prompt), env, { timeout: DRAFT_TIMEOUT_MS });
+  const r = await runLater(claude, headlessArgs(prompt), headlessEnv(env), { timeout: DRAFT_TIMEOUT_MS });
   if (r.error || r.status !== 0) return { why: `the plan drafter failed (${lastLine(r)})` };
   const p = readDraft(r.stdout);
   return p.why ? p : { plan: { epic, spine: null, draft: p.draft, owners: p.owners, contributors: p.contributors, untestable: p.untestable }, cost: p.cost };

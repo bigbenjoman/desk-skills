@@ -414,6 +414,71 @@ t('with the one usable login refused too, the batch holds', `${row('Y-1').state}
 pass(env);
 t('a pass later it still holds, with no second preflight', `${batchOf().usage_hold != null} ${calls('Y-1').length}`, 'true 1');
 
+// ---- the pass's own model calls: the decider, triage and epic planning ----------------------------
+// Each runs on a login that is not benched, chosen as a worker's is; with every login benched the
+// decider starts nothing and the others run as the caller does; with one login, nothing changes.
+const SEEN = join(T, 'decider-login');
+const DECIDER_CLAUDE = join(W, 'stub', 'decider-claude');
+writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}"\n`, { mode: 0o755 });
+// In a child with the world's environment, from the repo: the decider's spawn environment (or `none`
+// when it started nothing), epic planning's headless environment, and call-login.mjs's answer for triage.
+const calling = (env) => {
+  rmSync(SEEN, { force: true });
+  const js = `
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { startDecider } = await import(${JSON.stringify(join(BIN, 'decider.mjs'))});
+    const { headlessEnv } = await import(${JSON.stringify(join(BIN, 'epic-plan.mjs'))});
+    const rec = startDecider({ state: ${JSON.stringify(state)}, slug: 'acme__widgets', bin: ${JSON.stringify(BIN)}, report: '', items: [], rules: '', cwd: process.cwd(), claude: ${JSON.stringify(DECIDER_CLAUDE)} });
+    for (let i = 0; rec && !existsSync(${JSON.stringify(SEEN)}) && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
+    const decider = rec ? readFileSync(${JSON.stringify(SEEN)}, 'utf8') : 'none';
+    console.log(JSON.stringify({ decider, line: rec?.login ?? null, epic: headlessEnv(process.env).CLAUDE_CONFIG_DIR ?? 'unset' }));`;
+  const r = spawnSync('node', ['--input-type=module', '-e', js], { env, cwd: join(W, 'repo'), encoding: 'utf8' });
+  const d = spawnSync('node', [join(BIN, 'call-login.mjs'), 'dir'], { env, cwd: join(W, 'repo'), encoding: 'utf8' });
+  try { return { ...JSON.parse(r.stdout.trim().split('\n').pop()), triage: d.stdout.trim() }; } catch { return { error: `${r.stdout}${r.stderr}` }; }
+};
+
+// AC1 to AC4: login A (the default) benched, B with room.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], {});
+preset({ default: benchRow('default') });
+let got = calling(env);
+t('DS-468 AC1 the decider runs on login b', got.decider, dirOf('b'));
+t('DS-468 AC1 its record names the login', got.line, 'b');
+t('DS-468 AC2 AC3 triage and its challenge are pointed at login b', got.triage, dirOf('b'));
+t('DS-468 AC4 epic planning\'s headless call runs on login b', got.epic, dirOf('b'));
+// A bench in another of the repo's batches counts too: a login at its limit is at it everywhere.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], {});
+const OTHER = join(dirname(QF), 'batches', 'EPIC-1', 'queue.json');
+mkdirSync(dirname(OTHER), { recursive: true });
+writeFileSync(OTHER, JSON.stringify({ version: 1, batch: 'EPIC-1', tickets: {}, benched: { default: benchRow('default') } }));
+got = calling({ ...env, DESK_REPO_OVERRIDE: 'acme/widgets' });
+t('DS-468 a bench in another batch steers the calls too', `${got.decider} ${got.triage}`, `${dirOf('b')} ${dirOf('b')}`);
+rmSync(dirname(OTHER), { recursive: true, force: true });
+// B benched and A, the caller's own, with room: the calls run as they always have.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], {});
+preset({ b: benchRow('b') });
+got = calling(env);
+t('DS-468 with the caller\'s own login open, nothing is changed', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
+// A bench whose reset has passed benches nothing: the login with the most room is chosen again.
+env = world([['default', 'in rotation', 90, 90], ['b', 'in rotation', 10, 10]], {});
+preset({ b: benchRow('b', Math.round(Date.now() / 1000) - 60) });
+got = calling(env);
+t('DS-468 a bench past its reset is not a bench', got.decider, dirOf('b'));
+// AC5 to AC7: every login in rotation and on standby benched.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60], ['s', 'standby', 0, 0]], {});
+preset({ default: benchRow('default'), b: benchRow('b'), s: benchRow('s', null) });
+got = calling(env);
+t('DS-468 AC5 every login benched: no decider starts', got.decider, 'none');
+t('DS-468 AC6 triage runs as the caller does', got.triage, 'all');
+t('DS-468 AC7 epic planning runs as the caller does', got.epic, 'unset');
+// AC8: one login only.
+env = world([['default', 'in rotation', 50, 50]], {});
+preset({ default: benchRow('default') });
+got = calling(env);
+t('DS-468 AC8 one login: every call runs as today', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
+env = world(null, {});
+got = calling(env);
+t('DS-468 AC8 no subscriptions file: every call runs as today', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
+
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all checks passed');

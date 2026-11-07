@@ -240,6 +240,15 @@ unknowns and already_met are [] when there are none.
 ben_steps is [] when the ticket needs no step only the user can take.
 PROMPT_END
 
+# Both passes run on a Claude login that is not benched (call-login.mjs), as a new worker would. With one
+# login, or every login benched, they run on this shell's own, as they always have.
+CALL_LOGIN="$(node "$DESK_BIN/call-login.mjs" dir 2>/dev/null)" || CALL_LOGIN=keep
+case "$CALL_LOGIN" in
+  keep|all|'') ;;
+  default) unset CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
+  *) export CLAUDE_CONFIG_DIR="$CALL_LOGIN"; unset ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
+esac
+
 cd "$MAIN"
 # An earlier triage's record would read as this pass's, and hide a pass that wrote nothing.
 rm -f "$OUT"
