@@ -4,7 +4,7 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync, realpathSync, readlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync, realpathSync } from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -45,6 +45,7 @@ import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketS
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
+import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT } from './suite-wait.mjs';
 import { usagePace, newestReading, probeLog } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
@@ -228,6 +229,9 @@ const pausedOn = (limit) => !!limit && !limit.resumed && (limit.resetsAt == null
 // log no partial messages, so a long model turn or a suite behind the test lock writes nothing until it ends.
 const QUIET_PASSES = 3;
 const WEDGE_PASSES = 6;
+// A worker past WEDGE_PASSES that is running its own suite under the test lock, or queued for it, is
+// quiet, not wedged, until it has been held that way for this long.
+const SUITE_WAIT_CEILING_MS = 30 * 60 * 1000;
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -578,27 +582,38 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
   // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
   // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
-  // Workers log no partial messages, so a long model turn writes nothing until its message ends, as a
-  // long suite behind the test lock never did: six quiet passes is the margin for both.
+  // Workers log no partial messages, so a long model turn writes nothing until its message ends: six
+  // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
+  // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
   const bytes = statSync(log).size;
   let wedged = false;
   if (wroteSince(logRaw, t.log_bytes ?? 0)) {
-    q('set', t.key, `log_bytes=${bytes}`, 'idle_passes=0');
+    q('set', t.key, `log_bytes=${bytes}`, 'idle_passes=0', ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
     if (t.idle_passes) q('set', t.key, 'idle_passes=0');
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
-    q('set', t.key, `idle_passes=${idle}`);
-    if (idle >= WEDGE_PASSES && !done && !handoff) {
+    const stall = idle >= WEDGE_PASSES && !done && !handoff;
+    // Held since the first pass that found it so; the ceiling counts from then.
+    const waitOn = stall ? suiteWait(t.worktree ?? join(WORKTREES, t.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir()) }) : null;
+    const since = waitOn ? (t.suite_wait_since ?? Date.now()) : null;
+    const overCeiling = since != null && Date.now() - since > SUITE_WAIT_CEILING_MS;
+    q('set', t.key, `idle_passes=${idle}`, ...(since !== (t.suite_wait_since ?? null) ? [`suite_wait_since=${since}`] : []));
+    if (waitOn && !overCeiling) {
+      report.quiet.push(`${t.key}: quiet for ${idle} passes, ${SUITE_WAIT_TEXT[waitOn]}`);
+    } else if (stall) {
       // Free the slot. The worker's session id survives, so it can be resumed later with
       // its context intact; leaving it wedged blocks the whole batch.
       const pid = (JSON.parse(sh('claude', ['agents', '--json'], { tolerant: true }) || '[]')
         .find((a) => a.sessionId === t.session_id) ?? {}).pid;
       if (pid) sh('kill', [String(pid)], { tolerant: true });
       wedged = true;
-      q('park', t.key, `wedged — no output for ${idle} passes, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
-      report.stalled.push(`${t.key}: no output for ${idle} passes — stopped and parked, slot freed`);
+      const why = overCeiling
+        ? `no output for ${idle} passes, ${SUITE_WAIT_TEXT[waitOn]} for over the ${SUITE_WAIT_CEILING_MS / 60000}-minute ceiling`
+        : `no output for ${idle} passes`;
+      q('park', t.key, `wedged — ${why}, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
+      report.stalled.push(`${t.key}: ${why} — stopped and parked, slot freed`);
     } else if (idle >= QUIET_PASSES) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
   }
 
@@ -2164,34 +2179,6 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
 
-// Every process's working directory, as [{pid, cmd, cwd}], read once a pass: lsof, else Linux's /proc.
-// Null when neither can be read, and then no worktree is held for it.
-let CWDS;
-function processCwds() {
-  if (CWDS !== undefined) return CWDS;
-  CWDS = null;
-  const r = spawnSync('lsof', ['-n', '-w', '-d', 'cwd', '-Fpcn'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  if (!r.error) {
-    // lsof exits 1 when it could not read some process, which still leaves the rest.
-    CWDS = [];
-    let cur = null;
-    for (const l of (r.stdout ?? '').split('\n')) {
-      if (l[0] === 'p') { cur = { pid: Number(l.slice(1)), cmd: '' }; } else if (l[0] === 'c' && cur) cur.cmd = l.slice(1);
-      else if (l[0] === 'n' && cur) CWDS.push({ ...cur, cwd: l.slice(1) });
-    }
-    return CWDS;
-  }
-  try {
-    CWDS = readdirSync('/proc').filter((d) => /^\d+$/.test(d)).flatMap((d) => {
-      try {
-        let cmd = '';
-        try { cmd = readFileSync(`/proc/${d}/comm`, 'utf8').trim(); } catch { /* unnamed */ }
-        return [{ pid: Number(d), cmd, cwd: readlinkSync(`/proc/${d}/cwd`) }];
-      } catch { return []; }
-    });
-  } catch { CWDS = null; }
-  return CWDS;
-}
 // Why a ticket's worktree must not get a worker now, or null. A worktree another process works in (a
 // session fixing the branch by hand) would have the worker reset or push over its work, and the pass
 // sees only the sessions it spawned. A fix try is held too while the worktree has uncommitted changes

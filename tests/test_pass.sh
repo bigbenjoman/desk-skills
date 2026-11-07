@@ -974,6 +974,40 @@ check "DS-158 AC5 five quiet passes are not yet a stall" '[ "$(field P-1 state)"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-158 AC5 the sixth parks it as wedged, as before" '[ "$(field P-1 state)" = "\"parked\"" ] && field P-1 park | grep -q wedged'
 
+# ---- DS-109: a worker quiet only because its suite runs under the test lock, or waits for it, is not wedged
+export DESK_QUEUE="$T/queue-w.json" DESK_AUTOPILOT_STATE="$T/state-w" DESK_LOCK_DIR="$T/locks"
+mkdir -p "$T/state-w/logs" "$T/locks/desk-test.lock.d" "$T/locks/desk-test.lock.2.d" "$T/elsewhere"
+# The process table the pass reads: what $T/ps.out says, else the real ps.
+printf '#!/bin/sh\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
+# W-1 holds a mkdir slot (wrapper and suite); W-2's wrapper waits, polling with sleep; W-3's worktree
+# runs only a dev server and its worker, whose prompt quotes the lock commands, while another
+# session's suite holds slot 2; W-4's suite holds a flock slot.
+cat > "$T/ps.out" <<'EOF'
+ 4101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh
+ 4102  4101 bash tests/run.sh
+ 4201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck
+ 4202  4201 sleep 2
+ 4301     1 node server.js
+ 4302     1 claude -p Your ticket is W-3. Run ~/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh, and flock /tmp/desk-test.lock is refused
+ 4401     1 bash tests/run.sh
+ 4501     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test -- bash tests/run.sh
+EOF
+echo "4101 4102" > "$T/locks/desk-test.lock.d/pid"; echo "4501" > "$T/locks/desk-test.lock.2.d/pid"; echo 4401 > "$T/locks/desk-test.lock.3.pid"
+for p in 4101:W-1 4102:W-1 4201:W-2 4202:W-2 4301:W-3 4302:W-3 4401:W-4; do mkdir -p "$T/wt/${p#*:}"; printf 'p%s\ncbash\nn%s\n' "${p%%:*}" "$T/wt/${p#*:}"; done > "$T/lsof.out"
+printf 'p4501\ncbash\nn%s\n' "$T/elsewhere" >> "$T/lsof.out"
+q init w
+for k in W-1 W-2 W-3 W-4; do
+  q add "$k"; say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-w/logs/$k.log"
+  q set "$k" state=running lane=A "branch=feat/$k" session_id=live-1 "worktree=$T/wt/$k" idle_passes=5 "log_bytes=$(wc -c < "$T/state-w/logs/$k.log" | tr -d ' ')"
+done
+q set W-4 "suite_wait_since=$(( ($(date +%s) - 31 * 60) * 1000 ))"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-109 AC1 a quiet worker running its own suite is not stopped, and is quiet running its suite" '[ "$(field W-1 state)" = "\"running\"" ] && echo "$out" | grep -q "W-1: quiet for 6 passes, running its suite" && field W-1 suite_wait_since | grep -qE "^[0-9]+$"'
+check "DS-109 AC2 a quiet worker waiting on the test lock is not stopped, and says so" '[ "$(field W-2 state)" = "\"running\"" ] && echo "$out" | grep -q "W-2: quiet for 6 passes, waiting on the test lock"'
+check "DS-109 AC3 a quiet worker with no suite and no wait of its own is stopped as wedged" '[ "$(field W-3 state)" = "\"parked\"" ] && field W-3 park | grep -q "wedged — no output for 6 passes, worker stopped"'
+check "DS-109 AC4 one exempted past the ceiling is stopped as wedged, naming the ceiling" '[ "$(field W-4 state)" = "\"parked\"" ] && field W-4 park | grep -q "wedged — no output for 6 passes, running its suite for over the 30-minute ceiling"'
+rm -f "$T/ps.out" "$T/lsof.out"; unset DESK_LOCK_DIR
+
 # ---- DS-194: each done ticket's PR state and checks are recorded as pr_status, until it merges or closes
 export DESK_QUEUE="$T/queue-g.json" DESK_AUTOPILOT_STATE="$T/state-g"
 mkdir -p "$T/state-g/logs"
