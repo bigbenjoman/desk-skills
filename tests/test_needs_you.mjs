@@ -341,11 +341,11 @@ put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
 } });
 const iota = N.collect({ word: 'iota' }).items;
 const i1 = iota.find((i) => i.t.key === 'I-1');
-t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Say how to settle them; a worker on the PR carries out your call. | answer,done,not-now');
+t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
 t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
 const i2 = iota.find((i) => i.t.key === 'I-2');
 t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72 is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; then merge it on GitHub once its checks are green.');
-t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,not-now false');
+t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,resume,not-now false');
 const call323 = 'Split gap 1 into its own ticket; fix gap 2 in this PR';
 const gr = cli('record', 'iota', 'I-1', 'answer', call323);
 const i1q = queueOf('iota').tickets['I-1'];
@@ -377,13 +377,84 @@ put('mu', { port: 4200, beat: 1, supervised: true, tickets: {
   'M-2': draftPr(82, passed, { call: 'findings', why: 'its review verdict at 575fa8c5c is not clean (p1=1)', action: 'settle the findings on #82' }),
 } });
 const mu = Object.fromEntries(N.collect({ word: 'mu' }).items.map((i) => [i.t.key, i]));
-t('DS-345 AC1 a findings draft with gaps offers answer first', mu['M-1']?.actions.map((a) => a[0]).join(), 'answer,done,not-now');
+t('DS-345 AC1 a findings draft with gaps offers answer first', mu['M-1']?.actions.map((a) => a[0]).join(), 'answer,done,resume,not-now');
 const call345 = 'Drop the 7-day row for the old subscription; keep the rest';
 const mr = cli('record', 'mu', 'M-1', 'answer', call345);
 const m1q = queueOf('mu').tickets['M-1'];
 t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 81 --repo acme/mu --body')}`, '0 true');
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
-t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,not-now');
+t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
+
+// ---- DS-501: an open PR takes the person's instruction for a worker on it; a merged or closed one says why not.
+const readyPr = (pr, extra = {}) => { const d = draftPr(pr, passed); return { ...d, ...extra, pr_status: { ...d.pr_status, isDraft: false } }; };
+put('instr', { port: 4210, beat: 1, supervised: true, tickets: {
+  'SG-1': { ...draftPr(91, passed, { call: 'person', why: 'its review verdict at abc123456 is not clean (gaps=1)', action: 'settle the gaps on #91' }), branch: 'fix/SG-1-x' },
+  'SG-2': readyPr(92, { branch: 'fix/SG-2-x' }),
+  'SG-3': readyPr(93),
+  'SG-4': readyPr(94),
+  'SG-5': readyPr(95),
+  'SG-6': { ...draftPr(96, passed), pr_status: { ...draftPr(96, passed).pr_status, state: 'CLOSED' } },
+  'SG-7': { ...draftPr(97, passed), merged_at: minsAgo(5), pr_status: { ...draftPr(97, passed).pr_status, state: 'MERGED', isDraft: false } },
+  'SG-8': readyPr(98),
+  'SG-9': { ...readyPr(99), lane: 'C' },
+} });
+const instr = () => Object.fromEntries(N.collect({ word: 'instr' }).items.map((i) => [i.t.key, i]));
+const sg0 = instr();
+const sq = () => queueOf('instr').tickets;
+t('DS-501 AC1 a PR with review gaps and a plain open PR both offer resume, with no recommendation of their own',
+  `${sg0['SG-1']?.actions.map((a) => a[0]).join()} ${sg0['SG-2']?.actions.map((a) => a[0]).join()} ${sg0['SG-2']?.actions.find((a) => a[0] === 'resume')?.[1]}`,
+  'answer,done,resume,not-now done,resume,not-now null');
+t('DS-501 AC1 negative: a closed PR does not', sg0['SG-6']?.actions.map((a) => a[0]).join(), 'drop,requeue,not-now');
+t('DS-501 AC1 its listed line says what resume does', cli('list', 'instr').out.split('\n').some((l) => l.startsWith('instr SG-2 pr') && /\d\. resume \(resume "<instruction>" keeps it for the next worker/.test(l)), true);
+
+// AC2: GitHub is read first, then the instruction is kept and the ticket goes back on its branch.
+const loggedBefore = readFileSync(GH_LOG, 'utf8').length;
+const told = 'Fix the issues, then send it back\nand keep the title';
+onGitHub(92, { state: 'OPEN', isDraft: false, headRefOid: 'live92' });
+const resumed = cli('record', 'instr', 'SG-2', 'resume', told);
+const sg2 = sq()['SG-2'];
+const sgBrief = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__instr', 'briefings', 'SG-2.md'), 'utf8');
+t('DS-501 AC2 the instruction is kept in the briefing for the next worker', `${resumed.code} ${JSON.stringify(answers().at(-1).args)} ${sgBrief.includes(told)}`, `0 ${JSON.stringify(['SG-2', told])} true`);
+t('DS-501 AC2 and requeued on its branch, at the head GitHub shows', `${sg2.state} ${sg2.branch} ${sg2.fix?.kind} ${sg2.fix?.pr} ${sg2.fix?.head} ${sg2.fix?.ready} ${sg2.fix?.answer === told}`, 'triaged fix/SG-2-x instruction 92 live92 true true');
+t('DS-501 AC2 it is not one of the pass\'s fix tries', `${(sg2.fix_tries ?? []).length} ${sg2.fix?.try} of ${sg2.fix?.of}`, '0 1 of 1');
+t('DS-501 triage call: resume posts nothing on the PR (answer stays that path)', readFileSync(GH_LOG, 'utf8').slice(loggedBefore).includes('pr comment'), false);
+t('DS-501 AC2 its worker\'s briefing quotes the instruction, and it stays out of draft and reviews its new head',
+  `${fixBrief(sg2).includes('> and keep the title')} ${/open and out of draft/.test(fixBrief(sg2))} ${/carry out the person's instruction on PR #92/.test(fixTask(sg2))} ${/leave the PR out of draft/.test(fixTask(sg2))} ${/review the new head with desk-review/.test(fixTask(sg2))}`, 'true true true true true');
+t('DS-501 AC2 desk-q no longer counts it as needing you', instr()['SG-2'], undefined);
+const sgRepo = loadRepos().find((r) => r.name === 'instr');
+t('DS-501 AC2 its desk-q page shows your instruction, not a numbered fix try', `${ticketScreen(sgRepo, 'SG-2', { width: 160 }).includes('Your call')} ${ticketScreen(sgRepo, 'SG-2', { width: 160 }).includes('Fix try')}`, 'true false');
+
+// A draft goes back as a draft, and a review-gaps PR's resume is kept without being posted.
+onGitHub(91, { state: 'OPEN', isDraft: true, headRefOid: 'h91' });
+const sg1r = N.record({ word: 'instr', ticket: 'SG-1', action: 'resume', text: 'keep the gap as it is' });
+t('DS-501 AC2 a draft stays in draft, and a gaps PR\'s resume is not posted', `${sg1r.ok} ${sq()['SG-1'].fix?.kind} ${/a draft/.test(fixBrief(sq()['SG-1']))} ${/leave the PR in draft/.test(fixTask(sq()['SG-1']))} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 91')}`, 'true instruction true true false');
+
+// A live session runs the batch: requeued all the same, with nothing left for the session to do.
+onGitHub(98, { state: 'OPEN', isDraft: false, headRefOid: 'h98' });
+const sg8 = N.record({ word: 'instr', ticket: 'SG-8', action: 'resume', text: 'go', repos: loadRepos().map((r) => (r.name === 'instr' ? { ...r, live: true, run: { by: 'session' } } : r)) });
+t('DS-501 triage call: requeued whoever runs the batch, with no message to send', `${sg8.ok} ${sg8.message} ${sq()['SG-8'].state}`, 'true null triaged');
+
+// AC3: the queue still says open, GitHub says otherwise.
+const untouched = (k) => `${sq()[k].state} ${sq()[k].fix}`;
+const answersBefore = answers().length;
+onGitHub(93, { state: 'MERGED', isDraft: false, headRefOid: 'h93', mergedAt: minsAgo(1) });
+const sMerged = cli('record', 'instr', 'SG-3', 'resume', 'x');
+t('DS-501 AC3 a PR merged since the last pass is refused, saying why', `${sMerged.code} ${/PR #93 is merged, so no worker can carry out an instruction on it/.test(sMerged.out + sMerged.err)} ${untouched('SG-3')}`, '11 true done undefined');
+onGitHub(94, { state: 'CLOSED', isDraft: false, headRefOid: 'h94' });
+const sClosed = N.record({ word: 'instr', ticket: 'SG-4', action: 'resume', text: 'x' });
+t('DS-501 AC3 a PR closed since the last pass is refused, saying why', `${sClosed.ok} ${/PR #94 was closed without merging.*Drop the ticket, or requeue it/.test(sClosed.line)} ${untouched('SG-4')}`, 'false true done undefined');
+const sUnread = N.record({ word: 'instr', ticket: 'SG-5', action: 'resume', text: 'x' });
+t('DS-501 AC3 a PR GitHub cannot read is refused and stays listed', `${sUnread.ok} ${/could not read PR #95's state from GitHub .*nothing was recorded/.test(sUnread.line)} ${untouched('SG-5')} ${!!instr()['SG-5']}`, 'false true done undefined true');
+// The queue already has it shut: it says why, not that the verb or the item is unknown.
+const sShut = N.record({ word: 'instr', ticket: 'SG-6', action: 'resume', text: 'x' });
+t('DS-501 AC3 a PR the queue has closed is refused, saying why', `${sShut.ok} ${/PR #96 was closed without merging/.test(sShut.line)} ${/is not an action/.test(sShut.line)}`, 'false true false');
+const sDone = N.record({ word: 'instr', ticket: 'SG-7', action: 'resume', text: 'x' });
+t('DS-501 AC3 a PR the queue has merged is refused, saying why', `${sDone.ok} ${/PR #97 is merged/.test(sDone.line)} ${/does not count it/.test(sDone.line)}`, 'false true false');
+t('DS-501 AC3 no refused resume recorded an answer', answers().length, answersBefore);
+// A requeue the queue refuses takes its fix back and says so.
+onGitHub(99, { state: 'OPEN', isDraft: false, headRefOid: 'h99' });
+const sLane = N.record({ word: 'instr', ticket: 'SG-9', action: 'resume', text: 'x' });
+t('DS-501 a refused requeue leaves no fix behind, and says so', `${sLane.ok} ${/kept in its briefing, but the requeue was refused/.test(sLane.line)} ${sq()['SG-9'].state} ${sq()['SG-9'].fix}`, 'false true done null');
 
 // ---- DS-322: a worker's park that names lane C, or lane D with no saved canvas, is offered open, never
 // resume or requeue; any other park's resume names the ticket's own lane.
@@ -535,7 +606,7 @@ t('DS-375 AC1 once every check it named is green it is not stuck: a PR the drive
 t('DS-375 AC3 a §4 Check builds check names its command as what unblocks it', sg['S-2']?.need, 'PR #102: "Flows image" needs a step outside GitHub: ./scripts/ensure-flows-image.sh. Do that step; desk then merges it once its checks are green.');
 t('DS-375 AC4 a step outside GitHub: done is offered but not recommended, and says what the step is',
   `${sg['S-2']?.actions.map(([a]) => a).join()} ${recommends(sg['S-2'])} ${sg['S-2']?.actions[0][2]}`,
-  'done,not-now false the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "Flows image" is green');
+  'done,resume,not-now false the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "Flows image" is green');
 t('DS-375 AC4 its listed line carries no recommendation', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
 t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done recommended',
   `${sg['S-3']?.need} | ${recommends(sg['S-3'])}`, `PR #103: "${LINT}" (failed at "Check portal schema mirror") needs a step outside GitHub: apply the PR's migrations to staging first. Do that step; desk then merges it once its checks are green. | false`);
@@ -731,12 +802,12 @@ t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,
 t('DS-384 AC3 a review stuck after its tries names how many repairs of which kind desk made', p0['Q-7']?.need,
   'PR #147\'s code review still has findings after desk\'s 3 repairs (1 conflict fix, 1 re-review, 1 review fix). Send it back to a worker for one more try, or fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
 t('DS-406 AC3 a review stuck on findings in the code recommends a fix worker, never that only the person can do it',
-  `${p0['Q-7']?.actions.map(([a]) => a).join()} ${/worker/.test(p0['Q-7']?.actions[0][1] ?? '')} ${p0['Q-7']?.actions.some(([, why]) => /only you/.test(why ?? ''))}`, 'fix,done,not-now true false');
+  `${p0['Q-7']?.actions.map(([a]) => a).join()} ${/worker/.test(p0['Q-7']?.actions[0][1] ?? '')} ${p0['Q-7']?.actions.some(([, why]) => /only you/.test(why ?? ''))}`, 'fix,done,resume,not-now true false');
 t('DS-406 AC4 a step outside the code is still worded as only the person\'s', p0['Q-6']?.actions[0][1], 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then');
 t('DS-406 AC4 so is a review stuck reason that quotes no finding', (() => { const q = queueOf('psi'); const was = q.tickets['Q-7'].stuck.why; q.tickets['Q-7'].stuck.why = 'review not clean after 2 fix tries (2 review): 1 P0';
   writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); const a = psi()['Q-7']?.actions.map(([v]) => v).join(); q.tickets['Q-7'].stuck.why = was;
-  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); return a; })(), 'done,not-now');
-t('DS-375 AC4 the outside-GitHub step is unchanged by DS-406', sg['S-2']?.actions.map(([a]) => a).join(), 'done,not-now');
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); return a; })(), 'done,resume,not-now');
+t('DS-375 AC4 the outside-GitHub step is unchanged by DS-406', sg['S-2']?.actions.map(([a]) => a).join(), 'done,resume,not-now');
 const q7 = N.record({ word: 'psi', ticket: 'Q-7', action: 'fix' });
 const q7t = queueOf('psi').tickets['Q-7'];
 t('DS-406 AC3 fix sends it to a worker on the PR with its finding quoted, outside desk\'s tries',
