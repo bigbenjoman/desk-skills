@@ -66,6 +66,8 @@ const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seat
 // With the codex lever on, the model and effort each codex role ran at, as `desk-codex settings` prints them.
 const CODEX_ROLES = ['finder', 'refuter']
 const CODEX_RUN = /^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z]+$/
+// With more than one Codex login, the logins the calls ran on, as `desk-codex: on Codex login <name>` names them.
+const CODEX_LOGINS = /^[A-Za-z0-9][A-Za-z0-9._-]*(, [A-Za-z0-9][A-Za-z0-9._-]*)*$/
 const ACCEPTED = ['gap', 'by', 'at', 'url']
 // The record of an acceptance: a comment or a review on a pull request, linked by its anchor.
 const ACCEPT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+#(?:issuecomment-\d+|pullrequestreview-\d+|discussion_r\d+)$/
@@ -133,8 +135,9 @@ export function tally(r) {
     seats.set(s.role, s)
   })
   if (r.codex != null) {
-    keysOf(r.codex, CODEX_ROLES, 'codex')
-    for (const [role, v] of Object.entries(r.codex)) if (!CODEX_RUN.test(String(v))) no(`codex.${role} is <model>:<effort>, as desk-codex settings prints it`)
+    keysOf(r.codex, [...CODEX_ROLES, 'login'], 'codex')
+    for (const role of CODEX_ROLES) if (role in r.codex && !CODEX_RUN.test(String(r.codex[role]))) no(`codex.${role} is <model>:<effort>, as desk-codex settings prints it`)
+    if ('login' in r.codex && !CODEX_LOGINS.test(String(r.codex.login))) no('codex.login names the Codex logins the calls ran on, as desk-codex prints them, comma-separated')
   }
   // Correctness fires on every review, so a results file without it is a run that never finished.
   if (!seats.has('correctness')) no('seats must include correctness, which runs on every review')
@@ -245,7 +248,8 @@ const how = (t) => `${t.vendor === 'codex-cross'
   : `same-vendor${t.codexRead ? '' : ' · codex did not read the diff'}`}${codexRuns(t)}`
 const codexRuns = (t) => {
   const runs = CODEX_ROLES.filter((role) => t.codex?.[role]).map((role) => `${role} ${t.codex[role].replace(':', ' at ')}`)
-  return runs.length ? ` · codex ${runs.join(', ')}` : ''
+  const on = t.codex?.login ? ` · on Codex login${t.codex.login.includes(',') ? 's' : ''} ${t.codex.login}` : ''
+  return runs.length ? ` · codex ${runs.join(', ')}${on}` : on
 }
 
 // The PR body's line on how the review ran: its rounds, its vendor and its fallback seats.

@@ -70,7 +70,9 @@ head.
 `desk-codex finder [--cd <the PR's worktree>] '<the same prompt>'`, under the same quoting rules, at
 the 600000 ms tool timeout. Its stdout is codex's final message alone. Exit 124 means it ran past
 the timeout in config §3b Codex review (`desk-env get codex-models`) and was ended: do not re-run it; the seat is
-`"status": "died", "reason": "timed out"`.
+`"status": "died", "reason": "timed out"`. Exit 75 means no Codex login could take the call, and
+nothing ran: do not re-run it either; the seat is `"status": "died"` with the reason it printed, as
+`"reason": "every Codex login at its limit until <the earliest reset it names>"`.
 
 **Finders read the changed files and their direct callers, with two exceptions**, both for claims
 about code the diff does not contain. Both search the **reviewed revision**, `<TIP>`: `HEAD` on a

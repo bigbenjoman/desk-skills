@@ -590,6 +590,8 @@ if (mode === 'triage') {
   if (codexPerm === 'yes') {
     allow.push(...bash('codex', ' exec --sandbox read-only'), ...exact('codex', ' --version'));
     deny.push(...bash('codex', ' *danger*', ' *--full-auto*', ' *--yolo*', ' *--config*', ' * -c *', ' *--sandbox=*', ' * -s *', ' *workspace-write*'));
+    // desk-codex picks the Codex login: a worker never points codex at one of its own choosing.
+    deny.push('Bash(*CODEX_HOME=*)');
     // With the codex lever on, desk-codex passes the model, effort and output file itself, so a
     // direct call may not.
     if (E.leverOn('codex')) {
