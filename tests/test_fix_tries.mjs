@@ -335,9 +335,9 @@ const stale318 = undraftCall(tk(), draft(reviewBody('p0=0 p1=0 p2=0'), { head: '
 t('DS-318 AC4 the new head\'s old review is stale, so it goes to a review worker (DS-316), never undrafted on it', `${stale318?.call} ${stale318?.why.includes('not the head')}`, 'review true');
 t('DS-318 a review try at this head does not count as a conflict fix try, as it does not for a red check', conflictFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, base: 'main' })?.call, 'requeue');
 t('DS-318 the brief of a draft\'s last conflict try says it goes to the person still in conflict', brief318.includes('A PR still in conflict after try 2 goes to the person.'), true);
-// Every try counts towards a conflict try, while a review fix counts only review fix tries (DS-384).
-t('DS-318 a review try counts towards the conflict tries', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, base: 'main' })?.fix.try, 2);
-t('DS-318 two review tries leave no conflict try', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 2 fix tries');
+// A conflict counts only conflict tries, as a review fix counts only review fix tries (DS-384).
+t('DS-435 a review try leaves the conflict its own tries', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, base: 'main' })?.fix.try, 1);
+t('DS-435 AC1 two review tries still leave a conflict try', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'rereview' }, { try: 2, head: 'c'.repeat(40), kind: 'review' }] }), { pr: 702, head: HEAD, base: 'main' })?.call, 'requeue');
 t('DS-384 a conflict try leaves a review fix its own tries', reviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'conflict' }] }), { pr: 702, head: HEAD, verdict: { p1: '1' }, body: inlineBody, comments: () => [inlineP1] })?.fix.try, 1);
 t('DS-318 a try already made for this head is not made again', conflictFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'conflict' }] }), { pr: 702, head: HEAD, base: 'main', files: null })?.why, 'still in conflict with main after 1 fix try');
 const c318 = conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'conflict' }, { try: 2, head: 'c'.repeat(40), kind: 'conflict' }] }), { pr: 702, head: HEAD, base: 'main', files: ['src/a.ts', 'src/b.ts'] });
@@ -352,6 +352,20 @@ t('DS-318 AC5 the same for a conflict out of draft', fixCall(tk({ ...said318, fi
   'still in conflict with main after 2 fix tries; the last try said: pr=702 jira=In Progress said=src/a.ts left unresolved: both sides rename the export');
 t('DS-318 AC5 a last try that was not for the conflict gave no reason for it', conflictFix(tk({ ...said318, fix: { try: 2, kind: 'review', finished: '2026-10-29T12:00:00Z' } }), { pr: 702, head: HEAD, base: 'main' })?.why,
   'still in conflict with main after 2 fix tries');
+
+// ---- DS-435: a conflict has its own tries, whatever kind the PR's other tries were.
+const gate435 = [{ try: 1, head: HEAD, kind: 'checks', what: 'red: 🔐 Review gate' }, { try: 2, head: HEAD, kind: 'checks', what: 'red: 🔐 Review gate' }];
+const d435 = conflictFix(tk({ fix_tries: gate435 }), { pr: 2594, head: HEAD, base: 'main', files: ['src/generated/class.ts'] });
+t('DS-435 AC1 a draft whose tries were spent on a check, at this head, gets conflict try 1', `${d435?.call} ${d435?.fix?.try}/${d435?.fix?.of} ${d435?.fix?.kind}`, `requeue 1/${FIX_TRIES_MAX} conflict`);
+const r435 = fixCall(tk({ fix_tries: gate435 }), dirty, ctx());
+t('DS-435 AC1 the same out of draft', `${r435?.call} ${r435?.fix?.try} ${r435?.fix?.kind}`, 'requeue 1 conflict');
+const spent435 = [...gate435, { try: 1, head: 'b'.repeat(40), kind: 'conflict' }, { try: 2, head: 'c'.repeat(40), kind: 'conflict' }];
+t('DS-435 FIX_TRIES_MAX conflict tries spend them, and the reason counts only those', conflictFix(tk({ fix_tries: spent435 }), { pr: 2594, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 2 fix tries');
+t('DS-435 still one conflict try per head', conflictFix(tk({ fix_tries: [...gate435, { try: 1, head: HEAD, kind: 'conflict' }] }), { pr: 2594, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 1 fix try');
+t('DS-435 a red check after the conflict tries still counts every kind', draftChecksFix(tk({ fix_tries: spent435.slice(2) }), { pr: 2594, head: HEAD, failing: [{ name: 'tests', runId: 1 }] }, ctx())?.call, 'stuck');
+const brief435 = fixBrief(tk({ fix: d435.fix }));
+t('DS-435 AC2 the conflict brief takes the base\'s side of a generated file and runs §4 Codegen', brief435.includes("take main's version of it (`git checkout --theirs <file>` during the merge), run §4 Codegen (`desk-env cmds codegen-cmd`)"), true);
+t('DS-435 the conflict brief merges a branch far behind in steps', brief435.includes('merge main in steps'), true);
 
 // ---- DS-440: a check build that failed behind the base goes to a sync try, one of the FIX_TRIES_MAX.
 const build440 = "its check build `./scripts/ensure-flows-image.sh` exited 1 at aaaaaaaaa: main's backend/ has changed; its head is behind main";
