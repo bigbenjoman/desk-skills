@@ -43,7 +43,7 @@ workers deny it, and it is the pattern that posts to the wrong PR when a placeho
   review goes through `desk-codex`, never `codex exec`, and the probe is `desk-codex probe`. It
   answers `CODEX_OK` from a passing probe or codex call under an hour old without running a new
   one, and probes again after any failure. `desk-codex settings` prints the model and effort each
-  role runs at (config §3b Codex review): record them in the results file's `codex` (the core's
+  role runs at (config §3b Codex review, `desk-env get codex-models`): record them in the results file's `codex` (the core's
   *The verdict*).
   Off, everything here and in Phases 3 and 4 runs exactly as written.
 

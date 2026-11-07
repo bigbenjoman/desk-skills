@@ -69,7 +69,7 @@ head.
 **With the `codex` lever on** (Phase 0), the call is
 `desk-codex finder [--cd <the PR's worktree>] '<the same prompt>'`, under the same quoting rules, at
 the 600000 ms tool timeout. Its stdout is codex's final message alone. Exit 124 means it ran past
-config §3b Codex review's timeout and was ended: do not re-run it; the seat is
+the timeout in config §3b Codex review (`desk-env get codex-models`) and was ended: do not re-run it; the seat is
 `"status": "died", "reason": "timed out"`.
 
 **Finders read the changed files and their direct callers, with two exceptions**, both for claims
