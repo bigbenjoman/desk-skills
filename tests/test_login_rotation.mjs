@@ -332,14 +332,13 @@ atLimit(DEF); atLimit(dirOf('b'), RESET + 3600); atLimit(dirOf('s'), null);
 out = pass(env);
 t('AC4 nothing spawns', `${row('Y-1').state} ${calls('Y-1').length}`, 'triaged 0');
 t('AC4 the batch holds on the first login back', JSON.stringify([batchOf().usage_hold?.type, batchOf().usage_hold?.resets_at]), JSON.stringify(['five_hour', RESET]));
-t('AC4 the hold lists each login, earliest first', (batchOf().usage_hold?.logins ?? []).map((l) => l.login).join(), 'default,b,s');
 t('AC4 the report names each reset', out.includes(`every Claude login is benched (default: the 5-hour usage limit until ${resetText(RESET)}; b: the 5-hour usage limit until ${resetText(RESET + 3600)}; s: the 5-hour usage limit, no reset time)`), true);
 // The last open login's preflight refused: the batch holds there and then.
 env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], TWO);
 preset({ b: benchRow('b') });
 atLimit(DEF); atLimit(dirOf('b'));
 out = pass(env);
-t('AC4 the last login refused holds the batch', `${batchOf().usage_hold?.logins?.length} ${row('Y-2').state} ${calls('Y-2').length}`, '2 triaged 0');
+t('AC4 the last login refused holds the batch', `${batchOf().usage_hold != null} ${Object.keys(batchOf().benched ?? {}).sort().join()} ${row('Y-2').state} ${calls('Y-2').length}`, 'true b,default triaged 0');
 t('AC4 and the report says every login is benched', out.includes('Every login is now benched, so nothing else spawns until one is back'), true);
 // A pass after the first reset lifts the hold.
 preset({ ...batchOf().benched, default: benchRow('default', Math.round(Date.now() / 1000) - 60) });
@@ -382,10 +381,20 @@ t('AC7 unbenched once a probe succeeds', batchOf().benched ?? null, null);
 env = world([['default', 'in rotation', 50, 50]], TWO);
 atLimit(DEF);
 out = pass(env);
-t('AC9 one login: the batch holds on the preflight', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at, batchOf().usage_hold?.logins]), JSON.stringify(['Y-1', RESET, undefined]));
+t('AC9 one login: the batch holds on the preflight', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at]), JSON.stringify(['Y-1', RESET]));
 t('AC9 one login: nothing is benched', batchOf().benched ?? null, null);
 t('AC9 one login: the report is today\'s', out.includes('Y-1: its preflight was refused at the 5-hour usage limit — not failed, and nothing else spawns until the limit lifts'), true);
 t('AC9 one login: nothing else spawns', calls('Y-2').length, 0);
+// One usable login: a second listed but signed out. Its hold and report are today's too.
+env = world([['default', 'in rotation', 50, 50], ['b', 'in rotation', 10, 10]], TWO);
+signOut(dirOf('b'));
+atLimit(DEF);
+out = pass(env);
+t('AC9 one usable login: the batch holds on the preflight', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at, batchOf().benched ?? null]), JSON.stringify(['Y-1', RESET, null]));
+t('AC9 one usable login: the report is today\'s', out.includes('Y-1: its preflight was refused at the 5-hour usage limit — not failed, and nothing else spawns until the limit lifts'), true);
+out = pass(env);
+t('AC9 one usable login: a pass later it still holds, with nothing spawned', `${batchOf().usage_hold?.preflight} ${calls('Y-1').filter((l) => !l.includes('|preflight|')).length} ${calls('Y-2').length}`, 'Y-1 0 0');
+t('AC9 one usable login: and the hold reads as today\'s', out.includes(`the 5-hour usage limit until ${resetText(RESET)} holds every spawn and resume`), true);
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }

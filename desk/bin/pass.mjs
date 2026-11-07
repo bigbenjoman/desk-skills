@@ -244,6 +244,8 @@ const untilText = (l) => (l.resetsAt != null ? ` until ${resetText(l.resetsAt)}`
 const BENCHED = rotating ? { ...(queue().benched ?? {}) } : {};
 const benchOf = (login) => BENCHED[loginKey(login)] ?? null;
 const benchLimit = (b) => ({ type: b.type, resetsAt: b.resets_at });
+// A resumed session waits while its own login is benched, because its session lives there.
+const waitsOnBench = (key, b) => report.paused.push(`${key} resumes on its own login ${b.login} once that is back from ${limitName(b.type)}${untilText(benchLimit(b))}`);
 function bench(login, limit, by) {
   const k = loginKey(login);
   const was = BENCHED[k];
@@ -252,6 +254,10 @@ function bench(login, limit, by) {
   BENCHED[k] = { login: login.name, config_dir: login.configDir ?? null, ...(later ? { type: limit.type, resets_at: limit.resetsAt } : { type: was.type, resets_at: was.resets_at }),
     since: was?.since ?? PASS_AT, by: was?.by ?? by };
 }
+const oneUsable = () => {
+  CHECKED ??= checkLogins(SUBS, { tools: ['claude'] });
+  return CHECKED.usable.length <= 1;
+};
 // Every login new work may start on is benched: the batch holds as it does with one login, its hold
 // naming each login's reset, earliest first, and one with no reset time last.
 function benchHold() {
@@ -804,7 +810,11 @@ let USAGE_HOLD = null;
       q('set', h.key, `usage_paused=${JSON.stringify({ type: h.limit.type, resets_at: h.limit.resetsAt })}`);
     }
   }
-  if (rotating) {
+  // One usable login holds the batch as it always has, whatever else the subscriptions file lists.
+  // Logins are checked only once a limit is in play: checking asks each one for its sign-in.
+  const one = rotating && !!(usageHolds.length || Object.keys(BENCHED).length || queue().usage_hold) && oneUsable();
+  if (one) for (const k of Object.keys(BENCHED)) delete BENCHED[k];
+  if (rotating && !one) {
     // A paused worker benches its login until its reset, and stays paused on it. A bench whose limit
     // lifted is cleared, and so is one on a login no longer in use, which is never probed.
     for (const h of usageHolds) if (h.limit.resetsAt == null || Date.now() < h.limit.resetsAt * 1000) bench(h.login, h.limit, h.key);
@@ -1813,7 +1823,7 @@ let usageStop = false;
 function preflightHitLimit(t, cost, login) {
   logPreflight(t.key, cost);
   const l = probeOnce(login).limit ?? { type: 'unknown', resetsAt: null };
-  if (rotating) {
+  if (rotating && !oneUsable()) {
     // Only its login is benched: the ticket keeps its place and state, and the others take new work.
     bench(login, l, t.key);
     const all = benchHold();
@@ -2126,7 +2136,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   const loginDir = loginDirOf({ key });
   const login = loginOf(loginDir);
   const own = rotating ? benchOf(login) : null;
-  if (own) { report.paused.push(`${key} resumes on its own login ${own.login} once that is back from ${limitName(own.type)}${untilText(benchLimit(own))}`); return undefined; }
+  if (own) { waitsOnBench(key, own); return undefined; }
   const signedOutWhy = signedOut(login);
   if (signedOutWhy) return fail(signedOutWhy);
   const model = models.off ? '' : models[tierFor({ key })];
@@ -2259,7 +2269,7 @@ for (const t of spawnable) {
   // A resumed one waits while its own login is benched: its session lives there.
   const ownBench = rotating && toResume(t) ? benchOf(loginOf(loginDirOf(t))) : null;
   if (ownBench) {
-    report.paused.push(`${t.key} resumes on its own login ${ownBench.login} once that is back from ${limitName(ownBench.type)}${untilText(benchLimit(ownBench))}`);
+    waitsOnBench(t.key, ownBench);
     continue;
   }
   const pick = needsLogin ? pickLogin() : null;
@@ -2408,8 +2418,7 @@ borrowLock?.release();
   if (USAGE_HOLD) {
     const rec = { since: was?.since ?? PASS_AT, type: USAGE_HOLD.type, resets_at: USAGE_HOLD.resetsAt, preflight: USAGE_HOLD.preflight ?? null,
       paused: usageHolds.map((h) => h.key),
-      ...(USAGE_HOLD.login && USAGE_HOLD.login.dir !== OWN_LOGIN.dir ? { login_dir: USAGE_HOLD.login.configDir } : {}),
-      ...(USAGE_HOLD.logins ? { logins: USAGE_HOLD.logins.map((b) => ({ login: b.login, type: b.type, resets_at: b.resets_at })) } : {}) };
+      ...(USAGE_HOLD.login && USAGE_HOLD.login.dir !== OWN_LOGIN.dir ? { login_dir: USAGE_HOLD.login.configDir } : {}) };
     q('set-batch', `usage_hold=${JSON.stringify(rec)}`);
   } else if (was) q('set-batch', 'usage_hold=null');
   // Each login's bench, kept across passes; none left, or one login only, keeps none.
