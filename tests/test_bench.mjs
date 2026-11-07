@@ -1,5 +1,5 @@
 // suite: bench (frozen tasks in throwaway checkouts, scored by hidden tests)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync, utimesSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -95,6 +95,22 @@ const { spawnSync } = require('child_process');
 const a = process.argv.slice(2);
 const val = (f) => { const i = a.indexOf(f); return i < 0 ? null : a[i + 1]; };
 const prompt = val('-p');
+// The account's weekly use, in STUB_USAGE: a usage probe reports it (STUB_PROBE none: with no
+// rate_limit_event, bad: one it cannot parse, silent: no output at all), and a run adds STUB_STEP.
+const usageFile = process.env.STUB_USAGE;
+const usage = () => JSON.parse(fs.readFileSync(usageFile, 'utf8'));
+if (prompt === 'Reply with: ok') {
+  let mode = process.env.STUB_PROBE || 'ok';
+  // first: the first probe answers, every later one prints nothing.
+  if (mode === 'first') { const m = usageFile + '.probed'; mode = fs.existsSync(m) ? 'silent' : 'ok'; fs.writeFileSync(m, ''); }
+  if (mode === 'silent') process.exit(1);
+  const u = usage();
+  if (mode === 'bad') console.log('{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":"lots"}}}}');
+  else if (mode === 'ok') console.log(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.01, resetsAt: u.reset }, seven_day: { utilization: u.used, resetsAt: u.reset } } } }));
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ok' }));
+  return;
+}
+{ const u = usage(); u.used += Number(process.env.STUB_STEP || 0.001); fs.writeFileSync(usageFile, JSON.stringify(u)); }
 const sh = (c) => spawnSync('sh', ['-c', c], { encoding: 'utf8' });
 const push = sh('git push origin HEAD');
 fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({
@@ -120,10 +136,16 @@ chmodSync(join(bin, 'claude'), 0o755);
 
 const log = join(dir, 'calls.jsonl');
 const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
-const run = (args) => {
+// The weekly window the stub reports: 10% used, resetting in three days.
+const RESET = Math.floor(Date.now() / 1000) + 3 * 24 * 3600;
+const usageFile = join(dir, 'usage.json');
+const setUsage = (used, reset = RESET) => writeFileSync(usageFile, JSON.stringify({ used, reset }));
+setUsage(0.1);
+const run = (args, extra = {}) => {
   rmSync(log, { force: true });
   return spawnSync(process.execPath, [SCRIPT, ...args], { cwd: dir, encoding: 'utf8', env: {
     ...gitEnv, PATH: `${bin}:${process.env.PATH}`, STUB_LOG: log, DESK_CONFIG_ROOT: configRoot, DESK_LOCK_DIR: join(dir, 'locks'), DISABLE_PROMPT_CACHING: '1',
+    STUB_USAGE: usageFile, DESK_USAGE_DIR: join(dir, 'usage'), ...extra,
   } });
 };
 mkdirSync(join(dir, 'locks'));
@@ -277,6 +299,72 @@ t('a file no item covers is named', testRuns([{ dir: 'apps', cmd: 'x' }], ['b.te
 
 t('logTokens falls back to usage', JSON.stringify(logTokens(`${JSON.stringify({ type: 'result', usage: { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 } })}\n`)), '{"uncached":1,"cacheWrite":2,"cacheRead":3,"output":4}');
 t('logTokens with no result is null', logTokens('nope\n'), null);
+
+// DS-477: the quota guard, each case on its own ledger.
+const qrun = (name, tasks, extra = {}, arms = ['--arm', 'a']) => run(['--tasks', taskSet(name, tasks), ...arms, ...flags(name)], { DESK_USAGE_DIR: join(dir, `usage-${name}`), ...extra });
+const profile = (name, rows) => {
+  const f = join(dir, `machine-${name}.md`);
+  writeFileSync(f, `# Machine profile\n\n## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n${Object.entries(rows).map(([k, v]) => `| \`${k}\` | \`${v}\` | test |`).join('\n')}\n`);
+  return f;
+};
+setUsage(0.1);
+r = qrun('q-default', [task('one', 'FIX')]);
+t('DS-477 AC1 unset settings print the defaults', r.stderr.includes('quota: cap 10 points of each weekly allowance, reserve 25% (the defaults: neither is set on this computer)'), true);
+t('DS-477 AC6 a run records its quota points', results(join(dir, 'q-default'))['one.a'].quota.points, 0.1);
+t('DS-477 the report prints the points', /quota: Claude login default: the bench has used 0\.1 of 10 points this week, weekly use 10\.1%/.test(r.stdout), true);
+t('DS-477 run.json keeps the quota', JSON.parse(readFileSync(join(dir, 'q-default', 'run.json'), 'utf8')).quota.cap, 10);
+
+// AC2, AC6, AC7: a 2-point cap, each run 1 point: two run, the third stops; after the reset it runs.
+const capSet = [task('one', 'FIX'), task('two', 'FIX'), task('three', 'FIX')];
+const capEnv = { DESK_MACHINE: profile('cap', { 'bench-cap-points': '2' }), STUB_STEP: '0.01' };
+r = qrun('q-cap', capSet, capEnv);
+t('DS-477 AC1 a set cap is not called a default', r.stderr.includes('quota: cap 2 points of each weekly allowance, reserve 25% (`bench-reserve-percent` unset, so its default)'), true);
+t('DS-477 AC2 runs until the cap', calls().length, 2);
+t('DS-477 AC2 stops before the run, naming account, points and cap', /stopped before three \(a\): the bench has used 2 of its 2-point cap of Claude login default's weekly allowance/.test(r.stderr), true);
+t('DS-477 AC2 the stopped run is listed', /three a: not run/.test(r.stdout), true);
+t('DS-477 AC6 the whole rise is the run\'s points', results(join(dir, 'q-cap'))['one.a'].quota.points, 1);
+t('DS-477 AC2 the stop leaves no result to reuse', existsSync(join(dir, 'q-cap', 'runs')) && !results(join(dir, 'q-cap'))['three.a'], true);
+setUsage(0.02, RESET + 7 * 24 * 3600);
+r = qrun('q-cap', capSet, capEnv);
+t('DS-477 AC7 after the reset only the unscored run starts', calls().length, 1);
+t('DS-477 AC7 and the scored ones are reused', /one a: accepted \(reused\)/.test(r.stdout) && /three a: accepted/.test(r.stdout), true);
+
+// AC3: 80% used leaves 20%, under the 25% reserve.
+setUsage(0.8);
+r = qrun('q-reserve', [task('one', 'FIX')]);
+t('DS-477 AC3 under the reserve starts nothing', calls().length, 0);
+t('DS-477 AC3 names the account, what is left and the reserve', /stopped before one \(a\): Claude login default has 20% of its weekly allowance left, under the 25% interactive reserve/.test(r.stderr), true);
+setUsage(0.1);
+
+// AC4: no reading, one it cannot parse, and a stale one: each stops with its reason, never as zero.
+r = qrun('q-none', [task('one', 'FIX')], { STUB_PROBE: 'none' });
+t('DS-477 AC4 no reading stops', calls().length === 0 && /the Claude quota is unreadable for Claude login default: no weekly reading/.test(r.stderr), true);
+r = qrun('q-bad', [task('one', 'FIX')], { STUB_PROBE: 'bad' });
+t('DS-477 AC4 a malformed reading stops', calls().length === 0 && /unreadable for Claude login default: its weekly reading could not be parsed/.test(r.stderr), true);
+mkdirSync(join(dir, 'usage-q-stale'), { recursive: true });
+const staleLog = join(dir, 'usage-q-stale', 'probe.log');
+writeFileSync(staleLog, `${JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { seven_day: { utilization: 0.1, resetsAt: RESET } } } })}\n`);
+utimesSync(staleLog, new Date(Date.now() - 2 * 3600 * 1000), new Date(Date.now() - 2 * 3600 * 1000));
+r = qrun('q-stale', [task('one', 'FIX')], { STUB_PROBE: 'silent' });
+t('DS-477 AC4 a stale reading stops, naming its age', calls().length === 0 && /unreadable for Claude login default: its newest weekly reading is 120 minutes old/.test(r.stderr), true);
+
+// AC4, AC6: an after-run probe that prints nothing leaves the before-run probe's file: that is no
+// reading, never a run of 0 points, so the run stays pending and the bench stops.
+rmSync(`${usageFile}.probed`, { force: true });
+r = qrun('q-after', [task('one', 'FIX'), task('two', 'FIX')], { STUB_PROBE: 'first' });
+rmSync(`${usageFile}.probed`, { force: true });
+t('DS-477 AC6 a failed after-run probe is not 0 points', results(join(dir, 'q-after'))['one.a'].quota.points, null);
+t('DS-477 AC4 a failed after-run probe stops the bench', calls().length === 1 && /the Claude quota is unreadable for Claude login default after one \(a\): no new weekly reading: the usage probe failed/.test(r.stderr), true);
+
+// AC5: a Codex arm with no Codex reading stops before the run.
+r = qrun('q-codex', [task('one', 'FIX')], { CODEX_HOME: join(dir, 'codex-empty') }, ['--arm', 'c=gpt-5:high']);
+t('DS-477 AC5 no Codex reading stops', calls().length === 0 && /the Codex quota is unreadable for Codex login codex-empty: no weekly reading/.test(r.stderr), true);
+
+// AC8: a setting that is not a number refuses to start.
+r = qrun('q-badcap', [task('one', 'FIX')], { DESK_MACHINE: profile('badcap', { 'bench-cap-points': 'ten' }) });
+t('DS-477 AC8 a bad cap refuses, naming it', r.status === 2 && /`bench-cap-points` is "ten"/.test(r.stderr) && calls().length === 0, true);
+r = qrun('q-badres', [task('one', 'FIX')], { DESK_MACHINE: profile('badres', { 'bench-reserve-percent': '25%' }) });
+t('DS-477 AC8 a bad reserve refuses, naming it', r.status === 2 && /`bench-reserve-percent` is "25%"/.test(r.stderr) && calls().length === 0, true);
 
 if (fails) { console.log(`FAIL ${fails} check(s) failed`); process.exit(1); }
 console.log('all bench checks passed');

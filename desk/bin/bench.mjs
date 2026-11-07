@@ -23,6 +23,12 @@
 //
 // --total-budget-usd (default 5) caps the invocation as claude's reported cost: a run starts only while
 // it fits at its --max-budget-usd ceiling, and one that reports no cost counts as its ceiling.
+//
+// Each weekly allowance is guarded too (bench-quota.mjs): before a run, the account it spends is read,
+// and the bench stops, naming the account, at the per-computer cap of points it may use in one weekly
+// window, under the interactive reserve, or on a reading it cannot trust. The rise in weekly use
+// during a run is that run's quota points, kept in its result.json. Run again once the window
+// resets, it picks up at the first task and arm not yet scored.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, mkdtempSync, rmSync, cpSync, openSync, closeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -34,6 +40,7 @@ import { logTokens } from './worker-cost.mjs';
 import { runItem } from './baseline.mjs';
 import { nearestDir, takesFiles } from './test-scope.mjs';
 import { lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.mjs';
+import * as Q from './bench-quota.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>]';
@@ -289,6 +296,9 @@ function stored(file) {
 
 // Runs every task on every arm and writes run.json under the output folder.
 export function runBench(opts, log = () => {}) {
+  const settings = Q.quotaSettings();
+  const ledger = Q.ledgerPath();
+  log(Q.settingsLine(settings));
   const tasks = loadBenchTasks(opts.tasks);
   const repos = new Map();
   for (const t of tasks) {
@@ -300,6 +310,8 @@ export function runBench(opts, log = () => {}) {
   mkdirSync(join(out, 'runs'), { recursive: true });
   const budget = Number(opts.budget), total = Number(opts.total);
   let spent = 0;
+  let stopped = null;
+  const points = new Map();
   const report = tasks.map((task) => {
     const repo = repos.get(task.repo);
     const order = armOrder(opts.arms, opts.seed, task.id);
@@ -308,18 +320,48 @@ export function runBench(opts, log = () => {}) {
       const dir = join(out, 'runs', `${task.id}.${arm.name}.${runKey(task, arm)}`);
       const prior = stored(join(dir, 'result.json'));
       if (prior) { log(`reuse ${task.id} (${arm.name}): ${prior.status}`); return { arm: arm.name, status: prior.status, reused: true, dir }; }
+      if (stopped) return { arm: arm.name, status: 'not run', why: stopped, dir: null };
       if (spent + budget > total + 1e-9) { log(`skip ${task.id} (${arm.name}): $${spent.toFixed(2)} of $${total} spent`); return { arm: arm.name, status: 'not run', dir: null }; }
+      const account = Q.accountFor(Q.armVendor(arm), armEnv());
+      const before = Q.readWeekly(account, { env: armEnv() });
+      const used = Q.benchUsed(Q.readLedger(ledger), account, before);
+      points.set(account.key, Q.pointsLine(account, used, settings, before));
+      const why = Q.gate({ account, reading: before, used, settings });
+      if (why) {
+        stopped = `stopped: ${why}`;
+        log(`stopped before ${task.id} (${arm.name}): ${why}`);
+        log(points.get(account.key));
+        return { arm: arm.name, status: 'not run', why: stopped, dir: null };
+      }
       log(`run ${task.id} (${arm.name})`);
+      const id = `${dir}@${new Date().toISOString()}`;
+      const entry = { id, account: account.key, name: account.name, task: task.id, arm: arm.name, resetsAt: before.resetsAt, before: before.used, after: null, points: null, at: new Date().toISOString() };
+      Q.record(entry, ledger);
       const r = runOne(repo, task, arm, order, opts, out, dir, secrets);
       spent += r.cost ?? budget;
-      log(`  ${r.status}${r.why ? `: ${r.why}` : ''}`);
-      return { arm: arm.name, status: r.status, why: r.why, dir };
+      let after = Q.readWeekly(account, { env: armEnv() });
+      // The reading the run started on, read again, says nothing of what the run spent.
+      if (!after.why && !(after.at > before.at)) after = { why: 'no weekly reading newer than the one the run started on' };
+      if (after.why) {
+        r.quota = { account: account.name, before: before.used, after: null, points: null, why: after.why };
+        stopped = `stopped: ${Q.unreadable(account, after.why, ` after ${task.id} (${arm.name})`)}`;
+      } else {
+        const p = Q.runPoints(before, after);
+        r.quota = { account: account.name, before: before.used, after: after.used, points: p.points };
+        Q.record({ ...entry, resetsAt: p.resetsAt, after: after.used, points: p.points }, ledger);
+        points.set(account.key, Q.pointsLine(account, Q.benchUsed(Q.readLedger(ledger), account, after), settings, after));
+      }
+      writeFileSync(join(dir, 'result.json'), `${JSON.stringify(r, null, 2)}\n`);
+      log(`  ${r.status}${r.why ? `: ${r.why}` : ''}${r.quota.points == null ? '' : ` (${r.quota.points} quota points)`}`);
+      if (stopped) { log(stopped); log(points.get(account.key)); }
+      return { arm: arm.name, status: r.status, why: r.why, quota_points: r.quota.points, dir };
     });
     return { task: task.id, order: order.map((a) => a.name), runs };
   });
+  const quotaReport = { cap: settings.cap, reserve: settings.reserve, defaults: settings.defaults, stopped, accounts: [...points.values()] };
   const path = join(out, 'run.json');
-  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent, tasks: report }, null, 2)}\n`);
-  return { path, report };
+  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent, quota: quotaReport, tasks: report }, null, 2)}\n`);
+  return { path, report, quota: quotaReport };
 }
 
 const isMain = (() => {
@@ -330,8 +372,10 @@ const isMain = (() => {
 if (isMain) {
   try {
     const opts = parseArgs(process.argv.slice(2));
-    const { path, report } = runBench(opts, (m) => console.error(m));
-    for (const t of report) for (const r of t.runs) console.log(`${t.task} ${r.arm}: ${r.status}${r.reused ? ' (reused)' : ''}`);
+    const { path, report, quota } = runBench(opts, (m) => console.error(m));
+    for (const t of report) for (const r of t.runs) console.log(`${t.task} ${r.arm}: ${r.status}${r.reused ? ' (reused)' : ''}${r.quota_points == null ? '' : ` (${r.quota_points} quota points)`}`);
+    for (const line of quota.accounts) console.log(line);
+    if (quota.stopped) console.log(quota.stopped);
     console.log(`results: ${path}`);
   } catch (e) {
     console.error(e.message);
