@@ -712,11 +712,19 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // means a PR exists, NOT that the review posted or that it merged — verify those separately.
     const pr = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch ?? '',
       '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
-    if (/^\d+$/.test(pr)) {
+    const prOpen = /^\d+$/.test(pr);
+    // The person's instruction is the exception: an open PR says nothing about whether it was carried
+    // out, and done would close the fix that holds the merge (merge-driver.sh instruction_held).
+    const instruction = t.fix?.kind === 'instruction' && !t.fix.finished;
+    if (prOpen && !instruction) {
       recordDone(t, { log, h, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)` });
     } else {
       logDecisions(t, log, null);
-      if (stop?.fail) {
+      if (prOpen) {
+        const why = `its worker ended with no marker, so your instruction on PR #${pr} may not be carried out, and the PR stays held from merging. Requeue it for a new worker on the same instruction — check ${log}`;
+        q('park', t.key, why);
+        report.parked.push(`${t.key}: ${why}`);
+      } else if (stop?.fail) {
         q('set', t.key, 'state=failed');
         report.failed.push(`${t.key}: killed before it finished (${killed}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
       } else if (stop?.park) {

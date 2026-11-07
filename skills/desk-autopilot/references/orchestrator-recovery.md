@@ -135,6 +135,10 @@ with no marker is. A fix try queued to resume its own session is never held as W
 the uncommitted changes or unpushed commits it left: they are its own.
 The count is the queue's `resumes`; a requeue starts a fresh session and clears a pending resume.
 
+**A worker on the person's instruction is never recorded done on an open PR alone.** Ended with no
+marker, or killed past the limit, it parks with the fix left open, so the merge driver keeps holding
+the PR. A requeue sends the same instruction to a new worker.
+
 ## Resuming a dead worker's half-finished worktree
 
 For a worker the pass did not resume (failed, wedged, or over the limit), setting `AUTOPILOT_RESUME`
