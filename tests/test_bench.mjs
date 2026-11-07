@@ -96,8 +96,8 @@ const prompt = val('-p');
 const sh = (c) => spawnSync('sh', ['-c', c], { encoding: 'utf8' });
 const push = sh('git push origin HEAD');
 fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({
-  args: a, cwd: process.cwd(), head: sh('git rev-parse HEAD').stdout.trim(), parent: sh('git rev-parse HEAD~1').stdout.trim(),
-  hiddenThere: fs.existsSync('tests/hidden.sh'), oldThere: fs.existsSync('tests/old.sh'), status: sh('git status --porcelain').stdout,
+  args: a, cwd: process.cwd(), head: sh('git rev-parse HEAD').stdout.trim(),
+  hiddenThere: fs.existsSync('tests/hidden.sh'), old: fs.readFileSync('tests/old.sh', 'utf8'), status: sh('git status --porcelain').stdout,
   remotes: sh('git remote').stdout, merge: sh('git cat-file -e ${merge}').status, pushCode: push.status,
   caching: Object.keys(process.env).filter((k) => k.startsWith('DISABLE_PROMPT_CACHING')),
   settings: JSON.parse(fs.readFileSync(val('--settings'), 'utf8')),
@@ -161,8 +161,9 @@ if (r.status !== 0) console.log(r.stderr);
 t('runs to completion', r.status, 0);
 const c = calls();
 t('every task on every arm', c.length, 4);
-t('AC1 the arm starts on the base commit, with an old copy taken out', c.every((x) => x.parent === base), true);
-t('AC1 hidden tests absent during the run', c.every((x) => !x.hiddenThere && !x.oldThere), true);
+t('AC1 the arm starts on the base commit', c.every((x) => x.head === base), true);
+t('AC1 a new hidden test is absent during the run', c.every((x) => !x.hiddenThere), true);
+t('AC1 a changed one is there only in its base version', c.every((x) => x.old === 'exit 0 # OLD VERSION\n'), true);
 t('AC1 the tree is clean at the start', c.every((x) => x.status === ''), true);
 t('AC1 each run has its own new checkout', new Set(c.map((x) => x.cwd)).size, 4);
 t('AC1 the merge commit is not in the checkout', c.every((x) => x.merge !== 0), true);
@@ -177,7 +178,7 @@ t('AC6 nothing disables caching', c.every((x) => !x.caching.length && !x.args.so
 t('AC6 tokens recorded by kind', JSON.stringify(res['fixed.a'].tokens), '{"uncached":10,"cacheWrite":30,"cacheRead":40,"output":20}');
 t('AC9 the checkout is removed', c.every((x) => !existsSync(x.cwd)), true);
 t('AC9 the diff is kept', /^\+new$/m.test(readFileSync(join(res['fixed.a'].dir, 'diff.patch'), 'utf8')), true);
-t('AC9 the diff leaves out the taken-out test', /old\.sh/.test(readFileSync(join(res['fixed.a'].dir, 'diff.patch'), 'utf8')), false);
+t('AC9 the diff holds only the arm\'s change', /old\.sh|hidden\.sh/.test(readFileSync(join(res['fixed.a'].dir, 'diff.patch'), 'utf8')), false);
 t('AC9 the transcript is kept', readFileSync(join(res['fixed.a'].dir, 'transcript.jsonl'), 'utf8').includes('"result"'), true);
 const argOf = (x, f) => x.args[x.args.indexOf(f) + 1];
 t('AC10 model reaches claude', c.filter((x) => argOf(x, '--model') === 'model-a').length, 2);

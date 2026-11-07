@@ -287,7 +287,8 @@ node ~/.claude/desk/bin/skill-eval.mjs --skill <name|dir> --tasks <tasks.json> -
 **`bench.mjs`** runs named arms over frozen tasks taken from real merged tickets. Each run gets a
 throwaway checkout of the task's repo at the commit the ticket started from: a repository of its
 own with no remote and no later history, so the merged fix is not there to read and there is
-nowhere to push. The merged PR's tests are kept outside it and copied in only after the run, then
+nowhere to push. The merged PR's tests are kept outside it (a test file the PR changed is there in
+its base version, as the ticket's worker found it) and copied in only after the run, then
 run with that repo's §4 Unit tests under the test lock. The task is **accepted** if every one
 passes and **rejected** if one fails. A run that errors, times out or is stopped is **failed**,
 which counts as neither. Arms run on a worker's permission set for that repo with gh, Jira, the web

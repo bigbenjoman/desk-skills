@@ -196,22 +196,15 @@ const git = (wt, ...args) => {
   return r.stdout.trim();
 };
 
-// A throwaway checkout at the task's base. A hidden test the base already holds, in an older version,
-// is taken out in a commit of its own, so it is absent from the tree and the arm starts clean.
-// -> the commit the arm's diff is taken against.
-function makeCheckout(repo, task, arm, wt) {
+// A throwaway checkout at the task's base, exactly as the ticket's worker found it: a test file the PR
+// changed is there in its base version, and the PR's version arrives only when the run is scored.
+function makeCheckout(repo, task, wt) {
   const r = spawnSync('bash', [join(HERE, 'setup-worktree.sh'), '--for-worker', '--frozen', task.base, wt, task.id, 'bench'],
     { cwd: repo.root, env: repo.env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`could not set up the checkout: ${(r.stderr || r.stdout || '').trim().split('\n').pop()}`);
-  const present = task.hidden_tests.files.filter((f) => existsSync(join(wt, f)));
-  if (present.length) {
-    git(wt, 'rm', '-q', '--', ...present);
-    git(wt, '-c', 'user.name=bench', '-c', 'user.email=bench@localhost', 'commit', '-q', '--no-verify', '-m', 'Hold back the task\'s tests');
-  }
-  return git(wt, 'rev-parse', 'HEAD');
 }
 
-function writeSettings(repo, task, arm, wt, file, secrets) {
+function writeSettings(repo, task, wt, file, secrets) {
   const r = spawnSync(process.execPath, [join(HERE, 'worker-settings.mjs'), 'worker', '--ticket', `bench-${task.id}`, '--wt', wt, '--out', file],
     { cwd: repo.root, env: repo.env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`could not generate the arm's settings: ${(r.stderr || '').trim()}`);
@@ -266,12 +259,12 @@ function runOne(repo, task, arm, order, opts, out, dir, secrets) {
   const parent = mkdtempSync(join(realpathSync(tmpdir()), 'desk-bench-'));
   const wt = join(parent, 'checkout');
   try {
-    const baseline = makeCheckout(repo, task, arm, wt);
+    makeCheckout(repo, task, wt);
     const settings = join(parent, 'settings.json');
-    writeSettings(repo, task, arm, wt, settings, secrets);
+    writeSettings(repo, task, wt, settings, secrets);
     const run = runClaude(task, arm, wt, settings, opts, dir);
     Object.assign(result, { cost: run.cost, tokens: run.tokens, attempts: run.attempts, why: run.why ?? null });
-    saveDiff(wt, baseline, join(dir, 'diff.patch'));
+    saveDiff(wt, task.base, join(dir, 'diff.patch'));
     if (run.ok) Object.assign(result, score(repo, task, wt, dir));
   } catch (e) {
     result.status = 'failed';
