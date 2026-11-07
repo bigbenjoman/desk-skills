@@ -96,4 +96,15 @@ When the batch is idle with no held ticket left:
    (with no terminal, `gh` refuses a PR with no body).
    Then record it on the batch, `node ~/.claude/desk/bin/queue.mjs set-batch promotion.pr=<n> --batch ABC-900`,
    so the supervisor archives the batch once it merges.
+
+   **Not in feature mode, the pass opens it for you** once every child has merged into the base (a
+   child done with no PR, and a ticket held behind the epic key itself, aside): a draft titled
+   `ABC-900: promote <base> to <default>`, recorded as `promotion`, and tried again each pass until
+   it opens. A review try in the base worktree reviews it, each epic PR having tries of its own; a clean review at its head takes it out of draft, and the merge driver
+   merges it once it is green, as it merges a child (§3 `pr-merge-green`). What only the person
+   clears (it could not open, no clean review after its tries, no merge grant, a §4 Merge hold it
+   touches or its children carried) is under WAITING ON YOU, so the pass exits 11, never 10. Tickets
+   held behind the epic key, here or in the standing batch, read as WAITING ON EPIC PR (its number,
+   or why there is none) until it merges, and are released once it has, even after the supervisor
+   archives the epic's batch.
 4. **Never transition the epic**, whatever the result.
