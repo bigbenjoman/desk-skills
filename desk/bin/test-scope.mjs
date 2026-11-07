@@ -126,20 +126,28 @@ export const takesFiles = (cmd) => /(^|[\s/])(vitest|jest)(\s|$)/.test(cmd);
 // §4 Related tests is never skipped.
 // -> [{ dir, cmd, files: [paths relative to dir] }]
 const depth = (dir) => (dir === '.' ? 0 : dir.split('/').length);
+// The directory, among the items', that holds `path` most closely, and `path` relative to it.
+// -> { dir, rel } | null when no item's directory holds it
+export function nearestDir(items, path) {
+  const holders = items.filter((i) => under(path, i.dir));
+  if (!holders.length) return null;
+  const dir = holders.reduce((a, i) => (depth(i.dir) > depth(a) ? i.dir : a), holders[0].dir);
+  return { dir, rel: dir === '.' ? path : path.slice(dir.length + 1) };
+}
 export function runs(decision, { relatedItems = [], fullItems = [] } = {}) {
   if (decision.scope === 'none') return [];
   if (decision.scope === 'full') return fullItems.map((i) => ({ dir: i.dir, cmd: i.cmd, files: [] }));
   const related = new Map();
   const full = new Set();
   for (const f of decision.files) {
-    const holders = [...relatedItems, ...fullItems].filter((i) => under(f, i.dir));
-    if (!holders.length) continue;
-    const dir = holders.reduce((a, i) => (depth(i.dir) > depth(a) ? i.dir : a), holders[0].dir);
+    const near = nearestDir([...relatedItems, ...fullItems], f);
+    if (!near) continue;
+    const { dir } = near;
     const rel = relatedItems.filter((i) => i.dir === dir);
     const unit = fullItems.filter((i) => i.dir === dir);
     for (const i of rel) {
       if (!related.has(i)) related.set(i, []);
-      related.get(i).push(dir === '.' ? f : f.slice(dir.length + 1));
+      related.get(i).push(near.rel);
     }
     if (unit.length > rel.length) for (const i of unit) full.add(i);
   }

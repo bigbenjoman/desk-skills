@@ -195,6 +195,8 @@ t('AC4 no gh rule is allowed', rules.some((a) => /\bgh\b/.test(a)), false);
 t('AC4 no Jira rule is allowed', rules.some((a) => /desk-jira/.test(a)), false);
 t('AC4 no push rule is allowed', rules.some((a) => /git.* push/.test(a)), false);
 t('AC4 no web is allowed', rules.some((a) => /^Web/.test(a)), false);
+t('AC1 no fetch is allowed, so no URL brings the merged commit in', rules.some((a) => /\bgit\b.*\sfetch\b/.test(a)), false);
+t('AC1 a fetch rule is taken out in every form', armSettings({ permissions: { allow: ['Bash(git fetch:*)', 'Bash(/usr/bin/git fetch:*)', 'Bash(git -C /wt fetch:*)', 'Bash(git status:*)'], deny: [], additionalDirectories: [] } }, { wt: '/wt', secrets: [], lockDirs: [] }).permissions.allow.join(), 'Bash(git status:*)');
 t('AC4 push denied', s.permissions.deny.includes('Bash(git push:*)'), true);
 t('AC4 gh denied whatever the subcommand', s.permissions.deny.includes('Bash(gh:*)'), true);
 t('AC4 Jira denied', s.permissions.deny.includes('Bash(desk-jira:*)'), true);

@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { FILE_SAFE, USD, claudeArgs, readRun, readTasks } from './skill-eval.mjs';
 import { logTokens } from './worker-cost.mjs';
 import { runItem } from './baseline.mjs';
-import { takesFiles } from './test-scope.mjs';
+import { nearestDir, takesFiles } from './test-scope.mjs';
 import { lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
@@ -102,24 +102,20 @@ export const runKey = (task, arm) => createHash('sha256')
 // Which §4 Unit tests items run which hidden files, each file going to the items in the deepest
 // directory holding it, relative to that directory. -> { runs: [{dir, cmd, files}], orphans: [path] }
 export function testRuns(items, files) {
-  const holds = (dir, f) => dir === '.' || f.startsWith(`${dir}/`);
-  const depth = (dir) => (dir === '.' ? 0 : dir.split('/').length);
   const byItem = new Map();
   const orphans = [];
   for (const f of files) {
-    const holders = items.filter((i) => holds(i.dir, f));
-    if (!holders.length) { orphans.push(f); continue; }
-    const deepest = Math.max(...holders.map((i) => depth(i.dir)));
-    for (const i of holders.filter((h) => depth(h.dir) === deepest)) {
-      byItem.set(i, [...(byItem.get(i) ?? []), i.dir === '.' ? f : f.slice(i.dir.length + 1)]);
-    }
+    const near = nearestDir(items, f);
+    if (!near) { orphans.push(f); continue; }
+    for (const i of items.filter((x) => x.dir === near.dir)) byItem.set(i, [...(byItem.get(i) ?? []), near.rel]);
   }
   return { runs: [...byItem].map(([i, fs]) => ({ dir: i.dir, cmd: i.cmd, files: fs })), orphans };
 }
 
 // The ways out of the checkout, and what a run could read the answer through: gone from the allow
 // list. `gh` reads count too: the merged PR is one `gh pr view` away.
-const OUT_OF_BOUNDS = /\b(gh|desk-jira|desk-gh|desk-env|desk-design|codex|docker|docker-compose)\b|verdict\.mjs|^WebFetch$|^WebSearch$|^mcp__|^Read\(/;
+// `git fetch` too: the checkout has no remote, but a URL fetches the merged commit just the same.
+const OUT_OF_BOUNDS = /\b(gh|desk-jira|desk-gh|desk-env|desk-design|codex|docker|docker-compose)\b|verdict\.mjs|^WebFetch$|^WebSearch$|^mcp__|^Read\(|^Bash\(\S*\bgit\b[^:]*\sfetch\b/;
 
 // A worker's generated settings cut down for an arm: its Edit rules only in the checkout, none of
 // its grants beyond the repo's own toolchain, and `secrets` (the primary checkout, the task set, the
