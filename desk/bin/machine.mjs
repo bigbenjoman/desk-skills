@@ -251,6 +251,9 @@ export function splitRow(line) {
 }
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 const esc = (s) => String(s).replace(/\|/g, '\\|');
+// The Sizing table's heading and header, and one of its rows; renderProfile and setSizingRows share them.
+const SIZING_HEAD = Object.freeze(['## Sizing', '', '| Key | Value | Why |', '|---|---|---|']);
+const sizingRow = (s) => `| \`${s.key}\` | \`${esc(s.value)}\` | ${esc(s.why)} |`;
 
 // -> { hardware: { key: { value, detected } }, sizing: { key: { value, why } } }
 export function parseProfile(text) {
@@ -290,11 +293,8 @@ export function renderProfile(hw, sizing, date) {
     '|---|---|---|',
     ...HARDWARE_KEYS.map((k) => `| \`${k}\` | \`${esc(hw[k] ?? 'unknown')}\` | \`${date}\` |`),
     '',
-    '## Sizing',
-    '',
-    '| Key | Value | Why |',
-    '|---|---|---|',
-    ...sizing.map((s) => `| \`${s.key}\` | \`${esc(s.value)}\` | ${esc(s.why)} |`),
+    ...SIZING_HEAD,
+    ...sizing.map(sizingRow),
     '',
   ];
   return lines.join('\n');
@@ -306,13 +306,13 @@ export function setSizingRows(text, rows) {
   const lines = String(text ?? '').replace(/\n+$/, '').split('\n');
   let start = lines.findIndex((l) => /^##\s+.*sizing/i.test(l.trim()));
   if (start < 0) {
-    lines.push('', '## Sizing', '', '| Key | Value | Why |', '|---|---|---|');
-    start = lines.length - 4;
+    lines.push('', ...SIZING_HEAD);
+    start = lines.length - SIZING_HEAD.length;
   }
   let end = start + 1;
   while (end < lines.length && !/^##\s/.test(lines[end].trim())) end++;
   for (const r of rows) {
-    const line = `| \`${r.key}\` | \`${esc(r.value)}\` | ${esc(r.why)} |`;
+    const line = sizingRow(r);
     const at = lines.slice(start, end).findIndex((l) => l.trim().startsWith('|') && unquote(splitRow(l.trim())[0]).toLowerCase() === r.key);
     if (at >= 0) { lines[start + at] = line; continue; }
     let last = end - 1;
@@ -323,11 +323,12 @@ export function setSizingRows(text, rows) {
   return `${lines.join('\n')}\n`;
 }
 
-// Sizing rows the profile holds that a proposal does not make (set by `desk-env machine set`), so a
-// re-written profile keeps them.
-export function keptSizing(profile, proposal) {
+// The Sizing rows a re-written profile holds: the proposal, then every row the profile has that the
+// proposal does not make (set by `desk-env machine set`), so a re-write keeps them.
+export function rewrittenSizing(profile, proposal) {
   const proposed = new Set(proposal.map((s) => s.key));
-  return Object.entries(profile?.sizing ?? {}).filter(([k]) => !proposed.has(k)).map(([key, s]) => ({ key, value: s.value, why: s.why }));
+  const kept = Object.entries(profile?.sizing ?? {}).filter(([k]) => !proposed.has(k)).map(([key, s]) => ({ key, value: s.value, why: s.why }));
+  return [...proposal, ...kept];
 }
 
 // Hardware rows that differ from the profile. Free disk moves every day, so it never counts.

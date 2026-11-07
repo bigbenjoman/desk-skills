@@ -1923,8 +1923,7 @@ if (isMain) {
         }
         // write: overwrites; /desk-setup runs it only after the user confirms the proposal. Rows the
         // proposal does not make (the bench settings) are kept.
-        const sizing = [...proposal, ...M.keptSizing(profile, proposal)];
-        console.log(writeWithBackup(path, M.renderProfile(hw, sizing, new Date().toISOString().slice(0, 10))));
+        console.log(writeWithBackup(path, M.renderProfile(hw, M.rewrittenSizing(profile, proposal), new Date().toISOString().slice(0, 10))));
         break;
       }
       case 'costs': {

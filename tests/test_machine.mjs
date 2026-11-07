@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, keptSizing } from '../desk/bin/machine.mjs';
+import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing } from '../desk/bin/machine.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const sized = (hw) => Object.fromEntries(propose(hw).map((r) => [r.key, r]));
@@ -198,7 +198,7 @@ t('the bench reads them on its next start', quotaLine(profile), 'quota: cap 10 p
 setErr(['bench-reserve-percent=30']);
 const reread = parseProfile(readFileSync(profile, 'utf8'));
 t('a changed value replaces its row', `${reread.sizing['bench-cap-points'].value} ${reread.sizing['bench-reserve-percent'].value} ${Object.keys(reread.sizing).filter((k) => k.startsWith('bench-')).length}`, '10 30 2');
-const rewritten = parseProfile(renderProfile(small, [...propose(small), ...keptSizing(reread, propose(small))], '2026-11-07'));
+const rewritten = parseProfile(renderProfile(small, rewrittenSizing(reread, propose(small)), '2026-11-07'));
 t('a re-proposed profile keeps the bench rows', `${rewritten.sizing['bench-cap-points']?.value} ${rewritten.sizing['bench-reserve-percent']?.value}`, '10 30');
 t('with no profile, machine set writes nothing', setErr(['bench-cap-points=10'], missing).startsWith('exit 1: nothing written: no machine profile'), true);
 t('so the bench keeps its defaults', quotaLine(missing), 'quota: cap 10 points of each weekly allowance, reserve 25% (the defaults: neither is set on this computer)');
