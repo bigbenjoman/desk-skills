@@ -46,7 +46,7 @@ import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './revie
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { usagePace, newestReading, probeLog } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
-import { INTAKE_EVERY_MS, landedOn } from './intake.mjs';
+import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
 import { listBatches, lastPromotion } from './batches.mjs';
 
@@ -2897,7 +2897,7 @@ function fileEvidenceFix(g) {
 }
 function admitFix(key) {
   const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', key, '--by', 'evidence']);
-  return r.ok ? { ok: true } : { ok: false, why: r.out.split('\n').pop() };
+  return r.ok ? { ok: true } : { ok: false, why: r.out.split('\n').filter((line) => !isProgress(line)).pop() };
 }
 // The ticket's worktree at the PR's head: moved on to it when it is behind and clean, never otherwise.
 function buildDir(t, head) {
