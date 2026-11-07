@@ -633,14 +633,17 @@ instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge
 # person, as pass.mjs says. -> `<n>\t<epic key>\tepic` for one to try, or nothing.
 epic_pr(){
   local line n key carried st
-  line=$(node - "$DESK_QUEUE" <<'NODE'
-const fs = require('fs');
+  line=$(node --input-type=module - "$DESK_BIN/batch-state.mjs" "$GATE" "$DESK_QUEUE" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [bs, gate, qf] = process.argv.slice(2);
+const { epicBatch } = await import(pathToFileURL(bs).href);
+const { promotionHolds } = await import(pathToFileURL(gate).href);
 let q = {};
-try { q = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')); } catch { process.exit(0); }
+try { q = JSON.parse(readFileSync(qf, 'utf8')); } catch { process.exit(0); }
 const p = q.promotion || {};
-if (q.feature === true || !q.epic || !q.base || p.pr == null || p.merged_at) process.exit(0);
-const since = p.since ? Date.parse(p.since) : null;
-const carried = Object.values(q.tickets || {}).some((t) => t && t.promotion_hold && t.merged_at && (since == null || Date.parse(t.merged_at) > since));
+if (!epicBatch(q) || p.pr == null || p.merged_at) process.exit(0);
+const carried = promotionHolds(Object.values(q.tickets || {}), p.since ?? null).length > 0;
 console.log([p.pr, q.epic, carried ? 'held' : '-'].join('\t'));
 NODE
 ) || return 0

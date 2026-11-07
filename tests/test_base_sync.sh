@@ -569,5 +569,24 @@ pass
 check "DS-508 AC6 and with its other blocker merged, it is released" '[ "$(jq -r ".tickets[\"T-2\"].state" "$DESK_QUEUE")" != parked ]'
 node "$B/queue.mjs" drop T-2 >/dev/null; pass
 check "DS-508 AC6 with the epic PR merged and nothing left, the batch reads idle" '[[ "$out" == *"IDLE"* ]] && [ "$(grep -c "^pr create" "$T/ghlog")" = 3 ]'
+# Held behind another epic whose batch the supervisor archived as its epic PR merged by hand, before its
+# own pass could record the merge: read from GitHub in the archived copy.
+SQ=$(node --input-type=module -e "const E = await import('$B/desk-env.mjs'); console.log(E.batchPaths(E.repoSlug()).queue)")
+mkdir -p "$(dirname "$SQ")/batches/.done/E-9"
+echo '{"epic":"E-9","base":"feat/y","feature":false,"promotion":{"pr":900},"tickets":{}}' > "$(dirname "$SQ")/batches/.done/E-9/queue.json"
+echo '{"state":"MERGED","mergedAt":"2026-11-07T10:00:00Z"}' > "$T/ep/900.json"
+node "$B/queue.mjs" add T-3 >/dev/null
+node "$B/queue.mjs" set T-3 state=parked 'park={"question":"held by orchestrator: behind E-9"}' held_by=E-9 held_outside=E-9 >/dev/null
+pass
+check "DS-508 AC6 a ticket held behind an epic whose batch was archived with its epic PR merged is released" \
+  '[[ "$out" == *"outside hold: T-3: E-9 landed on main through its epic PR"* ]] && [ "$(jq -r ".tickets[\"T-3\"].state" "$DESK_QUEUE")" != parked ]'
+# Held behind the epic of another batch, whose epic PR could not be opened: said as that, not as a merge.
+mkdir -p "$(dirname "$SQ")/batches/E-7"
+echo '{"epic":"E-7","base":"feat/z","feature":false,"promotion":{"pr":null,"why":"gh pr create failed: nope"},"tickets":{"T-70":{"key":"T-70","state":"done","merged_at":"2026-11-06T10:00:00Z","result":{"pr":700}}}}' > "$(dirname "$SQ")/batches/E-7/queue.json"
+node "$B/queue.mjs" add T-4 >/dev/null
+node "$B/queue.mjs" set T-4 state=parked 'park={"question":"held by orchestrator: behind E-7"}' held_by=E-7 held_outside=E-7 >/dev/null
+pass
+check "DS-508 AC5 a ticket held behind another batch's epic waits on that epic PR, saying why there is none" \
+  '[[ "$out" == *"WAITING ON EPIC PR: T-4 (E-7: no epic PR: gh pr create failed: nope)"* ]] && [[ "$out" != *"WAITING ON MERGE"* ]]'
 
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]

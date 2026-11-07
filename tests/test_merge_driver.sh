@@ -867,8 +867,10 @@ vp 301 "$SHA301" "$CLEAN"
 ep_q ready false; rvloop; rvloop
 check "DS-508 AC2: a ready epic PR into main, green with a clean review at its head, is merged by the driver, pinned to its head" '[ "$(merged)" = 301 ] && grep -qx "301 main $SHA301" "$T/merges.log" && echo "$out" | grep -q "#301 MERGED (T-300)"'
 check "DS-508 AC2: and its merge is recorded on the queue's promotion, not as a ticket" '[ "$(jq -r .promotion.merged_at "$DESK_QUEUE")" != null ] && [ "$(jq -r ".tickets[\"T-300\"]" "$DESK_QUEUE")" = null ]'
+# GitHub shown as open again, so only the queue's promotion.merged_at can keep the driver off it.
+: > "$T/merges.log"; jq '."301".state = "open"' "$T/prs.json" > "$T/prs.json.new" && mv "$T/prs.json.new" "$T/prs.json"
 rvloop
-check "DS-508 AC2: a merged epic PR is not tried again" '! echo "$out" | grep -q "#301"'
+check "DS-508 AC2: a merged epic PR is not tried again" '[ -z "$(merged)" ] && ! echo "$out" | grep -q "#301"'
 ep_q draft true; rvloop; rvloop
 check "DS-508 AC2: a draft epic PR is not merged" '[ -z "$(merged)" ] && echo "$out" | grep -q "epic PR #301 draft (still reviewing)"'
 vp 301 "$SHA301" -

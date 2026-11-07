@@ -67,8 +67,9 @@ const reviewed = { tries: [{ kind: 'review', try: 1, head: H1, pr: 300, outcome:
 const rs = epicReviewCall(reviewed, v1, { alive: false });
 t('DS-508 AC2 a try already made at this head goes to the person, naming it', `${rs.call}: ${rs.why}`, `stuck: no clean review at ${H1.slice(0, 12)} after 1 review try; the last try finished: pr=300 jira=none`);
 t('DS-508 AC2 a head the try moved gets the next try', epicReviewCall(reviewed, { pr: 300, head: H2 }, { alive: false }).fix?.try, 2);
-const twice = { tries: [{ kind: 'review', try: 1, head: H1 }, { kind: 'review', try: 2, head: H2 }], running: null };
+const twice = { tries: [{ kind: 'review', try: 1, head: H1, pr: 300 }, { kind: 'review', try: 2, head: H2, pr: 300 }], running: null };
 t('DS-508 AC2 after the last try, the person', epicReviewCall(twice, { pr: 300, head: '3'.repeat(40) }, { alive: false }).call, 'stuck');
+t('DS-508 AC2 a later epic PR starts its own tries, not the last one\'s', epicReviewCall(twice, { pr: 301, head: '3'.repeat(40) }, { alive: false }).fix?.try, 1);
 t('DS-508 conflict tries do not count review tries', baseFixCall(twice, c()).fix?.try, 1);
 const ectx = { key: 'base-feat-x', base: 'feat/x', source: 'main', epic: 'E-9', fix: r1.fix };
 t('DS-508 the review ticket names the PR and the clean review it needs', epicReviewTicket(ectx).includes('A clean review (§4 Clean review verdict) of PR #300 is posted on it at its head.'), true);
@@ -81,7 +82,9 @@ const kid = (key, at) => ({ key, state: 'done', result: { pr: 1 }, merged_at: at
 const eq = (o = {}) => ({ base: 'feat/E', epic: 'E-1', feature: false, tickets: { 'A-1': kid('A-1', '2026-11-06T10:00:00Z'), 'A-2': { key: 'A-2', state: 'parked', held_by: 'A-1|E-1' } }, ...o });
 t('DS-508 AC1 every child merged, one held behind the epic: due', epicDue(eq()), true);
 t('DS-508 AC1 a child still open: not due', epicDue(eq({ tickets: { 'A-1': { ...kid('A-1', null) } } })), false);
-t('DS-508 AC1 feature mode is the base gate\'s, not this', epicDue(eq({ feature: true })), false);
+t('DS-508 AC1 a child done with no PR does not hold it back', epicDue(eq({ tickets: { 'A-1': kid('A-1', '2026-11-06T10:00:00Z'), 'A-3': { key: 'A-3', state: 'done', result: { pr: null } } } })), true);
+t('DS-508 AC1 with nothing merged into the base, nothing to land', epicDue(eq({ tickets: { 'A-3': { key: 'A-3', state: 'done', result: { pr: null } } } })), false);
+t('DS-508 AC1 feature mode is the base gate\'s, not this',epicDue(eq({ feature: true })), false);
 t('DS-508 AC1 no epic: not an epic batch', epicDue(eq({ epic: null })), false);
 t('DS-508 AC6 merged epic PR: not due', epicDue(eq({ promotion: { pr: 9, merged_at: '2026-11-07T00:00:00Z' } })), false);
 t('DS-508 AC6 a child merged after it: due again', epicDue(eq({ promotion: { pr: 9, merged_at: '2026-11-05T00:00:00Z' } })), true);

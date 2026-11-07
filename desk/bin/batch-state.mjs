@@ -284,13 +284,16 @@ export function batchIdle(q, prState = () => null) {
 // queue's `promotion`), opened once every child has merged into the base. A ticket held behind the
 // epic key itself waits on that PR, so it is not a child the PR waits for.
 export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
-const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
-// Due, so the base still has to land: every child done and merged into the base, one of them since the
+export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
+// A child is through once done and merged into the base, or done with no PR (nothing to merge).
+export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result?.pr == null);
+// Due, so the base still has to land: every child through, at least one merged into the base since the
 // last epic PR merged (`merged_at`, or `since` on the one opened after it).
 export function epicDue(q) {
   if (!epicBatch(q)) return false;
   const kids = epicChildren(q);
   const last = q.promotion?.merged_at ?? q.promotion?.since ?? null;
-  return kids.length > 0 && kids.every((t) => t.state === 'done' && !!t.merged_at)
-    && (last == null || kids.some((t) => Date.parse(t.merged_at) > Date.parse(last)));
+  const merged = kids.filter((t) => t.merged_at);
+  return kids.length > 0 && kids.every(childDone)
+    && merged.some((t) => last == null || Date.parse(t.merged_at) > Date.parse(last));
 }

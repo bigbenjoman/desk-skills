@@ -6,11 +6,11 @@
 // detail lives here and only a summary reaches the conversation.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync, realpathSync, readlinkSync } from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -48,7 +48,7 @@ import { usagePace, newestReading, probeLog } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
-import { listBatches, lastPromotion } from './batches.mjs';
+import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -2372,11 +2372,24 @@ for (const t of onTracker) {
 // left in held_by as an ordinary hold, released when it merges here. The merge driver never releases a
 // ticket held outside its batch, so lifting the last blocker releases it here.
 // Whether epic `key`'s batch, `qO` itself or the repo's batch named for it, recorded its epic PR merged.
+// The supervisor archives a batch whose epic PR merged before its own pass runs, so a merge nothing
+// recorded (a person merged it) is read from GitHub in the archived copy, under batches/.done/.
 const epicMerged = (qO, key) => {
   const merged = (x) => epicBatch(x) && x.epic === key && !!x.promotion?.merged_at;
   if (qO.epic === key) return merged(qO);
-  const b = REPO_SLUG == null ? null : listBatches(REPO_SLUG).find((x) => x.name === key);
-  try { return !!b && existsSync(b.queue) && merged(readQueue(b.queue)); } catch { return false; }
+  if (REPO_SLUG == null) return false;
+  const [standing, ...named] = listBatches(REPO_SLUG);
+  const b = named.find((x) => x.name === key);
+  try { if (b && existsSync(b.queue)) return merged(readQueue(b.queue)); } catch { return false; }
+  const done = join(dirname(standing.queue), E.BATCHES_DIR, '.done');
+  let dirs = [];
+  try { dirs = readdirSync(done).filter((d) => d === key || d.startsWith(`${key}.`)); } catch { return false; }
+  return dirs.some((d) => {
+    try {
+      const x = readQueue(join(done, d, 'queue.json'));
+      return merged(x) || (epicBatch(x) && x.epic === key && x.promotion?.pr != null && batchPrState(x.promotion.pr) === 'MERGED');
+    } catch { return false; }
+  });
 };
 {
   const qO = queue();
@@ -3194,15 +3207,28 @@ for (const t of heldNow) {
 }
 const prState = (n) => prStates[n] ?? null;
 const predsOf = (t) => String(t.held_by ?? '').split('|').filter(Boolean);
-const releaseDue = heldNow.filter((t) => predsOf(t).length && predsOf(t).every((p) => qNow.tickets[p]?.state === 'done' && prState(qNow.tickets[p]?.result?.pr) === 'MERGED'));
+const mergedHere = (p) => qNow.tickets[p]?.state === 'done' && prState(qNow.tickets[p]?.result?.pr) === 'MERGED';
+const releaseDue = heldNow.filter((t) => predsOf(t).length && predsOf(t).every(mergedHere));
 // Held behind a spine the person has still to approve (or send back) waits on that, not on a merge.
 const spinesOf = (t) => predsOf(t).filter((p) => spinePark(qNow.tickets[p]));
 const onApproval = heldNow.filter((t) => spinesOf(t).length && waitingOnMerge(qNow, t, prState));
-// Held behind this batch's own epic with every other blocker merged waits on the epic PR, which only
-// this batch opens and lands: said as that, with its number or why there is none.
+// Held behind an epic with every other blocker merged waits on its epic PR, which only the epic's own
+// batch (this one, or the batch named for it) opens and lands: said as that, with its number or why
+// there is none.
 const EPIC = epicBatch(qNow) ? qNow.epic : null;
-const mergedHere = (p) => qNow.tickets[p]?.state === 'done' && prState(qNow.tickets[p]?.result?.pr) === 'MERGED';
-const onEpic = EPIC ? heldNow.filter((t) => predsOf(t).includes(EPIC) && predsOf(t).every((p) => p === EPIC || mergedHere(p))) : [];
+const epicQueues = new Map();
+const epicQueue = (p) => {
+  if (!epicQueues.has(p)) {
+    let x = null;
+    const b = p === EPIC || qNow.tickets[p] || REPO_SLUG == null ? null : listBatches(REPO_SLUG).find((y) => y.name === p);
+    try { if (b && existsSync(b.queue)) { const r = readQueue(b.queue); if (epicBatch(r) && r.epic === p) x = r; } } catch { /* unreadable: not an epic hold */ }
+    epicQueues.set(p, x);
+  }
+  return epicQueues.get(p);
+};
+const isEpic = (p) => p === EPIC || epicQueue(p) != null;
+const epicsOf = (t) => predsOf(t).filter(isEpic);
+const onEpic = heldNow.filter((t) => epicsOf(t).length && predsOf(t).every((p) => isEpic(p) || mergedHere(p)));
 const onMerge = heldNow.filter((t) => waitingOnMerge(qNow, t, prState) && !releaseDue.includes(t) && !onApproval.includes(t) && !onEpic.includes(t));
 // Held behind a failed or parked ticket waits on the person's answer there, which is asked once.
 const parksOf = new Map(heldNow.map((t) => [t, waitingOnPark(qNow, t, prState)]).filter(([, p]) => p));
@@ -3211,7 +3237,10 @@ const stuck = heldNow.filter((t) => !waitingOnMerge(qNow, t, prState) && !parksO
 if (onPark.length) out.push(`WAITING ON A PARK: ${onPark.map((t) => `${t.key} (${parksOf.get(t).join(', ')})`).join(', ')}: answered there, not asked again`);
 if (onApproval.length) out.push(`WAITING ON APPROVAL: ${onApproval.map((t) => `${t.key} (spine ${spinesOf(t).join(', ')})`).join(', ')}`);
 if (onMerge.length) out.push(`WAITING ON MERGE: ${onMerge.map((t) => `${t.key} (${predsOf(t).join(', ')})`).join(', ')}`);
-if (onEpic.length) out.push(`WAITING ON EPIC PR: ${onEpic.map((t) => t.key).join(', ')} (${EPIC}: ${epicState(queue())})`);
+if (onEpic.length) {
+  const ownEpic = EPIC ? epicState(queue()) : null;
+  out.push(`WAITING ON EPIC PR: ${onEpic.map((t) => `${t.key} (${epicsOf(t).map((e) => `${e}: ${e === EPIC ? ownEpic : epicState(epicQueue(e), false)}`).join('; ')})`).join(', ')}`);
+}
 for (const t of Object.values(qNow.tickets).filter((r) => spinePark(r) === 'approval')) {
   report.waiting.push(`${t.key}: SPINE APPROVAL — PR #${t.result?.pr ?? '?'} lands a strict expected-fail spec per criterion and stays draft. ` +
     `Review them read-only first (node ${join(BIN, 'spine-review.mjs')} brief ${t.key}), then put one question per spec to the person (spine-review.mjs questions ${t.key} <reply>): approved, node ${join(BIN, 'queue.mjs')} approve ${t.key}; rejected, node ${join(BIN, 'queue.mjs')} reject ${t.key} "<their note>"`);
@@ -3434,14 +3463,17 @@ const gatePending = featureBase ? baseGate(queue()) : false;
 // review try in the base worktree posts (epicReviewCall), and the merge driver merges it once it is
 // green, as it merges a child. Whatever only the person can clear (no PR, a closed one, no review after
 // its tries, no merge driver, a merge hold) is put to them: nothing else would reach it.
-function epicState(qx) {
+// `own` false: another batch's epic, read from its queue alone.
+function epicState(qx, own = true) {
   const p = qx.promotion ?? {};
+  const base = own ? BASE : qx.base;
   if (!epicDue(qx)) {
     if (p.merged_at) return `epic PR #${p.pr} merged into ${REPO_DEFAULT}`;
-    const left = Object.values(qx.tickets).filter((t) => !keysOf(t.held_by).includes(qx.epic) && !(t.state === 'done' && t.merged_at)).map((t) => t.key);
-    return `no epic PR until ${left.join(', ') || 'every child'} merge${left.length === 1 ? 's' : ''} into ${BASE}`;
+    const left = epicChildren(qx).filter((t) => !childDone(t)).map((t) => t.key);
+    return `no epic PR until ${left.join(', ') || 'every child'} merge${left.length === 1 ? 's' : ''} into ${base}`;
   }
-  if (p.pr == null) return `no epic PR: ${p.why ?? `not opened yet from ${BASE}`}`;
+  if (p.pr == null) return `no epic PR: ${p.why ?? `not opened yet from ${base}`}`;
+  if (!own) return `epic PR #${p.pr}, which batch ${qx.epic} lands`;
   if (!epicPr) return `epic PR #${p.pr}, opened as a draft this pass`;
   if (epicPr.state !== 'OPEN') return `epic PR #${p.pr}, ${epicPr?.unreadable ? 'which could not be read' : String(epicPr?.state ?? 'unread').toLowerCase()}`;
   return `epic PR #${p.pr}, ${epicPr.isDraft ? 'in draft until a clean review stands at its head' : 'out of draft, merged by the merge driver once green'}`;

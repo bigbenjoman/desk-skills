@@ -80,11 +80,11 @@ export function baseFixTask({ base, source, fix }) {
 
 // An epic batch not in feature mode lands its base through one epic PR, which leaves draft only once a
 // clean review stands at its head. A review try is a worker in the base worktree, recorded on base_fix
-// as a try of kind `review`: at most FIX_TRIES_MAX of them, and one per head.
+// as a try of kind `review`: at most FIX_TRIES_MAX of them per epic PR, and one per head.
 //   rec: base_fix · v: { pr, head } · alive: the running try's worker is live
 //   -> wait | stuck (why) | spawn (fix)
 export function epicReviewCall(rec, v, { alive }) {
-  const done = (rec?.tries ?? []).filter((x) => x.kind === 'review');
+  const done = (rec?.tries ?? []).filter((x) => x.kind === 'review' && x.pr === v.pr);
   const last = done[done.length - 1] ?? null;
   if (rec?.running && alive) return { call: 'wait', try: last };
   if (done.some((x) => x.head === v.head) || done.length >= FIX_TRIES_MAX) {
