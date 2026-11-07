@@ -412,6 +412,8 @@ export DESK_WORKER_LOG="$LOG"
 # desk-q (claude-logins.mjs) to probe that login's usage. Beside its settings, never in its log, whose
 # growth is the worker's own output.
 node "$DESK_ENV_DIR/claude-logins.mjs" login-event > "$STATE/workers/$TICKET.login.json" 2>/dev/null < /dev/null || true
+# Where desk-env lines finds what this worker may read (worker-settings.mjs writes it beside these settings).
+export DESK_WORKER_SETTINGS="$SETTINGS"
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
 desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
