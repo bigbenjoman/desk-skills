@@ -314,6 +314,22 @@ Keep the task set outside this repo. Its paths are relative to the file:
 {"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
 ```
 
+**`bench-blind.mjs`** turns a bench run into blind scoring sheets. `export` reads the output
+folder's `run.json` and writes, under `<out>/blind`, one Markdown sheet per task in `sheets/`: the
+ticket text, the rubric (`desk/bin/bench-rubric.md`, or `--rubric <file>`) and every arm's diff
+under a letter drawn at random per task, with an arm that made no diff shown as "no change
+produced". Names of models, arms and efforts in a diff (a co-author trailer, a comment, a branch
+name) become `[redacted]`. It also writes `scores.csv`, a `task,letter,score` template with the
+scores blank, and `key.json`, which maps each letter to its arm and is named by no sheet. Fill in
+each score from 1 to 5, then `join` attaches them to the arms through the key and writes
+`joined.json`. A sheet with a missing, out-of-range or unknown score is listed and none of its
+scores count:
+
+```
+node ~/.claude/desk/bin/bench-blind.mjs export --tasks <tasks.json> [--out <dir>] [--dest <dir>] [--rubric <file>]
+node ~/.claude/desk/bin/bench-blind.mjs join --tasks <tasks.json> [--out <dir>] [--dest <dir>]
+```
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
