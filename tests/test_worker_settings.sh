@@ -515,4 +515,23 @@ settings '`bash tests/run.sh`' '' "$(lever3b codex)"
 check "DS-452 AC5 memory lever off: auto-memory is left as it is" '[ $rc -eq 0 ] && [ "$(jq -c .autoMemoryEnabled "$T/ws.json")" = null ]'
 check "DS-452 AC5 memory lever off: the memory folder is granted, and not denied" 'readable "$MEM" && ! denies "Edit(/$MEM/**)"'
 
+# The codex lever, under §3 codex-review yes: on, desk-codex is allowed and a direct codex call may not
+# pass a model, profile or output file; off, codex is allowed and denied as it always was.
+settings '`bash tests/run.sh`' '' "$(rows3 codex-review=yes)"; cp "$T/ws.json" "$T/ws-codex-off.json"
+check "DS-445 AC7 codex lever off: desk-codex is not allowed, and codex keeps its rules" \
+  '[ $rc -eq 0 ] && no "desk-codex probe" && ok "codex exec --sandbox read-only --skip-git-repo-check '"'x'"'" "codex exec --sandbox read-only -m gpt-5 '"'x'"'" && no "codex exec --sandbox workspace-write '"'x'"'"'
+settings '`bash tests/run.sh`' "$(lever3b codex)" "$(rows3 codex-review=yes)"
+check "DS-445 AC6 codex lever on: every codex deny rule the lever off has is kept" \
+  '[ $rc -eq 0 ] && jq -e --slurpfile off "$T/ws-codex-off.json" "(\$off[0].permissions.deny - .permissions.deny) == []" "$T/ws.json" >/dev/null'
+check "DS-445 AC6 codex lever on: exactly the model, profile and output deny rules are added" \
+  'jq -e --slurpfile off "$T/ws-codex-off.json" "[(.permissions.deny - \$off[0].permissions.deny)[] | sub(\"^Bash\\\\(.*codex\"; \"\")] | unique == ([\" * -m*)\", \" *--model*)\", \" * -p*)\", \" *--profile*)\", \" * -o*)\", \" *--output-last-message*)\", \" * -c*)\"] | sort)" "$T/ws.json" >/dev/null && denies "Bash(codex * -m*)"'
+check "DS-445 codex lever on: the only allow rules added are desk-codex" \
+  'jq -e --slurpfile off "$T/ws-codex-off.json" "(.permissions.allow - \$off[0].permissions.allow) | length > 0 and all(test(\"desk-codex\"))" "$T/ws.json" >/dev/null'
+check "DS-445 codex lever on: desk-codex runs by name, installed path and module" \
+  'ok "desk-codex probe" "desk-codex refuter '"'x'"'" "$HOME/.local/bin/desk-codex finder --cd $T/repo '"'x'"'" "node $B/desk-codex.mjs settings" "codex exec --sandbox read-only --skip-git-repo-check '"'x'"'"'
+check "DS-445 AC6 codex lever on: a direct call with a model, profile, output file, config or other sandbox is refused" \
+  'no "codex exec --sandbox read-only -m gpt-5 '"'x'"'" "codex exec --sandbox read-only --model=gpt-5 '"'x'"'" "codex exec --sandbox read-only -p fast '"'x'"'" \
+      "codex exec --sandbox read-only --profile fast '"'x'"'" "codex exec --sandbox read-only -o out.txt '"'x'"'" "codex exec --sandbox read-only --output-last-message out.txt '"'x'"'" \
+      "codex exec --sandbox read-only -c model=x '"'x'"'" "codex exec --sandbox read-only -cmodel=x '"'x'"'" "codex exec --sandbox workspace-write '"'x'"'"'
+
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

@@ -119,7 +119,8 @@ Your settings are an **allow-list**: anything not named here is refused.
   Which entry you start, and the line on why in that park, follow the Stage 4 file's "A CI or
   end-to-end run you ask for is the narrowest one that covers your change": read it first.
 - **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
-  is `yes`.
+  is `yes`. With the `codex` lever on, `desk-codex …` too, and a direct call passing a model,
+  profile or output file is refused.
 - **Reading tools**: `rg`, `grep`, `find` (without `-exec`/`-delete`), `ls`, `cat`, `head`, `tail`,
   `wc`, `diff`, `jq`, `tr`, `cut`, `stat`, `du`, `file`, `mkdir`, `ps`, `pgrep`, and `echo`,
   `printf` and `true` to stdout. **Not** `sed`,
@@ -229,6 +230,11 @@ orchestrator cannot see the stall. Never offer a benign alternative ("or is this
 codex rejects when uncertain, so that clause can flip a CONFIRMED P1 to REJECTED with no code
 change. Never pass `-m`. A useless or empty reply counts as REJECTED and says the refutation did
 not run, not that it passed.
+
+**With the `codex` lever on** (`desk-env levers codex` prints `on`), every call above is
+`desk-codex` instead: `desk-codex probe`, `desk-codex finder '<prompt>'`, `desk-codex refuter
+'<prompt>'` (desk-review's Phases 0, 3 and 4). It is one command whatever the prompt holds, takes no
+codex flag, never reads stdin, and ends a call at its timeout with exit 124, a dead seat.
 
 You cannot answer a question, so **do not let the codex probe stop you.** If codex is genuinely
 unusable after a correctly-shaped call, fall back to the same-vendor refuter, tag every finding

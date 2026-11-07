@@ -167,6 +167,7 @@ with local.
 **Phase 0 levers are not asked.** A new config gets `none` (every lever off). On a re-run keep what
 the row holds, never turning a lever on or off for the user, and run `desk-env levers`: say its `on:`
 line, and any `unknown:` line it prints in one sentence naming each value, which is read as off.
+Codex review is not asked either: a new config gets its Recommended value, and a re-run keeps it.
 
 **The dev-server port is read, not recalled.** Run `desk-env ports --cap <the cap half of the
 autopilot worker concurrency answer>` (not the test worker cap): it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block

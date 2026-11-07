@@ -62,12 +62,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
 const FIX_RANGE_ROUND = 2
-const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seats', 'findings']
+const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seats', 'findings', 'codex']
+// With the codex lever on, the model and effort each codex role ran at, as `desk-codex settings` prints them.
+const CODEX_ROLES = ['finder', 'refuter']
+const CODEX_RUN = /^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z]+$/
 const ACCEPTED = ['gap', 'by', 'at', 'url']
 // The record of an acceptance: a comment or a review on a pull request, linked by its anchor.
 const ACCEPT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+#(?:issuecomment-\d+|pullrequestreview-\d+|discussion_r\d+)$/
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/
-const SEAT = ['role', 'agent', 'vendor', 'status', 'note', 'fallback']
+const SEAT = ['role', 'agent', 'vendor', 'status', 'reason', 'note', 'fallback']
 const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
 const RESULTS = ['CONFIRMED', 'REJECTED', 'DUPLICATE', 'UNREFUTED']
@@ -126,8 +129,13 @@ export function tally(r) {
     if (!VENDORS.includes(s.vendor)) no(`seat ${s.role}: vendor must be claude or codex`)
     if (s.status !== 'ran' && s.status !== 'died') no(`seat ${s.role}: status must be ran or died`)
     if (s.fallback != null && typeof s.fallback !== 'boolean') no(`seat ${s.role}: fallback must be true or false`)
+    if (s.reason != null && (s.status !== 'died' || typeof s.reason !== 'string' || !s.reason.trim())) no(`seat ${s.role}: reason says why a seat died, as "timed out"`)
     seats.set(s.role, s)
   })
+  if (r.codex != null) {
+    keysOf(r.codex, CODEX_ROLES, 'codex')
+    for (const [role, v] of Object.entries(r.codex)) if (!CODEX_RUN.test(String(v))) no(`codex.${role} is <model>:<effort>, as desk-codex settings prints it`)
+  }
   // Correctness fires on every review, so a results file without it is a run that never finished.
   if (!seats.has('correctness')) no('seats must include correctness, which runs on every review')
 
@@ -188,13 +196,13 @@ export function tally(r) {
     if (f.result === 'UNREFUTED') n.unrefuted++
     if (f.deferred) n.deferred++
   }
-  const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => s.role)
+  const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => (s.reason ? `${s.role} (${s.reason.trim()})` : s.role))
   n.partial += died.length
   const fallback = [...seats.values()]
     .filter((s) => s.fallback === true || (NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose'))
     .map((s) => s.role)
   return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted,
-    vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback,
+    vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback, codex: r.codex ?? null,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
 
@@ -232,9 +240,13 @@ export function render(r) {
   return lines.join('\n')
 }
 
-const how = (t) => (t.vendor === 'codex-cross'
+const how = (t) => `${t.vendor === 'codex-cross'
   ? 'codex read the diff cold · refuted cross-vendor'
-  : `same-vendor${t.codexRead ? '' : ' · codex did not read the diff'}`)
+  : `same-vendor${t.codexRead ? '' : ' · codex did not read the diff'}`}${codexRuns(t)}`
+const codexRuns = (t) => {
+  const runs = CODEX_ROLES.filter((role) => t.codex?.[role]).map((role) => `${role} ${t.codex[role].replace(':', ' at ')}`)
+  return runs.length ? ` · codex ${runs.join(', ')}` : ''
+}
 
 // The PR body's line on how the review ran: its rounds, its vendor and its fallback seats.
 export function methodLine(r) {
