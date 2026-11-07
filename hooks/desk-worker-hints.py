@@ -3,10 +3,10 @@
 a command the worker's allow-list refuses anyway is refused naming the single command that does the
 same, instead of the harness's bare "denied because Claude Code is running in don't ask mode".
 
-    python3 desk-worker-hints.py <worker settings file>
+    python3 desk-worker-hints.py <worker settings file> <its .wrappers.json sidecar>
 
-worker-settings.mjs registers it only with the lever on, beside the settings file whose allow rules
-it reads and the `.wrappers.json` sidecar it writes (the worktree, the §4 Unit tests items).
+worker-settings.mjs registers it only with the lever on, naming the settings file whose allow rules
+it reads and the sidecar it writes beside them (the worktree, the §4 Unit tests items).
 
 It only ever denies, and only a command the harness would refuse too: one with a step that no allow
 rule matches (a prefix rule matched as a bare prefix, the widest reading) and that is not a command
@@ -14,10 +14,11 @@ the harness may allow by itself (the CAN_RUN words: cd, sed, the reading tools).
 other way, so a hint is lost before a command that would have run is refused: a command it cannot
 split with confidence (`$`, backticks, a heredoc, a subshell, a loop) gets no opinion, and so does a
 refused command none of the hints below fits. The hints:
-  - `cd <its own worktree> && ...`: the cd does nothing, so the same command without it;
+  - `cd <its own worktree> && ...`: the cd does nothing, so the same command without it, which still
+    holds the refused step;
   - `sed -n A,Bp <file>`: `desk-env lines <file> A,B`, one command with nothing chained;
-  - one test file run directly (`node tests/test_x.mjs`, `bash tests/test_x.sh`): §4 Unit tests with
-    that file, under the test lock.
+  - one test file run directly (`node tests/test_x.mjs`, `bash tests/test_x.sh`): the §4 Unit tests
+    item whose directory holds that file, with the file's path from there, under the test lock.
 """
 
 import json
@@ -115,15 +116,35 @@ def own_dir(target, cwd, worktrees):
     return any(path == os.path.realpath(w) for w in worktrees)
 
 
-def test_hint(tokens, tests, lock):
+def test_item(path, cwd, tests):
+    """The §4 Unit tests item whose directory holds the file (the deepest one), and the file's path from
+    that directory, or None: a file outside the worktree, or under no item's directory."""
+    root = os.path.realpath(cwd)
+    rel = os.path.relpath(os.path.realpath(os.path.join(cwd, path)), root)
+    if rel == ".." or rel.startswith(".." + os.sep):
+        return None
+    best = None
+    for t in tests:
+        d = os.path.normpath(t.get("dir") or ".")
+        if d == "." or rel.startswith(d + os.sep):
+            if best is None or len(d) > len(best[0]):
+                best = (d, t)
+    if best is None:
+        return None
+    d, t = best
+    return t, rel if d == "." else rel[len(d) + 1:]
+
+
+def test_hint(tokens, cwd, tests, lock):
     if len(tokens) < 2 or os.path.basename(tokens[0]) not in SHELLS or not TEST_FILE.match(os.path.basename(tokens[1])):
         return None
-    if not tests:
+    found = test_item(tokens[1], cwd, tests)
+    if not found:
         return None
-    t = tests[0]
-    where = "" if t.get("dir", ".") == "." else f" --cwd {t['dir']}"
-    return (f"`{' '.join(tokens[:2])}` runs one test file directly, which is not allowed: run it through §4 Unit "
-            f"tests instead, `{lock} test{where} -- {t['cmd']} {tokens[1]}`, and read its summary rather than piping it")
+    t, file = found
+    where = "" if os.path.normpath(t.get("dir") or ".") == "." else f" --cwd {t['dir']}"
+    return (f"Instead, `{' '.join(tokens[:2])}` runs one test file directly, which is not allowed: run it through §4 "
+            f"Unit tests, `{lock} test{where} -- {t['cmd']} {file}`, and read its summary rather than piping it.")
 
 
 def hints(command, cwd, allow, side):
@@ -137,40 +158,38 @@ def hints(command, cwd, allow, side):
     first = shlex.split(steps[0][0])
     if len(steps) > 1 and len(first) == 2 and first[0] == "cd" and steps[0][1] in ("&&", ";") \
             and own_dir(first[1], cwd, side.get("worktree", [])):
+        # The cd is never the refused step (CAN_RUN), so the rest still holds one: say so, never "run the rest".
         rest = command.split(steps[0][1], 1)[1].strip()
-        out.append(f"the `cd {first[1]}` does nothing: your commands already run in your worktree. Run the rest "
-                   f"without it: `{rest}`")
+        out.append(f"The `cd {first[1]}` does nothing: your commands already run in your worktree, so leave it out. "
+                   f"Without it the command is `{rest}`, which still holds the refused step.")
     for step, _ in steps:
         tokens = shlex.split(step)
         if tokens[:2] == ["sed", "-n"] and len(tokens) == 4 and SED_RANGE.match(tokens[2]):
             m = SED_RANGE.match(tokens[2])
             span = m.group(1) + (f",{m.group(2)}" if m.group(2) else "")
-            out.append(f"for a line range, `desk-env lines {tokens[3]} {span}` prints what `{step}` does, "
-                       "as one command")
+            out.append(f"Instead, for a line range, `desk-env lines {tokens[3]} {span}` prints what `{step}` does, "
+                       "as one command.")
     for step in refused:
-        h = test_hint(spellings(shlex.split(step))[1], side.get("tests", []), side.get("lock", "~/.claude/desk/bin/with-lock.sh"))
+        h = test_hint(spellings(shlex.split(step))[1], cwd, side.get("tests", []),
+                      side.get("lock", "~/.claude/desk/bin/with-lock.sh"))
         if h:
             out.append(h)
     if not out:
         return None
     names = ", ".join(f"`{s}`" for s in refused)
     return (f"Refused before it ran: {names} {'is' if len(refused) == 1 else 'are'} not allowed on its own, and a "
-            "command runs only when every part of it is. " + " ".join(f"Instead, {h}." for h in out))
-
-
-def sidecar(settings):
-    return re.sub(r"\.json$", "", settings) + ".wrappers.json"
+            "command runs only when every part of it is. " + " ".join(out))
 
 
 def main():
     try:
-        settings = sys.argv[1]
+        settings, sidecar = sys.argv[1], sys.argv[2]
         payload = json.load(sys.stdin)
         command = (payload.get("tool_input") or {}).get("command") or ""
         cwd = payload.get("cwd") or os.getcwd()
         with open(settings, encoding="utf-8") as f:
             allow = (json.load(f).get("permissions") or {}).get("allow") or []
-        with open(sidecar(settings), encoding="utf-8") as f:
+        with open(sidecar, encoding="utf-8") as f:
             side = json.load(f)
         reason = hints(command, cwd, allow, side)
     except Exception:  # noqa: BLE001 - any doubt is no opinion: the harness decides as it would

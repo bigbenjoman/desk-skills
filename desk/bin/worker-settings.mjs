@@ -762,7 +762,7 @@ const HINTS_HOOK = join(E.HOME, '.claude', 'hooks', 'desk-worker-hints.py');
 const sq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 if (opt.wrappers && existsSync(HINTS_HOOK)) {
   const hooks = settings.hooks || {};
-  settings.hooks = { ...hooks, PreToolUse: [...(hooks.PreToolUse || []), { matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${HINTS_HOOK}" ${sq(resolve(opt.out))}`, timeout: 10 }] }] };
+  settings.hooks = { ...hooks, PreToolUse: [...(hooks.PreToolUse || []), { matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${HINTS_HOOK}" ${sq(resolve(opt.out))} ${sq(resolve(wrappersFile(opt.out)))}`, timeout: 10 }] }] };
 }
 
 // Validate before writing: a silently-ignored settings file is full permissions.

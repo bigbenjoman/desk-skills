@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # suite: wrappers lever (desk-env lines, the worker hints hook)
-# covers: desk/bin/desk-lines.mjs hooks/desk-worker-hints.py desk/bin/worker-settings.mjs desk/bin/spawn-worker.sh
+# covers: desk/bin/desk-lines.mjs hooks/desk-worker-hints.py desk/bin/worker-settings.mjs
 # With config §3b Phase 0 levers naming `wrappers`: `desk-env lines <file> A,B` prints what
 # `sed -n A,Bp <file>` prints (AC1) and refuses what a worker's reading tools are refused (AC2);
 # hooks/desk-worker-hints.py refuses a command the allow-list refuses anyway naming what to run
@@ -129,19 +129,18 @@ check "AC4 lever off: no sidecar is written"           '[ $rc -eq 0 ] && [ ! -e 
 check "AC4 lever off: the hints hook is not registered" '! grep -q desk-worker-hints "$T/ws-off.json"'
 check "the lever adds no allow rule, no deny rule and no directory" \
   '[ "$(jq -S .permissions "$T/ws-on.json")" = "$(jq -S .permissions "$T/ws-off.json")" ]'
-check "the lever adds exactly one hook: the hints hook on Bash, given the settings file" \
+check "the lever adds exactly one hook: the hints hook on Bash, given the settings file and its sidecar" \
   '[ "$(jq -c "[.hooks.PreToolUse[] | select(.matcher == \"Bash\")] | length" "$T/ws-on.json")" = 2 ] \
-   && [ "$(jq -r ".hooks.PreToolUse[-1].hooks[0].command" "$T/ws-on.json")" = "python3 \"$HOME/.claude/hooks/desk-worker-hints.py\" '"'"'$T/ws.json'"'"'" ] \
+   && [ "$(jq -r ".hooks.PreToolUse[-1].hooks[0].command" "$T/ws-on.json")" = "python3 \"$HOME/.claude/hooks/desk-worker-hints.py\" '"'"'$T/ws.json'"'"' '"'"'$T/ws.wrappers.json'"'"'" ] \
    && [ "$(jq -S "del(.hooks.PreToolUse[-1])" "$T/ws-on.json")" = "$(jq -S . "$T/ws-off.json")" ]'
 check "desk-env lines is already allowed by name and module, so no rule is needed for it" \
   'jq -e ".permissions.allow | index(\"Bash(desk-env:*)\") and index(\"Bash(node $B/desk-env.mjs:*)\")" "$T/ws-on.json" >/dev/null'
-check "spawn-worker names the settings file for desk-env lines" 'grep -q "^export DESK_WORKER_SETTINGS=\"\$SETTINGS\"" "$B/spawn-worker.sh"'
 
 # ---- AC3: the hook ---------------------------------------------------------------------------------
 config wrappers; ws
 HOOK="$HOME/.claude/hooks/desk-worker-hints.py"
-# hook <command> [cwd] -> $out, $rc
-hook(){ out=$(jq -nc --arg c "$1" --arg d "${2:-$R}" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c},cwd:$d}' | python3 "$HOOK" "$T/ws.json" 2>&1); rc=$?; }
+# hook <command> [cwd] [sidecar] -> $out, $rc
+hook(){ out=$(jq -nc --arg c "$1" --arg d "${2:-$R}" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c},cwd:$d}' | python3 "$HOOK" "$T/ws.json" "${3:-$T/ws.wrappers.json}" 2>&1); rc=$?; }
 reason(){ printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null; }
 denied(){ [ "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" = deny ]; }
 silent(){ [ "$rc" -eq 0 ] && [ -z "$out" ]; }
@@ -149,7 +148,9 @@ LOCK="$(jq -r .lock "$T/ws.wrappers.json")"
 
 hook "cd $R && node tests/test_x.mjs 2>&1 | tail -5"
 check "AC3 cd into its own worktree before a refused step: refused" '[ $rc -eq 0 ] && denied'
-check "AC3 the refusal names the command without the cd" '[[ "$(reason)" == *"the \`cd $R\` does nothing"*"Run the rest without it: \`node tests/test_x.mjs 2>&1 | tail -5\`"* ]]'
+check "AC3 the refusal names the command without the cd, and says it still holds the refused step" \
+  '[[ "$(reason)" == *"The \`cd $R\` does nothing"*"Without it the command is \`node tests/test_x.mjs 2>&1 | tail -5\`, which still holds the refused step."* ]]'
+check "the cd hint never tells the worker to run the rest" '[[ "$(reason)" != *"Run the rest"* ]]'
 check "AC3 and names the one test file through §4 Unit tests" '[[ "$(reason)" == *"\`$LOCK test -- bash tests/run.sh tests/test_x.mjs\`"* ]]'
 check "AC3 and names the step that was refused"         '[[ "$(reason)" == *"\`node tests/test_x.mjs 2>&1\` is not allowed on its own"* ]]'
 hook "bash tests/test_worker_settings.sh | tail -3"
@@ -171,9 +172,24 @@ for c in "cd $R && git status" "sed -n 1,5p notes.txt" "sed -n 1,5p notes.txt | 
 done
 hook "cd $R/tests && node test_x.mjs"
 check "AC3 cd into a directory inside the worktree is not called a no-op" 'denied && [[ "$(reason)" != *"does nothing"* ]]'
-out=$(printf 'not json' | python3 "$HOOK" "$T/ws.json" 2>&1); rc=$?
+out=$(printf 'not json' | python3 "$HOOK" "$T/ws.json" "$T/ws.wrappers.json" 2>&1); rc=$?
 check "bad input: no opinion, no error"                 'silent'
-out=$(jq -nc '{tool_input:{command:"node tests/test_x.mjs"},cwd:"/"}' | python3 "$HOOK" "$T/missing.json" 2>&1); rc=$?
+out=$(jq -nc '{tool_input:{command:"node tests/test_x.mjs"},cwd:"/"}' | python3 "$HOOK" "$T/missing.json" "$T/ws.wrappers.json" 2>&1); rc=$?
 check "settings it cannot read: no opinion, no error"   'silent'
+hook "node tests/test_x.mjs" "$R" "$T/missing.wrappers.json"
+check "a sidecar it cannot read: no opinion, no error"  'silent'
+
+# The test hint takes the §4 Unit tests item whose directory holds the file, and the path from there.
+jq '.tests = [{dir: ".", cmd: "bash tests/run.sh"}, {dir: "apps/web", cmd: "pnpm vitest run"}]' "$T/ws.wrappers.json" > "$T/multi.wrappers.json"
+hook "node apps/web/tests/test_x.mjs" "$R" "$T/multi.wrappers.json"
+check "a test file under a directory item: that item, with --cwd and the path from its directory" \
+  'denied && [[ "$(reason)" == *"\`$LOCK test --cwd apps/web -- pnpm vitest run tests/test_x.mjs\`"* ]] && [[ "$(reason)" != *"bash tests/run.sh"* ]]'
+hook "node tests/test_y.mjs" "$R" "$T/multi.wrappers.json"
+check "a test file under no directory item: the root item" 'denied && [[ "$(reason)" == *"\`$LOCK test -- bash tests/run.sh tests/test_y.mjs\`"* ]]'
+jq '.tests = [{dir: "apps/web", cmd: "pnpm vitest run"}]' "$T/ws.wrappers.json" > "$T/web.wrappers.json"
+hook "node tests/test_y.mjs" "$R" "$T/web.wrappers.json"
+check "a test file under no item's directory: no hint, so no opinion" 'silent'
+hook "node $T/outside/test_z.mjs" "$R" "$T/multi.wrappers.json"
+check "a test file outside the worktree: no hint, so no opinion" 'silent'
 
 echo "wrappers lever: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
