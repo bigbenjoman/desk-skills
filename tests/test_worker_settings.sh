@@ -524,7 +524,7 @@ settings '`bash tests/run.sh`' "$(lever3b codex)" "$(rows3 codex-review=yes)"
 check "DS-445 AC6 codex lever on: every codex deny rule the lever off has is kept" \
   '[ $rc -eq 0 ] && jq -e --slurpfile off "$T/ws-codex-off.json" "(\$off[0].permissions.deny - .permissions.deny) == []" "$T/ws.json" >/dev/null'
 check "DS-445 AC6 codex lever on: exactly the model, profile and output deny rules are added" \
-  'jq -e --slurpfile off "$T/ws-codex-off.json" "[(.permissions.deny - \$off[0].permissions.deny)[] | sub(\"^Bash\\\\(.*codex\"; \"\")] | unique == ([\" * -m*)\", \" *--model*)\", \" * -p*)\", \" *--profile*)\", \" * -o*)\", \" *--output-last-message*)\"] | sort)" "$T/ws.json" >/dev/null && denies "Bash(codex * -m*)"'
+  'jq -e --slurpfile off "$T/ws-codex-off.json" "[(.permissions.deny - \$off[0].permissions.deny)[] | sub(\"^Bash\\\\(.*codex\"; \"\")] | unique == ([\" * -m*)\", \" *--model*)\", \" * -p*)\", \" *--profile*)\", \" * -o*)\", \" *--output-last-message*)\", \" * -c*)\"] | sort)" "$T/ws.json" >/dev/null && denies "Bash(codex * -m*)"'
 check "DS-445 codex lever on: the only allow rules added are desk-codex" \
   'jq -e --slurpfile off "$T/ws-codex-off.json" "(.permissions.allow - \$off[0].permissions.allow) | length > 0 and all(test(\"desk-codex\"))" "$T/ws.json" >/dev/null'
 check "DS-445 codex lever on: desk-codex runs by name, installed path and module" \
@@ -532,6 +532,6 @@ check "DS-445 codex lever on: desk-codex runs by name, installed path and module
 check "DS-445 AC6 codex lever on: a direct call with a model, profile, output file, config or other sandbox is refused" \
   'no "codex exec --sandbox read-only -m gpt-5 '"'x'"'" "codex exec --sandbox read-only --model=gpt-5 '"'x'"'" "codex exec --sandbox read-only -p fast '"'x'"'" \
       "codex exec --sandbox read-only --profile fast '"'x'"'" "codex exec --sandbox read-only -o out.txt '"'x'"'" "codex exec --sandbox read-only --output-last-message out.txt '"'x'"'" \
-      "codex exec --sandbox read-only -c model=x '"'x'"'" "codex exec --sandbox workspace-write '"'x'"'"'
+      "codex exec --sandbox read-only -c model=x '"'x'"'" "codex exec --sandbox read-only -cmodel=x '"'x'"'" "codex exec --sandbox workspace-write '"'x'"'"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

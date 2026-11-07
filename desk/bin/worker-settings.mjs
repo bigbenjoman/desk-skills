@@ -590,7 +590,7 @@ if (mode === 'triage') {
     if (E.leverOn('codex')) {
       allow.push('Bash(desk-codex:*)', `Bash(${E.HOME}/.local/bin/desk-codex:*)`, 'Bash(~/.local/bin/desk-codex:*)',
         ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-codex.mjs:*)`, `Bash(node ${b}/desk-codex.mjs:*)`]));
-      deny.push(...bash('codex', ' * -m*', ' *--model*', ' * -p*', ' *--profile*', ' * -o*', ' *--output-last-message*'));
+      deny.push(...bash('codex', ' * -m*', ' *--model*', ' * -p*', ' *--profile*', ' * -o*', ' *--output-last-message*', ' * -c*'));
     }
   } else { deny.push(...bash('codex')); denied.push(`${E.permissionKey('codex-review')} (${setting('codex-review')})`); }
 

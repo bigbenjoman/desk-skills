@@ -59,19 +59,26 @@ function run(role, prompt, cd) {
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; group('SIGTERM'); setTimeout(() => group('SIGKILL'), KILL_GRACE_MS).unref(); }, cfg.timeout * 1000);
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => { group('SIGKILL'); process.exit(128 + ({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 })[sig]); });
+  // Sets the exit code and returns, never process.exit: a pipe write on macOS is asynchronous, and
+  // exiting at once would cut a long final message short.
   const finish = (code) => {
     clearTimeout(timer);
     let msg = '';
     try { msg = readFileSync(last, 'utf8'); } catch { /* no final message */ }
     rmSync(dir, { recursive: true, force: true });
-    if (timedOut) { writeRecord(false); say(`timed out after ${cfg.timeout}s (${role}, ${model} at ${effort})`); process.exit(124); }
+    if (timedOut) {
+      // codex itself has closed, but a descendant that ignored the SIGTERM would outlive the grace
+      // timer, which is unref'd: end the group now.
+      group('SIGKILL');
+      writeRecord(false); say(`timed out after ${cfg.timeout}s (${role}, ${model} at ${effort})`); process.exitCode = 124; return;
+    }
     const answered = code === 0 && msg.trim() !== '' && (role !== 'probe' || msg.includes('CODEX_OK'));
     writeRecord(answered);
     if (msg) process.stdout.write(msg.endsWith('\n') ? msg : `${msg}\n`);
-    if (code !== 0) { say(`codex exited ${code} (${role}, ${model} at ${effort}): ${tail.trim().split('\n').slice(-5).join(' | ') || 'no error text'}`); process.exit(code); }
-    if (!answered) { say(`codex answered ${msg.trim() ? 'without CODEX_OK' : 'with no final message'} (${role}, ${model} at ${effort})`); process.exit(1); }
+    if (code !== 0) { say(`codex exited ${code} (${role}, ${model} at ${effort}): ${tail.trim().split('\n').slice(-5).join(' | ') || 'no error text'}`); process.exitCode = code; return; }
+    if (!answered) { say(`codex answered ${msg.trim() ? 'without CODEX_OK' : 'with no final message'} (${role}, ${model} at ${effort})`); process.exitCode = 1; return; }
     if (role === 'probe') say(describe());
-    process.exit(0);
+    process.exitCode = 0;
   };
   child.on('error', (e) => { clearTimeout(timer); rmSync(dir, { recursive: true, force: true }); writeRecord(false); say(`codex did not start: ${e.message}`); process.exit(127); });
   child.on('close', (code, signal) => finish(code ?? (signal ? 128 : 1)));

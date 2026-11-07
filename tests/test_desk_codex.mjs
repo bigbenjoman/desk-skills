@@ -37,6 +37,8 @@ case "$(cat "${T}/mode")" in
   answer) echo "progress: reading files"; echo "tokens used: 42" >&2; printf 'FINAL ANSWER\\nsecond line\\n' > "$out" ;;
   probe) echo "progress"; echo CODEX_OK > "$out" ;;
   hang) echo $$ > "${T}/pid"; sleep 30 & echo $! > "${T}/sleep"; wait ;;
+  stubborn) ( trap '' TERM; exec sleep 30 ) </dev/null >/dev/null 2>&1 & echo $! > "${T}/stubborn"; wait ;;
+  long) head -c 300000 /dev/zero | tr '\\0' a > "$out" ;;
   stdin) if IFS= read -r line; then echo "STDIN:$line" > "$out"; else echo "NO STDIN" > "$out"; fi ;;
   fail) echo "You've hit your usage limit." >&2; exit 1 ;;
 esac
@@ -110,6 +112,15 @@ r = codex(['finder', 'x']);
 t('AC2 a hung call is ended at the timeout, exit 124', [r.status, r.secs < 10], [124, true]);
 t('AC2 it says timed out, and prints no answer', [/timed out after 2s/.test(r.err), r.out], [true, '']);
 t('AC2 codex and its children are gone', [alive(join(T, 'pid')), alive(join(T, 'sleep'))], [false, false]);
+mode('stubborn');
+r = codex(['finder', 'x']);
+const gone = (pidFile) => { const end = Date.now() + 2000; while (alive(pidFile) && Date.now() < end) spawnSync('sleep', ['0.1']); return !alive(pidFile); };
+t('AC2 a child that ignores the end signal is killed too, once codex has closed', [r.status, gone(join(T, 'stubborn'))], [124, true]);
+
+// AC1: a final message larger than a pipe buffer reaches the caller whole.
+mode('long');
+r = codex(['refuter', 'x']);
+t('AC1 a long final message is not cut short', [r.status, r.out.length], [0, 300001]);
 
 // A failure passes codex's exit and its error through.
 mode('fail');
