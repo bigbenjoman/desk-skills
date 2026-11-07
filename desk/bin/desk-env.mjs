@@ -325,6 +325,7 @@ export const CONFIG_ROWS = Object.freeze({
   'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
   'intake-query': { section: '3b', row: 'Intake query' },
+  'triage-concurrency': { section: '3b', row: 'Triage concurrency' },
   'maintenance-window': { section: '3b', row: 'Maintenance window' },
   'maintenance-drain': { section: '3b', row: 'Maintenance drain limit (minutes)' },
   'env-files': { section: '4', row: 'Env files' },
