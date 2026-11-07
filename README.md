@@ -313,6 +313,19 @@ Keep the task set outside this repo. Its paths are relative to the file:
 `hidden_tests.run` (default: every file) names the files handed to the test command; the rest,
 such as fixtures, are only copied in.
 
+The bench spends at most a set share of each weekly allowance and always leaves a reserve for your own
+work. Before each run it reads the weekly use of the account the run will spend: for Claude, a usage
+probe on that login; for an arm on a GPT or Codex model, the signed-in Codex login's session logs.
+It stops before the run, naming the account, when the bench has used its cap of points in this
+weekly window, when less than the reserve is left, or when the reading is missing, older than 30
+minutes or cannot be parsed. A missing reading is never read as zero. The whole rise in weekly use
+during a run, other work on that account included, is that run's `quota.points` in its
+`result.json`, and is kept per computer in `<usage dir>/bench-quota.jsonl`. The points are printed at
+every stop and in the report. Run it again once the window resets and it picks up at the first task
+and arm not yet scored. The cap and reserve are per computer, set as the machine profile's Sizing rows
+`bench-cap-points` and `bench-reserve-percent` (unset: 10 points and 25%). A value that is not a
+number refuses to start.
+
 **`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
 merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and
 description as they read when the PR's first commit was authored: later edits are undone from the
