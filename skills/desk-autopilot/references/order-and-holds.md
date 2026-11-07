@@ -70,7 +70,7 @@ step once, as `step:<KEY>`, naming every PR and ticket waiting on it.
 
 **The person's instruction on an open PR holds its merge too.** From needs-you `resume` until the pass
 closes that fix, the merge driver leaves the PR alone, red or green, and a worker that parks or fails
-on it keeps it held.
+on it keeps it held. One that ends with no marker is parked, not done, so it keeps it held too.
 
 **Behind a failed or parked blocker, a held ticket is not a question of its own.** That blocker is
 already in front of the person (its `FAILED` line, or its park), so what is held behind it, at any
