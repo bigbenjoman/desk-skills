@@ -79,7 +79,9 @@
       },
       "license": null,
       "notes": "Patched locally (DS-453): its mandatory ask-first gate is replaced by infer-and-state for a single string, ask first for audits, flows and voice guides. `upgrade` re-applies the patch; if it no longer applies, rework it against the new upstream.",
-      "patches": ["vendor-patches/ux-copywriter.patch"],
+      "patches": [
+        "vendor-patches/ux-copywriter.patch"
+      ],
       "tree_sha256": "c8545a16002679d690e3ca4d91dbe224ad3ce3fb0a5ba8faa4cd3838c630b317"
     },
     "context-audit": {
@@ -468,12 +470,12 @@
         "path": "skills/neon"
       },
       "pin": {
-        "commit": "ae9babbf8",
-        "date": "2026-11-03"
+        "commit": "8c01172e2",
+        "date": "2026-11-07"
       },
       "license": "Apache-2.0",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 47 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 11). Listed in ~/skills-l",
-      "tree_sha256": "01f75426a1032a31b84a623dab99b0075f21bb86a4ed509df58b23855ab911a8"
+      "tree_sha256": "37d348899c4a9bfc409a80521e2f8963625f426741e1eb2a4d2cd97e2b5360d6"
     },
     "nextjs-app-router-patterns": {
       "source": {
