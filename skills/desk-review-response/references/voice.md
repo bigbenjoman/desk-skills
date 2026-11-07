@@ -20,6 +20,7 @@ point goes in the first line.
 - "Successfully…", "I've gone ahead and…", "Just wanted to flag…", "Hope that helps"
 - chummy filler and softeners: "shout if you'd rather", "no rush", "worth checking", "worth
   confirming". They bury the point
+- reflexive hedges: "I think", "possibly", "it seems"
 - bold on every other phrase
 - a summary paragraph restating what was just said
 - spelling that differs from the user's own (British or American: match what their own writing uses)
@@ -30,7 +31,7 @@ point goes in the first line.
 - say "Check X", not "Worth confirming X"; "unless you want to do it", not "shout if you'd rather"
 - name people plainly, first name only
 - say "I" and "we" naturally
-- state real uncertainty plainly: "not sure if", "I think"
+- state real uncertainty once, with what would settle it: "not sure the job reran; its log will say"
 - keep it to a few sentences unless there is genuinely more
 
 ## Length

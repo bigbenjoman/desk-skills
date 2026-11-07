@@ -16,7 +16,8 @@ and worker on every call, so an index that has grown into a document costs all o
 `cleanup-scan.mjs memory-index --repo <repo root>` and copy its lines into the plan as they are. It
 prints nothing when the file is within 6 KB and 60 lines, or when the repo has no memory directory.
 Its second line names the entries that run past one line: those are the ones to move into their own
-memory files. Report only: never rewrite a memory file here.
+memory files. The moves go in the plan for approval, and an approved move is written as
+`instruction-audit.md` says (below): never rewrite a memory file without an approved diff.
 
 **The instruction files.** Everything Claude Code reads into a session at launch, measured, with a
 proposed move for each oversized part. Read `instruction-audit.md`, beside this file, and run its
