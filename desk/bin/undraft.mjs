@@ -255,6 +255,14 @@ export function restsOnCarries({ from, head, base, files, git }) {
   return { range: `${was.out.slice(0, 12)}..${now.out.slice(0, 12)}` };
 }
 
+// Whether a review posted on `from` holds at `head`, as every carry reads it, so the pass and the merge
+// driver never disagree: with the review-reuse lever on (`reuse`), only while the files it rests on
+// (from the review's `body`) are unchanged (restsOnCarries); off, across clean merges of the base alone
+// (verdictCarries).
+export const reviewCarries = ({ reuse, from, head, base, body, git }) => (reuse
+  ? restsOnCarries({ from, head, base, files: restsOn(body), git })
+  : verdictCarries({ from, head, base, git }));
+
 const short = (sha) => `\`${String(sha ?? '').slice(0, 12)}\``;
 // What a carry under the review-reuse lever tells the PR, so that nothing reads as a review of the head.
 const carriedTo = (head, range) => `carried to this head (${short(head)}), which no review has read: the PR's own diff is unchanged, and the base range \`${range}\` changed none of the files the review rests on, no dependency manifest, lockfile or configuration file`;

@@ -38,7 +38,7 @@ import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessage, FAILED } from './gate.mjs';
-import { undraftCall, buildPark, undraftComment, verdictCarries, restsOnCarries, restsOn, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { undraftCall, buildPark, undraftComment, reviewCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -2749,9 +2749,7 @@ const baseMoves = (t, head) => {
   const fetched = () => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok;
   const git = (args) => shOut('git', ['-C', MAIN, ...args]);
   return {
-    carry: (sha, body) => fetched() && (reviewReuse
-      ? restsOnCarries({ from: sha, head, base: `origin/${DEFAULT_BRANCH}`, files: restsOn(body), git })
-      : verdictCarries({ from: sha, head, base: `origin/${DEFAULT_BRANCH}`, git })),
+    carry: (sha, body) => fetched() && reviewCarries({ reuse: reviewReuse, from: sha, head, base: `origin/${DEFAULT_BRANCH}`, body, git }),
     baseMerge: (from) => fetched() && movedByBase({ from, head, base: `origin/${DEFAULT_BRANCH}`, git }),
     // The base's name when it has commits the head lacks; null when the head has them or git cannot say.
     behind: () => {
@@ -3598,7 +3596,7 @@ async function epicStep(qx) {
     const fb = readFeedback(n);
     if (!fb) { out.push(`epic PR #${n}: its review could not be read; the next pass tries again`); return true; }
     const git = (args) => shOut('git', ['-C', MAIN, ...args]);
-    const carry = (sha) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && verdictCarries({ from: sha, head: fb.head, base: `origin/${SOURCE}`, git });
+    const carry = (sha, body) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && reviewCarries({ reuse: reviewReuse, from: sha, head: fb.head, base: `origin/${SOURCE}`, body, git });
     const v = readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry });
     if (v?.clean) {
       const readyPerm = E.permission('pr-ready');
@@ -3606,7 +3604,8 @@ async function epicStep(qx) {
       if (DRY) { out.push(`epic PR #${n} (dry run): would mark it ready, its review clean at its head`); return true; }
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
       if (!r.ok) { report.waiting.push(`EPIC PR: #${n} has a clean review at its head, but gh pr ready failed (${r.out.split('\n').pop()}): mark it ready. The next pass tries again. ${link}`); return true; }
-      out.push(`epic PR #${n}: its review is clean at its head, so it is out of draft; the merge driver merges it once it is green`);
+      const why = v.range ? `its clean review at ${String(v.carried).slice(0, 12)} is carried to its head, not reviewed there: ${SOURCE}'s range ${v.range} changed none of the files it rests on` : 'its review is clean at its head';
+      out.push(`epic PR #${n}: ${why}, so it is out of draft; the merge driver merges it once it is green`);
       return true;
     }
     const c = epicReviewCall(bf, { pr: n, head: fb.head }, { alive: baseFixLive });

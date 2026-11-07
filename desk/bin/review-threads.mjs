@@ -26,7 +26,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, verdictCarries, restsOnCarries, restsOn, carryComment, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, DESK_REVIEW_CLEAN } from './undraft.mjs';
 import { pairs, leverOn } from './desk-env.mjs';
 import { LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
@@ -121,9 +121,7 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
     // Fetched only for a verdict at an older head, as the pass does before it asks the same thing, and
     // carried as the pass carries it: under the review-reuse lever, only while what it rests on holds.
     const reuse = leverOn('review-reuse');
-    const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && (reuse
-      ? restsOnCarries({ from: sha, head, base: `origin/${base}`, files: restsOn(body), git })
-      : verdictCarries({ from: sha, head, base: `origin/${base}`, git }));
+    const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && reviewCarries({ reuse, from: sha, head, base: `origin/${base}`, body, git });
     r = readVerdict(payload, { handle: at('--handle'), clean: at('--clean'), carry });
   } catch { /* unreadable: null */ }
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
