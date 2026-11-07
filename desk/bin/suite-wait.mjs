@@ -60,8 +60,10 @@ export function lockHolders(dir) {
   return pids;
 }
 
-const WRAPPER = /(?:^|[\s/])with-lock\.sh\s+(?:test|tsc)(?:\s|$)/;
-const FLOCK = /(?:^|[\s/])flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|$)/;
+// The process itself, by its first words: a worker's own command line quotes these commands in its
+// prompt, and must not read as one.
+const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc)(?:\s|$)/;
+const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|$)/;
 
 // 'suite' when a process working in the worktree holds the test lock, 'lock' when one waits for it,
 // else null. flock(1) runs its command as a child, so a single-slot flock with a child holds the lock.

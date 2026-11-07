@@ -980,18 +980,20 @@ mkdir -p "$T/state-w/logs" "$T/locks/desk-test.lock.d" "$T/locks/desk-test.lock.
 # The process table the pass reads: what $T/ps.out says, else the real ps.
 printf '#!/bin/sh\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
 # W-1 holds a mkdir slot (wrapper and suite); W-2's wrapper waits, polling with sleep; W-3's worktree
-# runs only a dev server while another session's suite holds slot 2; W-4's suite holds a flock slot.
+# runs only a dev server and its worker, whose prompt quotes the lock commands, while another
+# session's suite holds slot 2; W-4's suite holds a flock slot.
 cat > "$T/ps.out" <<'EOF'
  4101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh
  4102  4101 bash tests/run.sh
  4201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck
  4202  4201 sleep 2
  4301     1 node server.js
+ 4302     1 claude -p Your ticket is W-3. Run ~/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh, and flock /tmp/desk-test.lock is refused
  4401     1 bash tests/run.sh
  4501     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test -- bash tests/run.sh
 EOF
 echo "4101 4102" > "$T/locks/desk-test.lock.d/pid"; echo "4501" > "$T/locks/desk-test.lock.2.d/pid"; echo 4401 > "$T/locks/desk-test.lock.3.pid"
-for p in 4101:W-1 4102:W-1 4201:W-2 4202:W-2 4301:W-3 4401:W-4; do mkdir -p "$T/wt/${p#*:}"; printf 'p%s\ncbash\nn%s\n' "${p%%:*}" "$T/wt/${p#*:}"; done > "$T/lsof.out"
+for p in 4101:W-1 4102:W-1 4201:W-2 4202:W-2 4301:W-3 4302:W-3 4401:W-4; do mkdir -p "$T/wt/${p#*:}"; printf 'p%s\ncbash\nn%s\n' "${p%%:*}" "$T/wt/${p#*:}"; done > "$T/lsof.out"
 printf 'p4501\ncbash\nn%s\n' "$T/elsewhere" >> "$T/lsof.out"
 q init w
 for k in W-1 W-2 W-3 W-4; do
