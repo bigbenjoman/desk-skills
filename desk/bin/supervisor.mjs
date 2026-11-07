@@ -70,14 +70,13 @@ import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { readInstalled, oldCode, lockVersion } from './installed.mjs';
+import { readInstalled, oldCode, lockVersion, AGENTS, plistPath } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const AGENTS = join(E.HOME, 'Library', 'LaunchAgents');
 const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
 // A pass takes seconds; one still going after this is hung, and launchd starts no tick while one runs.
@@ -90,7 +89,6 @@ const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
 
 const die = (msg, code = 1) => { console.error(`supervisor: ${msg}`); process.exit(code); };
 const label = supervisorLabel;
-const plistPath = (slug) => join(AGENTS, `${label(slug)}.plist`);
 const domain = launchdDomain;
 
 // ---- launchd ---------------------------------------------------------------------------------

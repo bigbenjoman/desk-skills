@@ -18,7 +18,8 @@ import { namedBatches } from './batches.mjs';
 import { supervisorLabel } from './run-by.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const AGENTS = join(E.HOME, 'Library', 'LaunchAgents');
+export const AGENTS = join(E.HOME, 'Library', 'LaunchAgents');
+export const plistPath = (slug) => join(AGENTS, `${supervisorLabel(slug)}.plist`);
 const WAIT_MS = Number(process.env.DESK_RESTART_WAIT_MS) || 10_000;
 
 export const installedFile = (home = E.deskHome()) => join(home, 'installed.json');
@@ -151,8 +152,8 @@ export function readPlist(text) {
 }
 // The desk version a repo's agent was loaded at, or null with none recorded. The plist is only written
 // as the agent reloads, so this is what launchd runs next, whatever a pass still going started on.
-export function agentVersion(slug, agents = AGENTS) {
-  try { return readPlist(readFileSync(join(agents, `${supervisorLabel(slug)}.plist`), 'utf8')).env.DESK_AGENT_VERSION ?? null; } catch { return null; }
+export function agentVersion(slug) {
+  try { return readPlist(readFileSync(plistPath(slug), 'utf8')).env.DESK_AGENT_VERSION ?? null; } catch { return null; }
 }
 
 // One line per loaded agent, rewritten through `supervisor.mjs install --reload` from its own working

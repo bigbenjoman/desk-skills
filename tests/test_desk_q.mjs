@@ -1679,7 +1679,7 @@ put219('drv3', 5420, { tickets: { 'DL-1': run215 } });
 state219('drv3', 'supervisor.json', JSON.stringify({ driver: { pid: 2147483646, started: minsAgo(2), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: no PR for DL-1' } }));
 put219('old', 5380, { tickets: { 'OL-1': run215 } });
 state219('old', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'old1', old_code: true }, driver: null } }));
-// DS-512: each of these has a last code record that disagrees with what runs now.
+// Each of these has a last code record that disagrees with what runs now.
 const lockDriver512 = (name, version) => {
   const lock = join(I.env.HOME, '.desk-autopilot', `acme__${name}`, 'merge-driver.lock.d');
   mkdirSync(lock, { recursive: true });
@@ -1737,7 +1737,7 @@ t('DS-512 AC3 a driver whose lock names another version, its last record written
   notesOf('drvold').join(' / '), 'the merge driver runs old desk code. Run ./install.sh in desk-skills.');
 t('DS-512 AC4 a driver whose lock names the installed version, whatever its last record says: no note',
   notesOf('drvnew').length, 0);
-t('DS-219 AC6a loaded agent whose last run failed: the red band names the repo and the reason from its log',
+t('DS-219 AC6 a loaded agent whose last run failed: the red band names the repo and the reason from its log',
   `${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') >= 0} ${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') < needs219}`, 'true true');
 // land's open PR needs you too: nothing there may merge it.
 t('DS-219 AC7 the needs-you count is followed by how long the oldest has waited', /^◆ 3 tickets need you {2}oldest 2h 10m │ wait 2 · land 1$/.test(lines(ov219)[needs219]), true);
