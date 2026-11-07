@@ -75,6 +75,8 @@ export const SEARCH_MAX = 100;
 export const TRIAGE_TRIES = 3;
 // Triages /desk-admit runs at once when config §3b "Triage concurrency" does not say.
 export const TRIAGE_DEFAULT = 3;
+// Whether a line of an admit's output only reports how the run went, so a refusal's reason is not in it.
+export const isProgress = (line) => /^(triage|waiting|summary): /.test(line);
 
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
 const lastLine = (r) => `${r.stderr ?? ''}${r.stdout ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `exited ${r.status ?? r.signal}`;

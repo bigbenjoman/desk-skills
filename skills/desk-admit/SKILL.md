@@ -74,7 +74,9 @@ triaged (at one at a time, a ticket behind another in the call waits for the las
 timeout the tool takes) and wait for its notification; with 3 or fewer, give it your longest
 foreground timeout, and if it moves to the background, wait the same way. Never run it again while
 it runs. It prints each line as it happens, in the order things happen: `triage: started`, `triage:
-done` and `waiting:` lines are progress, and its last line is a `summary:` of the call. Exit 0: every ticket was admitted
+done` and `waiting:` lines are progress, and its last line is a `summary:` of the call. While it runs
+in the background those lines land in its output file: read that when the user asks how it is going.
+Exit 0: every ticket was admitted
 or was already where it belongs (`<TICKET> is already in batch <B> (<state>)`, its epic's feature
 batch included: ask nothing about it), any epic had its feature batch started, and any other epic is one to
 plan (step 1b). Print its lines, less the progress, and stop unless there is an epic to plan or a blocker to admit next.

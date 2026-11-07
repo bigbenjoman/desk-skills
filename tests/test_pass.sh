@@ -1344,7 +1344,7 @@ EOF
 cat > "$T/desk/bin/intake.mjs" <<EOF
 import { appendFileSync, existsSync } from 'node:fs';
 appendFileSync('$T/admits', process.argv.slice(2).join(' ') + '\n');
-if (existsSync('$T/admit-refuse')) { console.log('not admitted ' + process.argv[3] + ': batch ev is run by a session, not the supervisor'); process.exit(1); }
+if (existsSync('$T/admit-refuse')) { console.log('triage: done ' + process.argv[3] + ' lane A (1s)\nnot admitted ' + process.argv[3] + ': batch ev is run by a session, not the supervisor\nsummary: 0 of 1 admitted, 1 not admitted (1s)'); process.exit(1); }
 console.log('admitted ' + process.argv[3]);
 EOF
 uconfig yes; printf '| Evidence workflow | `pr-evidence.yml` |\n' >> "$T/config-u.md"
@@ -1362,6 +1362,8 @@ check "DS-415 AC2 three drafts failing the same way file one fix and try to admi
 check "DS-415 AC2 its ticket names the run and the error line" 'grep -q "Error: did not set a _vercel_jwt cookie for the bypass secret" "$T/state-ev/tickets/$fixkey.md" && grep -q "#801 (E-801), #802 (E-802), #803 (E-803)" "$T/state-ev/tickets/$fixkey.md"'
 check "DS-415 a fix the batch refuses is one item, on the lowest PR, naming the others, not one per PR" \
   '[ "$(field E-801 undraft.call)" = "\"person\"" ] && [ "$(field E-802 undraft.call)" = "\"evidence-fix\"" ] && [ "$(field E-803 undraft.call)" = "\"evidence-fix\"" ] && [ "$(echo "$out" | grep -c "DRAFT — PR #80")" = 1 ] && echo "$out" | grep "DRAFT — PR #801" | grep -q "/desk-admit $fixkey. PR(s) #802, #803 fail the same way"'
+check "a refused fix keeps the refusal's reason, not the summary line after it" \
+  'echo "$out" | grep -q "but it was not admitted (not admitted $fixkey: batch ev is run by a session, not the supervisor)" && ! echo "$out" | grep -q "summary: 0 of 1"'
 rm -f "$T/admit-refuse"; : > "$T/gh-calls"; : > "$T/admits"; out=$(node "$B/pass.mjs" 2>&1)
 q add "$fixkey"
 check "DS-415 AC1 AC2 once the fix is admitted, each PR waits on it, and none goes to the person" \
