@@ -284,6 +284,31 @@ node ~/.claude/desk/bin/skill-eval.mjs --skill <name|dir> --tasks <tasks.json> -
 
 `evals/desk-pr.json` is desk-pr's task set; its last report is `docs/evals/desk-pr/report.md`.
 
+**`bench.mjs`** runs named arms over frozen tasks taken from real merged tickets. Each run gets a
+throwaway checkout of the task's repo at the commit the ticket started from: a repository of its
+own with no remote and no later history, so the merged fix is not there to read and there is
+nowhere to push. The merged PR's tests are kept outside it and copied in only after the run, then
+run with that repo's §4 Unit tests under the test lock. The task is **accepted** if every one
+passes and **rejected** if one fails. A run that errors, times out or is stopped is **failed**,
+which counts as neither. Arms run on a worker's permission set for that repo with gh, Jira, the web
+and pushes taken out. Any attempt to push, open a PR or reach Jira is recorded in that run's
+result. Arm order is shuffled per task from `--seed`, and prompt caching stays at the CLI's
+default. A result scored at the same base and arm settings is reused. Each run keeps its diff, its
+stream-json transcript, its test output and its tokens (uncached, cache write, cache read, output)
+under the output folder:
+
+```
+node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<effort>]] [--arm …] \
+  --max-budget-usd <usd> [--total-budget-usd 5] [--out <dir>] [--timeout 1800] [--seed <n>]
+```
+
+Keep the task set outside this repo. Its paths are relative to the file:
+
+```json
+{"tasks": [{"id": "ds-123", "repo": "owner/name", "base": "<full SHA>", "prompt": "<ticket text>",
+  "hidden_tests": {"dir": "hidden/ds-123", "files": ["tests/test_x.mjs"]}}]}
+```
+
 ```json
 {"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
 ```
