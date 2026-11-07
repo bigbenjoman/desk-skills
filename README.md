@@ -593,6 +593,9 @@ git aliases or write outside its worktree:
 AUTOPILOT_PREFLIGHT=1 ~/.claude/desk/bin/spawn-worker.sh <TICKET> <worktree> preflight
 ```
 
+With the `preflight` lever on (config §3b Phase 0 levers), a ticket whose last preflight passed on
+the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` to force one.
+
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
 ```bash
