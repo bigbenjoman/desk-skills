@@ -158,7 +158,8 @@ set on each model and the findings held. Never set either on the user's behalf. 
 Recommended is `none`: say that the row is read only with the `effort` lever on, when each session
 runs at the effort named for how it starts and at `medium` where none is named, that every ticket
 then runs locally, since a cloud session cannot be given an effort, and that the way in
-is every start at `medium`, then one start lowered at a time against the Phase 0 baseline. For worker location,
+is every start at `medium`, then one start lowered at a time against the Phase 0 baseline (at worker
+location `cloud`, against that all-`medium` stretch, since the first step moves tickets here). For worker location,
 Recommended is `local`; say that `cloud` runs each ticket that needs nothing on this computer in a
 Claude Code cloud session, whose tokens and cost are not reported, so its cost cannot be compared
 with local.

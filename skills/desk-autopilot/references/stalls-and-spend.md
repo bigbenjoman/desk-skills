@@ -48,7 +48,10 @@ nothing was passed.
 effort. At config §3b Worker location `cloud`, the plan keeps every ticket local and its `runs:` line
 says why, and a ticket already placed in the cloud parks at its start, as does one starting with a
 malformed Worker effort row. With the lever off, a cloud session starts as before, and its report row
-shows start `0`, model `default` and effort `default`, since it is passed neither.
+shows start `0`, model `default` and effort `default`, since it is passed neither. So at `cloud`,
+turning the lever on is a change in itself, even with every start at `medium`: tickets that ran in
+the cloud now run here. The Phase 0 baseline leaves cloud workers out, so it covers a different set
+of tickets. There, compare each lowered start with that all-`medium` stretch instead.
 
 **Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
 `cloud`. Any other value refuses the plan, naming the row. At `cloud`, the batch plan's `workers:`
