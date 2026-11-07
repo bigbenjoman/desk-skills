@@ -44,6 +44,7 @@ const REWRITTEN = [
   ['DS-433', 'pinned, the moment it is green (never a PR under a §4 Merge holds glob)', 1], // it also needs a clean review at its head
   ['DS-466', 'reports it as paused, holds every spawn and resume, and', 1], // with more than one login, only its login is benched
   ['DS-109', 'freeing its slot, unless its last marker is', 1], // a worker running its suite under the test lock, or waiting for it, is not stalled
+  ['DS-435', 'and a head gets one try at most. After two tries', 1], // a conflict counts only conflict tries
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',

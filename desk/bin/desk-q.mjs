@@ -40,7 +40,7 @@ import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
+import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
@@ -283,8 +283,10 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const approval = /^approval: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (approval) return needs({ code: 'approval', text: approval[1] }, [approval[1], WARN], [' · approve it', null]);
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
-    if (!triesLeft) return needs({ code: 'conflict', base: ctx.base }, [`still in conflict with ${ctx.base} after ${FIX_TRIES_MAX} fix tries`, FAIL]);
-    return merging([`merge conflict with ${ctx.base}`, FAIL], [` · the next pass sends it to a worker, ${tryOf(t)}`, null]);
+    // A conflict has its own tries (fix-tries.mjs conflictTriesMade), whatever other kinds have used.
+    const made = conflictTriesMade(t.fix_tries);
+    if (made >= FIX_TRIES_MAX) return needs({ code: 'conflict', base: ctx.base }, [`still in conflict with ${ctx.base} after ${FIX_TRIES_MAX} fix tries`, FAIL]);
+    return merging([`merge conflict with ${ctx.base}`, FAIL], [` · the next pass sends it to a worker, try ${made + 1} of ${FIX_TRIES_MAX}`, null]);
   }
   const checks = ps.checks ?? [];
   // Red as the fix tries read it (evaluateGate): a failed advisory check holds nothing and gets no worker.

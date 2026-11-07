@@ -794,7 +794,7 @@ put('psi', { port: 5100, beat: 1, supervised: true, merge: 'yes', tickets: {
   'Q-3': withHead(psiPr(143)),
   'Q-4': withHead(stuckPr(144, passed, { why: `no review verdict readable at its head after 2 fix tries: the verdict is at ${sha(1)}, not ${sha(144)}` })),
   'Q-5': withHead(draftPr(145, passed, { call: 'findings', why: `its review verdict at ${sha(145)} is not clean (p1=2)`, action: 'settle the findings on #145' })),
-  'Q-6': withHead(stuckPr(146, passed, { why: 'still in conflict after 2 fix tries; the last try parked: which side wins?' })),
+  'Q-6': withHead({ ...stuckPr(146, passed, { why: 'still in conflict after 2 fix tries; the last try parked: which side wins?' }), fix_tries: [{ try: 1, head: 'b1', kind: 'conflict' }, { try: 2, head: 'b2', kind: 'conflict' }] }),
   'Q-7': withHead(stuckPr(147, passed, { why: 'review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell' })),
   'Q-8': withHead(draftPr(148, passed, { call: 'person', why: `its review verdict at ${sha(148)} is not clean (p0=0 p1=0 p2=1 deferred=1 gaps=0)`, action: 'settle the findings or gaps on #148' })),
   'Q-9': withHead(stuckPr(149, passed, { why: 'review not clean after 2 fix tries (2 review): 1 P2 — P2: src/pager.ts:1 no consumer outside its own story' })),
@@ -830,6 +830,23 @@ t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
   'PR #145 is a draft, and its code review found 2 P1 findings, which it does not list with a file:line a worker can fix, so desk sends no worker to them. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
 t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,
   'PR #146 is in conflict with main, and desk\'s own repairs did not fix it. Resolve the conflict on its branch; desk then merges it once its checks are green.');
+// ---- DS-435: a conflict says repairs failed only once a conflict try ran, and then what it said.
+const gate435 = [{ try: 1, head: 'h1', kind: 'checks', what: 'red: 🔐 Review gate' }, { try: 2, head: 'h1', kind: 'checks', what: 'red: 🔐 Review gate' }];
+const tried435 = [{ try: 1, head: 'b1', kind: 'conflict' }, { try: 2, head: 'b2', kind: 'conflict' }];
+put('conflict435', { port: 5435, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'C-1': withHead({ ...stuckPr(171, passed, { why: 'still in conflict with main after 2 fix tries' }), fix_tries: gate435 }),
+  'C-2': withHead({ ...stuckPr(172, passed, { why: 'still in conflict with main after 2 fix tries: src/class.ts; the last try said: pr=172 jira=In Progress said=src/class.ts left unresolved: both sides add a field' }), fix_tries: [...gate435, ...tried435] }),
+  'C-3': { ...greenPr(173), fix_tries: tried435, fix: { try: 2, of: 2, pr: 173, kind: 'conflict', finished: '2026-11-07T10:00:00Z' }, result: { pr: 173, summary: 'pr=173 jira=In Progress said=main renamed the export both sides use' },
+    pr_status: { pr: 173, state: 'OPEN', url: null, isDraft: false, mergeable: 'CONFLICTING', mergeState: 'DIRTY', head: 'h173', checks: passed, at: minsAgo(1) } },
+} });
+const c435 = Object.fromEntries(N.collect({ word: 'conflict435' }).items.map((i) => [i.t.key, i]));
+t('DS-435 AC3 a conflict no conflict try ran on does not say repairs failed', c435['C-1']?.need,
+  'PR #171 is in conflict with main, and no repair by desk has tried it yet. Resolve the conflict on its branch; desk then merges it once its checks are green.');
+t('DS-435 AC4 a failed conflict try names what it said', c435['C-2']?.need,
+  'PR #172 is in conflict with main, and desk\'s own repairs did not fix it: its last repair said "src/class.ts left unresolved: both sides add a field". Resolve the conflict on its branch; desk then merges it once its checks are green.');
+t('DS-435 AC4 so does one desk-q puts to the person with its tries spent', c435['C-3']?.need,
+  'PR #173 is in conflict with main, and desk\'s own repairs did not fix it: its last repair said "main renamed the export both sides use". Resolve the conflict on its branch; desk then merges it once its checks are green.');
+
 // ---- a merge hold's item quotes its reason as the step to take, never only "merge it on GitHub".
 put('hold413', { port: 5413, beat: 1, supervised: true, merge: 'yes', tickets: {
   'H-1': greenPr(161, { merge_blocked: 'merge hold: legal copy sign-off — content/legal/**, 1 file(s), e.g. content/legal/terms.md' }),
