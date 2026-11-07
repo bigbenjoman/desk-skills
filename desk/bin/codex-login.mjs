@@ -9,7 +9,7 @@ import { chooseLogin } from './login-choice.mjs';
 import { checkLogins, loginEnv, readSubscriptions } from './logins.mjs';
 
 // A Codex window in the shape login-choice reads a Claude one in.
-const asClaude = (w) => (w ? { utilization: w.used / 100, resetsAt: w.resetsAt } : null);
+export const asClaude = (w) => (w ? { utilization: w.used / 100, resetsAt: w.resetsAt } : null);
 
 // When a reading's limit lifts, in epoch seconds: the latest reset of a window at its limit, or null
 // with none at its limit. A window past its reset is already no reading (codex-usage.mjs).
@@ -28,16 +28,24 @@ export function codexCallLogin({ env = process.env, now = Date.now() } = {}) {
   if (!subs.exists) return keep;
   const { usable } = checkLogins(subs, { tools: ['codex'], env });
   if (!usable.length) return { login: null, env, dead: 'no Codex login is signed in with a rule of in rotation or standby (desk-env logins check)' };
-  const read = usable.map((login) => {
+  const { login, read } = codexChoice(usable, now);
+  if (!login) {
+    const first = [...read].sort((a, b) => a.until - b.until)[0];
+    return { login: null, env, dead: `every Codex login is at its usage limit: the earliest to reset is ${first.login.name}, at ${new Date(first.until * 1000).toISOString()}` };
+  }
+  return { login, env: loginEnv(login, env), dead: null };
+}
+
+// The Codex login a call starts on among `logins`, with each one's reading and when its limit lifts.
+// `login` is null when every one is at its limit.
+//   -> { login, read: [{ login, reading, until }] }
+export function codexChoice(logins, now = Date.now()) {
+  const read = logins.map((login) => {
     const reading = readCodexUsage({ login, now });
     return { login, reading, until: benchedUntil(reading) };
   });
   const open = read.filter((r) => r.until == null);
-  if (!open.length) {
-    const first = [...read].sort((a, b) => a.until - b.until)[0];
-    return { login: null, env, dead: `every Codex login is at its usage limit: the earliest to reset is ${first.login.name}, at ${new Date(first.until * 1000).toISOString()}` };
-  }
-  const login = chooseLogin(open.map((r) => ({ login: r.login, running: 0,
-    reading: { five_hour: asClaude(r.reading.five_hour), seven_day: asClaude(r.reading.seven_day) } })), now);
-  return { login, env: loginEnv(login, env), dead: null };
+  const login = open.length ? chooseLogin(open.map((r) => ({ login: r.login, running: 0,
+    reading: { five_hour: asClaude(r.reading.five_hour), seven_day: asClaude(r.reading.seven_day) } })), now) : null;
+  return { login, read };
 }

@@ -32,7 +32,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath } from './desk-env.mjs';
 import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -43,9 +43,13 @@ import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, 
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
-import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
-import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { claudeLogins, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
+import { WINDOW_LABELS, WEEK_MS, newestReading, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
+import { readUsage, readLoginUsage, loginProbeLog, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
+import { chooseLogin } from './login-choice.mjs';
+import { asClaude, codexChoice } from './codex-login.mjs';
+import { codexLogins } from './codex-usage.mjs';
+import { readSubscriptions } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1029,7 +1033,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
 function tabHead(repos, slug, now, solid, pinUsage) {
   if (!slug) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
   const r = repos.find((x) => x.id === slug);
-  return r?.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : [usageLine(usageOf(repos, now, [r]), { now, solid })])] : [];
+  return r?.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : usageLines(usageOf(repos, now, [r]), { now, solid }))] : [];
 }
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
@@ -1389,7 +1393,7 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
 // by supplier. A name the cost sources list with no figure reads –. A row ends in what its figure
 // leaves out, the total in how many figures were not read today, and a note under them says each.
 function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null } = {}) {
-  const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
+  const foot = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
   const fc = forCosts(cache, costs);
   const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
@@ -1461,7 +1465,7 @@ function supplierTag(x, s, now, { credits = true } = {}) {
 // name's total. A supplier the cost sources list with no figure reads –. `label` names the repo when
 // it has no cost sources. Enter on a supplier opens its screen, from the place at `slug`.
 function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache(), pinUsage = false, width = null, label = name, slug = null } = {}) {
-  const foot = pinUsage ? [] : ['', usageLine(usageOf(repos, now, shownRepos(repos, false)), { now })];
+  const foot = pinUsage ? [] : ['', ...usageLines(usageOf(repos, now, shownRepos(repos, false)), { now })];
   const mine = costs.entries.filter((e) => e.name === name);
   if (!mine.length) return { head: [noCostSourcesFor(label)], rows: [], foot };
   const fc = forCosts(cache, costs);
@@ -1715,16 +1719,76 @@ function machineLine(running, cap, room, avail) {
     [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
 
-// The usage reading every header shows: the newest of both windows on the line's login (lineLogin), how
-// many workers run in every repo here, and which of the `shown` repos weekly pace holds new workers in
-// (usage-pace.mjs, each repo by its own §3b row, so a repo set to off is never held). A pass paces on
-// its own login's worker logs and probe output, so the hold is judged on the 7-day figure shown when
-// the pass runs on the line's login. Weekly pacing per login is not built yet.
+// The usage reading every header shows: the newest of both windows on the line's login (the one new
+// workers start on with a subscriptions file, else lineLogin), how many workers run in every repo here,
+// and which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each repo by its own
+// §3b row, so a repo set to off is never held). A pass paces on its own login's worker logs and probe
+// output, so the hold is judged on the 7-day figure shown when the pass runs on the line's login.
+// Weekly pacing per login is not built yet. `logins` is loginsNow's.
+const NO_READING = { five_hour: null, seven_day: null, at: null, none: [] };
 export function usageOf(repos, now, shown = repos) {
-  const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), login: lineLogin(), now });
+  const logins = loginsNow(repos, now);
+  const reading = logins?.claude ? logins.claude.reading ?? NO_READING : readUsage({ dirs: stateDirs({ self: usageDir() }), login: lineLogin(), now });
   const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
   const heldBy = shown.filter((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))).map((r) => r.name);
-  return { reading, running: machineRunning(repos), held: heldBy.length > 0, heldBy };
+  return { reading, running: machineRunning(repos), held: heldBy.length > 0, heldBy, logins };
+}
+
+// The logins new work starts on, once a subscriptions file exists; null with none, or one that cannot
+// be read, and the usage line is then the one it always was. Claude's is the login a pass would start
+// a worker on (pass.mjs pickLogin): of the logins in rotation or on standby that no batch here has
+// benched, the one login-choice ranks first. Sign-in is not checked, which takes a call per login on
+// every redraw. Codex's, only while the file lists a Codex login, is the one a codex call starts on
+// (codex-login.mjs).
+//   -> { claude: side | null, codex: side | null } | null
+// A side is { login, reading, n, rotation, standby, out }: `login` null when every one of its `n` logins
+// is at its limit; `rotation` and `standby` the other open logins by rule; `out` each login at its limit
+// with when it lifts (`at`, epoch seconds, or null), the first to lift first.
+export function loginsNow(repos, now) {
+  let subs;
+  try { subs = readSubscriptions(subscriptionsPath()); } catch { return null; }
+  if (!subs.exists) return null;
+  return { claude: claudeSide(repos, now), codex: subs.logins.some((l) => l.tool === 'codex' && l.source === 'file') ? codexSide(now) : null };
+}
+// Every login benched by a batch here whose limit has not lifted, by login key: the later lift where two
+// batches bench one login, one with no reset time outlasting any with one.
+function benchesIn(repos, now) {
+  const out = {};
+  for (const r of repos) {
+    for (const b of r.batches ?? [r]) {
+      for (const [k, v] of Object.entries(b.q?.benched ?? {})) {
+        if (!v || (v.resets_at != null && now >= v.resets_at * 1000)) continue;
+        const was = out[k];
+        if (!was || v.resets_at == null || (was.resets_at != null && v.resets_at > was.resets_at)) out[k] = v;
+      }
+    }
+  }
+  return out;
+}
+function loginSide(logins, login, out, reading) {
+  const others = logins.filter((l) => l !== login && !out.some((o) => o.login === l));
+  const lifts = (o) => o.at ?? Infinity;
+  return { login, reading, n: logins.length, rotation: others.filter((l) => l.rule === 'in rotation').length,
+    standby: others.filter((l) => l.rule === 'standby').length, out: [...out].sort((a, b) => lifts(a) - lifts(b)) };
+}
+function claudeSide(repos, now) {
+  const logins = probeLogins();
+  if (!logins.length) return null;
+  const benched = benchesIn(repos, now);
+  const out = logins.filter((l) => benched[loginKey(l)]).map((l) => ({ login: l, at: benched[loginKey(l)].resets_at ?? null }));
+  const open = logins.filter((l) => !benched[loginKey(l)]);
+  const dirs = stateDirs({ self: usageDir() });
+  const login = chooseLogin(open.map((l) => ({ login: l, running: runningOn(repos, l),
+    reading: newestReading({ dirs, files: [loginProbeLog(usageDir(), l)], login: l, now, recent: WEEK_MS }) })), now);
+  return loginSide(logins, login, out, login ? readUsage({ dirs, login, now }) : null);
+}
+function codexSide(now) {
+  const logins = codexLogins().filter(inUse);
+  if (!logins.length) return null;
+  const { login, read } = codexChoice(logins, now);
+  const r = read.find((x) => x.login === login)?.reading;
+  return loginSide(logins, login, read.filter((x) => x.until != null).map((x) => ({ login: x.login, at: x.until })),
+    r ? { five_hour: asClaude(r.five_hour), seven_day: asClaude(r.seven_day), at: r.at, none: r.none } : null);
 }
 
 // The usage line: a bar for the 5-hour and the 7-day window, each with its reset time; green under
@@ -1759,6 +1823,45 @@ export function usageLine({ reading, running, held, heldBy }, { now, solid = fal
   return segLine(segs.filter(([s]) => s));
 }
 
+// The usage lines: with no subscriptions file, the usage line alone. With one, a line per tool naming
+// the login new work starts on (loginsNow), its bars as the usage line's, then what stands behind it:
+// how many logins are at their limit and when the first lifts, else how many others are in rotation,
+// else how many are on standby. With every login out, the line says so and names the first back. The
+// Codex line has no "as of" or pace note: its reading changes only when Codex is used, which logs anew.
+// The names take the longest one's width, so the two lines' bars line up.
+function loginLine(tool, s, { now, solid = false, nameW = 0 }, { held = false, heldBy = [], running = null } = {}) {
+  const label = [pad(tool, 8), GREY];
+  if (!s.login) {
+    const f = s.out[0];
+    return segLine([label, [`all ${s.n} logins at their limit`, FAIL], ['  · first back ', GREY], [f.login.name, null],
+      ...(f.at != null ? [[' at ', GREY], [resetText(f.at * 1000, now), null]] : [])]);
+  }
+  const r = s.reading;
+  const segs = [label, [`${s.login.name.padEnd(nameW)}  `, null]];
+  if (r?.at == null) segs.push(['no reading yet', GREY]);
+  else segs.push(...[['five_hour', false], ['seven_day', held]].filter(([k]) => !r.none?.includes(k)).flatMap(([k, h], i) => [...(i ? [[' · ', GREY]] : []), ...windowSegs(k, r[k], now, h, solid)]));
+  if (s.out.length) segs.push(['  │ ', GREY], [`${s.out.length} at limit`, FAIL], ...(s.out[0].at != null ? [[` to ${resetText(s.out[0].at * 1000, now)}`, GREY]] : []));
+  else if (s.rotation) segs.push([`  │ +${s.rotation} in rotation`, GREY]);
+  else if (s.standby) segs.push([`  │ +${s.standby} standby`, GREY]);
+  if (running === 0 && r?.at != null && now - r.at > PROBE_EVERY_MS) segs.push([`  as of ${clock(r.at)}`, GREY]);
+  if (held) segs.push([`  ${paceNote(heldBy)}`, WARN]);
+  return segLine(segs.filter(([x]) => x));
+}
+export function usageLines(u, opts) {
+  const l = u.logins;
+  const o = { ...opts, nameW: Math.max(0, ...[l?.claude, l?.codex].map((s) => s?.login?.name.length ?? 0)) };
+  return [l?.claude ? loginLine('Claude', l.claude, o, u) : usageLine(u, opts), ...(l?.codex ? [loginLine('Codex', l.codex, o)] : [])];
+}
+
+// Home's note while every Claude login is at its limit, which holds every batch: when the first is back,
+// and that adding a login starts work sooner.
+function allOutNote(s, now) {
+  const f = s.out[0];
+  const standby = s.out.some((o) => o.login.rule === 'standby');
+  return { tag: '▲ usage', sgr: WARN, text: [[`Every Claude login is at its limit${standby ? ', standby ones too' : ''}, so no new workers start. `
+    + `The first back is ${f.login.name}${f.at != null ? ` at ${resetText(f.at * 1000, now)}` : ', once a probe call on it succeeds'}. `, null], ['Add a login on view 6 to start sooner.', BOLD]] };
+}
+
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
 // loaded, a loaded one that cannot start, or passes that keep failing.
 const band = (text) => segLine([[` ✕ ${text}`, BAND]]);
@@ -1791,13 +1894,14 @@ function quietNotes(shown) {
 }
 
 // The amber notes for a batch that runs but does not move, each with its fix where there is one.
-// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note.
-function stallNotes(r, quiet) {
+// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note. With `allOut`,
+// Home's one usage note stands for every batch's hold on a limit.
+function stallNotes(r, quiet, allOut = false) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
   const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
   const out = [];
-  const u = usageHoldOf(r);
+  const u = allOut ? null : usageHoldOf(r);
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
   if (quiet.has(r)) out.push(note(quiet.get(r)));
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
@@ -1855,7 +1959,7 @@ function overviewHead(repos, list, { now = Date.now(), solid = false, avail = av
   const running = machineRunning(repos);
   const each = byRepo(list);
   return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
-    ...(pinUsage ? [] : [usageLine(usageOf(repos, now, each), { now, solid })])];
+    ...(pinUsage ? [] : usageLines(usageOf(repos, now, each), { now, solid }))];
 }
 
 // Home's table, widest first. With a `width` it sheds what it can until a row fits: the "ready with
@@ -1914,8 +2018,9 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
   const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable);
-  const notes = [...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
-    ...readable.flatMap((r) => stallNotes(r, quiet)), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+  const claude = loginsNow(repos, now)?.claude, allOut = claude && !claude.login ? claude : null;
+  const notes = [...(allOut ? [allOutNote(allOut, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
+    ...readable.flatMap((r) => stallNotes(r, quiet, !!allOut)), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   const seen = new Set();
   // Ports are claimed per repo, so each repo is checked once, as its standing batch.
   const standing = repos.filter((r) => !r.batch);
@@ -2229,7 +2334,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     countsLine(r),
     ...passHead(r, now),
     ...(r.unreadable ?? []).map(unreadableText),
-    ...(pinUsage ? [] : [usageLine(usage ?? usageOf([r], now), { now, solid: solidBars(width) })]),
+    ...(pinUsage ? [] : usageLines(usage ?? usageOf([r], now), { now, solid: solidBars(width) })),
   ];
   // Wrapped to the terminal, so how to resume passes is never cut.
   const fit = head.flatMap((s) => (width == null ? [s] : typeof s === 'string' ? wrap(s, width) : barWrap(s, width)));
@@ -2947,7 +3052,7 @@ export function interactive({
     keepTab();
     // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
     // one repo's own, or none for a repo with no batch.
-    const claude = (shown) => (shown ? { usage: usageLine(usageOf(repos, now, shown), { now, solid: !process.env.NO_COLOR }) } : {});
+    const claude = (shown) => (shown ? { usage: usageLines(usageOf(repos, now, shown), { now, solid: !process.env.NO_COLOR }) } : {});
     const own = r?.q && !r.error ? [r] : null;
     if (view.kind === 'epic' && !epicIn(r, epicFacts(), view.epic)) return { head: [`${view.epic} has no unfinished tickets in ${r.name}'s queue.`], rows: [], foot: [], keys: cmdKeys };
     // Costs carry the Claude usage line but none of home's batch lines.
@@ -3035,8 +3140,8 @@ export function interactive({
     const head = screen.head.flatMap(lay);
     const body = ['', ...head, ...rows.map((x, i) => paint(x, w, i === sel && pickable(x))), ...screen.foot.flatMap(lay)];
     // A message can be longer than the line (a refused raise says what raising the cap takes). The
-    // Claude usage line stays put above it and the keys, a blank line above it.
-    const status = [...(screen.usage ? ['', fit(screen.usage)] : []), ...[...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
+    // usage lines stay put above it and the keys, a blank line above them.
+    const status = [...(screen.usage ? ['', ...screen.usage.map(fit)] : []), ...[...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
     const room = Math.max(1, h - status.length - pinned.length);
     const first = 1 + head.length;
     let top = 0;
