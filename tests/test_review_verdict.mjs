@@ -42,6 +42,18 @@ t('reviewer died: heading names the seat', heading(died).includes('correctness s
 const codexDied = base({ seats: [seat('correctness'), seat('codex', 'codex', 'died')] })
 t('codex cold died: not clean', reads(codexDied), false)
 t('codex cold died: same-vendor', marker(codexDied).includes(' vendor=same-vendor '), true)
+// With the codex lever on: a timed-out call is a dead seat that says why, and the record shows the
+// model and effort each codex role ran at.
+const timedOut = base({ seats: [seat('correctness'), { ...seat('codex', 'codex', 'died'), reason: 'timed out' }] })
+t('DS-445 AC2 codex timed out: not clean, same-vendor', [reads(timedOut), marker(timedOut).includes(' partial=1 vendor=same-vendor ')].join(), 'false,true')
+t('DS-445 AC2 codex timed out: the heading says why it died', heading(timedOut).includes('codex (timed out) seat died'), true)
+t('DS-445 a reason is only for a seat that died', refused(base({ seats: [seat('correctness'), { ...seat('codex', 'codex'), reason: 'timed out' }] })), 'seat codex: reason says why a seat died, as "timed out"')
+const runs = base({ seats: [seat('correctness'), seat('codex', 'codex')], codex: { finder: 'gpt-6.1-sol:medium', refuter: 'gpt-6.1-sol:low' } })
+t('DS-445 AC4 the heading shows the model and effort each codex role ran at', heading(runs).endsWith('refuted cross-vendor · codex finder gpt-6.1-sol at medium, refuter gpt-6.1-sol at low'), true)
+t('DS-445 AC4 and so does the PR body line', methodLine(runs).includes('· codex finder gpt-6.1-sol at medium, refuter gpt-6.1-sol at low ·'), true)
+t('DS-445 AC4 the counts are untouched', marker(runs), marker(base({ seats: [seat('correctness'), seat('codex', 'codex')] })))
+t('DS-445 a codex run that is not <model>:<effort> is refused', refused(base({ codex: { finder: 'gpt-6.1-sol' } })), 'codex.finder is <model>:<effort>, as desk-codex settings prints it')
+t('DS-445 an unknown codex role is refused', refused(base({ codex: { probe: 'a:low' } })), 'unknown field codex.probe')
 
 // ---- refutation outcomes and the vendor
 t('rejected finding: clean', reads(base({ findings: [f({ result: 'REJECTED' })] })), true)

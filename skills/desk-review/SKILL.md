@@ -219,7 +219,10 @@ worker: at its worktree root, removed at the end with `git clean -f`):
                   "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
 ```
 
-- `seats`: every seat dispatched, Bea and simplicity included, each `ran` or `died` (Phase 3).
+- `codex`: with the codex lever on, `{"finder": "<model>:<effort>", "refuter": "<model>:<effort>"}`
+  as `desk-codex settings` prints them (Phase 0); left out otherwise.
+- `seats`: every seat dispatched, Bea and simplicity included, each `ran` or `died` (Phase 3), a
+  dead one with `reason` where it is known (`"timed out"`).
   `"fallback": true` where its named agent did not resolve and general-purpose ran its brief (not
   simplicity or domain: general-purpose by design).
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its

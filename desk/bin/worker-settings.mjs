@@ -585,6 +585,13 @@ if (mode === 'triage') {
   if (codexPerm === 'yes') {
     allow.push(...bash('codex', ' exec --sandbox read-only'), ...exact('codex', ' --version'));
     deny.push(...bash('codex', ' *danger*', ' *--full-auto*', ' *--yolo*', ' *--config*', ' * -c *', ' *--sandbox=*', ' * -s *', ' *workspace-write*'));
+    // With the codex lever on, desk-codex passes the model, effort and output file itself, so a
+    // direct call may not.
+    if (E.leverOn('codex')) {
+      allow.push('Bash(desk-codex:*)', `Bash(${E.HOME}/.local/bin/desk-codex:*)`, 'Bash(~/.local/bin/desk-codex:*)',
+        ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-codex.mjs:*)`, `Bash(node ${b}/desk-codex.mjs:*)`]));
+      deny.push(...bash('codex', ' * -m*', ' *--model*', ' * -p*', ' *--profile*', ' * -o*', ' *--output-last-message*'));
+    }
   } else { deny.push(...bash('codex')); denied.push(`${E.permissionKey('codex-review')} (${setting('codex-review')})`); }
 
   // A new or synced dependency: the package manager's add and sync forms, with arguments. Never

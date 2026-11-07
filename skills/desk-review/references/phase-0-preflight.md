@@ -39,6 +39,14 @@ workers deny it, and it is the pattern that posts to the wrong PR when a placeho
   output at all** in a worker means the harness denied a mis-shaped call; if it printed `Reading
   additional input from stdin`, add `< /dev/null`.
 
+- **With the `codex` lever on** (`desk-env levers codex` prints `on`), every codex call in this
+  review goes through `desk-codex`, never `codex exec`, and the probe is `desk-codex probe`. It
+  answers `CODEX_OK` from a passing probe or codex call under an hour old without running a new
+  one, and probes again after any failure. `desk-codex settings` prints the model and effort each
+  role runs at (config §3b Codex review): record them in the results file's `codex` (the core's
+  *The verdict*).
+  Off, everything here and in Phases 3 and 4 runs exactly as written.
+
 **If codex is unusable, or §3 says `no`, stop and ask** (a worker does not ask; it falls back and
 says so in `AUTOPILOT_DONE`):
 
