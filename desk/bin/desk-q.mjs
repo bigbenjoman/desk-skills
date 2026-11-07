@@ -651,14 +651,20 @@ export function runningOn(repos, login) {
 // This desk-q's login, its CLAUDE_CONFIG_DIR's, as a pass's is. Null when the subscriptions file cannot
 // be read, which reads and probes as no login was named.
 const ownLogin = () => { try { return loginOf(process.env.CLAUDE_CONFIG_DIR); } catch { return null; } };
+// The logins in rotation or on standby besides desk-q's own. None when the subscriptions file cannot be
+// read, so desk-q then treats its own login as the only one.
+const otherLogins = (own) => { try { return probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file')); } catch { return []; } };
+// The login the usage line shows: the default, named by null, whichever login this desk-q started on
+// while there are others. With no others, its own, so one login under CLAUDE_CONFIG_DIR still shows
+// its probe's reading.
+const lineLogin = () => { const own = ownLogin(); return own?.configDir && otherLogins(own).length ? null : own; };
 // The probes an open desk-q makes now. With one login, its probe while no worker anywhere keeps the
 // reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
 // worker runs on it, judged on that login's own probe reading.
 //   -> [{ login }]
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
-  let others = [];
-  try { others = probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file')); } catch { /* an unreadable subscriptions file probes its own login only */ }
+  const others = otherLogins(own);
   if (!own || !others.length) return probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
   return [own, ...others].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
 }
@@ -1683,13 +1689,13 @@ function machineLine(running, cap, room, avail) {
     [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
 
-// The usage reading every header shows: the newest of both windows on desk-q's own login, which is the
-// default login unless CLAUDE_CONFIG_DIR says otherwise, how many workers run in every repo here, and
-// which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each repo by its own
-// §3b row, so a repo set to off is never held). A pass reads its own login's worker logs and probe
-// output the same way, so the hold is judged on the 7-day figure shown.
+// The usage reading every header shows: the newest of both windows on the line's login (lineLogin), how
+// many workers run in every repo here, and which of the `shown` repos weekly pace holds new workers in
+// (usage-pace.mjs, each repo by its own §3b row, so a repo set to off is never held). A pass paces on
+// its own login's worker logs and probe output, so the hold is judged on the 7-day figure shown when
+// the pass runs on the line's login. Weekly pacing per login is not built yet.
 export function usageOf(repos, now, shown = repos) {
-  const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), login: ownLogin(), now });
+  const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), login: lineLogin(), now });
   const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
   const heldBy = shown.filter((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))).map((r) => r.name);
   return { reading, running: machineRunning(repos), held: heldBy.length > 0, heldBy };

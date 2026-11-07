@@ -233,7 +233,7 @@ const seen = Q.usageOf([], nowU);
 t('AC5 desk-q\'s line shows the default login\'s reading', Q.usageLine(seen, { now: nowU }).segs.map((s) => s[0]).join('').includes(' 20%'), true);
 t('AC5 and not login B\'s', Q.usageLine(seen, { now: nowU }).segs.map((s) => s[0]).join('').includes(' 40%'), false);
 process.env.CLAUDE_CONFIG_DIR = B;
-t('a desk-q started on login B shows B\'s', Q.usageOf([], nowU).reading.seven_day.utilization, 0.4);
+t('AC5 a desk-q started on login B still shows the default login\'s', Q.usageOf([], nowU).reading.seven_day.utilization, 0.2);
 delete process.env.CLAUDE_CONFIG_DIR;
 
 // AC2, AC3, AC4: the printed readings.
