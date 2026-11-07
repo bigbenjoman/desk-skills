@@ -969,6 +969,12 @@ printf '{"key":"JX-1","fields":{"status":{"name":"To Do","statusCategory":{"key"
 pool ''; out=$(admit JX-1 JX-2 JX-3 --by ben)
 check "DS-506 AC6: at Triage concurrency 1, a blocker Jira links is triaged in the order given" '[ "$(tr "\n" " " < "$T/triage.calls")" = "JX-1 JX-2 JX-3 " ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
 check "DS-506 AC6: and a ticket behind another is placed after the free ones, as today" '[ "$(grep "^admitted" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "JX-2 JX-3 JX-1 " ]'
+rec QA A '"blockers":[{"key":"QB","category":"new"}]'; rec QB A; rec QC A; touch "$T/recs/QB.fails"
+pool ''; out=$(admit QA QC QB --by ben)
+check "DS-506 AC6: a free ticket keeps its turn behind one whose blocker is then refused, as today" '[ "$(grep "^admitted" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "QA QC " ]'
+rec RP A; rec RX A '"blockers":[{"key":"RP","category":"new"}]'; rec RA A '"blockers":[{"key":"RB","category":"new"}]'; rec RC A; rec RB A
+pool ''; out=$(admit RP RX RA RC RB --by ben)
+check "DS-506 AC6: the tickets left to the end keep today's rounds, past what was placed early" '[ "$(grep "^admitted" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "RP RC RB RX RA " ]'
 echo 0.3 > "$T/recs/JX-2.sleep"; echo 0.3 > "$T/recs/JX-3.sleep"
 pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit JX-1 JX-3 JX-2 --by ben)
 check "DS-506: with more than one at once, a blocker Jira links is triaged before what it blocks" '[ "$(tail -1 "$T/triage.calls")" = JX-1 ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'

@@ -674,8 +674,9 @@ async function byHand(keys, { state, by, front, now }) {
 
   // Tickets of this call not yet placed or refused: what a triaged ticket's blockers wait for.
   const unsettled = new Set(Object.keys(links));
-  // Triaged records waiting to be placed.
+  // Triaged records waiting to be placed, and every record that has waited, placed since or not.
   const recs = {};
+  const seen = {};
   // The first usage limit any triage stopped at, and the tickets whose next triage it put off: an
   // epic's children are triaged in its feature batch, and a ticket joining one is triaged again there.
   let limit = null;
@@ -707,6 +708,7 @@ async function byHand(keys, { state, by, front, now }) {
     const unread = needsPersonLane(t.rec) ? [] : unreadCanvases(t.rec);
     if (unread.length) return refuse(key, `design not snapshotted: ${unread.join(', ')}: snapshot it into ${join(state, 'designs', key)}/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared with this subscription, then run /desk-admit ${key} again`);
     recs[key] = t.rec;
+    seen[key] = t.rec;
   };
 
   let started = null;
@@ -758,14 +760,18 @@ async function byHand(keys, { state, by, front, now }) {
   // batch, or route it there, whatever the ticket's record says. A record naming an epic Jira's read
   // did not show as one waits for it too.
   const epicAhead = () => Object.keys(links).some((key) => links[key].epic && unsettled.has(key));
-  const waits = (key) => epicAhead() || [...openBlockers(recs[key]), ...(recs[key].epic?.key ? [recs[key].epic.key] : [])]
-    .some((b) => b !== key && (unsettled.has(b) || (k === 1 && tried.has(b))));
+  const ahead = (key) => [...openBlockers(recs[key]), ...(recs[key].epic?.key ? [recs[key].epic.key] : [])].filter((b) => b !== key);
+  const blocked = (key) => ahead(key).some((b) => unsettled.has(b));
+  // One at a time, a ticket also keeps its turn behind a blocker placed in this call, and behind any
+  // ticket named before it that is still blocked.
+  const outOfTurn = (key) => ahead(key).some((b) => tried.has(b)) || order.slice(0, order.indexOf(key)).some((x) => recs[x] && blocked(x));
+  const waits = (key) => epicAhead() || blocked(key) || (k === 1 && outOfTurn(key));
   const settle = (key) => { tried.add(key); place(key); delete recs[key]; unsettled.delete(key); };
   // Places every triaged ticket with nothing in this call left to wait for, in triage order, until
   // none is left; with `all`, once no triage is left to wait for, the rest too, a cycle as found.
   const placeReady = (all = false) => {
     for (let key; (key = order.find((x) => recs[x] && !waits(x)));) settle(key);
-    if (all) blockersFirst(recs).forEach(settle);
+    if (all) blockersFirst(seen).filter((key) => recs[key]).forEach(settle);
   };
 
   const toTriage = [...order];
