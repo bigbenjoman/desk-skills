@@ -250,8 +250,16 @@ t('AC4 the other login keeps its 5-hour window', P.readUsage({ login: lDefault, 
 written(uLog('B-1.log'), JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.3, resetsAt: inHours(-1) }, seven_day: { utilization: 0.4, resetsAt: inHours(48) } } } }), 0);
 t('a window past its reset reads 0%', /^b {8}5h 0%, reset /.test(lines(P.usageByLogin({ now: nowU }))[1]), true);
 
-// AC6: one login. Every worker log is its, with no login file, and the line is the one it always was.
+// Which login a desk-q on login B draws, by what the subscriptions file says of the default.
+const lineOnB = () => { process.env.CLAUDE_CONFIG_DIR = B; const u = Q.usageOf([], nowU).reading.seven_day?.utilization; delete process.env.CLAUDE_CONFIG_DIR; return u; };
+subscriptions([['default', '~/.claude', 'off'], ['b', '~/.claude-logins/b', 'in rotation']]);
+t('AC6 a file leaving B the one login in use: a desk-q on B shows B\'s', lineOnB(), 0.4);
+subscriptions([['b', '~/.claude-logins/b', 'in rotation']]);
+t('AC6 a file listing only B: a desk-q on B shows B\'s', lineOnB(), 0.4);
 rmSync(process.env.DESK_SUBSCRIPTIONS);
+t('AC5 no file, with a folder for login B: a desk-q on B shows the default login\'s', lineOnB(), 0.2);
+
+// AC6: one login. Every worker log is its, with no login file, and the line is the one it always was.
 rmSync(join(H, '.claude-logins'), { recursive: true });
 rmSync(L.loginFile(U, 'B-1'));
 t('AC6 one login: every worker log reads as its own', lines(P.usageByLogin({ now: nowU })).length, 1);

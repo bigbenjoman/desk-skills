@@ -655,9 +655,13 @@ const ownLogin = () => { try { return loginOf(process.env.CLAUDE_CONFIG_DIR); } 
 // read, so desk-q then treats its own login as the only one.
 const otherLogins = (own) => { try { return probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file')); } catch { return []; } };
 // The login the usage line shows: the default, named by null, whichever login this desk-q started on
-// while there are others. With no others, its own, so one login under CLAUDE_CONFIG_DIR still shows
-// its probe's reading.
-const lineLogin = () => { const own = ownLogin(); return own?.configDir && otherLogins(own).length ? null : own; };
+// while there are others, as there are with a folder under the logins folder and no subscriptions file
+// to rule on either. With no others, its own: one login under CLAUDE_CONFIG_DIR still shows its probe's
+// reading, and so does the one login a subscriptions file leaves in use.
+const lineLogin = () => {
+  const own = ownLogin();
+  return own?.configDir && (otherLogins(own).length || (own.source === 'found' && !own.rule)) ? null : own;
+};
 // The probes an open desk-q makes now. With one login, its probe while no worker anywhere keeps the
 // reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
 // worker runs on it, judged on that login's own probe reading.
