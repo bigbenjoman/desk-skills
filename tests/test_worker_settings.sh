@@ -550,5 +550,19 @@ check "DS-445 AC6 codex lever on: a direct call with a model, profile, output fi
   'no "codex exec --sandbox read-only -m gpt-5 '"'x'"'" "codex exec --sandbox read-only --model=gpt-5 '"'x'"'" "codex exec --sandbox read-only -p fast '"'x'"'" \
       "codex exec --sandbox read-only --profile fast '"'x'"'" "codex exec --sandbox read-only -o out.txt '"'x'"'" "codex exec --sandbox read-only --output-last-message out.txt '"'x'"'" \
       "codex exec --sandbox read-only -c model=x '"'x'"'" "codex exec --sandbox read-only -cmodel=x '"'x'"'" "codex exec --sandbox workspace-write '"'x'"'"'
+# The CODEX_HOME rule itself refuses each command, not a missing allow rule: under allow rules wide
+# enough to admit it, it is refused while the rule is there and allowed once the rule is taken out.
+codexHome(){ local c w="$T/ws-wide.json" o="$T/ws-wide-nodeny.json"
+  jq '.permissions.allow += ["Bash(*desk-codex*)", "Bash(*codex exec --sandbox read-only*)", "Bash(export *)"]' "$T/ws.json" > "$w"
+  jq '.permissions.deny -= ["Bash(*CODEX_HOME=*)"]' "$w" > "$o"
+  no "$@" || return 1
+  for c in "$@"; do
+    [ "$(node "$T/match.mjs" "$w" bash "$c")" = refused ] && [ "$(node "$T/match.mjs" "$o" bash "$c")" = allow ] || { out="not refused by the CODEX_HOME rule: $c"; return 1; }
+  done; }
+check "DS-470 AC7 a codex call with a CODEX_HOME of the worker's own choosing is refused" \
+  'codexHome "CODEX_HOME=$HOME/.codex-logins/b desk-codex probe" "env CODEX_HOME=/x desk-codex refuter '"'x'"'" \
+      "export CODEX_HOME=/x" "CODEX_HOME=/x codex exec --sandbox read-only --skip-git-repo-check '"'x'"'" "CODEX_HOME=/x node $B/desk-codex.mjs finder '"'x'"'"'
+settings '`bash tests/run.sh`' '' "$(rows3 codex-review=yes)"
+check "DS-470 AC7 with the codex lever off too" 'codexHome "CODEX_HOME=/x codex exec --sandbox read-only '"'x'"'"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

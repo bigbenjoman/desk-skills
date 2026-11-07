@@ -54,6 +54,12 @@ t('DS-445 AC4 and so does the PR body line', methodLine(runs).includes('· codex
 t('DS-445 AC4 the counts are untouched', marker(runs), marker(base({ seats: [seat('correctness'), seat('codex', 'codex')] })))
 t('DS-445 a codex run that is not <model>:<effort> is refused', refused(base({ codex: { finder: 'gpt-6.1-sol' } })), 'codex.finder is <model>:<effort>, as desk-codex settings prints it')
 t('DS-445 an unknown codex role is refused', refused(base({ codex: { probe: 'a:low' } })), 'unknown field codex.probe')
+const onLogins = base({ codex: { finder: 'gpt-6.1-sol:medium', refuter: 'gpt-6.1-sol:low', login: 'default, login-2' } })
+t('DS-470 AC1 the heading names the Codex logins the calls ran on', heading(onLogins).endsWith('refuter gpt-6.1-sol at low · on Codex logins default, login-2'), true)
+t('DS-470 AC1 one login reads singular', heading(base({ codex: { login: 'login-2' } })).endsWith('refuted cross-vendor · on Codex login login-2'), true)
+t('DS-470 AC1 the counts are untouched', marker(onLogins), marker(base()))
+t('DS-470 a found login named after its folder is accepted', heading(base({ codex: { login: 'default, work@example.com' } })).endsWith('· on Codex logins default, work@example.com'), true)
+for (const login of ['', 'a\nb', 'a, ', ' a', 7]) t(`DS-470 a login that is not a name is refused: ${JSON.stringify(login)}`, refused(base({ codex: { login } })), 'codex.login names the Codex logins the calls ran on, as desk-codex prints them, comma-separated')
 
 // ---- refutation outcomes and the vendor
 t('rejected finding: clean', reads(base({ findings: [f({ result: 'REJECTED' })] })), true)
