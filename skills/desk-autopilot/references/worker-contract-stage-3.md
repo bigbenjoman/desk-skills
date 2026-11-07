@@ -161,6 +161,13 @@ The Stage 4 file's self-review sends you here. These rules live in this file bec
 reads it before Stage 4b: at Stage 3, before its first command, or at the start of a session that
 begins at Stage 4b.
 
+**The review you run and post is the one `desk-env review-cmd` prints.** That is §4 Local review
+command, unless §4 Clean review verdict (`desk-env get clean-verdict`) is in desk-review's counts form
+and the command posts no verdict marker. Only a `desk-review:verdict` marker reads clean under that
+row, so `desk-env review-cmd` then prints `/desk-review`, and that is what you run and post, on a fix
+try too (`$DESK_SKILLS_DIR/desk-review/SKILL.md`). The row's own command stays an extra review you may
+also run; it never stands in for that one.
+
 **The named agents are already synced: confirm, do not assume.** Where the repo gitignores its
 generated `.claude/agents/*.md`, a hand-made worktree starts empty and every named agent silently
 resolves to `general-purpose`, while the report still reads as a full fleet run. `setup-worktree.sh`

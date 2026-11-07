@@ -3418,6 +3418,21 @@ function reportOverrides() {
 }
 reportOverrides();
 
+// A §4 Local review command whose reviews §4 Clean review verdict can never read clean: logged once for
+// that pair of rows, since workers run /desk-review in its place until /desk-setup settles it.
+function reportReviewRows() {
+  let clash = null;
+  try { clash = E.reviewRows().clash; } catch { /* no rows to compare */ }
+  if (!clash) return;
+  const seenFile = join(STATE, 'review-rows-reported.txt');
+  let seen = '';
+  try { seen = readFileSync(seenFile, 'utf8'); } catch { /* none reported yet */ }
+  if (seen === clash) return;
+  out.push(`review rows: ${clash}`);
+  if (!DRY) writeFileSync(seenFile, clash);
+}
+reportReviewRows();
+
 if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\n  ')}`);
 
 // Blocked-on-questions must be visible, or "no change this pass" reads as "idle" when it
