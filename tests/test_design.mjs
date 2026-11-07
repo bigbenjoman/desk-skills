@@ -5,11 +5,11 @@
 // Claude Design link with no saved copy. Scratch git repos only.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles, savedAt } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
@@ -437,6 +437,76 @@ save(s4, { root: r7, dir: DIR, tickets: [{ key: 'DS-52', boards: [] }], url: URL
 t('re-save, new version: old screens removed', existsSync(join(d7, 'screens/admin-390@390.png')), false);
 t('re-save, new version: README drops them', read(join(d7, 'README.md')).includes('## Screens'), false);
 
+// ---- a Slides deck: deck.json and slides/<id>.html (fixtures/design-pm2, from the Prana Motion deck) ----
+const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'design-pm2');
+const DECK_URL = 'https://claude.ai/artifact/2v9EQUrnCJgQeRNhEBUK53';
+const CANVAS_URL = 'https://claude.ai/artifact/MEzqmgF7kAduPcxbu8djtL';
+const IMG1 = '332b39fd4f1032005551b3ba94a0e8ec';
+const IMG2 = 'f84d5011663f37917b13022bf265557f';
+// A 1x1 PNG stands in for each image: the snapshot holds it under its asset id, with no extension.
+const DOT = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+const deckSnap = join(T, 'deck-snap');
+cpSync(join(FIX, 'deck'), deckSnap, { recursive: true });
+for (const id of [IMG1, IMG2]) put(join(deckSnap, `_blob/${id}`), DOT);
+const cd = collect(deckSnap);
+t('deck collect: a deck, its slides in deck.json order', `${cd.kind} ${cd.deck} ${cd.slides.join(',')}`, 'deck project/deck.json short,who,gaps');
+t('deck collect: deck.json, every slide and each image', cd.files.join(' '),
+  `project/assets/${IMG1}.png project/assets/${IMG2}.png project/deck.json project/slides/gaps.html project/slides/short.html project/slides/who.html`);
+t('deck collect: its font faces are remote', cd.remote.length, 2);
+t('deck collect: nothing missing', cd.missing.join(' | '), '');
+const rD = repo('rD');
+const sd = save(deckSnap, { root: rD, dir: DIR, tickets: [{ key: 'PM-3', boards: [] }], epic: 'PM-2', url: DECK_URL, version: '1792850658-97df', now: '2026-11-07T10:00:00Z' });
+const dd = join(rD, DIR, 'PM-2');
+t('AC1 deck save: under the epic', sd.path, 'docs/design/PM-2/');
+t('AC1 deck save: deck.json, every slide, every image, the viewer', sd.files.join(' '),
+  `index.html project/assets/${IMG1}.png project/assets/${IMG2}.png project/deck.json project/slides/gaps.html project/slides/short.html project/slides/who.html`);
+t('AC1 deck save: every file is on disk', sd.files.every((f) => existsSync(join(dd, f))), true);
+t('AC1 deck save: the images are the snapshot\'s bytes', readFileSync(join(dd, `project/assets/${IMG1}.png`)).equals(DOT), true);
+t('AC1 deck save: a slide points at its saved image', read(join(dd, 'project/slides/gaps.html')).includes(`src="../assets/${IMG1}.png"`), true);
+const dsrc = json(join(dd, 'source.json'));
+t('AC1 deck save: source.json records the kind and the slides', `${dsrc.kind} ${dsrc.slides.join(',')} ${dsrc.url} ${dsrc.version}`, `deck short,who,gaps ${DECK_URL} 1792850658-97df`);
+const drm = read(join(dd, 'README.md'));
+t('AC1 deck save: README names the source URL and version', drm.includes(`<${DECK_URL}>, version 1792850658-97df`), true);
+t('AC1 deck save: README says how to read it and lists the slides', `${drm.startsWith('# Slides deck PM-2')} ${drm.includes('Open index.html')} ${drm.includes('## Slides\n\n1. short\n2. who\n3. gaps')}`, 'true true true');
+const viewer = read(join(dd, 'index.html'));
+t('AC2 deck viewer: every slide in deck.json order', [...viewer.matchAll(/data-slide="([^"]+)"/g)].map((m) => m[1]).join(','), 'short,who,gaps');
+t('AC2 deck viewer: each frame is 1920×1080', viewer.includes('.frame{width:1920px;height:1080px'), true);
+t('AC2 deck viewer: speaker notes are hidden', viewer.includes('section aside{display:none}') && viewer.includes('<aside>The site’s first job'), true);
+t('AC2 deck viewer: images load from the saved folder', viewer.includes(`src="project/assets/${IMG2}.png"`) && !viewer.includes('/_blob/'), true);
+t('AC2 deck viewer: the deck\'s fonts are linked', viewer.includes('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader'), true);
+t('AC3 deck viewer: a data-crop image keeps its focal point', viewer.includes(`data-crop="1 50% 0%" style="object-position:50% 0%;`), true);
+t('AC3 applyCrops: a style with no object-position gets the crop\'s', applyCrops('<img src="a.png" data-crop="1.4 30% 70%" style="width:10px">'), '<img src="a.png" data-crop="1.4 30% 70%" style="object-position:30% 70%;width:10px">');
+t('AC3 applyCrops: an image with no style gets one', applyCrops("<img data-crop='1 0% 100%' src=a.png>"), "<img data-crop='1 0% 100%' src=a.png style=\"object-position:0% 100%;\">");
+t('AC3 applyCrops: an object-position already set is kept', applyCrops('<img data-crop="1 10% 10%" style="object-position: 50% 0%">'), '<img data-crop="1 10% 10%" style="object-position: 50% 0%">');
+t('deck render: refused, naming the viewer', (await render(dd, { chromium: null, bps: [] }).then(() => 'no error', (e) => `${e.code}:${e.message.includes('open its index.html')}`)), '2:true');
+const dd2 = save(deckSnap, { root: rD, dir: DIR, tickets: [{ key: 'PM-4', boards: [] }], url: DECK_URL, version: '1792850658-97df' });
+t('deck save: a second ticket reuses the folder', `${dd2.path} ${dd2.reused} ${json(join(dd, 'source.json')).tickets.map((x) => x.key).join(' ')}`, 'docs/design/PM-2/ true PM-3 PM-4');
+const missingSlide = join(T, 'deck-missing');
+cpSync(deckSnap, missingSlide, { recursive: true });
+rmSync(join(missingSlide, 'project/slides/who.html'));
+t('deck save: a slide deck.json orders but the snapshot lacks exits 4, naming it', throws(() => save(missingSlide, { root: repo('rDm'), dir: DIR, tickets: [{ key: 'PM-3', boards: [] }], url: DECK_URL, version: '1' })).startsWith('4:not saved'), true);
+t('deck collect: the missing slide is named', collect(missingSlide).missing.join(' '), 'slide who (deck.json orders it: read project/slides/who.html from the artifact)');
+const cliW = spawnSync('node', [BIN, 'write', deckSnap, '--url', DECK_URL, '--version', '1792850658-97df', '--epic', 'PM-2', '--key', 'PM-3'], { encoding: 'utf8' });
+t('deck write: a snapshot records its kind', `${cliW.status} ${json(join(deckSnap, 'source.json')).kind}`, '0 deck');
+
+// AC4: a deck saved on the base is no blocking finding; AC5: a page is advisory; an unknown kind blocks.
+git(rD, 'add', '-A'); git(rD, 'commit', '-q', '-m', 'deck');
+const pmIssue = (desc) => ({ key: 'PM-3', fields: { description: desc, parent: { key: 'PM-2', fields: { issuetype: { name: 'Epic', hierarchyLevel: 1 } } } } });
+t('AC4 deck: savedAt reads its kind', savedAt(rD, DIR, 'main').map((c) => `${c.path} ${c.kind}`).join(' '), 'docs/design/PM-2/ deck');
+t('AC4 deck check: a saved deck named in the Design section is clean', checkTicket(pmIssue(`h2. Design\n${DECK_URL} · docs/design/PM-2/`), { root: rD, dir: DIR, ref: 'main' }).length, 0);
+t('AC4 deck check: a saved deck not named is advisory, not blocking', checkTicket(pmIssue(`h2. Design\n${DECK_URL}`), { root: rD, dir: DIR, ref: 'main' }).map((f) => f.severity).join(' '), 'advisory');
+t('kindOfFiles: a hand-made deck with no kind recorded', `${kindOfFiles(['x/deck.json', 'x/index.html'])} ${kindOfFiles(['x/project/canvas.json'])} ${kindOfFiles(['x/project/index.html'])} ${kindOfFiles(['x/README.md'])}`, 'deck canvas page null');
+const kst = join(T, 'kind-state');
+cpSync(join(FIX, 'canvas'), join(kst, 'designs/PM-2c'), { recursive: true });
+put(join(kst, 'designs/PM-2c/source.json'), JSON.stringify({ url: CANVAS_URL, version: '1792843406-fc94' }));
+put(join(kst, 'designs/PAGE/source.json'), JSON.stringify({ url: 'https://claude.ai/artifact/PAGE9', version: '1', kind: 'page' }));
+put(join(kst, 'designs/PAGE/project/index.html'), '<h1>a page</h1>');
+const canvasSnap = checkTicket(pmIssue(`h2. Design\n${CANVAS_URL}`), { root: r5, dir: DIR, state: kst });
+t('AC5 check: a snapshotted canvas is advisory, saved from there', `${canvasSnap.map((f) => f.severity).join(' ')} ${canvasSnap[0]?.message.endsWith('so the worker saves it from there')}`, 'advisory true');
+const pageSnap = checkTicket(pmIssue('h2. Design\nhttps://claude.ai/artifact/PAGE9'), { root: r5, dir: DIR, state: kst });
+t('AC5 check: an artifact that is neither a canvas nor a deck is advisory', `${pageSnap.map((f) => f.severity).join(' ')} ${pageSnap[0]?.message.includes('a single page rather than a canvas or deck, so it does not block')}`, 'advisory true');
+t('AC5 check: a link with no saved copy and no snapshot is of unknown kind, so blocking', checkTicket(pmIssue('h2. Design\nhttps://claude.ai/artifact/UNKNOWN1'), { root: r5, dir: DIR, state: kst }).map((f) => f.severity).join(' '), 'blocking');
+
 // ---- render in a real browser: desk's own Playwright, skipped where it is not installed ----
 const pw = findPlaywright();
 if (!pw.entry) {
@@ -550,6 +620,30 @@ else document.getElementById('storybook-root').innerHTML = '<main style="height:
   const errC = await compare(good, { chromium, storybook: sb, out: join(T, 'shots-err'), widths: [390] }).then(() => 'no error', (e) => `${e.code}:${e.message}`);
   t('DS-382 compare: a story on the error screen fails with exit 4, writing nothing', `${errC.startsWith('4:not compared: story pages-broken--test-390')} ${existsSync(join(T, 'shots-err'))}`, 'true false');
   t('DS-382 compare: no Storybook index exits 3', spawnSync('node', [BIN, 'compare', good, '--storybook', join(T, 'nothing'), '--out', join(T, 'x')], { encoding: 'utf8' }).status, 3);
+
+  // AC2/AC3: the saved deck's index.html opened from file://, with the network refused.
+  const deckBrowser = await chromium.launch();
+  try {
+    const page = await deckBrowser.newPage({ viewport: { width: 1280, height: 800 } });
+    await page.route((u) => u.protocol !== 'file:', (r) => r.abort());
+    await page.goto(pathToFileURL(join(dd, 'index.html')).href, { waitUntil: 'load' });
+    const seen = await page.evaluate(() => [...document.querySelectorAll('.frame')].map((f) => {
+      const r = f.getBoundingClientRect();
+      const imgs = [...f.querySelectorAll('img')];
+      return {
+        id: f.querySelector('section')?.id, ratio: Math.round((r.width / r.height) * 1000) / 1000,
+        notes: [...f.querySelectorAll('aside')].map((a) => getComputedStyle(a).display).join(','),
+        images: imgs.every((i) => i.complete && i.naturalWidth > 0), crops: imgs.map((i) => getComputedStyle(i).objectPosition).join(','),
+      };
+    }));
+    t('AC2 deck in a browser: every slide in order', seen.map((s) => s.id).join(','), 'short,who,gaps');
+    t('AC2 deck in a browser: each slide at 16:9', seen.every((s) => s.ratio === Math.round((16 / 9) * 1000) / 1000), true);
+    t('AC2 deck in a browser: speaker notes hidden', seen[0].notes, 'none');
+    t('AC2 deck in a browser: images load from file://', seen.every((s) => s.images), true);
+    t('AC3 deck in a browser: the data-crop focal point', seen[2].crops, '50% 0%,50% 0%');
+  } finally {
+    await deckBrowser.close();
+  }
 }
 
 rmSync(T, { recursive: true, force: true });
