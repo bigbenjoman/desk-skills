@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Closes the GitHub issues in this repo that a ticket's web links name, once every ticket linking each
 // one is done, with a comment naming those tickets and their merged PRs. Run after a ticket goes to
-// §4 Done state. Jira cannot search web-link URLs, so the tickets linking an issue are this one plus a
-// text search of the project for the issue's URL or #<n>, each confirmed by its own web links. Where
+// §4 Done state. Jira cannot search web-link URLs, so the tickets linking an issue are this one (its
+// status read directly) plus a text search of the project for the issue's URL or #<n>, each confirmed
+// by its own web links; a search with more hits than one page leaves the issue open. Where
 // §3 gh-close-linked-issue is not yes, nothing is closed and the issue is named as ready to close.
 // A ticket with no such link, or a repo with no Jira tracker, prints nothing.
 //
@@ -11,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { keyPattern } from './batch-state.mjs';
 
 // The number of the issue a web link names in <repo> (owner/name), or null.
 export function issueOf(url, repo) {
@@ -21,11 +23,10 @@ export function issueOf(url, repo) {
 export const linkedIssues = (links, repo) => [...new Set((Array.isArray(links) ? links : [])
   .map((l) => issueOf(l?.object?.url, repo)).filter((n) => n != null))].sort((a, b) => a - b);
 
-// Whether a PR title or branch names the key whole (DS-49 is not in DS-494).
-export const namesKey = (key, s) => new RegExp(`(^|[^A-Za-z0-9])${key.replace(/[.]/g, '\\.')}(?![0-9])`, 'i').test(String(s ?? ''));
-
+// The other tickets in <project> that may link issue <n>: any whose text names its URL or #<n>.
 export const issueJql = (project, ticket, repo, n) =>
-  `project = "${project}" AND (key = ${ticket} OR text ~ "\\"https://github.com/${repo}/issues/${n}\\"" OR text ~ "\\"#${n}\\"")`;
+  `project = "${project}" AND key != ${ticket} AND (text ~ "\\"https://github.com/${repo}/issues/${n}\\"" OR text ~ "\\"#${n}\\"")`;
+export const SEARCH_MAX = 100;
 
 const sh = (cmd, args) => {
   const r = spawnSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -45,25 +46,32 @@ export function closeLinkedIssues({ ticket, repo, project, doneState, perm, run 
   };
   const own = linksOf(ticket);
   if (!own.links) return [`${ticket}: its web links could not be read (${own.why}), so no GitHub issue was checked`];
+  const issuesHere = linkedIssues(own.links, repo);
+  if (!issuesHere.length) return [];
+  // The ticket's own status is read directly: a search straight after its move to Done can still
+  // return the old status.
+  const ownRead = run('desk-jira', ['api', `api/2/issue/${ticket}?fields=status`]);
+  const ownFields = ownRead.ok ? parse(ownRead)?.fields : undefined;
+  if (!ownFields?.status) return [`${ticket}: its status could not be read (${ownRead.ok ? 'no status' : why(ownRead)}), so no GitHub issue was checked`];
+  const self = { key: ticket, done: isDone(ownFields, doneState), status: ownFields.status.name ?? 'unknown' };
   const lines = [];
-  for (const n of linkedIssues(own.links, repo)) {
+  for (const n of issuesHere) {
     const ref = `${repo}#${n}`;
-    const found = run('desk-jira', ['search', issueJql(project, ticket, repo, n), '100', '--json']);
-    const issues = found.ok ? parse(found)?.issues : undefined;
+    const found = run('desk-jira', ['search', issueJql(project, ticket, repo, n), String(SEARCH_MAX), '--json']);
+    const res = found.ok ? parse(found) : undefined;
+    const issues = res?.issues;
     if (!Array.isArray(issues)) { lines.push(`${ref} left open: the tickets linking it could not be searched (${found.ok ? 'no issues list' : why(found)})`); continue; }
-    const linking = [];
+    if (res.nextPageToken || issues.length >= SEARCH_MAX) { lines.push(`${ref} left open: ${SEARCH_MAX} or more tickets mention it, so not every ticket linking it could be checked`); continue; }
+    const linking = [self];
     let unread = null;
     for (const i of issues) {
-      if (typeof i?.key !== 'string' || !E.SAFE_ID.test(i.key)) continue;
-      if (i.key !== ticket) {
-        const l = linksOf(i.key);
-        if (!l.links) { unread = `${i.key}'s web links could not be read (${l.why})`; break; }
-        if (!linkedIssues(l.links, repo).includes(n)) continue;
-      }
+      if (typeof i?.key !== 'string' || !E.SAFE_ID.test(i.key) || i.key === ticket) continue;
+      const l = linksOf(i.key);
+      if (!l.links) { unread = `${i.key}'s web links could not be read (${l.why})`; break; }
+      if (!linkedIssues(l.links, repo).includes(n)) continue;
       linking.push({ key: i.key, done: isDone(i.fields, doneState), status: i.fields?.status?.name ?? 'unknown' });
     }
     if (unread) { lines.push(`${ref} left open: ${unread}`); continue; }
-    if (!linking.some((t) => t.key === ticket)) { lines.push(`${ref} left open: ${ticket} was not found by the search`); continue; }
     const open = linking.filter((t) => !t.done);
     if (open.length) { lines.push(`${ref} left open: ${open.map((t) => `${t.key} is ${t.status}`).join(', ')}`); continue; }
     const state = run('gh', ['issue', 'view', String(n), '--repo', repo, '--json', 'state']);
@@ -74,7 +82,8 @@ export function closeLinkedIssues({ ticket, repo, project, doneState, perm, run 
       const r = run('gh', ['pr', 'list', '--repo', repo, '--state', 'merged', '--search', key, '--json', 'number,title,headRefName', '--limit', '30']);
       const prs = (r.ok ? parse(r) : null);
       if (!Array.isArray(prs)) return `${key} (merged PRs not read)`;
-      const ns = prs.filter((p) => namesKey(key, `${p.title} ${p.headRefName}`)).map((p) => p.number).sort((a, b) => a - b);
+      const names = new RegExp(keyPattern(key));
+      const ns = prs.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`)).map((p) => p.number).sort((a, b) => a - b);
       return `${key} (${ns.length ? ns.map((x) => `#${x}`).join(', ') : 'no merged PR'})`;
     });
     const comment = `Closed by desk: every ticket filed for this issue is done: ${named.join(', ')}.`;

@@ -422,7 +422,7 @@ sed -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \
   | awk '{ print } /^\| `pr-ready`/ { print "| `jira-close-own-merged` | Close own merged | `yes` | `yes` |"; print "| `gh-close-linked-issue` | Close linked issue | `yes` | `yes` |" } /^\| Tracker/ { print "| Done state | `Done` |"; print "| Jira project | `T` |" }' > "$T/config-close.md"
 sed -e 's/| `jira-close-own-merged` | Close own merged | `yes` | `yes` |/| `jira-close-own-merged` | Close own merged | `yes` | `ask` |/' "$T/config-close.md" > "$T/config-noclose.md"
 # The fake desk-jira: each ticket's status in jira-status/<key>, In Progress until a transition moves it;
-# its web links in jira-links/<key> (none without one). A search finds only the ticket its JQL names.
+# its web links in jira-links/<key> (none without one). A search finds no other ticket.
 mkdir -p "$T/jira-status" "$T/jira-links"
 cat > "$T/stub/desk-jira" <<EOF
 #!/usr/bin/env bash
@@ -431,9 +431,13 @@ f="$T/jira-status/\$2"
 case "\$1" in
   get) st="In Progress"; [ -f "\$f" ] && st="\$(cat "\$f")"; jq -n --arg s "\$st" '{fields: {status: {name: \$s}}}' ;;
   transition) printf '%s' "\$3" > "\$f"; echo "\$2 -> \$3" ;;
-  api) k="\${2#api/2/issue/}"; k="\${k%%/*}"; if [ -f "$T/jira-links/\$k" ]; then cat "$T/jira-links/\$k"; else echo '[]'; fi ;;
-  search) k=\$(printf '%s' "\$2" | grep -oE 'key = [^ ]+' | cut -d' ' -f3); st="In Progress"; [ -f "$T/jira-status/\$k" ] && st="\$(cat "$T/jira-status/\$k")"
-    jq -n --arg k "\$k" --arg s "\$st" '{issues: [{key: \$k, fields: {status: {name: \$s, statusCategory: {key: (if \$s == "Done" then "done" else "indeterminate" end)}}}}]}' ;;
+  api) k="\${2#api/2/issue/}"
+    case "\$k" in
+      *'?fields=status') k="\${k%%\?*}"; st="In Progress"; [ -f "$T/jira-status/\$k" ] && st="\$(cat "$T/jira-status/\$k")"
+        jq -n --arg k "\$k" --arg s "\$st" '{key: \$k, fields: {status: {name: \$s, statusCategory: {key: (if \$s == "Done" then "done" else "indeterminate" end)}}}}' ;;
+      *) k="\${k%%/*}"; if [ -f "$T/jira-links/\$k" ]; then cat "$T/jira-links/\$k"; else echo '[]'; fi ;;
+    esac ;;
+  search) echo '{"issues": []}' ;;
   *) exit 1 ;;
 esac
 EOF
