@@ -194,6 +194,11 @@ re-running a ticket from scratch.
   starts on the other logins, on standby only once every login in rotation is benched, and a worker
   paused on a benched login stays paused there and resumes there. The batch holds as above only
   once every login is benched, and its hold names each login's reset, earliest first.
+- **The pass's own model calls skip a benched login too.** The decider, triage and its lane
+  challenge, and epic planning's headless calls each start on a usable login no batch of the repo has
+  benched, chosen as a new worker's is (`call-login.mjs`). With every login benched, no decider
+  starts and its items wait for the next one; triage and epic planning run on the caller's own login,
+  as they do with one login.
 - **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
   batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
   once; exactly one row that is the same batch with tickets added or removed is the same session.
