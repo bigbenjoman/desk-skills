@@ -60,6 +60,8 @@ import * as E from './desk-env.mjs';
 import { isEpic, blockersFact } from './desk-q-eta.mjs';
 import { machineCap } from './borrow.mjs';
 import { usagePace } from './usage-pace.mjs';
+import { readUsage } from './usage-probe.mjs';
+import { loginOf } from './claude-logins.mjs';
 import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, personStep } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
 import { startEpic, clearAbandoned } from './epic-plan.mjs';
@@ -256,9 +258,10 @@ function triageLater(key, state, env = process.env) {
 
 // How many triages /desk-admit runs at once: config §3b "Triage concurrency" (a whole number from 1,
 // else 1), at most the machine profile's worker cap, and 1 while the spawn gate or usage pacing would
-// hold a worker's start. -> {k, why}, `why` saying what brought a higher setting down to 1, else null.
+// hold a worker's start, paced on the login these triages run on. -> {k, why}, `why` saying what brought
+// a higher setting down to 1, else null.
 export function triageConcurrency({ raw = E.configValue('triage-concurrency'), machine = machineCap(), avail = () => E.availableGiB(),
-  gate = () => E.spawnGate(), pace = () => usagePace() } = {}) {
+  gate = () => E.spawnGate(), pace = () => usagePace({ usage: readUsage({ login: loginOf(process.env.CLAUDE_CONFIG_DIR) }).seven_day }) } = {}) {
   const v = String(raw ?? '').trim();
   const k = Math.min(/^\d+$/.test(v) ? Math.max(1, Number(v)) : 1, machine == null ? Infinity : Math.max(1, machine));
   if (k === 1) return { k, why: null };

@@ -212,6 +212,15 @@ written(P.loginProbeLog(process.env.DESK_USAGE_DIR, lb), reading(0.5, 0.6), 0);
 t('AC1 a login\'s probe is read as that login\'s alone', lBoth(), '0.2,0.6');
 written(P.probeLog(process.env.DESK_USAGE_DIR), reading(0.7, 0.8), 0);
 t('AC1 and the default\'s as the default\'s', lBoth(), '0.8,0.6');
+// /desk-admit's triage pool paces on the login it runs on: only B is ahead of an even pace here.
+written(P.probeLog(process.env.DESK_USAGE_DIR), reading(0.1, 0.2), 0);
+written(P.loginProbeLog(process.env.DESK_USAGE_DIR, lb), reading(0.1, 0.99), 0);
+const paceConfig = join(T, 'pace-config.md');
+writeFileSync(paceConfig, '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Usage pacing headroom (points) | `5` | `5` |\n');
+const triagePool = (dir) => spawnSync(process.execPath, ['--input-type=module', '-e',
+  `import { triageConcurrency } from ${JSON.stringify(join(BIN, 'intake.mjs'))}; console.log(triageConcurrency({ raw: '3', machine: 4, avail: () => 99, gate: () => ({ start: 0 }) }).k);`],
+{ encoding: 'utf8', env: { ...process.env, DESK_CONFIG: paceConfig, ...(dir ? { CLAUDE_CONFIG_DIR: dir } : {}) } }).stdout.trim();
+t('a triage pool on B drops to 1 on B\'s reading, and on the default stays at 3', `${triagePool(B)} ${triagePool(null)}`, '1 3');
 rmSync(P.probeLog(process.env.DESK_USAGE_DIR));
 rmSync(P.loginProbeLog(process.env.DESK_USAGE_DIR, lb));
 
