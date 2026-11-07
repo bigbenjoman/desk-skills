@@ -16,6 +16,7 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { machineValue } from './desk-env.mjs';
+import { BENCH_CAP_KEY, BENCH_RESERVE_KEY, benchSettingError as settingError } from './machine.mjs';
 import { loginProbeLog, probeNow, readLoginUsage, usageDir } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { defaultLogin, login as makeLogin } from './logins.mjs';
@@ -23,13 +24,12 @@ import { readCodexUsage } from './codex-usage.mjs';
 
 export const DEFAULT_CAP = 10;
 export const DEFAULT_RESERVE = 25;
-export const CAP_KEY = 'bench-cap-points';
-export const RESERVE_KEY = 'bench-reserve-percent';
+export const CAP_KEY = BENCH_CAP_KEY;
+export const RESERVE_KEY = BENCH_RESERVE_KEY;
 // A reading older than this says too little about the allowance now.
 export const FRESH_MS = 30 * 60 * 1000;
 // Two readings whose weekly resets are this close are the same window.
 const SAME_WINDOW_S = 60 * 60;
-const NUM = /^\d+(\.\d+)?$/;
 const round1 = (x) => Math.round(x * 10) / 10;
 
 // The cap and reserve, each from the machine profile or its default. A value that is not a number (or
@@ -37,17 +37,13 @@ const round1 = (x) => Math.round(x * 10) / 10;
 //   -> { cap, reserve, defaults: [key] }
 export function quotaSettings({ cap = machineValue(CAP_KEY), reserve = machineValue(RESERVE_KEY) } = {}) {
   const defaults = [];
-  const read = (key, raw, def, ok, want) => {
+  const read = (key, raw, def) => {
     if (raw == null || String(raw).trim() === '') { defaults.push(key); return def; }
-    const v = String(raw).trim();
-    if (!NUM.test(v) || !ok(Number(v))) throw new Error(`refusing to start: the machine profile's \`${key}\` is "${raw}": want ${want}`);
-    return Number(v);
+    const bad = settingError(key, raw);
+    if (bad) throw new Error(`refusing to start: the machine profile's ${bad}`);
+    return Number(String(raw).trim());
   };
-  return {
-    cap: read(CAP_KEY, cap, DEFAULT_CAP, (n) => n > 0, 'a positive number of points of the weekly allowance'),
-    reserve: read(RESERVE_KEY, reserve, DEFAULT_RESERVE, (n) => n < 100, 'a percentage of the weekly allowance from 0 to under 100'),
-    defaults,
-  };
+  return { cap: read(CAP_KEY, cap, DEFAULT_CAP), reserve: read(RESERVE_KEY, reserve, DEFAULT_RESERVE), defaults };
 }
 
 export function settingsLine(s) {

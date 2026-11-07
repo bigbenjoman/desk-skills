@@ -23,6 +23,25 @@ export const SIZING_KEYS = Object.freeze([
   'memory-ceiling-gb', 'test-cap', 'test-lock-slots', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
 ]);
 
+// The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
+// user's answers and read by bench-quota.mjs.
+export const BENCH_CAP_KEY = 'bench-cap-points';
+export const BENCH_RESERVE_KEY = 'bench-reserve-percent';
+const BENCH_RULES = Object.freeze({
+  [BENCH_CAP_KEY]: { ok: (n) => n > 0, want: 'a positive number of points of the weekly allowance',
+    why: 'points of each weekly allowance the bench may spend, set in /desk-setup' },
+  [BENCH_RESERVE_KEY]: { ok: (n) => n < 100, want: 'a percentage of the weekly allowance from 0 to under 100',
+    why: '% of each weekly allowance the bench leaves for interactive work, set in /desk-setup' },
+});
+export const benchWhy = (key) => BENCH_RULES[key]?.why;
+// Why a value cannot be stored or read as one of the bench settings, or null when it can.
+export function benchSettingError(key, raw) {
+  const rule = BENCH_RULES[key];
+  if (!rule) return `\`${key}\` is not a bench setting: want ${Object.keys(BENCH_RULES).join(' or ')}`;
+  const v = String(raw ?? '').trim();
+  return /^\d+(\.\d+)?$/.test(v) && rule.ok(Number(v)) ? null : `\`${key}\` is "${raw}": want ${rule.want}`;
+}
+
 // The thresholds and ratios the proposal uses. Changing one changes every new proposal, never a
 // profile already written.
 export const RULES = Object.freeze({
@@ -279,6 +298,36 @@ export function renderProfile(hw, sizing, date) {
     '',
   ];
   return lines.join('\n');
+}
+
+// The profile text with each of rows ([{ key, value, why }]) set in its Sizing table: an existing
+// row for the key is replaced in place, a new one goes at the table's end. Everything else is kept.
+export function setSizingRows(text, rows) {
+  const lines = String(text ?? '').replace(/\n+$/, '').split('\n');
+  let start = lines.findIndex((l) => /^##\s+.*sizing/i.test(l.trim()));
+  if (start < 0) {
+    lines.push('', '## Sizing', '', '| Key | Value | Why |', '|---|---|---|');
+    start = lines.length - 4;
+  }
+  let end = start + 1;
+  while (end < lines.length && !/^##\s/.test(lines[end].trim())) end++;
+  for (const r of rows) {
+    const line = `| \`${r.key}\` | \`${esc(r.value)}\` | ${esc(r.why)} |`;
+    const at = lines.slice(start, end).findIndex((l) => l.trim().startsWith('|') && unquote(splitRow(l.trim())[0]).toLowerCase() === r.key);
+    if (at >= 0) { lines[start + at] = line; continue; }
+    let last = end - 1;
+    while (last > start && !lines[last].trim().startsWith('|')) last--;
+    lines.splice(last + 1, 0, line);
+    end++;
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+// Sizing rows the profile holds that a proposal does not make (set by `desk-env machine set`), so a
+// re-written profile keeps them.
+export function keptSizing(profile, proposal) {
+  const proposed = new Set(proposal.map((s) => s.key));
+  return Object.entries(profile?.sizing ?? {}).filter(([k]) => !proposed.has(k)).map(([key, s]) => ({ key, value: s.value, why: s.why }));
 }
 
 // Hardware rows that differ from the profile. Free disk moves every day, so it never counts.
