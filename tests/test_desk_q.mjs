@@ -1679,14 +1679,38 @@ put219('drv3', 5420, { tickets: { 'DL-1': run215 } });
 state219('drv3', 'supervisor.json', JSON.stringify({ driver: { pid: 2147483646, started: minsAgo(2), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: no PR for DL-1' } }));
 put219('old', 5380, { tickets: { 'OL-1': run215 } });
 state219('old', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'old1', old_code: true }, driver: null } }));
+// Each of these has a last code record that disagrees with what runs now.
+const lockDriver512 = (name, version) => {
+  const lock = join(I.env.HOME, '.desk-autopilot', `acme__${name}`, 'merge-driver.lock.d');
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+  writeFileSync(join(lock, 'version'), `${version}\n`);
+};
+put219('reloaded', 5430, { tickets: { 'RL-1': run215 } });
+state219('reloaded', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'old1', old_code: true }, driver: null } }));
+put219('unreloaded', 5440, { tickets: { 'UR-1': run215 } });
+state219('unreloaded', 'supervisor.json', JSON.stringify({ code: { installed: 'old1', supervisor: { version: 'old1', old_code: false }, driver: null } }));
+put219('drvold', 5450, { tickets: { 'DO-1': run215 } });
+state219('drvold', 'supervisor.json', JSON.stringify({ code: { installed: 'old1', supervisor: { version: 'old1', old_code: false }, driver: { pid: process.pid, version: 'old1', old_code: false } } }));
+lockDriver512('drvold', 'old1');
+put219('drvnew', 5460, { tickets: { 'DN-1': run215 } });
+state219('drvnew', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'new1', old_code: false }, driver: { pid: process.pid, version: 'old1', old_code: true } } }));
+lockDriver512('drvnew', 'new1');
 put219('cant', 5390, { beat: 40, tickets: { 'CA-1': ready } });
 state219('cant', 'supervisor.agent.log', 'tick\nsupervisor: no repo config found for acme/cant\n');
 writeFileSync(join(I.T, 'bin', 'print-com.desk-skills.supervisor.acme__cant'), '\tstate = not running\n\truns = 12\n\tlast exit code = 1\n');
 put219('land', 5400, { pass: { at: minsAgo(1), by: 'supervisor', held: null, errors: 0, progress_at: minsAgo(300) }, tickets: {
   'LD-1': { state: 'done', result: { pr: 50 }, pr_status: { pr: 50, state: 'OPEN', checks: [] } }, 'LD-2': { state: 'done', result: { pr: 51 }, pr_status: { pr: 51, state: 'MERGED' } } } });
 put219('wait', 5410, { supervised: false, tickets: { 'WA-1': { state: 'parked', park: { question: 'which copy?', since: minsAgo(130) } }, 'WA-2': { state: 'parked', park: { question: 'which price?', since: minsAgo(20) } } } });
-I.loaded('sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land');
-const names219 = ['np', 'moved', 'err', 'err1', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'wait'];
+const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew'];
+I.loaded(...loaded219);
+// What install.sh leaves: the installed commit, and each agent it reloaded loaded at that commit.
+writeFileSync(join(I.env.DESK_HOME, 'installed.json'), JSON.stringify({ commit: 'new1' }));
+mkdirSync(join(I.env.HOME, 'Library', 'LaunchAgents'), { recursive: true });
+const behind219 = ['old', 'unreloaded'];
+for (const n of loaded219) writeFileSync(join(I.env.HOME, 'Library', 'LaunchAgents', `com.desk-skills.supervisor.acme__${n}.plist`),
+  `<plist><dict><key>EnvironmentVariables</key><dict><key>DESK_AGENT_VERSION</key><string>${behind219.includes(n) ? 'old1' : 'new1'}</string></dict></dict></plist>\n`);
+const names219 = ['np', 'moved', 'err', 'err1', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'wait', 'reloaded', 'unreloaded', 'drvold', 'drvnew'];
 const ov219 = Q.overview(Q.loadRepos(NOW).filter((r) => names219.includes(r.name)), { now: NOW, avail: 30 });
 const notesOf = (name) => lines(ov219).filter((l) => new RegExp(`^(note| {4}) {2}▲ ${name} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${name} +`), ''));
 const cell219 = (name) => (rowOf(ov219, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
@@ -1705,6 +1729,14 @@ t('DS-219 AC4 a merge driver that died, never started, or whose retry died too: 
   'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login. | the merge driver could not start: spawn EACCES. | the merge driver stopped: no PR for DL-1.');
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
   notesOf('old').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+t('DS-512 AC1 an agent reloaded at the installed commit, whose last pass recorded itself as old code: no note',
+  notesOf('reloaded').length, 0);
+t('DS-512 AC2 an agent install.sh did not reload, whose last record reads as current: the supervisor note',
+  notesOf('unreloaded').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+t('DS-512 AC3 a driver whose lock names another version, its last record written before the install: the merge driver note',
+  notesOf('drvold').join(' / '), 'the merge driver runs old desk code. Run ./install.sh in desk-skills.');
+t('DS-512 AC4 a driver whose lock names the installed version, whatever its last record says: no note',
+  notesOf('drvnew').length, 0);
 t('DS-219 AC6 a loaded agent whose last run failed: the red band names the repo and the reason from its log',
   `${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') >= 0} ${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') < needs219}`, 'true true');
 // land's open PR needs you too: nothing there may merge it.

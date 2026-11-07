@@ -13,7 +13,8 @@
 //   cancel  a check pending past PENDING_LIMIT_MS while its run is still in progress: the pass cancels
 //           the run, once per check per head, so the next pass re-runs it as a cancelled check
 //   build  every red check is one §4 Check builds names, and no build has run at this head: the pass
-//           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
+//           starts its command on the host, from its clean checkout of the default branch, with the
+//           head as DESK_CHECK_HEAD and DESK_CHECK_TREE (check-build.mjs)
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
 //   sync    that build failed at a head behind its base (cfg.behind): the pass sends it to a fix worker
 //           that merges the base (fix-tries.mjs syncFix), and to the person once no try is left

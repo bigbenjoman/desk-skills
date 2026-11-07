@@ -17,9 +17,8 @@
 // A read that exits 0 having printed at most MAX_BYTES has its stdout saved, mode 0644, to
 // <fixtures>/<KEY>/<name>.json, where the requeued worker reads it as an untrusted API response.
 import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { startDetached, detachedRecord } from './check-build.mjs';
+import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
 import { parseOperatorChecks } from './fix-tries.mjs';
 import { parkOnlyNames } from './undraft.mjs';
 
@@ -72,11 +71,7 @@ export function readRecord(dir, key, head, name) {
 }
 
 // Whether any read recorded in dir is still running: the checkout it runs in is not to be moved.
-export function readsRunning(dir) {
-  let names = [];
-  try { names = readdirSync(dir).filter((f) => f.endsWith('.json')); } catch { return false; }
-  return names.some((f) => detachedRecord(dir, f.slice(0, -5))?.state === 'running');
-}
+export const readsRunning = (dir) => anyRunning(dir);
 
 // Starts `command` with sh in cwd (the checkout prepareCheckout made, at commit `base`), detached
 // (check-build.mjs startDetached): stdout and stderr to their files, its exit code to the code file.
@@ -90,9 +85,8 @@ export function startRead(dir, { key, head, name, command, cwd, base }) {
 // Nothing is cleaned or reset away: a checkout something wrote into is reported, not wiped, so the
 // person sees what did. { ok: true, sha } or { ok: false, why }.
 export function prepareCheckout(dir, { origin, branch }) {
-  // No hook runs, whatever the checkout's own config says.
-  const git = (...a) => spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...a], { encoding: 'utf8', timeout: 120000 });
-  const tail = (r) => String(r.stderr || r.stdout || r.error?.message || '').trim().split('\n').pop() || `exit ${r.status}`;
+  const git = hooklessGit(120000);
+  const tail = gitError;
   if (!origin) return { ok: false, why: 'the primary checkout has no origin remote to clone it from' };
   if (!existsSync(join(dir, '.git'))) {
     if (existsSync(dir) && readdirSync(dir).length) return { ok: false, why: `${dir} is not a git checkout, and is not empty` };
@@ -105,8 +99,7 @@ export function prepareCheckout(dir, { origin, branch }) {
   if (f.status !== 0) return { ok: false, why: `fetching origin's ${branch} into ${dir} failed: ${tail(f)}` };
   const s = git('-C', dir, 'status', '--porcelain', '--ignored', '--untracked-files=all');
   if (s.status !== 0) return { ok: false, why: `reading ${dir}'s status failed: ${tail(s)}` };
-  const dirty = s.stdout.split('\n').filter(Boolean);
-  if (dirty.length) return { ok: false, why: `${dir} is not clean (${dirty.slice(0, 5).map((l) => l.slice(3)).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''})` };
+  if (s.stdout.trim()) return { ok: false, why: `${dir} is not clean (${dirtyPaths(s.stdout)})` };
   const co = git('-C', dir, 'checkout', '--quiet', '--detach', ref);
   if (co.status !== 0) return { ok: false, why: `checking out origin's ${branch} in ${dir} failed: ${tail(co)}` };
   const head = git('-C', dir, 'rev-parse', 'HEAD').stdout.trim();

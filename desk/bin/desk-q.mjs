@@ -50,6 +50,7 @@ import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
+import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -579,7 +580,8 @@ function whoRuns(r) {
 //   cannotStart the loaded agent's failed last run, { code, why }, `why` its own log's last line
 //   driver      { at, reason }: the merge driver the supervisor started stopped with a failure, or
 //               could not start, and none runs now
-//   oldCode     which of the supervisor and its running merge driver run older desk code than is installed
+//   oldCode     which of the loaded supervisor agent and its running merge driver run other desk code than
+//               is installed, read now: a pass's own record can predate the install, or outlive the reload
 const NO_PROGRESS_MS = HOUR;
 const ERROR_STREAK = 2;
 export const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
@@ -611,10 +613,11 @@ function stallOf(r, now) {
       if (m) driver = { at: null, reason: m[1], start: true };
     }
   }
-  const c = sup?.code;
-  const oldCode = { supervisor: loaded && c?.supervisor?.old_code === true, driver: c?.driver?.old_code === true && holder != null && holder === c.driver.pid };
+  const installed = readInstalled();
+  const old = { supervisor: loaded && oldCode(agentVersion(r.slug), installed),
+    driver: r.run?.by === 'supervisor' && typeof holder === 'number' && oldCode(lockVersion(r.stateDir), installed) };
   return { noProgress: quiet, held: rec.held ?? null, errors, sessionToo: loaded && session != null && now - session < LIVE_MS, cannotStart, driver,
-    oldCode: oldCode.supervisor || oldCode.driver ? oldCode : null };
+    oldCode: old.supervisor || old.driver ? old : null };
 }
 // The batch's hold on a usage limit, as the last pass recorded it (pass.mjs usage_hold), in one
 // sentence, or null with none. It lifts by itself, so it says what lifts it sooner.

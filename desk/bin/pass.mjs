@@ -42,7 +42,7 @@ import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } f
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessage, FAILED } from './gate.mjs';
 import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
-import { buildRecord, startBuild, markReran } from './check-build.mjs';
+import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
@@ -560,6 +560,10 @@ function buildParkOf(t, question) {
 const readRow = parseLiveReads(E.configValues('live-reads'));
 const READ_DIR = join(STATE, 'live-reads');
 const READ_CHECKOUT = join(STATE, 'live-read-checkout');
+// §4 Check builds (check-build.mjs) run from READ_CHECKOUT too, each PR's head checked out for its
+// build under TREE_DIR/<n>, kept while the PR is open in the queue.
+const BUILD_DIR = join(STATE, 'check-builds');
+const TREE_DIR = join(STATE, 'check-trees');
 // §0 Default branch, never DEFAULT_BRANCH, which a named batch sets to its base: workers' PRs merge
 // into a batch base unreviewed as one change, so its scripts are not the merged code a read may run.
 const READ_BRANCH = E.configValue('default-branch') || 'main';
@@ -945,8 +949,8 @@ for (const t of Object.values(queue().tickets)) {
   };
   const names = (c.reads ?? []).join(', ');
   if (!c.base) {
-    if (!readCheckout && readsRunning(READ_DIR)) {
-      report.clears.push(`${t.key}: live read ${names} waits for the pass's checkout, where another read still runs: left parked`);
+    if (!readCheckout && (readsRunning(READ_DIR) || anyRunning(BUILD_DIR))) {
+      report.clears.push(`${t.key}: live read ${names} waits for the pass's checkout, where another read or a check build still runs: left parked`);
       continue;
     }
     readCheckout ??= prepareCheckout(READ_CHECKOUT, { origin: originUrl(), branch: READ_BRANCH });
@@ -2782,7 +2786,6 @@ function withUntriggered(s) {
   return keep.length ? { ...s, ...Object.fromEntries(keep) } : s;
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
-const BUILD_DIR = join(STATE, 'check-builds');
 const EVIDENCE_DIR = join(STATE, 'evidence-runs');
 const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
 // A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
@@ -2857,6 +2860,11 @@ for (const t of Object.values(qNow.tickets)) {
   }
 }
 for (const m of merges) out.push(`merge recorded: ${m}`);
+// A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
+if (!DRY) {
+  const open = new Set(Object.values(qNow.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String));
+  for (const f of pruneTrees(TREE_DIR, BUILD_DIR, (n) => open.has(n))) report.failed.push(`check build checkout ${join(TREE_DIR, f.n)}: PR #${f.n} is closed, but it could not be removed — ${f.why}`);
+}
 
 // ---- reopen --------------------------------------------------------------
 // A PR whose required checks never reported, though its base's copy of the workflow now runs them (the
@@ -3049,18 +3057,23 @@ for (const { t, s } of undrafted) {
   if (!DRY) q('set', t.key, `undraft=${JSON.stringify({ call: 'ready', why: 'a person undrafted it', action: null, sha: s.head, pr: s.pr, at: PASS_AT })}`);
 }
 
-// A draft red only on checks §4 Check builds names gets their build, on the host, in the ticket's
-// worktree moved on to the PR's head (check-build.mjs). Where it cannot start, the draft is the person's.
+// A draft red only on checks §4 Check builds names gets their build, on the host (check-build.mjs):
+// run from the pass's clean checkout of origin's default branch, READ_CHECKOUT, never the ticket's
+// worktree, with the PR's head given only as DESK_CHECK_HEAD and DESK_CHECK_TREE, the pass's clean
+// checkout of it under TREE_DIR. Where either cannot be made, nothing runs and the draft is the person's.
+// A checkout something still runs in is not moved: the build starts at a later pass.
 function startCheckBuild(t, n, head, c, rec) {
   if (DRY) { out.push(`undraft (dry run): would run \`${c.command}\` for PR #${n} (${t.key}) at ${String(head).slice(0, 12)}: ${c.why}`); return rec; }
-  const dir = buildDir(t, head);
+  const busy = buildBusy(n);
+  if (busy) { out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}; it starts once ${busy}`); return rec; }
+  const dir = buildDir(t, n, head);
   let pid = null;
   let failed = dir.why ?? null;
   if (!failed) {
-    try { pid = startBuild(BUILD_DIR, { n, head, command: c.command, checks: c.checks, cwd: dir.cwd }); } catch (e) { failed = e.message; }
+    try { pid = startBuild(BUILD_DIR, { n, head, command: c.command, checks: c.checks, cwd: READ_CHECKOUT, tree: dir.tree, base: dir.base }); } catch (e) { failed = e.message; }
   }
   if (!failed) {
-    out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why} (started in ${dir.cwd}, pid ${pid})`);
+    out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why} (started from the pass's clean checkout of origin/${READ_BRANCH} at ${dir.base.slice(0, 9)}, ${READ_CHECKOUT}, with DESK_CHECK_TREE ${dir.tree}; pid ${pid})`);
     return rec;
   }
   const why = `its check build \`${c.command}\` could not start: ${failed}`;
@@ -3216,16 +3229,23 @@ function admitFix(key) {
   const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', key, '--by', 'evidence']);
   return r.ok ? { ok: true } : { ok: false, why: r.out.split('\n').filter((line) => !isProgress(line)).pop() };
 }
-// The ticket's worktree at the PR's head: moved on to it when it is behind and clean, never otherwise.
-function buildDir(t, head) {
-  const wt = t.worktree;
-  if (!wt || !existsSync(wt)) return { why: `the ticket's worktree (${wt ?? 'none recorded'}) is not there` };
-  const at = shOut('git', ['-C', wt, 'rev-parse', 'HEAD']);
-  if (at.ok && at.out === head) return { cwd: wt };
-  const st = shOut('git', ['-C', wt, 'status', '--porcelain']);
-  if (!st.ok || st.out) return { why: `its worktree ${wt} is not at the head and has uncommitted changes` };
-  const moved = shOut('git', ['-C', wt, 'fetch', '-q', 'origin', head]).ok && shOut('git', ['-C', wt, 'merge', '--ff-only', '-q', head]).ok;
-  return moved ? { cwd: wt } : { why: `its worktree ${wt} is at ${at.out.slice(0, 9)} and could not be moved on to the head` };
+// Why PR n's build cannot start yet, or null: the checkout it runs from is moved only while nothing
+// runs in it (once a pass, shared with the live reads), and its own head's checkout only while no
+// earlier build of the PR runs in that.
+function buildBusy(n) {
+  if (anyRunning(BUILD_DIR, `${n}-`)) return `its build at an earlier head has finished`;
+  if (!readCheckout && (readsRunning(READ_DIR) || anyRunning(BUILD_DIR))) return `the live read or check build still running in the pass's checkout ${READ_CHECKOUT} has finished`;
+  return null;
+}
+// The two checkouts PR n's build at head needs: the pass's checkout of origin's default branch,
+// brought there (once a pass), and the PR's own, TREE_DIR/<n>, reset to the head. { base (the
+// default branch's commit), tree } or { why }.
+function buildDir(t, n, head) {
+  readCheckout ??= prepareCheckout(READ_CHECKOUT, { origin: originUrl(), branch: READ_BRANCH });
+  if (!readCheckout.ok) return { why: `the pass's checkout could not be brought to origin's ${READ_BRANCH}: ${readCheckout.why}` };
+  const tree = join(TREE_DIR, String(n));
+  const made = prepareTree(tree, { origin: originUrl(), seed: READ_CHECKOUT, head, branch: t.branch, base: READ_BRANCH });
+  return made.ok ? { base: readCheckout.sha, tree } : { why: `a clean checkout of its head could not be made: ${made.why}` };
 }
 // A check build that succeeded: its checks' runs re-run with --failed, once per head. Not rerun.sh,
 // whose cap and cooldown are for flaky runs: these were red for want of the build.
