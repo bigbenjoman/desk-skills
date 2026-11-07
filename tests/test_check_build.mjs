@@ -26,13 +26,13 @@ writeFileSync(join(src, '.env'), 'SECRET=1\n'); writeFileSync(join(src, 'helper.
 const tree = join(dir, 'check-trees', '781');
 const made = prepareTree(tree, { origin, head, branch: 'fix/X-1', base: 'main' });
 t('AC3 a first run clones origin and stands detached at the head', `${made.ok} ${git('-C', tree, 'rev-parse', 'HEAD') === head} ${git('-C', tree, 'rev-parse', '--abbrev-ref', 'HEAD')}`, 'true true HEAD');
-t('AC3 it holds the head\'s files', readFileSync(join(tree, 'build.sh'), 'utf8').trim(), 'branch');
+t('AC3 it holds the head\'s files', readFileSync(join(tree, 'build.sh'), 'utf8').trim(), 'echo branch');
 t('AC4 and nothing the worker left uncommitted or ignored in its worktree', `${existsSync(join(tree, '.env'))} ${existsSync(join(tree, 'helper.sh'))}`, 'false false');
 t('the default branch is fetched beside it, for a build that compares against it', git('-C', tree, 'rev-parse', 'refs/remotes/origin/main') === git('-C', src, 'rev-parse', 'main'), true);
 writeFileSync(join(tree, '.env'), 'X=1\n'); writeFileSync(join(tree, 'build.sh'), 'echo changed\n'); mkdirSync(join(tree, 'out'));
 writeFileSync(join(tree, 'out', 'image.tar'), 'x');
 const again = prepareTree(tree, { origin, head, branch: 'fix/X-1', base: 'main' });
-t('AC4 a later run resets it: what a build wrote there is gone', `${again.ok} ${existsSync(join(tree, '.env'))} ${existsSync(join(tree, 'out'))} ${readFileSync(join(tree, 'build.sh'), 'utf8').trim()}`, 'true false false branch');
+t('AC4 a later run resets it: what a build wrote there is gone', `${again.ok} ${existsSync(join(tree, '.env'))} ${existsSync(join(tree, 'out'))} ${readFileSync(join(tree, 'build.sh'), 'utf8').trim()}`, 'true false false echo branch');
 // A head on no branch origin has is fetched by its SHA.
 git('-C', src, 'checkout', '-q', '-b', 'fix/X-2', 'main');
 writeFileSync(join(src, 'b.txt'), 'b\n'); git('-C', src, 'add', 'b.txt'); git('-C', src, 'commit', '-q', '-m', 'two');
