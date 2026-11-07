@@ -20,6 +20,8 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { FILE_SAFE } from './skill-eval.mjs';
 import { deskEnv, makeCheckout, readRepo, score, testRuns } from './bench.mjs';
+import { keyRegex, SIZE_LINE } from './ticket-lint.mjs';
+import { SIZES } from './desk-q-eta.mjs';
 
 const USAGE = 'usage: bench-build.mjs --set <file.json> --pr <owner/name>#<n> [--pr …] [--rewrite] [--timeout <seconds>]';
 const SHA = /^[0-9a-f]{40}$/;
@@ -75,6 +77,16 @@ export function fieldsAt(current, histories, cutoff, ids) {
   return out;
 }
 
+// The size from the Size field's value, else a first description line `Size: M`; null when neither.
+export function sizeOf(field, description) {
+  const first = String(description ?? '').split('\n').find((l) => l.trim()) ?? '';
+  return [field, SIZE_LINE.exec(first)?.[1]].map((v) => String(v ?? '').trim().toUpperCase()).find((s) => SIZES.includes(s)) ?? null;
+}
+
+// The task id: owner and name, so two owners' same-named repos never share a task directory. A
+// GitHub owner holds no `_`, so `__` is never inside one.
+export const taskId = ({ repo, pr }) => `${repo.replace('/', '__')}-${pr}`.replace(/[^A-Za-z0-9._-]/g, '-');
+
 // Tasks per repo and per size.
 export function counts(tasks) {
   const tally = (key) => tasks.reduce((m, t) => ({ ...m, [key(t)]: (m[key(t)] ?? 0) + 1 }), {});
@@ -98,11 +110,15 @@ function jira(repo, path) {
 const optional = (repo, id) => { try { return deskEnv(repo, 'get', id); } catch { return ''; } };
 
 // The ticket as it read at `cutoff` (ms). -> { key, size, summary, description, as_of }
+// A ticket created after the cutoff was all written after it, so it is a drop.
 function ticketAt(repo, key, cutoff) {
   const size = optional(repo, 'jira-size-field');
   const sizeId = /^customfield_\d+$/.test(size) ? size : null;
   const fields = ['summary', 'description', ...(sizeId ? [sizeId] : [])];
-  const issue = jira(repo, `api/2/issue/${key}?fields=${fields.join(',')}&expand=changelog`);
+  const issue = jira(repo, `api/2/issue/${key}?fields=${[...fields, 'created'].join(',')}&expand=changelog`);
+  const created = Date.parse(issue.fields?.created ?? '');
+  if (!Number.isFinite(created)) fail(`${key} gives no creation date to tell its text from what came after the PR`);
+  if (created > cutoff) fail(`${key} was created after the PR's first commit, so all its text came after the work`);
   const histories = [...(issue.changelog?.histories ?? [])];
   while (histories.length < (issue.changelog?.total ?? 0)) {
     const page = jira(repo, `api/2/issue/${key}/changelog?startAt=${histories.length}&maxResults=100`);
@@ -112,7 +128,7 @@ function ticketAt(repo, key, cutoff) {
   const f = issue.fields ?? {};
   const current = { summary: f.summary ?? '', description: f.description ?? '', ...(sizeId ? { [sizeId]: f[sizeId]?.value ?? f[sizeId] ?? null } : {}) };
   const at = fieldsAt(current, histories, cutoff, fields);
-  return { key, size: (sizeId && at[sizeId]) || null, summary: at.summary, description: at.description, as_of: new Date(cutoff).toISOString() };
+  return { key, size: sizeOf(sizeId && at[sizeId], at.description), summary: at.summary, description: at.description, as_of: new Date(cutoff).toISOString() };
 }
 
 const git = (root, args, opts = {}) => run('git', ['-C', root, ...args], opts);
@@ -151,8 +167,8 @@ function freeze(want, setDir, opts, repos) {
   const { files, run: runs } = testFiles((pr.files ?? []).filter((f) => f.changeType !== 'DELETED').map((f) => f.path));
   if (!runs.length) fail('the PR changed no test files, so it has no tests to hide');
 
-  const pattern = optional(repo, 'ticket-pattern');
-  if (optional(repo, 'tracker') !== 'jira' || !pattern) fail(`${want.repo} has no Jira tracker to read the ticket from`);
+  const pattern = keyRegex((id) => optional(repo, id));
+  if (!/^jira\b/i.test(optional(repo, 'tracker').trim()) || !pattern) fail(`${want.repo} has no Jira tracker to read the ticket from`);
   const key = new RegExp(pattern).exec(`${pr.title}\n${pr.headRefName}`)?.[0];
   if (!key) fail(`no ticket key matching ${pattern} in the PR's title or branch`);
   const first = Math.min(...(pr.commits ?? []).map((c) => Date.parse(c.authoredDate)).filter(Number.isFinite));
@@ -162,7 +178,7 @@ function freeze(want, setDir, opts, repos) {
 
   const base = pr.baseRefOid, merge = pr.mergeCommit.oid;
   for (const sha of [base, merge]) haveCommit(repo.root, sha);
-  const id = `${want.repo.split('/')[1]}-${want.pr}`.replace(/[^A-Za-z0-9._-]/g, '-');
+  const id = taskId(want);
   if (!FILE_SAFE.test(id)) fail(`cannot make a task id from ${want.repo}#${want.pr}`);
   const taskDir = join(setDir, id);
   rmSync(taskDir, { recursive: true, force: true });

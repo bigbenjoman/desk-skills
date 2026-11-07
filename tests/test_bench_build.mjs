@@ -4,7 +4,8 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { parseArgs, parsePr, testFiles, fieldsAt, counts } from '../desk/bin/bench-build.mjs';
+import { parseArgs, parsePr, testFiles, fieldsAt, counts, sizeOf, taskId } from '../desk/bin/bench-build.mjs';
+import { keyRegex } from '../desk/bin/ticket-lint.mjs';
 import { loadBenchTasks } from '../desk/bin/bench.mjs';
 
 let fails = 0;
@@ -98,10 +99,13 @@ pr(1, c0, c1, ['src.txt', 'tests/test_fix.sh', 'tests/fixtures/input.txt']);
 pr(2, c1, c2, ['tests/test_already.sh']);
 pr(3, c2, c3, ['README']);
 pr(4, c3, c4, ['tests/test_broken.sh']);
+pr(5, c0, c1, ['src.txt', 'tests/test_fix.sh']);
 
 // DS-1's description was edited before the first commit (kept) and after it (left out), and its size
-// changed after it too.
-const issue = (key, fields, histories) => writeFileSync(join(stub, 'jira', `${key}.json`), JSON.stringify({ key, fields, changelog: { total: histories.length, histories } }));
+// changed after it too. DS-5 was created after the first commit.
+const CREATED = '2025-12-01T00:00:00.000+0000';
+const issue = (key, fields, histories) => writeFileSync(join(stub, 'jira', `${key}.json`), JSON.stringify({ key, fields: { created: CREATED, ...fields }, changelog: { total: histories.length, histories } }));
+issue('DS-5', { summary: 'Late', description: 'written after the work', created: '2026-01-04T00:00:00.000+0000' }, []);
 issue('DS-1', { summary: 'Fix the source', description: 'Make src say new. ANSWER: write new to src.txt', customfield_1: { value: 'S' } }, [
   { created: '2026-01-05T00:00:00.000+0000', items: [{ field: 'description', fieldId: 'description', fromString: 'Make src say new.', toString: 'Make src say new. ANSWER: write new to src.txt' }] },
   { created: '2026-01-04T00:00:00.000+0000', items: [{ field: 'Size', fieldId: 'customfield_1', fromString: 'XS', toString: 'S' }] },
@@ -134,17 +138,23 @@ t('only test files are run', tf.run.join(), 'src/a.test.ts,tests/test_x.sh,pkg/b
 const hist = [{ created: '2026-01-05T00:00:00Z', items: [{ fieldId: 'description', fromString: 'v2' }] }, { created: '2026-01-03T00:00:00Z', items: [{ fieldId: 'description', fromString: 'v1' }] }];
 t('AC6 every edit after the cutoff is undone, oldest last', fieldsAt({ description: 'v3' }, hist, Date.parse('2026-01-02T00:00:00Z'), ['description']).description, 'v1');
 t('AC6 an edit before the cutoff stays', fieldsAt({ description: 'v3' }, hist, Date.parse('2026-01-04T00:00:00Z'), ['description']).description, 'v2');
-t('counts per repo and per size', JSON.stringify(counts([{ repo: 'a/b', ticket: { size: 'M' } }, { repo: 'a/b', ticket: { size: null } }])), '{"repo":{"a/b":2},"size":{"M":1,"unsized":1}}');
+t('the size is the field\'s', sizeOf('m', 'Size: S\nbody'), 'M');
+t('else a first line Size: S', sizeOf(null, '\n*Size:* S\nbody'), 'S');
+t('else none', sizeOf('', 'body\nSize: S'), null);
+t('two owners\' same-named repos get two task ids', taskId({ repo: 'acme/app', pr: 5 }) !== taskId({ repo: 'other/app', pr: 5 }), true);
+t('a task id keeps its owner', taskId({ repo: 'acme/my.app', pr: 5 }), 'acme__my.app-5');
+t('no key pattern reads <Jira project>-<n>', keyRegex((id) => ({ 'ticket-pattern': 'none', 'jira-project': '`KAN`' })[id]), 'KAN-[0-9]+');
+t('counts per repo and per size',JSON.stringify(counts([{ repo: 'a/b', ticket: { size: 'M' } }, { repo: 'a/b', ticket: { size: null } }])), '{"repo":{"a/b":2},"size":{"M":1,"unsized":1}}');
 
 // One build over all four PRs.
 const setFile = join(dir, 'set', 'tasks.json');
-const prs = [1, 2, 3, 4].flatMap((n) => ['--pr', `acme/widgets#${n}`]);
+const prs = [1, 2, 3, 4, 5].flatMap((n) => ['--pr', `acme/widgets#${n}`]);
 let r = run(['--set', setFile, ...prs]);
 if (r.status !== 0) console.log(r.stderr);
 t('builds to completion', r.status, 0);
 const set = JSON.parse(readFileSync(setFile, 'utf8'));
 const task = set.tasks[0];
-t('AC3 only the valid PR is kept', set.tasks.map((x) => x.id).join(), 'widgets-1');
+t('AC3 only the valid PR is kept', set.tasks.map((x) => x.id).join(), 'acme__widgets-1');
 t('AC1 the repo is recorded', task.repo, 'acme/widgets');
 t('AC1 the base commit is recorded', task.base, c0);
 t('AC1 the merge commit is recorded', task.merge, c1);
@@ -154,19 +164,20 @@ t('AC6 the description is as it read at the first commit', task.ticket.descripti
 t('AC6 no later text reaches the prompt', task.prompt.includes('ANSWER'), false);
 t('AC6 the cutoff is the first commit', task.ticket.as_of, new Date(FIRST).toISOString());
 t('the ticket is read from the repo\'s own Jira', calls().filter((c) => c.kind === 'jira').every((c) => realpathSync(c.cwd) === repo), true);
-const hiddenDir = join(dir, 'set', 'widgets-1', 'hidden');
+const hiddenDir = join(dir, 'set', 'acme__widgets-1', 'hidden');
 t('AC2 the test files are the hidden tests', task.hidden_tests.files.join(), 'tests/test_fix.sh,tests/fixtures/input.txt');
 t('AC2 copied at the merge commit', readFileSync(join(hiddenDir, 'tests', 'test_fix.sh'), 'utf8'), FIX_TEST);
-t('AC2 beside the set, outside the repo', task.hidden_tests.dir === 'widgets-1/hidden' && !hiddenDir.startsWith(repo), true);
+t('AC2 beside the set, outside the repo', task.hidden_tests.dir === 'acme__widgets-1/hidden' && !hiddenDir.startsWith(repo), true);
 t('AC2 a fixture is copied but not run', JSON.stringify(task.hidden_tests.run), '["tests/test_fix.sh"]');
 t('the set loads as a bench task set', loadBenchTasks(setFile)[0].hidden_tests.dir, hiddenDir);
-t('AC3 the base run failed', readFileSync(join(dir, 'set', 'widgets-1', 'validate', 'base', 'test-output.log'), 'utf8').includes('exit 1'), true);
-t('AC3 the merge run passed', readFileSync(join(dir, 'set', 'widgets-1', 'validate', 'merge', 'test-output.log'), 'utf8').includes('exit 0'), true);
+t('AC3 the base run failed', readFileSync(join(dir, 'set', 'acme__widgets-1', 'validate', 'base', 'test-output.log'), 'utf8').includes('exit 1'), true);
+t('AC3 the merge run passed', readFileSync(join(dir, 'set', 'acme__widgets-1', 'validate', 'merge', 'test-output.log'), 'utf8').includes('exit 0'), true);
 const why = Object.fromEntries(set.dropped.map((d) => [d.pr, d.why]));
 t('AC4 passing at the base drops it', /already pass at the base/.test(why[2]), true);
 t('AC5 no test changes skips it', /no tests to hide/.test(why[3]), true);
 t('AC4 failing at the merge drops it', /fail at the merge commit/.test(why[4]), true);
-t('AC5 a skipped PR runs no tests', existsSync(join(dir, 'set', 'widgets-3')), false);
+t('AC6 a ticket created after the first commit drops it', /created after the PR's first commit/.test(why[5]), true);
+t('AC5 a skipped PR runs no tests', existsSync(join(dir, 'set', 'acme__widgets-3')), false);
 t('AC7 counts per repo', JSON.stringify(set.counts.repo), '{"acme/widgets":1}');
 t('AC7 counts per size', JSON.stringify(set.counts.size), '{"XS":1}');
 t('AC7 the build prints each dropped PR and why', ['#2: the hidden tests already pass', '#3: the PR changed no test files', '#4: the hidden tests fail'].every((s) => r.stdout.includes(s)), true);
@@ -183,7 +194,7 @@ r = run(['--set', setFile, '--pr', 'acme/widgets#1']);
 t('AC8 a frozen task\'s hidden tests are left alone', readFileSync(join(hiddenDir, 'tests', 'test_fix.sh'), 'utf8'), 'edited\n');
 r = run(['--set', setFile, '--pr', 'acme/widgets#1', '--rewrite']);
 t('--rewrite builds it again', calls().some((c) => c.kind === 'gh') && readFileSync(join(hiddenDir, 'tests', 'test_fix.sh'), 'utf8') === FIX_TEST, true);
-t('--rewrite keeps the others', JSON.parse(readFileSync(setFile, 'utf8')).dropped.length, 3);
+t('--rewrite keeps the others', JSON.parse(readFileSync(setFile, 'utf8')).dropped.length, 4);
 
 // A PR outside any desk config, or not merged, is dropped with the reason.
 r = run(['--set', join(dir, 'other.json'), '--pr', 'acme/other#1']);
