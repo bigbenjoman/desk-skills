@@ -46,6 +46,10 @@ for (const [name, out, want] of [
   ['a hung-up remote', 'fatal: the remote end hung up unexpectedly', true],
   ['a 403 is an answer', "fatal: unable to access 'https://github.com/a/b.git/': The requested URL returned error: 403", false],
   ['a non-fast-forward is an answer', ' ! [rejected] b -> b (non-fast-forward)\nerror: failed to push some refs', false],
+  ['a revoked SSH key is an answer', 'git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.', false],
+  ['a lost repo is an answer', 'ERROR: Repository not found.\nfatal: Could not read from remote repository.', false],
+  ['a 413 is an answer', 'error: RPC failed; HTTP 413 curl 22 The requested URL returned error: 413\nfatal: the remote end hung up unexpectedly', false],
+  ['a failed pre-push check printing fatal:', 'pre-push: FAIL  bash tests/run.sh (3s, exit 1)\nfatal: the remote end hung up unexpectedly', false],
 ]) t(`unreached: ${name}`, unreachedPush(out), want);
 
 // A stubbed git answering from `answers`, its last repeating, on a clock only sleep and `took` move.

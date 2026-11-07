@@ -31,9 +31,14 @@ export function transientPush(out) {
   return !HOOK_FAILED.test(s) && s.split('\n').some((l) => GIT_5XX.some((re) => re.test(l)));
 }
 
-// A push that never got an answer: no network, or a remote that could not be reached. A 4xx is an answer.
-const UNREACHED = /^(?:ssh: |fatal: (?:unable to access (?!.*The requested URL returned error)|Could not read from remote|the remote end hung up))/m;
-export const unreachedPush = (out) => UNREACHED.test(String(out ?? ''));
+// A push that never got an answer: no network, or a remote that could not be reached. A 4xx is an
+// answer, and so is git's "Could not read from remote", which also follows a revoked SSH key.
+const UNREACHED = /^(?:ssh: |fatal: (?:unable to access (?!.*The requested URL returned error)|the remote end hung up))/m;
+const HTTP_4XX = /RPC failed; HTTP 4\d\d\b/;
+export function unreachedPush(out) {
+  const s = String(out ?? '');
+  return !HOOK_FAILED.test(s) && !HTTP_4XX.test(s) && UNREACHED.test(s);
+}
 
 const PINNED = /^--force-with-lease=([^:]+):([0-9a-f]{40})$/;
 

@@ -128,6 +128,13 @@ PIN=$(printf a%.0s {1..40})
 pushpark P-4 A "git push --force-with-lease=feat/P-4:$PIN origin feat/P-4 succeeds"
 pushpark P-5 C
 pushpark P-6 A "git push origin feat/other succeeds"
+# P-8: a person's one-off grant for this branch and SHA, with §3's lease row at ask. P-9: a grant for another SHA.
+HELD=$(git -C "$T/repo" rev-parse HEAD); REWRITTEN=$(git -C "$T/repo" commit-tree "$HELD^{tree}" -m rewritten)
+git -C "$T/repo" push -q origin "$HELD:refs/heads/feat/P-8"
+pushpark P-8 A "git push --force-with-lease=feat/P-8:$HELD origin feat/P-8 succeeds"; git -C "$T/repo" branch -f feat/P-8 "$REWRITTEN"
+q set P-8 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-8\",\"lease\":\"$HELD\",\"at\":\"2026-11-01T00:00:00Z\"}"
+pushpark P-9 A "git push --force-with-lease=feat/P-9:$HELD origin feat/P-9 succeeds"
+q set P-9 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-9\",\"lease\":\"$PIN\",\"at\":\"2026-11-01T00:00:00Z\"}"
 q add C-4 Story A; q set C-4 state=running branch=feat/C-4 session_id=gone
 say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_PARK_CLEARS_WHEN: git push -u origin feat/C-4 succeeds" > "$T/state/logs/C-4.log"
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
@@ -171,6 +178,10 @@ check "DS-496 AC3 any other refusal ends the tries and goes to a person" \
   '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"none\"}" ] && [[ "$(field P-3 park.recovery)" == *"git refused it"* ]] && grep -q "P-3: could not check \"git push origin feat/P-3 succeeds\"" <<< "$out"'
 check "DS-496 a lease push §3 does not grant is not made, and says so" \
   '! on_origin P-4 && [ "$(field P-4 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "P-4: could not check \"git push --force-with-lease=feat/P-4:$PIN origin feat/P-4 succeeds\" (config §3 git-force-with-lease is \"ask\"): left parked" <<< "$out"'
+check "DS-496 AC2 a one-off grant for that branch and SHA lets the pass make the lease push, and requeue" \
+  '[ "$(git -C "$T/origin.git" rev-parse refs/heads/feat/P-8)" = "$REWRITTEN" ] && [ "$(field P-8 state)" = "\"triaged\"" ]'
+check "DS-496 a grant for another SHA does not" \
+  '! on_origin P-9 && [ "$(field P-9 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "P-9: could not check .*(config §3 git-force-with-lease is \"ask\"): left parked" <<< "$out"'
 check "DS-496 a lane C park is not pushed for" \
   '! on_origin P-5 && [ "$(field P-5 state)" = "\"parked\"" ] && grep -q "P-5: \"git push origin feat/P-5 succeeds\" not tried, since it is lane C: left parked for a person" <<< "$out"'
 check "DS-496 a condition naming another branch is not pushed" \
@@ -190,7 +201,7 @@ check "DS-269 AC6 a failed variable read leaves the park and is named" '[ "$(fie
 check "DS-269 AC4 still lane C: never requeued" '[ "$(field D-1 state)" = "\"parked\"" ]'
 pushpark P-7 A; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
 check "DS-496 a dry run pushes nothing" '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ]'
-mv "$T/origin.git" "$T/origin.away"; out=$(node "$B/pass.mjs" 2>&1); mv "$T/origin.away" "$T/origin.git"
+git -C "$T/repo" remote set-url origin https://127.0.0.1:1/nothing.git; out=$(node "$B/pass.mjs" 2>&1); git -C "$T/repo" remote set-url origin "$T/origin.git"
 check "DS-496 a push that reached nothing keeps the park and its condition" \
   '[ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\"" <<< "$out"'
 out=$(node "$B/pass.mjs" 2>&1)

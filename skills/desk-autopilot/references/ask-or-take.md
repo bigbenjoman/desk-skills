@@ -65,8 +65,8 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   succeeds` (`git push --force-with-lease=<branch>:<sha> origin <branch> succeeds` for a lease push,
   naming the SHA it may overwrite) is one more condition, and its check is the push itself, from the
   ticket's worktree. Another 5xx, or a push that reached nothing, waits for the next pass. Any other
-  refusal, or a push §3 does not grant, sets the condition to `none` for a person, and a park left
-  for a person is never pushed for.
+  refusal, or a push neither §3 nor the ticket's one-off grant for that branch and SHA allows, sets
+  the condition to `none` for a person, and a park left for a person is never pushed for.
 - **A park on a take call can carry its recommendation**: a worker that parks on a call outside the
   ask categories anyway (one that widens the ticket past its criteria, say) prints
   `AUTOPILOT_PARK_RECOMMENDS: {"options": ["…", "…"], "chose": "<recommended>", "category": "<category>"}`
