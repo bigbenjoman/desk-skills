@@ -16,8 +16,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { machineValue } from './desk-env.mjs';
-import { windowEvents } from './usage-pace.mjs';
-import { loginProbeLog, probeNow, usageDir } from './usage-probe.mjs';
+import { loginProbeLog, probeNow, readLoginUsage, usageDir } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { defaultLogin, login as makeLogin } from './logins.mjs';
 import { readCodexUsage } from './codex-usage.mjs';
@@ -61,13 +60,19 @@ export function settingsLine(s) {
 export const armVendor = (arm) => (/^(gpt-|codex)/i.test(arm?.model ?? '') ? 'codex' : 'claude');
 
 // The account a run spends: the Claude login its environment points at, or the signed-in Codex login.
-//   -> { vendor, login, key, name }
+//   -> { vendor, label, login, key, name }
 export function accountFor(vendor, env = process.env) {
   const l = vendor === 'codex'
     ? (env.CODEX_HOME ? makeLogin({ tool: 'codex', name: basename(resolve(env.CODEX_HOME)), folder: env.CODEX_HOME, rule: null, source: 'env' }) : defaultLogin('codex'))
     : loginOf(env.CLAUDE_CONFIG_DIR || null);
-  return { vendor, login: l, key: `${vendor}:${l.dir}`, name: `${vendor === 'codex' ? 'Codex' : 'Claude'} login ${l.name}` };
+  const label = vendor === 'codex' ? 'Codex' : 'Claude';
+  return { vendor, label, login: l, key: `${vendor}:${l.dir}`, name: `${label} login ${l.name}` };
 }
+
+// The stop for a reading that cannot be trusted, before a run or (`when`) after one.
+export const unreadable = (account, why, when = '') => `the ${account.label} quota is unreadable for ${account.name}${when}: ${why}`;
+
+const staleWhy = (age) => `its newest weekly reading is ${Math.round(age / 60000)} minutes old, past the ${FRESH_MS / 60000}-minute freshness window`;
 
 // A reading's weekly window as { used (percent), resetsAt (s), at (ms) }, or { why } naming what makes it
 // unreadable. A missing reading is never zero.
@@ -75,37 +80,40 @@ export function weekly({ used, resetsAt, at, why }, now = Date.now()) {
   if (why) return { why };
   if (at == null) return { why: 'no weekly reading' };
   if (!Number.isFinite(used) || !Number.isFinite(resetsAt)) return { why: 'its weekly reading could not be parsed' };
-  if (now - at > FRESH_MS) return { why: `its newest weekly reading is ${Math.round((now - at) / 60000)} minutes old, past the ${FRESH_MS / 60000}-minute freshness window` };
+  if (now - at > FRESH_MS) return { why: staleWhy(now - at) };
   if (resetsAt * 1000 <= now) return { why: 'its newest weekly reading is from a window that has since reset' };
   return { used, resetsAt, at };
 }
 
-// A Claude login's weekly reading from a probe's stream-json text, `at` the probe's time.
-export function claudeWeekly(text, at, now = Date.now()) {
-  const lines = String(text ?? '').split('\n').filter((l) => l.startsWith('{"type":"rate_limit_event"'));
-  if (!lines.length) return weekly({ at: null }, now);
-  const e = windowEvents(lines.join('\n')).filter((x) => x.seven_day).pop();
-  if (!e) return { why: 'its weekly reading could not be parsed' };
-  return weekly({ used: e.seven_day.utilization * 100, resetsAt: e.seven_day.resetsAt, at }, now);
-}
-
-// A Codex reading (codex-usage.mjs) as its weekly window.
-export function codexWeekly(r, now = Date.now()) {
+// A reading in the { seven_day, at, none } shape both vendors' readers return (usage-probe.mjs
+// readLoginUsage, codex-usage.mjs) as its weekly window; `pct` gives the window's use in percent.
+function weeklyOf(r, pct, now) {
   if (!r || r.at == null) return weekly({ at: null }, now);
   if (r.none?.includes('seven_day')) return { why: 'its plan logs no weekly window' };
   if (!r.seven_day) return { why: 'its weekly reading could not be parsed or is from a window that has since reset' };
-  return weekly({ used: r.seven_day.used, resetsAt: r.seven_day.resetsAt, at: r.at }, now);
+  return weekly({ used: pct(r.seven_day), resetsAt: r.seven_day.resetsAt, at: r.at }, now);
 }
+export const claudeWeekly = (r, now = Date.now()) => weeklyOf(r, (w) => w.utilization * 100, now);
+export const codexWeekly = (r, now = Date.now()) => weeklyOf(r, (w) => w.used, now);
 
-// The account's weekly reading now: for Claude, a probe on its login and then that probe's output.
+// The account's weekly reading now: for Claude, a probe on its login and then that probe's output,
+// which counts only if this probe wrote it. A probe that prints nothing leaves the last one's output in
+// place, and that is not a reading of now.
 export function readWeekly(account, { dir = usageDir(), env = process.env, now = () => Date.now() } = {}) {
   if (account.vendor === 'codex') return codexWeekly(readCodexUsage({ login: account.login, now: now() }), now());
   const l = account.login.configDir ? account.login : null;
+  const start = now();
   const p = probeNow({ dir, env, login: l });
+  const failed = p.ok ? '' : `: the usage probe failed (${p.why})`;
   const file = loginProbeLog(dir, l);
-  if (!existsSync(file)) return { why: `no weekly reading${p.ok ? '' : `: the usage probe failed (${p.why})`}` };
-  const r = claudeWeekly(readFileSync(file, 'utf8'), statSync(file).mtimeMs, now());
-  return r.why && !p.ok ? { why: `${r.why}; the usage probe failed (${p.why})` } : r;
+  if (!existsSync(file)) return { why: `no weekly reading${failed}` };
+  const at = statSync(file).mtimeMs;
+  if (now() - at > FRESH_MS) return { why: `${staleWhy(now() - at)}${failed}` };
+  if (at < start - 1000) return { why: `no new weekly reading${failed || ': the usage probe printed nothing'}` };
+  const r = claudeWeekly(readLoginUsage({ login: l, dir, now: now() }), now());
+  // Rate-limit events none of which could be read are a reading that cannot be parsed, not no reading.
+  if (r.why === 'no weekly reading' && readFileSync(file, 'utf8').includes('"rate_limit_event"')) return { why: `its weekly reading could not be parsed${failed}` };
+  return r.why ? { why: `${r.why}${failed}` } : r;
 }
 
 // ---- the ledger ------------------------------------------------------------------------------
@@ -150,8 +158,7 @@ export function runPoints(before, after) {
 
 // Whether a run may start.  -> null | why it may not
 export function gate({ account, reading, used, settings }) {
-  const vendor = account.vendor === 'codex' ? 'Codex' : 'Claude';
-  if (reading.why) return `the ${vendor} quota is unreadable for ${account.name}: ${reading.why}`;
+  if (reading.why) return unreadable(account, reading.why);
   if (used >= settings.cap) return `the bench has used ${used} of its ${settings.cap}-point cap of ${account.name}'s weekly allowance this week`;
   const left = round1(100 - reading.used);
   if (left < settings.reserve) return `${account.name} has ${left}% of its weekly allowance left, under the ${settings.reserve}% interactive reserve`;

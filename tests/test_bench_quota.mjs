@@ -18,7 +18,7 @@ const now = Date.now();
 const reset = Math.floor(now / 1000) + 3 * 24 * 3600;
 const event = (sevenDay) => JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.02, resetsAt: reset }, seven_day: sevenDay } } });
 const settings = { cap: 10, reserve: 25, defaults: [] };
-const account = { vendor: 'claude', key: 'claude:/h/.claude', name: 'Claude login default' };
+const account = { vendor: 'claude', label: 'Claude', key: 'claude:/h/.claude', name: 'Claude login default' };
 
 // Settings: unset is 10 and 25, a number is taken, anything else refuses naming the setting and value.
 t('unset settings are the defaults', JSON.stringify(Q.quotaSettings({ cap: null, reserve: null })), '{"cap":10,"reserve":25,"defaults":["bench-cap-points","bench-reserve-percent"]}');
@@ -33,14 +33,18 @@ writeFileSync(profile, '# Machine profile\n\n## Sizing\n\n| Key | Value | Why |\
 process.env.DESK_MACHINE = profile;
 t('the cap is read from the machine profile', JSON.stringify(Q.quotaSettings()), '{"cap":6,"reserve":25,"defaults":["bench-reserve-percent"]}');
 
-// Claude readings from rate_limit_event lines.
+// Claude readings: a login's probe log as usage-probe.mjs's readLoginUsage reads it.
+const { readLoginUsage, loginProbeLog } = await import('../desk/bin/usage-probe.mjs');
 const fresh = now - 1000;
-t('a reading is weekly use in percent', JSON.stringify(Q.claudeWeekly(event({ utilization: 0.43, resetsAt: reset }), fresh, now)), JSON.stringify({ used: 43, resetsAt: reset, at: fresh }));
-t('the last event stands', Q.claudeWeekly(`${event({ utilization: 0.4, resetsAt: reset })}\n${event({ utilization: 0.5, resetsAt: reset })}`, fresh, now).used, 50);
-t('no event is no reading, not zero', Q.claudeWeekly('{"type":"result"}', fresh, now).why, 'no weekly reading');
-t('a malformed event cannot be parsed', Q.claudeWeekly(event({ utilization: 'lots', resetsAt: reset }), fresh, now).why, 'its weekly reading could not be parsed');
-t('a stale reading names its age', Q.claudeWeekly(event({ utilization: 0.4, resetsAt: reset }), now - 45 * 60000, now).why, 'its newest weekly reading is 45 minutes old, past the 30-minute freshness window');
-t('a window past its reset is unreadable', /since reset/.test(Q.claudeWeekly(event({ utilization: 0.4, resetsAt: Math.floor(now / 1000) - 60 }), fresh, now).why), true);
+mkdirSync(join(T, 'usage'), { recursive: true });
+const probed = (text) => { writeFileSync(loginProbeLog(join(T, 'usage')), text); return readLoginUsage({ login: null, dir: join(T, 'usage'), now }); };
+const atFresh = (r) => ({ ...r, at: r.at == null ? null : fresh });
+t('a reading is weekly use in percent', JSON.stringify(Q.claudeWeekly(atFresh(probed(event({ utilization: 0.43, resetsAt: reset }))), now)), JSON.stringify({ used: 43, resetsAt: reset, at: fresh }));
+t('the last event stands', Q.claudeWeekly(atFresh(probed(`${event({ utilization: 0.4, resetsAt: reset })}\n${event({ utilization: 0.5, resetsAt: reset })}`)), now).used, 50);
+t('no event is no reading, not zero', Q.claudeWeekly(probed('{"type":"result"}'), now).why, 'no weekly reading');
+t('a plan with no weekly window says so', Q.claudeWeekly(probed(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: reset } } } })), now).why, 'its plan logs no weekly window');
+t('a stale reading names its age', Q.claudeWeekly({ ...probed(event({ utilization: 0.4, resetsAt: reset })), at: now - 45 * 60000 }, now).why, 'its newest weekly reading is 45 minutes old, past the 30-minute freshness window');
+t('a window past its reset is unreadable', /since reset/.test(Q.claudeWeekly(atFresh(probed(event({ utilization: 0.4, resetsAt: Math.floor(now / 1000) - 60 }))), now).why), true);
 
 // Codex readings from a rollout's rate_limits block, read by codex-usage.mjs.
 const codexHome = join(T, 'codex');
@@ -65,7 +69,7 @@ t('at the cap stops', Q.gate({ account, reading: reading(40), used: 10, settings
 t('under the reserve stops', Q.gate({ account, reading: reading(80), used: 0, settings }), 'Claude login default has 20% of its weekly allowance left, under the 25% interactive reserve');
 t('at the reserve runs', Q.gate({ account, reading: reading(75), used: 0, settings }), null);
 t('unreadable stops, with its reason', Q.gate({ account, reading: { why: 'no weekly reading' }, used: 0, settings }), 'the Claude quota is unreadable for Claude login default: no weekly reading');
-t('a Codex account says Codex', /^the Codex quota is unreadable/.test(Q.gate({ account: { ...account, vendor: 'codex' }, reading: { why: 'x' }, used: 0, settings })), true);
+t('a Codex account says Codex', /^the Codex quota is unreadable/.test(Q.gate({ account: { ...account, vendor: 'codex', label: 'Codex' }, reading: { why: 'x' }, used: 0, settings })), true);
 
 // Points: the whole rise counts, a reset mid-run counts the new window, the ledger sums one window.
 t('the whole rise is the run\'s points', Q.runPoints(reading(40), reading(43.5)).points, 3.5);

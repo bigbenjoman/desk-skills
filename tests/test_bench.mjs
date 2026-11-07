@@ -100,7 +100,9 @@ const prompt = val('-p');
 const usageFile = process.env.STUB_USAGE;
 const usage = () => JSON.parse(fs.readFileSync(usageFile, 'utf8'));
 if (prompt === 'Reply with: ok') {
-  const mode = process.env.STUB_PROBE || 'ok';
+  let mode = process.env.STUB_PROBE || 'ok';
+  // first: the first probe answers, every later one prints nothing.
+  if (mode === 'first') { const m = usageFile + '.probed'; mode = fs.existsSync(m) ? 'silent' : 'ok'; fs.writeFileSync(m, ''); }
   if (mode === 'silent') process.exit(1);
   const u = usage();
   if (mode === 'bad') console.log('{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":"lots"}}}}');
@@ -345,6 +347,14 @@ writeFileSync(staleLog, `${JSON.stringify({ type: 'rate_limit_event', rate_limit
 utimesSync(staleLog, new Date(Date.now() - 2 * 3600 * 1000), new Date(Date.now() - 2 * 3600 * 1000));
 r = qrun('q-stale', [task('one', 'FIX')], { STUB_PROBE: 'silent' });
 t('DS-477 AC4 a stale reading stops, naming its age', calls().length === 0 && /unreadable for Claude login default: its newest weekly reading is 120 minutes old/.test(r.stderr), true);
+
+// AC4, AC6: an after-run probe that prints nothing leaves the before-run probe's file: that is no
+// reading, never a run of 0 points, so the run stays pending and the bench stops.
+rmSync(`${usageFile}.probed`, { force: true });
+r = qrun('q-after', [task('one', 'FIX'), task('two', 'FIX')], { STUB_PROBE: 'first' });
+rmSync(`${usageFile}.probed`, { force: true });
+t('DS-477 AC6 a failed after-run probe is not 0 points', results(join(dir, 'q-after'))['one.a'].quota.points, null);
+t('DS-477 AC4 a failed after-run probe stops the bench', calls().length === 1 && /the Claude quota is unreadable for Claude login default after one \(a\): no new weekly reading: the usage probe failed/.test(r.stderr), true);
 
 // AC5: a Codex arm with no Codex reading stops before the run.
 r = qrun('q-codex', [task('one', 'FIX')], { CODEX_HOME: join(dir, 'codex-empty') }, ['--arm', 'c=gpt-5:high']);
