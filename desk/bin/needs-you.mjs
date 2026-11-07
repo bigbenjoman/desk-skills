@@ -193,8 +193,7 @@ function approvalCause(line) {
   const named = [...new Set(files.map(fileWords)), ...(more > 0 ? [`${more} more protected file${more === 1 ? '' : 's'}`] : [])];
   const why = [...(named.length ? [`it changes ${andList(named)}`] : []), ...(over ? [`it has ${over[1]} changed files, over the ${over[2]}-file limit`] : [])].join(', and ');
   const stale = /— and (.+?)'s approval predates/.exec(s)?.[1] ?? /\. ([^.]+?) approved an earlier commit/.exec(s)?.[1];
-  const blocked = /changes are requested by ([^.]+)\.?$/.exec(s)?.[1];
-  return { why, then: `${stale ? ` ${stale} approved an earlier commit, so it needs approving again.` : ''}${blocked ? ` ${blocked} has requested changes.` : ''}` };
+  return { why, then: stale ? ` ${stale} approved an earlier commit, so it needs approving again.` : '' };
 }
 // The role §4 People gives an approval to: the code reviewer, else the product owner, by name.
 function approverOf(r) {

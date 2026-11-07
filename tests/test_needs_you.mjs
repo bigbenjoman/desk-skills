@@ -542,9 +542,10 @@ t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done 
 t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
   sg['S-6']?.actions[0][2], `the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "${LINT}", "Flows image" are green`);
 t('DS-375 a reason recorded before the pass kept its checks still names them', sg['S-5']?.need, 'PR #105 has failing checks desk\'s own repairs did not fix: Lint. Fix them on its branch; desk then merges it once its checks are green.');
-// ---- DS-499: a review gate that wants a person's approval, from error lines recorded on studia-web
-// PRs #2555 and #2546, and the lines desk's own review-gate.mjs writes.
+// ---- A review gate that wants a person's approval, from error lines recorded on studia-web PRs
+// #2555 and #2546, and the lines desk's own review-gate.mjs writes.
 const { failureLine } = await import('../desk/bin/gate.mjs');
+const { checkApproval } = await import('../desk/templates/scripts/desk/review-gate.mjs');
 const GATE_NOTES = JSON.parse(readFileSync(join(ROOT, 'tests', 'fixtures', 'review-gate-annotations.json'), 'utf8'));
 const GATE = '🔐 Review gate', GATE_STEP = 'Require an approval unless a small fix, docs or chore change';
 const gateRed = (error) => ({ name: GATE, status: 'completed', conclusion: 'failure', error });
@@ -552,7 +553,12 @@ const gateStuck = (pr, error, more = {}) => stuckPr(pr, [gateRed(error), ...pass
 const protectedLine = failureLine(GATE_NOTES.protected), limitLine = failureLine(GATE_NOTES['file-limit']);
 t('DS-499 the error line is the gate\'s, not GitHub\'s exit code line', protectedLine.startsWith('Approval required — 2 protected file(s)'), true);
 const staleLine = 'Approval required — 1 protected file(s): `apps/web/package.json` — and mousedown\'s approval predates 9354a90.';
-const deskLine = 'It touches `db/migrations/1.sql`, `src/a.ts` and 3 more with a `feat` title, and only fix, docs, chore merge without an approval; **31** changed files, over the 30-file limit (900 lines). One approval at the head from someone with write access clears it. mousedown approved an earlier commit; it needs approving again at this head.';
+// Six protected paths as long as a real migration's, so the line is the longest shape the gate writes.
+const longPath = (i) => `packages/db/prisma/migrations/2026110712000${i}_update_customer_preferences_and_settings/migration.sql`;
+const gateFiles = Array.from({ length: 31 }, (_, i) => ({ filename: i < 6 ? longPath(i) : `src/${i}.ts`, additions: 1, deletions: 0 }));
+const deskGate = checkApproval({ title: 'feat: preferences', head: 'new', author: 'me' }, gateFiles, [{ user: { login: 'mousedown' }, state: 'APPROVED', commit_id: 'old' }], new Set(['mousedown']),
+  { protected: 'migrations/', generated: '^$', fileLimit: 30, exemptTypes: 'fix|docs|chore' });
+const deskLine = failureLine([{ annotation_level: 'failure', message: deskGate.message }]);
 const otherLine = 'Approval required — a `feat(messaging):` title, and only fix, docs, chore merge without an approval.';
 const approved499 = { name: GATE, status: 'completed', conclusion: 'success' };
 const gateTickets = {
@@ -572,7 +578,7 @@ const TAIL = 'No code change clears it, only an approving review on GitHub at it
 t('DS-499 AC1 protected files: the reason in plain words and the approver, not "fix it on its branch"', v1['V-1']?.need, `PR #121 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
 t('DS-499 AC1 the file limit', v1['V-2']?.need, `PR #122 needs Chris Anthony's approval: it has 37 changed files, over the 30-file limit. ${TAIL}`);
 t('DS-499 AC1 another protected file is named, and an approval of an older commit is said', v1['V-3']?.need, `PR #123 needs Chris Anthony's approval: it changes \`apps/web/package.json\`. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
-t('DS-499 AC1 desk\'s own gate line reads the same', v1['V-4']?.need, `PR #124 needs Chris Anthony's approval: it changes a database migration, \`src/a.ts\` and 3 more protected files, and it has 31 changed files, over the 30-file limit. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
+t('DS-499 AC1 desk\'s own gate line reads the same', v1['V-4']?.need, `PR #124 needs Chris Anthony's approval: it changes a database migration and 1 more protected file, and it has 31 changed files, over the 30-file limit. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
 t('DS-499 AC3 a line naming neither cause is as today', `${v1['V-5']?.need} | ${v1['V-5']?.actions.map(([a]) => a).join()}`, `PR #125: "${GATE}" (failed at "${GATE_STEP}") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | done,not-now`);
 t('DS-499 AC1 beside a check a person fixes, that check is asked for and the approval said after it', v1['V-6']?.need, `PR #126: "${LINT}" (failed at "Run eslint") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. It also needs Chris Anthony's approval: it changes a database migration and the database schema.`);
 t('DS-499 AC2 beside another red check there is no waiting to do', v1['V-6']?.actions.map(([a]) => a).join(), 'done,not-now');

@@ -970,7 +970,7 @@ check "DS-194 one gh call per done ticket with a PR, none for one without" '[ "$
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-194 AC2 the next pass reads the open PR again and makes no call for the merged one" '[ "$(cut -d" " -f1-3 "$T/gh-calls")" = "pr view 300" ]'
 
-# ---- DS-499: a failed check keeps the error its job gave, read once per job, and the PR who approved its head
+# ---- A failed check keeps the error its job gave, read once per job, and the PR who approved its head
 export DESK_QUEUE="$T/queue-ga.json" DESK_AUTOPILOT_STATE="$T/state-ga"
 mkdir -p "$T/state-ga/logs"
 FIX="$S/fixtures/review-gate-annotations.json"
