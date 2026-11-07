@@ -3493,7 +3493,7 @@ if (!DRY && PROMOTION_REF) {
   const merged = Object.values(qEnd.tickets).map((t) => (t.state === 'done' ? t.result?.pr : null)).filter((n) => n != null && prState(n) === 'MERGED');
   try {
     const u = urgentPromotion({
-      inputs: { slug: SLUG, root: E.repoRoot(), ghRepo: GH_REPO, def: E.configValue('default-branch') ?? 'main', ref: PROMOTION_REF, staging: E.configValues('staging') },
+      inputs: { slug: SLUG, root: E.repoRoot(), ghRepo: GH_REPO, def: REPO_DEFAULT, ref: PROMOTION_REF, staging: E.configValues('staging') },
       state: STATE, dir: digestDir(), merged,
     });
     if (u) push.push(u.push);
