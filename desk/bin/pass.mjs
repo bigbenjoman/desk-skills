@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -343,7 +343,8 @@ function logDecisions(t, log, pr) {
 
 // A worker's park against the "not now" register: the inputs the question depends on, from the
 // `AUTOPILOT_PARK_INPUTS: {json}` after its last park (none is {}), and lookup()'s verdict on them.
-function againstRegister(t, question, log) {
+// A lease push it clears on (`cond`) adds its SHA as `lease` where they name none (withLeaseInput).
+function againstRegister(t, question, log, cond) {
   let raw = null;
   try {
     for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
@@ -354,7 +355,7 @@ function againstRegister(t, question, log) {
   const p = parseInputs(raw);
   // Logged, never waiting on the person: nobody can clear it, and the park itself is asked as usual.
   if (!p.ok) report.inputs.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
-  const inputs = p.ok ? p.inputs : {};
+  const inputs = withLeaseInput(p.ok ? p.inputs : {}, cond);
   return { inputs, ...lookup(REGISTER, { question, inputs }) };
 }
 
@@ -706,12 +707,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.
     q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: statSync(log).mtime.toISOString() })}`);
-    const reg = againstRegister(t, park.trim(), log);
-    const recommends = recommendsOf(t, park.trim(), log);
     // A park asking only for §4 Live reads waits on the pass, which starts them in its "live reads"
     // section below and settles it there.
     const read = wedged ? null : liveReadOf(t, park.trim());
-    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log))}`,
+    const cleared = read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log);
+    const reg = againstRegister(t, park.trim(), log, cleared);
+    const recommends = recommendsOf(t, park.trim(), log);
+    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []));
     if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${READ_BRANCH} (${READ_CHECKOUT}), never the ticket's worktree; requeued once they finish. The park: ${park.trim()}`);
     else if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);

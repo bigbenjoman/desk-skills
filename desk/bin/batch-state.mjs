@@ -173,6 +173,17 @@ export function grantFor({ t, text, approve = false, remoteSha = () => null, now
   return { grant: { step: step.step, branch, lease, at: now.toISOString(), ...(pinned ? { pinned: true } : {}) } };
 }
 
+// A park's inputs as the pass records them: a park whose clears-when is a lease push names the SHA it
+// would overwrite in that condition, so its inputs carry it as `lease` where they name none. The
+// condition is cleared to none when a pass may not make the push (pass.mjs pushParked), and the inputs
+// keep the SHA, so a yes to the park is a pinned grant for that one overwrite. A lease the inputs
+// already name is the worker's own and is kept.
+export function withLeaseInput(inputs, cond) {
+  const named = String(inputs?.lease ?? '').trim();
+  if (named || cond?.kind !== 'push-ok' || !SHA.test(String(cond.lease ?? ''))) return inputs ?? {};
+  return { ...(inputs ?? {}), lease: cond.lease };
+}
+
 // Whether a ticket's one-off grant lets a pass make a parked lease push (`c`, a push-ok condition with
 // a lease) where config §3 git-force-with-lease is not yes: a pinned grant for that branch and that SHA.
 export const passLeaseGrant = (grant, c) => grant?.step === 'force-push' && grant.pinned === true

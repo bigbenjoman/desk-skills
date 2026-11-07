@@ -1201,6 +1201,15 @@ t('DS-496 and one naming the exact push in its question',
   BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: `GitHub refused git push --force-with-lease=b:${b40} origin b, force-push refused` } }, text: 'yes', remoteSha: () => b40 }).grant?.pinned, true);
 const unpinned = BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes', remoteSha: () => b40 }).grant;
 t('DS-496 a park that merely mentions a force-push gives an unpinned grant', `${unpinned?.lease === b40} ${unpinned?.pinned ?? null}`, 'true null');
+// DS-496 AC2: a lease park's clears-when names its SHA, which the pass keeps on its inputs, so its grant is pinned.
+const leased = BS.withLeaseInput({ step: 'push' }, { kind: 'push-ok', branch: 'b', lease: a40 });
+t('DS-496 withLeaseInput: a lease push condition adds its SHA to inputs naming none', JSON.stringify(leased), JSON.stringify({ step: 'push', lease: a40 }));
+t('DS-496 withLeaseInput: the inputs\' own lease, a plain push, a short SHA and none are left as they are',
+  [BS.withLeaseInput({ lease: b40 }, { kind: 'push-ok', branch: 'b', lease: a40 }).lease, JSON.stringify(BS.withLeaseInput({}, { kind: 'push-ok', branch: 'b' })),
+    JSON.stringify(BS.withLeaseInput({}, { kind: 'push-ok', branch: 'b', lease: 'abc' })), JSON.stringify(BS.withLeaseInput(undefined, { kind: 'none' }))].join(' '), `${b40} {} {} {}`);
+const leasedGrant = BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636, inputs: leased, clears_when: { kind: 'none' } } }, text: 'yes', remoteSha: () => b40 }).grant;
+t('DS-496 AC2 a yes to that park, its condition since cleared, is a pinned grant the pass may push',
+  `${leasedGrant?.lease === a40} ${leasedGrant?.pinned} ${BS.passLeaseGrant(leasedGrant, { kind: 'push-ok', branch: 'b', lease: a40 })}`, 'true true true');
 t('DS-496 passLeaseGrant: a pinned grant for that branch and SHA', BS.passLeaseGrant({ step: 'force-push', branch: 'b', lease: a40, pinned: true }, { kind: 'push-ok', branch: 'b', lease: a40 }), true);
 t('DS-496 passLeaseGrant: not unpinned, another SHA or another branch',
   [BS.passLeaseGrant(unpinned, { branch: 'b', lease: b40 }), BS.passLeaseGrant({ step: 'force-push', branch: 'b', lease: a40, pinned: true }, { branch: 'b', lease: b40 }),

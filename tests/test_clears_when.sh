@@ -142,6 +142,10 @@ pushpark P-10 A "git push --force-with-lease=feat/P-10:$HELD origin feat/P-10 su
 q set P-10 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-10\",\"lease\":\"$PIN\",\"pinned\":true,\"at\":\"2026-11-01T00:00:00Z\"}"
 q add C-4 Story A; q set C-4 state=running branch=feat/C-4 session_id=gone
 say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_PARK_CLEARS_WHEN: git push -u origin feat/C-4 succeeds" > "$T/state/logs/C-4.log"
+# C-5: a force-push park whose question names no SHA, only its clears-when does.
+q add C-5 Story A; q set C-5 state=running branch=feat/C-5 session_id=gone
+say "AUTOPILOT_PARK: GitHub refused the force-push of feat/C-5 with a 5xx" 'AUTOPILOT_PARK_INPUTS: {"step": "push"}' \
+  "AUTOPILOT_PARK_CLEARS_WHEN: git push --force-with-lease=feat/C-5:$PIN origin feat/C-5 succeeds" > "$T/state/logs/C-5.log"
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
 check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, or none" <<< "$out"'
 check "DS-496 queue.mjs clears-when stores a push" '[ "$(field P-1 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-1\"}" ]'
@@ -195,6 +199,8 @@ check "DS-496 a condition naming another branch is not pushed" \
   '[ "$(field P-6 state)" = "\"parked\"" ] && ! git -C "$T/origin.git" rev-parse --verify -q refs/heads/feat/other >/dev/null && grep -q "P-6: could not check .*it names feat/other, and the ticket.s branch is feat/P-6" <<< "$out"'
 check "DS-496 a worker's park line records a push, -u dropped, and with no worktree it goes to a person" \
   '[ "$(field C-4 state)" = "\"parked\"" ] && [ "$(field C-4 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "C-4: could not check \"git push origin feat/C-4 succeeds\" (it has no worktree to push from): left parked" <<< "$out"'
+check "DS-496 AC2 a lease park's clears-when SHA goes on its inputs, so a yes to it is a pinned grant after the condition is cleared" \
+  '[ "$(field C-5 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-5 park.inputs)" = "{\"step\":\"push\",\"lease\":\"$PIN\"}" ]'
 
 # ---- AC3: a lane A ticket waiting on something else is requeued ------------------------------------
 pr 41 MERGED false
