@@ -361,6 +361,7 @@ export const CONFIG_ROWS = Object.freeze({
   'status-table': { section: '3b', row: 'Orchestrator status table' },
   levers: { section: '3b', row: 'Phase 0 levers' },
   'worker-effort': { section: '3b', row: 'Worker effort' },
+  'codex-models': { section: '3b', row: 'Codex review' },
 });
 
 export class DeskConfigError extends Error {}
@@ -865,6 +866,40 @@ export function parseWorkerEffort(items) {
 }
 // The effort a session starting at `start` is launched at: NO_EFFORT (no --effort) with the lever off.
 export const workerEffort = (start) => (leverOn('effort') ? parseWorkerEffort(configValues('worker-effort'))[start] ?? DEFAULT_EFFORT : NO_EFFORT);
+
+// Config §3b "Codex review": `<role>=<model>:<effort>` pairs for the codex finder and refuter, and
+// `timeout=<seconds>` for every call, read by desk-codex.mjs with the codex lever on. A role or value
+// the row leaves out keeps its default; one desk does not know is refused, naming it.
+//   -> { finder: { model, effort }, refuter: { model, effort }, timeout }, or throws DeskConfigError
+export const CODEX_ROLES = Object.freeze(['finder', 'refuter']);
+export const CODEX_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
+export const CODEX_DEFAULTS = Object.freeze({ finder: { model: 'gpt-6.1-sol', effort: 'medium' }, refuter: { model: 'gpt-6.1-sol', effort: 'low' }, timeout: 600 });
+export function parseCodexReview(items) {
+  const row = (items ?? []).join(' ').trim();
+  const bad = (why) => new DeskConfigError(`desk: config §3b "Codex review" is "${row}" — ${why}want \`none\`, or \`finder=<model>:<effort> refuter=<model>:<effort> timeout=<seconds>\` with an effort of ${CODEX_EFFORTS.join(', ')}. Refusing to guess.`);
+  const out = { finder: { ...CODEX_DEFAULTS.finder }, refuter: { ...CODEX_DEFAULTS.refuter }, timeout: CODEX_DEFAULTS.timeout };
+  const seen = new Set();
+  for (const pair of row.split(/[\s,]+/).filter((p) => p && !isNone(p))) {
+    const [key, value, ...rest] = pair.split('=');
+    if (value === undefined || rest.length) throw bad(`\`${pair}\` is not a pair; `);
+    if (seen.has(key)) throw bad(`\`${key}\` is named twice; `);
+    seen.add(key);
+    if (key === 'timeout') {
+      if (!/^[1-9]\d*$/.test(value)) throw bad(`timeout \`${value}\` is not a whole number of seconds; `);
+      out.timeout = Number(value);
+      continue;
+    }
+    if (!CODEX_ROLES.includes(key)) throw bad(`unknown role \`${key}\`; `);
+    const [model, effort, ...more] = value.split(':');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(model ?? '') || more.length) throw bad(`\`${value}\` is not <model>:<effort>; `);
+    if (!CODEX_EFFORTS.includes(effort)) throw bad(`unknown effort \`${effort ?? ''}\`; `);
+    out[key] = { model, effort };
+  }
+  return out;
+}
+export function codexReview() {
+  try { return parseCodexReview(configValues('codex-models')); } catch (e) { if (e instanceof NoRepoConfigError) return parseCodexReview(null); throw e; }
+}
 
 // Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
 // `standard`; lane B, size M and an unsized ticket are `high`.

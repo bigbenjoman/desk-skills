@@ -57,9 +57,10 @@ const OPERATOR = /\boperator\b|\bby hand\b|\bmanually\b|\bsigns? off\b|\bsign-of
 // The Size fallback, a first line `Size: M`, for a project with no Size field.
 export const SIZE_LINE = /^\s*[*_]*size[*_]*\s*:\s*[*_]*\s*([a-z]+)/i;
 
-// §4 Ticket key pattern, else <§4 Jira project>-<n>; null when neither is set.
-function keyRegex() {
-  const read = (id) => { try { return String(configValue(id) ?? '').trim(); } catch { return ''; } };
+// §4 Ticket key pattern, else <§4 Jira project>-<n>; null when neither is set. `value` reads one
+// config row (this repo's by default; bench-build passes another repo's).
+export function keyRegex(value = configValue) {
+  const read = (id) => { try { return String(value(id) ?? '').trim(); } catch { return ''; } };
   const p = read('ticket-pattern');
   if (p && !isNone(p)) { try { new RegExp(p); return p; } catch { return null; } }
   const project = /^[`"]?([A-Z][A-Z0-9]*)\b/.exec(read('jira-project'))?.[1];

@@ -43,6 +43,9 @@ does:
 codex exec --sandbox read-only --skip-git-repo-check "Reply with exactly: CODEX_OK"
 ```
 
+With the `codex` lever on (`desk-env levers codex`), the check is `desk-codex probe`, which reuses
+a pass under an hour old, and every codex call goes through `desk-codex` (desk-review's Phase 0).
+
 **Not `codex login status`**: it reports logged in on a seat that is out of usage, so it passes
 while every refutation fails. Only making codex answer tells you anything.
 

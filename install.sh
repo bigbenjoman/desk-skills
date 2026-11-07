@@ -486,6 +486,14 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-gh"
   ok "desk-gh -> ~/.local/bin (desk-gh read: a read-only gh api call)"
   wrote "desk-gh  ~/.local/bin/desk-gh"
+  # desk-codex on PATH: the one codex command a review runs with the codex lever on.
+  CODEX_SHIM="$(mktemp)"
+  printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: codex review calls, per-role model and effort, timed out.\nexec node "%s" "$@"\n' \
+    "$DESKDIR/bin/desk-codex.mjs" > "$CODEX_SHIM"
+  install_file "$CODEX_SHIM" "$HOME/.local/bin/desk-codex"; rm -f "$CODEX_SHIM"
+  chmod +x "$HOME/.local/bin/desk-codex"
+  ok "desk-codex -> ~/.local/bin (desk-codex probe|finder|refuter: codex review calls)"
+  wrote "desk-codex ~/.local/bin/desk-codex"
   # retired local CI runner: its scripts, PATH shim, launchd jobs, state, Tart VM and base image go.
   gone=""
   # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.
