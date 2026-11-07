@@ -1001,7 +1001,7 @@ pool 3; out=$(DESK_MEM_AVAIL_GB=2 admit MA MB MC --by ben); rc=$?
 check "DS-506 AC8: while the memory spawn gate holds, triages run one at a time, saying why" \
   '[ $rc -eq 0 ] && [ "$(most)" = 1 ] && grep -qx "triaging one at a time: available memory 2.0G is under the 8G spawn gate" <<< "$out"'
 
-# ---- an admit says each thing as it happens, and triages three at once by default --------------------
+# ---- an admit says each thing as it happens, and triages one at a time by default --------------------
 # SL-2's triage is the slowest, SL-3 is blocked by it, and SL-4 is refused: everything but SL-2 and what
 # waits for it is read while the run is still going. Times are blanked: they depend on the machine.
 rec SL-1 A; rec SL-2 A; rec SL-3 A '"blockers":[{"key":"SL-2","category":"new"}]'; rec SL-4 C; echo 3 > "$T/recs/SL-2.sleep"
