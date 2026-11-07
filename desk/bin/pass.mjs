@@ -2465,8 +2465,9 @@ if (!DRY) {
 if (!DRY && report.spawned.length > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
 borrowLock?.release();
 // The batch's hold on the usage limit, for desk-q, needs-you and the next pass: one record, kept from
-// the first pass that held until the one that finds it lifted.
-{
+// the first pass that held until the one that finds it lifted. Saved again after the epic PR's review
+// try, which spawns after this point and may bench its login.
+function saveUsage() {
   const was = queue().usage_hold;
   if (USAGE_HOLD) {
     const rec = { since: was?.since ?? PASS_AT, type: USAGE_HOLD.type, resets_at: USAGE_HOLD.resetsAt, preflight: USAGE_HOLD.preflight ?? null,
@@ -2479,6 +2480,7 @@ borrowLock?.release();
   const benchedNow = Object.keys(BENCHED).length ? BENCHED : null;
   if (JSON.stringify(benchedNow) !== JSON.stringify(benchedWas)) q('set-batch', `benched=${JSON.stringify(benchedNow)}`);
 }
+saveUsage();
 const borrowLine = borrowedLine(plan, { share: concurrency, running: running.length, spawned: report.spawned.length });
 
 // ---- epics ---------------------------------------------------------------
@@ -3678,6 +3680,8 @@ async function epicStep(qx) {
       // The spawn summary is already printed by now, so this try says its own.
       const [s0, f0] = [report.spawned.length, report.failed.length];
       await spawnBaseFix({ wt: baseWt, fix: c.fix });
+      // A preflight refused at the usage limit benched its login (or held the batch) after the save.
+      saveUsage();
       if (report.spawned.length > s0) {
         out.push(`spawned: ${report.spawned.slice(s0).join(' | ')}`);
         if (!DRY) q('set-batch', `last_start=${new Date().toISOString()}`);
