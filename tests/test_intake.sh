@@ -357,6 +357,18 @@ rec P-4 A '"blockers":[{"key":"OPS-4","category":"new","type":"Task","summary":"
 out2=$(admit P-4); rc=$?
 check "DS-407 AC1: /desk-admit admits it runnable too, and never names the person'\''s step to admit next" '[ $rc -eq 0 ] && [ "$(qget tickets.P-4.merge_after)" = OPS-4 ] && [ "$(qget tickets.P-4.state)" = triaged ] && ! grep -q "^admit next" <<< "$out2"'
 check "admit: --front moves each admitted ticket to the front" 'grep -q "H-4 moved to the front of the spawn order" <<< "$out" && [ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets)[0])" "$DESK_QUEUE")" = H-5 ]'
+# The spawn order of a queue, and a ticket's state set in it by hand.
+order(){ node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).tickets).join(" "))' "${1:-$DESK_QUEUE}"; }
+qstate(){ node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); q.tickets[process.argv[2]].state=process.argv[3]; f.writeFileSync(p,JSON.stringify(q))' "$DESK_QUEUE" "$1" "$2"; }
+was=$(order); out=$(admit H-1); rc=$?
+check "DS-510 AC4: without --front, a ticket already in the batch is said so and the order is unchanged" '[ $rc -eq 0 ] && grep -qx "H-1 is already in batch b1 (triaged)" <<< "$out" && ! grep -qE "front|stays at" <<< "$out" && [ "$(order)" = "$was" ]'
+out=$(admit H-1 --front); rc=$?
+check "DS-510 AC1: --front moves a ticket already in the batch to the front, and says so" '[ $rc -eq 0 ] && grep -qx "H-1 is already in batch b1 (triaged)" <<< "$out" && grep -qx "H-1 moved to the front of the spawn order" <<< "$out" && [ "$(order | cut -d" " -f1)" = H-1 ]'
+qstate H-4 running; was=$(order); out=$(admit H-4 --front); rc=$?
+check "DS-510 AC3: --front leaves a running ticket where it is, and says why" '[ $rc -eq 0 ] && grep -qx "H-4 not moved to the front: it is running, so it has no place left in the spawn order" <<< "$out" && [ "$(order)" = "$was" ]'
+qstate H-4 triaged
+(cd "$T/repo" && node "$T/bin/queue.mjs" move H-1 3 >/dev/null 2>&1); was=$(order); out=$(admit H-1 --front); rc=$?
+check "DS-510 AC3: --front leaves a ticket the person placed where they put it, and says why" '[ $rc -eq 0 ] && grep -qx "H-1 stays at position 3 of the spawn order, where the user placed it" <<< "$out" && [ "$(order)" = "$was" ]'
 rec H-9 A "$(design https://claude.ai/artifact/H9 null)"; rec H-10 A "$(design https://claude.ai/artifact/H10 '"/snap/H-10"')"
 out=$(admit H-9 H-10 --by ben); rc=$?
 check "DS-358 AC4: /desk-admit refuses a ticket whose canvas has no snapshot, naming the artifact" '[ $rc -eq 11 ] && grep -q "^not admitted H-9: design not snapshotted: https://claude.ai/artifact/H9: snapshot it into $T/state/designs/H-9/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared" <<< "$out" && [ "$(qget tickets.H-9)" = undefined ]'
@@ -435,6 +447,8 @@ n=$(count "$T/triage.calls"); out=$(admit X-4); rc=$?
 check "DS-400 AC1: a child already in its epic's feature batch is said to be there with its state, exit 0, not triaged" '[ $rc -eq 0 ] && grep -qx "X-4 is already in batch X-1 (triaged)" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(nget tickets.X-4.state)" = triaged ]'
 out=$(admit Y-1); rc=$?
 check "DS-400 AC1: a ticket already in the batch its blocker routes it to is said to be there, exit 0" '[ $rc -eq 0 ] && grep -qx "Y-1 is already in batch X-1 (parked)" <<< "$out"'
+out=$(admit X-6 --front); rc=$?
+check "DS-510 AC2: --front moves a ticket already in a feature batch to the front of that batch, not the standing one" '[ $rc -eq 0 ] && grep -qx "X-6 is already in batch X-1 (parked)" <<< "$out" && grep -q "^X-6 moved to the front of the spawn order" <<< "$out" && [ "$(order "$NQ" | cut -d" " -f1)" = X-6 ] && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
 check "DS-400 AC3: the desk-admit skill asks nothing for a ticket already where it belongs" 'grep -q "is already in batch <B> (<state>)\`, its epic.s feature" "$SK" && grep -q "batch included: ask nothing about it" "$SK"'
 mkdir -p "$DESK_HOME/repos/acme__widgets/batches/.done"; mv "$NB" "$DESK_HOME/repos/acme__widgets/batches/.done/X-1"
 out=$(intake)

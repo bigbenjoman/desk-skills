@@ -65,7 +65,9 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 - `<TICKET>...`: every ticket the user named, in one call, so a blocker named alongside what it
   blocks is admitted first and the other held behind it.
 - `--by`: the user's first name, lower case, no spaces (from `git config user.name`).
-- `--front`: only when the user asks for it first, or calls it urgent ("ASAP", "next").
+- `--front`: only when the user asks for it first, or calls it urgent ("ASAP", "next"). It moves a
+  ticket already in a batch too, unless its worker has started, it is finished, or the user placed it
+  (`queue.mjs move`): the line after `is already in batch` says which.
 
 It triages each ticket afresh, which takes a minute or two each, as many at once as config §3b
 "Triage concurrency" allows, and admits each one as soon as it and its blockers in the call are
