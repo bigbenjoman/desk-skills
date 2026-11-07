@@ -25,7 +25,7 @@ work went up attached to an unrelated ticket.
 
 ## Posting the self-review
 
-With §4 Local review command (`desk-env get local-review`) `none` there is no report to post: nothing is posted, and the PR's
+With §4 Local review command (`desk-env review-cmd`) `none` there is no report to post: nothing is posted, and the PR's
 Testing section says the branch had no local review (the Stage 4b skip).
 
 **Posting the self-review (Stage 7).** Local reviews are posted to the PR so the code reviewer

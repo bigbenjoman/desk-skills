@@ -52,16 +52,12 @@
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
 import { RERUNS_MAX, reviewFindings, syncSaid } from './fix-tries.mjs';
 import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
+import { pairs } from './desk-env.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 // The name of desk-gate.yml's verdict job, the check that runs review-gate.mjs verdict.
 export const VERDICT_CHECK = 'desk-review verdict';
-
-// key=value pairs, as the §4 Clean review verdict row writes them.
-export function pairs(text) {
-  return Object.fromEntries([...String(text ?? '').matchAll(/([a-z0-9_]+)=(\S+)/gi)].map((m) => [m[1], m[2]]));
-}
 
 // A posted desk-review's verdict as the review gate reads it, or null. Values are strings, in
 // marker order, as the §4 Clean review verdict row compares them; the heading is left out.
