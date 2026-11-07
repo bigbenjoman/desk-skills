@@ -3,7 +3,9 @@ name: desk-review-response
 description: >-
   Use when a reviewer has commented on a pull request in this repo — the code reviewer, the product
   owner or anyone else requesting changes, leaving inline comments, or approving with notes. Also when
-  asked to reply to review feedback, or to judge whether a reviewer's comment is correct.
+  asked to reply to review feedback, or to judge whether a reviewer's comment is correct. Load it
+  before working any review comment, even to reply in its spirit: the assess-first table and the
+  reply register (references/voice.md) come only with it.
 ---
 
 # desk-review-response
@@ -24,7 +26,7 @@ A `TODO` in a row this skill needs is not a gap to guess: stop, ask, and offer `
 §0 for the GitHub repo, §1 for the user's GitHub handle, §3 for whether you may push (`git-push`),
 post replies and resolve threads (`pr-reply`), §4 People for who the code reviewer and product owner
 are (name and GitHub handle), §4 Local review command and Clean review verdict for the fix review
-(`desk-env get local-review`, `desk-env get clean-verdict`), §4 What review here consistently asks
+(`desk-env review-cmd` prints the review to run, `desk-env get clean-verdict`), §4 What review here consistently asks
 for (`desk-env get review-asks`), §4 Typecheck and Lint (`desk-env cmds typecheck-cmd`,
 `desk-env cmds lint-cmd`), and §5 for the written register (Messages to colleagues)
 and AI attribution.
@@ -32,10 +34,6 @@ and AI attribution.
 The order the skill's author asked for, repeatedly: *"Don't change the code yet, let's talk before
 you start working. Are all of the reviewer's comments correct?"* and *"is that what we should have
 done in the first place? Answer before fixing."*
-
-**Load this skill, don't approximate it.** Comments worked "in its spirit" without loading it keep
-the assessment and lose the voice file — replies run three to five paragraphs against a 2-3
-sentence register, and carry em-dashes.
 
 ## Required: assess first
 
@@ -74,7 +72,7 @@ faster than changing the code and changing it back.
 ## Review the fixes before you reply
 
 A review fix is new code, and nobody has reviewed it — the reviewer's comment predates it. Run
-§4 Local review command at the new head before pushing, the same Stage 4b `desk-ticket` runs. A round
+the review `desk-env review-cmd` prints at the new head before pushing, the same Stage 4b `desk-ticket` runs. A round
 is clean when its report matches §4 Clean review verdict. §4 Local review command `none`: review the
 fix diff yourself against §4 What review here consistently asks for, run §4 Typecheck, Lint and the
 unit tests touching the changed files, and say plainly that no local review command ran.
@@ -186,11 +184,10 @@ soon as you establish it. That changes what the user says back to the reviewer.
 | Mistake | Fix |
 |---|---|
 | Editing code on receipt of a comment | Assess all comments first, then wait |
-| Working the comments without loading this skill | The assess-first table and `voice.md` only come with it |
 | `git reset` or rewriting history to "start clean" | Don't restructure the user's branch to make a fix easier |
 | Agreeing with a comment you haven't verified | Read the code; give the evidence |
 | Fixing extra things while you're in there | Only what was agreed |
-| A long, apologetic reply | Two or three sentences, what changed, done |
+| A long, apologetic reply | Short: what changed, done |
 | `gh pr comment` to answer an inline comment | Thread reply via GraphQL on the thread id |
 | Answering a product question yourself | Draft it for §4 People Product owner |
 | Declaring it addressed without re-checking every thread | Enumerate from GitHub and confirm each |

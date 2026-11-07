@@ -321,11 +321,11 @@ spawn_one P-175
 check "DS-305 AC4 an unreadable named batch's queue does not stop the spawn, and the report names it" '[ "$(field P-175 state)" = "\"running\"" ] && [ "$(field P-175 port)" = 47501 ] && echo "$out" | grep -qF "ports: $X1/queue.json is not valid JSON ("'
 rm -rf "$T/desk/repos/acme__other/batches"; other '{"tickets": not json'
 
-# DS-121: a worker at the 5-hour usage limit. The event is built from the provisional fixture (the
-# real event at the limit has not been captured yet), with its reset moved to suit each case. Each
-# case is a running ticket whose log stopped growing five passes ago, one pass from the stall killer.
+# DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker,
+# with its reset moved to suit each case. Each case is a running ticket whose log stopped growing
+# five passes ago, one pass from the stall killer.
 export DESK_QUEUE="$T/queue-u.json" DESK_AUTOPILOT_STATE="$T/state-u" AUTOPILOT_PORT_FLOOR=47601; mkdir -p "$T/state-u/logs"
-limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); if (process.argv[3]) e.rate_limit_info.rateLimitType = process.argv[3]; console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.provisional.json" "$1" "${2:-}"; }
+limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); if (process.argv[3]) e.rate_limit_info.rateLimitType = process.argv[3]; console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.json" "$1" "${2:-}"; }
 # The registry stub also answers the probe call (claude -p): what the probe says is $T/probe.out.
 # probe_says limited <resetsAt> [type] | ok
 probe_says(){ if [ "$1" = ok ]; then { say "ok"; echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; } > "$T/probe.out"
@@ -381,6 +381,16 @@ quiet_running U-9 live-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-344 a rejection with no reset time is a pause, not a stall" '[ "$(field U-9 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: U-9 on the 5-hour usage limit, then it resumes"'
 q set U-9 state=done
+
+# U-10: the tail a real worker wrote at the limit, its reset moved an hour ahead. After the
+# rejection come the error messages written in the model's place and a subagent's reply to a request
+# already in flight; neither is the model answering, so the session's 429 is the same 5-hour limit.
+{ say "AUTOPILOT_STAGE: 4/9 verify"; node -e 'const fs = require("fs"); process.stdout.write(fs.readFileSync(process.argv[1], "utf8").replaceAll("1792768800", process.argv[2]))' "$S/fixtures/usage-limit-five-hour-session.jsonl" $((now + 3600)); } > "$T/state-u/logs/U-10.log"
+quiet_running U-10 live-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-174 AC2 a real worker's tail at the limit is paused on the 5-hour limit with its reset time" '[ "$(field U-10 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: U-10 on the 5-hour usage limit until $(date -u -r $((now + 3600)) "+%Y-%m-%d %H:%M" 2>/dev/null || date -u -d "@$((now + 3600))" "+%Y-%m-%d %H:%M") UTC, then it resumes"'
+check "DS-174 AC2 and is neither unrecognised nor recorded as resumed" '! echo "$out" | grep -q "unrecognised usage-limit event: U-10" && ! grep -q "^- \[U-10\] resumed" "$T/state-u/batch-notes.md"'
+q set U-10 state=done
 
 # U-4: a rate-limit event that is neither traffic under the limit nor a rejection is named, not
 # guessed at, and the stall check runs as before. U-5's only event is ordinary traffic, and the limit
@@ -493,6 +503,21 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-140 AC8 the next pass lists an overridden decision under WAITING ON YOU" 'echo "$out" | awk "/^WAITING ON YOU/,0" | grep -qF "C-3: decision overridden — \"Badge colour?\" is now \"neutral\" (was \"brand\"), by Ben at 2026-10-22T09:00:00.000Z"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-140 AC8 and only once" '! echo "$out" | grep -q "decision overridden"'
+# §4 rows no review of the command can read clean. Each config is the fixture's plus its two rows.
+review_rows(){ { cat "$T/config.md"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Local review command | `%s` |\n| Clean review verdict | `%s` |\n' "$1" "$2"; } > "$T/config-rows.md"; out=$(DESK_CONFIG="$T/config-rows.md" node "$B/pass.mjs" 2>&1); }
+review_rows /code-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 a pass logs that the review rows contradict each other, naming both" 'echo "$out" | grep -F "review rows: config §4 Local review command (\`/code-review\`) and §4 Clean review verdict (\`p0=0 p1=0 gaps=0\`) contradict each other" | grep -qF "/desk-setup"'
+review_rows /code-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 and only once" '! echo "$out" | grep -q "review rows:"'
+review_rows /other-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 a different pair of rows is logged afresh" 'echo "$out" | grep -qF "(\`/other-review\`)"'
+rm -f "$T/state-c/review-rows-reported.txt"
+review_rows /desk-review 'p0=0 p1=0 gaps=0'
+check "DS-439 negative control: /desk-review beside the counts logs nothing" '! echo "$out" | grep -q "review rows:"'
+review_rows /code-review 'no findings'
+check "DS-439 negative control: /code-review beside a plain-text verdict logs nothing" '! echo "$out" | grep -q "review rows:"'
+review_rows none 'p0=0 p1=0 gaps=0'
+check "DS-439 AC6 §4 Local review command none logs nothing" '! echo "$out" | grep -q "review rows:"'
 rm "$T/digest/last.json"
 out=$(node "$B/pass.mjs" --json 2>&1)
 check "DS-140 AC1 a pass past a slot builds the digest and pushes it" 'pushes | grep -q "^digest:20" && ls "$T/digest"/*.md >/dev/null 2>&1'
@@ -631,6 +656,22 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: PR #88"'
 check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: PR #88 (no marker printed"'
 q set Y-7 state=done
+# The same exits on the person's instruction: an open PR does not show it was carried out, and a ticket
+# recorded done has its fix closed in that pass, which frees the merge.
+instruction_fix='fix={"try":1,"of":1,"kind":"instruction","pr":88,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}'
+killed Y-61 sess-y61; q set Y-61 "$instruction_fix"; result_event >> "$T/state-k/logs/Y-61.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-501 a worker on the person's instruction that ended with no marker parks, its fix left open" '[ "$(field Y-61 state)" = "\"parked\"" ] && [ "$(field Y-61 fix.finished)" = null ] && [ "$(field Y-61 result)" = null ] && field Y-61 park.question | grep -q "your instruction on PR #88 may not be carried out" && ! echo "$out" | grep -q "Y-61: PR #88 (no marker printed"'
+q requeue Y-61
+check "DS-501 a requeue of that park keeps the instruction for its next worker" '[ "$(field Y-61 state)" = "\"triaged\"" ] && [ "$(field Y-61 fix.answer)" = "\"rename it\"" ] && [ "$(field Y-61 fix.finished)" = null ]'
+q set Y-61 state=done
+killed Y-62 sess-y62; q set Y-62 "$instruction_fix" resumes=2
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-501 so does a worker on the instruction killed past its resumes" '[ "$(field Y-62 state)" = "\"parked\"" ] && [ "$(field Y-62 fix.finished)" = null ] && field Y-62 park.question | grep -q "your instruction on PR #88"'
+q set Y-62 state=done
+killed Y-63 sess-y63; q set Y-63 "$instruction_fix" fix.finished=2026-01-01T00:00:00Z; result_event >> "$T/state-k/logs/Y-63.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: PR #88 (no marker printed"'
 probe_says limited $(( $(date +%s) + 3600 ))
 killed Y-6 sess-y6; usage_exit Y-6 $(( $(date +%s) + 3600 ))
 out=$(node "$B/pass.mjs" 2>&1)
@@ -905,6 +946,18 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-158 AC1 the spawn line shows the preflight's cost and turns" 'echo "$out" | grep -q "^spawned: P-1 port=.*; preflight \$0.43, 9 turn(s)"'
 check "DS-158 AC1 and the ticket's log holds them" 'grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.4321,\"num_turns\":9" "$T/state-p/logs/P-1.log"'
 check "DS-158 a failed preflight's cost is in the failure and the ticket's log too" '[ "$(field P-2 state)" = "\"failed\"" ] && echo "$out" | grep -q "preflight \$0.05, 2 turn(s)" && grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.05,\"num_turns\":2" "$T/state-p/logs/P-2.log"'
+# A skipped preflight spends nothing, so a fresh ticket with no log yet spawns with none.
+cat > "$T/desk/bin/spawn-worker.sh" <<'EOF'
+if [ "$3" = preflight ] && [ "$1" = P-4 ]; then printf '[preflight] %s\n[preflight] skipped: its last pass had this fingerprint\n[preflight] pass\n' "$1"; exit 0; fi
+if [ "$3" = preflight ] && [ "$1" = P-2 ]; then printf '[preflight] %s\n[preflight] cost=0.05 turns=2\n  W_IN   BLOCKED  FAIL (wanted OK)\n' "$1"; exit 1; fi
+if [ "$3" = preflight ]; then printf '[preflight] %s\n[preflight] cost=0.4321 turns=9\n[preflight] pass\n' "$1"; exit 0; fi
+echo "[spawn] ticket=$1"
+EOF
+q add P-4; q set P-4 state=triaged lane=A branch=fix/P-4
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-451 AC1 the spawn line says the preflight was skipped on a matching fingerprint" 'echo "$out" | grep -q "^spawned: P-4 port=.*; preflight skipped on a matching fingerprint"'
+check "DS-451 AC1 and no preflight line reaches the log, so nothing reads as an unknown cost" '[ "$(field P-4 state)" = "\"running\"" ] && [ "$(field P-4 log_bytes)" = 0 ] && ! grep -qs desk_preflight "$T/state-p/logs/P-4.log"'
+q set P-4 state=done
 # P-1's worker is in long model turns: with no partial messages its log grows only when a message
 # ends, here once every five passes. Today's threshold, six quiet passes, still applies.
 q set P-1 session_id=live-1 idle_passes=0 "log_bytes=$(wc -c < "$T/state-p/logs/P-1.log" | tr -d ' ')"
@@ -944,6 +997,32 @@ check "DS-194 AC2 a merged PR is recorded merged" '[ "$(field G-2 pr_status.stat
 check "DS-194 one gh call per done ticket with a PR, none for one without" '[ "$(grep -c "^pr view" "$T/gh-calls")" = 2 ] && [ "$(field G-3 pr_status)" = null ]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-194 AC2 the next pass reads the open PR again and makes no call for the merged one" '[ "$(cut -d" " -f1-3 "$T/gh-calls")" = "pr view 300" ]'
+
+# ---- A failed check keeps the error its job gave, read once per job, and the PR who approved its head
+export DESK_QUEUE="$T/queue-ga.json" DESK_AUTOPILOT_STATE="$T/state-ga"
+mkdir -p "$T/state-ga/logs"
+FIX="$S/fixtures/review-gate-annotations.json"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 310 "*) echo '{"state":"OPEN","headRefOid":"abc","reviews":[{"state":"APPROVED","author":{"login":"old"},"commit":{"oid":"zzz"}},{"state":"APPROVED","author":{"login":"mousedown"},"commit":{"oid":"abc"}},{"state":"COMMENTED","author":{"login":"me"},"commit":{"oid":"abc"}}],"statusCheckRollup":[{"__typename":"CheckRun","name":"Review gate","workflowName":"gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/7/job/70"},{"__typename":"CheckRun","name":"tests","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/80"},{"__typename":"CheckRun","name":"Lint","workflowName":"ci","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/81"}]}' ;;
+  "api repos/"*"/check-runs/70/annotations") jq -c '.protected' "$FIX" ;;
+  "api repos/"*"/check-runs/81/annotations") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+q init ga
+q add GA-1; q set GA-1 state=done result.pr=310
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 AC1 a failed check keeps its gate's error line, not GitHub's exit code line" 'field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required — 2 protected file(s): "'
+check "DS-499 a passing check is not read, and one whose annotations could not be read keeps no error" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name != \"Review gate\") | has(\"error\")]")" = "[false,false]" ] && ! grep -q "check-runs/80" "$T/gh-calls"'
+check "DS-499 AC2 who approved the head is recorded, and an approval of an older commit is not" '[ "$(field GA-1 pr_status.approvals | jq -c .)" = "[\"mousedown\"]" ]'
+touch "$T/annotations-ok"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 the next pass keeps a job's error without reading it again, and reads one it could not" '! grep -q "check-runs/70" "$T/gh-calls" && grep -q "check-runs/81" "$T/gh-calls" && field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 a job with no error line is not read again" '! grep -q "check-runs/" "$T/gh-calls"'
 
 # ---- DS-175: a merge is recorded however the PR was merged, and a missing eta history is built once
 ago(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 3600e3).toISOString())' "$1"; }
@@ -1355,6 +1434,24 @@ check "DS-415 AC3 and the next pass waits on those runs, starting none again" \
 check "DS-415 a run GitHub refused to start again is started at the next pass, not read as failing after the fix" \
   'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=803$" "$T/gh-calls" && [ "$(field E-803 undraft.call)" = "\"evidence\"" ]'
 
+# ---- A batch on its own base: the evidence workflow runs from §0 Default branch, not the base --------
+# The base goes straight onto the queue: set-batch asks origin for it, and this repo has no origin.
+export DESK_QUEUE="$T/queue-eb.json" DESK_AUTOPILOT_STATE="$T/state-eb"
+mkdir -p "$T/state-eb/logs" "$T/state-eb/evidence-runs"; : > "$T/admits"
+q init eb; q add E-804; q set E-804 state=done result.pr=804
+q add E-805; q set E-805 state=done result.pr=805
+printf '{"workflow":"pr-evidence.yml","runId":"9805","url":"https://github.com/acme/widgets/actions/runs/9805","at":"2026-11-01T19:28:00Z","cells":2}\n' > "$T/state-eb/evidence-runs/805-$HEAD_A.json"
+node -e 'const fs = require("fs"), f = process.argv[1], q = JSON.parse(fs.readFileSync(f, "utf8")); q.base = "feat/x"; fs.writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+: > "$T/gh-calls"; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-373 AC1 a dry-run pass on a batch base prints the dispatch with --ref the default branch" \
+  'echo "$out" | grep -q "would run \`gh workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=804\`" && ! grep -q "^workflow run" "$T/gh-calls"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-373 AC1 the pass starts it there too" \
+  'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=804$" "$T/gh-calls" && ! grep -q "^workflow run .*--ref feat/x" "$T/gh-calls"'
+ebfix=$(node -e 'const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(Object.values(f).map((r) => r.fix).join(" "))' "$T/state-eb/evidence-runs/fixes.json" 2>/dev/null)
+check "DS-373 the fix ticket for a failed run reproduces it where the pass runs it" \
+  'grep -qF -- "--ref main -f pr=805" "$T/state-eb/tickets/$ebfix.md" && ! grep -q "feat/x" "$T/state-eb/tickets/$ebfix.md"'
+
 # ---- DS-278: a ready PR red after the driver's reruns, or in conflict, goes back to a fix worker twice
 # The fake gh answers each PR from $T/fx/<n>.json. The driver's rerun record is written as the driver
 # writes it: one line per check per rerun, in <state>/merge-driver/reruns-<n>-<head>.
@@ -1498,6 +1595,35 @@ q set-batch concurrency=2; q set P-1 state=triaged session_id=null
 check "DS-278 ahead of pace, a fix try still waits for workers to be allowed" '[ ! -s "$T/spawns" ] && [ "$(field P-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "autopilot-workers is \"ask\""'
 export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
 check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint\",true]" ]'
+
+# ---- a pass held on pacing whose reading is older than the probe interval takes a new one.
+# pace_case <name> <7-day utilisation> <age of the reading in seconds>: a batch of its own, one triaged
+# N-1, nothing running, and its only reading a worker log that old. Pace is a day into the week, ~14%.
+seven_day_event(){ node -e 'const s = Math.round(Date.now() / 1000); console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: s + 3600, rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: s + 3600 }, seven_day: { utilization: Number(process.argv[1]), resetsAt: s + 6 * 86400 } } } }))' "$1"; }
+pace_case(){ export DESK_QUEUE="$T/queue-$1.json" DESK_AUTOPILOT_STATE="$T/state-$1" DESK_USAGE_DIR="$T/usage-$1"
+  mkdir -p "$T/state-$1/logs"; seven_day_event "$2" > "$T/state-$1/logs/OLD-1.log"
+  node -e 'const t = Date.now() / 1000 - Number(process.argv[2]); require("fs").utimesSync(process.argv[1], t, t)' "$T/state-$1/logs/OLD-1.log" "$3"
+  q init "$1"; q set-batch concurrency=1; q add N-1; q set N-1 state=triaged lane=A branch=fix/N-1; : > "$T/probes"; }
+probes(){ wc -l < "$T/probes" | tr -d " "; }
+stub_claude '[{"sessionId": "live-1"}]'
+pace_case pa 0.99 600; { seven_day_event 0.10; echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; } > "$T/probe.out"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC1 held on a reading older than the probe interval, the pass makes one probe call and judges on its reading" '[ "$(probes)" = 1 ] && grep -qF "\"seven_day\":{\"utilization\":0.1," "$T/usage-pa/probe.log" && ! echo "$out" | grep -q "7-day 99%"'
+check "DS-438 AC2 a probe reading back within pace spawns the eligible ticket in the same pass" '[ "$(field N-1 state)" = "\"running\"" ]'
+pace_case pb 0.99 30
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC3 held on a reading newer than the probe interval, the pass makes no probe call" '[ "$(probes)" = 0 ] && [ "$(field N-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "usage: 7-day 99%, pace 14% + 5: holding spawns"'
+pace_case pc 0.05 600
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC4 not held on pacing, the pass makes no probe call" '[ "$(probes)" = 0 ] && [ "$(field N-1 state)" = "\"running\"" ]'
+pace_case pd 0.99 600; : > "$T/probe.out"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC5 a probe that fails keeps the hold, and the report names why" '[ "$(probes)" = 1 ] && [ "$(field N-1 state)" = "\"triaged\"" ] && echo "$out" | grep -qF "usage: 7-day 99%, pace 14% + 5: holding spawns (0 running carry on; fix tries still start; the probe call for a new reading failed (claude exited 0 with no answer), so the last reading stands)"'
+pace_case pe 0.99 600; probe_says limited $(( $(date +%s) + 3600 )) seven_day
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-438 AC5 a probe rejected at a usage limit keeps the hold, and the report names why" '[ "$(probes)" = 1 ] && [ "$(field N-1 state)" = "\"triaged\"" ] && echo "$out" | grep -qF "the probe call for a new reading failed (rejected at the usage limit), so the last reading stands"'
+unset DESK_USAGE_DIR; export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
+printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
 
 # ---- a draft whose review at its head found a P0 or P1 goes back to a fix worker twice
 # The fake gh answers each PR from $T/fr/<n>.json, a green draft with one review by ben, and records
@@ -1941,6 +2067,44 @@ check "DS-327 AC3 still red after the build and its re-run: the command is not r
 check "DS-327 AC3 and the PR is put to the person, naming the check" \
   'echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Flows image\" is still red at ${HB1:0:9} after its check build \`sh $T/build-ok.sh\` ran and the check was re-run. Fix \"Flows image\" on #761"'
 
+# ---- DS-490: a draft's check stuck pending, its run completed without it or pending past the limit, is
+# re-run once, then put to the person naming the job. The fake gh also answers run view from
+# $T/fb/run-<id>.json and takes run rerun and run cancel.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/run-' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && (a[1] === 'rerun' || a[1] === 'cancel')) { /* accepted */ }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { /* no PR was put back to draft */ }
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+# The pass runs rerun.sh from the installed bin directory, which here is under the test's home.
+mkdir -p "$T/desk/bin" && cp "$B/rerun.sh" "$T/desk/bin/rerun.sh"
+fbx 761 "$HB1" tests:SUCCESS "Cookie Notice:PENDING:9101"
+printf '%s' '{"status":"completed","startedAt":"2026-11-03T07:00:00Z","jobs":[{"databaseId":91011,"name":"Cookie Notice","status":"in_progress","startedAt":"2026-11-03T07:00:00Z"}]}' > "$T/fb/run-9101.json"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC1 a job its completed run left in progress is re-run as that job only" \
+  '[ "$(grep -c "^run rerun" "$T/gh-calls")" = 1 ] && grep -q "^run rerun --job 91011 --repo acme/widgets$" "$T/gh-calls" && [ "$(field V-1 undraft.call)" = "\"rerun\"" ]'
+check "DS-490 AC1 and the pass logs which job and why" \
+  'echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Cookie Notice\" is still in_progress though its run 9101 has completed, so that job is re-run (#761 red + completed -> rerun job 91011 of run 9101 (\"Cookie Notice\"), whose run completed without it)"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC1 still stuck after its re-run: the person, naming the job, and nothing re-run again" \
+  '! grep -q "^run rerun" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Cookie Notice\" is still in_progress though its run 9101 has completed, after it was re-run once at this head. Re-run job \"Cookie Notice\" of run 9101 on #761 once a runner can take it"'
+fbx 761 "$HB1" tests:SUCCESS "Slow job:PENDING:9102"
+printf '%s' '{"status":"in_progress","startedAt":"2026-11-03T07:00:00Z","jobs":[{"databaseId":91021,"name":"Slow job","status":"in_progress","startedAt":"2026-11-03T07:00:00Z"}]}' > "$T/fb/run-9102.json"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC2 pending past the limit with its run in progress: the run is cancelled, so its check is re-run" \
+  'grep -q "^run cancel 9102 --repo acme/widgets$" "$T/gh-calls" && [ "$(field V-1 undraft.call)" = "\"cancel\"" ] && grep -qx "Slow job" "$T/state-b/merge-driver/cancels-761-$HB1" && ! echo "$out" | grep -q "V-1: DRAFT"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC2 on a second expiry the person, naming the job, and nothing cancelled again" \
+  '! grep -q "^run cancel" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Slow job\" has been in_progress for .* with its run 9102 still in progress, past the 6h 0m limit, after it was re-run once at this head. Re-run job \"Slow job\" of run 9102 on #761"'
+fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
+
 # ---- DS-402: a worker that parks only on a red check §4 Check builds names is recorded done, and built
 # V-4 parks as VPL-603's worker did (asking for this config's command, then the steps not reached), its draft red only on "Flows image"; V-5 parks the same way on a
 # draft red on "lint" too. The fake gh answers pr list for a branch from $T/fb/list-<branch>.json.
@@ -2084,6 +2248,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field CW-3 state)" = "\"parked\"" ] && field CW-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
 check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
 check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
+# DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
+# an effort, so it parks rather than run at the session default, and a malformed row names its value.
+effort_cfg(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `effort` |\n| Worker effort | `none` | `%s` |\n' "$1"; } > "$T/config-ef.md"; }
+effort_cfg 0=low; cloud_ticket CW-4
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "DS-450 AC1 with the effort lever on, a cloud ticket parks and says why" '[ "$(field CW-4 state)" = "\"parked\"" ] && field CW-4 park.question | grep -q "the effort lever is on, and a cloud session cannot be given an effort"'
+check "DS-450 AC1 and no session starts for it, here or in the cloud" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-4" ] && ! echo "$out" | grep -q "CW-4 port="'
+effort_cfg 0=turbo; cloud_ticket CW-5
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
 
 # ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
 # W-1's worktree is another process's working directory. W-2 and W-3 are fix tries: W-2's worktree
@@ -2173,6 +2347,17 @@ check "DS-388 AC3 a fix try whose own worker was killed with its worktree dirty 
   'grep -qx "W-5 sess-w5 resume=yes" "$T/wb-spawns" && [ "$(field W-5 state)" = "\"running\"" ] && [ "$(field W-5 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-5: WORKTREE IN USE" && echo "$out" | grep -q "W-5 resumed after it was killed" && ! echo "$out" | grep -q "W-5: PR #55"'
 check "DS-388 AC4 a fix try whose worktree holds changes no worker of its own is resuming is still held" \
   '[ "$(field W-6 state)" = "\"triaged\"" ] && ! grep -q "^W-6 " "$T/wb-spawns" && echo "$out" | grep -qF "W-6: WORKTREE IN USE — its worktree $T/wt/W-6 has uncommitted changes (a.txt)" && [ "$(field W-6 resume)" = null ]'
+
+# W-7 parked with a commit origin lacks, on a branch origin has never seen; the note goes once it is pushed.
+git clone -q "$T/wb-origin.git" "$T/wt/W-7" 2>/dev/null; git -C "$T/wt/W-7" checkout -q -b fix/W-7
+git -C "$T/wt/W-7" commit -q --allow-empty -m "not pushed"
+q add W-7; q set W-7 lane=A branch=fix/W-7 "worktree=$T/wt/W-7"; q park W-7 "git push was refused: remote rejected"
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-497 a pass keeps what a parked ticket's worktree holds that origin does not on its park" \
+  '[ "$(field W-7 park.unpushed)" = "\"its worktree $T/wt/W-7 has 1 commit(s) not on origin\"" ]'
+git -C "$T/wt/W-7" push -q origin fix/W-7 2>/dev/null
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-497 and drops it once they are pushed" '[ "$(field W-7 park.unpushed)" = null ] && [ "$(field W-7 state)" = "\"parked\"" ]'
 
 # ---- DS-397: routine recoveries the pass settles by script, with no decider and no person -----------
 # D-1's branch adds nothing to main, where merged PR #88 names it. P-2 parked on a refused push with its
@@ -2330,6 +2515,38 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-419 the next pass resolves it, with no second reply, and starts no try" \
   '[ "$(grep -c "^PRRT_d" "$T/fb/replied.log")" = 1 ] && grep -qx PRRT_d "$T/fb/resolved.log" && [ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ]'
 
+# ---- DS-433: a green ready PR with no clean verdict at its head goes for review, where a driver may merge --
+# fix/C-1's head CB is a clean merge of main over CA, fix/C-2's head CC also has a commit of its own.
+node -e 'const fs = require("fs"); const [a, b] = process.argv.slice(1);
+  fs.writeFileSync(b, fs.readFileSync(a, "utf8").replace(/(\| `pr-ready` .*\n)/, "$1| `autopilot-merge` | Merge batch PRs | `yes` | `yes` |\n| `pr-merge-green` | Merge on green | `yes` | `yes` |\n"));' "$T/config-r.md" "$T/config-m0.md"
+sed "s#$T/repo#$T/carry#" "$T/config-m0.md" > "$T/config-m.md"
+export DESK_CONFIG="$T/config-m.md" DESK_QUEUE="$T/queue-m.json" DESK_AUTOPILOT_STATE="$T/state-m"
+mkdir -p "$T/state-m/logs"; q init m; q set-batch concurrency=6
+for k in 1 2 3 4 5; do q add "M-$k"; q set "M-$k" state=done lane=A "result.pr=82$k"; done
+q set M-1 branch=fix/C-1; q set M-2 branch=fix/C-2; q set M-3 branch=fix/M-3; q set M-4 branch=fix/M-4; q set M-5 branch=fix/M-5
+ffx 821 "$CB" "$CA p0=0 p1=0"
+ffx 822 "$CC" "$CA p0=0 p1=0"
+ffx 823 "$H1" -
+ffx 824 "$H1" "$H1 p0=0 p1=0"
+ffx 825 "$H1" "$H1 p0=0 p1=0"; sed 's/p2=0/p2=1/' "$T/fb/825.threads" > "$T/fb/825.tmp"; mv "$T/fb/825.tmp" "$T/fb/825.threads"
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-433 AC2 a clean verdict carried across a clean merge of the base sends no worker" \
+  '[ "$(field M-1 state)" = "\"done\"" ] && [ "$(field M-1 fix_tries)" = null ] && [ "$(field M-1 stuck)" = null ]'
+check "DS-433 AC2 a stale verdict its own commit moved past goes to a review worker, out of draft" \
+  '[ "$(field M-2 state)" = "\"triaged\"" ] && [ "$(field M-2 fix | jq -c "[.kind, .ready, .held]")" = "[\"rereview\",true,true]" ] && echo "$out" | grep -qF "review try 1 of 2: M-2 requeued for PR #822 — review its head: its review verdict is for ${CA:0:9}"'
+check "DS-433 no verdict at all goes to a review worker too" \
+  '[ "$(field M-3 state)" = "\"triaged\"" ] && [ "$(field M-3 fix.what)" = "\"review its head: no desk-review verdict is posted on it\"" ]'
+check "DS-433 AC1 a clean verdict at the head sends no worker and asks no one" \
+  '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 fix_tries)" = null ] && [ "$(field M-4 stuck)" = null ]'
+check "DS-433 an uncarried P2 the review lists nowhere is put to the person, not left waiting" \
+  '[ "$(field M-5 state)" = "\"done\"" ] && field M-5 stuck.why | jq -r . | grep -qF "is not clean (p2=1)" && echo "$out" | grep -qF "M-5: STUCK — PR #825"'
+export DESK_CONFIG="$T/config-r.md" DESK_QUEUE="$T/queue-m2.json" DESK_AUTOPILOT_STATE="$T/state-m2"
+mkdir -p "$T/state-m2/logs"; q init m2; q set-batch concurrency=6
+q add M-6; q set M-6 state=done lane=A branch=fix/M-6 result.pr=826; ffx 826 "$H1" -
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-433 AC4 where no driver may merge, a PR with no verdict gets no review worker" \
+  '[ "$(field M-6 state)" = "\"done\"" ] && [ "$(field M-6 fix_tries)" = null ] && [ "$(field M-6 stuck)" = null ]'
+
 # ---- DS-431: the clones behind §4 Worker read-only repos ------------------------------------------
 # acme/web's default branch is not main, and this repo's origin says where its neighbours are.
 mkdir -p "$T/remotes/acme"; git init -q --bare -b trunk "$T/remotes/acme/web.git"
@@ -2401,5 +2618,24 @@ check "DS-431 AC4 at none a spawn makes no clone" '[ "$(field R-7 state)" = "\"r
 url(){ node --input-type=module -e "import { cloneUrl } from '$B/read-repos.mjs'; console.log(cloneUrl(process.argv[1], 'acme/web'))" "$1"; }
 check "DS-431 a clone is addressed by this repo's own transport and host" \
   '[ "$(url git@github.com:me/own.git)" = git@github.com:acme/web.git ] && [ "$(url https://github.com/me/own)" = https://github.com/acme/web ] && [ "$(url ssh://git@ghe.example/me/own.git)" = ssh://git@ghe.example/acme/web.git ] && [ "$(url "")" = https://github.com/acme/web.git ]'
+
+# A migrate that failed in setup reaches the worker's briefing, and one that did not says nothing.
+cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+echo "[setup-worktree] database=widgets_x_70"
+EOF
+q --batch X-3 init x3; q --batch X-3 add X-70; q --batch X-3 set X-70 state=triaged
+out=$(node "$B/pass.mjs" --batch X-3 2>&1)
+X70B=$(find "$T" -path '*briefings/X-70.md' | head -n 1)
+check "a clean setup's briefing says nothing about the database" '[ -n "$X70B" ] && ! grep -q "Your database did not migrate" "$X70B"'
+cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+echo "[setup-worktree] database=widgets_x_8"; echo "[setup-worktree] migrate=failed"
+EOF
+q --batch X-2 init x2; q --batch X-2 add X-8; q --batch X-2 set X-8 state=triaged
+out=$(node "$B/pass.mjs" --batch X-2 2>&1)
+X8B=$(find "$T" -path '*briefings/X-8.md' | head -n 1)
+check "a failed migrate is in the worker's briefing, naming the database and the log" \
+  '[ -n "$X8B" ] && grep -q "Setup could not apply migrations to widgets_x_8" "$X8B" && grep -q ".desk-migrate.log" "$X8B"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

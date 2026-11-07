@@ -38,18 +38,20 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | \`pr-merge-green\` | Merge on green | \`ask\` | \`yes\` |
 | \`git-push\` | Push a branch | \`ask\` | \`yes\` |
 | \`jira-create\` | Create a ticket | \`ask\` | \`yes\` |
+| \`jira-edit\` | Edit a ticket | \`ask\` | \`${JIRA_EDIT:-yes}\` |
 
 ## 3b. Cost and autonomy
 | Field | Recommended | Your setting |
 |---|---|---|
 | Intake query | \`none\` | ${2-\`project = ACME AND labels = autopilot\`} |
+| Triage concurrency | \`1\` | \`${TRIAGE_K:-TODO}\` |
 EOF
 }
 config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs usage-pace.mjs harvest.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
 # with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -57,16 +59,29 @@ cat > "$T/fakes/desk-jira" <<EOF
 echo "\$*" >> "$T/jira.calls"
 [ "\$1" = create ] && { echo "created E-11"; exit 0; }
 [ "\$1" = get ] && [ -f "$T/get/\$2.json" ] && { cat "$T/get/\$2.json"; exit 0; }
+[ "\$1" = get ] && [ -f "$T/get/\$2.fails" ] && { echo "desk-jira: HTTP 404 from Jira" >&2; exit 1; }
+[ "\$1" = link ] && [ -f "$T/link.fails" ] && { echo "desk-jira: HTTP 400 from Jira" >&2; exit 1; }
+[ "\$1" = link ] && { echo "linked: \$2 blocks \$4 (read back)"; exit 0; }
+[ "\$1" = fields ] && { [ -f "$T/fields.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }; printf 'customfield_10208\tT-shirt\toption\ncustomfield_10207\tLaunch Priority\toption\ncustomfield_10513\tTeam / Squad (owner)\toption\ncustomfield_10300\tSize\toption\ncustomfield_10301\t2nd Approver\tstring\n'; exit 0; }
+[ "\$1" = meta ] && { printf '== %s\n  customfield_10207 (Launch Priority) allows: P0, P1, P2\n  customfield_10513 (Team / Squad (owner)) allows: Core, Growth, None\n' "\$2"; exit 0; }
 [ -f "$T/search.fails" ] && { echo "desk-jira: HTTP 503 from Jira" >&2; exit 1; }
 cat "$T/search.json"
 EOF
 # Triage: copies the set record for the ticket into the state of the batch it runs in, or fails while
 # $T/recs/<KEY>.fails exists. A run in a named batch is logged with that batch in $T/triage.batch.
+# It takes the seconds in $T/recs/<KEY>.sleep, and logs `start <KEY> <tickets admitted so far>` and
+# `end <KEY>` in $T/triage.events. It stops at the usage limit in $T/recs/<KEY>.limit, or in a named
+# batch only, in $T/recs/<KEY>.batchlimit.
 cat > "$T/bin/triage.sh" <<EOF
 #!/bin/sh
 echo "\$1" >> "$T/triage.calls"
+echo "start \$1 \$(grep -o admitted_by "\$DESK_QUEUE" 2>/dev/null | wc -l | tr -d ' ')" >> "$T/triage.events"
+trap 'echo "end \$1" >> "$T/triage.events"' EXIT
+[ -f "$T/recs/\$1.sleep" ] && sleep "\$(cat "$T/recs/\$1.sleep")"
 [ -n "\${DESK_BATCH:-}" ] && echo "\$1 \$DESK_BATCH \${DESK_DEFAULT_BRANCH:-unpinned}" >> "$T/triage.batch"
 [ -f "$T/recs/\$1.fails" ] && { echo "triage: claude exited 1" >&2; exit 1; }
+[ -f "$T/recs/\$1.limit" ] && { echo "[triage] reading \$1" >&2; echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.limit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
+[ -n "\${DESK_BATCH:-}" ] && [ -f "$T/recs/\$1.batchlimit" ] && { echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.batchlimit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
 mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"
 EOF
 cat > "$T/bin/pass.mjs" <<EOF
@@ -224,6 +239,11 @@ out=$(intake)
 check "a triage that fails is not admitted, and is tried again next run" '[ "$(qget tickets.F-1)" = undefined ] && grep -q "F-1 not admitted: triage failed: triage: claude exited 1; the next intake tries again" <<< "$out"'
 out=$(intake); out=$(intake)
 check "after three failed triages it goes to the digest" 'grep -q "^handed: triage failed" <<< "$(handed F-1)"'
+# Triage's exit 3 is the usage limit, named as triage's USAGE LIMIT line names it, with its reset time.
+echo 'triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC' > "$T/recs/U-1.limit"
+search U-1; out=$(intake)
+check "DS-505 AC4: a triage stopped at the usage limit says so with its reset, not as a failed triage" \
+  'grep -q "U-1 not admitted: triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC; the next intake tries again" <<< "$out" && ! grep -q "produced no triage record\|triage failed" <<< "$out" && [ "$(qget tickets.U-1)" = undefined ]'
 
 # ---- a batch still being planned ---------------------------------------------------------------
 printf '{"version":1,"batch":"p1","supervised":false,"tickets":{"P":{"key":"P","state":"triaged"}}}\n' > "$DESK_QUEUE"
@@ -309,6 +329,14 @@ rec H-2 A '"unknowns":["which tier?"]'; rec H-3 C
 out=$(admit H-2 H-3); rc=$?
 check "admit: a ticket failing a check is refused to the person with why, exit 11" '[ $rc -eq 11 ] && grep -q "^not admitted H-2: open question(s): which tier?$" <<< "$out" && grep -q "^not admitted H-3: lane C: needs a plan$" <<< "$out"'
 check "admit: a refused ticket is not queued or handed to the digest" '[ "$(qget tickets.H-2)" = undefined ] && [ "$(handed H-2)" = none ]'
+echo 'triage stopped at the usage limit' > "$T/recs/U-2.limit"
+cp "$T/recs/U-1.limit" "$T/recs/U-3.limit"
+out=$(admit U-3); rc=$?
+check "DS-505 AC4: /desk-admit refuses a ticket stopped at the usage limit with the limit, its reset, and to try once it lifts" \
+  '[ $rc -eq 11 ] && grep -qx "not admitted U-3: triage stopped at the weekly usage limit, which resets at 2027-01-15 08:00 UTC: run /desk-admit U-3 again once the limit lifts" <<< "$out"'
+out=$(admit U-2); rc=$?
+check "DS-505 AC4: a limit with no reset time names the limit alone" \
+  '[ $rc -eq 11 ] && grep -qx "not admitted U-2: triage stopped at the usage limit: run /desk-admit U-2 again once the limit lifts" <<< "$out"'
 rec H-5 A '"blockers":[{"key":"H-4","category":"new"}]'; rec H-4 A
 out=$(admit H-5 H-4 --front)
 check "admit: a blocker named in the same call goes first, and the other is held behind it" '[ "$(qget tickets.H-4.state)" = triaged ] && [ "$(qget tickets.H-5.held_by)" = H-4 ]'
@@ -452,7 +480,7 @@ const plan = existsSync(s + '/feature.json') ? JSON.parse(readFileSync(s + '/fea
 const owner = plan?.owners?.AC1;
 const qs = owner && !keys.includes(owner) ? ["AC1's owner " + owner + ' is not a child this batch builds: name another owner'] : [];
 const message = ['FEATURE MODE — on', plan ? '  AC1 owner ' + plan.owners.AC1 : '  no feature plan yet'];
-const needs = [...(plan?.spine ? [] : [{ ticket: epic, why: 'feature_plan', detail: 'the plan' }]), ...qs.map((q) => ({ ticket: epic, why: 'question', detail: q }))];
+const needs = [...(plan?.spine && keys.includes(plan.spine) ? [] : [{ ticket: epic, why: 'feature_plan', detail: 'the plan' }]), ...qs.map((q) => ({ ticket: epic, why: 'question', detail: q }))];
 if (seed) {
   const q = (...a) => execFileSync(process.execPath, ['$T/bin/queue.mjs', ...a], { stdio: 'ignore' });
   for (const k of keys) { q('add', k, 'Story', 'A'); q('set', k, 'state=triaged', 'held_by=null'); }
@@ -509,6 +537,45 @@ check "DS-351: the decider hands the plan straight on, with no session" '[ "$(cd
 rec E-10 A '"epic":{"key":"E-5","summary":"a feature"}'
 out=$(admit E-10 --by ben); rc=$?
 check "DS-351 AC2: a child admitted later into the waiting batch is held behind the epic too" '[ $rc -eq 0 ] && [ "$(eget E-5 tickets.E-10.state)" = parked ] && [ "$(eget E-5 tickets.E-10.held_by)" = E-5 ]'
+# Triaged three at a time, the child's triage done long before its epic's: it still waits for the epic.
+rec EP-1 A '"type":"Epic","branch":"feat/EP-1-pool"'; rec EP-3 A '"summary":"a listed child"'; printf 'EP-3\n' > "$T/children/EP-1"
+rec EP-2 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 1 > "$T/recs/EP-1.sleep"
+out=$(TRIAGE_K=3 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-2 EP-1 --by ben); rc=$?
+check "DS-506 AC7: an epic and its child in one call: the child joins the epic's feature batch, not the standing one" \
+  '[ $rc -eq 0 ] && [ "$(eget EP-1 tickets.EP-2.admitted_by)" = ben ] && [ "$(qget tickets.EP-2)" = undefined ] && grep -q "^admitted EP-2 by ben into feature batch EP-1 " <<< "$out"'
+# A child the epic's own start takes into its feature batch: listed by expand-parent, and named in the call too.
+listed(){ rec "$1" A "\"type\":\"Epic\",\"branch\":\"feat/$1-listed\""; rec "$2" A "\"epic\":{\"key\":\"$1\",\"summary\":\"a feature\"}"; printf '%s\n' "$2" > "$T/children/$1"; rm -f "$T/triage.calls"; }
+listed ER-1 ER-2; out=$(TRIAGE_K=1 config yes '`none`'; admit ER-1 ER-2 --by ben); rc=$?
+check "DS-506 AC7: an epic named before its listed child: the child is already in its batch, exit 0, and not triaged a second time" \
+  '[ $rc -eq 0 ] && grep -qx "ER-2 is already in batch ER-1 (parked)" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(tr "\n" " " < "$T/triage.calls")" = "ER-1 ER-2 " ]'
+listed ES-1 ES-2; out=$(TRIAGE_K=1 config yes '`none`'; admit ES-2 ES-1 --by ben); rc=$?
+check "DS-506 AC7: a listed child named before its epic is said to be there too, exit 0" \
+  '[ $rc -eq 0 ] && grep -qx "ES-2 is already in batch ES-1 (parked)" <<< "$out" && ! grep -q "not admitted" <<< "$out" && [ "$(eget ES-1 tickets.ES-2.admitted_by)" = ben ]'
+listed ET-1 ET-2; out=$(TRIAGE_K=3 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit ET-1 ET-2 --by ben); rc=$?
+check "DS-506 AC7: a listed child in triage while its epic starts is said to be there too, exit 0" \
+  '[ $rc -eq 0 ] && grep -qx "ET-2 is already in batch ET-1 (parked)" <<< "$out" && ! grep -q "not admitted" <<< "$out"'
+# A child's second triage, in its epic's feature batch, stops at the usage limit: no triage starts after it.
+rec EP-4 A '"epic":{"key":"EP-1","summary":"a feature"}'; rec EP-5 A; rec EP-6 A; cp "$T/recs/U-1.limit" "$T/recs/EP-4.batchlimit"
+rm -f "$T/triage.calls"; out=$(TRIAGE_K=1 config yes '`none`'; admit EP-4 EP-5 EP-6 --by ben); rc=$?
+check "DS-506 AC4: a usage limit in a feature batch's triage starts no more triages" \
+  '[ $rc -eq 11 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "EP-4 EP-4 " ] && grep -q "^not admitted EP-4: .*weekly usage limit.* in feature batch EP-1: run /desk-admit EP-4 again once the limit lifts$" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EP-5 EP-6: run /desk-admit EP-5 EP-6 again once the limit lifts" <<< "$out"'
+# After a usage limit, a child in flight is not triaged again to join its epic's feature batch.
+rec EP-7 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 0.5 > "$T/recs/EP-7.sleep"; rec EP-8 A; cp "$T/recs/U-1.limit" "$T/recs/EP-8.limit"
+rm -f "$T/triage.calls"; out=$(TRIAGE_K=2 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-7 EP-8 --by ben); rc=$?
+check "DS-506 AC4: after a usage limit, a child is not triaged again to join its epic's feature batch, and is named to admit again" \
+  '[ $rc -eq 11 ] && [ "$(count "$T/triage.calls")" = 2 ] && [ "$(eget EP-1 tickets.EP-7)" = undefined ] && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EP-7: run /desk-admit EP-7 again once the limit lifts" <<< "$out"'
+# An epic's child, triaged in its new feature batch, stops at the usage limit: no triage starts after it.
+rec EQ-1 A '"type":"Epic","branch":"feat/EQ-1-limited"'; rec EQ-2 A; printf 'EQ-2\n' > "$T/children/EQ-1"; cp "$T/recs/U-1.limit" "$T/recs/EQ-2.batchlimit"
+rec EQ-3 A; rec EQ-4 A
+rm -f "$T/triage.calls"; out=$(TRIAGE_K=1 config yes '`none`'; admit EQ-1 EQ-3 EQ-4 --by ben); rc=$?
+check "DS-506 AC4: a usage limit in an epic's child triage starts no more triages, and the epic is named to admit again" \
+  '[ $rc -eq 11 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "EQ-1 EQ-2 " ] && [ ! -e "$EB/EQ-1" ] && grep -q "^not admitted EQ-1: an epic, and its feature batch was not started: child EQ-2 could not be triaged (.*weekly usage limit.*); batch EQ-1 discarded: run /desk-admit EQ-1 again once the limit lifts$" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EQ-3 EQ-4: run /desk-admit EQ-3 EQ-4 again once the limit lifts" <<< "$out"'
+# Past a usage limit, a ticket another batch holds is still said to be there, not named to triage again.
+rec EQ-5 A; rec EQ-6 A; cp "$T/recs/U-1.limit" "$T/recs/EQ-5.limit"
+out=$(TRIAGE_K=1 config yes '`none`'; admit EQ-5 EP-3 EQ-6 --by ben); rc=$?
+check "DS-506 AC4: after a usage limit, a ticket in another batch is told as ever, and only the rest are named" \
+  '[ $rc -eq 11 ] && grep -q "^not admitted EP-3: EP-3 is in batch EP-1" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EQ-6: run /desk-admit EQ-6 again once the limit lifts" <<< "$out"'
+config yes '`none`'; rm -f "$T/recs/EP-1.sleep" "$T/recs/EP-7.sleep"
 config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-19 A '"summary":"the third epic child"'; printf 'E-19\n' > "$T/children/E-9"
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
 check "DS-352: standing intake starts another epic's feature batch beside a live one" '[ "$(eget E-9 base)" = feat/E-9-third ] && [ "$(eget E-5 base)" = feat/E-5-a-feature ] && grep -q "^intake: started feature batch E-9 on feat/E-9-third, beside the standing batch$" <<< "$out" && ! grep -q "E-9 not admitted" <<< "$out"'
@@ -592,6 +659,171 @@ check "DS-354 AC1: an approved plan starts the feature batch on its feature bran
 check "DS-354 AC1: no editor runs on a plain start" '[ "$(count "$T/claude.calls")" = "$n" ] && grep -q "^E-15.s feature batch started on feat/E-15-approved, with its spine E-11 first: 1 child seeded by plan-batch$" "$ES/E-15/supervisor.log"'
 filed=$(node --input-type=module -e "import { readEdit } from '$B/epic-plan.mjs'; const out = (plan) => JSON.stringify({ type: 'result', result: 'PLAN_EDIT: ' + JSON.stringify({ plan, drop: [] }) }); const plan = { spine: 'E-11', draft: 'Spine: AC1', owners: { AC1: 'E-6' } }; console.log(readEdit(out({ draft: 'Spine: AC1 and AC2', owners: { AC1: 'E-6' } }), { children: ['E-6'], plan }).cannot ?? 'applied'); console.log(readEdit(out({ draft: 'Spine: AC1', owners: { AC1: 'E-7' } }), { children: ['E-6', 'E-7'], plan }).plan?.owners.AC1)")
 check "DS-354: an edit to a spine already filed cannot be applied, and one to its owner table can" '[ "$filed" = "$(printf "it changes the spine, which is already filed as E-11: edit E-11 in Jira, then answer start\nE-7")" ]'
+
+# ---- DS-434: what a drafted spine files as ---------------------------------------------------------
+parsed(){ node --input-type=module -e "import { parseDraft } from '$B/epic-plan.mjs'; const p = parseDraft(process.argv[1], { keys: process.argv[2] === 'nosize' ? [] : ['size'] }); console.log(JSON.stringify([p.summary, p.type, p.blocks, p.body]))" "$1" "${2:-}"; }
+check "DS-434: a labelled line that names no field stays in the body, in its place, and headers after it are still read" '[ "$(parsed "The spine
+
+Goal: specs first
+Type: Task
+
+Note: land it first
+Blocks: E-1
+
+## Outcome")" = "[\"The spine\",\"Task\",[\"E-1\"],\"Goal: specs first\\n\\nNote: land it first\\n\\n## Outcome\"]" ]'
+check "DS-434: a first line that only opens with a template word, or with a heading, is still the summary" '[ "$(parsed "Context menu specs land first
+Type: Task
+## Outcome")" = "[\"Context menu specs land first\",\"Task\",[],\"## Outcome\"]" ] && [ "$(parsed "## The spine
+Type: Task")" = "[\"The spine\",\"Task\",[],\"\"]" ]'
+check "DS-434: a Blocks line per key is read as every key" '[ "$(parsed "The spine
+Blocks: E-1
+Blocks: E-2
+## Outcome")" = "[\"The spine\",\"Story\",[\"E-1\",\"E-2\"],\"## Outcome\"]" ]'
+check "DS-434: a first line naming no filing header is the summary, and a body with no headers is whole" '[ "$(parsed "Spine: the AC1 spec
+It lands the spec.")" = "[\"Spine: the AC1 spec\",\"Story\",[],\"It lands the spec.\"]" ]'
+check "DS-434: headers in bold, with a blank line before them, are read and stay out of the body" '[ "$(parsed "# The spine
+
+**Type:** Task
+**Blocks**: E-1, E-2 and E-2
+
+_Context: under E-5_
+
+## Outcome
+Specs.")" = "[\"The spine\",\"Task\",[\"E-1\",\"E-2\"],\"_Context: under E-5_\\n\\n## Outcome\\nSpecs.\"]" ]'
+check "DS-434: headers before a title or a Summary line still leave the summary" '[ "$(parsed "Type: Task
+The spine
+Parent: E-5
+
+## Outcome")" = "[\"The spine\",\"Task\",[],\"## Outcome\"]" ] && [ "$(parsed "Launch Priority: P2
+Summary: The spine
+## Outcome")" = "[\"The spine\",\"Story\",[],\"## Outcome\"]" ]'
+check "DS-434: a draft of headers and sections alone has no summary" '[ "$(parsed "Type: Task
+## Outcome")" = "[\"\",\"Task\",[],\"## Outcome\"]" ]'
+check "DS-434: with no §4 Size field a Size line opens the body; with one it does not" '[ "$(parsed "The spine
+Type: Task
+Blocked by: E-1
+Size: M
+## Outcome" nosize)" = "[\"The spine\",\"Task\",[],\"Size: M\\nBlocked by: E-1\\n## Outcome\"]" ] && [ "$(parsed "The spine
+Size: M
+## Outcome")" = "[\"The spine\",\"Story\",[],\"## Outcome\"]" ]'
+
+# The whole flow, on a repo with §4 Required fields. Each batch is cleared so the next can start.
+rm -rf "$EB/E-15" "$ES/E-15"
+required(){ printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Required fields | `Story: customfield_10208, customfield_10207` `Task: customfield_10208, customfield_10207, customfield_10513` |\n| Size field | `customfield_10208` |\n| Priority | `customfield_10207` |\n| Priorities only you set | `P0` |\n' >> "$T/cfg/repos/acme__widgets/config.md"; }
+drafted(){ printf '{"type":"result","total_cost_usd":0.12,"result":"Drafted.\\nPLAN_RESULT: %s"}\n' "$(node -e 'console.log(JSON.stringify(JSON.stringify({ draft: process.argv[1], owners: { AC1: process.argv[2] } })).slice(1, -1))' "$1" "$2")" > "$T/claude.out"; }
+startepic(){ rec "$1" A "\"type\":\"Epic\",\"branch\":\"feat/$1-required\""; rec "$2" A '"summary":"a child"'; printf '%s\n' "$2" > "$T/children/$1"; }
+clear_calls(){ : > "$T/jira.calls"; }
+cleared(){ rm -rf "${EB:?}/${1:?}" "${ES:?}/${1:?}"; }
+ALL="Spine: the AC1 spec
+Type: Task
+Parent: E-30
+Assignee: Ben Lavender
+Impact: every child
+Repository: acme/widgets
+Blocks: E-31, E-32
+Size: M
+customfield_10207: P2
+Team / Squad (owner): None
+
+_Context: under E-30_
+
+## Outcome
+The specs land first."
+
+config yes '`none`'; required; startepic E-30 E-31; drafted "$ALL" E-31; clear_calls
+out=$(admit E-30 --by ben)
+check "DS-434: the drafter is told each required field, without a priority only the person sets" 'grep -q "^- Launch Priority (customfield_10207), one of P1, P2$" "$ES/E-30/plan-draft.prompt.md" && grep -qF -- "- Team / Squad (owner) (customfield_10513), one of Core, Growth" "$ES/E-30/plan-draft.prompt.md" && grep -q "^- T-shirt (customfield_10208)$" "$ES/E-30/plan-draft.prompt.md"'
+check "DS-434: a plan with every value asks nothing more than start, edit or discard" 'grep -q "held behind it: read .*, then start, edit or discard it$" <<< "$(eget E-30 tickets.E-30.park.question)" && ! grep -q "Before it can start" "$ES/E-30/plan.md"'
+clear_calls; answer E-30 start; out=$(btick)
+check "DS-434 AC1: the spine is filed with a value for each required field, read by Jira name, §4 row and id, and None where Jira offers it" 'grep -qF "create Task Spine: the AC1 spec $ES/E-30/spine.md parent=E-30 customfield_10208=M customfield_10207=P2 customfield_10513=None" "$T/jira.calls"'
+check "DS-434 AC4: a draft naming a type is filed as that type" 'grep -q "^create Task " "$T/jira.calls" && ! grep -q "^create Story " "$T/jira.calls"'
+check "DS-434 AC3: the description holds none of the draft's header lines" '[ "$(cat "$ES/E-30/spine.md")" = "$(printf "_Context: under E-30_\n\n## Outcome\nThe specs land first.")" ]'
+check "DS-434 AC5: each ticket the Blocks line names gets a Blocks link from the spine" 'grep -q "^link E-11 Blocks E-31$" "$T/jira.calls" && grep -q "^link E-11 Blocks E-32$" "$T/jira.calls" && [ -f "$ES/E-30/triage/E-11.json" ] && [ "$(eget E-30 tickets.E-30)" = undefined ]'
+cleared E-30
+
+# AC2: a value the batch cannot work out is asked for with the plan, and a start files nothing.
+PART="Spine: the AC1 spec
+Size: M
+Launch Priority: TBD
+
+## Outcome
+The specs land first."
+startepic E-33 E-34; drafted "$PART" E-34; clear_calls
+out=$(admit E-33 --by ben)
+check "DS-434 AC2: the plan asks for a required field with no value, naming its allowed values" 'grep -q "^feature plan awaiting your answer: the spine and owner table for E-33 are drafted, with 1 child held behind it, but its spine has no value for Launch Priority (customfield_10207), one of P1, P2 (config §4 Required fields and Size field): answer with an edit naming each: read $ES/E-33/plan.md, then edit or discard it$" <<< "$(eget E-33 tickets.E-33.park.question)" && grep -q "^Before it can start, its spine has no value for Launch Priority" "$ES/E-33/plan.md"'
+check "DS-434 AC2: nothing is filed when the plan is drafted" '! grep -q "^create" "$T/jira.calls"'
+answer E-33 start; out=$(btick)
+check "DS-434 AC2: a start with the value still missing asks again, and files nothing" '[ "$(eget E-33 tickets.E-33.state)" = parked ] && grep -q "was not started, because its spine has no value for Launch Priority" <<< "$(pq E-33)" && ! grep -q "^create" "$T/jira.calls" && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).spine)" "$ES/E-33/feature.json")" = null ]'
+editor "$(node -e 'console.log(JSON.stringify({ plan: { draft: process.argv[1].replace("Launch Priority: TBD", "Launch Priority: P2"), owners: { AC1: "E-34" } }, drop: [] }))' "$PART")"
+answer E-33 "Launch Priority is P2"; out=$(btick)
+check "DS-434 AC2: an edit naming the value gets past it, and the editor is told the fields" 'grep -q "customfield_10208=M customfield_10207=P2$" "$T/jira.calls" && grep -q "^- Launch Priority (customfield_10207), one of P1, P2$" "$ES/E-33/plan-edit.prompt.md" && [ "$(eget E-33 tickets.E-33)" = undefined ]'
+cleared E-33
+
+# When Jira's field names cannot be read, a header by a name only they hold cannot be matched, and it says so.
+startepic E-35 E-36; drafted "Spine: the AC1 spec
+T-shirt: M
+Priority: P2" E-36; touch "$T/fields.fails"
+out=$(admit E-35 --by ben)
+check "DS-434: a field name Jira could not give is a question naming why" 'grep -q "its spine has no value for customfield_10208 (config §4 Required fields and Size field, and Jira.s field names could not be read: desk-jira: HTTP 503 from Jira)" <<< "$(eget E-35 tickets.E-35.park.question)"'
+rm -f "$T/fields.fails"; cleared E-35
+
+# Blocks: refused before filing where it could never be linked, and retried after a failed link.
+SPINE="Spine: the AC1 spec
+Size: M
+Priority: P2
+Blocks: E-38
+
+## Outcome
+The specs land first."
+JIRA_EDIT=ask config yes '`none`'; required; startepic E-37 E-38; drafted "$SPINE" E-38; clear_calls
+out=$(admit E-37 --by ben); answer E-37 start; out=$(btick)
+check "DS-434 AC5: a Blocks line §3 jira-edit does not cover asks again before anything is filed" 'grep -q "because linking its spine to E-38 needs config §3 jira-edit to be \"yes\" (it is \"ask\")" <<< "$(pq E-37)" && ! grep -q "^create" "$T/jira.calls"'
+cleared E-37
+config yes '`none`'; required; startepic E-39 E-40; drafted "$SPINE" E-40; mkdir -p "$T/get"; touch "$T/get/E-38.fails"; clear_calls
+out=$(admit E-39 --by ben); answer E-39 start; out=$(btick)
+check "DS-434 AC5: a Blocks key that cannot be read asks again before anything is filed" 'grep -q "because its spine draft blocks E-38, which could not be read (desk-jira: HTTP 404 from Jira)" <<< "$(pq E-39)" && ! grep -q "^create" "$T/jira.calls"'
+rm -f "$T/get/E-38.fails"; touch "$T/link.fails"; clear_calls
+answer E-39 start; out=$(btick)
+check "DS-434 AC5: a refused link asks again, with the spine's key kept" 'grep -q "because its spine E-11 is filed, but its Blocks link to E-38 was refused (desk-jira: HTTP 400 from Jira): put the links right in Jira, then answer start" <<< "$(pq E-39)" && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).spine)" "$ES/E-39/feature.json")" = E-11 ] && [ ! -f "$ES/E-39/triage/E-11.json" ]'
+rm -f "$T/link.fails"; clear_calls
+answer E-39 start; out=$(btick)
+check "DS-434 AC5: the next start finishes the link and does not file a second spine" '! grep -q "^create" "$T/jira.calls" && grep -q "^link E-11 Blocks E-38$" "$T/jira.calls" && [ "$(eget E-39 tickets.E-39)" = undefined ]'
+cleared E-39
+
+# The §4 Size field is carried with no Required fields rule for it, and asked for like one.
+config yes '`none`'; printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Size field | `customfield_10208` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+startepic E-41 E-42; drafted "Spine: the AC1 spec
+Size: M
+
+## Outcome" E-42; out=$(admit E-41 --by ben); clear_calls; answer E-41 start; out=$(btick)
+check "DS-434: a Size line is sent as the §4 Size field, with no Required fields rule for it" 'grep -qF "create Story Spine: the AC1 spec $ES/E-41/spine.md parent=E-41 customfield_10208=M" "$T/jira.calls" && [ "$(cat "$ES/E-41/spine.md")" = "## Outcome" ]'
+cleared E-41
+startepic E-43 E-44; drafted "Spine: the AC1 spec
+
+## Outcome" E-44; clear_calls; out=$(admit E-43 --by ben)
+check "DS-434: a draft with no value for the §4 Size field asks for it" 'grep -q "but its spine has no value for T-shirt (customfield_10208)" <<< "$(eget E-43 tickets.E-43.park.question)" && ! grep -q "^create" "$T/jira.calls"'
+cleared E-43
+
+# A required field Jira names Size, on a repo with no §4 Size field row, is read by that name.
+config yes '`none`'; printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Required fields | `Story: customfield_10300` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+startepic E-45 E-46; drafted "Spine: the AC1 spec
+Size: M
+
+## Outcome" E-46; out=$(admit E-45 --by ben); clear_calls; answer E-45 start; out=$(btick)
+check "DS-434: a required field named Size is sent by that name, and stays out of the body" 'grep -qF "create Story Spine: the AC1 spec $ES/E-45/spine.md parent=E-45 customfield_10300=M" "$T/jira.calls" && [ "$(cat "$ES/E-45/spine.md")" = "## Outcome" ]'
+cleared E-45
+
+# A field line above the Type and Blocks lines, on a name only that type's rule holds.
+config yes '`none`'; printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Required fields | `Task: customfield_10301` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+startepic E-47 E-48; drafted "2nd Approver: Ann
+The spine
+Type: Task
+Blocks: E-48
+
+## Outcome" E-48; out=$(admit E-47 --by ben); clear_calls; answer E-47 start; out=$(btick)
+check "DS-434: a field line above Type and Blocks is sent, and both are read when filing and when linking" 'grep -qF "create Task The spine $ES/E-47/spine.md parent=E-47 customfield_10301=Ann" "$T/jira.calls" && grep -q "^link E-11 Blocks E-48$" "$T/jira.calls"'
+cleared E-47
+config yes '`none`'
 
 # ---- DS-380: a ticket whose files are only on a running batch's base joins that batch -------------
 # main and feat/k-1 both have src/both.js; only feat/k-1 has src/only-k.js. Batch K-1 runs on feat/k-1.
@@ -682,6 +914,89 @@ check "DS-394 AC3: so does a call with no recommendation, and a refused ticket l
 rec VO-1 A '"verify_only":true,"already_met":["AC1: src/a.js:12 retries","AC2: src/b.js:4 logs"]'
 out=$(admit VO-1 --by ben); rc=$?
 check "DS-394 AC4: a ticket whose every criterion is already met is admitted as verify-only" '[ $rc -eq 0 ] && [ "$(qget tickets.VO-1.state)" = triaged ] && grep -q "^admitted VO-1 by ben into batch b1 (lane A, size S, verify-only)$" <<< "$out"'
+
+# ---- DS-506: a bounded triage pool, each ticket admitted as soon as it can be ---------------------
+# most: the most triages in flight at once, from $T/triage.events. started <KEY>: how many tickets the
+# queue held as admitted when that ticket's triage started.
+most(){ local n=0 m=0 ev; while read -r ev _; do if [ "$ev" = start ]; then n=$((n + 1)); [ $n -gt $m ] && m=$n; else n=$((n - 1)); fi; done < "$T/triage.events"; echo $m; }
+started(){ grep "^start $1 " "$T/triage.events" | tail -1 | cut -d' ' -f3; }
+pool(){ TRIAGE_K="$1" tracker; running_batch; rm -f "$T/triage.events" "$T/triage.calls"; }
+P10=(PL-1 PL-2 PL-3 PL-4 PL-5 PL-6 PL-7 PL-8 PL-9 PL-10)
+for k in "${P10[@]}"; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
+pool 3; out=$(DESK_MEM_AVAIL_GB=64 admit "${P10[@]}" --by ben); rc=$?
+check "DS-506 AC1: with Triage concurrency 3, three triages run at once and never more" '[ $rc -eq 0 ] && [ "$(most)" = 3 ] && [ "$(count "$T/triage.calls")" = 10 ]'
+check "DS-506 AC1: the first ticket is admitted before the last triage starts" '[ "$(started PL-10)" -ge 1 ] && [ "$(qget tickets.PL-10.state)" = triaged ] && [ "$(grep -c "^admitted PL-" <<< "$out")" = 10 ]'
+# AC2: SB is blocked by SA, whose triage is the slowest.
+rec SA A; rec SB A '"blockers":[{"key":"SA","category":"new"}]'; rec SC A; echo 1 > "$T/recs/SA.sleep"
+pool 3; out=$(DESK_MEM_AVAIL_GB=64 admit SB SC SA --by ben); rc=$?
+check "DS-506 AC2: a blocker whose triage is the slowest is admitted before what it blocks, held behind it in the batch" \
+  '[ $rc -eq 0 ] && [ "$(grep "^admitted S" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "SC SA SB " ] && [ "$(qget tickets.SB.held_by)" = SA ] && [ "$(qget tickets.SB.held_outside)" = undefined ]'
+# AC3: one triage fails among three.
+rec FA A; rec FB A; rec FC A; touch "$T/recs/FB.fails"
+pool 3; out=$(DESK_MEM_AVAIL_GB=64 admit FA FB FC --by ben); rc=$?
+check "DS-506 AC3: a failed triage refuses that ticket with its reason and admits every other" \
+  '[ $rc -eq 11 ] && grep -qx "not admitted FB: triage failed: triage: claude exited 1: fix it and run /desk-admit FB again" <<< "$out" && [ "$(qget tickets.FA.state)" = triaged ] && [ "$(qget tickets.FC.state)" = triaged ] && [ "$(qget tickets.FB)" = undefined ]'
+# AC4: LA stops at the usage limit while LB is still in flight; LC to LE never start.
+for k in LA LB LC LD LE; do rec "$k" A; done; cp "$T/recs/U-1.limit" "$T/recs/LA.limit"; echo 1 > "$T/recs/LB.sleep"
+pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit LA LB LC LD LE --by ben); rc=$?
+check "DS-506 AC4: after a usage limit no triage starts, and the one in flight finishes and is admitted" \
+  '[ $rc -eq 11 ] && [ "$(sort "$T/triage.calls" | tr "\n" " ")" = "LA LB " ] && [ "$(qget tickets.LB.state)" = triaged ]'
+check "DS-506 AC4: the tickets not triaged are named with the reset time and the command to run again" \
+  'grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): LC LD LE: run /desk-admit LC LD LE again once the limit lifts" <<< "$out" && grep -q "^not admitted LA: triage stopped at the weekly usage limit" <<< "$out"'
+# AC5: killed once KA is admitted, while KB's triage runs.
+rec KA A; rec KB A; echo 3 > "$T/recs/KB.sleep"
+pool 1; (cd "$T/repo" && exec node "$T/bin/intake.mjs" admit KA KB --by ben >/dev/null 2>&1) & pid=$!
+i=0; while [ "$(qget tickets.KA.state)" != triaged ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+# KB's triage outlives the kill; let it end before a later test's events are read.
+i=0; while ! grep -q "^end KB" "$T/triage.events" && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; rm -f "$T/recs/KB.sleep"; : > "$T/triage.calls"
+out=$(admit KA KB --by ben); rc=$?
+check "DS-506 AC5: run again after a kill, an admitted ticket is already in the batch and only the rest are triaged" \
+  '[ $rc -eq 0 ] && grep -qx "KA is already in batch b1 (triaged)" <<< "$out" && [ "$(tr "\n" " " < "$T/triage.calls")" = "KB " ] && [ "$(qget tickets.KB.state)" = triaged ]'
+# AC6: at the default of 1, one at a time, in the order given, and the lines today's run printed.
+rec OA A '"blockers":[{"key":"OC","category":"new"}]'; rec OB A; rec OC A
+pool ''; out=$(admit OA OB OC --by ben); rc=$?
+check "DS-506 AC6: at Triage concurrency 1, triages run one at a time in the order given" '[ "$(most)" = 1 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "OA OB OC " ]'
+check "DS-506 AC6: and the output is today's" '[ $rc -eq 0 ] && [ "$out" = "$(printf "admitted OB by ben into batch b1 (lane A, size S)\nadmitted OC by ben into batch b1 (lane A, size S)\nadmitted OA by ben into batch b1 (lane A, size S), held behind OC\nthe supervisor'\''s next tick picks them up")" ]'
+rec OD A; rec OE A; touch "$T/recs/OE.fails"
+pool ''; out=$(admit OD OE R --by ben); rc=$?
+check "DS-506 AC6: every line before placement comes first, in the order given, as today" \
+  '[ $rc -eq 11 ] && [ "$out" = "$(printf "not admitted OE: triage failed: triage: claude exited 1: fix it and run /desk-admit OE again\nR is already in batch b1 (running)\nadmitted OD by ben into batch b1 (lane A, size S)\nthe supervisor'\''s next tick picks it up")" ]'
+# A blocker Jira links, and one more ticket after it. One at a time keeps today's order; more than one
+# triages the blocker first, to free what it blocks sooner.
+rec JX-1 A '"blockers":[{"key":"JX-2","category":"new"}]'; rec JX-2 A; rec JX-3 A
+printf '{"key":"JX-1","fields":{"status":{"name":"To Do","statusCategory":{"key":"new"}},"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"JX-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}\n' > "$T/get/JX-1.json"
+pool ''; out=$(admit JX-1 JX-2 JX-3 --by ben)
+check "DS-506 AC6: at Triage concurrency 1, a blocker Jira links is triaged in the order given" '[ "$(tr "\n" " " < "$T/triage.calls")" = "JX-1 JX-2 JX-3 " ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
+check "DS-506 AC6: and a ticket behind another is placed after the free ones, as today" '[ "$(grep "^admitted" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "JX-2 JX-3 JX-1 " ]'
+rec QA A '"blockers":[{"key":"QB","category":"new"}]'; rec QB A; rec QC A; touch "$T/recs/QB.fails"
+pool ''; out=$(admit QA QC QB --by ben)
+check "DS-506 AC6: a free ticket keeps its turn behind one whose blocker is then refused, as today" '[ "$(grep "^admitted" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "QA QC " ]'
+rec RP A; rec RX A '"blockers":[{"key":"RP","category":"new"}]'; rec RA A '"blockers":[{"key":"RB","category":"new"}]'; rec RC A; rec RB A
+pool ''; out=$(admit RP RX RA RC RB --by ben)
+check "DS-506 AC6: the tickets left to the end keep today's rounds, past what was placed early" '[ "$(grep "^admitted" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "RP RC RB RX RA " ]'
+echo 0.3 > "$T/recs/JX-2.sleep"; echo 0.3 > "$T/recs/JX-3.sleep"
+pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit JX-1 JX-3 JX-2 --by ben)
+check "DS-506: with more than one at once, a blocker Jira links is triaged before what it blocks" '[ "$(tail -1 "$T/triage.calls")" = JX-1 ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
+# AC7: a subtask the epic lists has no epic on its record, and is named before it: nothing is placed
+# until the epic has started. SP-3 is named between them, and SP-4 is blocked by a child the call leaves out.
+epicget(){ printf '{"key":"%s","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1},"status":{"name":"To Do","statusCategory":{"key":"new"}}}}\n' "$1" > "$T/get/$1.json"; }
+rec SP-1 A '"type":"Epic","branch":"feat/SP-1-subtask"'; epicget SP-1; rec SP-2 A; rec SP-3 A; rec SP-5 A; rec SP-4 A '"blockers":[{"key":"SP-5","category":"new"}]'
+printf 'SP-2\nSP-5\n' > "$T/children/SP-1"
+cat > "$T/claude.out" <<'EOF'
+{"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: the AC1 spec\", \"owners\": {\"AC1\": \"SP-2\"}}"}
+EOF
+pool ''; out=$(admit SP-2 SP-3 SP-4 SP-1 --by ben); rc=$?
+check "DS-506 AC7: an epic named last still starts, with the subtask it lists in its feature batch and not the standing one" \
+  'grep -q "^started feature batch SP-1 on feat/SP-1-subtask" <<< "$out" && [ "$(eget SP-1 tickets.SP-2.admitted_by)" = ben ] && [ "$(qget tickets.SP-2)" = undefined ]'
+check "DS-506 AC6: a ticket between them is placed once the epic has started, as today" '[ "$(started SP-1)" = 0 ] && [ "$(qget tickets.SP-3.state)" = triaged ]'
+check "DS-506 AC7: a ticket blocked by a child the call leaves out joins the feature batch it routes to" \
+  '[ "$(qget tickets.SP-4)" = undefined ] && [ "$(eget SP-1 tickets.SP-4.admitted_by)" = ben ] && grep -q "^admitted SP-4 by ben into feature batch SP-1 " <<< "$out"'
+# AC8: the spawn gate holding brings the pool down to one.
+for k in MA MB MC; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
+pool 3; out=$(DESK_MEM_AVAIL_GB=2 admit MA MB MC --by ben); rc=$?
+check "DS-506 AC8: while the memory spawn gate holds, triages run one at a time, saying why" \
+  '[ $rc -eq 0 ] && [ "$(most)" = 1 ] && grep -qx "triaging one at a time: available memory 2.0G is under the 8G spawn gate" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

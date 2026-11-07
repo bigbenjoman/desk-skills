@@ -7,6 +7,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkRewritten, rewrittenBy } from './split_check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -75,9 +76,14 @@ for (const r of rows) {
 }
 
 // AC2: and no rule is dropped. Every paragraph and list item of the old file is in one of the new
-// files word for word (whitespace aside): the split moves text, it does not reword it.
+// files word for word (whitespace aside): the split moves text, it does not reword it. A paragraph a
+// later ticket rewrote is named by text only it holds (`split_check.mjs`'s `rewritten`).
+const REWRITTEN = [
+  ['DS-460', 'your copy predates 2.0: re-run `install.sh`', 1], // every installed copy is past 2.0
+];
+checkRewritten({ t, label: 'AC2', rewritten: REWRITTEN, items: paras });
 const after = norm(files.map(read).join('\n\n'));
-const dropped = paras.filter((p) => !after.includes(p));
+const dropped = paras.filter((p) => !rewrittenBy(REWRITTEN, p) && !after.includes(p));
 t(`AC2 every paragraph of the old file survives the split (${paras.length} read)`, dropped.length, 0);
 for (const p of dropped) console.log(`     dropped: ${p.slice(0, 120)}`);
 

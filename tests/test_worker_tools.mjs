@@ -117,12 +117,14 @@ writeFileSync(join(T, 'config.md'), `## 0. Repo
 `);
 const SID = '11111111-2222-3333-4444-555555555555';
 // `claude agents --json` reports the session, so spawn-worker finds its pid at once; any other call
-// writes its argv, NUL-separated, to the next free $STUB_LOG.<n>.
+// writes its argv, NUL-separated, to the next free $STUB_LOG.<n>, moved into place whole: a large
+// system prompt takes more than one write, and argv() below reads the file as soon as it is there.
 const stub = join(T, 'stub', 'claude');
 writeFileSync(stub, `#!/usr/bin/env bash
 if [ "$1" = agents ]; then printf '[{"sessionId":"%s","pid":4242}]' "${SID}"; exit 0; fi
 n=0; while [ -e "$STUB_LOG.$n" ]; do n=$((n+1)); done
-printf '%s\\0' "$@" > "$STUB_LOG.$n"
+printf '%s\\0' "$@" > "$STUB_LOG.$n.tmp"
+mv "$STUB_LOG.$n.tmp" "$STUB_LOG.$n"
 `);
 chmodSync(stub, 0o755);
 
@@ -208,6 +210,73 @@ const resumed = launch('fix-one', 'resumed', { AUTOPILOT_RESUME: RESUME });
 t('briefing AC5 a resumed worker resumes its session', resumed.argv.includes('--resume'), true);
 t('briefing AC5 and is not handed a second copy of the briefing', [resumed.prompt, resumed.system].some((s) => s.includes('Briefing for this ticket')), false);
 t('briefing AC5 its prompt is the resume text', resumed.prompt, RESUME);
+
+// The memory lever (config §3b Phase 0 levers): on, the memory folder is not added and the first
+// message carries the index's digest, its size logged; off, the folder is added and there is no digest.
+const MEM = join(T, 'home', '.claude', 'projects', join(T, 'repo').replace(/[^A-Za-z0-9]/g, '-'), 'memory');
+mkdirSync(MEM, { recursive: true });
+writeFileSync(join(MEM, 'MEMORY.md'), '- [One](one.md) — first rule\n- [Two](two.md) — second rule\n');
+const leverCfg = join(T, 'config-memory.md');
+writeFileSync(leverCfg, `${readFileSync(join(T, 'config.md'), 'utf8')}
+## 3b. Cost and autonomy
+| Field | Recommended | Your setting |
+|---|---|---|
+| Phase 0 levers | \`none\` | \`memory\` |
+`);
+const addsMem = (w) => w.argv.some((x, i) => x === MEM && w.argv[i - 1] === '--add-dir');
+const workerLog = join(T, 'state', 'logs', 'fix-one.log');
+const digestLines = () => (existsSync(workerLog) ? readFileSync(workerLog, 'utf8') : '').split('\n').filter((l) => l.includes('"desk_memory_digest"'));
+const memOn = launch('fix-one', 'memon', { DESK_CONFIG: leverCfg });
+t('memory AC1 lever on: the worker is not given the memory folder', [memOn.status, addsMem(memOn)], [0, false]);
+t('memory AC3 lever on: the first message ends with the whole index', memOn.prompt.endsWith('all 2 of its entries: nothing was cut. The files it links to are not loaded.\n\n- [One](one.md) — first rule\n- [Two](two.md) — second rule'), true);
+t('memory AC3 and it follows the briefing', memOn.prompt.indexOf('# Briefing for this ticket') < memOn.prompt.indexOf('# Memory digest'), true);
+t('memory AC2 the digest size is logged', digestLines().map((l) => JSON.parse(l).bytes), [Buffer.byteLength('- [One](one.md) — first rule\n- [Two](two.md) — second rule\n')]);
+t('memory the system prompt is unchanged', memOn.system === one.system, true);
+const memResumed = launch('fix-one', 'memresumed', { DESK_CONFIG: leverCfg, AUTOPILOT_RESUME: RESUME });
+t('memory a resumed worker gets no second digest', [memResumed.prompt, digestLines().length], [RESUME, 1]);
+const memOff = launch('fix-two', 'memoff');
+t('memory AC5 lever off: the worker is given the memory folder, with no digest', [memOff.status, addsMem(memOff), memOff.prompt.includes('# Memory digest')], [0, true, false]);
+
+// The effort lever (config §3b Phase 0 levers and Worker effort): on, each session is launched at the
+// effort named for how it starts, or medium; off, with no --effort. Either way its log records it.
+let cfgN = 0;
+const effortCfg = (row, levers = 'effort') => {
+  const p = join(T, `config-effort-${cfgN += 1}.md`);
+  writeFileSync(p, `${readFileSync(join(T, 'config.md'), 'utf8')}
+## 3b. Cost and autonomy
+| Field | Recommended | Your setting |
+|---|---|---|
+| Phase 0 levers | \`none\` | \`${levers}\` |
+${row ? `| Worker effort | \`none\` | \`${row}\` |\n` : ''}`);
+  return p;
+};
+const flagOf = (w) => (w.argv.includes('--effort') ? w.argv[w.argv.indexOf('--effort') + 1] : 'none');
+const TASK = 'Fix the review finding on $TICKET.';
+const startsOf = (key) => { const f = join(T, 'state', 'logs', `${key}.log`); return readFileSync(f, 'utf8').split('\n').filter((l) => l.includes('"desk_spawn"')).map((l) => JSON.parse(l)); };
+const row = '0=low 4b=high 7=xhigh task=max resume=low';
+const on = { DESK_CONFIG: effortCfg(row) };
+t('effort AC1 a Stage 0 session runs at the effort named', flagOf(launch('eff-a', 'e0', on)), 'low');
+t('effort AC1 a later start runs at its own', flagOf(launch('eff-a', 'e4b', { ...on, AUTOPILOT_START_STAGE: '4b' })), 'high');
+t('effort AC2 a start the row does not name runs at medium, passed', flagOf(launch('eff-a', 'e5', { ...on, AUTOPILOT_START_STAGE: '5' })), 'medium');
+t('effort AC2 with no row every start runs at medium', flagOf(launch('eff-a', 'enorow', { DESK_CONFIG: effortCfg('') })), 'medium');
+t('effort AC6 a task session runs at task', flagOf(launch('eff-a', 'etask', { ...on, AUTOPILOT_TASK: TASK })), 'max');
+t('effort AC6 a resume wins over a task, as its prompt does', flagOf(launch('eff-a', 'eres', { ...on, AUTOPILOT_RESUME: RESUME, AUTOPILOT_TASK: TASK })), 'low');
+const noTask = { DESK_CONFIG: effortCfg('0=low') };
+t('effort AC6 task and resume unnamed run at medium, passed',
+  [flagOf(launch('eff-a', 'etask2', { ...noTask, AUTOPILOT_TASK: TASK })), flagOf(launch('eff-a', 'eres2', { ...noTask, AUTOPILOT_RESUME: RESUME }))], ['medium', 'medium']);
+t('effort AC3 the log records each start, model and effort', startsOf('eff-a').slice(0, 2).map((s) => `${s.stage} ${s.model} ${s.effort}`), ['0 default low', '4b default high']);
+t('effort AC3 a task and a resume are recorded as those starts', startsOf('eff-a').map((s) => s.stage), ['0', '4b', '5', '0', 'task', 'resume', 'task', 'resume']);
+
+const badCfg = { DESK_CONFIG: effortCfg('0=low 7=turbo') };
+const bad = launch('eff-b', 'ebad', badCfg);
+t('effort AC4 an unknown value refuses the spawn, naming it', [bad.status, /^FAIL: .*Worker effort.*unknown effort `turbo`/m.test(bad.stderr), bad.argv.length], [1, true, 0]);
+r = spawnWorker('preflight', 'ebadpre', { AUTOPILOT_PREFLIGHT: '1', ...badCfg });
+t('effort AC4 it is refused before the preflight spends anything', [r.status, /unknown effort `turbo`/.test(r.stderr), argv('ebadpre', 0)], [1, true, null]);
+
+const off = launch('eff-c', 'eoff', { DESK_CONFIG: effortCfg('0=turbo', 'codex') });
+t('effort AC5 lever off: no --effort, and the row is not read', [off.status, flagOf(off)], [0, 'none']);
+t('effort AC5 lever off: the launch arguments match a config with neither row', off.argv, launch('eff-c', 'eplain').argv);
+t('effort AC3 lever off: the log shows effort default', startsOf('eff-c').map((s) => s.effort), ['default', 'default']);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

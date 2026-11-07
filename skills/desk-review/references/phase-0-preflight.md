@@ -44,8 +44,11 @@ says so in `AUTOPILOT_DONE`):
 
 > Codex is unavailable (`<the error>`, or "§3 codex-review is no"), so refutation would fall back to
 > `ada-devils-advocate`, Claude checking Claude. A model shares its own vendor's blind spots, so
-> more false positives would reach you marked CONFIRMED. Fix it with `! codex login`, or say
-> **proceed** to run same-vendor.
+> more false positives would reach you marked CONFIRMED.
+>
+> 1. Fix it with `! codex login` (Recommended: refutation stays cross-vendor, so fewer false
+>    positives reach you marked CONFIRMED).
+> 2. Say **proceed** to run same-vendor.
 
 On proceed, every finding is tagged `(same-vendor)`, the header says so, there is no codex cold
 finder, and the verdict line carries `vendor=same-vendor`. A reader cannot tell from the word

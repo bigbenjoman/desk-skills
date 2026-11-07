@@ -148,7 +148,7 @@ listed, and the line on why goes in the park on its run id, after the run id
 
 ### Self-review — `desk-ticket` Stage 4b
 
-Run §4 Local review command (`desk-env get local-review`) on your branch once the change is verified and **before you capture any
+Run the review `desk-env review-cmd` prints on your branch once the change is verified and **before you capture any
 screenshot**. A confirmed finding means a code change, and every shot taken before it is of the old
 build. With `none`, Stage 4b is a stated skip: say `review=SKIPPED (none configured)` in
 `AUTOPILOT_DONE`, and nothing below about findings or posting applies.
@@ -206,7 +206,7 @@ finders read-only, and when and how to call `codex`. Read that section before th
 - **Nothing found**: say so with the count of files reviewed. It goes in the PR's Testing bullet
   per `desk-pr`, carrying the SHA and any `(same-vendor)` tag.
 
-**Before every push** (§4 Local review command `/desk-review`, or a `scripts/desk/review-gate.mjs`):
+**Before every push** (where `desk-env review-cmd` prints `/desk-review`, or a `scripts/desk/review-gate.mjs`):
 run desk-review's `bin/verdict.mjs --check <report> <HEAD SHA>`. Exit 1: don't push; review the
 head again; still rejected, park. Exit 2: park.
 
@@ -248,7 +248,7 @@ as reviewed.
 
 Self-review and the PR stage each start in a new session, so neither pays to re-read the context
 the build grew. Hand off at two points, and only at the end of a stage that passed (a stage that
-parks parks as before):
+parks just parks):
 
 - **At the end of Stage 4**, before Stage 4b, unless your session started at Stage 4b or later.
 - **At the end of Stage 6**, before Stage 7, unless your session started at Stage 7.

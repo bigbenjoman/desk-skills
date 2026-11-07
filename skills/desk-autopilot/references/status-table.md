@@ -13,10 +13,10 @@ other six from memory, and silence between spawn and PR reads as nothing happeni
 
 Emit it whenever the status monitor fires with a real change: a spawn, a park, an unpark, a question
 for the person, a PR landing, a merge, a failure. Not on memory jitter, and not on a pass that
-changed nothing. **A worker stepping from one stage to the next no longer wakes you**: each wake
+changed nothing. **A worker stepping from one stage to the next does not wake you**: each wake
 re-reads your whole context, and desk-q already shows every stage. The table printed on the next
 real change carries each running ticket's current stage. `queue.mjs watch --stages` fires on stage
-steps too, as it used to. A draft PR a worker opens while it carries on shows on its running row
+steps too. A draft PR a worker opens while it carries on shows on its running row
 once a pass finds it on GitHub (from Stage 7, kept as `draft_pr`), and a merge (`queue.mjs merged`)
 moves the row from `PR OPEN` to `DONE … merged`, so both wake you. A finished ticket reads `DONE`
 only once its PR has merged, or it finished with no PR; `CLOSED` once its PR was closed unmerged.
@@ -37,7 +37,7 @@ only once its PR has merged, or it finished with no PR; `CLOSED` once its PR was
 `full`, the rule above). It applies to a batch run in the session: someone following the batch in
 desk-q already sees every row, so the table twice in the session is only spent context. The status
 watch then prints the table once at start and, after that, one line per ticket that changed (key,
-old → new) with the memory line. On a spawn (or, with `--stages`, a stage step), reply in one line at most, with no
+old → new) with the memory line. On a spawn (or, with `--stages`, a stage step), reply briefly, with no
 table, or not at all. Quiet removes repetition, never signal:
 
 - **A park, a question for the person, a PR opening, a merge or a failure** still gets its line,
@@ -48,7 +48,7 @@ table, or not at all. Quiet removes repetition, never signal:
 Any value but `full` or `quiet` reads as `full`: the watch's first line says the value was not
 recognised; say that once to the person, and run the batch at `full`.
 
-**The batch report (Stage 8) carries the batch's CI red rate.** Workers now run related tests rather
+**The batch report (Stage 8) carries the batch's CI red rate.** Workers run related tests rather
 than full suites, so a rise in red PRs is the cost of that showing up. Once the batch has PRs, run
 
 ```bash
@@ -56,8 +56,8 @@ node ~/.claude/desk/bin/desk-ci.mjs batch-red      # the queue's finished ticket
 ```
 
 It measures those PRs exactly as `desk-ci measure` measures a window (a PR is red when any attempt
-of any run on it went red) and compares the rate with the newest `measure` report for the repo, the
-D6 baseline, in the main checkout's `.handoffs/`. Put its `batch:` and `baseline:` lines in the
+of any run on it went red) and compares the rate with the newest `measure` report for the repo, its
+baseline, in the main checkout's `.handoffs/`. Put its `batch:` and `baseline:` lines in the
 report. **`RED RATE ROSE`** (more than 5 percentage points above the baseline, exit 1) is a finding:
 say it first, with the PRs that went red, and do not lower it to a note. With no baseline it says so;
 offer `desk-ci measure` rather than reporting the rate as normal.

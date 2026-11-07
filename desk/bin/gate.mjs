@@ -35,9 +35,13 @@
 //   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
 //   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
 //   stateFailing(failing, stateChecks) -> the failing checks that are state checks, each with its kind
+//   failureLine(notes)       a job's annotations -> the first error its run gave, or null
+//   failureMessage(repo, jobId) -> failureLine read from GitHub; undefined when they cannot be read
 //   skippedOnly(checks)      every check finished, at least one was skipped, and the rest passed
 //   isBot(author)            a PR author, reviewer or commenter ({ login, __typename? }) that is a bot
 //   isHuman(author, self)    one that is neither a bot nor `self`
+//   PENDING_LIMIT_MS         how long a check may stay pending before it is taken as stuck
+//   since(ms)                a span as "4m", "3h 24m" or "3d 4h" (desk-q's ages, the pass's stuck-check log)
 //
 // CLI (merge-driver.sh):
 //   node gate.mjs pr <number> [--repo owner/name] [--merger <login>]   one JSON object: title, sha, base,
@@ -61,6 +65,14 @@ import { fileURLToPath } from 'node:url';
 import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
+// How long a check may stay queued or running before it is taken as stuck: GitHub Actions' default
+// job timeout-minutes (360), past which a job that is still running has lost its runner.
+export const PENDING_LIMIT_MS = 6 * 60 * 60 * 1000;
+// A span as "4m", "3h 24m" or, from a day, "3d 4h": a check's age as desk-q shows it and the pass logs it.
+export const since = (ms) => {
+  const m = Math.floor(ms / 60000);
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor(m / 60) % 24}h`;
+};
 // A required check passes as branch protection passes it: success, or a job its workflow skipped by
 // `if:`. A head whose every check was skipped still fails clause 3 (no success).
 const REQUIRED_PASS = new Set(['success', 'skipped']);
@@ -97,6 +109,7 @@ export function normaliseCheck(c) {
 }
 export const normaliseRollup = (nodes) => (nodes || []).filter((n) => n && (n.name || n.context)).map((n) => ({
   ...normaliseCheck(n), workflow: n.workflowName ?? null, startedAt: n.startedAt ?? null, completedAt: n.completedAt ?? null,
+  jobId: /\/job\/(\d+)/.exec(n.detailsUrl ?? '')?.[1] ?? null,
 }));
 
 // The latest run of each check, as GitHub's own `gh pr checks` and branch protection read it.
@@ -573,14 +586,19 @@ function loadStateChecks(E) {
   if (errors.length) throw new Error(`config §4 State checks does not parse: ${errors.join(', ')} (want \`<check>\` or \`<check>: ${STATE_KINDS.join('|')}\`, one span per check, or \`none\`). Run /desk-setup`);
   return checks;
 }
-// The first failure a check run's annotations give (a workflow's ::error:: line), or null.
-function failureMessage(repo, jobId) {
+// The first failure a check run's annotations give (a workflow's ::error:: line), or null. The line
+// GitHub adds for the step's exit code says nothing of why, and can come first. Kept long: a review
+// gate's line names its files first and asks for the approval after them, and needs-you reads all of it.
+const EXIT_LINE = /^Process completed with exit code \d+\.?$/;
+export function failureLine(notes) {
+  const m = (Array.isArray(notes) ? notes : []).find((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()))?.message;
+  return m ? String(m).split('\n')[0].trim().slice(0, 2000) : null;
+}
+// failureLine for a job, or undefined when its annotations could not be read.
+export function failureMessage(repo, jobId) {
   if (!jobId) return null;
-  try {
-    const notes = JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations`]));
-    const m = (Array.isArray(notes) ? notes : []).find((x) => x?.annotation_level === 'failure' && x.message)?.message;
-    return m ? String(m).split('\n')[0].trim().slice(0, 300) : null;
-  } catch { return null; }
+  try { return failureLine(JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations`]))); }
+  catch { return undefined; }
 }
 export const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 // The workflow runs on a commit, in the shape evaluateGate reads. Throws when gh cannot list them.
@@ -621,9 +639,8 @@ if (isMain) {
       // A failing §4 State check is never rerun: it reads the PR's state, which a rerun reads again.
       // Each carries the error its run gave, for the driver's log.
       const stateChecks = loadStateChecks(E);
-      const jobOf = (f) => (pr.statusCheckRollup ?? []).filter((x) => x?.name === f.name && (!f.runId || String(x.detailsUrl ?? '').includes(`/runs/${f.runId}/`)))
-        .map((x) => /\/job\/(\d+)/.exec(String(x.detailsUrl ?? ''))?.[1]).filter(Boolean).pop() ?? null;
-      const state = stateFailing(gate.failing, stateChecks).map((f) => ({ ...f, why: failureMessage(repo, jobOf(f)) }));
+      const jobOf = (f) => checks.filter((x) => x.name === f.name && (!f.runId || x.runId === f.runId)).map((x) => x.jobId).filter(Boolean).pop() ?? null;
+      const state = stateFailing(gate.failing, stateChecks).map((f) => ({ ...f, why: failureMessage(repo, jobOf(f))?.slice(0, 300) ?? null }));
       const toRerun = gate.failing.filter((f) => !state.some((s) => s.name === f.name));
       // A run holding a red state check as well as one red check to rerun: `--failed` would rerun the state
       // check too, so that check's job is rerun alone. With more than one (a job rerun puts the run in

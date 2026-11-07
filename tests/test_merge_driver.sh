@@ -67,6 +67,14 @@ fs.appendFileSync('$T/gh.log', a.join(' ') + '\n');
 // gh.signedout: what gh says, and its exit code, signed out; gh.broken: any other failure.
 if (fs.existsSync('$T/gh.signedout')) { console.error('To get started with GitHub CLI, please run:  gh auth login'); process.exit(4); }
 if (fs.existsSync('$T/gh.broken')) { console.error('error connecting to api.github.com'); process.exit(1); }
+// A shell command run once, so the queue changes mid-loop: gh.midloop at the review read, between a PR's
+// gate and its merge; gh.atlist at the PR list, once the queue's tickets are read and before any gate.
+const hook = a[0] === 'api' && a.includes('graphql') ? '$T/gh.midloop' : a[1] === 'list' ? '$T/gh.atlist' : null;
+if (hook && fs.existsSync(hook)) {
+  const c = fs.readFileSync(hook, 'utf8');
+  fs.rmSync(hook);
+  require('child_process').execSync(c, { stdio: 'ignore' });
+}
 const prs = JSON.parse(fs.readFileSync(F, 'utf8'));
 const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
@@ -610,7 +618,53 @@ q set T-61 merge_after=null
 sloop; sloop
 check "DS-407 AC3: once the step is lifted, it merges with no other answer, pinned to its head" '[ "$(merged)" = 161 ] && grep -qx "161 main $SHA61" "$T/merges.log"'
 
-# ---- DS-419: a feature merges only once a person approves it; review feedback goes to a worker instead --
+# ---- The person's instruction on a ready PR holds its merge until a worker has carried it out --------
+SHA62=a611111111111111111111111111111111111111; SHA63=a622222222222222222222222222222222222222
+SHA64=a633333333333333333333333333333333333333; SHA65=a644444444444444444444444444444444444444
+green_pr(){ # green_pr <n> <sha>: the one PR, ready and green, on fix/T-<n - 100>
+  printf '{ "%s": { "head": "fix/T-%s", "base": "main", "sha": "%s", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] } }\n' "$1" "$(($1 - 100))" "$2" > "$T/prs.json"
+}
+instruction(){ printf '{"try":1,"of":1,"kind":"instruction","pr":%s,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}' "$1"; }
+iloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$1" 2>&1); rc=$?; }
+green_pr 162 $SHA62
+q init merge-instruction
+q add T-62 Story A; q set T-62 branch=fix/T-62 state=queued result.pr=162 "fix=$(instruction 162)"
+: > "$T/merges.log"
+iloop T-62; iloop T-62
+check "a green PR is not merged while the person's instruction waits for a worker" '[ -z "$(merged)" ] && echo "$out" | grep -q "#162 HELD: a worker has still to carry out the person.s instruction"'
+check "and it is held before the green confirmation, so that starts again once the hold lifts" '! echo "$out" | grep -q "#162 green" && [ ! -f "$T/state/merge-driver/green-162" ]'
+q set T-62 state=parked
+iloop T-62; iloop T-62
+check "a worker that parked on it has not carried it out, so the PR is still held" '[ -z "$(merged)" ] && echo "$out" | grep -q "#162 HELD: a worker"'
+q set T-62 state=done fix.finished=2026-11-07T00:00:00Z
+iloop T-62; iloop T-62
+check "once its fix is finished, it merges pinned to its head" '[ "$(merged)" = 162 ] && grep -qx "162 main $SHA62" "$T/merges.log"'
+
+green_pr 163 $SHA63
+q init merge-instruction-other-fix
+q add T-63 Story A; q set T-63 branch=fix/T-63 state=done result.pr=163 'fix={"try":1,"of":3,"kind":"conflict","pr":163,"what":"a conflict"}'
+: > "$T/merges.log"
+iloop T-63; iloop T-63
+check "another kind of unfinished fix is not held by this" '[ "$(merged)" = 163 ] && ! echo "$out" | grep -q "HELD: a worker"'
+
+green_pr 164 $SHA64
+q init merge-instruction-race
+q add T-64 Story A; q set T-64 branch=fix/T-64 state=done result.pr=164
+: > "$T/merges.log"
+iloop T-64
+printf '%s' "node '$B/queue.mjs' set T-64 'fix=$(instruction 164)'" > "$T/gh.midloop"
+iloop T-64
+check "an instruction recorded after the PR's gate read still stops the merge" '[ -z "$(merged)" ] && [ ! -e "$T/gh.midloop" ] && echo "$out" | grep -q "#164 HELD: a worker" && ! echo "$out" | grep -q "#164 gate GREEN"'
+
+green_pr 165 $SHA65
+q init merge-instruction-unreadable
+q add T-65 Story A; q set T-65 branch=fix/T-65 state=done result.pr=165
+: > "$T/merges.log"
+printf '%s' "printf '{' > '$DESK_QUEUE'" > "$T/gh.atlist"
+iloop T-65
+check "a queue that cannot be read holds the merge" '[ -z "$(merged)" ] && echo "$out" | grep -q "#165 could not read the queue for the person.s instruction"'
+
+# ---- DS-419 / DS-433: a green feature merges with no GitHub approval; review feedback goes to a worker --
 SHA71=a711111111111111111111111111111111111111; SHA72=a722222222222222222222222222222222222222
 cat > "$T/prs.json" <<EOF
 { "171": { "head": "feat/T-71", "base": "main", "sha": "$SHA71", "state": "open", "draft": false, "title": "feat(rail): T-71 live classes", "checks": [["test", "SUCCESS"]] },
@@ -623,16 +677,12 @@ q add T-72 Story A; q set T-72 branch=feat/T-72 state=done result.pr=172 "merge_
 aloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-71 T-72" 2>&1); rc=$?; }
 aloop
 check "DS-419 AC10: a feat PR with an unresolved thread is held for the feedback, and its approval request is cleared" 'echo "$out" | grep -q "#172 has outstanding review feedback (NONE, 1 unresolved)" && ! echo "$out" | grep -q "#172 .*a feature with no approval" && [ "$(qf T-72 .merge_blocked)" = null ]'
-aloop
-check "DS-419 AC9: a green feat PR with no thread open and no approval is not merged" '[ -z "$(merged)" ] && echo "$out" | grep -q "#171 green at a71111111, a feature with no approval — not merging until a person approves it"'
-check "DS-419 AC9: the queue asks the person for an approval" '[ "$(qf T-71 .merge_blocked)" = "approval: a feature, green at a71111111 with no approval: a person approves it before desk merges it" ]'
+# Loop 2 holds the confirm window open, so #171 (confirming, not held) is still open while #172 is read.
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=3600 bash "$B/merge-driver.sh" --tickets "T-71 T-72" 2>&1); rc=$?
+check "DS-433: a green feat PR with no thread open and no GitHub approval is not held for one" '! echo "$out" | grep -q "a feature with no approval" && echo "$out" | grep -q "#171 green at a71111111 — confirming" && [ "$(qf T-71 .merge_blocked)" = null ]'
 check "DS-419 AC10: held a second loop, its feedback is recorded for the fix worker, with no approval asked" '! echo "$out" | grep -q "#172 .*a feature with no approval" && qf T-72 .merge_blocked | grep -q "^review feedback: 1 unresolved thread on a green PR, first "'
-jq '."171".checks = [["test", "FAILURE"]]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 aloop
-check "DS-419: a feat PR that goes red no longer asks for an approval" '[ "$(qf T-71 .merge_blocked)" = null ] && [ -z "$(merged)" ]'
-jq '."171".checks = [["test", "SUCCESS"]] | ."171".feedback = "APPROVED 0"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
-aloop; aloop
-check "DS-419 AC9: once approved, the request is cleared and it merges, pinned to its head" '[ "$(merged)" = 171 ] && grep -qx "171 main $SHA71" "$T/merges.log" && [ "$(qf T-71 .merge_blocked)" = null ]'
+check "DS-433: confirmed green on the next loop, it merges, pinned to its head, with no approval asked" '[ "$(merged)" = 171 ] && grep -qx "171 main $SHA71" "$T/merges.log" && [ "$(qf T-71 .merge_blocked)" = null ]'
 
 # ---- DS-420: why the driver is not merging a red PR is recorded too: its review threads, or an approval --
 SHA81=b811111111111111111111111111111111111111; SHA82=b822222222222222222222222222222222222222
@@ -694,5 +744,110 @@ stloop
 check "DS-422 AC1: a later loop reruns no state check either" '! grep -q "run rerun 919[12]" "$T/gh.log" && ! echo "$out" | grep -q "#191 red, cooling down"'
 out=$(DESK_CONFIG="$T/config-state-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merge-driver.sh" --tickets "T-91" 2>&1); rc=$?
 check "DS-422: a state row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: config §4 State checks does not parse: \`🔐 Review gate: approve\`" && ! echo "$out" | grep -q "merge driver up"'
+
+# ---- DS-433: every PR merges on a clean desk-review at its head, whatever its title, with no approval --
+cp "$T/config.md" "$T/config-rv.md"
+echo '| Local review command | `/desk-review` |' >> "$T/config-rv.md"
+echo '| Clean review verdict | `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0` |' >> "$T/config-rv.md"
+# vp <n> <sha> <counts, or "-" for no review> [<a line of the body>]: PR #n's GraphQL read, with tester's desk-review.
+vp(){
+  node -e 'const [f, sha, counts, line] = process.argv.slice(1);
+    const reviews = counts === "-" ? [] : [{ id: "PRR_1", author: { login: "tester" }, commit: { oid: sha }, body: ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts} vendor=codex round=2 -->`, "**desk-review, round 2**", ...(line ? [line] : [])].join("\n") }];
+    require("fs").writeFileSync(f, JSON.stringify({ data: { repository: { pullRequest: { reviewDecision: null, reviews: { nodes: reviews }, reviewThreads: { nodes: [] } } } } }));' "$T/vp-$1.json" "$2" "$3" "${4:-}"
+}
+# rv_prs "<n> <branch> <sha> <title> [<feedback>]"...: open, ready, green PRs read from vp-<n>.json, each a ticket T-<n>.
+CLEAN='p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
+rv_prs(){
+  : > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-*; echo '{}' > "$T/prs.json"; q init "merge-rv-$1"; shift; RV_TICKETS=""
+  local row n br sha title fb
+  for row in "$@"; do
+    IFS='|' read -r n br sha title fb <<EOF_ROW
+$row
+EOF_ROW
+    jq --arg n "$n" --arg br "$br" --arg sha "$sha" --arg t "$title" --arg fb "$fb" --arg pl "$T/vp-$n.json" \
+      '.[$n] = { head: $br, base: "main", sha: $sha, state: "open", draft: false, title: $t, feedback: $fb, payload: $pl, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+    q add "T-$n" Story A; q set "T-$n" "branch=$br" state=done "result.pr=$n"
+    RV_TICKETS="$RV_TICKETS T-$n"
+  done
+}
+rvloop(){ out=$(DESK_CONFIG="${RV_CONFIG:-$T/config-rv.md}" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$RV_TICKETS" 2>&1); rc=$?; }
+SHA201=d201111111111111111111111111111111111111; SHA202=d202222222222222222222222222222222222222; SHA203=d203333333333333333333333333333333333333
+
+vp 201 "$SHA201" "$CLEAN"
+rv_prs ac1 "201|feat/T-201|$SHA201|feat(rail): T-201 live classes|"
+rvloop; rvloop
+check "DS-433 AC1: a green feat PR with a clean verdict at its head and no approval merges, pinned to that head" '[ "$(merged)" = 201 ] && grep -qx "201 main $SHA201" "$T/merges.log"'
+check "DS-433 AC1: and nothing is left for needs-you" '[ "$(qf T-201 .merge_blocked)" = null ]'
+
+vp 201 "$SHA202" "$CLEAN"
+rv_prs ac2 "201|feat/T-201|$SHA201|feat(rail): T-201 live classes|"
+rvloop; rvloop
+check "DS-433 AC2: a clean verdict for an older head does not merge it, and it is held for the review" '[ -z "$(merged)" ] && echo "$out" | grep -q "#201 green at d20111111, HELD with no clean review at its head: its review verdict is for d20222222, not the head d20111111" && [ ! -e "$SD/green-201" ]'
+vp 201 "$SHA201" "$CLEAN"
+rvloop; rvloop
+check "DS-433 AC2: once a clean verdict is posted at the head, it merges with no other answer" '[ "$(merged)" = 201 ] && grep -qx "201 main $SHA201" "$T/merges.log"'
+
+vp 201 "$SHA201" -
+vp 202 "$SHA202" 'p0=0 p1=0 p2=1 deferred=0 gaps=0 unrefuted=0 partial=0'
+vp 203 "$SHA203" 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0' '<!-- desk-review:carried v=1 p2=2 since=d200000000000000000000000000000000000000 -->'
+rv_prs p2 "201|fix/T-201|$SHA201|fix: T-201 no review|" "202|fix/T-202|$SHA202|fix: T-202 an open P2|" "203|fix/T-203|$SHA203|fix: T-203 carried P2s|"
+rvloop; rvloop
+check "DS-433: a PR with no verdict at all is held" 'echo "$out" | grep -q "#201 green at d20111111, HELD with no clean review at its head: no desk-review verdict is posted on it"'
+check "DS-433: an uncarried P2 at the head holds it" 'echo "$out" | grep -q "#202 green at d20222222, HELD with no clean review at its head: its review verdict at d20222222 is not clean (p2=1)"'
+check "DS-433: P2s carried on the carried line do not hold it, and only it merges" '[ "$(merged)" = 203 ] && grep -qx "203 main $SHA203" "$T/merges.log"'
+
+vp 201 "$SHA201" "$CLEAN"
+rv_prs ac3 "201|feat/T-201|$SHA201|feat(rail): T-201 live classes|REVIEW_REQUIRED 0"
+rvloop; rvloop
+check "DS-433 AC3: where GitHub requires an approving review, a green cleanly reviewed feat PR stays held and needs-you asks" '[ -z "$(merged)" ] && [ "$(qf T-201 .merge_blocked)" = "approval: an approving review is required at d20111111: a person approves it before desk merges it" ]'
+
+sed 's/| `autopilot-merge` | Merge batch PRs | `no` | `yes` |/| `autopilot-merge` | Merge batch PRs | `no` | `no` |/' "$T/config-rv.md" > "$T/config-rv-no.md"
+vp 201 "$SHA201" "$CLEAN"
+rv_prs ac4 "201|feat/T-201|$SHA201|feat(rail): T-201 live classes|"
+RV_CONFIG="$T/config-rv-no.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-433 AC4: under §3 autopilot-merge no, a green cleanly reviewed feat PR is not merged" '[ -z "$(merged)" ] && [ $rc -eq 1 ] && echo "$out" | grep -q "the driver merges nothing"'
+
+vp 201 "$SHA201" "$CLEAN"; vp 202 "$SHA202" "$CLEAN"
+rv_prs ac5 "201|fix/T-201|$SHA201|fix: T-201 a bug|" "202|feat/T-202|$SHA202|feat: T-202 a feature|"
+rvloop
+check "DS-433 AC5: a fix PR and a feat PR both green and clean are confirmed the same way" 'echo "$out" | grep -q "#201 green at d20111111 — confirming" && echo "$out" | grep -q "#202 green at d20222222 — confirming"'
+rvloop; rvloop
+check "DS-433 AC5: and both merge, pinned to their heads, with nothing left for a person" '[ "$(merged)" = "201 202" ] && grep -qx "201 main $SHA201" "$T/merges.log" && grep -qx "202 main $SHA202" "$T/merges.log" && [ "$(qf T-201 .merge_blocked)" = null ] && [ "$(qf T-202 .merge_blocked)" = null ]'
+vp 201 "$SHA201" -; vp 202 "$SHA202" -
+rv_prs ac5b "201|fix/T-201|$SHA201|fix: T-201 a bug|" "202|feat/T-202|$SHA202|feat: T-202 a feature|"
+rvloop; rvloop
+check "DS-433 AC5: and neither merges with no review" '[ -z "$(merged)" ] && echo "$out" | grep -q "#201 green at d20111111, HELD" && echo "$out" | grep -q "#202 green at d20222222, HELD"'
+
+# The hold reads the row: `none` waits on nothing, and a plain-text row and §3 merge-feedback-first no still hold.
+sed 's/| Local review command | `\/desk-review` |/| Local review command | `none` |/' "$T/config-rv.md" > "$T/config-rv-none.md"
+vp 201 "$SHA201" -
+rv_prs none "201|fix/T-201|$SHA201|fix: T-201 a bug|"
+RV_CONFIG="$T/config-rv-none.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-433: §4 Local review command none waits on no verdict" '[ "$(merged)" = 201 ]'
+sed 's/^| `pr-ready` .*/&\n| `merge-feedback-first` | Feedback first | `yes` | `no` |/' "$T/config-rv.md" > "$T/config-rv-fb.md"
+rv_prs fbno "201|fix/T-201|$SHA201|fix: T-201 a bug|"
+RV_CONFIG="$T/config-rv-fb.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-433: §3 merge-feedback-first no skips the threads, not the verdict" '[ -z "$(merged)" ] && echo "$out" | grep -q "#201 green at d20111111, HELD"'
+sed 's/| Clean review verdict | .*/| Clean review verdict | `no findings` |/' "$T/config-rv.md" > "$T/config-rv-plain.md"
+node -e 'const sha = process.argv[2]; require("fs").writeFileSync(process.argv[1], JSON.stringify({ data: { repository: { pullRequest: { reviewDecision: null, reviews: { nodes: [{ id: "PRR_1", author: { login: "tester" }, commit: { oid: sha }, body: "No findings.\nNothing deferred or carried." }] }, reviewThreads: { nodes: [] } } } } }));' "$T/vp-201.json" "$SHA201"
+rv_prs plain "201|fix/T-201|$SHA201|fix: T-201 a bug|"
+RV_CONFIG="$T/config-rv-plain.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-433: under a plain-text row, a review stating it at the head reads as clean, so it merges" '[ "$(merged)" = 201 ]'
+
+# A verdict carried across a clean merge of the base holds at the head; commits of its own do not. Real commits, fetched.
+git init -q --bare -b main "$T/origin.git"; git -C "$T/repo" remote add origin "file://$T/origin.git"
+cmt(){ echo "$1" > "$T/repo/$1"; git -C "$T/repo" add "$1"; git -C "$T/repo" commit -q -m "$1"; }
+git -C "$T/repo" checkout -q main; cmt base.txt; git -C "$T/repo" push -q origin main
+git -C "$T/repo" checkout -q -b fix/T-211; cmt own.txt; RA=$(git -C "$T/repo" rev-parse HEAD)
+git -C "$T/repo" checkout -q main; cmt moved.txt
+git -C "$T/repo" checkout -q fix/T-211; git -C "$T/repo" merge -q --no-edit main; RB=$(git -C "$T/repo" rev-parse HEAD)
+git -C "$T/repo" checkout -q -b fix/T-212 "$RA"; cmt other.txt; git -C "$T/repo" merge -q --no-edit main; RC=$(git -C "$T/repo" rev-parse HEAD)
+git -C "$T/repo" checkout -q main; git -C "$T/repo" push -q origin main "$RB:refs/pull/211/head" "$RC:refs/pull/212/head"
+vp 211 "$RA" "$CLEAN"; vp 212 "$RA" "$CLEAN"
+rv_prs carry "211|fix/T-211|$RB|fix: T-211 base merged|" "212|fix/T-212|$RC|fix: T-212 own commit|"
+rvloop; rvloop
+check "DS-433: a clean verdict carried across a clean merge of the base merges, with no new review" '[ "$(merged)" = 211 ] && grep -qx "211 main $RB" "$T/merges.log" && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main came since"'
+rvloop
+check "DS-433: one its own commits moved past is held for a review" '! grep -q "^212 " "$T/merges.log" && echo "$out" | grep -q "#212 green at ${RC:0:9}, HELD with no clean review at its head: its review verdict is for ${RA:0:9}"'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

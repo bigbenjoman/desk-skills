@@ -135,6 +135,10 @@ with no marker is. A fix try queued to resume its own session is never held as W
 the uncommitted changes or unpushed commits it left: they are its own.
 The count is the queue's `resumes`; a requeue starts a fresh session and clears a pending resume.
 
+**A worker on the person's instruction is never recorded done on an open PR alone.** Ended with no
+marker, or killed past the limit, it parks with the fix left open, so the merge driver keeps holding
+the PR. A requeue sends the same instruction to a new worker.
+
 ## Resuming a dead worker's half-finished worktree
 
 For a worker the pass did not resume (failed, wedged, or over the limit), setting `AUTOPILOT_RESUME`
@@ -172,8 +176,8 @@ re-running a ticket from scratch.
   session on its own model, and held tickets spawn as normal: never requeue one by hand. A worker
   whose session is still live and quiet half an hour after its reset falls back to the stall check.
   An `unrecognised usage-limit event` line means the log held a rate-limit event that was neither
-  traffic under the limit nor a rejection: it was not read as a pause, so that ticket is under the
-  stall check as before.
+  traffic under the limit nor a rejection: it was not read as a pause, so that ticket stays under the
+  stall check.
 - **A preflight refused at the usage limit fails nothing.** `spawn-worker.sh` prints
   `[preflight] usage-limit` when its call gets HTTP 429. The pass leaves that ticket as it was, spawns
   and preflights nothing more that pass, and records the hold on the queue (`usage_hold`), which

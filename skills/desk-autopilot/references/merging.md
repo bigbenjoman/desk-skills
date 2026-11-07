@@ -64,7 +64,7 @@ put that under `WAITING ON YOU`. It never waives:
 - a §4 Required check, whatever the row says: branch protection enforces it, and merging past it
   would be a bypass (§3 `merge-bypass` is `never`). The driver records it as `merge_blocked` and you
   report the PR;
-- a check the row does not name: red, as it always was.
+- a check the row does not name: it stays red.
 
 A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
 Unset waives nothing.
@@ -116,13 +116,23 @@ replies on each thread the try quoted and resolves it, so the next pass reads on
 open. A worker that cannot fix a thread parks naming it and what blocks it. Out of tries, the PR is
 `stuck` with `review feedback still open after 2 fix tries: <each thread>`.
 
-A PR titled `feat…` merges only once a person has approved it: green, past the feedback check and
-with no approval, the driver records `merge_blocked` `approval: …`, and desk-q and needs-you ask the person
-to approve it. One held for review feedback asks for no approval: the feedback goes to a fix worker.
-A request is cleared once the PR is approved, or once it conflicts or is not green, so the queue
-shows the conflict or the red check instead. Any PR whose GitHub review decision is `REVIEW_REQUIRED`
-(branch protection wants an approving review) is recorded the same way, red or green: no rerun or
-fix worker gives it the approval, though a red one is still rerun and repaired.
+Every PR, whatever its title, merges on a clean review with no person's approval: desk-review, fix,
+desk-review, merge. Where §4 Local review command is set, the driver merges a green PR only with a
+clean verdict (§4 Clean review verdict) at its head, or one carried to it by clean merges of the base
+alone. It reads the verdict itself, since green holds one only where CI runs a §4 State check reading
+it. A P0, a P1 or an uncarried P2 blocks; a carried P2 does not. With no verdict or a stale one, it does
+not merge, and the pass sends it to a review worker out of draft (`fix-tries.mjs` `verdictTry`), and
+to the person once no try is left. A review at the head that is not clean goes to a fix worker where
+it lists a P0, a P1, a P2 or, under §3 `autopilot-judgement`, a gap (`reviewFix`; P2s once nothing worse
+is left, and a later round may carry one), and otherwise to the person.
+
+The driver does not wait on GitHub's review decision: desk opens PRs from the person's own account,
+and GitHub never lets an author approve their own PR. A person's approval holds a PR in two cases only.
+One is a PR whose GitHub review decision is `REVIEW_REQUIRED`, because branch protection wants an
+approving review. The other is a red §4 State check of kind `approval`. Either is recorded as
+`merge_blocked` `approval: …`, red or green, and desk-q and needs-you ask the person. No rerun or fix
+worker gives it the approval, though a red one is still rerun and repaired. The request is cleared
+once that no longer holds the PR. A §4 Merge holds path still waits for a person whatever its review says.
 
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
 handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is
@@ -197,7 +207,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   queue's `approved.undraft` is `true`), then do whatever is needed to merge it immediately. Under
   that batch approval, undraft without asking again, and add one line to `batch-notes.md` with the
   Edit tool each time: `- [<TICKET>] undrafted #<n> at <head sha>: §3 pr-ready is ask, batch approval
-  given at Stage 3`. Declined, or never asked, is today's rule: report the PR as ready to undraft. Done and reviewed means the review verdict on the PR's **current**
+  given at Stage 3`. Declined, or never asked: report the PR as ready to undraft. Done and reviewed means the review verdict on the PR's **current**
   `headRefOid` reads as §4 Clean review verdict with nothing deferred and no requirement gaps, the
   screenshots are uploaded (or the body says nothing renders differently), and `mergeStateStatus` is
   not `DIRTY`. Where §4 Clean review verdict is plain text (`no findings`) rather than counts, a
@@ -218,7 +228,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   `convert_to_draft`, is recorded as `undraft` `held`. The pass then never undrafts it, re-runs or
   builds its checks, or sends it to a review or fix worker, and it is under WAITING ON YOU as `HELD` (desk-q and `/desk-needs-you` show it as needing the person). Their
   own `gh pr ready` releases it, and the driver merges it once green. The driver merges a ready PR,
-  pinned, the moment it is green (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
+  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
   Undrafting earlier pings the reviewer before the evidence is in.
 - **A draft whose every red check was cancelled or timed out is re-run by the pass**, where §3
   `ci-rerun` is `yes`: those runs never tested the code. It keeps the driver's cap of two reruns per
@@ -236,8 +246,11 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, in the
   ticket's worktree at the PR's head, detached so a pass that ends leaves it running, with its output
   and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
-  `--failed`. A command that fails, or a check still red after the re-run, goes to the person with the
-  command, its exit code and its last lines; it is not run again at that head. A worker never runs it,
+  `--failed`. A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
+  `syncFix`, one of the fix tries): its worker merges the base, fixes what the merge breaks in a commit
+  of its own and pushes, and the pass builds the new head. A command that fails at a head up to date
+  with its base, or a check still red after the re-run, goes to the person with the command, its exit
+  code and its last lines; it is not run again at that head. A worker never runs it,
   and never parks on it: a worker whose park asks only for that build (every clause names the check or
   its command, or lists the steps it did not reach), while its open draft is red on those checks alone, is recorded done at harvest
   (`undraft.mjs` `buildPark`), so this step builds it. A park that asks anything else stays a park.

@@ -1,14 +1,13 @@
 ---
 name: desk-groom
 description: >-
-  Use when grooming this repo's Jira backlog: "groom the backlog", "is anything open already done",
-  "which tickets are duplicates", "what links are missing", "which tickets cite stale code", "fill
-  in the blank priorities", "clear the dead blockers", "is every epic's Definition of done covered",
-  "fix the Children lists", "which tickets have no epic", "does anything outrank its epic". Checks
-  every open ticket and epic against the default branch and the rest of the backlog, proposes each
-  fix as a desk-jira gate block with its evidence, and asks the user each call with no single correct
-  fix. Also "these epics are the priority", "send this epic to the batch", and the weekly report-only
-  groom. It writes only what the user approves from one list, and reads every write back.
+  Use when grooming this repo's Jira backlog ("groom the backlog"): open tickets that are already
+  done, duplicated, missing links, citing stale code, missing a priority or field, or held by dead
+  blockers; epics' Definition of done coverage, Children lists, loose tickets and priority order;
+  marking epics as the priority and sending them to the batch; and the weekly report-only groom.
+  Checks every open ticket and epic against the default branch and the rest of the backlog, proposes
+  each fix as a desk-jira gate block with its evidence, and asks the user each call with no single
+  correct fix. It writes only what the user approves from one list, and reads every write back.
 argument-hint: "[--jql <jql>] [--priority <EPIC>...] [--report]"
 ---
 

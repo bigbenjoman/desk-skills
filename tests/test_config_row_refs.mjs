@@ -1,5 +1,5 @@
 // suite: config row references (review-asks reads §4's house bar; worker skills name §3b/§4 rows with their desk-env call)
-// covers: desk/bin/desk-env.mjs skills/desk-ticket/** skills/desk-review/** skills/desk-pr/** skills/desk-review-response/** skills/desk-dev/** skills/desk-jira/** skills/desk-kiss/** skills/desk-autopilot/references/**
+// covers: desk/bin/desk-env.mjs desk-config.md skills/desk-setup/SKILL.md skills/desk-ticket/** skills/desk-review/** skills/desk-pr/** skills/desk-review-response/** skills/desk-dev/** skills/desk-jira/** skills/desk-kiss/** skills/desk-autopilot/references/**
 // `desk-env get review-asks` prints §4 "What review here consistently asks for", one ask per line,
 // and exits 3 while it is TODO or still says "Not mined". Every file a worker reads names each §3b
 // and §4 row it mentions with the `desk-env get|list|cmds <id>` call that reads it, at or before the
@@ -60,7 +60,7 @@ const ROWS = Object.entries(CONFIG_ROWS).filter(([, r]) => r.section === '4' || 
 // The ids of rows a text names as `§<n> <label>` (quotes and bold allowed) with no
 // `desk-env get|list|cmds <id>` at or before the paragraph of the first mention.
 // Rows a dedicated desk-env command reads, which names them as well as `get` does.
-const READ_BY = { 'worker-models': 'desk-env\\s+model\\b' };
+const READ_BY = { 'worker-models': 'desk-env\\s+model\\b', 'local-review': 'desk-env\\s+review-cmd\\b' };
 // A skill's frontmatter description says what the skill is, not what to read, so it is left out.
 function bareRows(text) {
   const paras = text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/);
@@ -86,6 +86,26 @@ for (const f of WORKER_FILES) {
   if (ids.length) t(`AC2: ${relative(ROOT, f)} names every row with its id`, ids.join(' '), '');
 }
 t(`AC2: ${WORKER_FILES.length} worker files checked, rows named without an id`, bare, 0);
+
+// ---- desk-setup asks every §3b row of the template -------------------------------------------
+// The §3b step reads its rows from the template, or, if it lists them by hand, names every one by
+// its label, so a row added to the template is never left to fall back to its Recommended value.
+const TEMPLATE = readFileSync(join(ROOT, 'desk-config.md'), 'utf8');
+const rows3b = (TEMPLATE.split(/^## 3b\. /m)[1] ?? '').split(/^## /m)[0]
+  .split('\n').filter((l) => /^\| [^-|]/.test(l)).map((l) => l.split('|')[1].trim()).filter((r) => r !== 'Field');
+t(`3b: the template's §3b rows are read (${rows3b.length})`, rows3b.length >= 25, true);
+const stepOf = (text) => text.split(/\n\s*\n/).find((p) => p.startsWith('**Then §3b**')) ?? '';
+const unasked = (step) => {
+  if (/desk-config\.template\.md/.test(step) && /every row/.test(step)) return [];
+  const flat = step.replace(/\s+/g, ' ').toLowerCase();
+  return rows3b.filter((r) => !flat.includes(r.toLowerCase()));
+};
+const OLD_STEP = '**Then §3b** (five rounds): subagents without asking, autopilot worker concurrency, memory ceiling,\nspawn gate; batches run by.';
+t('3b can fail: a hand list that misses a row', unasked(OLD_STEP).includes('Usage pacing headroom (points)'), true);
+t('3b passes: a hand list naming every row', unasked(`**Then §3b**: ${rows3b.join(', ')}.`).length, 0);
+const SETUP_STEP = stepOf(readFileSync(join(ROOT, 'skills/desk-setup/SKILL.md'), 'utf8'));
+t('3b: desk-setup has a §3b step', SETUP_STEP.length > 0, true);
+t('3b: desk-setup asks every row of the template\'s §3b table', unasked(SETUP_STEP).join(' | '), '');
 
 console.log(fails ? `${fails} FAIL` : 'all checks passed');
 process.exit(fails ? 1 : 0);

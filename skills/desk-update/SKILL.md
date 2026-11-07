@@ -15,8 +15,8 @@ argument-hint: "[outdated | <skill>... | --all]"
 
 # desk-update
 
-`brew update && brew upgrade`, for skills. Three kinds of skill live on this machine, each with its
-own source of truth; this skill checks all three and upgrades only what the user chooses.
+`brew update && brew upgrade`, for skills. Each kind of skill in the table below has its own source
+of truth; this skill checks every kind and upgrades only what the user chooses.
 
 | Kind | Where the one real copy lives | Where it comes from | Updated by |
 |---|---|---|---|
@@ -152,7 +152,7 @@ WRONG COPY    <name>: ~/.agents/skills/<name> is not the checkout's clone, or do
 UNVERIFIED    <dir>: git could not read the clone's origin (ownership, a corrupt config); check it by hand,
               never ./install.sh, which would move it aside
 UNTRACKED     <names>: no recorded source, so no update check
-SETTING       skills listed in full: name-only + skill-index cuts the listing ~30,000 -> ~9,600 chars a turn
+SETTING       skills listed in full: name-only + skill-index lists skills by name only; full descriptions move to skill-index
 SETTING       no update notice: a SessionStart hook would say once a day when desk-skills has new commits
 SETTING       no context handoff: past §2 Handoff at context % the session would write .handoffs/<date>.md,
               and the session after /clear or a compaction would pick it up
@@ -195,6 +195,9 @@ skills-upstream upgrade <name>...          # writes vendor/<name> and the pin; n
 git -C "$D" diff --stat -- vendor/
 git -C "$D" diff -- vendor/<name>/SKILL.md # summarise the substance for the user
 ```
+
+A `REFUSED` line means a local patch in that entry's `patches` no longer applies: that skill is not
+upgraded; tell the user, and never drop the patch to get past it.
 
 Commit on that branch: `chore(vendor): upgrade <name> to <new pin>` (one commit per skill). Then
 go back to where the run started, with `git -C "$D" checkout -q -` (it returns to the previous

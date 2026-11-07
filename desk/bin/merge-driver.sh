@@ -49,9 +49,13 @@
 #                                            (`review feedback: …`, naming the first thread); pass.mjs
 #                                            sends the feedback to a fix worker (fix-tries.mjs
 #                                            feedbackFix), and to the person once no try is left
-#   - a feature with no approval             a PR titled feat… merges only once a person approves it:
-#                                            green and past the feedback check, it is recorded as
-#                                            merge_blocked (`approval: …`) for the person
+#   - no clean review at its head            where §4 Local review command is set, green is not enough:
+#                                            the latest desk-review verdict must be clean at the head
+#                                            (§4 Clean review verdict; review-threads.mjs verdict), or
+#                                            carried to it by clean merges of the base alone (undraft.mjs
+#                                            verdictCarries). A carried P2 does not hold it. Held, it is
+#                                            logged, and the pass sends it to a review worker
+#                                            (fix-tries.mjs verdictTry), or to the person
 #   - DIRTY                                  a conflict needs resolving and a fresh review: pass.mjs
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
@@ -69,6 +73,10 @@
 #   - waits on the person's step             its ticket's merge_after names blockers in no batch that are
 #                                            steps only the person takes: held, green or not, until
 #                                            pass.mjs reads each Done in Jira and lifts it
+#   - waits on the person's instruction      its ticket's fix is the person's instruction (needs-you
+#                                            resume) and pass.mjs has not closed it: held before any
+#                                            other step, with nothing rerun or updated, and read again
+#                                            just before the merge
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
@@ -244,6 +252,12 @@ THREADS="$DESK_BIN/review-threads.mjs"
 THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
 # §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
 CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
+# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
+REVIEW_HOLD=""
+case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
+  ''|todo|none) ;;
+  *) REVIEW_HOLD=1 ;;
+esac
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
@@ -295,6 +309,12 @@ feedback(){
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
     | node "$THREADS" read --handle "$AUTHOR" --clean "$CLEAN_ROW" 2>/dev/null
 }
+# Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
+# Nothing when GitHub could not be read.
+head_verdict(){
+  gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
+    | node "$THREADS" verdict --handle "$AUTHOR" --clean "$CLEAN_ROW" --base "$BASE_BRANCH" --pr "$1" 2>/dev/null
+}
 # Prints true once GitHub has resolved the thread.
 resolve_thread(){
   gh api graphql -f id="$1" -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
@@ -318,11 +338,8 @@ blocked_clear(){ # blocked_clear <key> <reason prefix>
   esac
 }
 feedback_clear(){ rm -f "$SD/feedback-$1"; blocked_clear "$2" "review feedback:"; }
-# A feature (a PR titled feat…) merges only once a person has approved it. Green, past the feedback
-# check and with no approval, the queue asks the person for one; cleared once it is approved, or once it
-# is not green and past the feedback check (review feedback goes to a fix worker, a conflict or a red
-# check to the fix tries).
-is_feature(){ case "$1" in feat:*|feat\(*|feat!:*) return 0 ;; esac; return 1; }
+# An `approval:` note asks a person to approve a PR where GitHub requires a review or a §4 State check of
+# kind approval is red; it is cleared once that no longer holds the PR.
 approval_clear(){ blocked_clear "$1" "approval:"; }
 
 # Tickets join the batch after the driver starts, so each loop adds every queue ticket not yet in
@@ -584,12 +601,31 @@ EOF_ROUTINES
   if [ "$head" != "$sha" ]; then log "#$n head is ${head:-unreadable}, not ${sha:0:9} where its routine ran — not merging"; return 1; fi
 }
 
+# The person's instruction on a ready PR (needs-you resume, fix-tries.mjs instructionFix) leaves it open
+# for a worker to change: until pass.mjs closes that fix, its head is not yet what the person asked for,
+# and a worker that parked or failed has not done it. A queue that cannot be read holds it too.
+instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge waits on the instruction
+  local open
+  [ -f "$DESK_QUEUE" ] || return 1
+  if ! open=$(jq -r --arg k "$2" '(.tickets[$k].fix // {}) | .kind == "instruction" and (.finished | not)' "$DESK_QUEUE" 2>/dev/null); then
+    log "#$1 could not read the queue for the person's instruction — not merging it this loop"
+  elif [ "$open" = true ]; then
+    log "#$1 HELD: a worker has still to carry out the person's instruction on it — not merging until that fix is finished"
+  else
+    return 1
+  fi
+  [ "$(printf '%s' "$3" | jq -r .autoMerge)" = true ] && gh pr merge "$1" --repo "$REPO" --disable-auto >/dev/null 2>&1
+  rm -f "$SD/green-$1"
+}
+
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting
+  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$BASE_BRANCH" ] || { log "#$n is not based on $BASE_BRANCH — not the batch's to merge"; return 1; }
+  # First, so nothing updates or reruns a branch a worker is on, and an armed auto-merge is disarmed red or green.
+  instruction_held "$n" "$key" "$g" && return 1
 
   holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
   met=$(printf '%s' "$g" | jq -r '(.holdsMet // [])[] | "\(.why) — \(.glob)"' | paste -sd ';' -)
@@ -704,14 +740,22 @@ EOF_RESOLVE
     return 1
   fi
 
-  if is_feature "$(printf '%s' "$g" | jq -r '.title // ""')" && [ "$(printf '%s' "$g" | jq -r .reviewDecision)" != APPROVED ]; then
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
-    rm -f "$SD/green-$n"
-    log "#$n $label at ${sha:0:9}, a feature with no approval — not merging until a person approves it"
-    queue_note "$key" "approval: a feature, $label at ${sha:0:9} with no approval: a person approves it before desk merges it"
-    return 1
-  fi
   approval_clear "$key"
+
+  # A clean review at the head stands in for a person's approval, for every PR whatever its title. Green
+  # alone does not show one: only a repo whose CI runs a §4 State check reading the verdict has it in green.
+  if [ -n "$REVIEW_HOLD" ]; then
+    verdict=$(head_verdict "$n")
+    if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
+    if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then
+      [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+      rm -f "$SD/green-$n"
+      log "#$n $label at ${sha:0:9}, HELD with no clean review at its head: $(printf '%s' "$verdict" | jq -r '.why // "the head moved as it was read"') — the pass sends it to a review worker, or the person"
+      return 1
+    fi
+    carried_from=$(printf '%s' "$verdict" | jq -r '.carried // empty')
+    [ -n "$carried_from" ] && log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $BASE_BRANCH came since"
+  fi
 
   # Green now. It must still be green at the same head on a later loop before it merges.
   green_at=$(awk -v s="$sha" '$1 == s { print $2 }' "$SD/green-$n" 2>/dev/null)
@@ -731,6 +775,8 @@ EOF_RESOLVE
     fi
     if ! run_routines "$n" "$sha" "$key" "$routines"; then rm -f "$SD/green-$n"; return 1; fi
   fi
+  # Read again here: the reads above and a routine can take minutes, and the person may answer in them.
+  instruction_held "$n" "$key" "$g" && return 1
   if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then

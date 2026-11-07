@@ -214,6 +214,24 @@ How to turn what you find into rows:
   `` `<the lockfile>: dependency changes are merged by a person` ``. The key form reads JSON only,
   so a TOML or INI file holding check config is held whole: for `pyproject.toml` that includes every
   dependency bump, which the user weighs before confirming.
+
+  **A hold on a code-owner approval is proposed only where someone other than desk owns the path.**
+  The merge driver reads any reason naming a code owner (`code owner`, `codeowner`, `CODEOWNERS`, in
+  any spelling) as that approval, and treats it as met when every owner of every held file is the
+  desk account: the §1 GitHub handle (`gh api user --jq .login` above), the account the merge driver
+  merges with. So before proposing one, read the whole CODEOWNERS (the first of `.github/CODEOWNERS`,
+  `CODEOWNERS` and `docs/CODEOWNERS`; the last matching pattern owns a file) and compare each path's
+  owners with that account. A team counts as someone else.
+
+  - **Only the desk account owns the path:** do not propose a hold whose reason is a code-owner
+    approval. Nobody else can give it (an author cannot approve their own PR), so it would hold
+    nothing. If the user asks to hold the path anyway, ask what policy the path stands for ("pricing
+    changes are signed off by finance") and write that policy as the reason,
+    `` `<glob>: <the policy>` ``, with no mention of code owners or CODEOWNERS: a reason that names
+    one is read as the approval and met, and the PR merges unheld.
+  - **Someone else owns the path:** a code-owner approval hold naming that owner may be proposed,
+    e.g. `` `billing/**: code-owner approval from @acme/finance` ``. The merge driver holds it,
+    naming the owners other than the desk account.
 - **Merge method.** From the repo's allowed methods (`allow_squash_merge`, `allow_merge_commit`,
   `allow_rebase_merge`) and the merged-PR history: a merge commit with **two parents** is `merge`;
   one parent is `squash` (or `rebase`, when only rebase is allowed). Propose the method the last 20
@@ -232,6 +250,15 @@ How to turn what you find into rows:
   there rather than proposing a command: a plain `uv sync` writes a new lockfile into every
   worktree, and `git status` is then never clean. Propose, then
   confirm; a guessed test command that does not exist wastes a worker's whole run.
+- **Dev server.** One item per app a ticket can change a screen in, not only the main one: for
+  every directory another command row names (Lint, Typecheck, Unit tests, Build, …) whose
+  `package.json` has a `dev` script, propose `` `<dir>: <its dev command>` `` through the package
+  manager as its scripts run it, with the port flag in the row's note, e.g.
+  `` `apps/portal/apps/web: bun run dev` `` (the app takes `-p <port>`). A worker is refused any
+  dev command the row does not hold, so a ticket in a missing app gets no local screenshots and
+  parks. A root item that filters to the app (`--filter <its package name or path>`) already serves
+  it, and the root itself is never a missing app. `desk-env drift` names each such directory `NODEV` after the row is written; propose its
+  item on every run, a re-run's included, and the user confirms or declines each.
 - **Related tests.** For each Unit tests item, the same runner in its related form, in the same
   directory: Vitest `vitest related --run --passWithNoTests`, Jest `jest --findRelatedTests
   --passWithNoTests` (through the package manager as the Unit tests item runs it, e.g.
@@ -297,6 +324,14 @@ How to turn what you find into rows:
 - **Local review command.** Offer what the repo ships first (a review skill in `.agents/skills` or
   `.claude/skills`), then `/desk-review`, then `/code-review`, then `none`. With `/desk-review`,
   propose §4 Clean review verdict `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.
+- **A counts-form Clean review verdict beside a command that posts no verdict marker.** Compare the
+  two rows whenever you reach either. A §4 Clean review verdict of `key=value` counts reads only a
+  `desk-review:verdict` marker, which `/desk-review` posts and `/code-review` does not; a review skill
+  the repo ships posts one only where its `SKILL.md` names that marker. Beside any other command, say
+  that the pair can never read clean, and offer `/desk-review` for §4 Local review command as the
+  recommended fix, or a plain-text §4 Clean review verdict that the command states. Do not write the
+  pair as it stands without saying so: a worker would run `/desk-review` in the command's place, and
+  the pass logs the contradiction once.
 - **Review bar.** `default` unless the repo has its own bar file (search `review-bar`, `REVIEW.md`,
   a review section in `CLAUDE.md`); then its path. Offer to copy desk-review's
   `references/review-bar.md` into the repo as a starting point only if the user asks.

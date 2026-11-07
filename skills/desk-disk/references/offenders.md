@@ -35,8 +35,14 @@ them either), and containers are small and needed the moment work starts.
 
 ## orbstack-image
 
-- **What it is:** the disk image every docker row above lives in. It does not shrink the moment
-  volumes are pruned; OrbStack returns the space to macOS on its own afterwards.
+- **What it is:** the disk image every docker row above lives in, under
+  `~/Library/Group Containers/<team id>.dev.orbstack/data` (the team id differs between installs).
+  It is sparse, so its row is what the docker rows actually hold on this Mac, and it caps what any
+  docker fix can free. It does not shrink the moment volumes are pruned; OrbStack returns the space
+  to macOS on its own afterwards.
+- **Seen:** docker called 551 GB of volumes and 124 GB of build cache reclaimable while the image
+  held 160 GB; the volume prune reported 553 GB reclaimed and the image went to 118 GB within
+  minutes. Quote this row, not docker's, as the ceiling.
 - **Fix:** none of its own: fix the docker rows, then re-measure.
 
 ## messages-tmp
@@ -164,7 +170,8 @@ Only with `--backup-volume`.
 
 ## stale-volume-folder
 
-- **What it is:** a plain folder in `/Volumes` with a drive's name. The drive then mounts as
+- **What it is:** a plain folder in `/Volumes` with a drive's name. `com.apple.*` folders (such as
+  `com.apple.TimeMachine.localsnapshots`) are macOS's own mount points and are never reported. The drive then mounts as
   `<name> 1`, and Time Machine backups to it fail.
 - **Lost by the fix:** nothing: only an empty folder is removed.
 - **Fix (sudo):** with the drive unplugged, and only when the folder is empty

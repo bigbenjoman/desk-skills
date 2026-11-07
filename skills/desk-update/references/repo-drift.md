@@ -33,7 +33,7 @@ grants, and each ticket that needs it parks naming it (needs-you lists those par
   worker's settings read the row when each worker spawns, so the answer takes effect on the next spawn.
 - **No `MISSING  §3` line, no permission question.** A config with every template row asks none.
 - `MISSING` rows in §2, §3b, §4 and §5 are detected facts, not grants: report them on one ROW line and
-  offer `/desk-setup` (a re-run asks exactly those). `STALLS`, `UNLISTED` and `DONTASK` lines are
+  offer `/desk-setup` (a re-run asks exactly those). `STALLS`, `UNLISTED`, `NODEV` and `DONTASK` lines are
   `/desk-setup`'s too: report them, change nothing.
 
 If any parked ticket names a row answered here, say that `/desk-needs-you` (its `unset:<key>` item,

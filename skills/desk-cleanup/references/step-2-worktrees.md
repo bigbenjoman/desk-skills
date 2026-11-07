@@ -105,10 +105,10 @@ Then, before removing:
   server on one port *and* a component explorer on another, and only the cwd check sees the second.
   Record each process's RSS — it feeds step 5.
 - **Check whether a Claude session was launched inside it** — does a project dir for that path exist
-  under `~/.claude/projects/` (the path with `/` turned into `-`)? The dir is keyed by where `claude`
-  was *launched*, not by the cwd of its Bash calls, so a session that merely `cd`s into a worktree is
-  unaffected. Even when one was launched inside, removal loses nothing resumable:
-  `claude -r <session-id>` finds a session from any cwd after its worktree is gone, and `~/.claude/projects` is never touched. Put the restore line in the report anyway —
+  under `~/.claude/projects/` (the path with every non-alphanumeric character turned into `-`)? The
+  dir is keyed by where `claude` was *launched*, not by the cwd of its Bash calls, so a session that
+  merely `cd`s into a worktree is unaffected. Even when one was launched inside, removal loses
+  nothing resumable: `claude -r <session-id>` finds a session from any cwd after its worktree is gone, and `~/.claude/projects` is never touched. Put the restore line in the report anyway —
   `git worktree add <path> <branch>` — for anyone who wants the tree back.
 - **Never pass `--force`.** `git worktree remove` refuses on dirty tracked or untracked files, and
   that refusal is the strongest guard here. If git objects, report and stop.

@@ -94,13 +94,176 @@ function untriggeredOn(base, branches) {
   return admissionRefusal(base, { required, branches, defaultBranch: E.configValue('default-branch') || 'main', repo: E.ghRepo() });
 }
 
+// ---- what a drafted spine files as ---------------------------------------------------------------
+// A draft is its summary, then `Name: value` header lines, then the ticket's body. The headers say how
+// it is filed (its type, its required fields, what it blocks), so none of them reaches the description.
+
+// The names that are always headers, whatever the repo's fields. Any other `Name: text` line is the body's.
+const FILING_KEY = /^(summary|title|type|issue type|parent|assignee|impact|repository|blocks|size|labels|(\w+ )?priority)$/;
+const SUMMARY_KEY = /^(summary|title)$/;
+const LABELLED = /^\*{0,2}[A-Za-z0-9][^:]*:/;
+const CONTEXT_LINE = /^[*_]{0,2}context[*_]{0,2}\s*:/i;
+// The ticket template's opening lines: the body's in any repo, and never a summary.
+const TEMPLATE_OPENING = /^[*_]{0,2}(blocked by|context)[*_]{0,2}\s*:/i;
+const NO_VALUE = /^(|none|n\/a|tbd|todo|unknown|[-—–?]+|<.*>)$/i;
+const ISSUE_KEY = /\b[A-Z][A-Z0-9_]*-\d+\b/g;
+
+// `line` as a header whose name `known` accepts: {key, value}, or null. A field's name may hold a colon.
+function headerOf(line, known) {
+  for (let i = line.indexOf(':'); i >= 0; i = line.indexOf(':', i + 1)) {
+    const key = line.slice(0, i).replace(/\*/g, '').trim().toLowerCase();
+    if (known(key)) return { key, value: line.slice(i + 1).replace(/\*/g, '').trim() };
+  }
+  return null;
+}
+
+// A draft's parts: {summary, type, headers: [{key, value}], blocks: [KEY], body}. `keys` are the lower-case
+// names of the fields this spine carries, headers as well as the filing ones. With no `size` among them a
+// `Size:` line belongs to the body, as its first line, where triage reads it.
+export function parseDraft(draft, { keys = [] } = {}) {
+  const lines = String(draft).trim().split('\n');
+  const sizeField = keys.includes('size');
+  const known = (k) => FILING_KEY.test(k) || keys.includes(k);
+  const headers = [];
+  const taken = new Set();
+  let sizeLine = null;
+  // Reads headers from line `from`, past any other labelled line, up to the first line of prose: where it stopped.
+  const walk = (from) => {
+    let i = from;
+    for (; i < lines.length; i++) {
+      const l = lines[i].trim();
+      if (!l) continue;
+      const h = headerOf(l, known);
+      if (h) {
+        taken.add(i);
+        if (h.key === 'size' && !sizeField) sizeLine = l; else headers.push(h);
+      } else if (CONTEXT_LINE.test(l) || !LABELLED.test(l)) break;
+    }
+    return i;
+  };
+  const next = walk(0);
+  let summary = headers.find((h) => SUMMARY_KEY.test(h.key))?.value;
+  if (summary == null) {
+    // The first line no header took. A `##` after headers is the body's first section, so the draft has no summary.
+    const at = lines.findIndex((l, i) => l.trim() && !taken.has(i) && !TEMPLATE_OPENING.test(l.trim()));
+    summary = at < 0 || (at > 0 && /^##/.test(lines[at].trim())) ? '' : lines[at];
+    if (summary) {
+      taken.add(at);
+      if (at >= next) walk(at + 1);
+    }
+  }
+  const clean = String(summary).trim().replace(/^#+\s*/, '').replace(/^(summary|title)\s*:\s*/i, '').replace(/\*\*/g, '').trim();
+  const type = headers.find((h) => h.key === 'type' || h.key === 'issue type')?.value;
+  return {
+    summary: clean,
+    type: type || 'Story',
+    headers,
+    blocks: [...new Set(headers.filter((h) => h.key === 'blocks').flatMap((h) => h.value.match(ISSUE_KEY) ?? []))],
+    body: [...(sizeLine ? [sizeLine] : []), ...lines.filter((_, i) => !taken.has(i))].join('\n').trim(),
+  };
+}
+
+// The §4 Size field's id, or null.
+function sizeFieldId() {
+  try { return /customfield_\d+/.exec(String(E.configValue('jira-size-field') ?? ''))?.[0] ?? null; } catch { return null; }
+}
+
+// The fields a spine of `type` (of any type, with none named) is filed with: its §4 Required fields and the
+// §4 Size field, which create's lint asks of every ticket.
+const spineFields = (type) => [...new Set([...E.requiredFields(type).need, sizeFieldId()].filter(Boolean))];
+
+// Jira's names for fields and the values it allows on `type`, or on any type with none named:
+// {names: {id: name}, allowed: {id: [value]}, why}. `why` says the names could not be read. The allowed
+// values are only ever a help to whoever is asked.
+function fieldCatalog(type, env) {
+  const names = {};
+  const allowed = {};
+  const f = run('desk-jira', ['fields'], env);
+  if (f.status === 0) for (const l of String(f.stdout).split('\n')) { const [id, name] = l.split('\t'); if (id && name) names[id] = name; }
+  const m = run('desk-jira', ['meta', ...(type ? [type] : [])], env);
+  if (m.status === 0) {
+    for (const l of String(m.stdout).split('\n')) {
+      const a = /^\s*(\S+) \((.+)\) allows: (.*)$/.exec(l);
+      if (a) { names[a[1]] ??= a[2]; allowed[a[1]] = a[3].split(', ').filter(Boolean); }
+    }
+  }
+  return { names, allowed, why: f.status === 0 ? null : lastLine(f) };
+}
+
+// Whether the §4 row naming a field holds `id`.
+const rowNames = (row, id) => { try { return String(E.configValue(row) ?? '').split(/[,\s]+/).includes(id); } catch { return false; } };
+
+// How `id` is written in a draft: each header key that names it.
+function fieldKeys(id, catalog) {
+  return [id, catalog.names[id], rowNames('jira-size-field', id) && 'size', rowNames('jira-priority', id) && 'priority']
+    .filter(Boolean).map((k) => k.toLowerCase());
+}
+
+// One required field, for a person or a drafter to read.
+function fieldLine(id, catalog) {
+  const name = catalog.names[id];
+  let values = catalog.allowed[id] ?? [];
+  if (rowNames('jira-priority', id)) {
+    let top = [];
+    try { top = [].concat(E.configValues('jira-priority-user-only') ?? []).map((v) => String(v).toLowerCase()); } catch { /* none to leave out */ }
+    values = values.filter((v) => !top.includes(v.toLowerCase()));
+  }
+  return `${name ? `${name} (${id})` : id}${values.length ? `, one of ${values.join(', ')}` : ''}`;
+}
+
+// What filing `draft` sends, and what it lacks: its parts, plus {fields: [`id=value`], missing: [line]}.
+// Reads Jira only where the repo has fields to carry. The draft's type decides which it needs, and a field
+// line can come before its Type line, so every type's names are known to the one parse.
+function readSpine(draft, env) {
+  const any = spineFields();
+  if (!any.length) return { ...parseDraft(draft), fields: [], missing: [], unread: null };
+  const catalog = fieldCatalog(null, env);
+  const keys = any.flatMap((id) => fieldKeys(id, catalog));
+  const parsed = parseDraft(draft, { keys });
+  const fields = [];
+  const absent = [];
+  let forType = null;
+  const typeCatalog = () => (forType ??= fieldCatalog(parsed.type, env));
+  // A placeholder such as `None` is a value where Jira offers it as one.
+  const offered = (id, v) => (typeCatalog().allowed[id] ?? []).some((a) => a.toLowerCase() === v.toLowerCase());
+  for (const id of spineFields(parsed.type)) {
+    const named = fieldKeys(id, catalog);
+    const value = parsed.headers.find((h) => named.includes(h.key) && h.value && (!NO_VALUE.test(h.value) || offered(id, h.value)))?.value;
+    if (value) fields.push(`${id}=${value}`);
+    else absent.push(id);
+  }
+  return { ...parsed, fields, missing: absent.map((id) => fieldLine(id, typeCatalog())), unread: catalog.why };
+}
+
+// What the person is asked when a spine lacks a field it must carry.
+const missingText = (spine) => `its spine has no value for ${spine.missing.join('; ')} (config §4 Required fields${sizeFieldId() ? ' and Size field' : ''}${spine.unread ? `, and Jira's field names could not be read: ${spine.unread}` : ''}): answer with an edit naming each`;
+
+// The drafter's or editor's section on the fields the spine must carry, opening with `lead`; empty where
+// it must carry none.
+const DRAFT_FIELDS = 'Write each as its own `Name: value` header line, by the name or id given here. Where the epic has a value for a field the spine shares, such as a priority, use it. Leave out any you cannot work out: the person is asked for it. Do not guess.';
+const EDIT_FIELDS = 'A field the edit gives a value for goes in the draft as its own `Name: value` header line, by the name or id given here.';
+function fieldsSection(lead, env) {
+  const need = spineFields('Story');
+  const all = [...new Set([...need, ...spineFields('Task')])];
+  if (!all.length) return [];
+  const catalog = fieldCatalog(need.length ? 'Story' : 'Task', env);
+  return [
+    '## The fields the spine must carry',
+    '',
+    lead,
+    '',
+    ...all.map((id) => `- ${fieldLine(id, catalog)}`),
+    '',
+  ];
+}
+
 // The drafter's prompt: the epic, its numbered criteria and each child, and the feature.json shape.
-export function draftPrompt({ epic, epicText, criteria, children }) {
+export function draftPrompt({ epic, epicText, criteria, children, fields = [] }) {
   return [
     `You are drafting the feature plan for epic ${epic}, headless: nobody is reading, and you cannot ask anything. The person approves your draft afterwards, so draft what you would recommend.`,
     '',
     'Draft two things:',
-    '- the spine: one dedicated ticket, as it would be filed in the desk ticket template, that lands one strict expected-fail acceptance spec per criterion id below, each titled with its id, plus the shared contracts the children need. Nothing is filed yet.',
+    '- the spine: one dedicated ticket, as it would be filed in the desk ticket template, that lands one strict expected-fail acceptance spec per criterion id below, each titled with its id, plus the shared contracts the children need. Nothing is filed yet. Its first line is the summary, then any header lines, then the body. The headers set how it is filed and do not reach its description: `Type: <Story or Task>` (a Story when left out) and `Blocks: <KEY>, <KEY>` for the tickets it must land before.',
     '- the owner table: for each criterion id, the one child whose PR makes its spec pass. Where several children contribute, the owner is the one that completes it, and the rest are its contributors. A criterion that cannot be written as a test goes under untestable, with why.',
     'Use only the criterion ids and child keys given below.',
     '',
@@ -116,6 +279,7 @@ export function draftPrompt({ epic, epicText, criteria, children }) {
     '',
     ...children.map((c) => `- ${c.key}: ${c.summary ?? '(no summary)'}${c.files?.length ? ` (files: ${c.files.join(', ')})` : ''}`),
     '',
+    ...fields,
     '## Your answer',
     '',
     `End your reply with one line, at the start of a line: \`${RESULT_MARK} {"draft": "<the spine ticket>", "owners": {"<id>": "<KEY>"}, "contributors": {"<id>": ["<KEY>"]}, "untestable": {"<id>": {"why": "<why>"}}}\`.`,
@@ -143,7 +307,7 @@ const headless = (claude, prompt, env) => run(claude, ['-p', prompt, '--output-f
 function draft({ epic, state, children, env, claude }) {
   const epicText = run('desk-jira', ['get', epic], env);
   const expansion = readJson(join(state, 'expansion.json'), {});
-  const prompt = draftPrompt({ epic, epicText: epicText.status === 0 ? epicText.stdout : '', criteria: expansion.criteria, children });
+  const prompt = draftPrompt({ epic, epicText: epicText.status === 0 ? epicText.stdout : '', criteria: expansion.criteria, children, fields: fieldsSection(DRAFT_FIELDS, env) });
   writeFileSync(join(state, 'plan-draft.prompt.md'), prompt);
   const r = headless(claude, prompt, env);
   if (r.error || r.status !== 0) return { why: `the plan drafter failed (${lastLine(r)})` };
@@ -169,10 +333,11 @@ const queueIn = (env) => (args) => { const r = node('queue.mjs', args, env); ret
 export const planFile = (state) => join(state, 'plan.md');
 
 // The park the epic waits on in its batch: the person reads the plan and answers it in needs-you.
-export const planQuestion = (epic, n, path, feature) => `${FEATURE_PLAN_PREFIX}: ${feature ? 'the spine and owner table' : 'the plan'} for ${epic} ${feature ? 'are' : 'is'} drafted, with ${n} ${n === 1 ? 'child' : 'children'} held behind it: read ${path}, then start, edit or discard it`;
+export const planQuestion = (epic, n, path, feature, ask = null) => `${FEATURE_PLAN_PREFIX}: ${feature ? 'the spine and owner table' : 'the plan'} for ${epic} ${feature ? 'are' : 'is'} drafted, with ${n} ${n === 1 ? 'child' : 'children'} held behind it${ask ? `, but ${ask}` : ''}: read ${path}, then ${ask ? 'edit or discard it' : 'start, edit or discard it'}`;
 
 // Starts epic `key`'s feature batch, triaged rec `rec` (its `branch` is the feature branch), and leaves
-// its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind.
+// its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind, and
+// carries `limited`, the child's triage.sh run, when that triage stopped at a usage limit (exit 3).
 export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   const branch = rec?.branch;
   if (!branch) return { why: `its triage record names no branch for the feature batch: run /desk-autopilot ${key}` };
@@ -200,7 +365,7 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   for (const c of children) {
     const t = run(join(HERE, 'triage.sh'), [c], env);
     const r = t.status === 0 ? readJson(join(state, 'triage', `${c}.json`), null) : null;
-    if (!r) return discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`);
+    if (!r) return { ...discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`), ...(t.status === 3 ? { limited: t } : {}) };
     recs[c] = r;
   }
   const never = untriggeredOn(branch, children.map((c) => recs[c].branch ?? null));
@@ -209,6 +374,7 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   let v = planOf(children, env);
   if (v.why) return discard(v.why);
   const wantsPlan = wantsSpine(v, key);
+  let ask = null;
   if (wantsPlan) {
     const d = draft({ epic: key, state, env, claude, children: children.map((c) => ({ key: c, summary: recs[c].summary, files: recs[c].files_in_scope })) });
     if (d.why) return discard(d.why);
@@ -216,16 +382,18 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
     lines.push(`drafted ${key}'s spine and owner table headless${d.cost != null ? ` ($${d.cost.toFixed(2)})` : ''}`);
     v = planOf(children, env);
     if (v.why) return discard(v.why);
+    const spine = readSpine(d.plan.draft, env);
+    if (spine.missing.length) ask = missingText(spine);
   }
 
   const planPath = planFile(state);
   mkdirSync(state, { recursive: true });
-  writeFileSync(planPath, `# The plan for ${key}\n\n${[].concat(v.message ?? []).join('\n')}\n`);
+  writeFileSync(planPath, `# The plan for ${key}\n\n${[].concat(v.message ?? []).join('\n')}\n${ask ? `\nBefore it can start, ${ask}.\n` : ''}`);
   const q = queueIn(env);
   // A child parked for its own reason (a lane C or D park, a size) cannot be held as well: it waits on that.
   const admit = (c) => (q(['admit', c, '--by', by, '--hold', key]) && q(['admit', c, '--by', by]));
   const why = q(['add', key, 'Epic', EPIC_LANE])
-    ?? q(['park', key, planQuestion(key, children.length, planPath, wantsPlan)])
+    ?? q(['park', key, planQuestion(key, children.length, planPath, wantsPlan, ask)])
     ?? children.reduce((w, c) => w ?? admit(c), null)
     ?? q(['set-batch', 'supervised=true']);
   if (why) return discard(`its batch could not be written (${why})`);
@@ -253,7 +421,7 @@ export const answerKind = (text) => {
 export const replanQuestion = (epic, why, path) => `${FEATURE_PLAN_PREFIX}: the plan for ${epic} was not started, because ${why}: read ${path}, then start, edit or discard it`;
 
 // The editor's prompt: the plan as it stands, the children, and the person's edit, verbatim.
-export function editPrompt({ epic, edit, planText, plan, children }) {
+export function editPrompt({ epic, edit, planText, plan, children, fields = [] }) {
   return [
     `You are applying the person's edit to the plan for epic ${epic}, headless: nobody is reading, and you cannot ask anything.`,
     'Apply the edit exactly as it stands and change nothing else. If any part of it cannot be applied to this plan as it is written (it names a criterion or a child the plan does not have, contradicts itself, or asks for something the plan does not hold), apply none of it and say which part, and why.',
@@ -271,6 +439,7 @@ export function editPrompt({ epic, edit, planText, plan, children }) {
     '',
     ...children.map((c) => `- ${c}`),
     '',
+    ...fields,
     '## The edit',
     '',
     cut(String(edit).trim(), TEXT_MAX),
@@ -297,18 +466,47 @@ export function readEdit(text, { children, plan }) {
   return { plan: { ...plan, ...s }, drop };
 }
 
-// Files the drafted spine under the epic (desk-jira's gate, §3 jira-create): {key} or {why}.
+// Why the spine's Blocks links may not be written, or null (§3 jira-edit covers `desk-jira link`).
+function linkRefusal(blocks) {
+  if (!blocks.length) return null;
+  const grant = E.permission('jira-edit');
+  return grant === 'yes' ? null : `linking its spine to ${blocks.join(', ')} needs config §3 ${E.permissionKey('jira-edit')} to be "yes" (it is "${grant}")`;
+}
+
+// Files the drafted spine under the epic (desk-jira's gate, §3 jira-create): {key} or {why}. Everything
+// that can refuse it without Jira is asked first, so a refusal leaves nothing filed.
 function fileSpine({ epic, state, env, draft }) {
   const grant = E.permission('jira-create');
   if (grant !== 'yes') return { why: `filing its spine needs config §3 ${E.permissionKey('jira-create')} to be "yes" (it is "${grant}")` };
-  const lines = String(draft).trim().split('\n');
-  const summary = lines[0].replace(/^#+\s*/, '').replace(/^(summary|title)\s*:\s*/i, '').replace(/\*\*/g, '').trim();
+  const spine = readSpine(draft, env);
+  if (spine.missing.length) return { why: missingText(spine) };
+  if (!spine.summary) return { why: 'its spine draft has no summary line' };
+  const noLink = linkRefusal(spine.blocks);
+  if (noLink) return { why: noLink };
+  // A draft cannot change once its spine is filed, so a Blocks key that cannot be read is caught here.
+  for (const other of spine.blocks) {
+    const g = run('desk-jira', ['get', other], env);
+    if (g.status !== 0) return { why: `its spine draft blocks ${other}, which could not be read (${lastLine(g)})` };
+  }
   const file = join(state, 'spine.md');
-  writeFileSync(file, `${lines.slice(1).join('\n').trim() || summary}\n`);
+  writeFileSync(file, `${spine.body || spine.summary}\n`);
   // desk-jira sends a body only from inside the repo, $DESK_STATE or a temp dir.
-  const r = run('desk-jira', ['create', 'Story', summary, file, `parent=${epic}`], { ...env, DESK_STATE: state });
+  const r = run('desk-jira', ['create', spine.type, spine.summary, file, `parent=${epic}`, ...spine.fields], { ...env, DESK_STATE: state });
   const key = /^created ([A-Z][A-Z0-9_]*-\d+)/m.exec(r.stdout ?? '')?.[1];
   return r.status === 0 && key ? { key } : { why: `filing its spine was refused (${lastLine(r)})` };
+}
+
+// Links the filed spine to each ticket its draft's Blocks line names: null, or why not. Run on every
+// start: desk-jira link leaves a link already there alone, so one cut short is finished by the next.
+function linkSpine({ spine, env, draft }) {
+  const { blocks } = readSpine(draft, env);
+  const refused = linkRefusal(blocks);
+  if (refused) return refused;
+  for (const other of blocks) {
+    const r = run('desk-jira', ['link', spine, 'Blocks', other], env);
+    if (r.status !== 0) return `its spine ${spine} is filed, but its Blocks link to ${other} was refused (${lastLine(r)}): put the links right in Jira, then answer start`;
+  }
+  return null;
 }
 
 // Seeds the batch with `children` (and, in feature mode, the spine, filed first) and takes the epic out
@@ -333,6 +531,8 @@ function startPlan({ epic, state, env, children }) {
       spine = f.key;
       writeFileSync(path, `${JSON.stringify({ ...plan, spine }, null, 2)}\n`);
     }
+    const unlinked = linkSpine({ spine, env, draft: plan.draft });
+    if (unlinked) return { why: unlinked };
     if (!readJson(join(state, 'triage', `${spine}.json`), null)) {
       const t = run(join(HERE, 'triage.sh'), [spine], env);
       if (t.status !== 0 || !readJson(join(state, 'triage', `${spine}.json`), null)) return { why: `its spine ${spine} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})` };
@@ -363,7 +563,7 @@ function editPlan({ epic, state, env, children, edit, claude }) {
   const plan = before?.draft ? before : null;
   let planText = '';
   try { planText = readFileSync(planFile(state), 'utf8'); } catch { /* the prompt says so */ }
-  const prompt = editPrompt({ epic, edit, planText, plan, children });
+  const prompt = editPrompt({ epic, edit, planText, plan, children, fields: plan ? fieldsSection(EDIT_FIELDS, env) : [] });
   writeFileSync(join(state, 'plan-edit.prompt.md'), prompt);
   const r = headless(claude, prompt, env);
   if (r.error || r.status !== 0) return { why: `your edit was not applied: the plan editor failed (${lastLine(r)})` };

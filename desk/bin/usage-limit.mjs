@@ -3,14 +3,23 @@
 // its work: pass.mjs asks this module whether that is why, and holds the batch rather than failing it.
 //
 // Every usage-limit decision is made here, in usageLimit(), and nowhere else. Two events say so: the
-// `rate_limit_event` Claude Code writes when a call is rejected (tests/fixtures/usage-limit-allowed.json
-// is the envelope recorded from real workers), and the `result` that ends the session with HTTP 429.
+// `rate_limit_event` Claude Code writes when a call is rejected (tests/fixtures/usage-limit-five-hour.json
+// is one recorded from a real worker, and usage-limit-allowed.json the traffic under the limit), and the `result` that ends the session with HTTP 429.
 // A rate_limit_event that matches neither the traffic under the limit nor a rejection is reported as
 // unrecognised and never parsed by guesswork, so the pass falls back to the stall check.
 
 const TYPE = 'rate_limit_event';
 // Traffic under the limit: one of these follows most API calls and says nothing about a pause.
 const UNDER = new Set(['allowed', 'allowed_warning']);
+// An assistant line that is the model answering the worker itself. At the limit a real worker also
+// writes the error Claude Code puts in the model's place (`is_api_error_message`, model `<synthetic>`)
+// and a subagent's reply to a request already in flight (`parent_tool_use_id` set): neither means
+// the limit lifted (tests/fixtures/usage-limit-five-hour-session.jsonl is that session's tail).
+function modelAnswered(line) {
+  let ev = null;
+  try { ev = JSON.parse(line); } catch { return true; }
+  return !ev?.is_api_error_message && !ev?.parent_tool_use_id;
+}
 
 // -> { limits: [{ kind: 'limit', type, resetsAt, resumed }], unrecognised: [snippet],
 //      last: <the latest limit> | { kind: 'unrecognised' } | null }
@@ -30,7 +39,7 @@ export function usageLimit(text) {
   for (const line of String(text ?? '').split('\n')) {
     // The worker's own turns: an answer from the model after a limit means it lifted.
     if (line.startsWith('{"type":"assistant"')) {
-      if (last?.kind === 'limit') last.resumed = true;
+      if (last?.kind === 'limit' && !last.resumed && modelAnswered(line)) last.resumed = true;
       continue;
     }
     // A session that ended on HTTP 429. Its rejection is usually recorded just before it; one that is

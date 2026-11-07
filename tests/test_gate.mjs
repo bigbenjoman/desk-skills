@@ -1,5 +1,6 @@
 // suite: gate (one definition of green)
 import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold } from '../desk/bin/gate.mjs';
+import { readFileSync } from 'node:fs';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -113,6 +114,19 @@ const legal = await co(['content/legal/terms.md', 'frontend/a.ts'], { CODEOWNERS
 t('DS-413 negative control: a hold whose reason is not a code-owner approval is never met by CODEOWNERS', `${legal.held.map((h) => h.why).join()} | ${legal.satisfied.map((h) => h.glob).join()}`, 'legal copy sign-off | frontend/**');
 t('DS-413 no merger, nothing read and nothing met', (await codeOwnerHolds(coHold(['frontend/a.ts']), { repo: 'o/r', base: 'main', merger: null, run: () => { throw new Error('called'); } })).held.length, 1);
 t('DS-413 the reason is matched as a code-owner approval in any spelling', ['needs codeowner review', 'Code owner approval', 'code-owners'].every((why) => isCodeOwnerHold({ why })) && !isCodeOwnerHold({ why: 'owner sign-off' }), true);
+// /desk-setup's Merge holds step, read against what the merge driver does with the holds it proposes.
+const setup = readFileSync(new URL('../skills/desk-setup/references/step-1-detect.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+const setupHold = (re) => parseHolds([re.exec(setup)?.[1] ?? 'missing: missing'])[0];
+const soleHeld = await codeOwnerHolds(matchHolds(['pricing/plans.ts'], parseHolds(['pricing/**: code-owner approval'])), { repo: 'o/r', base: 'main', merger: 'BigBenjoman', run: coGh({ CODEOWNERS: '* @bigbenjoman' }) });
+t('DS-424 AC1 a code-owner approval hold on a path only the merging account owns holds nothing, so setup does not propose it', `${soleHeld.held.length} ${soleHeld.satisfied.map((h) => h.glob).join()}`, '0 pricing/**');
+const policy = /ask what policy the path stands for \("([^"]+)"\)/.exec(setup)?.[1];
+t('DS-424 AC2 the example policy reason is not read as a code-owner approval', Boolean(policy) && !isCodeOwnerHold({ why: policy }), true);
+const policyHeld = await codeOwnerHolds(matchHolds(['pricing/plans.ts'], parseHolds([`pricing/**: ${policy}`])),{ repo: 'o/r', base: 'main', merger: 'BigBenjoman', run: coGh({ CODEOWNERS: '* @bigbenjoman' }) });
+t('DS-424 AC2 so a policy hold on a path the merging account alone owns stays held', `${policyHeld.held.length} ${policyHeld.satisfied.length}`, '1 0');
+const theirs = setupHold(/e\.g\. `` `([^`]+)` ``\. The merge driver holds it/);
+t('DS-424 AC3 setup may still propose a code-owner approval hold on a path someone else owns', `${theirs.glob} | ${isCodeOwnerHold(theirs)}`, 'billing/** | true');
+const theirsHeld = await codeOwnerHolds(matchHolds(['billing/x.ts'], [theirs]), { repo: 'o/r', base: 'main', merger: 'BigBenjoman', run: coGh({ CODEOWNERS: '* @bigbenjoman\nbilling/ @acme/finance' }) });
+t('DS-424 AC3 and the merge driver holds it, naming that owner', theirsHeld.held[0]?.why, 'code-owner approval from @acme/finance (code-owner approval from @acme/finance)');
 t('glob *', globToRegExp('apps/*/alembic/**').test('apps/api/alembic/versions/1.py'), true);
 t('glob * no slash', globToRegExp('apps/*/x').test('apps/a/b/x'), false);
 t('gh-checks bucket skipping', evaluateGate(normaliseRollup([{ name: 'a', bucket: 'skipping', state: 'SKIPPED' }]), { required: ['a'] }).state, 'fail');

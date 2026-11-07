@@ -367,8 +367,12 @@ which version is installed, as one of three source types:
 | `checkout` | your own skills, and upstreams you want to track live | a git clone at `~/.agents/skills/<name>`; nothing in `vendor/`. A repo holding several skills (`subskills`, e.g. `clerk/skills`) is cloned once to `~/.agents/sources/<name>` and each listed sub-skill linked in | `origin/<branch>` has commits you have not pulled |
 
 `vendor/<name>/` is never edited by hand: its `tree_sha256` in `sources.json` is checked by
-`skills-upstream verify`. A local change belongs upstream, or in a repo-level override
-(`<repo>/.claude/skills/<name>`, which Claude Code prefers).
+`skills-upstream verify`. A local change belongs upstream, in a repo-level override
+(`<repo>/.claude/skills/<name>`, which Claude Code prefers), or, for one every machine should get,
+in a patch: a diff relative to the skill folder under `vendor-patches/`, named in the entry's
+`patches` list. `upgrade` re-applies each patch to the new upstream before it reaches `vendor/`, and
+records the hash after patching; a patch that no longer applies refuses that skill (exit 1) and
+leaves `vendor/<name>` and its pin as they were, so rework the patch and upgrade again.
 
 Claude Code only sees a skill through `~/.claude/skills/<name>/SKILL.md`; an installed copy with no
 link there is "Unknown skill". `skills-upstream links` checks every skill desk installs (`desk-*`,
@@ -589,6 +593,9 @@ git aliases or write outside its worktree:
 AUTOPILOT_PREFLIGHT=1 ~/.claude/desk/bin/spawn-worker.sh <TICKET> <worktree> preflight
 ```
 
+With the `preflight` lever on (config §3b Phase 0 levers), a ticket whose last preflight passed on
+the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` to force one.
+
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
 ```bash
@@ -689,7 +696,7 @@ already pins at the same commit, naming the new one, and leaves open any other. 
 | `desk-jira` says authentication failed | The token in the repo's folder is wrong or expired; rewrite `atlassian-token` (see [Jira login](#jira-login-per-repo)) |
 | The autopilot preflight fails `ESCAPE` | The worker was not isolated from your own settings: reinstall (`./install.sh`) and re-run the preflight |
 | Claude Code keeps asking before commands | Expected for anything you did not grant as `yes`; grant it per repo with `/desk-setup permissions` |
-| A green PR is never merged by autopilot | It touches a §4 Merge holds path, has outstanding review feedback, or `pr-merge-green`/`autopilot-merge` is not `yes` and merging was not approved for the batch at Stage 3 |
+| A green PR is never merged by autopilot | It touches a §4 Merge holds path, has outstanding review feedback, has no clean §4 Local review verdict at its head, needs an approving review GitHub requires, or `pr-merge-green`/`autopilot-merge` is not `yes` and merging was not approved for the batch at Stage 3 |
 
 ## Origin
 

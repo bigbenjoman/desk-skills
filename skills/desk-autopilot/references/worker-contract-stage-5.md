@@ -67,6 +67,21 @@ call, and yours.
   take the "before" with `git checkout HEAD~1 -- <path>`, **never `git stash`** (it is shared across
   every worktree); and real data needs the repo's seed command (§4 Local database, `desk-env get local-db`, says how), run
   against your own database. "I could not seed" is not a reason to skip evidence.
+
+  **No §4 Dev server item for the app you changed?** (`desk-env cmds dev-cmd` has no line whose
+  directory holds the screen.) Its dev command is refused, so capture from the PR's preview instead:
+  open the draft PR first, then read the preview's URL from the host's bot comment
+  (`gh pr view <n> --json comments`) or the branch's deployment (`desk-gh read
+  repos/<repo>/deployments -X GET -f ref=<branch>`, then its statuses' `environment_url`). Use it
+  when it loads the screen signed out, or when §4 Staging bypass token (`desk-env get
+  staging-bypass`) or the sign-in token path in `desk-pr`'s `screenshot-surfaces.md` works against
+  it; take the "before" from §4 Staging (`desk-env list staging`) on the same terms, or say in the table why there is none. A preview still building is not a park: leave
+  the cells `_drag`, finish, and say so in `AUTOPILOT_DONE`; the pass's capture try takes them. With
+  no preview you can sign in to, park naming the row and the step that clears it, with the rest of
+  the tail (core section 1): `AUTOPILOT_PARK: screenshots for <dir>: §4 Dev server has no item for
+  it and the PR has no preview I can sign in to: add "<dir>: <its dev command>" to that row
+  (/desk-setup step 1, "Dev server"; desk-env drift names it NODEV) and requeue me, or capture them
+  yourself`, then `AUTOPILOT_PARK_INPUTS: {"config:dev-cmd": "<what desk-env get dev-cmd prints>"}`.
 - **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head
   <your branch> --body-file <file> --title "<title>"`, in that order: the allow rule matches only a
   command beginning `gh pr create --draft` or `gh pr create --repo <repo> --draft`, and `--repo`
@@ -91,5 +106,5 @@ call, and yours.
   park, at Stage 6 or 7. The pass runs that build on the host for a draft red only on such checks,
   then re-runs them: never ask anyone to run it, and never run it yourself. Finish your remaining
   steps and print `AUTOPILOT_DONE`, naming the check and saying the pass builds it. A red check it
-  does not name is handled as before.
+  does not name is handled as any red check is.
 - **Merging.** Never. Your terminal state is a draft PR with its review posted.
