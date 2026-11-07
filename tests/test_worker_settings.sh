@@ -496,6 +496,14 @@ settings '`bash tests/run.sh`' '| Worker read-only repos | `acme/widgets` |' "$(
 check "DS-431 AC2 a repo listing itself keeps its gh writes and is warned, and its clone stays read-only" \
   '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Worker read-only repos item \"acme/widgets\" is this repo"* ]] && ok "gh pr create --draft --repo acme/widgets --head b" "gh pr edit https://github.com/acme/widgets/pull/1 --title x" && denies "Edit(/$HOME/.desk-autopilot/acme__widgets/ref/acme__widgets/**)"'
 
+# ---- DS-426: a §4 Live reads row is the pass's, run on the host; a worker's settings do not change with it
+settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-noreads.json"
+settings '`bash tests/run.sh`' '| Live reads | `gateway-models: aws ssm get-parameter --name /gw/key --with-decryption` |'
+check "DS-426 AC4 a Live reads row grants a worker nothing: its permissions are the same with and without it" \
+  '[ $rc -eq 0 ] && [ "$(jq -S .permissions "$T/ws.json")" = "$(jq -S .permissions "$T/ws-noreads.json")" ]'
+check "DS-426 AC4 and no allow rule names the entry, its command or aws" \
+  '! jq -r ".permissions.allow[]" "$T/ws.json" | grep -qE "gateway-models|ssm|^Bash\(aws"'
+
 # The memory lever (config §3b Phase 0 levers): on, auto-memory is off and the memory folder is neither
 # granted nor writable; off, the folder is granted as before.
 MEM="$HOME/.claude/projects/$(printf '%s' "$T/repo" | tr -c 'A-Za-z0-9' '-')/memory"; mkdir -p "$MEM"

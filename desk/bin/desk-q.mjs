@@ -33,7 +33,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath } from './desk-env.mjs';
-import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf } from './batch-state.mjs';
+import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
@@ -110,7 +110,7 @@ function stateOf(q, t, ctx, seen) {
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
   if (worktreeBusy(t)) return 'needs';
-  if (answeredPark(t, ctx)) return 'waiting';
+  if (answeredPark(t, ctx) || readPark(t, ctx)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
@@ -120,6 +120,8 @@ const NOBODY = { releases: false, merges: false, reruns: false, live: false, sta
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
 const answeredPark = (t, ctx) => t?.state === 'parked' && !!t.park?.answered && ctx?.live === true;
+// A park waiting on the §4 Live reads a pass runs on this computer: with passes stopped, nothing runs them.
+const readPark = (t, ctx) => waitingOnRead(t) && ctx?.live === true;
 const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.batch}` : 'the batch session'} to requeue it`;
 // A triaged ticket the last pass would not spawn because its worktree is in use (pass.mjs busyWorktree,
 // recorded as `worktree_busy`): uncommitted changes, unpushed commits or another process working in it.
@@ -2276,6 +2278,7 @@ function moveOf(r, row, k, t, h, now) {
     return { text: `Needs you. ${capital(h.text)}.`, ...(h.act ? { lead: `Run, in ${r.name}:`, cmds: h.act.split(/, then /) } : {}) };
   }
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
+  if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
   if (k === 'needs' && claimOf(t)) {
     if (needsSession(t)) return { text: `Claimed by session ${claimOf(t).session}, which works it. It is lane ${t.lane}, so it stays with a person however long that session is idle${q ? `: ${q}` : '.'}` };
     return { text: `Claimed by session ${claimOf(t).session}, which works it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
