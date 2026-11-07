@@ -156,6 +156,7 @@ const REWRITTEN = [
   ['DS-427', '```bash codex exec --sandbox read-only ', 1], // the probe skips the trusted-directory check
   ['DS-458', 'wording calls park as before.', 1], // the rule as it stands, not against an earlier behaviour
   ['DS-458', 'Nobody is reading live, so drop the running commentary.', 1], // print a stage line, suppress nothing
+  ['DS-511', 'check headroom, keep the cap, proceed', 1], // a refused with-lock.sh drops to the lower cap
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));
