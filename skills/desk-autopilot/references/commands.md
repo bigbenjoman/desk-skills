@@ -86,3 +86,9 @@ that one field between passes: never by hand-spawning, and never by holding tick
 
 `node ~/.claude/desk/bin/usage-probe.mjs readings` prints each Claude login by name, with its 5-hour
 and 7-day use and reset times.
+
+On a computer with a Codex login, the same command then prints a Codex section: each Codex login by
+name with its plan as its logs record it, its 5-hour use and reset (or that its plan has none), its
+7-day use and reset, and when that reading was logged. It is read from the session logs in the
+login's own folder (`codex-usage.mjs`), at no token cost, so a login with no recent call shows its
+last reading; a window past its reset shows no reading.

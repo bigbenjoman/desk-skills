@@ -167,6 +167,22 @@ export function unlistedFolders(tool, listed) {
 // A folder the file does not list, as a login: on standby when there is a file, with no rule without one.
 export const foundLogin = (tool, dir, subs) => login({ tool, name: basename(dir), folder: dir, rule: subs.exists ? 'standby' : null, source: 'found' });
 
+// A tool's logins, each once by folder: its default folder first, then the file's rows for the tool,
+// then the folders under its logins folder the file does not list, then `extra`. The default keeps its
+// place: the file's own row for it (a name, a rule) replaces it, and a file that lists other logins of
+// the tool but not this one gives it no rule. Folders that do not exist are kept: the caller filters.
+//   -> [login]
+export function toolLogins(tool, subs, extra = []) {
+  const out = [defaultLogin(tool)];
+  const add = (l) => { if (!out.some((o) => o.dir === l.dir)) out.push(l); };
+  for (const l of subs.logins) if (l.tool === tool) add(l);
+  for (const dir of unlistedFolders(tool, out)) add(foundLogin(tool, dir, subs));
+  for (const l of extra) add(l);
+  const fileDefault = subs.logins.find((l) => l.tool === tool && l.dir === out[0].dir);
+  out[0] = fileDefault ?? { ...out[0], rule: null };
+  return out;
+}
+
 // Every login checked, the found ones added, duplicates refused, and the usable ones named.
 //   -> { exists, errors, logins: [{ ...login, state, email, plan, why, duplicateOf }], usable: [login] }
 // state is 'signed in', 'signed out', 'error' or 'duplicate'; a usable login is signed in with a rule

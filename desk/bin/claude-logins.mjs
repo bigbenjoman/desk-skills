@@ -11,7 +11,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loginFile, subscriptionsPath } from './desk-env.mjs';
-import { CHECK_TIMEOUT_MS, defaultLogin, foundLogin, isDir, login, loginEnv, readSubscriptions, unlistedFolders } from './logins.mjs';
+import { CHECK_TIMEOUT_MS, defaultLogin, isDir, login, loginEnv, readSubscriptions, toolLogins } from './logins.mjs';
 
 // A login for a folder no subscriptions row names.
 const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: dir, rule: null, source: 'env' });
@@ -22,17 +22,8 @@ const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: d
 // a folder the file does not name is never missed. Only folders that exist.
 //   -> [login]
 export function claudeLogins(env = process.env) {
-  const subs = readSubscriptions(subscriptionsPath());
-  const out = [defaultLogin('claude')];
-  const add = (l) => { if (!out.some((o) => o.dir === l.dir)) out.push(l); };
-  for (const l of subs.logins) if (l.tool === 'claude') add(l);
-  for (const dir of unlistedFolders('claude', out)) add(foundLogin('claude', dir, subs));
-  if (env.CLAUDE_CONFIG_DIR) add(envLogin(resolve(env.CLAUDE_CONFIG_DIR)));
-  // The default login keeps its place: the file's own row for ~/.claude (a name, a rule) replaces it,
-  // and a file that lists other Claude logins but not this one gives it no rule.
-  const fileDefault = subs.logins.find((l) => l.tool === 'claude' && l.dir === out[0].dir);
-  out[0] = fileDefault ?? { ...out[0], rule: null };
-  return out.filter((l, i) => i === 0 || isDir(l.dir));
+  const extra = env.CLAUDE_CONFIG_DIR ? [envLogin(resolve(env.CLAUDE_CONFIG_DIR))] : [];
+  return toolLogins('claude', readSubscriptions(subscriptionsPath()), extra).filter((l, i) => i === 0 || isDir(l.dir));
 }
 
 // A login desk may start or probe work on: in rotation or on standby.

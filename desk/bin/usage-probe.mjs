@@ -17,6 +17,7 @@ import { takeBorrowLock } from './borrow.mjs';
 import { resetText, usageLimit } from './usage-limit.mjs';
 import { loginEnv } from './logins.mjs';
 import { claudeLogins, loginKey } from './claude-logins.mjs';
+import { codexUsageByLogin } from './codex-usage.mjs';
 
 export const PROBE_EVERY_MS = 5 * 60 * 1000;
 // However many desk-q windows are open, at most one probe starts in this long.
@@ -55,6 +56,27 @@ function windowText(k, reading, now) {
 export function readingsText(rows, now) {
   const width = Math.max(...rows.map((r) => r.login.name.length));
   return rows.map(({ login, reading }) => `${login.name.padEnd(width)}  ${reading.at == null ? 'no reading' : WINDOWS.map((k) => windowText(k, reading, now)).join(' · ')}`).join('\n');
+}
+
+// A Codex login's line: its name and plan as its logs record it, each window's use and reset, a window
+// at its limit as such, and when the reading was logged, since a login with no recent call keeps an old one.
+function codexWindowText(k, reading, now) {
+  const label = WINDOW_LABELS[k], w = reading[k];
+  if (reading.none.includes(k)) return `no ${WINDOW_LONG_NAMES[k]} window`;
+  if (!w || w.resetsAt * 1000 <= now) return `${label} no reading`;
+  if (w.limited) return `${label} at its limit until ${resetText(w.resetsAt)}`;
+  return `${label} ${Math.round(w.used)}%, resets ${resetText(w.resetsAt)}`;
+}
+export function codexReadingsText(rows, now) {
+  const width = Math.max(...rows.map((r) => r.login.name.length));
+  return rows.map(({ login, reading }) => `${login.name.padEnd(width)}  ${reading.at == null ? 'no reading'
+    : [reading.plan ?? 'plan not logged', ...WINDOWS.map((k) => codexWindowText(k, reading, now)), `read ${resetText(Math.floor(reading.at / 1000))}`].join(' · ')}`).join('\n');
+}
+
+// The printed readings: the Claude logins, then a Codex section when this computer has a Codex login.
+export function allReadingsText(claude, codex, now) {
+  const text = readingsText(claude, now);
+  return codex.length ? `Claude\n${text}\n\nCodex\n${codexReadingsText(codex, now)}` : text;
 }
 
 // A probe is due only with no worker running on what it reads and no reading in the last PROBE_EVERY_MS.
@@ -125,7 +147,8 @@ export function probeNow({ dir = usageDir(), claude = 'claude', env = process.en
 }
 
 // ---- CLI ---------------------------------------------------------------------------------------
-//   readings        each Claude login by name, with its 5-hour and 7-day use and reset times
+//   readings        each Claude login by name, with its 5-hour and 7-day use and reset times, then
+//                   each Codex login with its plan and the same, read from its session logs
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
@@ -133,7 +156,7 @@ const isMain = (() => {
 if (isMain) {
   if (process.argv[2] === 'readings') {
     const now = Date.now();
-    console.log(readingsText(usageByLogin({ now }), now));
+    console.log(allReadingsText(usageByLogin({ now }), codexUsageByLogin({ now }), now));
   } else {
     console.error('usage: usage-probe.mjs readings');
     process.exit(2);
