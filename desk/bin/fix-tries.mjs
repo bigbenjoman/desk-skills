@@ -330,7 +330,8 @@ export const gapsFix = ({ pr, head, answer }) => ({ kind: 'gaps', pr, head: head
 
 // The person's instruction on an open PR (desk-needs-you `resume`), as the fix it sends back: like a
 // gaps call, not one of the pass's tries; numbered as the last of the tries made, for the views that
-// show a try's number. `ready` is a PR out of draft, which its worker leaves out of draft.
+// show a try's number. `ready` is a PR out of draft, which its worker leaves out of draft and the merge
+// driver holds (merge-driver.sh instruction_held) until this fix is finished.
 export function instructionFix(t, { pr, head, ready, answer }) {
   const n = triesMade(t.fix_tries) + 1;
   return { try: n, of: n, kind: 'instruction', pr, head: head ?? null, ready: ready === true, what: 'your instruction', answer };
