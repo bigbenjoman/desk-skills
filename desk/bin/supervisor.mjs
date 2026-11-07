@@ -43,7 +43,8 @@
 //     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
 //     window and the auto-release on (maintenance.mjs step), pushing what the step pushes.
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
-// this agent and the running merge driver started at an older one (`old_code`).
+// this agent and the running merge driver started at an older one (`old_code`). It records what that
+// tick saw; desk-q judges old code for itself, from the loaded agent's plist and the driver's lock.
 //
 // After intake, each tick runs repo-templates.mjs check, which at most hourly records in the standing
 // batch's templates.json which of the repo's committed copies of desk's templates are behind them.
@@ -69,7 +70,7 @@ import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { readInstalled, oldCode } from './installed.mjs';
+import { readInstalled, oldCode, lockVersion } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
@@ -195,8 +196,7 @@ function codeRecord(state) {
   const pid = driverHolder(state);
   let driver = null;
   if (typeof pid === 'number') {
-    let version = null;
-    try { version = readFileSync(join(state, 'merge-driver.lock.d', 'version'), 'utf8').trim() || null; } catch { /* none written */ }
+    const version = lockVersion(state);
     driver = { pid, version, old_code: oldCode(version, installed) };
   }
   return { installed: installed?.commit ?? null, supervisor: { version: agent, old_code: oldCode(agent, installed) }, driver };
