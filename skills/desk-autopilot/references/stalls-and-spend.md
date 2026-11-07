@@ -80,7 +80,8 @@ PR, and its tokens and cost as "not reported for cloud".
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded
 done with its PR, on the first pass that reads the marker. A worker at a usage limit (5-hour, weekly
-or any other) is not stalled: the pass reports it as paused, holds every spawn and resume, and
+or any other) is not stalled: the pass reports it as paused, holds every spawn and resume (with
+more than one login, it benches only that login and new work goes to the others), and
 resumes it in its own session once the limit lifts, at its reset or sooner when a probe call
 succeeds (orchestrator-recovery.md). Log growth
 alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone

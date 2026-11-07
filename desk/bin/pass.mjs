@@ -805,13 +805,15 @@ let USAGE_HOLD = null;
     }
   }
   if (rotating) {
-    // A paused worker benches its login, and stays paused on it. A bench whose limit lifted is cleared.
-    for (const h of usageHolds) bench(h.login, h.limit, h.key);
+    // A paused worker benches its login until its reset, and stays paused on it. A bench whose limit
+    // lifted is cleared, and so is one on a login no longer in use, which is never probed.
+    for (const h of usageHolds) if (h.limit.resetsAt == null || Date.now() < h.limit.resetsAt * 1000) bench(h.login, h.limit, h.key);
     for (const [k, b] of Object.entries(BENCHED)) {
       const login = loginOf(b.config_dir);
+      if (!IN_USE.some((l) => loginKey(l) === k)) { delete BENCHED[k]; continue; }
       if (!lifted(benchLimit(b), login)) continue;
       delete BENCHED[k];
-      report.advanced.push(`login ${b.login} is back: ${limitName(b.type)} lifted (${liftedHow(benchLimit(b))}), so it takes new work again`);
+      if (b.since !== PASS_AT) report.advanced.push(`login ${b.login} is back: ${limitName(b.type)} lifted (${liftedHow(benchLimit(b))}), so it takes new work again`);
     }
     if (!benchHold()) {
       for (const b of Object.values(BENCHED)) {
@@ -1820,7 +1822,7 @@ function preflightHitLimit(t, cost, login) {
       (all ? 'Every login is now benched, so nothing else spawns until one is back' : `Login ${login.name} is benched until it lifts, and new work goes to the other logins`));
     return;
   }
-  USAGE_HOLD ??={ type: l.type, resetsAt: l.resetsAt, preflight: t.key };
+  USAGE_HOLD ??= { type: l.type, resetsAt: l.resetsAt, preflight: t.key };
   USAGE_HOLD.preflight ??= t.key;
   USAGE_HOLD.login ??= login;
   usageStop = true;

@@ -187,6 +187,12 @@ re-running a ticket from scratch.
   `[preflight] usage-limit` when its call gets HTTP 429. The pass leaves that ticket as it was, spawns
   and preflights nothing more that pass, and records the hold on the queue (`usage_hold`), which
   desk-q shows as one note and desk-needs-you as one item. Retrying by hand only burns calls.
+- **With more than one login, a limit benches its own login, not the batch.** A worker or preflight
+  at a limit on one login benches that login (the queue's `benched`, one record per login) until its
+  reset passes or a probe call on it succeeds; one with no reset time waits for the probe. New work
+  starts on the other logins, on standby only once every login in rotation is benched, and a worker
+  paused on a benched login stays paused there and resumes there. The batch holds as above only
+  once every login is benched, and its hold names each login's reset, earliest first.
 - **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
   batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
   once; exactly one row that is the same batch with tickets added or removed is the same session.
