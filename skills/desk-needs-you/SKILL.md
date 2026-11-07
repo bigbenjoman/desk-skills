@@ -58,8 +58,7 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
 - **header**: the ticket key.
 - **question**: `<repo> <TICKET>: <what is needed>`, in one line.
 - **options**: the recommendation first, labelled `(Recommended)` with its reason as the
-  description, then the other actions. With no recommendation, label no option `(Recommended)`, and say in the
-  question what would settle it. At most four options; free-text "Other" is always added.
+  description, then the other actions. With none, label none and say what would settle it. At most four options; free-text "Other" is always added.
 - For `resume`, `answer` and `reject`, the answer text is recorded. Where the question
   offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Otherwise
   the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
