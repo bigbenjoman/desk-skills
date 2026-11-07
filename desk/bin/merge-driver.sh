@@ -92,6 +92,8 @@
 # and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl. Where §4 Tracker
 # is jira and §3 jira-close-own-merged is yes, a ticket with no other PR still open on its key, by
 # anyone, is then moved to §4 Done state and read back; this is the only close anywhere in the batch.
+# A ticket that is Done then has the GitHub issues its web links name closed by linked-issues.mjs, each
+# once every ticket linking it is done, under §3 gh-close-linked-issue.
 # Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
 # the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
 # A check still red after both goes back to a fix worker: pass.mjs reads reruns-<n>-<sha> and
@@ -543,13 +545,22 @@ close_merged(){
   open=$(printf '%s\n' "$open" | awk -F'\t' -v n="$n" '$1 != "" && $1 != n { printf "%s#%s", s, $1; s = " " }')
   if [ -n "$open" ]; then log "#$n $key left as it is: $open still open on the key"; return 0; fi
   st=$(desk-jira get "$key" --json 2>/dev/null | jq -r '.fields.status.name // empty')
-  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key already $DONE_STATE"; return 0; fi
+  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key already $DONE_STATE"; close_issues "$n" "$key"; return 0; fi
   if ! out=$(desk-jira transition "$key" "$DONE_STATE" 2>&1); then
     log "#$n $key not moved to $DONE_STATE: $(printf '%s' "$out" | head -1) — move it by hand"; return 0
   fi
   st=$(desk-jira get "$key" --json 2>/dev/null | jq -r '.fields.status.name // empty')
-  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key moved to $DONE_STATE (read back; §3 jira-close-own-merged)"
+  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key moved to $DONE_STATE (read back; §3 jira-close-own-merged)"; close_issues "$n" "$key"
   else log "#$n $key transition sent but it reads ${st:-unreadable}, not $DONE_STATE — check it by hand"; fi
+}
+# close_issues <n> <key>: once the ticket is Done, each GitHub issue in this repo its web links name is
+# closed when every ticket linking it is done (linked-issues.mjs, §3 gh-close-linked-issue); each line
+# it prints is logged.
+close_issues(){
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] && log "#$1 $2 $line"
+  done < <(node "$DESK_BIN/linked-issues.mjs" "$2" --repo "$REPO" 2>&1)
 }
 
 # A §4 Merge holds routine is run once per PR head, recorded in <state>/merge-driver/routine-<n>-<sha>.*:
