@@ -796,12 +796,19 @@ put('psi', { port: 5100, beat: 1, supervised: true, merge: 'yes', tickets: {
   'Q-5': withHead(draftPr(145, passed, { call: 'findings', why: `its review verdict at ${sha(145)} is not clean (p1=2)`, action: 'settle the findings on #145' })),
   'Q-6': withHead(stuckPr(146, passed, { why: 'still in conflict after 2 fix tries; the last try parked: which side wins?' })),
   'Q-7': withHead(stuckPr(147, passed, { why: 'review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell' })),
+  'Q-8': withHead(draftPr(148, passed, { call: 'person', why: `its review verdict at ${sha(148)} is not clean (p0=0 p1=0 p2=1 deferred=1 gaps=0)`, action: 'settle the findings or gaps on #148' })),
+  'Q-9': withHead(stuckPr(149, passed, { why: 'review not clean after 2 fix tries (2 review): 1 P2 — P2: src/pager.ts:1 no consumer outside its own story' })),
 } });
 const psi = () => Object.fromEntries(N.collect({ word: 'psi' }).items.map((i) => [i.t.key, i]));
 const p0 = psi();
-t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,Q-4,Q-5,Q-6,Q-7');
+t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,Q-4,Q-5,Q-6,Q-7,Q-8,Q-9');
 t('DS-384 AC3 a review stuck after its tries names how many repairs of which kind desk made', p0['Q-7']?.need,
-  'PR #147\'s code review still has findings after desk\'s 3 repairs (1 conflict fix, 1 re-review, 1 review fix). Send it back to a worker for one more try, or fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
+  'PR #147\'s code review still has findings after desk\'s 3 repairs (1 conflict fix, 1 re-review, 1 review fix): P0 desk/bin/evidence.mjs:40 a code span splits the cell. Send it back to a worker for one more try, or fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
+t('DS-436 AC3 a P2 no fix try ran on does not say repairs failed', p0['Q-8']?.need,
+  'PR #148 is a draft, and its code review found 1 P2 finding, which it marks deferred, so desk sends no worker to it. Fix it on its branch and post a fresh review; the next pass then takes it out of draft.');
+t('DS-436 AC4 a P2 left after the review fix tries names the finding and the tries made', p0['Q-9']?.need,
+  'PR #149\'s code review still has findings after desk\'s 2 repairs (2 review fixes): P2 src/pager.ts:1 no consumer outside its own story. Send it back to a worker for one more try, or fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
+t('DS-436 AC4 and it can go back to a worker for one more try', p0['Q-9']?.actions[0][0], 'fix');
 t('DS-406 AC3 a review stuck on findings in the code recommends a fix worker, never that only the person can do it',
   `${p0['Q-7']?.actions.map(([a]) => a).join()} ${/worker/.test(p0['Q-7']?.actions[0][1] ?? '')} ${p0['Q-7']?.actions.some(([, why]) => /only you/.test(why ?? ''))}`, 'fix,done,resume,not-now true false');
 t('DS-406 AC4 a step outside the code is still worded as only the person\'s', p0['Q-6']?.actions[0][1], 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then');
@@ -820,7 +827,7 @@ t('DS-378 AC4 a merge hold says what holds it and what happens once it is merged
 t('DS-378 AC4 a PR with no readable review says what to do and what follows', p0['Q-4']?.need,
   'PR #144 has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.');
 t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
-  'PR #145 is a draft, and its code review found 2 P1 findings that desk\'s own repairs did not fix. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
+  'PR #145 is a draft, and its code review found 2 P1 findings, which it does not list with a file:line a worker can fix, so desk sends no worker to them. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
 t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,
   'PR #146 is in conflict with main, and desk\'s own repairs did not fix it. Resolve the conflict on its branch; desk then merges it once its checks are green.');
 // ---- a merge hold's item quotes its reason as the step to take, never only "merge it on GitHub".
