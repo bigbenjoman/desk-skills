@@ -872,6 +872,9 @@ export function readRepos() {
   return items.map((repo) => ({ repo, path: /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes('..') ? join(readRepoDir(), slugOf(repo)) : null }));
 }
 
+// The file naming the login a worker runs on (claude-logins.mjs reads it).
+export const loginFile = (state, key) => join(state, 'workers', `${key}.login.json`);
+
 // Move a ticket's last round aside so the next worker starts clean: its log (a kept AUTOPILOT_DONE
 // blocks the respawn, and a kept PR line sends screenshots to the old PR), its park record (an old
 // question reads as the new worker's) and, with `answers`, its mailbox (a stale answer satisfies the
@@ -889,7 +892,7 @@ export function rotateRound(key, { answers = false } = {}) {
   if (!present.length) return [];
   let n = 1;
   while (files.some((f) => existsSync(`${f}.round${n}`) || existsSync(`${f}.round${n}.gz`))) n += 1;
-  const login = join(state, 'workers', `${key}.login.json`);
+  const login = loginFile(state, key);
   if (existsSync(login)) copyFileSync(login, `${login}.round${n}`);
   return present.map((f) => {
     const to = `${f}.round${n}`;

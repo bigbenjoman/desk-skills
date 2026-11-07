@@ -38,6 +38,12 @@ export function pacingSetting(raw = E.configValue('usage-pacing')) {
 // the windows its unifiedWindows lists, which are all the windows its subscription has. The same text
 // inside a tool call or its result is not this worker's usage.
 export const WINDOWS = ['five_hour', 'seven_day'];
+export const WINDOW_LABELS = { five_hour: '5h', seven_day: '7d' };
+// A window's use at `now`, in percent: one whose reset has passed reads 0 without a new reading.
+export function windowUse(w, now) {
+  const reset = w.resetsAt * 1000 <= now;
+  return { reset, pct: reset ? 0 : Math.round(w.utilization * 100) };
+}
 export function windowEvents(text) {
   const out = [];
   for (const line of String(text ?? '').split('\n')) {

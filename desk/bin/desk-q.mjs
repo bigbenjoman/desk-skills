@@ -43,7 +43,7 @@ import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, 
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
-import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
+import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
 import { limitName } from './usage-limit.mjs';
@@ -1709,10 +1709,10 @@ export const PACE_NOTE = '▲ ahead of pace: no new workers until it slows';
 const paceNote = (heldBy) => (heldBy?.length ? PACE_NOTE.replace('▲ ', `▲ ${heldBy.join(', ')} `) : PACE_NOTE);
 const usageSgr = (pct, held) => (pct >= 85 ? FAIL : pct >= 60 || held ? WARN : GOOD);
 const resetText = (t, now) => (calendarDays(t, now) === 0 ? clock(t) : `${new Date(t).toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(t)}`);
-function windowSegs(label, w, now, held, solid) {
+function windowSegs(k, w, now, held, solid) {
+  const label = WINDOW_LABELS[k];
   if (!w) return [[`${label} no reading`, GREY]];
-  const t = w.resetsAt * 1000, reset = t <= now;
-  const pct = reset ? 0 : Math.round(w.utilization * 100);
+  const t = w.resetsAt * 1000, { reset, pct } = windowUse(w, now);
   const used = Math.min(USAGE_BAR, Math.round((pct * USAGE_BAR) / 100));
   const sgr = usageSgr(pct, held && !reset);
   return [[`${label} `, GREY], ['█'.repeat(used), sgr], [(solid ? '█' : '·').repeat(USAGE_BAR - used), solid ? TRACK : GREY], [` ${pct}%`, sgr],
@@ -1720,8 +1720,8 @@ function windowSegs(label, w, now, held, solid) {
 }
 export function usageLine({ reading, running, held, heldBy }, { now, solid = false }) {
   if (reading.at == null) return segLine([['Claude usage  no reading yet', GREY]]);
-  const shown = [['5h', 'five_hour', false], ['7d', 'seven_day', held]].filter(([, k]) => !reading.none?.includes(k));
-  const segs = [['Claude usage  ', GREY], ...shown.flatMap(([label, k, h], i) => [...(i ? [[' · ', GREY]] : []), ...windowSegs(label, reading[k], now, h, solid)])];
+  const shown = [['five_hour', false], ['seven_day', held]].filter(([k]) => !reading.none?.includes(k));
+  const segs = [['Claude usage  ', GREY], ...shown.flatMap(([k, h], i) => [...(i ? [[' · ', GREY]] : []), ...windowSegs(k, reading[k], now, h, solid)])];
   if (running === 0 && now - reading.at > PROBE_EVERY_MS) segs.push([`  as of ${clock(reading.at)}`, GREY]);
   if (held) segs.push([`  ${paceNote(heldBy)}`, WARN]);
   return segLine(segs.filter(([s]) => s));

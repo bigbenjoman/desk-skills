@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { WINDOWS, newestReading, stateDirs, usageDir, probeLog } from './usage-pace.mjs';
+import { WINDOWS, WINDOW_LABELS, newestReading, stateDirs, usageDir, probeLog, windowUse } from './usage-pace.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { resetText, usageLimit } from './usage-limit.mjs';
 import { loginEnv } from './logins.mjs';
@@ -39,18 +39,18 @@ export const readLoginUsage = ({ login, dir = usageDir(), now = Date.now() }) =>
   newestReading({ dirs: [], files: [loginProbeLog(dir, login)], now });
 
 // Every Claude login with its reading.  -> [{ login, reading }]
-export const usageByLogin = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), logins = claudeLogins(), now = Date.now() } = {}) =>
-  logins.map((login) => ({ login, reading: readUsage({ dir, dirs, login, now }) }));
+export const usageByLogin = ({ now = Date.now() } = {}) =>
+  claudeLogins().map((login) => ({ login, reading: readUsage({ login, now }) }));
 
 // One login's line: its name, then each window's use and reset time. A login with no recent reading
-// says so rather than showing a figure, and a window its subscription lacks is named as lacking. A
-// window whose reset has passed reads 0%, as desk-q's bars do.
-const WINDOW_NAMES = { five_hour: ['5h', '5-hour'], seven_day: ['7d', '7-day'] };
+// says so rather than showing a figure, and a window its subscription lacks is named as lacking.
+const WINDOW_LONG_NAMES = { five_hour: '5-hour', seven_day: '7-day' };
 function windowText(k, reading, now) {
-  const [label, long] = WINDOW_NAMES[k], w = reading[k];
-  if (reading.none.includes(k)) return `no ${long} window`;
+  const label = WINDOW_LABELS[k], w = reading[k];
+  if (reading.none.includes(k)) return `no ${WINDOW_LONG_NAMES[k]} window`;
   if (!w) return `${label} no reading`;
-  return w.resetsAt * 1000 <= now ? `${label} 0%, reset ${resetText(w.resetsAt)}` : `${label} ${Math.round(w.utilization * 100)}%, resets ${resetText(w.resetsAt)}`;
+  const { reset, pct } = windowUse(w, now);
+  return `${label} ${pct}%, ${reset ? 'reset' : 'resets'} ${resetText(w.resetsAt)}`;
 }
 export function readingsText(rows, now) {
   const width = Math.max(...rows.map((r) => r.login.name.length));

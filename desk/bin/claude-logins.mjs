@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { subscriptionsPath } from './desk-env.mjs';
+import { loginFile, subscriptionsPath } from './desk-env.mjs';
 import { CHECK_TIMEOUT_MS, defaultLogin, foundLogin, isDir, login, loginEnv, readSubscriptions, unlistedFolders } from './logins.mjs';
 
 // A login for a folder no subscriptions row names.
@@ -72,7 +72,7 @@ export function readRegistry({ env = process.env } = {}) {
 // The login a worker runs on, from the file spawn-worker.sh writes beside its settings at each start
 // (kept out of its log, whose growth is the worker's own output): its config folder, or null for the
 // default, and for a worker with no such file.
-export const loginFile = (stateDir, key) => join(stateDir, 'workers', `${key}.login.json`);
+export { loginFile };
 const readLoginFile = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
 export const workerLoginDir = (stateDir, key) => readLoginFile(loginFile(stateDir, key))?.config_dir || null;
 
