@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// The memory digest a worker gets in its brief when the memory lever is on: the repo's auto-memory
-// index (MEMORY.md) entry by entry, in order, up to DIGEST_CAP bytes, with how many were cut. Its
-// size goes into the worker's log, beside the preflight's cost line.
+// The memory digest a worker gets in its brief when the memory lever is on, or when it runs on another
+// login: the repo's auto-memory index (MEMORY.md) entry by entry, in order, up to DIGEST_CAP bytes, with
+// how many were cut. Its size goes into the worker's log, beside the preflight's cost line.
 //
 //   node memory-digest.mjs <memory dir> [--log <worker log>]
 //       prints the brief's digest section (nothing when there is no index), and with --log appends

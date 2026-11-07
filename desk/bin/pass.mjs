@@ -31,7 +31,9 @@ import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText, limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
-import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
+import { readRegistry, workerLoginDir, loginOf, loginKey, probeLogins } from './claude-logins.mjs';
+import { checkLogin, checkLogins, readSubscriptions, signInCommand } from './logins.mjs';
+import { chooseLogin } from './login-choice.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -212,7 +214,7 @@ const putOff = (t) => t.state === 'parked' && !!t.park?.question && !isHeld(t)
 // not wedged, until this long after the reset; then the stall check runs as before.
 const LIMIT_GRACE_MS = 30 * 60 * 1000;
 // The probe runs on the login the hold is on, its reading kept as that login's (usage-probe.mjs): a
-// worker's login is the one spawn-worker.sh recorded for it, and a preflight's this pass's own.
+// worker's login is the one spawn-worker.sh recorded for it, and a preflight's the one it ran on.
 const OWN_LOGIN = loginOf(process.env.CLAUDE_CONFIG_DIR);
 const PROBES = new Map();
 // At most one probe a login a pass, made only when something on that login is held on the limit.
@@ -756,9 +758,10 @@ let USAGE_HOLD = null;
     }
   }
   const stored = queue().usage_hold;
-  const pre = stored?.preflight ? { key: stored.preflight, limit: { type: stored.type ?? 'unknown', resetsAt: stored.resets_at ?? null } } : null;
+  const pre = stored?.preflight ? { key: stored.preflight, limit: { type: stored.type ?? 'unknown', resetsAt: stored.resets_at ?? null },
+    login: stored.login_dir === undefined ? OWN_LOGIN : loginOf(stored.login_dir) } : null;
   const holding = [...(pre ? [pre] : []), ...usageHolds].find((h) => !lifted(h.limit, h.login));
-  if (holding) USAGE_HOLD = { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: pre && !lifted(pre.limit, pre.login) ? pre.key : null };
+  if (holding) USAGE_HOLD = { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: pre && !lifted(pre.limit, pre.login) ? pre.key : null, login: pre?.login };
   else if (pre) report.advanced.push(`${limitName(pre.limit.type)} lifted (${liftedHow(pre.limit)}): spawns and resumes go ahead`);
 }
 
@@ -1141,7 +1144,8 @@ for (const s of HEALTH.stalls) personStall(s);
 // probe: the hold would keep itself on its last figure, an old subscription's after a switch. So a pass
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
-const paceReading = () => newestReading({ files: [loginProbeLog(usageDir(), OWN_LOGIN)], login: OWN_LOGIN });
+const loginReading = (login) => newestReading({ files: [loginProbeLog(usageDir(), login)], login });
+const paceReading = () => loginReading(OWN_LOGIN);
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
 let paceProbe = '';
@@ -1685,6 +1689,43 @@ async function freePort(own = null) {
   return port;
 }
 
+// A new session starts on the login with the most room (login-choice.mjs), and a resumed one on the
+// login it started on, because its session lives in that login's folder. With no subscriptions file,
+// or with this pass's own login the only one in use, there is nothing to choose: a worker inherits
+// the pass's login and nothing is checked.
+const SUBS = readSubscriptions(E.subscriptionsPath());
+const IN_USE = probeLogins();
+const rotating = SUBS.exists && !(IN_USE.length === 1 && IN_USE[0].dir === OWN_LOGIN.dir);
+const loginVars = (dir) => (dir === OWN_LOGIN.configDir ? {} : { AUTOPILOT_LOGIN_DIR: dir ?? '' });
+// The folder a worker's session lives in: its row's, or what spawn-worker.sh recorded for a worker
+// whose row names none.
+const loginDirOf = (t) => (t.login ? t.login.config_dir : workerLoginDir(STATE, t.key, OWN_LOGIN.configDir));
+let CHECKED = null;
+// The login a new session starts on, as { login, vars, row, line }: the variables its spawn takes, its
+// queue field and its report text. Null when no login can take it.
+function pickLogin() {
+  if (!rotating) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
+  CHECKED ??= checkLogins(SUBS, { tools: ['claude'] });
+  const workers = Object.values(queue().tickets).filter((r) => r.state === 'running');
+  const login = chooseLogin(CHECKED.usable.map((l) => ({ login: l, reading: loginReading(l), running: workers.filter((r) => loginDirOf(r) === l.configDir).length })));
+  if (!login) return null;
+  return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir })}`,
+    line: ` login=${login.name}${login.rule === 'standby' ? ' (standby: no login in rotation can take it)' : ''}` };
+}
+let noLoginTold = false;
+function noLogin() {
+  if (noLoginTold) return;
+  noLoginTold = true;
+  const state = (l) => (l.rule === 'off' ? `${l.name} is off` : l.state === 'signed out' ? `${l.name} is signed out (${signInCommand(l)})` : `${l.name}: ${l.why ?? 'no rule set'}`);
+  personStall(`no Claude login can take new work — ${CHECKED.logins.map(state).join('; ')}. Nothing new spawns until one can; resumes carry on`);
+}
+// Why a session cannot resume on its login, or null. A login that could not be checked goes on to its
+// preflight, which says what is wrong with it.
+function signedOut(login) {
+  if ((!rotating && login.dir === OWN_LOGIN.dir) || checkLogin(login).state !== 'signed out') return null;
+  return `its login ${login.name} (${login.folder}) is signed out, so its session was not resumed. Sign it in, in another terminal: ${signInCommand(login)}`;
+}
+
 // Prove the generated permissions behave before committing a worker to a ticket: `failure` is null on
 // a pass, else what failed. §3b Worker models' finder and text models are proved too, on every
 // preflight, so a value the CLI rejects stops the ticket before any worker of it runs. `cost` is the
@@ -1704,11 +1745,12 @@ function preflight(key, wt, workerEnv) {
 // A preflight the usage limit refused holds the batch: the ticket keeps its place and state, and
 // nothing else spawns or preflights this pass. The probe names the limit where it can.
 let usageStop = false;
-function preflightHitLimit(t, cost) {
+function preflightHitLimit(t, cost, login) {
   logPreflight(t.key, cost);
-  const l = probeOnce().limit ?? { type: 'unknown', resetsAt: null };
+  const l = probeOnce(login).limit ?? { type: 'unknown', resetsAt: null };
   USAGE_HOLD ??= { type: l.type, resetsAt: l.resetsAt, preflight: t.key };
   USAGE_HOLD.preflight ??= t.key;
+  USAGE_HOLD.login ??= login;
   usageStop = true;
   report.stalled.push(`${t.key}: its preflight was refused at ${limitName(USAGE_HOLD.type)} — not failed, and nothing else spawns until the limit lifts`);
 }
@@ -1750,10 +1792,20 @@ async function resumeKilled(t) {
     return undefined;
   }
   if (!t.worktree || !existsSync(t.worktree)) return fail(`its worktree ${t.worktree ?? '(none recorded)'} is gone. Requeue it for a fresh worker with queue.mjs requeue ${t.key}`);
+  const loginDir = loginDirOf(t);
+  const login = loginOf(loginDir);
+  const signedOutWhy = signedOut(login);
+  if (signedOutWhy) {
+    const line = `${ended}: ${signedOutWhy}. Then requeue it with queue.mjs requeue ${t.key}, which starts a fresh session`;
+    q('set', t.key, 'resume=null');
+    q('park', t.key, line);
+    report.parked.push(`${t.key}: ${line}`);
+    return undefined;
+  }
   const model = t.model && t.model !== 'default' ? t.model : '';
-  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch ?? '', AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir) };
   const pre = preflight(t.key, t.worktree, workerEnv);
-  if (pre.limit) return preflightHitLimit(t, pre.cost);
+  if (pre.limit) return preflightHitLimit(t, pre.cost, login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
@@ -1771,7 +1823,7 @@ async function resumeKilled(t) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${rotating ? ` login=${login.name}` : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 
@@ -1890,7 +1942,7 @@ function spawnCloud(t) {
   runningKeys.add(t.key);
 }
 
-async function spawnHandoff(t) {
+async function spawnHandoff(t, pick) {
   // queue.mjs stores a stage of 7 as a number.
   const stage = t.handoff_stage == null ? '' : String(t.handoff_stage);
   const parkIt = (why) => { q('set', t.key, 'handoff=null'); q('park', t.key, why); report.parked.push(`${t.key}: ${why}`); };
@@ -1906,27 +1958,27 @@ async function spawnHandoff(t) {
   // requeue raises the same tier it would have.
   const tier = tierFor(t);
   const model = stage === '7' && models.text ? models.text : models.off ? '' : models[tier];
-  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model };
+  const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...pick.vars };
   const fail = (why) => {
     q('set', t.key, 'state=failed', 'handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true');
     report.failed.push(`${t.key}: handed off to Stage ${stage}, and the new session could not be spawned: ${why}`);
   };
   const pre = preflight(t.key, t.worktree, workerEnv);
-  if (pre.limit) return preflightHitLimit(t, pre.cost);
+  if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null');
+    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   const spawnRefused = spawnRefusal(spawned.out);
   if (spawnRefused) return fail(spawnRefused);
-  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   return undefined;
 }
@@ -1937,6 +1989,9 @@ async function spawnHandoff(t) {
 async function spawnBaseFix({ wt, fix }) {
   const ctx = { base: BASE, source: SOURCE, fix };
   if (DRY) { out.push(`base conflict fix (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
+  // No login to start on: no try is spent, and the next pass looks again.
+  const pick = pickLogin();
+  if (!pick) { noLogin(); return; }
   const key = BASE_FIX_KEY;
   mkdirSync(join(STATE, 'tickets'), { recursive: true });
   writeFileSync(join(STATE, 'tickets', `${key}.md`), baseFixTicket({ key, ...ctx }));
@@ -1949,11 +2004,11 @@ async function spawnBaseFix({ wt, fix }) {
   };
   attempts += 1;
   const model = models.off ? '' : models[tierFor({ key })];
-  const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model };
+  const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model, ...pick.vars };
   const briefPath = writeBrief({ key }, wt, baseFixBrief(ctx), { notes: true });
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
-  if (pre.limit) { preflightHitLimit({ key }, pre.cost); return; }
+  if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return; }
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
   const sid = E.uuid();
   const port = await freePort();
@@ -1969,7 +2024,7 @@ async function spawnBaseFix({ wt, fix }) {
   if (refused) { failed('could not be spawned', refused); return; }
   made[made.length - 1].session = sid;
   record({ running: sid, port, log_bytes: logBytes, idle_passes: 0 });
-  report.spawned.push(`${key} port=${port} model=${model || 'default'} (conflict fix try ${fix.try} of ${fix.of} on ${BASE}); ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${key} port=${port} model=${model || 'default'}${pick.line} (conflict fix try ${fix.try} of ${fix.of} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 const spawnedBefore = report.spawned.length;
 if (baseFix) await spawnBaseFix(baseFix);
@@ -1989,11 +2044,15 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
     report.failed.push(`${key}: ${ended}, and ${outcome}`);
   };
   if (!wt) return fail(why ?? 'the base worktree is gone');
+  const loginDir = loginDirOf({ key });
+  const login = loginOf(loginDir);
+  const signedOutWhy = signedOut(login);
+  if (signedOutWhy) return fail(signedOutWhy);
   const model = models.off ? '' : models[tierFor({ key })];
-  const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model };
+  const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model, ...loginVars(loginDir) };
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: the try stays running, paused, and the batch holds, as a ticket's does.
-  if (pre.limit) return preflightHitLimit({ key }, pre.cost);
+  if (pre.limit) return preflightHitLimit({ key }, pre.cost, login);
   if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
   const port = await freePort();
   const briefPath = join(STATE, 'briefings', `${key}.md`);
@@ -2009,7 +2068,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   if (refused) return fail(refused);
   bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${rotating ? ` login=${login.name}` : ''} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
 
@@ -2114,6 +2173,10 @@ for (const t of spawnable) {
       continue;
     }
   }
+  // A new session needs a login to start on; a resumed one has its own, so it still goes ahead.
+  const needsLogin = !toResume(t) && (toHandoff(t) || t.location !== 'cloud');
+  const pick = needsLogin ? pickLogin() : null;
+  if (needsLogin && !pick) { noLogin(); continue; }
   attempts += 1;
   if (toResume(t)) {
     // eslint-disable-next-line no-await-in-loop
@@ -2123,7 +2186,7 @@ for (const t of spawnable) {
   }
   if (toHandoff(t)) {
     // eslint-disable-next-line no-await-in-loop
-    await spawnHandoff(t);
+    await spawnHandoff(t, pick);
     if (usageStop) break;
     continue;
   }
@@ -2167,14 +2230,14 @@ for (const t of spawnable) {
   // The preflight runs on the worker's own model, so a model the CLI rejects fails it here.
   const tier = tierFor(t);
   const model = models.off ? '' : models[tier];
-  const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model };
+  const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model, ...pick.vars };
 
   const resumed = resumeRound(t, { wt, kept, branch });
   const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
   const pre = preflight(t.key, wt, workerEnv);
-  if (pre.limit) { preflightHitLimit(t, pre.cost); break; }
+  if (pre.limit) { preflightHitLimit(t, pre.cost, pick.login); break; }
   if (pre.failure) {
     logPreflight(t.key, pre.cost);
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
@@ -2204,7 +2267,7 @@ for (const t of spawnable) {
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
-    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
+    `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
@@ -2228,7 +2291,7 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
@@ -2249,7 +2312,8 @@ borrowLock?.release();
   const was = queue().usage_hold;
   if (USAGE_HOLD) {
     const rec = { since: was?.since ?? PASS_AT, type: USAGE_HOLD.type, resets_at: USAGE_HOLD.resetsAt, preflight: USAGE_HOLD.preflight ?? null,
-      paused: usageHolds.map((h) => h.key) };
+      paused: usageHolds.map((h) => h.key),
+      ...(USAGE_HOLD.login && USAGE_HOLD.login.dir !== OWN_LOGIN.dir ? { login_dir: USAGE_HOLD.login.configDir } : {}) };
     q('set-batch', `usage_hold=${JSON.stringify(rec)}`);
   } else if (was) q('set-batch', 'usage_hold=null');
 }

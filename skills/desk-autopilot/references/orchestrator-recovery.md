@@ -135,6 +135,11 @@ with no marker is. A fix try queued to resume its own session is never held as W
 the uncommitted changes or unpushed commits it left: they are its own.
 The count is the queue's `resumes`; a requeue starts a fresh session and clears a pending resume.
 
+A resume always runs on the login the worker started on (the row's `login`), whatever that login's
+rule is now, because its session lives in that login's folder. If that login has been signed out the
+ticket parks naming the login and its sign-in command, and no session starts. A new session,
+handoffs and requeues included, starts on the login with the most room.
+
 ## Resuming a dead worker's half-finished worktree
 
 For a worker the pass did not resume (failed, wedged, or over the limit), setting `AUTOPILOT_RESUME`

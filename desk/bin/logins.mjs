@@ -170,10 +170,10 @@ export const foundLogin = (tool, dir, subs) => login({ tool, name: basename(dir)
 // Every login checked, the found ones added, duplicates refused, and the usable ones named.
 //   -> { exists, errors, logins: [{ ...login, state, email, plan, why, duplicateOf }], usable: [login] }
 // state is 'signed in', 'signed out', 'error' or 'duplicate'; a usable login is signed in with a rule
-// of in rotation or standby.
-export function checkLogins(subs, opts = {}) {
-  const checked = subs.logins.map((l) => ({ ...l, ...checkLogin(l, opts), duplicateOf: null }));
-  for (const tool of TOOLS) {
+// of in rotation or standby. `tools` narrows the check to those tools' logins.
+export function checkLogins(subs, { tools = TOOLS, ...opts } = {}) {
+  const checked = subs.logins.filter((l) => tools.includes(l.tool)).map((l) => ({ ...l, ...checkLogin(l, opts), duplicateOf: null }));
+  for (const tool of tools) {
     for (const dir of unlistedFolders(tool, subs.logins)) {
       const l = foundLogin(tool, dir, subs);
       const c = checkLogin(l, opts);

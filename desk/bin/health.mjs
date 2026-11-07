@@ -209,7 +209,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const unconfirmed = units.filter((u) => !told(u)).map((u) => u.key);
   // Recovery is news only from a fresh run: a reused one is the run that reported the failure.
   const recovered = reused ? [] : (prev?.failing ?? []).filter((id) => byId[id] && !failing.includes(id));
-  // Another login failing holds no spawn, as workers start on the default login. It is told with its
+  // Another login failing holds no spawn: a pass starts no worker on it. It is told with its
   // sign-in command once signed out, and a connection failure once it has lasted two runs.
   const loginsOut = others.filter((l) => !loginResults[loginKey(l)]?.ok);
   const loginStreak = reused ? prev.login_streak ?? {}
