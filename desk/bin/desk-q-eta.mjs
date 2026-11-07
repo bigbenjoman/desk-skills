@@ -307,6 +307,13 @@ export function epicFact(issue, children) {
   return e;
 }
 
+// The triage record's `blockers`, from a `desk-jira get --json` issue: its "is blocked by" (Blocks)
+// links, [{key, category, summary, type}], with each blocker's status category, summary and type.
+export const blockersFact = (issue) => (issue?.fields?.issuelinks ?? [])
+  .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
+  .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new',
+    summary: l.inwardIssue.fields?.summary ?? null, type: l.inwardIssue.fields?.issuetype?.name ?? null }));
+
 // Each epic with a child in the queue, from the queue's tickets and their triage records (`triage`,
 // key -> record or null). A child is a ticket whose record names the epic, or one an epic's recorded
 // children list names. -> {epics: {KEY: {key, summary, total, done, queued, missing, shipped}}, of: {key:
