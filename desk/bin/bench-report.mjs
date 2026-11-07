@@ -15,6 +15,7 @@
 import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { quantile } from './desk-ci.mjs';
 
 const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>]';
 export const NOT_SCORED = 'not scored';
@@ -93,12 +94,7 @@ export function loadRun(out) {
   return { seed: run.seed ?? null, arms: arms.sort(), tasks };
 }
 
-export function median(values) {
-  if (!values.length) return null;
-  const a = [...values].sort((x, y) => x - y);
-  const m = Math.floor(a.length / 2);
-  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
-}
+const median = (values) => quantile(values, 0.5);
 
 const TOKEN_KINDS = [['uncached', 'uncached input'], ['cacheWrite', 'cache-write'], ['cacheRead', 'cache-read'], ['output', 'output']];
 

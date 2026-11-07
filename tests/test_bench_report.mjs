@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { parseBaseline, loadBaseline, loadRun, renderReport, median, NO_BASELINE, NOT_SCORED } from '../desk/bin/bench-report.mjs';
+import { parseBaseline, loadBaseline, loadRun, renderReport, NO_BASELINE, NOT_SCORED } from '../desk/bin/bench-report.mjs';
 import { report as phase0, figureLines, totalOf } from '../desk/bin/phase0-report.mjs';
 
 let fails = 0;
@@ -64,7 +64,6 @@ t('the baseline quota points add up its windows', b.quotaPoints, 40);
 const empty = parseBaseline(header.join('\n'));
 t('a baseline with nothing accepted says so', `${empty.perTicketWhy} ${empty.fixTries} ${empty.quotaPoints}`, 'no ticket accepted null null');
 t('text that is not a baseline is refused', parseBaseline('hello\ntotal:\n').why, 'its first line is not a PHASE 0 BASELINE header');
-t('median of an even count', median([4, 1, 3, 2]), 2.5);
 
 // AC1 to AC3: the CLI writes report.md with both arms beside the baseline.
 let r = run('--tasks', twoArms.set);
