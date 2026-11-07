@@ -54,7 +54,7 @@ const two = [...one, { try: 2, head: 'c'.repeat(40), kind: 'checks', what: 'red:
 const c5 = fixCall(tk({ fix_tries: two }), both, ctx());
 t('AC5 after 2 tries it is stuck, not requeued', c5?.call, 'stuck');
 t('AC5 the stuck text names the checks', c5?.why, 'still red after 2 fix tries: Backend tests, Lint');
-t('AC5 or the conflict', fixCall(tk({ fix_tries: two }), dirty, ctx())?.why, 'still in conflict with main after 2 fix tries');
+t('AC5 or the conflict, after 2 conflict tries', fixCall(tk({ fix_tries: two.map((x) => ({ ...x, kind: 'conflict' })) }), dirty, ctx())?.why, 'still in conflict with main after 2 fix tries');
 
 // AC6: red only on a check no worker can fix: stuck at once, with the command.
 const flows = pr([ok('tests'), red('Flows image missing', '903')]);
@@ -372,7 +372,7 @@ const build440 = "its check build `./scripts/ensure-flows-image.sh` exited 1 at 
 const s440 = syncFix(tk(), { pr: 855, head: HEAD, base: 'main', why: build440 });
 t('DS-440 AC1 a sync try is requeued as try 1 on the draft', `${s440?.call} ${s440?.fix.try}/${s440?.fix.of} ${s440?.fix.kind} ${s440?.fix.draft} ${s440?.fix.base}`, `requeue 1/${FIX_TRIES_MAX} sync true main`);
 t('DS-440 a sync try counts against FIX_TRIES_MAX', syncFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }] }), { pr: 855, head: HEAD, base: 'main', why: build440 })?.fix.try, 2);
-t('DS-440 and so does a conflict try after it', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'sync' }] }), { pr: 855, head: HEAD, base: 'main' })?.fix.try, 2);
+t('DS-435 a sync try leaves a conflict its own tries', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'sync' }] }), { pr: 855, head: HEAD, base: 'main' })?.fix.try, 1);
 const brief440 = fixBrief(tk({ fix: s440.fix }));
 t('DS-440 AC2 the brief merges the base, runs the checks and fixes a break the merge brought in, in its own commit',
   brief440.includes('Merge origin/main into your branch (git merge, never a rebase or a force push)') && brief440.includes('two migrations with the same parent') && brief440.includes('in a commit of its own after the merge commit, before you push') && brief440.includes(build440), true);
@@ -388,7 +388,7 @@ t('DS-440 AC5 out of tries it is stuck, naming the build and what the last sync 
   `still behind main with its check build failing after 2 fix tries: ${build440}; the last try said: pr=855 jira=In Progress said=alembic heads still split`);
 t('DS-440 AC5 a last try of another kind says nothing for it', syncFix(tk({ ...said440, fix: { ...said440.fix, kind: 'conflict' } }), { pr: 855, head: HEAD, base: 'main', why: build440 })?.why,
   `still behind main with its check build failing after 2 fix tries: ${build440}`);
-t('DS-440 AC5 the conflict reason still ignores a sync try\'s summary', conflictFix(tk(said440), { pr: 855, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 2 fix tries');
+t('DS-440 AC5 the conflict reason still ignores a sync try\'s summary', conflictFix(tk({ ...said440, fix_tries: said440.fix_tries.map((x) => ({ ...x, kind: 'conflict' })) }), { pr: 855, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 2 fix tries');
 
 // ---- DS-375: a stuck reason names the step each run failed at, keeps its checks by name, and leaves a
 // §4 Check builds check (out of draft) or a §4 Pre-merge steps one to the person, with what clears it.

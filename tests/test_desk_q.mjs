@@ -1859,7 +1859,7 @@ t('DS-279 AC16 "failed" is said only of checks', [ov279.join('\n'), q279.join('\
 const fx = {
   'F-1': prOn(801, [...okChecks(2), { ...red, name: 'e2e' }]),
   'F-2': { ...prOn(802, [...okChecks(2), { ...red, name: 'Lint' }]), fix_tries: [{ try: 1 }, { try: 2 }] },
-  'F-3': { ...prOn(803, okChecks(2), { mergeable: 'CONFLICTING' }), fix_tries: [{ try: 1 }, { try: 2 }] },
+  'F-3': { ...prOn(803, okChecks(2), { mergeable: 'CONFLICTING' }), fix_tries: [{ try: 1, kind: 'conflict' }, { try: 2, kind: 'conflict' }] },
   'F-4': prOn(804, okChecks(2), { mergeable: 'CONFLICTING' }),
   'F-5': { state: 'parked', park: { question: 'which copy?' }, result: { pr: 805 }, fix: { try: 1, of: 2, pr: 805, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
 };
