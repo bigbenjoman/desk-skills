@@ -133,6 +133,13 @@ HELD=$(git -C "$T/repo" rev-parse HEAD); REWRITTEN=$(git -C "$T/repo" commit-tre
 git -C "$T/repo" push -q origin "$HELD:refs/heads/feat/P-8"
 pushpark P-8 A "git push --force-with-lease=feat/P-8:$HELD origin feat/P-8 succeeds"; git -C "$T/repo" branch -f feat/P-8 "$REWRITTEN"
 q set P-8 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-8\",\"lease\":\"$HELD\",\"at\":\"2026-11-01T00:00:00Z\"}"
+# P-9: the same, with a pinned grant (the approved park named the SHA), and P-10 pinned to another SHA.
+git -C "$T/repo" push -q origin "$HELD:refs/heads/feat/P-9"
+pushpark P-9 A "git push --force-with-lease=feat/P-9:$HELD origin feat/P-9 succeeds"; git -C "$T/repo" branch -f feat/P-9 "$REWRITTEN"
+q set P-9 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-9\",\"lease\":\"$HELD\",\"pinned\":true,\"at\":\"2026-11-01T00:00:00Z\"}"
+git -C "$T/repo" push -q origin "$HELD:refs/heads/feat/P-10"
+pushpark P-10 A "git push --force-with-lease=feat/P-10:$HELD origin feat/P-10 succeeds"; git -C "$T/repo" branch -f feat/P-10 "$REWRITTEN"
+q set P-10 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-10\",\"lease\":\"$PIN\",\"pinned\":true,\"at\":\"2026-11-01T00:00:00Z\"}"
 q add C-4 Story A; q set C-4 state=running branch=feat/C-4 session_id=gone
 say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_PARK_CLEARS_WHEN: git push -u origin feat/C-4 succeeds" > "$T/state/logs/C-4.log"
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
@@ -176,7 +183,11 @@ check "DS-496 AC3 any other refusal ends the tries and goes to a person" \
   '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ] && [ "$(field P-3 park.clears_when)" = "{\"kind\":\"none\"}" ] && [[ "$(field P-3 park.recovery)" == *"git refused it"* ]] && grep -q "P-3: could not check \"git push origin feat/P-3 succeeds\"" <<< "$out"'
 check "DS-496 a lease push §3 does not grant is not made, and says so" \
   '! on_origin P-4 && [ "$(field P-4 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "P-4: could not check \"git push --force-with-lease=feat/P-4:$PIN origin feat/P-4 succeeds\" (config §3 git-force-with-lease is \"ask\"): left parked" <<< "$out"'
-check "DS-496 a one-off grant does not let a pass make the lease push: it goes to a person" \
+check "DS-496 AC2 a pinned one-off grant for that branch and SHA: the pass makes the lease push and requeues" \
+  '[ "$(git -C "$T/origin.git" rev-parse refs/heads/feat/P-9)" = "$REWRITTEN" ] && [ "$(field P-9 state)" = "\"triaged\"" ] && grep -q "P-9: \"git push --force-with-lease=feat/P-9:$HELD origin feat/P-9 succeeds\" holds: requeued" <<< "$out"'
+check "DS-496 a pinned grant for another SHA does not: it goes to a person" \
+  '[ "$(git -C "$T/origin.git" rev-parse refs/heads/feat/P-10)" = "$HELD" ] && [ "$(field P-10 state)" = "\"parked\"" ] && grep -q "P-10: could not check .*(config §3 git-force-with-lease is \"ask\"): left parked" <<< "$out"'
+check "DS-496 an unpinned one-off grant does not let a pass make the lease push: it goes to a person" \
   '[ "$(git -C "$T/origin.git" rev-parse refs/heads/feat/P-8)" = "$HELD" ] && [ "$(field P-8 state)" = "\"parked\"" ] && [ "$(field P-8 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "P-8: could not check .*(config §3 git-force-with-lease is \"ask\"): left parked" <<< "$out"'
 check "DS-496 a lane C park is not pushed for" \
   '! on_origin P-5 && [ "$(field P-5 state)" = "\"parked\"" ] && grep -q "P-5: \"git push origin feat/P-5 succeeds\" not tried, since it is lane C: left parked for a person" <<< "$out"'

@@ -161,8 +161,17 @@ export function grantFor({ t, text, approve = false, remoteSha = () => null, now
   const named = String(t.park?.inputs?.lease ?? '').trim();
   const lease = SHA.test(named) ? named : remoteSha(branch);
   if (!SHA.test(String(lease ?? ''))) return { why: `no lease SHA: the park names none, and origin/${branch} could not be read in its worktree` };
-  return { grant: { step: step.step, branch, lease, at: now.toISOString() } };
+  // Pinned: the park the person approved named this SHA itself (its inputs' lease, or the exact push in
+  // its question), so the approval was of that one overwrite, not of a park that merely mentions a
+  // force-push. Only a pinned grant lets a pass make the push unattended (passLeaseGrant).
+  const pinned = SHA.test(named) || String(t.park?.question ?? '').includes(`--force-with-lease=${branch}:${lease}`);
+  return { grant: { step: step.step, branch, lease, at: now.toISOString(), ...(pinned ? { pinned: true } : {}) } };
 }
+
+// Whether a ticket's one-off grant lets a pass make a parked lease push (`c`, a push-ok condition with
+// a lease) where config §3 git-force-with-lease is not yes: a pinned grant for that branch and that SHA.
+export const passLeaseGrant = (grant, c) => grant?.step === 'force-push' && grant.pinned === true
+  && SHA.test(String(grant.lease ?? '')) && grant.branch === c?.branch && grant.lease === c?.lease;
 
 // The git arguments (after `git`) of the one push a grant allows on `branch`, or null. Spent once
 // origin's branch (`remote`) has moved off the lease: git's own lease check then refuses the push, and

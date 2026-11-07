@@ -66,7 +66,9 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   naming the SHA it may overwrite) is one more condition, and its check is the push itself, from the
   ticket's worktree. Another 5xx, or a push that reached nothing, waits for the next pass. Any other
   refusal, or a push §3 does not grant, sets the condition to `none` for a person, and a park left
-  for a person is never pushed for. A ticket's one-off grant is its next worker's, never a pass's.
+  for a person is never pushed for. A ticket's one-off grant stands in for §3's lease row only when
+  the park the person approved named that SHA (its inputs' `lease`, or the exact push): a grant from a
+  park that merely mentions a force-push is its next worker's, never a pass's.
 - **A park on a take call can carry its recommendation**: a worker that parks on a call outside the
   ask categories anyway (one that widens the ticket past its criteria, say) prints
   `AUTOPILOT_PARK_RECOMMENDS: {"options": ["…", "…"], "chose": "<recommended>", "category": "<category>"}`
