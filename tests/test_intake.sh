@@ -358,7 +358,7 @@ out2=$(admit P-4); rc=$?
 check "DS-407 AC1: /desk-admit admits it runnable too, and never names the person'\''s step to admit next" '[ $rc -eq 0 ] && [ "$(qget tickets.P-4.merge_after)" = OPS-4 ] && [ "$(qget tickets.P-4.state)" = triaged ] && ! grep -q "^admit next" <<< "$out2"'
 check "admit: --front moves each admitted ticket to the front" 'grep -q "H-4 moved to the front of the spawn order" <<< "$out" && [ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).tickets)[0])" "$DESK_QUEUE")" = H-5 ]'
 # The spawn order of a queue, and a ticket's state set in it by hand.
-order(){ node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).tickets).join(" "))' "${1:-$DESK_QUEUE}"; }
+order(){ node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).tickets).join(" "))' "$DESK_QUEUE"; }
 qstate(){ node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); q.tickets[process.argv[2]].state=process.argv[3]; f.writeFileSync(p,JSON.stringify(q))' "$DESK_QUEUE" "$1" "$2"; }
 was=$(order); out=$(admit H-1); rc=$?
 check "DS-510 AC4: without --front, a ticket already in the batch is said so and the order is unchanged" '[ $rc -eq 0 ] && grep -qx "H-1 is already in batch b1 (triaged)" <<< "$out" && ! grep -qE "front|stays at" <<< "$out" && [ "$(order)" = "$was" ]'
