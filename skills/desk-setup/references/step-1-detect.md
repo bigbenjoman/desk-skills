@@ -167,9 +167,24 @@ How to turn what you find into rows:
   propose it for §4 Check builds as well as the row above, as `` `<check>: <command>` ``, the check
   named exactly as GitHub shows it and the command as the instructions give it, run from the repo
   root. Never leave it as prose only. The user confirms each; `none` is the default. Say that the
-  autopilot pass runs the command once per head on this computer, in the ticket's worktree, for a
-  draft whose only red checks it names, then re-runs them, and that it needs whatever that command
+  autopilot pass runs the command once per head on this computer, from a clean checkout of the
+  default branch the pass owns (never the ticket's worktree, so a worker's change to the script does
+  not run), for a draft whose only red checks it names, then re-runs them; that the command receives
+  the PR's tree as `DESK_CHECK_TREE` (a clean checkout of the head, whose SHA is `DESK_CHECK_HEAD`)
+  and must build from that, or it builds the default branch; that it must install and write nothing
+  in the default-branch checkout it runs from, which a file left there (an ignored one included)
+  makes every later check build and live read refuse until it is clean; and that it needs whatever that command
   needs in the supervisor's environment (a Docker context, cloud credentials).
+- **Live reads.** Detect nothing: ask the user for each read-only call to a live API whose response
+  a worker needs but cannot fetch for want of a secret (a staging model list behind an SSM key),
+  and record each as `` `<name>: <command>` ``, the command printing the response on stdout. `none`
+  is the default. Say that the pass runs one once per head on this computer, for a worker that
+  parks naming it, from a clean checkout of the default branch it keeps under the state directory,
+  fetched before each run (never the ticket's worktree or the user's own checkout), exactly as
+  written with nothing from the park added; that it saves up to 1 MiB of its output where the
+  requeued worker reads it as an untrusted response; that the command must install and write
+  nothing in that checkout; and that nothing that writes to a live system or places a call belongs
+  here.
 - **Pre-merge steps.** Search the repo instructions and the workflows for a step a person must take
   before a PR can go green, that a check or a step in one tests ("apply the migration to staging
   before merging": a schema check run against the real staging database). Propose each for §4

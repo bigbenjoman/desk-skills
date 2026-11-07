@@ -456,6 +456,7 @@ const pf = personReviewFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind
 t('DS-406 AC3 a review stuck reason gives the person one more try, its findings split by severity', `${pf?.person} ${pf?.try}/${pf?.of} ${pf?.findings.map((x) => x.text).join('|')}`, `true 3/3 ${p0_348}|src/a.ts:4 off; by one`);
 t('DS-406 AC3 its brief and task say the person sent it, quoting each finding', [fixBrief(tk({ fix: pf })).includes('## Fix try the person sent: PR #348'), fixBrief(tk({ fix: pf })).includes(`- P0: ${p0_348}`), fixTask(tk({ fix: pf })).includes('Your task is the fix try the person sent on PR #348')].join(), 'true,true,true');
 t('DS-406 a reason that quotes no finding gives no try', personReviewFix(tk(), { why: 'review not clean after 2 fix tries (2 review): 1 P0' }), null);
+t('DS-436 AC4 a P2 the review fix tries left gives the person one more try at it', JSON.stringify(personReviewFix(tk(), { why: p2Spent.why })?.findings.map((x) => x.sev)), '["P2"]');
 t('DS-406 findings listed at the same depth are each their own', reviewFindings('### P1\n  - src/a.ts:1 one\n  - src/b.ts:2 two').length, 2);
 t('DS-406 a deeper bullet under the next severity heading is not joined to the finding above it', reviewFindings('P0 (1)\n- src/a.ts:1 one\nP1 (1)\n  - src/b.ts:2 two').map((x) => x.sev).join(','), 'P0,P1');
 

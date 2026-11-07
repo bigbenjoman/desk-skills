@@ -7,6 +7,9 @@
 # install step (config §4 Install) can hard-fail without them, so this must run
 # before the install. Run it from inside the worktree.
 #
+# A bench checkout is a repository of its own, so setup-worktree.sh names the primary checkout in
+# DESK_ENV_FROM.
+#
 # Which files: config §4 "Env files", one backtick span per repo-relative path (never split on
 # commas or spaces), or `none`. Unset is refused rather than guessed.
 set -euo pipefail
@@ -16,7 +19,7 @@ set -euo pipefail
 
 # Absolute path to the primary repo's shared .git, then its parent = repo root.
 main_git_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
-main_root="$(dirname "$main_git_dir")"
+main_root="${DESK_ENV_FROM:-$(dirname "$main_git_dir")}"
 
 if ! files="$(node "$DESK_ENV_MJS" list env-files 2>/dev/null)"; then
   echo "[copy-env] FAIL: config §4 \"Env files\" is not set — run /desk-setup (write \`none\` if the repo needs none). Refusing to guess." >&2

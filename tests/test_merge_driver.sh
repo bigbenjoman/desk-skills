@@ -67,6 +67,14 @@ fs.appendFileSync('$T/gh.log', a.join(' ') + '\n');
 // gh.signedout: what gh says, and its exit code, signed out; gh.broken: any other failure.
 if (fs.existsSync('$T/gh.signedout')) { console.error('To get started with GitHub CLI, please run:  gh auth login'); process.exit(4); }
 if (fs.existsSync('$T/gh.broken')) { console.error('error connecting to api.github.com'); process.exit(1); }
+// A shell command run once, so the queue changes mid-loop: gh.midloop at the review read, between a PR's
+// gate and its merge; gh.atlist at the PR list, once the queue's tickets are read and before any gate.
+const hook = a[0] === 'api' && a.includes('graphql') ? '$T/gh.midloop' : a[1] === 'list' ? '$T/gh.atlist' : null;
+if (hook && fs.existsSync(hook)) {
+  const c = fs.readFileSync(hook, 'utf8');
+  fs.rmSync(hook);
+  require('child_process').execSync(c, { stdio: 'ignore' });
+}
 const prs = JSON.parse(fs.readFileSync(F, 'utf8'));
 const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
@@ -610,6 +618,52 @@ q set T-61 merge_after=null
 sloop; sloop
 check "DS-407 AC3: once the step is lifted, it merges with no other answer, pinned to its head" '[ "$(merged)" = 161 ] && grep -qx "161 main $SHA61" "$T/merges.log"'
 
+# ---- The person's instruction on a ready PR holds its merge until a worker has carried it out --------
+SHA62=a611111111111111111111111111111111111111; SHA63=a622222222222222222222222222222222222222
+SHA64=a633333333333333333333333333333333333333; SHA65=a644444444444444444444444444444444444444
+green_pr(){ # green_pr <n> <sha>: the one PR, ready and green, on fix/T-<n - 100>
+  printf '{ "%s": { "head": "fix/T-%s", "base": "main", "sha": "%s", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] } }\n' "$1" "$(($1 - 100))" "$2" > "$T/prs.json"
+}
+instruction(){ printf '{"try":1,"of":1,"kind":"instruction","pr":%s,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}' "$1"; }
+iloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$1" 2>&1); rc=$?; }
+green_pr 162 $SHA62
+q init merge-instruction
+q add T-62 Story A; q set T-62 branch=fix/T-62 state=queued result.pr=162 "fix=$(instruction 162)"
+: > "$T/merges.log"
+iloop T-62; iloop T-62
+check "a green PR is not merged while the person's instruction waits for a worker" '[ -z "$(merged)" ] && echo "$out" | grep -q "#162 HELD: a worker has still to carry out the person.s instruction"'
+check "and it is held before the green confirmation, so that starts again once the hold lifts" '! echo "$out" | grep -q "#162 green" && [ ! -f "$T/state/merge-driver/green-162" ]'
+q set T-62 state=parked
+iloop T-62; iloop T-62
+check "a worker that parked on it has not carried it out, so the PR is still held" '[ -z "$(merged)" ] && echo "$out" | grep -q "#162 HELD: a worker"'
+q set T-62 state=done fix.finished=2026-11-07T00:00:00Z
+iloop T-62; iloop T-62
+check "once its fix is finished, it merges pinned to its head" '[ "$(merged)" = 162 ] && grep -qx "162 main $SHA62" "$T/merges.log"'
+
+green_pr 163 $SHA63
+q init merge-instruction-other-fix
+q add T-63 Story A; q set T-63 branch=fix/T-63 state=done result.pr=163 'fix={"try":1,"of":3,"kind":"conflict","pr":163,"what":"a conflict"}'
+: > "$T/merges.log"
+iloop T-63; iloop T-63
+check "another kind of unfinished fix is not held by this" '[ "$(merged)" = 163 ] && ! echo "$out" | grep -q "HELD: a worker"'
+
+green_pr 164 $SHA64
+q init merge-instruction-race
+q add T-64 Story A; q set T-64 branch=fix/T-64 state=done result.pr=164
+: > "$T/merges.log"
+iloop T-64
+printf '%s' "node '$B/queue.mjs' set T-64 'fix=$(instruction 164)'" > "$T/gh.midloop"
+iloop T-64
+check "an instruction recorded after the PR's gate read still stops the merge" '[ -z "$(merged)" ] && [ ! -e "$T/gh.midloop" ] && echo "$out" | grep -q "#164 HELD: a worker" && ! echo "$out" | grep -q "#164 gate GREEN"'
+
+green_pr 165 $SHA65
+q init merge-instruction-unreadable
+q add T-65 Story A; q set T-65 branch=fix/T-65 state=done result.pr=165
+: > "$T/merges.log"
+printf '%s' "printf '{' > '$DESK_QUEUE'" > "$T/gh.atlist"
+iloop T-65
+check "a queue that cannot be read holds the merge" '[ -z "$(merged)" ] && echo "$out" | grep -q "#165 could not read the queue for the person.s instruction"'
+
 # ---- DS-419 / DS-433: a green feature merges with no GitHub approval; review feedback goes to a worker --
 SHA71=a711111111111111111111111111111111111111; SHA72=a722222222222222222222222222222222222222
 cat > "$T/prs.json" <<EOF
@@ -795,5 +849,41 @@ rvloop; rvloop
 check "DS-433: a clean verdict carried across a clean merge of the base merges, with no new review" '[ "$(merged)" = 211 ] && grep -qx "211 main $RB" "$T/merges.log" && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main came since"'
 rvloop
 check "DS-433: one its own commits moved past is held for a review" '! grep -q "^212 " "$T/merges.log" && echo "$out" | grep -q "#212 green at ${RC:0:9}, HELD with no clean review at its head: its review verdict is for ${RA:0:9}"'
+
+# ---- DS-508: an epic batch not in feature mode lands its base through its epic PR into main ---------
+# ep_q <case> <draft>: batch base feat/E for epic T-300, its one child merged, and epic PR #301
+# (feat/E → main), green, recorded as the queue's promotion.
+SHA301=e301111111111111111111111111111111111111
+git -C "$T/repo" push -q origin main:feat/E
+ep_q(){
+  : > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-*; q init "merge-epic-$1"
+  q set-batch base=feat/E epic=T-300 feature=false 'promotion={"pr":301}'
+  q add T-31 Story A; q set T-31 branch=fix/T-31 state=done result.pr=310 merged_at=2026-11-06T10:00:00Z
+  jq -n --arg s "$SHA301" --arg pl "$T/vp-301.json" --argjson d "$2" \
+    '{ "301": { head: "feat/E", base: "main", sha: $s, state: "open", draft: $d, title: "T-300: promote feat/E to main", payload: $pl, checks: [["test", "SUCCESS"]] } }' > "$T/prs.json"
+  RV_TICKETS="T-31"
+}
+vp 301 "$SHA301" "$CLEAN"
+ep_q ready false; rvloop; rvloop
+check "DS-508 AC2: a ready epic PR into main, green with a clean review at its head, is merged by the driver, pinned to its head" '[ "$(merged)" = 301 ] && grep -qx "301 main $SHA301" "$T/merges.log" && echo "$out" | grep -q "#301 MERGED (T-300)"'
+check "DS-508 AC2: and its merge is recorded on the queue's promotion, not as a ticket" '[ "$(jq -r .promotion.merged_at "$DESK_QUEUE")" != null ] && [ "$(jq -r ".tickets[\"T-300\"]" "$DESK_QUEUE")" = null ]'
+# GitHub shown as open again, so only the queue's promotion.merged_at can keep the driver off it.
+: > "$T/merges.log"; jq '."301".state = "open"' "$T/prs.json" > "$T/prs.json.new" && mv "$T/prs.json.new" "$T/prs.json"
+rvloop
+check "DS-508 AC2: a merged epic PR is not tried again" '[ -z "$(merged)" ] && ! echo "$out" | grep -q "#301"'
+ep_q draft true; rvloop; rvloop
+check "DS-508 AC2: a draft epic PR is not merged" '[ -z "$(merged)" ] && echo "$out" | grep -q "epic PR #301 draft (still reviewing)"'
+vp 301 "$SHA301" -
+ep_q noreview false; rvloop; rvloop
+check "DS-508 AC2: one with no clean review at its head is held for one" '[ -z "$(merged)" ] && echo "$out" | grep -q "#301 green at e30111111, HELD with no clean review at its head"'
+vp 301 "$SHA301" "$CLEAN"
+ep_q carried false; q set T-31 'promotion_hold=deploys the stack — infra/**'; rvloop; rvloop
+check "DS-508 AC3: §4 Merge holds its children carried into the base leave the epic PR to a person" '[ -z "$(merged)" ] && echo "$out" | grep -q "epic PR #301 HELD: its children carried §4 Merge holds into feat/E"'
+sed 's/| Merge holds | `none` |/| Merge holds | `infra\/**: deploys the stack` |/' "$T/config-rv.md" > "$T/config-rv-hold.md"
+ep_q hold false; jq '."301".files = ["infra/x.tf"]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+RV_CONFIG="$T/config-rv-hold.md"; rvloop; rvloop
+check "DS-508 AC3: a §4 Merge hold the epic PR touches holds it, noted on the queue's promotion" '[ -z "$(merged)" ] && jq -r .promotion.merge_blocked "$DESK_QUEUE" | grep -q "^merge hold: deploys the stack — infra/\*\*, 1 file(s)"'
+out=$(DESK_CONFIG="$T/config-rv-hold.md" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; RV_CONFIG=""
+check "DS-508 AC3: and the pass puts it to the person, naming the hold, exit 11" '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^EPIC PR: #301 is out of draft, but the merge driver holds it: merge hold: deploys the stack"'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

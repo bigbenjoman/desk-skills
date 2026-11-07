@@ -61,7 +61,9 @@ function put(name, r) {
     `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n\n` +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
-    (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : ''));
+    (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
+    (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
@@ -340,11 +342,11 @@ put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
 } });
 const iota = N.collect({ word: 'iota' }).items;
 const i1 = iota.find((i) => i.t.key === 'I-1');
-t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Say how to settle them; a worker on the PR carries out your call. | answer,done,not-now');
+t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
 t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
 const i2 = iota.find((i) => i.t.key === 'I-2');
 t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72 is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; then merge it on GitHub once its checks are green.');
-t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,not-now false');
+t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,resume,not-now false');
 const call323 = 'Split gap 1 into its own ticket; fix gap 2 in this PR';
 const gr = cli('record', 'iota', 'I-1', 'answer', call323);
 const i1q = queueOf('iota').tickets['I-1'];
@@ -376,13 +378,84 @@ put('mu', { port: 4200, beat: 1, supervised: true, tickets: {
   'M-2': draftPr(82, passed, { call: 'findings', why: 'its review verdict at 575fa8c5c is not clean (p1=1)', action: 'settle the findings on #82' }),
 } });
 const mu = Object.fromEntries(N.collect({ word: 'mu' }).items.map((i) => [i.t.key, i]));
-t('DS-345 AC1 a findings draft with gaps offers answer first', mu['M-1']?.actions.map((a) => a[0]).join(), 'answer,done,not-now');
+t('DS-345 AC1 a findings draft with gaps offers answer first', mu['M-1']?.actions.map((a) => a[0]).join(), 'answer,done,resume,not-now');
 const call345 = 'Drop the 7-day row for the old subscription; keep the rest';
 const mr = cli('record', 'mu', 'M-1', 'answer', call345);
 const m1q = queueOf('mu').tickets['M-1'];
 t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 81 --repo acme/mu --body')}`, '0 true');
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
-t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,not-now');
+t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
+
+// ---- An open PR takes the person's instruction for a worker on it; a merged or closed one says why not.
+const readyPr = (pr, extra = {}) => { const d = draftPr(pr, passed); return { ...d, ...extra, pr_status: { ...d.pr_status, isDraft: false } }; };
+put('instr', { port: 4210, beat: 1, supervised: true, tickets: {
+  'SG-1': { ...draftPr(91, passed, { call: 'person', why: 'its review verdict at abc123456 is not clean (gaps=1)', action: 'settle the gaps on #91' }), branch: 'fix/SG-1-x' },
+  'SG-2': readyPr(92, { branch: 'fix/SG-2-x' }),
+  'SG-3': readyPr(93),
+  'SG-4': readyPr(94),
+  'SG-5': readyPr(95),
+  'SG-6': { ...draftPr(96, passed), pr_status: { ...draftPr(96, passed).pr_status, state: 'CLOSED' } },
+  'SG-7': { ...draftPr(97, passed), merged_at: minsAgo(5), pr_status: { ...draftPr(97, passed).pr_status, state: 'MERGED', isDraft: false } },
+  'SG-8': readyPr(98),
+  'SG-9': { ...readyPr(99), lane: 'C' },
+} });
+const instr = () => Object.fromEntries(N.collect({ word: 'instr' }).items.map((i) => [i.t.key, i]));
+const sg0 = instr();
+const sq = () => queueOf('instr').tickets;
+t('DS-501 AC1 a PR with review gaps and a plain open PR both offer resume, with no recommendation of their own',
+  `${sg0['SG-1']?.actions.map((a) => a[0]).join()} ${sg0['SG-2']?.actions.map((a) => a[0]).join()} ${sg0['SG-2']?.actions.find((a) => a[0] === 'resume')?.[1]}`,
+  'answer,done,resume,not-now done,resume,not-now null');
+t('DS-501 AC1 negative: a closed PR does not', sg0['SG-6']?.actions.map((a) => a[0]).join(), 'drop,requeue,not-now');
+t('DS-501 AC1 its listed line says what resume does', cli('list', 'instr').out.split('\n').some((l) => l.startsWith('instr SG-2 pr') && /\d\. resume \(resume "<instruction>" keeps it for the next worker/.test(l)), true);
+
+// AC2: GitHub is read first, then the instruction is kept and the ticket goes back on its branch.
+const loggedBefore = readFileSync(GH_LOG, 'utf8').length;
+const told = 'Fix the issues, then send it back\nand keep the title';
+onGitHub(92, { state: 'OPEN', isDraft: false, headRefOid: 'live92' });
+const resumed = cli('record', 'instr', 'SG-2', 'resume', told);
+const sg2 = sq()['SG-2'];
+const sgBrief = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__instr', 'briefings', 'SG-2.md'), 'utf8');
+t('DS-501 AC2 the instruction is kept in the briefing for the next worker', `${resumed.code} ${JSON.stringify(answers().at(-1).args)} ${sgBrief.includes(told)}`, `0 ${JSON.stringify(['SG-2', told])} true`);
+t('DS-501 AC2 and requeued on its branch, at the head GitHub shows', `${sg2.state} ${sg2.branch} ${sg2.fix?.kind} ${sg2.fix?.pr} ${sg2.fix?.head} ${sg2.fix?.ready} ${sg2.fix?.answer === told}`, 'triaged fix/SG-2-x instruction 92 live92 true true');
+t('DS-501 AC2 it is not one of the pass\'s fix tries', `${(sg2.fix_tries ?? []).length} ${sg2.fix?.try} of ${sg2.fix?.of}`, '0 1 of 1');
+t('DS-501 triage call: resume posts nothing on the PR (answer stays that path)', readFileSync(GH_LOG, 'utf8').slice(loggedBefore).includes('pr comment'), false);
+t('DS-501 AC2 its worker\'s briefing quotes the instruction, and it stays out of draft and reviews its new head',
+  `${fixBrief(sg2).includes('> and keep the title')} ${/open and out of draft/.test(fixBrief(sg2))} ${/carry out the person's instruction on PR #92/.test(fixTask(sg2))} ${/leave the PR out of draft/.test(fixTask(sg2))} ${/review the new head with desk-review/.test(fixTask(sg2))}`, 'true true true true true');
+t('DS-501 AC2 desk-q no longer counts it as needing you', instr()['SG-2'], undefined);
+const sgRepo = loadRepos().find((r) => r.name === 'instr');
+t('DS-501 AC2 its desk-q page shows your instruction, not a numbered fix try', `${ticketScreen(sgRepo, 'SG-2', { width: 160 }).includes('Your call')} ${ticketScreen(sgRepo, 'SG-2', { width: 160 }).includes('Fix try')}`, 'true false');
+
+// A draft goes back as a draft, and a review-gaps PR's resume is kept without being posted.
+onGitHub(91, { state: 'OPEN', isDraft: true, headRefOid: 'h91' });
+const sg1r = N.record({ word: 'instr', ticket: 'SG-1', action: 'resume', text: 'keep the gap as it is' });
+t('DS-501 AC2 a draft stays in draft, and a gaps PR\'s resume is not posted', `${sg1r.ok} ${sq()['SG-1'].fix?.kind} ${/a draft/.test(fixBrief(sq()['SG-1']))} ${/leave the PR in draft/.test(fixTask(sq()['SG-1']))} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 91')}`, 'true instruction true true false');
+
+// A live session runs the batch: requeued all the same, with nothing left for the session to do.
+onGitHub(98, { state: 'OPEN', isDraft: false, headRefOid: 'h98' });
+const sg8 = N.record({ word: 'instr', ticket: 'SG-8', action: 'resume', text: 'go', repos: loadRepos().map((r) => (r.name === 'instr' ? { ...r, live: true, run: { by: 'session' } } : r)) });
+t('DS-501 triage call: requeued whoever runs the batch, with no message to send', `${sg8.ok} ${sg8.message} ${sq()['SG-8'].state}`, 'true null triaged');
+
+// AC3: the queue still says open, GitHub says otherwise.
+const untouched = (k) => `${sq()[k].state} ${sq()[k].fix}`;
+const answersBefore = answers().length;
+onGitHub(93, { state: 'MERGED', isDraft: false, headRefOid: 'h93', mergedAt: minsAgo(1) });
+const sMerged = cli('record', 'instr', 'SG-3', 'resume', 'x');
+t('DS-501 AC3 a PR merged since the last pass is refused, saying why', `${sMerged.code} ${/PR #93 is merged, so no worker can carry out an instruction on it/.test(sMerged.out + sMerged.err)} ${untouched('SG-3')}`, '11 true done undefined');
+onGitHub(94, { state: 'CLOSED', isDraft: false, headRefOid: 'h94' });
+const sClosed = N.record({ word: 'instr', ticket: 'SG-4', action: 'resume', text: 'x' });
+t('DS-501 AC3 a PR closed since the last pass is refused, saying why', `${sClosed.ok} ${/PR #94 was closed without merging.*Drop the ticket, or requeue it/.test(sClosed.line)} ${untouched('SG-4')}`, 'false true done undefined');
+const sUnread = N.record({ word: 'instr', ticket: 'SG-5', action: 'resume', text: 'x' });
+t('DS-501 AC3 a PR GitHub cannot read is refused and stays listed', `${sUnread.ok} ${/could not read PR #95's state from GitHub .*nothing was recorded/.test(sUnread.line)} ${untouched('SG-5')} ${!!instr()['SG-5']}`, 'false true done undefined true');
+// The queue already has it shut: it says why, not that the verb or the item is unknown.
+const sShut = N.record({ word: 'instr', ticket: 'SG-6', action: 'resume', text: 'x' });
+t('DS-501 AC3 a PR the queue has closed is refused, saying why', `${sShut.ok} ${/PR #96 was closed without merging/.test(sShut.line)} ${/is not an action/.test(sShut.line)}`, 'false true false');
+const sDone = N.record({ word: 'instr', ticket: 'SG-7', action: 'resume', text: 'x' });
+t('DS-501 AC3 a PR the queue has merged is refused, saying why', `${sDone.ok} ${/PR #97 is merged/.test(sDone.line)} ${/does not count it/.test(sDone.line)}`, 'false true false');
+t('DS-501 AC3 no refused resume recorded an answer', answers().length, answersBefore);
+// A requeue the queue refuses takes its fix back and says so.
+onGitHub(99, { state: 'OPEN', isDraft: false, headRefOid: 'h99' });
+const sLane = N.record({ word: 'instr', ticket: 'SG-9', action: 'resume', text: 'x' });
+t('DS-501 a refused requeue leaves no fix behind, and says so', `${sLane.ok} ${/kept in its briefing, but the requeue was refused/.test(sLane.line)} ${sq()['SG-9'].state} ${sq()['SG-9'].fix}`, 'false true done null');
 
 // ---- DS-322: a worker's park that names lane C, or lane D with no saved canvas, is offered open, never
 // resume or requeue; any other park's resume names the ticket's own lane.
@@ -534,13 +607,73 @@ t('DS-375 AC1 once every check it named is green it is not stuck: a PR the drive
 t('DS-375 AC3 a §4 Check builds check names its command as what unblocks it', sg['S-2']?.need, 'PR #102: "Flows image" needs a step outside GitHub: ./scripts/ensure-flows-image.sh. Do that step; desk then merges it once its checks are green.');
 t('DS-375 AC4 a step outside GitHub: done is offered but not recommended, and says what the step is',
   `${sg['S-2']?.actions.map(([a]) => a).join()} ${recommends(sg['S-2'])} ${sg['S-2']?.actions[0][2]}`,
-  'done,not-now false the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "Flows image" is green');
+  'done,resume,not-now false the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "Flows image" is green');
 t('DS-375 AC4 its listed line carries no recommendation', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
 t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done recommended',
   `${sg['S-3']?.need} | ${recommends(sg['S-3'])}`, `PR #103: "${LINT}" (failed at "Check portal schema mirror") needs a step outside GitHub: apply the PR's migrations to staging first. Do that step; desk then merges it once its checks are green. | false`);
 t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
   sg['S-6']?.actions[0][2], `the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "${LINT}", "Flows image" are green`);
 t('DS-375 a reason recorded before the pass kept its checks still names them', sg['S-5']?.need, 'PR #105 has failing checks desk\'s own repairs did not fix: Lint. Fix them on its branch; desk then merges it once its checks are green.');
+// ---- A review gate that wants a person's approval, from error lines recorded on studia-web PRs
+// #2555 and #2546, and the lines desk's own review-gate.mjs writes.
+const { failureLine } = await import('../desk/bin/gate.mjs');
+const { checkApproval } = await import('../desk/templates/scripts/desk/review-gate.mjs');
+const GATE_NOTES = JSON.parse(readFileSync(join(ROOT, 'tests', 'fixtures', 'review-gate-annotations.json'), 'utf8'));
+const GATE = '🔐 Review gate', GATE_STEP = 'Require an approval unless a small fix, docs or chore change';
+const gateRed = (error) => ({ name: GATE, status: 'completed', conclusion: 'failure', error });
+const gateStuck = (pr, error, more = {}) => stuckPr(pr, [gateRed(error), ...passed], why375([{ name: GATE, step: GATE_STEP }, ...(more.checks ?? [])]));
+const protectedLine = failureLine(GATE_NOTES.protected), limitLine = failureLine(GATE_NOTES['file-limit']);
+t('DS-499 the error line is the gate\'s, not GitHub\'s exit code line', protectedLine.startsWith('Approval required — 2 protected file(s)'), true);
+const staleLine = 'Approval required — 1 protected file(s): `apps/web/package.json` — and mousedown\'s approval predates 9354a90.';
+// Six protected paths as long as a real migration's, so the line is the longest shape the gate writes.
+const longPath = (i) => `packages/db/prisma/migrations/2026110712000${i}_update_customer_preferences_and_settings/migration.sql`;
+const gateFiles = Array.from({ length: 31 }, (_, i) => ({ filename: i < 6 ? longPath(i) : `src/${i}.ts`, additions: 1, deletions: 0 }));
+const deskGate = checkApproval({ title: 'feat: preferences', head: 'new', author: 'me' }, gateFiles, [{ user: { login: 'mousedown' }, state: 'APPROVED', commit_id: 'old' }], new Set(['mousedown']),
+  { protected: 'migrations/', generated: '^$', fileLimit: 30, exemptTypes: 'fix|docs|chore' });
+const deskLine = failureLine([{ annotation_level: 'failure', message: deskGate.message }]);
+const otherLine = 'Approval required — a `feat(messaging):` title, and only fix, docs, chore merge without an approval.';
+const approved499 = { name: GATE, status: 'completed', conclusion: 'success' };
+const gateTickets = {
+  'V-1': gateStuck(121, protectedLine),
+  'V-2': gateStuck(122, limitLine),
+  'V-3': gateStuck(123, staleLine),
+  'V-4': gateStuck(124, deskLine),
+  'V-5': gateStuck(125, otherLine),
+  'V-6': stuckPr(126, [lintRed, gateRed(protectedLine), ...passed], why375([{ name: LINT, step: 'Run eslint' }, { name: GATE, step: GATE_STEP }])),
+  'V-7': { ...greenPr(127), merge_blocked: `approval: "${GATE}" needs approval from a human reviewer at abc123456: a person approves it before desk merges it`, pr_status: { ...greenPr(127).pr_status, head: 'h127', checks: [gateRed(protectedLine), ...passed] } },
+  'V-8': gateStuck(128, protectedLine),
+};
+put('phi', { port: 4620, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)', 'Product owner': 'Sam' }, tickets: gateTickets });
+const vi = () => Object.fromEntries(N.collect({ word: 'phi' }).items.map((i) => [i.t.key, i]));
+const v1 = vi();
+const TAIL = 'No code change clears it, only an approving review on GitHub at its latest commit; desk then merges it once its checks are green.';
+t('DS-499 AC1 protected files: the reason in plain words and the approver, not "fix it on its branch"', v1['V-1']?.need, `PR #121 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
+t('DS-499 AC1 the file limit', v1['V-2']?.need, `PR #122 needs Chris Anthony's approval: it has 37 changed files, over the 30-file limit. ${TAIL}`);
+t('DS-499 AC1 another protected file is named, and an approval of an older commit is said', v1['V-3']?.need, `PR #123 needs Chris Anthony's approval: it changes \`apps/web/package.json\`. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
+t('DS-499 AC1 desk\'s own gate line reads the same', v1['V-4']?.need, `PR #124 needs Chris Anthony's approval: it changes a database migration and 1 more protected file, and it has 31 changed files, over the 30-file limit. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
+t('DS-499 AC3 a line naming neither cause is as today', `${v1['V-5']?.need} | ${v1['V-5']?.actions.map(([a]) => a).join()}`, `PR #125: "${GATE}" (failed at "${GATE_STEP}") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | done,resume,not-now`);
+t('DS-499 AC1 beside a check a person fixes, that check is asked for and the approval said after it', v1['V-6']?.need, `PR #126: "${LINT}" (failed at "Run eslint") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. It also needs Chris Anthony's approval: it changes a database migration and the database schema.`);
+t('DS-499 AC2 beside another red check there is no waiting to do', v1['V-6']?.actions.map(([a]) => a).join(), 'done,resume,not-now');
+t('DS-499 AC1 a §4 State check the driver noted reads the same', v1['V-7']?.need, `PR #127 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
+t('DS-499 AC2 the item offers waiting first', `${v1['V-1']?.kind} ${v1['V-1']?.actions.map(([a]) => a).join()}`, 'pr waiting,done,resume,not-now');
+t('DS-499 AC2 waiting is not an action on any other PR', N.record({ word: 'phi', ticket: 'V-5', action: 'waiting' }).ok, false);
+t('DS-499 AC2 waiting is recorded', N.record({ word: 'phi', ticket: 'V-1', action: 'waiting' }).ok, true);
+N.record({ word: 'phi', ticket: 'V-8', action: 'waiting' });
+t('DS-499 AC2 it is not listed again, and desk-q counts it put off', `${'V-1' in vi()} ${N.collect({ word: 'phi' }).putOff}`, 'false 2');
+const again = (key, change) => { const q = queueOf('phi').tickets; put('phi', { port: 4620, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)' }, tickets: { ...q, [key]: change(q[key]) } }); };
+again('V-1', (x) => ({ ...x, pr_status: { ...x.pr_status, approvals: ['mousedown'] } }));
+t('DS-499 AC2 an approval brings it back, saying so', vi()['V-1']?.need.endsWith('approvals none → mousedown.)'), true);
+again('V-8', (x) => ({ ...x, stuck: { ...x.stuck, head: 'h128b' }, pr_status: { ...x.pr_status, head: 'h128b' } }));
+t('DS-499 AC2 a new head brings it back', vi()['V-8']?.need.includes('pr-head h128 → h128b'), true);
+again('V-2', (x) => ({ ...x, pr_status: { ...x.pr_status, checks: [approved499, ...passed] } }));
+t('DS-499 AC2 a gate gone green leaves nothing to ask', 'V-2' in vi(), false);
+put('chi', { port: 4630, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'none', 'Product owner': 'Sam, @sam' }, tickets: { 'W-1': gateStuck(131, limitLine) } });
+put('psi', { port: 4640, beat: 1, supervised: true, merge: 'yes', tickets: { 'W-2': gateStuck(132, limitLine) } });
+put('omega499', { port: 4650, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'you' }, tickets: { 'W-3': gateStuck(133, limitLine) } });
+t('DS-499 AC1 no reviewer falls back to the product owner', N.collect({ word: 'chi' }).items[0]?.need.startsWith('PR #131 needs Sam\'s approval:'), true);
+t('DS-499 AC1 neither row: a person with approval rights', N.collect({ word: 'psi' }).items[0]?.need.startsWith('PR #132 needs approval from a person with approval rights:'), true);
+t('DS-499 AC1 a row that is the user', N.collect({ word: 'omega499' }).items[0]?.need.startsWith('PR #133 needs your approval:'), true);
+
 // ---- DS-410: a ready PR into a feature base held on a required check its workflow never runs there.
 const why410 = 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/ci.yml runs on pull requests into main, production)';
 const ready410 = (pr, untriggered) => ({ state: 'done', lane: 'A', result: { pr },
@@ -663,19 +796,26 @@ put('psi', { port: 5100, beat: 1, supervised: true, merge: 'yes', tickets: {
   'Q-5': withHead(draftPr(145, passed, { call: 'findings', why: `its review verdict at ${sha(145)} is not clean (p1=2)`, action: 'settle the findings on #145' })),
   'Q-6': withHead(stuckPr(146, passed, { why: 'still in conflict after 2 fix tries; the last try parked: which side wins?' })),
   'Q-7': withHead(stuckPr(147, passed, { why: 'review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell' })),
+  'Q-8': withHead(draftPr(148, passed, { call: 'person', why: `its review verdict at ${sha(148)} is not clean (p0=0 p1=0 p2=1 deferred=1 gaps=0)`, action: 'settle the findings or gaps on #148' })),
+  'Q-9': withHead(stuckPr(149, passed, { why: 'review not clean after 2 fix tries (2 review): 1 P2 — P2: src/pager.ts:1 no consumer outside its own story' })),
 } });
 const psi = () => Object.fromEntries(N.collect({ word: 'psi' }).items.map((i) => [i.t.key, i]));
 const p0 = psi();
-t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,Q-4,Q-5,Q-6,Q-7');
+t('DS-378 every PR item is listed', Object.keys(p0).sort().join(), 'Q-1,Q-2,Q-3,Q-4,Q-5,Q-6,Q-7,Q-8,Q-9');
 t('DS-384 AC3 a review stuck after its tries names how many repairs of which kind desk made', p0['Q-7']?.need,
-  'PR #147\'s code review still has findings after desk\'s 3 repairs (1 conflict fix, 1 re-review, 1 review fix). Send it back to a worker for one more try, or fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
+  'PR #147\'s code review still has findings after desk\'s 3 repairs (1 conflict fix, 1 re-review, 1 review fix): P0 desk/bin/evidence.mjs:40 a code span splits the cell. Send it back to a worker for one more try, or fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
+t('DS-436 AC3 a P2 no fix try ran on does not say repairs failed', p0['Q-8']?.need,
+  'PR #148 is a draft, and its code review found 1 P2 finding, which it marks deferred, so desk sends no worker to it. Fix it on its branch and post a fresh review; the next pass then takes it out of draft.');
+t('DS-436 AC4 a P2 left after the review fix tries names the finding and the tries made', p0['Q-9']?.need,
+  'PR #149\'s code review still has findings after desk\'s 2 repairs (2 review fixes): P2 src/pager.ts:1 no consumer outside its own story. Send it back to a worker for one more try, or fix them on its branch and post a fresh review; desk then merges it once its checks are green.');
+t('DS-436 AC4 and it can go back to a worker for one more try', p0['Q-9']?.actions[0][0], 'fix');
 t('DS-406 AC3 a review stuck on findings in the code recommends a fix worker, never that only the person can do it',
-  `${p0['Q-7']?.actions.map(([a]) => a).join()} ${/worker/.test(p0['Q-7']?.actions[0][1] ?? '')} ${p0['Q-7']?.actions.some(([, why]) => /only you/.test(why ?? ''))}`, 'fix,done,not-now true false');
+  `${p0['Q-7']?.actions.map(([a]) => a).join()} ${/worker/.test(p0['Q-7']?.actions[0][1] ?? '')} ${p0['Q-7']?.actions.some(([, why]) => /only you/.test(why ?? ''))}`, 'fix,done,resume,not-now true false');
 t('DS-406 AC4 a step outside the code is still worded as only the person\'s', p0['Q-6']?.actions[0][1], 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then');
 t('DS-406 AC4 so is a review stuck reason that quotes no finding', (() => { const q = queueOf('psi'); const was = q.tickets['Q-7'].stuck.why; q.tickets['Q-7'].stuck.why = 'review not clean after 2 fix tries (2 review): 1 P0';
   writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); const a = psi()['Q-7']?.actions.map(([v]) => v).join(); q.tickets['Q-7'].stuck.why = was;
-  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); return a; })(), 'done,not-now');
-t('DS-375 AC4 the outside-GitHub step is unchanged by DS-406', sg['S-2']?.actions.map(([a]) => a).join(), 'done,not-now');
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); return a; })(), 'done,resume,not-now');
+t('DS-375 AC4 the outside-GitHub step is unchanged by DS-406', sg['S-2']?.actions.map(([a]) => a).join(), 'done,resume,not-now');
 const q7 = N.record({ word: 'psi', ticket: 'Q-7', action: 'fix' });
 const q7t = queueOf('psi').tickets['Q-7'];
 t('DS-406 AC3 fix sends it to a worker on the PR with its finding quoted, outside desk\'s tries',
@@ -687,7 +827,7 @@ t('DS-378 AC4 a merge hold says what holds it and what happens once it is merged
 t('DS-378 AC4 a PR with no readable review says what to do and what follows', p0['Q-4']?.need,
   'PR #144 has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.');
 t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
-  'PR #145 is a draft, and its code review found 2 P1 findings that desk\'s own repairs did not fix. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
+  'PR #145 is a draft, and its code review found 2 P1 findings, which it does not list with a file:line a worker can fix, so desk sends no worker to them. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
 t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,
   'PR #146 is in conflict with main, and desk\'s own repairs did not fix it. Resolve the conflict on its branch; desk then merges it once its checks are green.');
 // ---- a merge hold's item quotes its reason as the step to take, never only "merge it on GitHub".
@@ -811,12 +951,74 @@ put('chi', { port: 5200, beat: 1, supervised: true, merge: 'yes', tickets: {
 } });
 const chi = Object.fromEntries(N.collect({ word: 'chi' }).items.map((i) => [i.t.key, i]));
 t('DS-379 AC3 a stuck capture try says what to do', chi['C-1']?.need,
-  'PR #151 is a draft, and desk\'s capture try could not take 2 of its screenshots. Take them and upload them to the PR; the next pass then takes it out of draft.');
+  'PR #151 is a draft, and desk\'s capture try could not take 2 of its screenshots, so nothing desk has can fill their cells. Edit the PR body so no cell is left; the next pass then takes it out of draft.');
 t('DS-379 AC3 its note names each screen and the worker\'s reason, whole', chi['C-1']?.note, `(Not taken: s-2-before.png, s-2-after.png. The capture try said: ${said379})`);
 const c1Line = cli('list', 'chi').out.split('\n').find((l) => l.startsWith('chi C-1 pr')) ?? '';
 t('DS-379 AC3 the listed line keeps the need and the note whole', c1Line.includes(`| ${chi['C-1'].need} ${chi['C-1'].note} |`), true);
 t('DS-379 AC3 one screen with nothing said still names it', `${chi['C-2']?.need} ${chi['C-2']?.note}`,
-  'PR #152 is a draft, and desk\'s capture try could not take one of its screenshots. Take it and upload it to the PR; the next pass then takes it out of draft. (Not taken: a-after.png.)');
+  'PR #152 is a draft, and desk\'s capture try could not take one of its screenshots, so nothing desk has can fill its cell. Edit the PR body so no cell is left; the next pass then takes it out of draft. (Not taken: a-after.png.)');
+
+// ---- DS-492: done on a screenshot item reads the PR's body, not its draft state, and the person is
+// never asked to upload.
+const shotDraft = (pr, why, extra = {}) => ({ state: 'done', result: { pr }, pr_status: { pr, state: 'OPEN', isDraft: true, head: 'h'.repeat(40), checks: [] },
+  undraft: { call: 'person', why, action: `edit the body of #${pr} so no \`_drag <file>_\` cell is left`, sha: 'h'.repeat(40), pr }, ...extra });
+const cellWhy = '1 screenshot cell(s) left: a.png, whose files desk holds but could not put in the body';
+put('sigma', { port: 5300, beat: 1, supervised: true, merge: 'yes', prReady: 'yes', tickets: {
+  'H-1': shotDraft(171, cellWhy),
+  'H-2': capturePr(172, ['a-after.png'], 'needs a signed-in admin'),
+  'H-3': shotDraft(173, cellWhy),
+  'H-4': { ...capturePr(174, ['a-after.png'], 'needs a signed-in admin'), fix_tries: [{ try: 1, head: 'h'.repeat(40), kind: 'capture' }] },
+  'H-5': { ...shotDraft(175, 'its review verdict at aaaaaaaaa is not clean (p2=1)'), undraft: { call: 'person', why: 'its review verdict at aaaaaaaaa is not clean (p2=1)', action: 'settle the findings or gaps on #175', pr: 175 } },
+} });
+const sig = () => Object.fromEntries(N.collect({ word: 'sigma' }).items.map((i) => [i.t.key, i]));
+t('DS-492 AC3 a cell desk holds but could not place is named, with why, and no upload is asked for', sig()['H-1']?.need,
+  'PR #171 is a draft: 1 screenshot cell(s) left: a.png, whose files desk holds but could not put in the body. Edit the body of #171 so no `_drag <file>_` cell is left; the next pass then picks it up.');
+onGitHub(171, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'Before | After\n<img alt="a" src="https://x/a.png">\n\nA cell reads `_drag <file>_`.' });
+const fine = N.record({ word: 'sigma', ticket: 'H-1', action: 'done' });
+t('DS-492 AC4 done with no cell in the body is accepted, though the PR is a draft', `${fine.ok} ${fine.line}`,
+  'true sigma H-1: GitHub shows no screenshot cell left in PR #171\'s body, so it is off your list; the next pass takes it out of draft.');
+t('DS-492 AC4 and it leaves the list, as desk\'s to undraft', `${sig()['H-1']?.kind ?? 'none'} ${queueOf('sigma').tickets['H-1'].undraft.call}`, 'none filled');
+onGitHub(172, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'done' });
+const fine2 = N.record({ word: 'sigma', ticket: 'H-2', action: 'done' });
+t('DS-492 AC4 a stuck capture try clears the same way', `${fine2.ok} ${queueOf('sigma').tickets['H-2'].stuck ?? null} ${sig()['H-2']?.kind ?? 'none'}`, 'true null none');
+const stateSigma = loadRepos().find((x) => x.slug === 'acme__sigma').stateDir;
+mkdirSync(join(stateSigma, 'images', 'H-3'), { recursive: true });
+writeFileSync(join(stateSigma, 'images', 'H-3', 'held.png'), '');
+onGitHub(173, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag held.png_ | _drag gone.png_ | _drag gone.png_' });
+const three = N.record({ word: 'sigma', ticket: 'H-3', action: 'done' });
+t('DS-492 AC5 done with cells left is refused, naming how many and what desk does about each', `${three.ok} ${three.line}`,
+  'false sigma H-3: GitHub still shows 3 screenshot cell(s) in PR #173\'s body, so it stays on your list: held.png: desk holds its file but could not put it in the body; gone.png: a capture worker takes it at the next pass.');
+t('DS-492 AC5 the item notes the cells, not the draft', /GitHub still showed it with 3 screenshot cell\(s\) left\.\)$/.test(sig()['H-3']?.note ?? ''), true);
+onGitHub(174, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag a-after.png_' });
+const spent = N.record({ word: 'sigma', ticket: 'H-4', action: 'done' });
+t('DS-492 AC5 a cell the capture try could not take says so', spent.line.endsWith('a-after.png: desk\'s capture try could not take it.'), true);
+onGitHub(175, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'no cells' });
+const review5 = N.record({ word: 'sigma', ticket: 'H-5', action: 'done' });
+t('DS-492 negative control: done on a draft held for another reason is still refused', `${review5.ok} ${/still shows PR #175 unmerged, still a draft/.test(review5.line)}`, 'false true');
+// A repo whose §4 Evidence workflow fills the cells, and whose §3 pr-ready leaves undrafting to the person.
+const noStart = (pr) => `its evidence workflow \`pr-evidence.yml\` could not start: HTTP 502 for #${pr}`;
+const EVC = '_drag e-after.png_\n\n```evidence\ne-after.png | after | /x | 1280\n```\n';
+put('tau', { port: 5310, beat: 1, supervised: true, merge: 'yes', prReady: 'no', evidence: 'pr-evidence.yml', tickets: {
+  'U-1': shotDraft(181, noStart(181)),
+  'U-2': shotDraft(182, noStart(182)),
+  'U-3': { ...shotDraft(183, '1 screenshot cell(s) left: u.png, whose files are saved, but config §3 pr-images leaves their upload to you'), images_reported: true },
+} });
+onGitHub(181, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'all in' });
+const tau1 = N.record({ word: 'tau', ticket: 'U-1', action: 'done' });
+t('DS-492 AC4 an evidence workflow that could not start is a screenshot item too, and done with no cell left is accepted', tau1.ok, true);
+t('DS-492 AC4 with §3 pr-ready not yes, done says the undraft is the person\'s, not the next pass\'s', tau1.line.endsWith('so it is off your list; config §3 pr-ready is "no", so the next pass leaves undrafting #181 to you.'), true);
+onGitHub(182, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: EVC });
+t('DS-492 AC5 a cell the evidence workflow fills: done names the workflow', N.record({ word: 'tau', ticket: 'U-2', action: 'done' }).line.endsWith('e-after.png: `pr-evidence.yml` takes it at the next pass.'), true);
+const stateTau = loadRepos().find((x) => x.slug === 'acme__tau').stateDir;
+mkdirSync(join(stateTau, 'evidence-runs'), { recursive: true });
+writeFileSync(join(stateTau, 'evidence-runs', `182-${'h'.repeat(40)}.json`), JSON.stringify({ workflow: 'pr-evidence.yml', runId: null, url: null, at: minsAgo(60), cells: 1 }));
+mkdirSync(join(stateTau, 'images', 'U-2'), { recursive: true });
+writeFileSync(join(stateTau, 'images', 'U-2', 'e-after.png'), '');
+t('DS-492 AC5 once it ran and left the cell, done says so', N.record({ word: 'tau', ticket: 'U-2', action: 'done' }).line.endsWith('e-after.png: `pr-evidence.yml` ran and could not take it.'), true);
+mkdirSync(join(stateTau, 'images', 'U-3'), { recursive: true });
+writeFileSync(join(stateTau, 'images', 'U-3', 'u.png'), '');
+onGitHub(183, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag u.png_' });
+t('DS-492 AC5 a file whose upload waits for approval: done says so', N.record({ word: 'tau', ticket: 'U-3', action: 'done' }).line.endsWith('u.png: its file is saved, and config §3 pr-images leaves its upload to you.'), true);
 
 // ---- DS-380: a parked ticket moved into the repo's other running batch, on that batch's base
 put('omega', { port: 3900, beat: 1, supervised: true, tickets: {

@@ -10,8 +10,10 @@
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
 //                           person has done, "<what was done>": handed back to a worker that starts at
-//                           self-review, with it in its briefing (queue.mjs handback)
-//       answer "<answer>"   answer it only (digest.mjs answer): triage questions, and an epic's drafted
+//                           self-review, with it in its briefing (queue.mjs handback). On a PR open on
+//                           GitHub, "<instruction>": kept for its next worker and requeued for a worker
+//                           on the PR, whoever runs the batch; a merged or closed PR is refused, saying so
+//       answer "<answer>"  answer it only (digest.mjs answer): triage questions, and an epic's drafted
 //                           plan (start, discard, or an edit), recorded on the epic for the supervisor to
 //                           act on (epic-plan.mjs actOnPlan). On a draft PR whose
 //                           review left gaps, the call on them: posted on the PR, kept for its next
@@ -29,6 +31,8 @@
 //                           batch's `base-push` item records approved.base_push on its queue
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
 //       not-now             put it off (the not-now register), asked again once its inputs change
+//       waiting             a PR held only by a person's approval: put off the same way, with the PR's head
+//                           and who approved it as its inputs, so it is back once it gets one or its head moves
 //       open                a lane C or D park, or one on a step no worker is allowed (aws, curl, gh
 //                           api, …): names the desk-ticket session to open; records nothing
 //       admit               a ticket held by open tickets outside its batch that no batch holds: names
@@ -50,13 +54,15 @@
 // its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
 // (show the person) on anything it refuses.
 import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { gapsFix, personReviewFix } from './fix-tries.mjs';
-import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
+import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
+import { cellPlan } from './undraft.mjs';
+import { gapsFix, instructionFix, personReviewFix, stuckFindings } from './fix-tries.mjs';
+import { repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
@@ -87,6 +93,11 @@ const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stat
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
 const reviewGaps = (t) => t.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
 const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
+// Every open PR takes an instruction for a worker on it, whatever else the item offers.
+const SEND_BACK = ['resume', null, 'resume "<instruction>" keeps it for the next worker and sends the ticket back to a worker on the PR'];
+// Why a PR in this state takes no instruction, or null for an open one.
+const prShut = (pr, state) => (state === 'MERGED' ? `PR #${pr} is merged, so no worker can carry out an instruction on it, and nothing was recorded.`
+  : state === 'CLOSED' ? `PR #${pr} was closed without merging, so no worker can carry out an instruction on it, and nothing was recorded. Drop the ticket, or requeue it for a worker that opens a new PR.` : null);
 
 // ---- A PR item in the person's words: what is wrong, then what to do and what happens once they have.
 // No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
@@ -100,6 +111,23 @@ const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks a
 const REPAIRED = "desk's own repairs did not fix";
 // A draft fix-tries.mjs captureTry left stuck: the screenshots still not taken, then what its worker said.
 const CAPTURE = /^(\d+) screenshot\(s\) still not taken after a capture try: (.+?)(?:; the capture try said: ([^]*))?$/;
+// Whether a draft's item is about its screenshots: what `done` on it reads is the body's cells.
+const shotsItem = (r, t) => {
+  const w = prWhy(r, t) ?? {};
+  return w.code === 'stuck' ? CAPTURE.test(String(w.stuck?.why ?? '')) : w.code === 'draft' && /screenshot|^its evidence workflow/.test(String(w.undraft?.why ?? ''));
+};
+// What desk does about each cell left in a body, for the person who said done on it: the pass's own
+// cell call (undraft.mjs cellPlan), read with what the pass reads.
+function cellWords(r, t, pr, v, repo) {
+  const row = repoConfigValue(r.slug, 'evidence-workflow');
+  const view = (id) => { try { return JSON.parse(execFileSync('gh', ['run', 'view', String(id), '--repo', repo, '--json', 'status,conclusion'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; } };
+  const plan = cellPlan(t, { number: pr, head: v.headRefOid ?? null, body: v.body }, {
+    evidence: row ? parseEvidenceRow([row]) : null,
+    evidenceRun: (head) => evidenceRecord(join(r.stateDir, 'evidence-runs'), pr, head, view),
+    missingShots: (body) => missingShots(body, ticketShots(t, r.stateDir)),
+  });
+  return plan.map((c) => `${c.file}: ${c.doing}`).join('; ');
+}
 // Those screens and the worker's reason, whole: the item's note, which listText prints after the need.
 const captureNote = (s) => {
   const m = CAPTURE.exec(String(s?.why ?? ''));
@@ -129,10 +157,14 @@ function stuckPlain(r, n, s) {
   const shots = CAPTURE.exec(why);
   if (shots) {
     const k = Number(shots[1]);
-    return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}. Take ${k === 1 ? 'it' : 'them'} and upload ${k === 1 ? 'it' : 'them'} to the PR; the next pass then takes it out of draft.`;
+    return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}, so nothing desk has can fill ${k === 1 ? 'its cell' : 'their cells'}. Edit the PR body so no cell is left; the next pass then takes it out of draft.`;
   }
   // Before the conflict test: a review reason names the conflict tries it was made after.
-  if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}. ${personReviewFix({}, { why }) ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.`;
+  if (/^review not clean/.test(why)) {
+    const left = stuckFindings(why);
+    const named = left.length ? `: ${left.map((f) => `${f.sev} ${one(f.text)}`).join('; ')}` : '';
+    return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}${named}. ${left.length ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.`;
+  }
   const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
   if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
   if (/conflict/.test(why)) return `${n} is in conflict with ${r.ctx?.base ?? 'its base'}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
@@ -151,7 +183,10 @@ function draftPlain(r, n, u) {
     const gaps = Number(kv.find(([k]) => k === 'gaps')?.[1] ?? 0);
     const what = andList([...(found.length ? [`${andList(found)} finding${found.length === 1 && found[0].startsWith('1 ') ? '' : 's'}`] : []), ...(gaps ? [`${gaps} requirement gap${gaps === 1 ? '' : 's'}`] : [])]);
     if (gaps) return `${n} is a draft, and its code review left ${what}. Say how to settle ${gaps === 1 && !found.length ? 'it' : 'them'}; a worker on the PR carries out your call.`;
-    if (what) return `${n} is a draft, and its code review found ${what} that ${REPAIRED}. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.`;
+    // No fix try ran on these: one that did and ran out is stuck (stuckPlain), so the reason is the review's.
+    const it = found.length === 1 && found[0].startsWith('1 ') ? 'it' : 'them';
+    const unsent = kv.some(([k]) => k === 'deferred') ? `which it marks deferred, so desk sends no worker to ${it}` : `which it does not list with a file:line a worker can fix, so desk sends no worker to ${it}`;
+    if (what) return `${n} is a draft, and its code review found ${what}, ${unsent}. Fix ${it} on its branch and post a fresh review; the next pass then takes it out of draft.`;
   }
   if (/Clean review verdict is not set/.test(why)) return `${n} is a draft, and desk can not read its code review because §4 Clean review verdict is not set. Set it with /desk-setup; the next pass then reads the review.`;
   if (/clean and green/.test(why)) return `${n} is a draft with a clean review and green checks. Undraft it; ${thenMerge(r)}.`;
@@ -175,13 +210,56 @@ function holdPlain(n, w) {
   return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
 }
 
+// ---- A red check that wants a person's approval, as its error line says: a review gate on protected
+// files or over its file limit, in the wording of desk's review-gate.mjs or a repo's own gate.
+const FILE_WORDS = [[/(^|\/)migrations?\//, 'a database migration'], [/(^|\/)schema\.(prisma|sql)$/, 'the database schema']];
+const fileWords = (f) => FILE_WORDS.find(([re]) => re.test(f))?.[1] ?? `\`${f}\``;
+// What `line` asks for, or null where it names neither cause: { why, then }, the reason and what else it says.
+function approvalCause(line) {
+  const s = String(line ?? '');
+  if (!/approv/i.test(s)) return null;
+  const listed = /(\d+) protected file\(s\):(.*)$/.exec(s), touches = /^It touches (.+?) with /.exec(s);
+  const over = /\*{0,2}(\d+)\*{0,2} changed files, over the (\d+)-file limit/.exec(s);
+  if (!listed && !touches && !over) return null;
+  const files = [...String(listed?.[2] ?? touches?.[1] ?? '').matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  const more = listed ? Number(listed[1]) - files.length : Number(/ and (\d+) more$/.exec(touches?.[1] ?? '')?.[1] ?? 0);
+  const named = [...new Set(files.map(fileWords)), ...(more > 0 ? [`${more} more protected file${more === 1 ? '' : 's'}`] : [])];
+  const why = [...(named.length ? [`it changes ${andList(named)}`] : []), ...(over ? [`it has ${over[1]} changed files, over the ${over[2]}-file limit`] : [])].join(', and ');
+  const stale = /— and (.+?)'s approval predates/.exec(s)?.[1] ?? /\. ([^.]+?) approved an earlier commit/.exec(s)?.[1];
+  return { why, then: stale ? ` ${stale} approved an earlier commit, so it needs approving again.` : '' };
+}
+// The role §4 People gives an approval to: the code reviewer, else the product owner, by name.
+function approverOf(r) {
+  const row = ['code-reviewer', 'product-owner'].map((id) => repoConfigValue(r.slug, id)).find((v) => v && !isNone(v));
+  if (!row) return 'approval from a person with approval rights';
+  if (/^you\b/i.test(row)) return 'your approval';
+  return `${row.split(/\s*[(,]|\s+@|\s+[—–-]\s/)[0] || row}'s approval`;
+}
+// The approval holding an unmerged PR: { cause, names, left }, the red checks asking for it and the
+// others holding the PR beside them; null where no check's error asks for one, or a reason that is not
+// its checks holds the PR.
+function approvalAsk(t, w) {
+  const held = w.code === 'red' ? w.names : w.code === 'approval' ? []
+    : w.code !== 'stuck' ? null : w.stuck.checks.length ? w.stuck.checks.map((c) => c.name) : /^still red/.test(String(w.stuck.why ?? '')) ? [] : null;
+  if (!held) return null;
+  const asks = (t.pr_status?.checks ?? []).filter((c) => approvalCause(c.error));
+  if (!asks.length) return null;
+  const names = new Set(asks.map((c) => c.name));
+  return { cause: approvalCause(asks[0].error), names, left: held.filter((x) => !names.has(x)) };
+}
+
 // An unmerged PR's need, from the reason desk-q has it need the person (prWhy).
 function prPlain(r, t) {
   const n = `PR #${t.result.pr}`;
   const w = prWhy(r, t) ?? {};
+  const ask = approvalAsk(t, w);
+  const needsIt = ask && `needs ${approverOf(r)}: ${ask.cause.why}.${ask.cause.then}`;
+  if (ask && !ask.left.length) return `${n} ${needsIt} No code change clears it, only an approving review on GitHub at its latest commit; ${thenMerge(r)}.`;
+  // Beside other red checks, those are worded as ever, and the approval is said after them.
+  const also = ask ? ` It also ${needsIt}` : '';
   switch (w.code) {
     case 'closed': return `${n} was closed without merging, so nothing will merge it. Drop the ticket, or requeue it; a requeued ticket gets a worker that opens a new PR.`;
-    case 'stuck': return stuckPlain(r, n, w.stuck);
+    case 'stuck': return `${stuckPlain(r, n, ask ? { ...w.stuck, checks: w.stuck.checks.filter((c) => !ask.names.has(c.name)) } : w.stuck)}${also}`;
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
     case 'draft': return draftPlain(r, n, w.undraft);
@@ -189,7 +267,10 @@ function prPlain(r, t) {
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
     case 'conflict': return `${n} is in conflict with ${w.base}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
-    case 'red': return `${n} has ${w.names.length === 1 ? 'a failing check' : `${w.names.length} failing checks`}, ${andList(w.names.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${w.names.length === 1 ? 'it' : 'them'}. Fix or re-run ${w.names.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.`;
+    case 'red': {
+      const red = ask ? ask.left : w.names;
+      return `${n} has ${red.length === 1 ? 'a failing check' : `${red.length} failing checks`}, ${andList(red.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${red.length === 1 ? 'it' : 'them'}. Fix or re-run ${red.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.${also}`;
+    }
     case 'trigger': return `${n} is not green: ${one(w.text)}. Re-running cannot help, as no run exists: add ${w.base ?? 'its base'} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${andList(w.names.map((c) => `"${c}"`))}, a change to the repo; its next push then runs the check, and ${thenMerge(r)}.`;
     case 'behind': return `${n} is not green: ${one(w.text)}. Nothing here may sync ${w.base ?? 'its base'}: merge the default branch into it, then close and reopen ${n} so its checks run; ${thenMerge(r)}.`;
     case 'gate': return `${n} is not green: ${plainWords(w.text ?? 'a required check did not pass')}. Fix that check, or §4 Required checks if it should not be required; ${thenMerge(r)}.`;
@@ -204,7 +285,7 @@ function prPlain(r, t) {
 function doneNote(t) {
   const d = t.done_check;
   if (!d || (d.head ?? null) !== (t.pr_status?.head ?? null)) return '';
-  const shown = d.state === 'CLOSED' ? 'closed without merging' : `unmerged${d.draft ? ', still a draft' : ''}`;
+  const shown = d.cells ? `with ${d.cells} screenshot cell(s) left` : d.state === 'CLOSED' ? 'closed without merging' : `unmerged${d.draft ? ', still a draft' : ''}`;
   return `(You said done at ${String(d.at).slice(0, 16).replace('T', ' ')} UTC, and GitHub still showed it ${shown}.)`;
 }
 
@@ -367,19 +448,23 @@ function itemOf(r, x) {
     const need = prPlain(r, t), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
     if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
-    if (reviewGaps(t)) return { kind: 'pr', need, note, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
+    const openPr = (...actions) => ({ kind: 'pr', need, note, actions: [...actions, SEND_BACK, ['not-now']] });
+    if (reviewGaps(t)) return openPr(['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done']);
+    // Held by nothing but a person's approval: once asked for, there is nothing to do but wait for it.
+    const ask = approvalAsk(t, prWhy(r, t) ?? {});
+    if (ask && !ask.left.length) return { ...openPr(['waiting', 'once the approval is asked for, waiting keeps it off this list until it gets one or its head moves'], ['done']), approval: true };
     // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
     // and the item leaves the list once every check it is still stuck on is green.
     const outside = stuck?.outside ?? [];
     if (outside.length) {
       const checks = `${stuck.checks.map((c) => `"${c.name}"`).join(', ')} ${stuck.checks.length === 1 ? 'is' : 'are'} green`;
-      return { kind: 'pr', need, note, actions: [['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`], ['not-now']] };
+      return openPr(['done', null, `the step is outside GitHub (${outside.map((c) => c.command).join('; ')}); it drops off once ${checks}`]);
     }
     // Review findings in the code are a worker's to fix, so one more try goes to a worker on the PR.
     if (stuck && personReviewFix(t, { why: stuck.why })) {
-      return { kind: 'pr', need, note, actions: [['fix', "its findings are in the code, which a worker can fix: fix sends it to a worker on the PR for one more try, and the review of its new head says whether they are gone"], ['done'], ['not-now']] };
+      return openPr(['fix', "its findings are in the code, which a worker can fix: fix sends it to a worker on the PR for one more try, and the review of its new head says whether they are gone"], ['done']);
     }
-    return { kind: 'pr', need, note, actions: [['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then'], ['not-now']] };
+    return openPr(['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then']);
   }
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in
   // it, makes it clean, and the pass drops the record once it is.
@@ -444,6 +529,7 @@ function putOffKey(r, t, item) {
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
+  if (item.approval) inputs.approvals = (t.pr_status?.approvals ?? []).join(', ') || 'none';
   // A worktree item led by its park's reason holds the worktree's state in its note: a new hold brings it back.
   if (item.kind === 'worktree' && item.note) inputs.hold = item.note;
   const blockers = blockerStates(r, t);
@@ -608,10 +694,14 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
+  const [verb, id] = action.split(/\s+/);
+  // A resume on a PR the queue already has shut says why, not that the verb or the item is unknown.
+  const queued = r.q?.tickets?.[ticket], status = prStatusOf(queued);
+  const shut = verb === 'resume' && status ? prShut(status.pr, queued.merged_at ? 'MERGED' : status.state) : null;
+  if (shut) return { ok: false, line: `${r.name} ${ticket}: ${shut}` };
   const x = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
   if (!x) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const item = itemOf(r, x);
-  const [verb, id] = action.split(/\s+/);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
   // refused naming those that are.
   const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : [])];
@@ -622,6 +712,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
   if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
+  const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
   // reads it, and taken back if the requeue is refused. null once both are made, else what refused.
   const sendFix = (fix) => {
@@ -645,14 +736,32 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     if (no) return say(false, `posted on PR #${pr} and in its briefing, but ${no}`);
     return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
   };
+  // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err, repo }.
+  const readPr = (pr, more = '') => {
+    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
+    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', `state,mergedAt,isDraft,headRefOid${more}`],{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '', repo }; }
+    catch (e) { return { v: null, err: one(e.stderr || e.message), repo }; }
+  };
+  // The person's instruction on an open PR: kept in the briefing and as the fix its next worker starts
+  // on, then requeued whoever runs the batch, as a gaps answer is. Read from GitHub first: a worker
+  // sent to a PR merged or closed since the last pass has nothing to push to.
+  const prResume = () => {
+    const pr = x.t.result.pr;
+    const { v, err } = readPr(pr);
+    if (!v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so nothing was recorded and it stays on your list.`);
+    const gone = prShut(pr, v.state);
+    if (gone) return say(false, gone);
+    const a = ans();
+    if (!a.ok) return say(false, a.why);
+    const no = sendFix(instructionFix(x.t, { pr, head: v.headRefOid ?? x.t.pr_status?.head, ready: v.isDraft === false, answer: text }));
+    if (no) return say(false, `kept in its briefing, but ${no}`);
+    return say(true, `kept for its next worker and requeued; the next pass sends it to a worker on PR #${pr}.`);
+  };
   // Done on a PR: read it from GitHub now. Merged is recorded (the next pass records the merge in full,
   // as it does any merge) and leaves the list; anything else is said, and noted on the item.
   const prDone = () => {
     const pr = x.t.result.pr;
-    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
-    let v = null, err = '';
-    try { v = JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'state,mergedAt,isDraft,headRefOid'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); }
-    catch (e) { err = one(e.stderr || e.message); }
+    const { v, err, repo } = readPr(pr, ',body');
     if (!v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not marked done and stays on your list.`);
     if (v.state === 'MERGED') {
       const at = v.mergedAt && !String(v.mergedAt).startsWith('0001-') ? v.mergedAt : new Date(now).toISOString();
@@ -666,9 +775,26 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       if (!m.ok) return say(false, `GitHub shows PR #${pr} out of draft, but recording it was refused: ${m.out}`);
       return say(true, `GitHub shows PR #${pr} out of draft, so it is released; the next pass takes it on from there.`);
     }
-    const check = { at: new Date(now).toISOString(), state: v.state, draft: v.isDraft === true, head: v.headRefOid ?? null };
+    // A draft's screenshot item asked only for its cells: taking it out of draft is desk's own step.
+    const shots = v.state === 'OPEN' && v.isDraft === true && shotsItem(r, x.t);
+    const cells = shots ? dragCells(v.body) : 0;
+    if (shots && !cells) {
+      const rec = { call: 'filled', why: 'no screenshot cell is left in its body', action: null, sha: v.headRefOid ?? null, carried_from: null, pr, at: new Date(now).toISOString() };
+      const m = queueCmd(r, ['set', ticket, 'stuck=null', `undraft=${JSON.stringify(rec)}`]);
+      if (!m.ok) return say(false, `GitHub shows no screenshot cell left in PR #${pr}'s body, but recording it was refused: ${m.out}`);
+      // The pass undrafts it itself only as undraftCall's pr-ready gate allows; otherwise it comes back as the person's undraft.
+      const perm = repoPermission(r.slug, 'pr-ready');
+      const next = perm === 'yes' || (perm === 'ask' && r.q?.approved?.undraft === true) ? 'the next pass takes it out of draft'
+        : `config §3 ${PERMISSION_KEYS['pr-ready']} is "${perm}", so the next pass leaves undrafting #${pr} to you`;
+      return say(true, `GitHub shows no screenshot cell left in PR #${pr}'s body, so it is off your list; ${next}.`);
+    }
+    const check = { at: new Date(now).toISOString(), state: v.state, draft: v.isDraft === true, head: v.headRefOid ?? null, ...(cells ? { cells } : {}) };
     const shows = v.state === 'CLOSED' ? 'closed without merging' : `unmerged${check.draft ? ', still a draft' : ''}`;
     const m = queueCmd(r, ['set', ticket, `done_check=${JSON.stringify(check)}`]);
+    if (cells) {
+      const still = `GitHub still shows ${cells} screenshot cell(s) in PR #${pr}'s body`;
+      return say(false, m.ok ? `${still}, so it stays on your list: ${cellWords(r, x.t, pr, v, repo)}.` : `${still}; noting it on the item was refused: ${m.out}`);
+    }
     if (!m.ok) return say(false, `GitHub still shows PR #${pr} ${shows}; noting it on the item was refused: ${m.out}`);
     const moved = check.head && x.t.pr_status?.head && check.head !== x.t.pr_status.head;
     return say(false, `GitHub still shows PR #${pr} ${shows}${moved ? ', though it has new commits the next pass reads' : ''}, so it stays on your list with that note.`);
@@ -686,6 +812,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
         const h = queueCmd(r, ['handback', ticket, text]);
         return h.ok ? say(true, 'handed back to a worker that starts at self-review, with your note in its briefing; the next pass can spawn it.') : say(false, `not handed back: ${h.out}`);
       }
+      if (item.kind === 'pr') return prResume();
       const a = ans();
       if (!a.ok) return say(false, a.why);
       if (item.kind === 'worktree') return say(true, 'recorded for its next worker; the next pass that finds the worktree clean starts it.');
@@ -740,8 +867,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
         stampItem(r, x, item);
         return say(true, 'put off (not-now register).');
       }
-      addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
+      putOff();
       return say(true, `put off (${notNowPath(r.stateDir)}).`);
+    }
+    case 'waiting': {
+      putOff();
+      return say(true, `waiting on its approval (${notNowPath(r.stateDir)}): not listed again until it gets one or its head moves.`);
     }
     // Into another running batch of the repo, by its name, `<repo>:<name>`, or `standing`. Made here
     // whoever runs either batch: the move holds both queue locks, and the next pass there spawns it.

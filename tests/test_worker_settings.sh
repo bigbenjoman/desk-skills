@@ -88,8 +88,13 @@ settings '`bash tests/run.sh`' '| Pre-push checks | `none` |'
 check "pre-push none: no pre-push rule"                   '[ $rc -eq 0 ] && ! allows "Bash(bash scripts/desk/pre-push.sh --head)"'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `pnpm format:check` `web: pnpm typecheck` |' '| Lint | `pnpm lint` |'
 check "DS-398 AC3 each pre-push item allowed exactly as written" \
-  '[ $rc -eq 0 ] && allows "Bash(pnpm format:check:*)" && allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:*)" && ! allows "Bash(pnpm typecheck:*)"'
+  '[ $rc -eq 0 ] && allows "Bash(pnpm format:check:*)" && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:*)" && ! allows "Bash(pnpm typecheck:*)"'
+check "a pre-push item naming typecheck takes the tsc lock, as pre-push.sh runs it" \
+  '! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:*)" && allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm format:check:*)"'
 check "DS-398 AC2 a root Lint item also runs under nolock"  'allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)" && allows "Bash(pnpm lint:*)"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `web: pnpm typecheck:portal` |' '| Typecheck | `web: pnpm typecheck` |'
+check "a filtered typecheck no row lists takes the tsc lock, never nolock" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:portal:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:portal:*)"'
 PMROW='`pnpm`' settings '`bash tests/run.sh` `api: pnpm test`' '| Pre-push checks | `web: pnpm typecheck` `api: pnpm test` |' '| Typecheck | `web: pnpm typecheck` |'
 check "DS-398 AC3 a pre-push item another row lists runs only under that row's lock" \
   '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:*)" && allows "Bash($B/with-lock.sh test --cwd api -- pnpm test:*)" \
@@ -505,6 +510,14 @@ settings '`bash tests/run.sh`' '| Worker read-only repos | `acme/widgets` |' "$(
 check "DS-431 AC2 a repo listing itself keeps its gh writes and is warned, and its clone stays read-only" \
   '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Worker read-only repos item \"acme/widgets\" is this repo"* ]] && ok "gh pr create --draft --repo acme/widgets --head b" "gh pr edit https://github.com/acme/widgets/pull/1 --title x" && denies "Edit(/$HOME/.desk-autopilot/acme__widgets/ref/acme__widgets/**)"'
 
+# ---- DS-426: a §4 Live reads row is the pass's, run on the host; a worker's settings do not change with it
+settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-noreads.json"
+settings '`bash tests/run.sh`' '| Live reads | `gateway-models: aws ssm get-parameter --name /gw/key --with-decryption` |'
+check "DS-426 AC4 a Live reads row grants a worker nothing: its permissions are the same with and without it" \
+  '[ $rc -eq 0 ] && [ "$(jq -S .permissions "$T/ws.json")" = "$(jq -S .permissions "$T/ws-noreads.json")" ]'
+check "DS-426 AC4 and no allow rule names the entry, its command or aws" \
+  '! jq -r ".permissions.allow[]" "$T/ws.json" | grep -qE "gateway-models|ssm|^Bash\(aws"'
+
 # The memory lever (config §3b Phase 0 levers): on, auto-memory is off and the memory folder is neither
 # granted nor writable; off, the folder is granted as before.
 MEM="$HOME/.claude/projects/$(printf '%s' "$T/repo" | tr -c 'A-Za-z0-9' '-')/memory"; mkdir -p "$MEM"
@@ -515,5 +528,24 @@ check "DS-452 AC1 memory lever on: the memory folder is not granted, and writing
 settings '`bash tests/run.sh`' '' "$(lever3b codex)"
 check "DS-452 AC5 memory lever off: auto-memory is left as it is" '[ $rc -eq 0 ] && [ "$(jq -c .autoMemoryEnabled "$T/ws.json")" = null ]'
 check "DS-452 AC5 memory lever off: the memory folder is granted, and not denied" 'readable "$MEM" && ! denies "Edit(/$MEM/**)"'
+
+# The codex lever, under §3 codex-review yes: on, desk-codex is allowed and a direct codex call may not
+# pass a model, profile or output file; off, codex is allowed and denied as it always was.
+settings '`bash tests/run.sh`' '' "$(rows3 codex-review=yes)"; cp "$T/ws.json" "$T/ws-codex-off.json"
+check "DS-445 AC7 codex lever off: desk-codex is not allowed, and codex keeps its rules" \
+  '[ $rc -eq 0 ] && no "desk-codex probe" && ok "codex exec --sandbox read-only --skip-git-repo-check '"'x'"'" "codex exec --sandbox read-only -m gpt-5 '"'x'"'" && no "codex exec --sandbox workspace-write '"'x'"'"'
+settings '`bash tests/run.sh`' "$(lever3b codex)" "$(rows3 codex-review=yes)"
+check "DS-445 AC6 codex lever on: every codex deny rule the lever off has is kept" \
+  '[ $rc -eq 0 ] && jq -e --slurpfile off "$T/ws-codex-off.json" "(\$off[0].permissions.deny - .permissions.deny) == []" "$T/ws.json" >/dev/null'
+check "DS-445 AC6 codex lever on: exactly the model, profile and output deny rules are added" \
+  'jq -e --slurpfile off "$T/ws-codex-off.json" "[(.permissions.deny - \$off[0].permissions.deny)[] | sub(\"^Bash\\\\(.*codex\"; \"\")] | unique == ([\" * -m*)\", \" *--model*)\", \" * -p*)\", \" *--profile*)\", \" * -o*)\", \" *--output-last-message*)\", \" * -c*)\"] | sort)" "$T/ws.json" >/dev/null && denies "Bash(codex * -m*)"'
+check "DS-445 codex lever on: the only allow rules added are desk-codex" \
+  'jq -e --slurpfile off "$T/ws-codex-off.json" "(.permissions.allow - \$off[0].permissions.allow) | length > 0 and all(test(\"desk-codex\"))" "$T/ws.json" >/dev/null'
+check "DS-445 codex lever on: desk-codex runs by name, installed path and module" \
+  'ok "desk-codex probe" "desk-codex refuter '"'x'"'" "$HOME/.local/bin/desk-codex finder --cd $T/repo '"'x'"'" "node $B/desk-codex.mjs settings" "codex exec --sandbox read-only --skip-git-repo-check '"'x'"'"'
+check "DS-445 AC6 codex lever on: a direct call with a model, profile, output file, config or other sandbox is refused" \
+  'no "codex exec --sandbox read-only -m gpt-5 '"'x'"'" "codex exec --sandbox read-only --model=gpt-5 '"'x'"'" "codex exec --sandbox read-only -p fast '"'x'"'" \
+      "codex exec --sandbox read-only --profile fast '"'x'"'" "codex exec --sandbox read-only -o out.txt '"'x'"'" "codex exec --sandbox read-only --output-last-message out.txt '"'x'"'" \
+      "codex exec --sandbox read-only -c model=x '"'x'"'" "codex exec --sandbox read-only -cmodel=x '"'x'"'" "codex exec --sandbox workspace-write '"'x'"'"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

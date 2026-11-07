@@ -21,6 +21,12 @@ no Artifact read: the snapshot stands in for the artifact even once it can no lo
 headless worker never parks asking for the design. A single-page artifact (a page with no
 `canvas.json`) is saved and read the same way.
 
+**A Slides deck is saved the same way.** Its snapshot holds `project/deck.json` and each slide at
+`project/slides/<id>.html`; `save` copies them with their `/_blob/<id>` images and writes an
+`index.html` beside them: open it to read every slide in order, offline. A deck has no boards and is
+not rendered (slides are a fixed 1920×1080). An `advisory` that says `a single page rather than a
+canvas or deck` needs nothing saved before the build.
+
 **Two kinds of file a board needs are not among the published files.** Its images are `/_blob/<id>`
 asset ids, in its attributes or in strings in its script: read each by its id, one `read` with
 `path: "/_blob/<id>"` apiece (a `paths` read refuses asset ids), into the same `out_dir` as the files

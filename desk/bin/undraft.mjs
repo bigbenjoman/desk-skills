@@ -13,7 +13,8 @@
 //   cancel  a check pending past PENDING_LIMIT_MS while its run is still in progress: the pass cancels
 //           the run, once per check per head, so the next pass re-runs it as a cancelled check
 //   build  every red check is one §4 Check builds names, and no build has run at this head: the pass
-//           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
+//           starts its command on the host, from its clean checkout of the default branch, with the
+//           head as DESK_CHECK_HEAD and DESK_CHECK_TREE (check-build.mjs)
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
 //   sync    that build failed at a head behind its base (cfg.behind): the pass sends it to a fix worker
 //           that merges the base (fix-tries.mjs syncFix), and to the person once no try is left
@@ -50,8 +51,8 @@
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { RERUNS_MAX, reviewFindings, syncSaid } from './fix-tries.mjs';
-import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
+import { RERUNS_MAX, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
+import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { pairs } from './desk-env.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
@@ -302,17 +303,10 @@ const TAIL_WORDS = new Set(['the', 'a', 'its', 'and', 'or', 'then', 'to', 'on', 
   'pr', 'draft', 'body', 'self-review', 'review', 'reviews', 'desk-review', 'comment', 'comments', 'post', 'posting', 'posted',
   'jira', 'tracker', 'ticket', 'transition', 'transitions', 'state', 'status', 'progress', 'done', 'screenshots', 'images', 'upload']);
 
-// A worker's park whose only blocker is a red check §4 Check builds names: every clause of the park
-// names one of those checks or its command, or lists the steps it did not reach (the tail the worker
-// contract has every park name), so a park that asks anything else beside the build stays a park, and
-// the ticket's open draft PR is red on such checks and nothing else, with nothing still
-// running. buildCall then runs the build once the ticket is done, so the pass records it done rather
-// than parked. readPr() -> { state, isDraft, checks } is read only once the park names a build. cfg:
-// { builds, rerun (§3 ci-rerun), required, advisory }. Returns { checks: [name], command } or null, and
-// null leaves the park as it is.
-export function buildPark(question, readPr, cfg) {
-  const builds = cfg.builds ?? [];
-  const namesBuild = (s) => builds.some((b) => s.includes(b.name.toLowerCase()) || s.includes(b.command.toLowerCase()));
+// Whether a park asks for nothing but what `names(clause)` matches: some clause matches, and every
+// other one lists the steps it did not reach (the tail the worker contract has every park name). A
+// park that asks anything else beside it stays a park.
+export function parkOnlyNames(question, names) {
   // Clauses end at . ? ! ; followed by a space, or a line break, so a command's own dots stay whole.
   // Each keeps its own end mark, so a tail clause can tell a question from a list.
   const clauses = String(question ?? '').toLowerCase().split(/(?<=[.?!;])(?:\s+|$)|\n+/).map((s) => s.trim()).filter(Boolean);
@@ -324,7 +318,20 @@ export function buildPark(question, readPr, cfg) {
     const m = /^(?:steps? )?(?:not (?:yet )?reached|remaining steps?|steps? remaining)\b(.*?)[.!;]*$/.exec(s);
     return !!m && m[1].split(/[\s,:()]+/).map((w) => w.replace(/^[-–—]+|[-–—]+$/g, '')).filter(Boolean).every((w) => TAIL_WORDS.has(w) || /^#?\d+$/.test(w));
   };
-  if (cfg.rerun !== 'yes' || !clauses.some(namesBuild) || !clauses.every((s) => namesBuild(s) || tail(s))) return null;
+  return clauses.some(names) && clauses.every((s) => names(s) || tail(s));
+}
+
+// A worker's park whose only blocker is a red check §4 Check builds names: every clause of the park
+// names one of those checks or its command, or is the not-reached tail (parkOnlyNames), and the
+// ticket's open draft PR is red on such checks and nothing else, with nothing still
+// running. buildCall then runs the build once the ticket is done, so the pass records it done rather
+// than parked. readPr() -> { state, isDraft, checks } is read only once the park names a build. cfg:
+// { builds, rerun (§3 ci-rerun), required, advisory }. Returns { checks: [name], command } or null, and
+// null leaves the park as it is.
+export function buildPark(question, readPr, cfg) {
+  const builds = cfg.builds ?? [];
+  const namesBuild = (s) => builds.some((b) => s.includes(b.name.toLowerCase()) || s.includes(b.command.toLowerCase()));
+  if (cfg.rerun !== 'yes' || !parkOnlyNames(question, namesBuild)) return null;
   const pr = readPr();
   if (pr?.state !== 'OPEN' || pr.isDraft !== true) return null;
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
@@ -339,7 +346,8 @@ export function buildPark(question, readPr, cfg) {
 // names the workflow that fills them (cfg.evidence, evidence.mjs), once per head (cfg.evidenceRun(head)):
 // `evidence` starts it, `wait` while it runs, `evidence-failed` once it failed or filled no cell (the pass
 // groups those into one fix for the repo, evidence.mjs evidenceFixPlan), and `person` once it has run and
-// cells are still left. Anything else is null: the cells are the person's, as before.
+// cells are still left, which undraftCall sends to a capture worker first where their files are missing.
+// Anything else is null: no workflow fills them.
 function evidenceCall(pr, cfg) {
   const wf = cfg.evidence?.workflow;
   if (!wf || !hasEvidenceBlock(pr.body)) return null;
@@ -349,13 +357,57 @@ function evidenceCall(pr, cfg) {
   const rec = cfg.evidenceRun?.(pr.head) ?? null;
   if (!rec) return { call: 'evidence', why: `${left} screenshot cell(s) left at ${at}, which §4 Evidence workflow \`${wf}\` fills`, workflow: wf, cells: left };
   if (rec.state === 'running') return { call: 'wait', why: `its evidence workflow \`${wf}\` is taking the screenshots at ${at}${rec.url ? ` (${rec.url})` : ''}` };
-  const action = `fill the cells it could not on #${n}, or fix its \`evidence\` block and re-run \`gh workflow run ${wf} -f pr=${n}\``;
+  const action = `fix its \`evidence\` block and re-run \`gh workflow run ${wf} -f pr=${n}\`, or ${noCellsLeft(n)}`;
   // A run that failed, or filled no cell, is the repo's to fix, not cells only the person can reach.
   if (runFailed(rec, left)) {
     const how = rec.conclusion === 'failure' ? 'failed' : 'filled none of its cells';
     return { call: 'evidence-failed', why: `its evidence workflow \`${wf}\` ${how} at ${at}${rec.url ? ` (${rec.url})` : ''} and left ${left} screenshot cell(s)`, action, workflow: wf, runId: rec.runId, url: rec.url ?? null, conclusion: rec.conclusion, at: rec.at ?? null };
   }
-  return { call: 'person', why: `its evidence workflow \`${wf}\` ran at ${at} (${rec.conclusion}${rec.url ? `, ${rec.url}` : ''}) and left ${left} screenshot cell(s)`, action };
+  return { call: 'person', why: `its evidence workflow \`${wf}\` ran at ${at} (${rec.conclusion}${rec.url ? `, ${rec.url}` : ''}) and left ${left} screenshot cell(s): ${dragFiles(pr.body).join(', ')}`, action };
+}
+// What a person does about cells nothing of desk's can fill. They are never asked to upload.
+const noCellsLeft = (n) => `edit the body of #${n} so no \`_drag <file>_\` cell is left`;
+
+// The call for a draft's `_drag <file>_` cells, or null with none left: only the cells hold it here,
+// however its upload ended. Each goes to what can fill it: §4 Evidence workflow, then for any it left
+// with no file a capture worker (fix-tries.mjs captureTry), then for files desk holds the §3 pr-images
+// upload, and the person only once none can. cfg as undraftCall's (evidence, evidenceRun, missingShots).
+export function cellCall(t, pr, cfg) {
+  const cells = dragCells(pr.body);
+  if (!cells) return null;
+  const n = pr.number;
+  const person = (why, action) => ({ call: 'person', why, action });
+  const evidence = evidenceCall(pr, cfg);
+  if (evidence && evidence.call !== 'person') return evidence;
+  const missing = cfg.missingShots?.(pr.body) ?? [];
+  if (missing.length) {
+    return { ...person(`${missing.length} screenshot(s) in its body were never taken: ${missing.join(', ')}`, noCellsLeft(n)), call: 'capture', files: missing };
+  }
+  const left = `${cells} screenshot cell(s) left: ${dragFiles(pr.body).join(', ')}`;
+  if (t.images_reported === true && t.images_uploaded !== true) {
+    return { ...person(`${left}, whose files are saved, but config §3 pr-images leaves their upload to you`, `approve it with \`DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs ${n} <its screenshot directory>\``), unapproved: true };
+  }
+  if (evidence) return evidence;
+  return person(`${left}, whose files desk holds but could not put in the body`, noCellsLeft(n));
+}
+
+// What desk does about each file a draft's cells name, read off the call cellCall makes for it, so the
+// person who says done is told what the pass will do: [{ file, doing }].
+export function cellPlan(t, pr, cfg) {
+  const c = cellCall(t, pr, cfg);
+  if (!c) return [];
+  const wf = `\`${cfg.evidence?.workflow}\``;
+  const spent = c.call === 'capture' && captureTry(t, { pr: pr.number, head: pr.head, files: c.files })?.call === 'stuck';
+  const doing = (file) => {
+    if (c.call === 'evidence') return `${wf} takes it at the next pass`;
+    if (c.call === 'wait') return `${wf} is taking it now`;
+    if (c.call === 'evidence-failed') return `${wf} ${c.conclusion === 'failure' ? 'failed' : 'filled none of its cells'}, so desk fixes the workflow for the repo and runs it again`;
+    if (c.call === 'capture' && c.files.includes(file)) return spent ? "desk's capture try could not take it" : 'a capture worker takes it at the next pass';
+    if (c.unapproved) return 'its file is saved, and config §3 pr-images leaves its upload to you';
+    if (/^its evidence workflow/.test(c.why ?? '')) return `${wf} ran and could not take it`;
+    return 'desk holds its file but could not put it in the body';
+  };
+  return dragFiles(pr.body).map((file) => ({ file, doing: doing(file) }));
 }
 
 // Whether anyone but `handle`, and not a bot, has reviewed or commented on the PR: the line between
@@ -472,16 +524,8 @@ export function undraftCall(t, pr, cfg) {
     const why = `its ${VERDICT_CHECK} check reads only a verdict posted on the head${carried ? `, and its verdict is carried from ${carried.slice(0, 9)}` : ''}`;
     return withCarried({ ...person(why, `review #${n} at its head`), call: 'review' });
   }
-  const evidence = dragCells(pr.body) ? evidenceCall(pr, cfg) : null;
-  // Cells §4 Evidence workflow does not fill and whose file was never taken go to a capture worker
-  // (fix-tries.mjs captureTry); the person gets them only once its try is spent.
-  const missing = evidence ? [] : cfg.missingShots?.(pr.body) ?? [];
-  if (missing.length) {
-    return { ...person(`${missing.length} screenshot(s) in its body were never taken: ${missing.join(', ')}`, `take ${missing.join(', ')} and upload them to #${n}`), call: 'capture', files: missing };
-  }
-  const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
-  if (unsent) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
-  if (dragCells(pr.body)) return evidence ?? person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
+  const shots = cellCall(t, pr, cfg);
+  if (shots) return shots;
   if (skipped) return person(SKIPPED_ON_DRAFT, `undraft #${n}`);
   const read = plain ? v.verdict : verdict;
   if (cfg.perm === 'yes') return withCarried({ call: 'ready', why: null, note: null, verdict: read });

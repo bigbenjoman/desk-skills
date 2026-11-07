@@ -35,6 +35,33 @@ preflight also asks each one set for one word on its own, so a value the CLI rej
 preflight with a `FINDER` or `TEXT` line naming the row and the value, and no worker spawns. Neither
 is set until the eval harness shows finding quality holds on the cheaper model.
 
+**The effort each worker session runs at is config §3b "Worker effort"** (`desk-env effort <start>`
+prints it), read only with the `effort` lever on (config §3b "Phase 0 levers"). Off, no `--effort` is
+passed. On, `spawn-worker.sh` passes the effort the row names for how the session starts: `0`, `3` to
+`9` or `4b`, `task` for a fix or review try, `resume` for a resumed session, and `medium` for one the
+row does not name. An unknown value anywhere in the row fails that ticket's preflight, naming it; fix
+the row, then requeue the ticket. Lever on or off, each start's stage, model and effort go into the
+ticket's log, and the batch report's worker table shows them per session, with `default` where
+nothing was passed.
+
+**With the `preflight` lever on (config §3b "Phase 0 levers"), a ticket does not pay for the same
+preflight twice.** A pass is recorded in `$DESK_STATE/workers/<TICKET>.preflight.json` as a fingerprint
+of the worker settings, the ticket's agents file, the tool list, the models, every start's effort,
+the installed claude CLI version, the desk commit, the worktree and the account. A spawn or resume
+with the same fingerprint runs no preflight, makes no line in the ticket's log, and its spawn line
+says it was skipped. Any change runs one, at low effort, and so does a spawn after a failure or a
+usage limit, which leave no record, or with an input that cannot be read. Delete the record to force
+one. Off, every preflight runs as it did, with no `--effort`.
+
+**With the `effort` lever on, no ticket runs in a cloud session**, because nothing gives one an
+effort. At config §3b Worker location `cloud`, the plan keeps every ticket local and its `runs:` line
+says why, and a ticket already placed in the cloud parks at its start, as does one starting with a
+malformed Worker effort row. With the lever off, a cloud session starts as before, and its report row
+shows start `0`, model `default` and effort `default`, since it is passed neither. So at `cloud`,
+turning the lever on is a change in itself, even with every start at `medium`: tickets that ran in
+the cloud now run here. The Phase 0 baseline leaves cloud workers out, so it covers a different set
+of tickets. There, compare each lowered start with that all-`medium` stretch instead.
+
 **Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
 `cloud`. Any other value refuses the plan, naming the row. At `cloud`, the batch plan's `workers:`
 and `budget:` lines say how many tickets run in a cloud session and that a cloud session takes no
@@ -52,7 +79,10 @@ PR, and its tokens and cost as "not reported for cloud".
 
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded
-done with its PR, on the first pass that reads the marker. A worker at a usage limit (5-hour, weekly
+done with its PR, on the first pass that reads the marker. Nor is one whose worktree is running a
+suite under the test lock, or waiting for it (a `with-lock.sh test|tsc` working there): the pass lists
+it as quiet, "running its suite" or "waiting on the test lock", until it has been held that way for
+30 minutes, and then stops and parks it as wedged, naming the ceiling. A worker at a usage limit (5-hour, weekly
 or any other) is not stalled: the pass reports it as paused, holds every spawn and resume, and
 resumes it in its own session once the limit lifts, at its reset or sooner when a probe call
 succeeds (orchestrator-recovery.md). Log growth

@@ -1,0 +1,12 @@
+{
+  "protected": [
+    { "path": ".github", "start_line": 93, "end_line": 93, "annotation_level": "failure", "title": "", "message": "Process completed with exit code 1.", "raw_details": "" },
+    { "path": ".github", "start_line": 92, "end_line": 92, "annotation_level": "failure", "title": "", "message": "Approval required — 2 protected file(s): `packages/db-studia/prisma/migrations/20261104120000_sv3178_drop_duplicate_indexes/migration.sql`, `packages/db-studia/prisma/schema.prisma`.", "raw_details": "" },
+    { "path": ".github", "start_line": 1, "end_line": 1, "annotation_level": "notice", "title": "", "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"", "raw_details": "" }
+  ],
+  "file-limit": [
+    { "path": ".github", "start_line": 93, "end_line": 93, "annotation_level": "failure", "title": "", "message": "Process completed with exit code 1.", "raw_details": "" },
+    { "path": ".github", "start_line": 92, "end_line": 92, "annotation_level": "failure", "title": "", "message": "Approval required — a `feat(messaging):` title, and only fix, docs, chore merge without an approval; **37** changed files, over the 30-file limit (764 lines).", "raw_details": "" },
+    { "path": ".github", "start_line": 1, "end_line": 1, "annotation_level": "notice", "title": "", "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"", "raw_details": "" }
+  ]
+}

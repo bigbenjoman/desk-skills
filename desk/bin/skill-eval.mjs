@@ -25,7 +25,7 @@ export const ARMS = Object.freeze(['skill', 'base']);
 const CHECK_KINDS = Object.freeze(['contains', 'absent', 'matches']);
 const DEFAULT_TOTAL_USD = 5;
 const USAGE = 'usage: skill-eval.mjs --skill <name|dir> --tasks <file.json> --max-budget-usd <usd> [--total-budget-usd <usd>] [--skills-dir <dir>] [--out <dir>] [--timeout <seconds>] [--model <model>]';
-const USD = /^\d+(\.\d+)?$/;
+export const USD = /^\d+(\.\d+)?$/;
 
 // argv -> options. Throws, naming the flag, on anything missing or malformed; the budget is checked
 // first so no run can start without one.
@@ -56,18 +56,28 @@ export function resolveSkill(skill, skillsDir) {
   return { name: basename(resolve(dir)), dir: resolve(dir) };
 }
 
-// The task set, validated: unique file-safe ids, a prompt, and at least one check of a known kind.
-export function loadTasks(file) {
+export const FILE_SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+// A task set's tasks, each with a unique file-safe id and a prompt, and then whatever `each` checks.
+export function readTasks(file, each) {
   let data;
   try { data = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new Error(`cannot read task set ${file}: ${e.message}`); }
   const tasks = data?.tasks;
   if (!Array.isArray(tasks) || !tasks.length) throw new Error(`task set ${file} has no "tasks" array`);
   const seen = new Set();
   for (const t of tasks) {
-    if (typeof t?.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(t.id)) throw new Error(`task id ${JSON.stringify(t?.id)} must be letters, digits, ., _ or -`);
+    if (typeof t?.id !== 'string' || !FILE_SAFE.test(t.id)) throw new Error(`task id ${JSON.stringify(t?.id)} must be letters, digits, ., _ or -`);
     if (seen.has(t.id)) throw new Error(`task id ${t.id} appears twice`);
     seen.add(t.id);
     if (typeof t.prompt !== 'string' || !t.prompt.trim()) throw new Error(`task ${t.id} has no prompt`);
+    each(t);
+  }
+  return tasks;
+}
+
+// The task set, validated: readTasks, and at least one check of a known kind per task.
+export function loadTasks(file) {
+  return readTasks(file, (t) => {
     if (!Array.isArray(t.checks) || !t.checks.length) throw new Error(`task ${t.id} has no checks`);
     for (const c of t.checks) {
       const kinds = CHECK_KINDS.filter((k) => typeof c?.[k] === 'string');
@@ -76,8 +86,7 @@ export function loadTasks(file) {
         try { new RegExp(c.matches); } catch (e) { throw new Error(`task ${t.id} check ${c.name}: ${e.message}`); }
       }
     }
-  }
-  return tasks;
+  });
 }
 
 // Whether one check passes against a reply.
@@ -102,11 +111,13 @@ export function readRun({ status, signal, error, stdout }, timeout) {
   return { ok: true, reply: r.result, cost };
 }
 
-// The claude arguments for one arm. The base arm differs only by not having the skill.
-export function claudeArgs({ prompt, arm, skill, budget, model }) {
-  const args = ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
-    '--permission-mode', 'dontAsk', '--max-budget-usd', String(budget)];
+// The claude arguments for one arm. The base arm differs only by not having the skill. `format` and
+// `extra` are the bench's: its runs stream their transcript and carry their own settings.
+export function claudeArgs({ prompt, arm, skill, budget, model, effort, format = 'json', extra = [] }) {
+  const args = ['-p', prompt, '--output-format', format, '--setting-sources', '', '--strict-mcp-config',
+    '--permission-mode', 'dontAsk', '--max-budget-usd', String(budget), ...extra];
   if (model) args.push('--model', model);
+  if (effort) args.push('--effort', effort);
   if (arm === 'skill') {
     const body = readFileSync(join(skill.dir, 'SKILL.md'), 'utf8');
     args.push('--add-dir', skill.dir, '--append-system-prompt',

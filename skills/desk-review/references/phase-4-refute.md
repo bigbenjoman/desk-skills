@@ -27,6 +27,10 @@ codex exec --sandbox read-only --skip-git-repo-check 'Refute this code-review fi
   written as a typographic ’, never `'`.
 - **No `-c`, `--config`, `-m` or `-p`.** Desk's harness asks on every one of them and a worker
   denies them. Reasoning effort is set in the user's `~/.codex/config.toml`, not per call.
+- **With the `codex` lever on** (Phase 0): `desk-codex refuter [--cd <the PR's worktree>] '<the same
+  prompt>'`, which runs at the refuter's model and effort from config §3b Codex review (`desk-env get codex-models`) and prints
+  codex's final message alone. Exit 124 is a call ended at its timeout: that finding is `UNREFUTED`,
+  not retried.
 - **Never offer a benign alternative** ("or is this deliberate?"). Codex rejects when uncertain, so
   the clause flips real findings to REJECTED with no change in the code.
 - **An empty, denied or useless reply is `UNREFUTED`**, never REJECTED and never a pass. Retry it

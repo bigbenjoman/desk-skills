@@ -190,7 +190,9 @@ function twins(cmd) {
 // arguments, or that a locked row's item extends (its prefix rule would match that item), takes that
 // row's lock. Where such rows take different locks, no one lock is right for every command its
 // prefix rule matches, so the item is left to those rows too. Either way a locked command never
-// gains a `nolock` form, or another lock's. The rest take `nolock`, as pre-push.sh runs them.
+// gains a `nolock` form, or another lock's. Of the rest, an item whose command names `typecheck` (a
+// filtered typecheck is as heavy as the full one) takes `tsc`, and the others `nolock`, as
+// pre-push.sh's lock_for runs them.
 const normDir = (d) => d.replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
 for (let i = items.length - 1; i >= 0; i--) {
   const p = items[i];
@@ -201,6 +203,7 @@ for (let i = items.length - 1; i >= 0; i--) {
   const locks = new Set(rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `)))).map((x) => E.lockFor(x.id)));
   if (locks.size > 1) items.splice(i, 1);
   else if (locks.size) p.lock = [...locks][0];
+  else if (p.cmd.includes('typecheck')) p.lock = 'tsc';
 }
 const withPrefix = (c) => [c, ...(PREFIX ? [`${PREFIX} ${c}`] : [])];
 
@@ -585,6 +588,13 @@ if (mode === 'triage') {
   if (codexPerm === 'yes') {
     allow.push(...bash('codex', ' exec --sandbox read-only'), ...exact('codex', ' --version'));
     deny.push(...bash('codex', ' *danger*', ' *--full-auto*', ' *--yolo*', ' *--config*', ' * -c *', ' *--sandbox=*', ' * -s *', ' *workspace-write*'));
+    // With the codex lever on, desk-codex passes the model, effort and output file itself, so a
+    // direct call may not.
+    if (E.leverOn('codex')) {
+      allow.push('Bash(desk-codex:*)', `Bash(${E.HOME}/.local/bin/desk-codex:*)`, 'Bash(~/.local/bin/desk-codex:*)',
+        ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-codex.mjs:*)`, `Bash(node ${b}/desk-codex.mjs:*)`]));
+      deny.push(...bash('codex', ' * -m*', ' *--model*', ' * -p*', ' *--profile*', ' * -o*', ' *--output-last-message*', ' * -c*'));
+    }
   } else { deny.push(...bash('codex')); denied.push(`${E.permissionKey('codex-review')} (${setting('codex-review')})`); }
 
   // A new or synced dependency: the package manager's add and sync forms, with arguments. Never

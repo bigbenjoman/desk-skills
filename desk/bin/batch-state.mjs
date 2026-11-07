@@ -86,6 +86,11 @@ export function spinePark(t) {
 export const FEATURE_PLAN_PREFIX = 'feature plan awaiting your answer';
 export const planPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(FEATURE_PLAN_PREFIX);
 
+// A park waiting on the §4 Live reads it named (live-read.mjs), which a pass runs on the host and
+// settles: it waits on the pass, not on the person.
+export const LIVE_READ = 'live-read';
+export const waitingOnRead = (t) => t?.state === 'parked' && t.park?.clears_when?.kind === LIVE_READ;
+
 // Why a triage record's design is not one a worker can build from, or null when its Design section
 // links at least one Claude Design canvas and each is saved on the batch's base or snapshotted
 // (ticket-facts.mjs records `design`).
@@ -276,10 +281,10 @@ export function batchConcurrency(q, { def, cap }) {
   return { n, user, line: `workers: concurrency ${raw === n ? n : `${raw} → ${n}`}, ${why}` };
 }
 
-// Settled: nothing running, nothing left to spawn, nothing waiting on a merge to be released, and no
-// spine waiting on the person's approval. A done ticket's own PR may still be open.
+// Settled: nothing running, nothing left to spawn, nothing waiting on a merge to be released or on a
+// live read, and no spine waiting on the person's approval. A done ticket's own PR may still be open.
 export function batchSettled(q, prState) {
-  return Object.values(q.tickets ?? {}).every((t) => ['done', 'parked', 'failed'].includes(t.state) && !waitingOnMerge(q, t, prState) && !spinePark(t));
+  return Object.values(q.tickets ?? {}).every((t) => ['done', 'parked', 'failed'].includes(t.state) && !waitingOnMerge(q, t, prState) && !spinePark(t) && !waitingOnRead(t));
 }
 
 // Idle: settled, and every done ticket's PR merged or closed, so the merge driver has nothing left.
@@ -287,4 +292,22 @@ export function batchSettled(q, prState) {
 export function batchIdle(q, prState = () => null) {
   return batchSettled(q, prState) && Object.values(q.tickets ?? {})
     .every((t) => t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr)));
+}
+
+// An epic batch not in feature mode lands its base on the default branch through one epic PR (the
+// queue's `promotion`), opened once every child has merged into the base. A ticket held behind the
+// epic key itself waits on that PR, so it is not a child the PR waits for.
+export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
+export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
+// A child is through once done and merged into the base, or done with no PR (nothing to merge).
+export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result?.pr == null);
+// Due, so the base still has to land: every child through, at least one merged into the base since the
+// last epic PR merged (`merged_at`, or `since` on the one opened after it).
+export function epicDue(q) {
+  if (!epicBatch(q)) return false;
+  const kids = epicChildren(q);
+  const last = q.promotion?.merged_at ?? q.promotion?.since ?? null;
+  const merged = kids.filter((t) => t.merged_at);
+  return kids.length > 0 && kids.every(childDone)
+    && merged.some((t) => last == null || Date.parse(t.merged_at) > Date.parse(last));
 }

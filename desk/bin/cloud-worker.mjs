@@ -8,7 +8,13 @@
 // carries the ticket's text and everything it is to do. Nothing reports its tokens or cost, and it
 // writes no local log: its result is the branch and PR it pushes, found on GitHub, and its wall time
 // runs from the session's start to that PR.
+//
+// Nothing gives a cloud session an effort: no recording or doc shows `claude --cloud` passing --effort
+// on, and local settings do not reach the session. So with the effort lever on, which promises each
+// session an effort config names, no ticket runs in the cloud (CLOUD_NO_EFFORT).
 import { spawnSync } from 'node:child_process';
+
+export const CLOUD_NO_EFFORT = 'the effort lever is on, and a cloud session cannot be given an effort';
 
 // A ticket runs locally when what it needs is on this computer only, and says why; otherwise in the
 // cloud. The triage record decides: `renders` (Stage 5 screenshots need the browser lock and a local
@@ -16,11 +22,13 @@ import { spawnSync } from 'node:child_process';
 // stub binaries a check runs or a dev server). A record written before triage asked `needs_local`
 // runs locally, so a ticket is never sent to the cloud on a question nobody answered. `feature` is the
 // ticket's part in a feature batch, when it has one: the spine and a child owning acceptance specs
-// are checked in a local worktree when they finish, so either runs locally.
+// are checked in a local worktree when they finish, so either runs locally. `effort` is whether the
+// effort lever is on.
 //   -> { where: 'local' | 'cloud', why: string | null }
-export function placement(rec, location, { feature = null } = {}) {
+export function placement(rec, location, { feature = null, effort = false } = {}) {
   if (location !== 'cloud') return { where: 'local', why: null };
   const why = [];
+  if (effort) why.push(CLOUD_NO_EFFORT);
   if (feature) why.push(feature);
   if (rec?.lane === 'D' || rec?.renders === true) why.push('it renders: its screenshots need the browser lock and a local dev server');
   if (rec?.needs_db === true) why.push('it needs a local database');
