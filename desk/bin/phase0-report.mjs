@@ -5,22 +5,23 @@
 //
 //   node phase0-report.mjs [--days <n>] [--no-ci]     the report (7 days unless --days says)
 //   node phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>]
-//       [--system-bytes <n>] [--prompt-bytes <n>]     one JSON line for spawn-worker.sh to append to
-//                                                     $DESK_STATE/workers/<KEY>.runs.jsonl
+//       [--effort <e>] [--system-bytes <n>] [--prompt-bytes <n>] [--log <worker log>]
+//       one JSON line for spawn-worker.sh to append to $DESK_STATE/workers/<KEY>.runs.jsonl, and with
+//       --log the desk_spawn line worker-cost.mjs reads appended to that log
 //
 // The report is read-only: it reads queues, logs, worker records, the digest's answers and git refs
 // as they are, and asks GitHub only for its failed workflow runs. It never fetches, resets, checks out
 // or writes anything, and runs git with --no-optional-locks so not even the index is refreshed. A
 // figure a run never recorded (a quota reading, a desk commit, the levers) is "not recorded", never a
 // zero or a guess.
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { listBatches } from './batches.mjs';
 import { readLogFile, saidIn, markersIn } from './harvest.mjs';
-import { workerLogs, ticketCost, logUsage } from './worker-cost.mjs';
+import { workerLogs, ticketCost, logUsage, spawnEvent, startFields } from './worker-cost.mjs';
 import { windowEvents, probeLog } from './usage-pace.mjs';
 import { readInstalled } from './installed.mjs';
 import { digestDir } from './digest.mjs';
@@ -30,13 +31,13 @@ export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
 
 // ---- what spawn-worker.sh records ----------------------------------------------------------------
-// One worker start: when, which session and stage, the desk commit installed, the levers on, and the
-// bytes of the system prompt and first message it was handed.
-export function spawnLine({ ticket, session, stage = null, model = null, systemBytes = null, promptBytes = null, now = new Date(),
+// One worker start: when, which session and stage, its model and effort, the desk commit installed,
+// the levers on, and the bytes of the system prompt and first message it was handed.
+export function spawnLine({ ticket, session, stage = null, model = null, effort = null, systemBytes = null, promptBytes = null, now = new Date(),
   installed = readInstalled(), levers = E.levers() }) {
   const n = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
   return JSON.stringify({
-    at: now.toISOString(), ticket, session, stage: stage || '0', model: model || 'default',
+    at: now.toISOString(), ticket, session, ...startFields({ stage, model, effort }),
     desk_commit: installed?.commit ?? null, levers: levers.on, unknown_levers: levers.unknown,
     system_bytes: n(systemBytes), prompt_bytes: n(promptBytes),
   });
@@ -307,7 +308,7 @@ const leversOf = (s) => (Array.isArray(s.levers) ? (s.levers.length ? s.levers.j
 const bytesOf = (s) => (s.system_bytes != null && s.prompt_bytes != null ? `${num(s.system_bytes + s.prompt_bytes)} bytes loaded` : `bytes loaded ${NR}`);
 // Each recorded start on its own line: which session ran on which desk commit, and what it loaded.
 const startLines = (f) => [...f.spawns].sort((a, b) => String(a.at).localeCompare(String(b.at)))
-  .map((s) => `  start ${s.ticket} session ${String(s.session).slice(0, 8)} at ${s.at} (stage ${s.stage}): desk ${commitOf(s)}, levers ${leversOf(s)}, ${bytesOf(s)}`);
+  .map((s) => `  start ${s.ticket} session ${String(s.session).slice(0, 8)} at ${s.at} (stage ${s.stage}, effort ${s.effort ?? NR}): desk ${commitOf(s)}, levers ${leversOf(s)}, ${bytesOf(s)}`);
 
 function bytesLine(f) {
   const s = f.spawns.filter((x) => x.system_bytes != null && x.prompt_bytes != null);
@@ -423,8 +424,10 @@ if (isMain()) {
     if (args[0] === 'spawn-line') {
       const ticket = opt('--ticket');
       const session = opt('--session');
-      if (!ticket || !session) { console.error('usage: phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>] [--system-bytes <n>] [--prompt-bytes <n>]'); process.exit(2); }
-      console.log(spawnLine({ ticket, session, stage: opt('--stage'), model: opt('--model'), systemBytes: opt('--system-bytes'), promptBytes: opt('--prompt-bytes') }));
+      if (!ticket || !session) { console.error('usage: phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>] [--effort <e>] [--system-bytes <n>] [--prompt-bytes <n>] [--log <worker log>]'); process.exit(2); }
+      const start = { session, stage: opt('--stage'), model: opt('--model'), effort: opt('--effort') };
+      if (opt('--log')) { try { appendFileSync(opt('--log'), spawnEvent(start)); } catch { /* a record that cannot be written never stops a spawn */ } }
+      console.log(spawnLine({ ticket, ...start, systemBytes: opt('--system-bytes'), promptBytes: opt('--prompt-bytes') }));
     } else {
       const days = opt('--days') == null ? 7 : Number(opt('--days'));
       if (!(days > 0)) { console.error('usage: phase0-report.mjs [--days <n>] [--no-ci]'); process.exit(2); }

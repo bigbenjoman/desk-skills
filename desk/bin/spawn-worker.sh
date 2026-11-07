@@ -50,6 +50,9 @@ SETTINGS="$STATE/workers/$TICKET.settings.json"
 # The named review agents, passed with --agents: --setting-sources "" drops ~/.claude/agents with
 # the rest of the user's settings, and loosening it would bring their permissions and hooks too.
 AGENTS="$STATE/workers/$TICKET.agents.json"
+# The fingerprint of the ticket's last passed preflight. Written only on a pass, and removed before any
+# preflight runs, so a failure or a usage limit leaves nothing to skip on.
+PREFLIGHT_RECORD="$STATE/workers/$TICKET.preflight.json"
 
 [ -d "$WT" ] || { echo "FAIL: worktree $WT does not exist — run setup-worktree.sh first" >&2; exit 1; }
 [ -f "$CONTRACT" ] || { echo "FAIL: worker contract missing at $CONTRACT" >&2; exit 1; }
@@ -84,6 +87,19 @@ CODEX_PERM="$(desk_perm codex-review)"
 MODEL="${AUTOPILOT_MODEL:-}"
 MODEL_ARGS=()
 [ -n "$MODEL" ] && MODEL_ARGS=(--model "$MODEL")
+
+# What this session starts as, and the effort config §3b Worker effort names for it. With the effort
+# lever off it is `default` and no --effort is passed. A malformed row is refused here, before the
+# preflight, naming the value, whichever session is starting: the preflight sets no start of its own.
+START="${AUTOPILOT_START_STAGE:-0}"
+[ -n "${AUTOPILOT_TASK:-}" ] && START=task
+[ -n "${AUTOPILOT_RESUME:-}" ] && START=resume
+if ! EFFORT="$(node "$DESK_ENV_MJS" effort "$START" 2>/dev/null </dev/null)"; then
+  echo "FAIL: $(node "$DESK_ENV_MJS" effort "$START" 2>&1 >/dev/null </dev/null) — refusing to spawn $TICKET" >&2
+  exit 1
+fi
+EFFORT_ARGS=()
+[ "$EFFORT" != default ] && EFFORT_ARGS=(--effort "$EFFORT")
 
 DRY_NOTE=""
 if [ -n "${AUTOPILOT_DRY_RUN:-}" ]; then
@@ -165,6 +181,25 @@ ESCAPE=OK or ESCAPE=BLOCKED — run: touch $CANARY.bash
 CODEX=OK or CODEX=BLOCKED — run: codex --version
 AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subagent type your Agent tool offers (do not launch any): $AGENT_NAMES"
   NCHECKS=$((i + 8))
+  # With the preflight lever on (config §3b Phase 0 levers), a pass on these same inputs stands, and a
+  # preflight that does run is at low effort. Off, the preflight runs as it always has.
+  PRE_EFFORT_ARGS=()
+  PASSED=""
+  if [ "$(node "$DESK_ENV_MJS" levers preflight 2>/dev/null </dev/null || true)" = on ]; then
+    PRE_EFFORT_ARGS=(--effort low)
+    FINGERPRINT="$(node "$BIN/preflight-fingerprint.mjs" --file "settings=$SETTINGS" --file "agents=$AGENTS" \
+      --part "tools=${TOOL_ARGS[*]-}" --part "model=$MODEL" --part "finder=${AUTOPILOT_FINDER_MODEL:-}" --part "text=${AUTOPILOT_TEXT_MODEL:-}" \
+      --part "worktree=$WT" --part "dirs=${ADD_DIRS[*]}" --part "checks=$CHECKS" \
+      --part "gates=$TRACKER $CODEX_PERM jira:$HAVE_JIRA codex:$HAVE_CODEX ${AUTOPILOT_ALLOW_NO_CODEX:-}" </dev/null)" || FINGERPRINT=""
+    [ -n "$FINGERPRINT" ] && PASSED="{\"fingerprint\":\"$FINGERPRINT\"}"
+    if [ -n "$PASSED" ] && [ "$(cat "$PREFLIGHT_RECORD" 2>/dev/null || true)" = "$PASSED" ]; then
+      echo "[preflight] $TICKET"
+      echo "[preflight] skipped: its last pass had this fingerprint"
+      echo "[preflight] pass"
+      exit 0
+    fi
+  fi
+  rm -f "$PREFLIGHT_RECORD"
   RAW=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
 $CHECKS" \
     --setting-sources "" --strict-mcp-config \
@@ -174,6 +209,7 @@ $CHECKS" \
     --permission-mode dontAsk \
     "${ADD_DIRS[@]}" \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+    ${PRE_EFFORT_ARGS[@]+"${PRE_EFFORT_ARGS[@]}"} \
     --max-budget-usd 2 --output-format json 2>&1 < /dev/null | tr -d '\r') || true
   # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
   # a timeout) the raw output stands in for the reply, so its message still shows, and the cost is
@@ -220,7 +256,7 @@ $CHECKS" \
     key="${extra%%:*}"; val="${extra#*:}"
     [ -n "$val" ] || continue
     GOT=$(desk_timeout 120 claude -p "Reply with exactly one word: MODEL_OK" --setting-sources "" --strict-mcp-config \
-      ${NO_TOOL_ARGS[@]+"${NO_TOOL_ARGS[@]}"} --model "$val" --max-budget-usd 1 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
+      ${NO_TOOL_ARGS[@]+"${NO_TOOL_ARGS[@]}"} --model "$val" ${PRE_EFFORT_ARGS[@]+"${PRE_EFFORT_ARGS[@]}"} --max-budget-usd 1 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
     if printf '%s\n' "$GOT" | grep -q MODEL_OK; then printf '  %-6s %-8s ok\n' "$(printf '%s' "$key" | tr 'a-z' 'A-Z')" "$val"
     else echo "  $(printf '%s' "$key" | tr 'a-z' 'A-Z')  FAIL     (config §3b Worker models names $key=\"$val\", and the CLI did not answer on it: $(printf '%s' "$GOT" | grep -m 1 . | cut -c1-200))"; fail=1; fi
   done
@@ -260,7 +296,11 @@ $CHECKS" \
   fi
   rm -f "$WT/.preflight.tmp"
 
-  [ "$fail" -eq 0 ] && { echo "[preflight] pass"; exit 0; }
+  if [ "$fail" -eq 0 ]; then
+    [ -z "$PASSED" ] || printf '%s\n' "$PASSED" > "$PREFLIGHT_RECORD"
+    echo "[preflight] pass"
+    exit 0
+  fi
   echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
   exit 1
 fi
@@ -348,12 +388,10 @@ $DIGEST"
 fi
 
 # The desk commit and levers this start runs on, and the bytes it is handed, one line per start for
-# phase0-report.mjs. A record that cannot be written never stops a spawn.
-START="${AUTOPILOT_START_STAGE:-0}"
-[ -n "${AUTOPILOT_TASK:-}" ] && START=task
-[ -n "${AUTOPILOT_RESUME:-}" ] && START=resume
+# phase0-report.mjs, and its start, model and effort into the log for worker-cost.mjs. A record that
+# cannot be written never stops a spawn.
 node "$BIN/phase0-report.mjs" spawn-line --ticket "$TICKET" --session "$SID" --stage "$START" --model "${MODEL:-default}" \
-  --system-bytes "$(printf '%s' "$SYSTEM" | wc -c | tr -d ' ')" --prompt-bytes "$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')" \
+  --effort "$EFFORT" --log "$LOG" --system-bytes "$(printf '%s' "$SYSTEM" | wc -c | tr -d ' ')" --prompt-bytes "$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')" \
   >> "$STATE/workers/$TICKET.runs.jsonl" 2>/dev/null || true
 
 cd "$WT"
@@ -376,6 +414,7 @@ desk_detach claude -p "$PROMPT" \
   --exclude-dynamic-system-prompt-sections \
   ${BUDGET_ARGS[@]+"${BUDGET_ARGS[@]}"} \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+  ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} \
   >> "$LOG" 2>&1 < /dev/null &
 disown $! 2>/dev/null || true
 

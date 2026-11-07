@@ -15,8 +15,8 @@ argument-hint: "[outdated | <skill>... | --all]"
 
 # desk-update
 
-`brew update && brew upgrade`, for skills. Three kinds of skill live on this machine, each with its
-own source of truth; this skill checks all three and upgrades only what the user chooses.
+`brew update && brew upgrade`, for skills. Each kind of skill in the table below has its own source
+of truth; this skill checks every kind and upgrades only what the user chooses.
 
 | Kind | Where the one real copy lives | Where it comes from | Updated by |
 |---|---|---|---|

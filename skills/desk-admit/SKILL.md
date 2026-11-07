@@ -65,14 +65,25 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 - `<TICKET>...`: every ticket the user named, in one call, so a blocker named alongside what it
   blocks is admitted first and the other held behind it.
 - `--by`: the user's first name, lower case, no spaces (from `git config user.name`).
-- `--front`: only when the user asks for it first, or calls it urgent ("ASAP", "next").
+- `--front`: only when the user asks for it first, or calls it urgent ("ASAP", "next"). It moves a
+  ticket already in a batch too, unless its worker has started, it is finished, or the user placed it
+  (`queue.mjs move`): the line after `is already in batch` says which.
 
-It triages each ticket afresh, which takes a minute or two each, and admits none until every triage
-is done: give the call your longest foreground timeout, and if it moves to the background, wait for
-its notification rather than running it again. Exit 0: every ticket was admitted
+It triages each ticket afresh, which takes a minute or two each, as many at once as config §3b
+"Triage concurrency" allows, and admits each one as soon as it and its blockers in the call are
+triaged (at one at a time, a ticket behind another in the call waits for the last triage).
+**With more than 3 tickets, start the call in the background** (`run_in_background`, at the longest
+timeout the tool takes) and wait for its notification; with 3 or fewer, give it your longest
+foreground timeout, and if it moves to the background, wait the same way. Never run it again while
+it runs. It prints each line as it happens, in the order things happen: `triage: started`, `triage:
+done` and `waiting:` lines are progress, and its last line is a `summary:` of the call. While it runs
+in the background those lines land in its output file: read that when the user asks how it is going.
+An epic's children, and a ticket joining another batch, are triaged in turn, each with its own
+`triage:` lines, and no other triage starts and nothing else is placed until that ends.
+Exit 0: every ticket was admitted
 or was already where it belongs (`<TICKET> is already in batch <B> (<state>)`, its epic's feature
 batch included: ask nothing about it), any epic had its feature batch started, and any other epic is one to
-plan (step 1b). Print its lines, and stop unless there is an epic to plan or a blocker to admit next.
+plan (step 1b). Print its lines, less the progress, and stop unless there is an epic to plan or a blocker to admit next.
 
 A ticket blocked by one in no batch is admitted held by it (`waiting for <B>, outside the batch, until
 it is Done and on <base>`), and one blocked by a ticket in another live batch joins that batch. **An
@@ -141,6 +152,10 @@ below as `(Recommended)`, with its reason as the description:
 | `is run by a session, not the supervisor` | Send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session asks and admits | Admit nothing here |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
+
+A `not triaged (usage limit, resets <time>): <TICKET>...` line is not a question: a triage hit the
+usage limit, so the rest were never started. Tell the user the reset time and the command the line
+names, and run nothing for them until then.
 
 Do what each answer says, then run step 1 again only for the tickets now ready. A `plan <EPIC> …`
 line in the same output is not refused: run step 1b for it once these are settled.

@@ -7,6 +7,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { markersIn, saidIn, readLogFile } from './harvest.mjs';
 import { cloudWall } from './cloud-worker.mjs';
+import { NO_EFFORT } from './desk-env.mjs';
 
 export const START_UP = 'start-up';
 
@@ -17,6 +18,32 @@ export const START_UP = 'start-up';
 const PREFLIGHT_EVENT = 'desk_preflight';
 export const preflightLine = ({ usd, turns }, at = new Date()) =>
   `${JSON.stringify({ type: PREFLIGHT_EVENT, total_cost_usd: usd, num_turns: turns, at: at.toISOString() })}\n`;
+
+// spawn-worker.sh writes one of these into the log before each launch: what the session starts as, on
+// which model and at which effort, `default` where it passes neither. Timed by `at` for the same reason.
+const SPAWN_EVENT = 'desk_spawn';
+export const startFields = ({ stage, model, effort }) => ({ stage: stage || '0', model: model || 'default', effort: effort || NO_EFFORT });
+export const spawnEvent = ({ session, ...start }, at = new Date()) =>
+  `${JSON.stringify({ type: SPAWN_EVENT, session, ...startFields(start), at: at.toISOString() })}\n`;
+
+// Whether a worker wrote anything past byte `from` of its log: the lines desk writes there itself (the
+// preflight, the start, the memory digest) are not its output, so they never read as it being live.
+// Pass the log as read from disk: `from` is a file size, and text decoded from a log holding a byte
+// that is not UTF-8 is longer than the file, which would read as output on every pass.
+export const wroteSince = (log, from) => Buffer.from(log).subarray(from).toString().split('\n')
+  .some((l) => l.trim() && !l.startsWith('{"type":"desk_'));
+
+// The starts in one log: a fresh session's, and each resume of it.
+function spawnStarts(logText) {
+  const starts = [];
+  for (const line of logText.split('\n')) {
+    if (!line.includes(SPAWN_EVENT)) continue;
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (d?.type === SPAWN_EVENT) starts.push({ stage: d.stage, model: d.model, effort: d.effort });
+  }
+  return starts;
+}
 
 // The preflights in one log: how many, the cost of those that reported one, and how many did not.
 function preflightUsage(logText) {
@@ -85,11 +112,32 @@ export function stageUsage(logText) {
   return { first: first.input, stages: [...stages.values()] };
 }
 
+// One result event's tokens by kind. Tokens come from modelUsage, which counts subagents' calls as
+// the cost does; `usage` is the fallback for a result event without it.
+function resultTokens(d) {
+  const n = (v) => Number(v) || 0;
+  const models = Object.values(d.modelUsage ?? {});
+  const sum = (k) => models.reduce((s, m) => s + n(m[k]), 0);
+  return models.length
+    ? { uncached: sum('inputTokens'), cacheWrite: sum('cacheCreationInputTokens'), cacheRead: sum('cacheReadInputTokens'), output: sum('outputTokens') }
+    : { uncached: n(d.usage?.input_tokens), cacheWrite: n(d.usage?.cache_creation_input_tokens), cacheRead: n(d.usage?.cache_read_input_tokens), output: n(d.usage?.output_tokens) };
+}
+
+// One log's tokens by kind from its last result event, or null when it has none.
+export function logTokens(logText) {
+  let last = null;
+  for (const line of logText.split('\n')) {
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (d?.type === 'result') last = d;
+  }
+  return last && resultTokens(last);
+}
+
 // One log (one worker process), or null when it has no result event. A process that is woken again
 // after its turn ends writes a result event per turn: cost and modelUsage in each are running totals
 // for the session, so they come from the last one, and only duration_ms, which is per turn, is
-// summed. Tokens come from modelUsage, which counts subagents' calls as the cost does; `usage` is
-// the fallback for a result event without it.
+// summed.
 export function logUsage(logText) {
   let last = null;
   let ms = 0;
@@ -101,14 +149,8 @@ export function logUsage(logText) {
     ms += Number(d.duration_ms) || 0;
   }
   if (!last) return null;
-  const n = (v) => Number(v) || 0;
-  const models = Object.values(last.modelUsage ?? {});
-  const [input, output] = models.length
-    ? [models.reduce((s, m) => s + n(m.inputTokens) + n(m.cacheCreationInputTokens) + n(m.cacheReadInputTokens), 0),
-      models.reduce((s, m) => s + n(m.outputTokens), 0)]
-    : [n(last.usage?.input_tokens) + n(last.usage?.cache_creation_input_tokens) + n(last.usage?.cache_read_input_tokens),
-      n(last.usage?.output_tokens)];
-  return { input, output, cost: n(last.total_cost_usd), ms };
+  const t = resultTokens(last);
+  return { input: t.uncached + t.cacheWrite + t.cacheRead, output: t.output, cost: Number(last.total_cost_usd) || 0, ms };
 }
 
 // A ticket's logs in this batch: the current `<KEY>.log` and every round a respawn or requeue moved
@@ -132,16 +174,19 @@ const preflightOnly = (text) => text.split('\n').every((l) => {
   try { return JSON.parse(l)?.type === PREFLIGHT_EVENT; } catch { return false; }
 });
 
-// -> { key, runs, unknown, usage, preflight, first, stages } for a queue ticket with a log, or null for
-// one no worker ran. `unknown` counts the runs with no result event; any at all leaves `usage` null.
-// `preflight` is every preflight's `{ n, cost, unknown }`, apart from `usage`. `first` and `stages`
+// -> { key, runs, unknown, usage, preflight, first, stages, sessions } for a queue ticket with a log, or
+// null for one no worker ran. `unknown` counts the runs with no result event; any at all leaves `usage`
+// null. `preflight` is every preflight's `{ n, cost, unknown }`, apart from `usage`. `first` and `stages`
 // add every run's up, a stage seen in two runs once, and are null when any run's log has no
-// assistant usage at all.
+// assistant usage at all. `sessions` is each run's `{ starts, cost }`: a run is one session, so one
+// log, and `starts` is empty for a log written before starts were recorded.
 // A cloud worker writes no log here and nothing reports its tokens or cost: its row is its session
-// URL and its wall time from session start to PR (`cloud`), and its usage stays null.
+// URL and its wall time from session start to PR (`cloud`), and its usage stays null. Its one session
+// starts at Stage 0 with no model or effort passed, which is what startFields gives for nothing.
 export function ticketCost(stateDir, ticket) {
   if (ticket.location === 'cloud' && ticket.cloud) {
     return { key: ticket.key, runs: 1, unknown: 0, usage: null, preflight: { n: 0, cost: 0, unknown: 0 }, first: null, stages: null,
+      sessions: [{ starts: [startFields({})], cost: null }],
       cloud: { url: ticket.cloud.url ?? null, ms: cloudWall(ticket.cloud) } };
   }
   const round = (f) => { const m = f.match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
@@ -154,6 +199,7 @@ export function ticketCost(stateDir, ticket) {
   let first = 0;
   let stagesKnown = true;
   const stages = new Map();
+  const sessions = [];
   for (const f of logs) {
     let text = '';
     try { text = readLogFile(f); } catch { /* unreadable: unknown */ }
@@ -168,12 +214,13 @@ export function ticketCost(stateDir, ticket) {
       for (const st of s.stages) addStage(stages, st.name, st.input, st.output);
     }
     const u = logUsage(text);
+    sessions.push({ starts: spawnStarts(text), cost: u?.cost ?? null });
     if (!u) { unknown += 1; continue; }
     for (const k of Object.keys(total)) total[k] += u[k];
   }
   return {
     key: ticket.key, runs, unknown, usage: unknown ? null : total, preflight,
-    first: stagesKnown ? first : null, stages: stagesKnown ? [...stages.values()] : null,
+    first: stagesKnown ? first : null, stages: stagesKnown ? [...stages.values()] : null, sessions,
   };
 }
 
@@ -209,7 +256,10 @@ export function costTable(rows) {
   const head = ['worker', 'runs', 'input tokens', 'output tokens', 'cost', 'preflight', 'wall time', 'first-turn input'];
   const width = head.map((h, i) => Math.max(h.length, ...table.map((row) => row[i].length)));
   const line = (row) => `  ${row.map((c, i) => (i < 2 ? c.padEnd(width[i]) : c.padStart(width[i]))).join('  ')}`.trimEnd();
-  // Each worker's stages sit under its row, in the order its runs reached them.
+  // Each worker's sessions sit under its row, then its stages in the order its runs reached them.
+  const startOf = (s) => `start ${s.stage}, model ${s.model}, effort ${s.effort}`;
+  const sessionLines = (r) => (r.sessions ?? []).map((s) =>
+    `      session: ${s.starts.length ? s.starts.map(startOf).join('; ') : 'start, model and effort not recorded'}: ${r.cloud ? 'cost not reported for cloud' : s.cost == null ? 'cost unknown' : usd(s.cost)}`);
   const stageLines = (r) => {
     if (r.cloud) return [`      cloud session: ${r.cloud.url ?? 'unknown'}`];
     if (!r.stages) return ['      stages: unknown (no usage in the log)'];
@@ -217,11 +267,11 @@ export function costTable(rows) {
     const wi = Math.max(...r.stages.map((s) => tokens(s.input).length));
     return r.stages.map((s) => `      ${s.name.padEnd(w)}  ${tokens(s.input).padStart(wi)} in  ${tokens(s.output)} out`);
   };
-  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it and includes the permissions preflights before each spawn, which the preflight column shows apart, wall time is the time inside the worker's turns (a cloud worker's runs from session start to its PR), first-turn input is the prompt each run started on, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
+  const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it and includes the permissions preflights before each spawn, which the preflight column shows apart, wall time is the time inside the worker's turns (a cloud worker's runs from session start to its PR), first-turn input is the prompt each run started on, each session line gives a run's start stage, model, effort (default where none was passed) and cost before its preflight, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
   for (const [i, row] of table.entries()) {
     const r = rows[i];
     out.push(`${line(row)}${r && !r.usage && !r.cloud ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
-    if (r) out.push(...stageLines(r));
+    if (r) out.push(...sessionLines(r), ...stageLines(r));
   }
   const notes = [];
   const cloud = rows.filter((r) => r.cloud).length;

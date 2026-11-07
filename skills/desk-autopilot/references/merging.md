@@ -89,7 +89,8 @@ head, and not waived above, or one GitHub reports in conflict with its base, has
 requeued for a fix worker on the same branch and PR. That worker's briefing names each failing
 check with its run URL, or the conflict with the files git lists, and the worker gets the fix as its
 task (`AUTOPILOT_TASK`). The try is kept on the ticket as `fix` (`try`, `of`, `what`, `head`) and
-appended to `fix_tries`, and a head gets one try at most. After two tries, or a try whose worker
+appended to `fix_tries`, and a head gets one try at most. A conflict counts only conflict tries, so
+tries spent on a check or a review still leave it two. After two tries, or a try whose worker
 left the head where it was, the PR is not requeued again: the ticket records `stuck`
 (`still red after 2 fix tries: <check>`, or the conflict) and it goes under `WAITING ON YOU`. A check
 §4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
@@ -254,9 +255,17 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   on it alone goes to a review worker. Such a draft is under WAITING ON YOU only once those tries are
   spent, or when its red check is one §4 Checks workers can't fix names.
 - **A draft red only on checks §4 Check builds names gets their build from the pass**, where §3
-  `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, in the
-  ticket's worktree at the PR's head, detached so a pass that ends leaves it running, with its output
-  and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
+  `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, from the
+  pass's clean checkout of origin's default branch (`<state>/live-read-checkout`, the one Live reads
+  run from), never the ticket's worktree, so no script or file the worker wrote runs. It receives the
+  PR's tree as `DESK_CHECK_TREE`, a clean checkout of the head the pass owns
+  (`<state>/check-trees/<n>`, reset to the head before each build and removed once the PR merges or
+  closes), with the head's SHA as `DESK_CHECK_HEAD`; a command that ignores them builds the default
+  branch. The command must install and write nothing in the default-branch checkout: a file left
+  there, an ignored one included, makes it dirty for every later check build and live read. Where
+  either checkout cannot be made (a failed fetch, a dirty checkout), nothing runs and the draft goes
+  to the person with the reason. It runs detached so a pass that ends leaves it running,
+  with its output and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
   `--failed`. A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
   `syncFix`, one of the fix tries): its worker merges the base, fixes what the merge breaks in a commit
   of its own and pushes, and the pass builds the new head. A command that fails at a head up to date
@@ -267,8 +276,8 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   (`undraft.mjs` `buildPark`), so this step builds it. A park that asks anything else stays a park.
 - **A conflicted draft goes to a fix worker, not to `DRAFT`**, where §3 `pr-conflict-unreviewed`
   (no one but the user's handle has reviewed or commented) or `pr-conflict-reviewed` (someone has)
-  is `yes`: it merges `<default>` in, reviews its new head and posts that review, within the same two
-  tries as the fixes above (`fix-tries.mjs` `conflictFix`). A new head it leaves with no review of its
+  is `yes`: it merges `<default>` in, reviews its new head and posts that review, within two tries of
+  its own, one per head (`fix-tries.mjs` `conflictFix`): tries of another kind leave a conflict its own. A new head it leaves with no review of its
   own is a stale review, so it goes to a review worker as above. Such a draft reaches WAITING ON YOU
   only once its tries are spent, as `STUCK` with what the last try reported.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too

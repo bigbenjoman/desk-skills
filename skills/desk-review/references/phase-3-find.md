@@ -66,6 +66,12 @@ commands live in the brief, never on the command line. Codex's findings are refu
 (Phase 4). If it dies (above), the run is `same-vendor` as well as partial: codex did not read the
 head.
 
+**With the `codex` lever on** (Phase 0), the call is
+`desk-codex finder [--cd <the PR's worktree>] '<the same prompt>'`, under the same quoting rules, at
+the 600000 ms tool timeout. Its stdout is codex's final message alone. Exit 124 means it ran past
+the timeout in config §3b Codex review (`desk-env get codex-models`) and was ended: do not re-run it; the seat is
+`"status": "died", "reason": "timed out"`.
+
 **Finders read the changed files and their direct callers, with two exceptions**, both for claims
 about code the diff does not contain. Both search the **reviewed revision**, `<TIP>`: `HEAD` on a
 branch, `refs/desk-review/pr-<n>` on a PR (Phase 1). Searching any other tree finds zero, which is a

@@ -25,7 +25,7 @@ work went up attached to an unrelated ticket.
 
 ## Posting the self-review
 
-With §4 Local review command (`desk-env get local-review`) `none` there is no report to post: nothing is posted, and the PR's
+With §4 Local review command (`desk-env review-cmd`) `none` there is no report to post: nothing is posted, and the PR's
 Testing section says the branch had no local review (the Stage 4b skip).
 
 **Posting the self-review (Stage 7).** Local reviews are posted to the PR so the code reviewer
@@ -95,6 +95,18 @@ It leaves a note for that batch's orchestrator, whose next pass records the tick
 one line saying so. A ticket in no batch writes nothing and prints nothing, so say nothing about
 queues. The orchestrator's own merge flow already records its merges (`queue.mjs merged`), so this
 is for interactive sessions only.
+
+**Once the ticket is in §4 Done state, close the GitHub issues it was filed for** (Jira only):
+
+```bash
+node ~/.claude/desk/bin/linked-issues.mjs <TICKET>
+```
+
+Each GitHub issue in this repo that the ticket's web links name is closed, with a comment naming
+every ticket linking it and their merged PRs, once all of those tickets are done (§3
+`gh-close-linked-issue`; short of `yes` it names the issue as ready to close instead). An issue
+another ticket still holds open stays open. Relay each line it prints. A ticket with no such link
+prints nothing. The merge driver runs this itself after its own move to Done.
 
 - **Green is the config's one definition** (desk-config "Green", the same in `desk-autopilot`,
   `desk-clearance` and the merge driver): on the exact head commit being merged, every §4 Required

@@ -5,7 +5,8 @@
 // yes a requirement gap (reviewFix), FIX_TRIES_MAX review fix tries of its own within FIX_TRIES_TOTAL
 // tries in all (a try that cleared what it quoted not counted, up to REVIEW_TRIES_CEILING), and one
 // whose review gaps the person
-// ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
+// ruled on through desk-needs-you (gapsFix), or that the person sent back with an instruction
+// (instructionFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
 // (reviewTry), or a ready PR whose §4 State check reading its verdict is red, or that the merge driver
 // holds for want of a clean verdict at its head (verdictTry), to a review
@@ -111,7 +112,8 @@ const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: triesMa
 export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // A review fix has FIX_TRIES_MAX of its own, counted over review fix tries only, so the conflict,
 // red-check and re-review tries before it leave it its own, within FIX_TRIES_TOTAL tries of every kind
-// that count. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always has one.
+// that count but conflict. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always
+// has one; a conflict has its own FIX_TRIES_MAX on top (conflictTriesMade), so its tries are not counted.
 // A review fix try that recorded what it quoted (`findings`, `gaps`) and whose findings all cleared,
 // none of them still in the review at the head, counts against neither: it moved the PR forward. Only
 // REVIEW_TRIES_CEILING bounds those, so a loop where every fix makes a new finding still ends.
@@ -124,7 +126,8 @@ const reviewTriesMade = (done) => (done ?? []).filter(isReviewTry).length;
 // they quoted, its own and no more than the overall cap leaves.
 function reviewTriesLeft(done) {
   const counted = (done ?? []).filter((x) => !(isReviewTry(x) && quoted(x)));
-  return Math.min(REVIEW_TRIES_CEILING - reviewTriesMade(done), FIX_TRIES_MAX - reviewTriesMade(counted), FIX_TRIES_TOTAL - triesMade(counted));
+  return Math.min(REVIEW_TRIES_CEILING - reviewTriesMade(done), FIX_TRIES_MAX - reviewTriesMade(counted),
+    FIX_TRIES_TOTAL - triesMade(counted.filter((x) => x.kind !== 'conflict')));
 }
 // A finding or gap as compared across heads: its first file:line, the path whole, so one holding
 // `[id]` or `(shop)` is not another file's, and its text with the markup, `F1 ·` label, severity,
@@ -150,12 +153,20 @@ function triesByKind(done) {
   return [...n].map(([k, c]) => `${c} ${k}`).join(', ');
 }
 
-// A conflict with the base, out of draft (fixCall) or in it (conflictFix), and its stuck reason. The
-// reason ends with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as
-// result.summary) when that try was a conflict try whose worker has finished.
+// A conflict with the base, out of draft (fixCall) or in it (conflictFix), and its stuck reason. A
+// conflict has FIX_TRIES_MAX tries of its own, counted over conflict tries only and one per head, so
+// tries of other kinds (a check no worker can clear, a review) never leave it none. The reason ends
+// with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as result.summary) when
+// that try was a conflict try whose worker has finished.
 const conflictTry = (base, files, draft) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null });
-const lastSaid = (t, kind = 'conflict') => (t.fix?.kind === kind && t.fix.finished && t.result?.summary ? `; the last try said: ${t.result.summary}` : '');
-const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(done.length)}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
+const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'conflict');
+export const conflictTriesMade = (done) => conflictTries(done).length;
+const conflictSpent = (done, head) => conflictTriesMade(done) >= FIX_TRIES_MAX || conflictTries(done).some((x) => x.head === head);
+const nextConflictTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: conflictTriesMade(done) + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
+// What the ticket's last try of that kind reported, once its worker has finished; else null.
+export const lastTrySaid = (t, kind = 'conflict') => (t?.fix?.kind === kind && t.fix.finished && t.result?.summary) || null;
+const lastSaid = (t, kind = 'conflict') => (lastTrySaid(t, kind) ? `; the last try said: ${lastTrySaid(t, kind)}` : '');
+const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(conflictTriesMade(done))}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
 
 // t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, stateChecks (§4 State
 // checks, parsed: never sent to a fix worker nor waited on for reruns), operator, builds and
@@ -191,9 +202,8 @@ export function fixCall(t, s, ctx) {
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
     fix = checksFix(mine, notMine, ctx.repo);
   }
-  if (spent(done, fixedAt(done, s.head))) {
-    return conflict ? { call: 'stuck', why: stillInConflict(t, done, ctx.base) } : stillRed(done, split.mine, split.notMine, ctx);
-  }
+  if (conflict) return conflictSpent(done, s.head) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base) } : nextConflictTry(done, s.pr, s.head, fix);
+  if (spent(done, fixedAt(done, s.head))) return stillRed(done, split.mine, split.notMine, ctx);
   return nextTry(done, s.pr, s.head, fix);
 }
 
@@ -327,14 +337,29 @@ export function reviewFix(t, review, opts = {}) {
 // the FIX_TRIES_MAX tries, which are the pass's own.
 export const gapsFix = ({ pr, head, answer }) => ({ kind: 'gaps', pr, head: head ?? null, what: 'review gaps: your call', answer });
 
-// A review stuck reason's findings (reviewFix's `stuck` why, `P0: <text>; P1: <text>`) as the review
-// fix the person sends back for one more try (desk-needs-you `fix`), marked `person`: not one of the
-// pass's tries, so the review of its new head that still lists one goes back to the person; numbered
-// as the last of the tries made, for the views that show a try's number. null for a reason that is
-// not a review's, or quotes no finding.
-export function personReviewFix(t, { pr, head, why }) {
+// The person's instruction on an open PR (desk-needs-you `resume`), as the fix it sends back: like a
+// gaps call, not one of the pass's tries; numbered as the last of the tries made, for the views that
+// show a try's number. `ready` is a PR out of draft, which its worker leaves out of draft and the merge
+// driver holds (merge-driver.sh instruction_held) until this fix is finished.
+export function instructionFix(t, { pr, head, ready, answer }) {
+  const n = triesMade(t.fix_tries) + 1;
+  return { try: n, of: n, kind: 'instruction', pr, head: head ?? null, ready: ready === true, what: 'your instruction', answer };
+}
+// A fix that carries out what the person said, rather than repairing what the pass found.
+export const personCall = (f) => f?.kind === 'gaps' || f?.kind === 'instruction';
+
+// The findings a review stuck reason quotes (reviewFix's `stuck` why, `P0: <text>; P2: <text>`), as
+// { sev, text }; [] for a reason that is not a review's, or quotes none.
+export function stuckFindings(why) {
   const m = /^review not clean\b.*? — (?:still open after the fix try that quoted it: )?(.+)$/.exec(String(why ?? ''));
-  const findings = (m?.[1].split(/; (?=P[01]: )/) ?? []).map((x) => /^(P[01]): (.+)$/.exec(x)).filter(Boolean).map(([, sev, text]) => ({ sev, text }));
+  return (m?.[1].split(/; (?=P[0-2]: )/) ?? []).map((x) => /^(P[0-2]): (.+)$/.exec(x)).filter(Boolean).map(([, sev, text]) => ({ sev, text }));
+}
+// A review stuck reason's findings as the review fix the person sends back for one more try
+// (desk-needs-you `fix`), marked `person`: not one of the pass's tries, so the review of its new head
+// that still lists one goes back to the person; numbered as the last of the tries made, for the views
+// that show a try's number. null for a reason that is not a review's, or quotes no finding.
+export function personReviewFix(t, { pr, head, why }) {
+  const findings = stuckFindings(why);
   const n = triesMade(t.fix_tries) + 1;
   return findings.length ? { try: n, of: n, kind: 'review', person: true, pr, head: head ?? null, what: 'review not clean: sent back by the person for one more try', findings } : null;
 }
@@ -437,12 +462,12 @@ export function draftChecksFix(t, { pr, head, failing }, ctx) {
 }
 
 // A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3
-// pr-conflict-unreviewed or -reviewed, goes back to a fix worker under the same tries as fixCall (one
-// per head, FIX_TRIES_MAX per PR). draft: { pr, head, base, files } (files: [file] | null).
+// pr-conflict-unreviewed or -reviewed, goes back to a fix worker under the same conflict tries as
+// fixCall's (one per head, FIX_TRIES_MAX per PR). draft: { pr, head, base, files } (files: [file] | null).
 export function conflictFix(t, { pr, head, base, files }) {
   if (!head) return null;
   const done = t.fix_tries ?? [];
-  return spent(done, fixedAt(done, head)) ? { call: 'stuck', why: stillInConflict(t, done, base, files) } : nextTry(done, pr, head, conflictTry(base, files, true));
+  return conflictSpent(done, head) ? { call: 'stuck', why: stillInConflict(t, done, base, files) } : nextConflictTry(done, pr, head, conflictTry(base, files, true));
 }
 
 // A draft whose §4 Check builds build failed at a head behind its base (undraft.mjs `sync`) goes to a
@@ -494,6 +519,11 @@ export function fixBrief(t) {
       `Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
       ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
   }
+  if (f.kind === 'instruction') {
+    return [`## The person's instruction on PR #${f.pr}`, '',
+      `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, and the person sent it back to you with this instruction:`, '',
+      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that instruction, and nothing else.', ''].join('\n');
+  }
   if (f.kind === 'rereview') {
     return [f.extra ? `## Review try for a merge from the base: PR #${f.pr}` : `## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
       f.held
@@ -511,6 +541,8 @@ export function fixBrief(t) {
       ? `Your PR #${f.pr} is a draft on this branch, and it conflicts with ${f.base}, so the pass cannot take it out of draft. Its review was for the old head, so the new head needs one of its own.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
     lines.push(f.files?.length ? `Conflicting files: ${f.files.join(', ')}.` : `The conflicting files were not listed: \`git merge-tree --write-tree --name-only origin/${f.base} HEAD\` names them.`);
+    lines.push(`A conflicting file a generator writes is not resolved by hand where §4 Codegen is set: take ${f.base}'s version of it (\`git checkout --theirs <file>\` during the merge), run §4 Codegen (\`desk-env cmds codegen-cmd\`) once the other conflicts are resolved, and commit what it regenerates with the merge.`,
+      `Where the branch is far behind ${f.base} and one merge leaves too much in conflict, merge ${f.base} in steps (an older commit of it first, then the next), pushing once the last merge is done.`);
   } else if (f.kind === 'sync') {
     lines.push(`Your PR #${f.pr} is a draft on this branch, and its head ${String(f.head).slice(0, 12)} is behind ${f.base}. Its check build failed there: ${f.build}`, '',
       `Merge origin/${f.base} into your branch (git merge, never a rebase or a force push). A merge git reports clean can still break the branch: two migrations with the same parent, a renamed symbol, a changed signature or fixture. ` +
@@ -578,16 +610,17 @@ export function fixTask(t) {
       'Change no code and do not edit the PR body: the pass uploads them and fills its cells. ' +
       `Open no new PR, leave the PR in draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status> said=<all taken, or for each screen you could not take, <file>: <why>>.`;
   }
-  const gaps = f.kind === 'gaps';
+  const gaps = f.kind === 'gaps', instruction = f.kind === 'instruction';
   // A draft's red checks or conflict are fixed in draft and reviewed again, as a review fix is, and so
-  // is a ready PR's review feedback or review.
-  const review = f.kind === 'review' || f.kind === 'feedback' || gaps || f.draft === true;
+  // is a ready PR's review feedback or review, and whatever the person sent back.
+  const review = f.kind === 'review' || f.kind === 'feedback' || personCall(f) || f.draft === true;
   const inDraft = review && !f.ready && f.kind !== 'feedback';
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
     : f.kind === 'sync' ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push), run the repo's checks on the merged head, and fix each break the merge brought in, in a commit of its own after the merge: this task is your authority to merge it`
     : f.kind === 'feedback' ? 'validate each review thread it quotes (desk-review-response), fix what is right, answer every thread with gh pr comment naming it, and park on one you cannot fix, naming it and what blocks it'
     : gaps ? 'do what the call says about each gap, and nothing else'
+    : instruction ? 'do what the instruction says, and nothing else'
       : f.kind === 'review' ? (f.gaps?.length
         ? `${f.findings?.length ? `fix each ${findingKinds(f.findings)} finding it quotes and ` : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
         : `fix each ${findingKinds(f.findings)} finding it quotes${f.findings?.some((x) => x.sev === 'P2') ? ', or carry one in your review of the new head where fixing it would mean another round' : ''}, and nothing else`)
@@ -599,6 +632,7 @@ export function fixTask(t) {
     : f.kind === 'sync' ? ' said=<one line: what the merge broke and how you fixed it, or what still fails and why>' : '';
   const task = gaps
     ? `Your task is to carry out the person's call on the review gaps of PR #${f.pr}, already open on your branch: the "Your call" section of your briefing quotes it. `
+    : instruction ? `Your task is to carry out the person's instruction on PR #${f.pr}, already open on your branch: the "The person's instruction" section of your briefing quotes it. `
     : `Your task is ${f.person ? 'the fix try the person sent' : `fix try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. `;
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     task +

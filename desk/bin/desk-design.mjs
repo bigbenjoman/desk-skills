@@ -12,7 +12,9 @@
 //       pointed at) from <src> into <design dir>/<EPIC or KEY>/ of the current checkout, or into the
 //       folder that already holds the same artifact, then writes source.json and README. A
 //       support.js the snapshot lacks is copied from its dc-runtime.js, which the artifact serves
-//       in its place
+//       in its place. A Slides deck (deck.json and slides/<id>.html) is saved the same way, with an
+//       index.html beside it that shows every slide in order offline. source.json records the
+//       kind: canvas, deck or page
 //   node desk-design.mjs import <file> --url <u> --key <K> [--boards <a,b>] [--key ...] [--epic <E>]
 //       takes a design's self-contained HTML export as a single-page snapshot under
 //       <state>/designs/<EPIC or KEY>/ (or the folder already holding the artifact): source.json
@@ -128,21 +130,33 @@ function walkFiles(dir, base = dir) {
 }
 
 // What to copy out of a snapshot: canvas.json, every HTML file beside it, and every local file
-// those reference, followed through CSS. A single-page artifact has no canvas.json (`canvas` is
-// null): its pages are the HTML files beside the shallowest one. A reference that leaves <src> or names a file the
+// those reference, followed through CSS. A Slides deck has deck.json in its place (`deck`), and
+// each slide deck.json orders is slides/<id>.html beside it. A single-page artifact has neither
+// (`canvas` and `deck` null): its pages are the HTML files beside the shallowest one. `kind` says
+// which of the three it is. A reference that leaves <src> or names a file the
 // snapshot lacks is `missing`; one to another host is `remote` (it needs the network to render).
 // `blobs` maps each asset id the boards use to its saved path, and `copyFrom` maps a saved path to
 // the snapshot file it comes from where the two differ: an asset, or support.js from dc-runtime.js.
 export function collect(src) {
   const all = walkFiles(src);
   const shallowest = (name) => all.filter(name).sort((a, b) => a.split(sep).length - b.split(sep).length || a.length - b.length)[0];
-  const canvasRel = shallowest((f) => basename(f) === 'canvas.json') ?? null;
-  const page = canvasRel ? null : shallowest((f) => /\.html?$/i.test(f));
-  if (!canvasRel && !page) fail(`no canvas.json or page under ${src}: read the artifact's project/canvas.json, or its page, first`);
-  const home = dirname(canvasRel ?? page);
-  const files = new Set(canvasRel ? [canvasRel] : []);
+  const kind = kindOfFiles(all);
+  if (!kind) fail(`no canvas.json, deck.json or page under ${src}: read the artifact's project/canvas.json, project/deck.json, or its page, first`);
+  const canvasRel = kind === 'canvas' ? shallowest((f) => basename(f) === 'canvas.json') : null;
+  const deckRel = kind === 'deck' ? shallowest((f) => basename(f) === 'deck.json') : null;
+  const page = kind === 'page' ? shallowest((f) => /\.html?$/i.test(f)) : null;
+  const home = dirname(canvasRel ?? deckRel ?? page);
+  const files = new Set([canvasRel, deckRel].filter(Boolean));
   const queue = all.filter((f) => /\.html?$/i.test(f) && (home === '.' || f.startsWith(home + sep)));
   const missing = []; const remote = [];
+  const deck = deckRel ? readJson(join(src, deckRel)) : null;
+  const slides = deckSlides(deck);
+  for (const id of slides) {
+    const rel = join(home, 'slides', `${id}.html`);
+    if (!safeId(id) || !queue.includes(rel)) missing.push(`slide ${id} (deck.json orders it: read ${rel} from the artifact)`);
+  }
+  // The deck's font faces load from the network.
+  for (const f of Object.values(deck?.faces ?? {})) if (typeof f?.href === 'string' && f.href && !remote.includes(f.href)) remote.push(f.href);
   const blobs = {}; const copyFrom = {}; const noAsset = new Set();
   // An asset file is named by its id, with or without an extension, anywhere in the snapshot.
   const assetAt = new Map();
@@ -183,7 +197,61 @@ export function collect(src) {
       if (TEXT.has(extname(rel).toLowerCase())) queue.push(rel);
     }
   }
-  return { canvas: canvasRel, home, files: [...files].sort(), missing, remote, blobs, copyFrom };
+  return { canvas: canvasRel, deck: deckRel, kind, slides, home, files: [...files].sort(), missing, remote, blobs, copyFrom };
+}
+
+// ---- a Slides deck ---------------------------------------------------------------------------
+
+// The slide ids deck.json lists, in order.
+export const deckSlides = (deck) => (Array.isArray(deck?.order) ? deck.order.filter((id) => typeof id === 'string' && id) : []);
+
+// Slides are drawn at a fixed 1920×1080.
+const SLIDE_W = 1920; const SLIDE_H = 1080;
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// An <img data-crop="<scale> <x> <y>"> shows its focal point through object-position, which the
+// Slides runtime sets from data-crop; written into its style here where the style lacks one.
+export function applyCrops(html) {
+  return html.replace(/<img\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi, (tag) => {
+    const crop = /\sdata-crop\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
+    const at = /^\s*[\d.]+\s+(-?[\d.]+%)\s+(-?[\d.]+%)\s*$/.exec(crop?.[1] ?? crop?.[2] ?? '');
+    if (!at) return tag;
+    const pos = `object-position:${at[1]} ${at[2]};`;
+    const style = /(\sstyle\s*=\s*)(?:"([^"]*)"|'([^']*)')/i.exec(tag);
+    if (!style) return tag.replace(/\s*\/?>$/, (end) => ` style="${pos}"${end}`);
+    const css = style[2] ?? style[3];
+    if (/(^|;)\s*object-position\s*:/i.test(css)) return tag;
+    const q = style[2] !== undefined ? '"' : "'";
+    return tag.slice(0, style.index) + `${style[1]}${q}${pos}${css}${q}` + tag.slice(style.index + style[0].length);
+  });
+}
+
+// The deck's offline viewer: every slide in deck.json order inlined into a 1920×1080 frame, scaled
+// to the window, its images at their saved paths and its speaker notes (<aside>) hidden. Inlined
+// rather than loaded, so it opens from file://. `slides` is [{id, html}] with blobs already pointed
+// at paths relative to the viewer.
+export function deckViewer(deck, slides) {
+  const fonts = Object.values(deck?.faces ?? {}).map((f) => f?.href).filter((h) => typeof h === 'string' && h);
+  return [
+    '<!doctype html>',
+    '<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
+    `<title>${esc(deck?.title ?? 'Slides deck')} (offline copy)</title>`,
+    ...fonts.map((h) => `<link rel="stylesheet" href="${esc(h)}">`),
+    '<style>',
+    '*{margin:0;box-sizing:border-box}',
+    'body{background:#2b2724;padding:24px 0}',
+    `.frame{width:${SLIDE_W}px;height:${SLIDE_H}px;margin:0 auto 24px;position:relative;overflow:hidden}`,
+    `.frame>section{position:relative;width:${SLIDE_W}px;height:${SLIDE_H}px;overflow:hidden}`,
+    'section aside{display:none}',
+    '</style></head><body>',
+    ...slides.map((s) => `<div class="frame" data-slide="${esc(s.id)}">${applyCrops(s.html).trim()}</div>`),
+    '<script>',
+    `function fit(){var k=Math.min(window.innerWidth-32,${SLIDE_W})/${SLIDE_W};document.querySelectorAll('.frame').forEach(function(f){f.style.zoom=k})}`,
+    "addEventListener('resize',fit);fit();",
+    '</script>',
+    '</body></html>',
+    '',
+  ].join('\n');
 }
 
 // A board's text with each /_blob/<id> pointing at the asset's saved path, relative to the board.
@@ -248,11 +316,16 @@ export function mergeSource(prev, next) {
   const screens = next.screens ?? (prev?.screens && String(prev.screens.version) === String(next.version) ? prev.screens : undefined);
   // An HTML export's file name and hash describe its version too.
   const from = next.from ? next : prev?.from && String(prev.version) === String(next.version) ? prev : null;
+  // What the artifact is (canvas, deck or page), which check reads to decide whether a link blocks.
+  const kind = next.kind ?? prev?.kind;
+  const slides = next.slides ?? prev?.slides;
   return {
     url: next.url, version: String(next.version), fetched_at: next.fetched_at,
     ...(from ? { from: from.from, file: from.file, sha256: from.sha256 } : {}),
+    ...(kind ? { kind } : {}),
     dir: next.dir ?? prev?.dir ?? null, tickets,
-    boards: next.boards ?? prev?.boards ?? [], files: next.files ?? prev?.files ?? [], screens,
+    boards: next.boards ?? prev?.boards ?? [], ...(kind === 'deck' && slides ? { slides } : {}),
+    files: next.files ?? prev?.files ?? [], screens,
   };
 }
 
@@ -265,14 +338,17 @@ export function readme(source) {
     if (!t.boards?.length) return boards.length ? boards.map(label).join(', ') : 'all';
     return t.boards.map((n) => { const b = boards.find((x) => x.name === n); return b ? label(b) : n; }).join(', ');
   };
+  const deck = source.kind === 'deck';
   return [
-    `# Design canvas${source.dir ? ` ${source.dir}` : ''}`,
+    `# ${deck ? 'Slides deck' : 'Design canvas'}${source.dir ? ` ${source.dir}` : ''}`,
     '',
     ...(source.from === 'export'
       ? [`Saved by \`desk-design\` from ${source.file}, an HTML export of <${source.url}> (sha256 ${source.sha256}),`,
         `version ${source.version}, imported ${source.fetched_at}.`]
       : [`Saved by \`desk-design\` from <${source.url}>, version ${source.version}, fetched ${source.fetched_at}.`]),
-    'Open any board\'s HTML from this folder: it renders offline with the files saved beside it.',
+    deck
+      ? 'Open index.html from this folder: every slide in order at 1920×1080, offline, with its speaker notes hidden.'
+      : 'Open any board\'s HTML from this folder: it renders offline with the files saved beside it.',
     source.from === 'export'
       ? 'Do not edit these files by hand. For a newer export, run `desk-design import` on it, then'
       : 'Do not edit these files by hand. When the artifact has a newer version, re-save it with',
@@ -282,11 +358,11 @@ export function readme(source) {
     '|---|---|',
     ...(source.tickets ?? []).map((t) => `| ${cell(t.key)} | ${cell(forTicket(t))} |`),
     '',
-    '## Boards',
-    '',
-    ...(boards.length
-      ? ['| Board | Width | File |', '|---|---|---|', ...boards.map((b) => `| ${cell(b.name)} | ${b.width}px | ${b.file ? cell(b.file) : '-'} |`)]
-      : ['canvas.json names no boards.']),
+    ...(deck
+      ? ['## Slides', '', ...(source.slides?.length ? source.slides.map((id, i) => `${i + 1}. ${id}`) : ['deck.json orders no slides.'])]
+      : ['## Boards', '', ...(boards.length
+        ? ['| Board | Width | File |', '|---|---|---|', ...boards.map((b) => `| ${cell(b.name)} | ${b.width}px | ${b.file ? cell(b.file) : '-'} |`)]
+        : ['canvas.json names no boards.'])]),
     '',
     ...screensSection(source.screens),
   ].join('\n');
@@ -378,15 +454,18 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   const prev = readJson(join(dest, 'source.json'));
   if (prev?.url && canonicalUrl(prev.url) !== canonicalUrl(url)) fail(`${destRel} already holds ${prev.url}: pass --epic to save this canvas elsewhere`);
 
-  const { canvas, files, missing, remote, blobs, copyFrom } = collect(src);
+  const { canvas, deck, kind, slides, home, files, missing, remote, blobs, copyFrom } = collect(src);
   if (missing.length) fail(`not saved: the snapshot lacks files the boards reference; read them from the artifact too:\n${missing.map((m) => `missing: ${m}`).join('\n')}`, 4);
   const boards = canvas ? parseBoards(readJson(join(src, canvas)) ?? {}) : [];
+  // A deck is read through the viewer save writes beside its project folder.
+  const viewer = deck ? 'index.html' : null;
+  const saved = viewer ? [...new Set([...files, viewer])].sort() : files;
 
   // A re-save replaces the old version's files, so none outlive it: its screens included.
   const stale = String(prev?.screens?.version) !== String(version) ? (prev?.screens?.images ?? []).map((s) => s.file) : [];
   for (const f of [...(prev?.files ?? []), ...stale]) {
     const p = normalize(join(dest, f));
-    if (!files.includes(f) && p.startsWith(dest + sep) && existsSync(p)) rmSync(p);
+    if (!saved.includes(f) && p.startsWith(dest + sep) && existsSync(p)) rmSync(p);
   }
   for (const f of files) {
     mkdirSync(dirname(join(dest, f)), { recursive: true });
@@ -398,11 +477,16 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
     }
     copyFileSync(from, join(dest, f));
   }
+  if (viewer) {
+    const html = slides.map((id) => ({ id, html: localiseBlobs(readFileSync(join(src, home, 'slides', `${id}.html`), 'utf8'), viewer, blobs) }));
+    writeFileSync(join(dest, viewer), deckViewer(readJson(join(src, deck)), html));
+  }
   const fromExport = meta?.from && String(meta.version) === String(version) ? { from: meta.from, file: meta.file, sha256: meta.sha256 } : {};
   const source = writeRecord(dest, {
-    url, version, fetched_at: fetchedAt ?? meta?.fetched_at ?? now, dir: name, tickets: all, boards, files, ...fromExport,
+    url, version, fetched_at: fetchedAt ?? meta?.fetched_at ?? now, dir: name, kind, tickets: all, boards, files: saved,
+    ...(deck ? { slides } : {}), ...fromExport,
   });
-  return { path: destRel, source, files, remote, reused: !!existing, previous: prev?.version ?? null };
+  return { path: destRel, source, files: saved, remote, reused: !!existing, previous: prev?.version ?? null };
 }
 
 // ---- import (a design's HTML export) -----------------------------------------------------------
@@ -495,7 +579,7 @@ export function importExport(file, { state, url, tickets, epic, now = new Date()
   mkdirSync(join(dest, 'project'), { recursive: true });
   writeFileSync(join(dest, 'project', 'index.html'), bytes);
   const source = writeRecord(dest, {
-    url, version, fetched_at: now, dir: prev?.dir ?? name, tickets, from: 'export', file: basename(file), sha256, boards: [], files: ['project/index.html'],
+    url, version, fetched_at: now, dir: prev?.dir ?? name, kind: 'page', tickets, from: 'export', file: basename(file), sha256, boards: [], files: ['project/index.html'],
   });
   return { path: dest, source, previous: prev?.version ?? null };
 }
@@ -620,7 +704,8 @@ const servedAt = (origin, rel) => origin + rel.split(sep).map(encodeURIComponent
 export async function render(dir, { chromium, bps = breakpoints(), now = new Date().toISOString(), height = 900 }) {
   const source = readJson(join(dir, 'source.json'));
   if (!source?.url) fail(`no saved canvas at ${dir}: render a folder desk-design save wrote`);
-  const { canvas, home, files } = collect(dir);
+  const { canvas, deck, home, files } = collect(dir);
+  if (deck) fail(`${dir} is a Slides deck, drawn at a fixed 1920×1080: open its index.html rather than rendering it`);
   // A single-page artifact's pages render at every breakpoint, with no width of their own.
   const boards = canvas ? parseBoards(readJson(join(dir, canvas)) ?? {})
     : files.filter((f) => /\.html?$/i.test(f) && dirname(f) === home).map((f) => ({ name: basename(f).replace(/\.html?$/i, ''), width: null, file: basename(f) }));
@@ -801,6 +886,22 @@ export function snapshotOf(state, url) {
   return null;
 }
 
+// What a design's files say it is: a canvas (canvas.json), a deck (deck.json), else a page (HTML
+// only), else null.
+export function kindOfFiles(paths) {
+  const names = paths.map((p) => basename(p));
+  if (names.includes('canvas.json')) return 'canvas';
+  if (names.includes('deck.json')) return 'deck';
+  return names.some((n) => /\.html?$/i.test(n)) ? 'page' : null;
+}
+
+// A snapshot or saved folder's kind: as its source.json records it, else from its files.
+export function kindAt(dir) {
+  const k = readJson(join(dir, 'source.json'))?.kind;
+  if (k) return k;
+  try { return kindOfFiles(walkFiles(dir)); } catch { return null; }
+}
+
 // Every saved canvas under <dir> as committed at <ref>: [{path, url, version}].
 export function savedAt(root, dir, ref) {
   const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 });
@@ -866,7 +967,9 @@ export function designFact(text, { root, dir, ref, state }) {
 // --json issue, or {key, text} for a ticket file. A canvas is saved when it is committed under <dir>
 // on <ref> (the batch's base), whatever the working tree holds. It belongs under the ticket's epic
 // when it has one, else under the ticket itself. One with a snapshot under <state> is advisory: the
-// worker saves it from there.
+// worker saves it from there. A deck is saved and checked as a canvas is; a snapshot that is
+// neither (a single page) says so, and is advisory too. With neither a saved copy nor a snapshot
+// the link's kind is unknown, so it blocks.
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const key = issue.key;
   // A Jira description is wiki markup, where desk-jira's markdown conversion escapes `-` and `_` in
@@ -885,7 +988,10 @@ export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
     if (!saved) {
       const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/ on ${ref}: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
       const snap = state ? snapshotOf(state, url) : null;
-      findings.push(snap ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` } : { severity: 'blocking', message });
+      const page = snap && kindAt(snap) === 'page';
+      findings.push(!snap ? { severity: 'blocking', message }
+        : page ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, a single page rather than a canvas or deck, so it does not block: the worker may save it from there` }
+          : { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` });
     } else if (!section.includes(saved.path.replace(/\/$/, ''))) {
       findings.push({ severity: 'advisory', message: `design: ${key}'s Design section links ${url} but not its saved copy ${saved.path}: add the repo path beside the link` });
     }
@@ -938,12 +1044,14 @@ if (isMain) {
       const url = opt(rest, '--url'); const version = opt(rest, '--version');
       if (!url || !version || !tickets.length) fail('write needs --url, --version and at least one --key');
       const prev = readJson(join(target, 'source.json'));
+      const shape = (() => { try { return collect(target); } catch { return null; } })();
       const s = writeRecord(target, {
         url, version, fetched_at: opt(rest, '--fetched-at') ?? new Date().toISOString(),
-        dir: opt(rest, '--epic') ?? prev?.dir ?? tickets[0].key, tickets,
-        boards: (() => { try { const c = collect(target).canvas; return parseBoards(readJson(join(target, c)) ?? {}); } catch { return prev?.boards ?? []; } })(),
+        dir: opt(rest, '--epic') ?? prev?.dir ?? tickets[0].key, tickets, kind: shape?.kind,
+        boards: shape ? (shape.canvas ? parseBoards(readJson(join(target, shape.canvas)) ?? {}) : []) : prev?.boards ?? [],
+        ...(shape?.deck ? { slides: shape.slides } : {}),
       });
-      console.log(`wrote: ${join(target, 'source.json')} (version ${s.version}; tickets ${s.tickets.map((t) => t.key).join(' ')})`);
+      console.log(`wrote: ${join(target, 'source.json')} (version ${s.version}; ${s.kind ?? 'unknown kind'}; tickets ${s.tickets.map((t) => t.key).join(' ')})`);
     } else if (cmd === 'save') {
       if (!target) fail('usage: desk-design save <src> --key <K> [--epic <E>] [--url <u> --version <v>]');
       const tickets = ticketsFromArgs(rest);

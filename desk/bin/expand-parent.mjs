@@ -16,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, ticketKind } from './desk-env.mjs';
 import { sections } from './desk-design.mjs';
+import { blockersFact } from './desk-q-eta.mjs';
 
 const [key, ...flags] = process.argv.slice(2);
 const subtasks = flags.includes('--subtasks');
@@ -36,9 +37,7 @@ const isSubtask = (i) => i.fields?.issuetype?.subtask === true;
 // Only a Story is a container. A Bug or Task with subtasks (QA, checklist) is work in itself: run as
 // itself, it builds its own change; replaced by its subtasks, that change would never be built.
 const isStory = (i) => !isSubtask(i) && /story/i.test(i.fields?.issuetype?.name ?? '');
-const blockersOf = (i) => (i.fields?.issuelinks ?? [])
-  .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
-  .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new' }));
+const blockersOf = (i) => blockersFact(i).map(({ key, category }) => ({ key, category }));
 
 // The numbered criteria of a description: the Definition of done's DoD<n> items, else the Acceptance
 // criteria's AC<n> items, the ids the epic close-out checks. An id named twice keeps its first text.

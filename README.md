@@ -284,8 +284,69 @@ node ~/.claude/desk/bin/skill-eval.mjs --skill <name|dir> --tasks <tasks.json> -
 
 `evals/desk-pr.json` is desk-pr's task set; its last report is `docs/evals/desk-pr/report.md`.
 
+**`bench.mjs`** runs named arms over frozen tasks taken from real merged tickets. Each run gets a
+throwaway checkout of the task's repo at the commit the ticket started from: a repository of its
+own with no remote and no later history, so the merged fix is not there to read and there is
+nowhere to push. The merged PR's tests are kept outside it (a test file the PR changed is there in
+its base version, as the ticket's worker found it) and copied in only after the run, then
+run with that repo's §4 Unit tests under the test lock. The task is **accepted** if every one
+passes and **rejected** if one fails. A run that errors, times out or is stopped is **failed**,
+which counts as neither. Arms run on a worker's permission set for that repo with gh, Jira, the web
+and pushes taken out. Any attempt to push, open a PR or reach Jira is recorded in that run's
+result. Arm order is shuffled per task from `--seed`, and prompt caching stays at the CLI's
+default. A result scored at the same base and arm settings is reused. Each run keeps its diff, its
+stream-json transcript, its test output and its tokens (uncached, cache write, cache read, output)
+under the output folder:
+
+```
+node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<effort>]] [--arm …] \
+  --max-budget-usd <usd> [--total-budget-usd 5] [--out <dir>] [--timeout 1800] [--seed <n>]
+```
+
+Keep the task set outside this repo. Its paths are relative to the file:
+
+```json
+{"tasks": [{"id": "ds-123", "repo": "owner/name", "base": "<full SHA>", "prompt": "<ticket text>",
+  "hidden_tests": {"dir": "hidden/ds-123", "files": ["tests/test_x.mjs"]}}]}
+```
+
+`hidden_tests.run` (default: every file) names the files handed to the test command; the rest,
+such as fixtures, are only copied in.
+
+**`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
+merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and
+description as they read when the PR's first commit was authored: later edits are undone from the
+Jira changelog, and comments are never read. A ticket created after that commit is dropped, since
+all of its text came after the work. The size is the Size field's, else a first description line
+`Size: M`. The PR's added or changed test files at the merge go to `<set dir>/<task id>/hidden/`,
+where the task id is `<owner>__<name>-<n>`. A task is kept only if those tests fail at the base and pass at the
+merge, run as `bench.mjs` scores them. A PR with no test changes is skipped. The rest are dropped
+with the reason: tests that pass at the base, fail at the merge, or cannot run. The file counts the
+tasks per repo and per size, and lists the dropped PRs. A PR already in the set, kept or dropped, is
+left alone unless `--rewrite` is given, so a frozen set stays frozen:
+
+```
+node ~/.claude/desk/bin/bench-build.mjs --set <tasks.json> --pr <owner/name>#<n> [--pr …] [--rewrite] [--timeout 3600]
+```
+
 ```json
 {"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
+```
+
+**`bench-blind.mjs`** turns a bench run into blind scoring sheets. `export` reads the output
+folder's `run.json` and writes, under `<out>/blind`, one Markdown sheet per task in `sheets/`: the
+ticket text, the rubric (`desk/bin/bench-rubric.md`, or `--rubric <file>`) and every arm's diff
+under a letter drawn at random per task, with an arm that made no diff, or whose run failed, shown
+as "no change produced". Names of models, arms and efforts in a diff (a co-author trailer, a comment, a branch
+name) become `[redacted]`. It also writes `scores.csv`, a `task,letter,score` template with the
+scores blank, and `key.json`, which maps each letter to its arm and is named by no sheet. Fill in
+each score from 1 to 5, then `join` attaches them to the arms through the key and writes
+`joined.json`. A sheet with a missing, out-of-range or unknown score is listed and none of its
+scores count:
+
+```
+node ~/.claude/desk/bin/bench-blind.mjs export --tasks <tasks.json> [--out <dir>] [--dest <dir>] [--rubric <file>]
+node ~/.claude/desk/bin/bench-blind.mjs join --tasks <tasks.json> [--out <dir>] [--dest <dir>]
 ```
 
 ## Subagents
@@ -592,6 +653,9 @@ git aliases or write outside its worktree:
 ```bash
 AUTOPILOT_PREFLIGHT=1 ~/.claude/desk/bin/spawn-worker.sh <TICKET> <worktree> preflight
 ```
+
+With the `preflight` lever on (config §3b Phase 0 levers), a ticket whose last preflight passed on
+the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` to force one.
 
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 

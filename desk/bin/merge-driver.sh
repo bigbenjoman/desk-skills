@@ -18,7 +18,9 @@
 # (never a promotion PR such as main -> production), and whose head branch is the branch recorded in
 # the queue for that ticket (setup-worktree.sh made it). Only where no branch is recorded does the
 # driver fall back to the id in the title or branch, bounded so `BUG-119` never matches `BUG-119-5`
-# or `BUG-1190` while `fix/BUG-119-login` does.
+# or `BUG-1190` while `fix/BUG-119-login` does. An epic batch not in feature mode has one more: its
+# epic PR, the base into §0 Default branch, recorded as the queue's promotion (epic_pr). Out of draft
+# it is gated and merged as a child is, unless its children carried §4 Merge holds into the base.
 #
 # Per loop, every ready (non-draft) batch PR is considered in turn, and the first that is mergeable
 # is merged; one merge per loop, because a merge moves the default branch under every other PR. A
@@ -75,6 +77,10 @@
 #   - waits on the person's step             its ticket's merge_after names blockers in no batch that are
 #                                            steps only the person takes: held, green or not, until
 #                                            pass.mjs reads each Done in Jira and lifts it
+#   - waits on the person's instruction      its ticket's fix is the person's instruction (needs-you
+#                                            resume) and pass.mjs has not closed it: held before any
+#                                            other step, with nothing rerun or updated, and read again
+#                                            just before the merge
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
@@ -88,6 +94,8 @@
 # and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl. Where §4 Tracker
 # is jira and §3 jira-close-own-merged is yes, a ticket with no other PR still open on its key, by
 # anyone, is then moved to §4 Done state and read back; this is the only close anywhere in the batch.
+# A ticket that is Done then has the GitHub issues its web links name closed by linked-issues.mjs, each
+# once every ticket linking it is done, under §3 gh-close-linked-issue.
 # Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
 # the runs behind its failing non-advisory checks, at most twice per check per head, 12 minutes apart.
 # A check still red after both goes back to a fix worker: pass.mjs reads reruns-<n>-<sha> and
@@ -309,16 +317,21 @@ feedback(){
 }
 # Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
 # Nothing when GitHub could not be read.
-head_verdict(){
+head_verdict(){ # head_verdict <n> [<base>]
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" verdict --handle "$AUTHOR" --clean "$CLEAN_ROW" --base "$BASE_BRANCH" --pr "$1" 2>/dev/null
+    | node "$THREADS" verdict --handle "$AUTHOR" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" 2>/dev/null
 }
 # Prints true once GitHub has resolved the thread.
 resolve_thread(){
   gh api graphql -f id="$1" -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
     --jq '.data.resolveReviewThread.thread.isResolved' 2>/dev/null
 }
-queue_note(){ node "$Q" set "$1" "merge_blocked=$2" >/dev/null 2>&1 || true; }
+# The epic PR's key is the epic's, which is no ticket: its note goes on the queue's promotion.
+EPIC_KEY=""
+queue_note(){
+  if [ -n "$EPIC_KEY" ] && [ "$1" = "$EPIC_KEY" ]; then node "$Q" set-batch "promotion.merge_blocked=$2" >/dev/null 2>&1 || true
+  else node "$Q" set "$1" "merge_blocked=$2" >/dev/null 2>&1 || true; fi
+}
 # A PR held for unresolved threads on two loops in a row, green or not, is recorded naming the first
 # thread: the hold is why it is not merging (a red one is not rerun either), so desk-q and needs-you say
 # so rather than its checks. Cleared once it is not held for them.
@@ -331,7 +344,9 @@ feedback_stall(){ # feedback_stall <n> <key> <gate state> <count> <thread>
 }
 # Clears the ticket's merge_blocked note when it is the one this reason wrote.
 blocked_clear(){ # blocked_clear <key> <reason prefix>
-  case "$(jq -r --arg k "$1" '.tickets[$k].merge_blocked // ""' "$DESK_QUEUE" 2>/dev/null)" in
+  local at='.tickets[$k].merge_blocked'
+  [ -n "$EPIC_KEY" ] && [ "$1" = "$EPIC_KEY" ] && at='.promotion.merge_blocked'
+  case "$(jq -r --arg k "$1" "$at // \"\"" "$DESK_QUEUE" 2>/dev/null)" in
     "$2"*) queue_note "$1" null ;;
   esac
 }
@@ -532,13 +547,22 @@ close_merged(){
   open=$(printf '%s\n' "$open" | awk -F'\t' -v n="$n" '$1 != "" && $1 != n { printf "%s#%s", s, $1; s = " " }')
   if [ -n "$open" ]; then log "#$n $key left as it is: $open still open on the key"; return 0; fi
   st=$(desk-jira get "$key" --json 2>/dev/null | jq -r '.fields.status.name // empty')
-  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key already $DONE_STATE"; return 0; fi
+  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key already $DONE_STATE"; close_issues "$n" "$key"; return 0; fi
   if ! out=$(desk-jira transition "$key" "$DONE_STATE" 2>&1); then
     log "#$n $key not moved to $DONE_STATE: $(printf '%s' "$out" | head -1) — move it by hand"; return 0
   fi
   st=$(desk-jira get "$key" --json 2>/dev/null | jq -r '.fields.status.name // empty')
-  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key moved to $DONE_STATE (read back; §3 jira-close-own-merged)"
+  if [ "$st" = "$DONE_STATE" ]; then log "#$n $key moved to $DONE_STATE (read back; §3 jira-close-own-merged)"; close_issues "$n" "$key"
   else log "#$n $key transition sent but it reads ${st:-unreadable}, not $DONE_STATE — check it by hand"; fi
+}
+# close_issues <n> <key>: once the ticket is Done, each GitHub issue in this repo its web links name is
+# closed when every ticket linking it is done (linked-issues.mjs, §3 gh-close-linked-issue); each line
+# it prints is logged.
+close_issues(){
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] && log "#$1 $2 $line"
+  done < <(node "$DESK_BIN/linked-issues.mjs" "$2" --repo "$REPO" 2>&1)
 }
 
 # A §4 Merge holds routine is run once per PR head, recorded in <state>/merge-driver/routine-<n>-<sha>.*:
@@ -599,12 +623,68 @@ EOF_ROUTINES
   if [ "$head" != "$sha" ]; then log "#$n head is ${head:-unreadable}, not ${sha:0:9} where its routine ran — not merging"; return 1; fi
 }
 
-try_pr(){ # try_pr <n> <key> -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range
+# The person's instruction on a ready PR (needs-you resume, fix-tries.mjs instructionFix) leaves it open
+# for a worker to change: until pass.mjs closes that fix, its head is not yet what the person asked for,
+# and a worker that parked or failed has not done it. A queue that cannot be read holds it too.
+instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge waits on the instruction
+  local open
+  [ -f "$DESK_QUEUE" ] || return 1
+  if ! open=$(jq -r --arg k "$2" '(.tickets[$k].fix // {}) | .kind == "instruction" and (.finished | not)' "$DESK_QUEUE" 2>/dev/null); then
+    log "#$1 could not read the queue for the person's instruction — not merging it this loop"
+  elif [ "$open" = true ]; then
+    log "#$1 HELD: a worker has still to carry out the person's instruction on it — not merging until that fix is finished"
+  else
+    return 1
+  fi
+  [ "$(printf '%s' "$3" | jq -r .autoMerge)" = true ] && gh pr merge "$1" --repo "$REPO" --disable-auto >/dev/null 2>&1
+  rm -f "$SD/green-$1"
+}
+
+# An epic batch not in feature mode lands its base through one epic PR into §0 Default branch, which
+# pass.mjs opens once every child has merged and records as the queue's promotion. Out of draft it is
+# merged as a child is, under the epic's key. Holds its children carried into the base leave it to a
+# person, as pass.mjs says. -> `<n>\t<epic key>\tepic` for one to try, or nothing.
+epic_pr(){
+  local line n key carried st
+  line=$(node --input-type=module - "$DESK_BIN/batch-state.mjs" "$GATE" "$DESK_QUEUE" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [bs, gate, qf] = process.argv.slice(2);
+const { epicBatch } = await import(pathToFileURL(bs).href);
+const { promotionHolds } = await import(pathToFileURL(gate).href);
+let q = {};
+try { q = JSON.parse(readFileSync(qf, 'utf8')); } catch { process.exit(0); }
+const p = q.promotion || {};
+if (!epicBatch(q) || p.pr == null || p.merged_at) process.exit(0);
+const carried = promotionHolds(Object.values(q.tickets || {}), p.since ?? null).length > 0;
+console.log([p.pr, q.epic, carried ? 'held' : '-'].join('\t'));
+NODE
+) || return 0
+  [ -n "$line" ] || return 0
+  IFS="$TAB" read -r n key carried <<EOF_EPIC
+$line
+EOF_EPIC
+  # It runs in a $( ): what it logs goes to stderr, so only the PR's line is read.
+  if [ "$carried" = held ]; then log "epic PR #$n HELD: its children carried §4 Merge holds into $BASE_BRANCH, so a person merges it" >&2; return 0; fi
+  st=$(gh pr view "$n" --repo "$REPO" --json state,isDraft 2>/dev/null | jq -r '"\(.state) \(.isDraft)"' 2>/dev/null)
+  [ -n "$st" ] || { log "epic PR #$n could not be read — not merging it this loop" >&2; return 0; }
+  case "$st" in
+    "OPEN false") printf '%s\t%s\tepic\n' "$n" "$key" ;;
+    "OPEN true") log "epic PR #$n draft (still reviewing)" >&2 ;;
+  esac
+}
+
+try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
+  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
+  EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
-  [ "$(printf '%s' "$g" | jq -r .base)" = "$BASE_BRANCH" ] || { log "#$n is not based on $BASE_BRANCH — not the batch's to merge"; return 1; }
+  # The epic PR merges the batch base into §0 Default branch.
+  [ -n "$EPIC_KEY" ] && want=$(printf '%s' "$g" | jq -r .defaultBranch)
+  [ "$(printf '%s' "$g" | jq -r .base)" = "$want" ] || { log "#$n is not based on $want — not the batch's to merge"; return 1; }
+  # First, so nothing updates or reruns a branch a worker is on, and an armed auto-merge is disarmed red or green.
+  instruction_held "$n" "$key" "$g" && return 1
 
   holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
   met=$(printf '%s' "$g" | jq -r '(.holdsMet // [])[] | "\(.why) — \(.glob)"' | paste -sd ';' -)
@@ -724,7 +804,7 @@ EOF_RESOLVE
   # A clean review at the head stands in for a person's approval, for every PR whatever its title. Green
   # alone does not show one: only a repo whose CI runs a §4 State check reading the verdict has it in green.
   if [ -n "$REVIEW_HOLD" ]; then
-    verdict=$(head_verdict "$n")
+    verdict=$(head_verdict "$n" "$want")
     if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
     if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then
       [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
@@ -735,7 +815,7 @@ EOF_RESOLVE
     carried_from=$(printf '%s' "$verdict" | jq -r '.carried // empty')
     carried_range=$(printf '%s' "$verdict" | jq -r '.range // empty')
     if [ -n "$carried_from" ] && [ -n "$carried_range" ]; then
-      log "#$n its clean review at ${carried_from:0:9} is carried to ${sha:0:9}, not reviewed there: its own diff is unchanged, and $BASE_BRANCH's range $carried_range changed none of the files it rests on"
+      log "#$n its clean review at ${carried_from:0:9} is carried to ${sha:0:9}, not reviewed there: its own diff is unchanged, and $want's range $carried_range changed none of the files it rests on"
       # The PR says so once per head; the pass records one it said on leaving draft.
       if [ ! -e "$SD/carried-$n-$sha" ]; then
         if gh pr comment "$n" --repo "$REPO" --body "$(printf '%s' "$verdict" | jq -r .said)" >/dev/null 2>&1; then
@@ -745,7 +825,7 @@ EOF_RESOLVE
         fi
       fi
     elif [ -n "$carried_from" ]; then
-      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $BASE_BRANCH came since"
+      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $want came since"
     fi
   fi
 
@@ -767,6 +847,8 @@ EOF_RESOLVE
     fi
     if ! run_routines "$n" "$sha" "$key" "$routines"; then rm -f "$SD/green-$n"; return 1; fi
   fi
+  # Read again here: the reads above and a routine can take minutes, and the person may answer in them.
+  instruction_held "$n" "$key" "$g" && return 1
   if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
@@ -782,10 +864,15 @@ EOF_RESOLVE
       printf -- '- [%s] merged #%s at %s: %s\n' "$key" "$n" "$sha" "${grant#*"$TAB"}" >> "$DESK_STATE/batch-notes.md"
     fi
     [ -n "$waived" ] && flaky_ticket "$n" "$sha" "$g" "$key" "$waived"
-    # The merge time on the ticket, and its line in the eta history. A failure here never undoes the merge.
-    if rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
+    # The merge time on the ticket, and its line in the eta history (the epic PR's on the queue's
+    # promotion, which releases what waits on the epic). A failure here never undoes the merge.
+    if [ -n "$EPIC_KEY" ]; then
+      if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
+      else log "#$n epic PR merge not recorded on the queue — the next pass reads it from GitHub"; fi
+    elif rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
     else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
-    close_merged "$n" "$key"
+    # The epic is never transitioned: its close-out is the orchestrator's.
+    [ -n "$EPIC_KEY" ] || close_merged "$n" "$key"
     return 0
   fi
   if printf '%s' "$out" | grep -qiE 'not up to date|behind|out of date|update the branch'; then behind "$n" "$sha" "$key"
@@ -808,7 +895,9 @@ while true; do
   if [ "$rc" -eq 4 ]; then log "FAIL: gh is signed out ($(tail -1 "$GH_ERR" 2>/dev/null)) — nothing can merge until \`gh auth login\`; stopping"; exit 1; fi
   [ "$rc" -eq 0 ] || { log "could not list PRs"; pause 120 1; continue; }
   drafts=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "true" { printf "#%s ", $1 }'); [ -n "$drafts" ] && log "draft (still reviewing): $drafts"
-  ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 }')
+  ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 "\t-" }')
+  epic=$(epic_pr </dev/null)
+  [ -n "$epic" ] && ready="${ready:+$ready$'\n'}$epic"
   if [ -z "$ready" ]; then
     # A driver started on the wrong base lists nothing and would say only that, forever: name the batch
     # PRs open on any other base, so the mismatch shows in the log.
@@ -819,10 +908,10 @@ while true; do
   fi
 
   merged=""
-  while IFS="$(printf '\t')" read -r n key; do
+  while IFS="$(printf '\t')" read -r n key kind; do
     [ -n "$n" ] || continue
     # stdin from /dev/null: nothing inside may eat the list this loop is reading.
-    if try_pr "$n" "$key" </dev/null; then merged=1; release_chain </dev/null; break; fi
+    if try_pr "$n" "$key" "$kind" </dev/null; then merged=1; release_chain </dev/null; break; fi
   done <<EOF_READY
 $ready
 EOF_READY

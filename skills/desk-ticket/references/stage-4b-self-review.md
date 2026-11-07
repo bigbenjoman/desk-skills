@@ -6,7 +6,7 @@ a "below" here that this file does not hold points there. Posting the report is 
 
 | # | Stage | What happens |
 |---|---|---|
-| 4b | Self-review | Run §4 Local review command (`desk-env get local-review`) on the branch, **before** Stage 5, so a finding cannot invalidate screenshots already taken. With `none`, the stage is a stated skip (below). Two preconditions, each a silent false clean otherwise: where the command is a repo-local skill, the tree must contain it (rebase onto `<default>` rather than skipping), and an empty diff is a stated skip, never a clean run. **Fix what the review confirms, then report**; do not stop and ask first. Apply every confirmed P0 and P1, and any P2 whose fix is mechanical, as their own commit. Produce the `SELF-REVIEW` block as a record of what was done, with an outcome against every finding. Re-run after fixes, **at most three rounds**: each fix is itself unreviewed code, so only a round that finds nothing has reviewed everything. From round 2 a round reads only the fix range, the commits since the round before (`desk-review`'s fix-range rules), and only P0 and P1 block: a round-2 P0 or P1 is fixed and round 3 runs. If round 3 finds a P0 or P1, stop: report each, do not open the PR, and let the user decide. If round 2 or 3 finds only P2s, they are **carried**, not a stop: open the PR with them under *Carried review findings* (`desk-pr`; more than five go to one follow-up ticket where §3 `jira-create` is `yes`). **Three things also stop and wait**, because no refutation settles them: a finding whose fix changes product, design or catalog behaviour and is an ask-category call or has no recommendation (otherwise take the recommended fix and log it: "Ask or take", below); **a fix that grows**: it needs a new file other than its own spec, or a file the ticket's diff does not already touch (Moving equivalent sites onto a helper this PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR body. Growth means new behaviour, not new call sites.); and any finding you could not confirm because the refutation pass did not run. |
+| 4b | Self-review | Run the review `desk-env review-cmd` prints (§4 Local review command, or `/desk-review` where only its verdict can read clean, below) on the branch, **before** Stage 5, so a finding cannot invalidate screenshots already taken. With `none`, the stage is a stated skip (below). Two preconditions, each a silent false clean otherwise: where the command is a repo-local skill, the tree must contain it (rebase onto `<default>` rather than skipping), and an empty diff is a stated skip, never a clean run. **Fix what the review confirms, then report**; do not stop and ask first. Apply every confirmed P0 and P1, and any P2 whose fix is mechanical, as their own commit. Produce the `SELF-REVIEW` block as a record of what was done, with an outcome against every finding. Re-run after fixes, **at most three rounds**: each fix is itself unreviewed code, so only a round that finds nothing has reviewed everything. From round 2 a round reads only the fix range, the commits since the round before (`desk-review`'s fix-range rules), and only P0 and P1 block: a round-2 P0 or P1 is fixed and round 3 runs. If round 3 finds a P0 or P1, stop: report each, do not open the PR, and let the user decide. If round 2 or 3 finds only P2s, they are **carried**, not a stop: open the PR with them under *Carried review findings* (`desk-pr`; more than five go to one follow-up ticket where §3 `jira-create` is `yes`). **Three things also stop and wait**, because no refutation settles them: a finding whose fix changes product, design or catalog behaviour and is an ask-category call or has no recommendation (otherwise take the recommended fix and log it: "Ask or take", below); **a fix that grows**: it needs a new file other than its own spec, or a file the ticket's diff does not already touch (Moving equivalent sites onto a helper this PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR body. Growth means new behaviour, not new call sites.); and any finding you could not confirm because the refutation pass did not run. |
 
 **Self-review (Stage 4b).** §4 Local review command is the repo's own review: often a repo-local
 skill that reviews the branch against the house bar (§4 What review here consistently asks for, `desk-env get review-asks`) in
@@ -15,6 +15,12 @@ only resolves in a tree that contains it, so a checkout branched before it lande
 first. If it still does not resolve after the rebase, the skill list was read when the session
 started: restart rather than working around it. The command failing to resolve is never a reason to
 skip the stage.
+
+**Where §4 Clean review verdict (`desk-env get clean-verdict`) is in desk-review's counts form, the
+review you run and post carries a verdict marker.** Only a `desk-review:verdict` marker reads clean under that row, so a command that
+posts none can never clear the PR: `desk-env review-cmd` then prints `/desk-review`, and that is the
+review this stage runs and Stage 7 posts. The row's own command stays an extra review you may also
+run. `/desk-setup` offers to settle the two rows.
 
 **§4 Local review command `none`** means this repo has no local review. Stage 4b is then a stated
 skip, never an improvised review: the `SELF-REVIEW` block says `skipped: §4 Local review command is
@@ -36,6 +42,9 @@ does:
 ```bash
 codex exec --sandbox read-only --skip-git-repo-check "Reply with exactly: CODEX_OK"
 ```
+
+With the `codex` lever on (`desk-env levers codex`), the check is `desk-codex probe`, which reuses
+a pass under an hour old, and every codex call goes through `desk-codex` (desk-review's Phase 0).
 
 **Not `codex login status`**: it reports logged in on a seat that is out of usage, so it passes
 while every refutation fails. Only making codex answer tells you anything.

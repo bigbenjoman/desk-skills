@@ -48,6 +48,7 @@ How to resume, by what was parked:
 | any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly. A requeue moves it aside for you |
 | a failed worktree setup | fix the cause the setup log names, then requeue; the failed worktree was already removed |
 | a park whose recorded `clears_when` now holds | nothing: the next pass settles it by these rules (lane C, or a lane D parked at triage on its design, left for a person, its own PR merged recorded done, otherwise requeued) and says so under `clears-when:` |
+| a worker's park naming only §4 Live reads entries (`desk-env list live-reads`) and the not-reached tail | nothing: the pass runs each on the host from its own clean checkout of the default branch (`<state>/live-read-checkout`, fetched before each run; never the ticket's worktree), saves up to 1 MiB of its output to `<state>/fixtures/<ticket>/<name>.json` and requeues it; one that exits non-zero, prints more, or finds that checkout unable to reach the default branch comes back as a park with the reason, which is the person's |
 | a worker's push or draft PR refused, with its `AUTOPILOT_PR_BODY_BEGIN:`/`END:` body in the log | nothing, where §3 `git-push` and `pr-open` are `yes`: the next pass pushes the branch as it stands (never a force-push), opens the draft from that body and records the ticket done on it, naming what else the park listed. A dirty worktree, an existing PR or a refused push leaves it parked, said once under `recovered:` |
 | a branch that adds nothing to `<default>`, where a merged PR names the ticket | nothing: the next pass records it done on that PR, removes its worktree and local branch, and deletes it on origin only where §3 `branch-delete` is `yes`. A dirty worktree leaves it parked |
 | a take call parked with `AUTOPILOT_PARK_RECOMMENDS` | nothing: the next pass answers it with the recommended option, requeues it and logs the decision (*Ask or take*); the same park again after that answer is the person's |
@@ -134,6 +135,10 @@ Past the limit, a killed worker whose PR is open is recorded done on it, as a wo
 with no marker is. A fix try queued to resume its own session is never held as WORKTREE IN USE for
 the uncommitted changes or unpushed commits it left: they are its own.
 The count is the queue's `resumes`; a requeue starts a fresh session and clears a pending resume.
+
+**A worker on the person's instruction is never recorded done on an open PR alone.** Ended with no
+marker, or killed past the limit, it parks with the fix left open, so the merge driver keeps holding
+the PR. A requeue sends the same instruction to a new worker.
 
 ## Resuming a dead worker's half-finished worktree
 

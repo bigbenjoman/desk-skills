@@ -26,7 +26,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, verdictCarries, restsOnCarries, restsOn, carryComment, pairs, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { latestReview, verdictAt, verdictAtHead, verdictCarries, restsOnCarries, restsOn, carryComment, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { pairs, leverOn } from './desk-env.mjs';
 import { LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
@@ -119,7 +120,6 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
     const head = payload?.data?.repository?.pullRequest?.headRefOid;
     // Fetched only for a verdict at an older head, as the pass does before it asks the same thing, and
     // carried as the pass carries it: under the review-reuse lever, only while what it rests on holds.
-    const { leverOn } = await import('./desk-env.mjs');
     const reuse = leverOn('review-reuse');
     const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && (reuse
       ? restsOnCarries({ from: sha, head, base: `origin/${base}`, files: restsOn(body), git })

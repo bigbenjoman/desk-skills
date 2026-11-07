@@ -9,7 +9,9 @@
 //   - a file in a shared package: a JS workspace package another workspace package depends on, whose
 //     dependants' tests sit in other projects that a per-project related run never looks at
 //   - a deleted or renamed file: its importers cannot be found from a path that no longer exists
-// Pure apart from workspacePackages(), which reads the workspace manifests under a root.
+// A changed file in a workspace package no configured suite holds (a new app, say) would run nothing,
+// so uncoveredWorkspaces() names those packages, to be run by their own package.json test script.
+// Pure apart from workspacePackages() and packageManager(), which read files under a root.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, posix } from 'node:path';
 
@@ -42,7 +44,7 @@ export function parseNameStatus(text) {
 
 // The workspace globs of a JS monorepo (pnpm-workspace.yaml's `packages:`, else package.json's
 // `workspaces`), each expanded to the directories under the root that hold a package.json.
-// -> [{ dir, name, deps: [names] }]
+// -> [{ dir, name, deps: [names], test: its package.json test script | null }]
 export function workspacePackages(root) {
   const read = (p) => { try { return readFileSync(join(root, p), 'utf8'); } catch { return null; } };
   let globs = [];
@@ -78,7 +80,8 @@ export function workspacePackages(root) {
     try {
       const p = JSON.parse(text);
       const deps = Object.keys({ ...p.dependencies, ...p.devDependencies, ...p.peerDependencies, ...p.optionalDependencies });
-      out.push({ dir, name: p.name ?? null, deps });
+      const test = typeof p.scripts?.test === 'string' && p.scripts.test.trim() ? p.scripts.test.trim() : null;
+      out.push({ dir, name: p.name ?? null, deps, test });
     } catch { /* an unreadable manifest is no package */ }
   }
   return out;
@@ -126,20 +129,28 @@ export const takesFiles = (cmd) => /(^|[\s/])(vitest|jest)(\s|$)/.test(cmd);
 // §4 Related tests is never skipped.
 // -> [{ dir, cmd, files: [paths relative to dir] }]
 const depth = (dir) => (dir === '.' ? 0 : dir.split('/').length);
+// The directory, among the items', that holds `path` most closely, and `path` relative to it.
+// -> { dir, rel } | null when no item's directory holds it
+export function nearestDir(items, path) {
+  const holders = items.filter((i) => under(path, i.dir));
+  if (!holders.length) return null;
+  const dir = holders.reduce((a, i) => (depth(i.dir) > depth(a) ? i.dir : a), holders[0].dir);
+  return { dir, rel: dir === '.' ? path : path.slice(dir.length + 1) };
+}
 export function runs(decision, { relatedItems = [], fullItems = [] } = {}) {
   if (decision.scope === 'none') return [];
   if (decision.scope === 'full') return fullItems.map((i) => ({ dir: i.dir, cmd: i.cmd, files: [] }));
   const related = new Map();
   const full = new Set();
   for (const f of decision.files) {
-    const holders = [...relatedItems, ...fullItems].filter((i) => under(f, i.dir));
-    if (!holders.length) continue;
-    const dir = holders.reduce((a, i) => (depth(i.dir) > depth(a) ? i.dir : a), holders[0].dir);
+    const near = nearestDir([...relatedItems, ...fullItems], f);
+    if (!near) continue;
+    const { dir } = near;
     const rel = relatedItems.filter((i) => i.dir === dir);
     const unit = fullItems.filter((i) => i.dir === dir);
     for (const i of rel) {
       if (!related.has(i)) related.set(i, []);
-      related.get(i).push(dir === '.' ? f : f.slice(dir.length + 1));
+      related.get(i).push(near.rel);
     }
     if (unit.length > rel.length) for (const i of unit) full.add(i);
   }
@@ -147,4 +158,37 @@ export function runs(decision, { relatedItems = [], fullItems = [] } = {}) {
     ...relatedItems.filter((i) => related.has(i)).map((i) => ({ dir: i.dir, cmd: i.cmd, files: takesFiles(i.cmd) ? related.get(i) : [] })),
     ...fullItems.filter((i) => full.has(i)).map((i) => ({ dir: i.dir, cmd: i.cmd, files: [] })),
   ];
+}
+
+// The workspace packages (from workspacePackages) holding a changed file that no suite runs() picks
+// holds: with scope related, no §4 Related or Unit tests item's directory; with scope full, no Unit
+// tests item's. Each file counts toward the deepest package holding it. -> [{ dir, name, test }]
+export function uncoveredWorkspaces(decision, pkgs, { relatedItems = [], fullItems = [] } = {}) {
+  if (decision.scope === 'none') return [];
+  const items = decision.scope === 'full' ? fullItems : [...relatedItems, ...fullItems];
+  const hit = new Set();
+  for (const f of decision.files) {
+    const holders = pkgs.filter((p) => under(f, p.dir));
+    if (!holders.length || nearestDir(items, f)) continue;
+    hit.add(holders.reduce((a, p) => (depth(p.dir) > depth(a.dir) ? p : a)));
+  }
+  return pkgs.filter((p) => hit.has(p)).map((p) => ({ dir: p.dir, name: p.name, test: p.test }));
+}
+
+// The package manager that runs a workspace's test script: §4 Package manager's first word where it
+// is set, else the one the root lockfile belongs to, else npm.
+const PM_LOCKS = [['pnpm-lock.yaml', 'pnpm'], ['yarn.lock', 'yarn'], ['bun.lock', 'bun'], ['bun.lockb', 'bun'], ['package-lock.json', 'npm']];
+export function packageManager(root, configured) {
+  const word = /^[A-Za-z0-9][A-Za-z0-9._+-]*/.exec(String(configured ?? '').trim())?.[0];
+  if (word && !/^(none|todo)$/i.test(word)) return word;
+  for (const [file, pm] of PM_LOCKS) { try { statSync(join(root, file)); return pm; } catch { /* not this one */ } }
+  return 'npm';
+}
+// What runs a workspace package's own test script, in its directory. A Vitest or Jest script gets the
+// worker cap (`cap`, config §3b) here, since the command alone does not show the runner.
+export function workspaceTestCmd(pm, script = '', cap = null) {
+  const cmd = `${pm} run test`;
+  const n = /^\s*([1-9][0-9]*)\b/.exec(String(cap ?? ''))?.[1];
+  if (!n || !takesFiles(String(script))) return cmd;
+  return `${cmd}${pm === 'npm' ? ' --' : ''} --maxWorkers=${n}`;
 }

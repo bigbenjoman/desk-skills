@@ -9,7 +9,7 @@
 // feature-mode.md) with the person's plan approval moved to needs-you. Anything that fails before the
 // batch is handed over discards it (batch.mjs discard), so a refusal leaves nothing behind.
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
@@ -31,6 +31,9 @@ const TEXT_MAX = 8000;
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
 const lastLine = (r) => `${r.stderr ?? ''}${r.stdout ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `exited ${r.status ?? r.signal}`;
 const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+export const elapsed = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`; };
+// The progress line for a triage of `key` that left record `rec`, or none, and took `ms`.
+export const triageDone = (key, rec, ms) => `triage: done ${key} ${rec ? `lane ${rec.lane ?? '?'}` : 'no record'} (${elapsed(ms)})`;
 
 // The environment that points queue.mjs, triage.sh, expand-parent and plan-batch at batch `epic`.
 function batchEnv(epic) {
@@ -40,6 +43,19 @@ function batchEnv(epic) {
 }
 const run = (cmd, args, env, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', env, maxBuffer: 64 << 20, ...opts });
 const node = (script, args, env) => run(process.execPath, [join(HERE, script), ...args], env);
+// A run that leaves the event loop free, so what else is in flight can say it finished: a promise of
+// its result, as spawnSync gives it.
+function runLater(cmd, args, env, opts = {}) {
+  return new Promise((resolve) => {
+    const out = { stdout: '', stderr: '' };
+    const c = spawn(cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    c.stdout?.setEncoding('utf8').on('data', (d) => { out.stdout += d; });
+    c.stderr?.setEncoding('utf8').on('data', (d) => { out.stderr += d; });
+    c.on('error', (error) => resolve({ ...out, status: null, error }));
+    c.on('close', (status, signal) => resolve({ ...out, status, signal }));
+  });
+}
+export const triageRun = (key, env) => runLater(join(HERE, 'triage.sh'), [key], env);
 
 // In a batch's state from its start until it is handed to the supervisor. A start killed in between
 // (the supervisor's intake timeout) never reaches its discard, so the next one finds this left behind
@@ -300,16 +316,17 @@ export function readDraft(text) {
 }
 
 // One headless session with no tools, answering `prompt`: the spawn result.
-const headless = (claude, prompt, env) => run(claude, ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
-  '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)], env, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+const headlessArgs = (prompt) => ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
+  '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)];
+const headless = (claude, prompt, env) => run(claude, headlessArgs(prompt), env, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
 
 // One headless session drafts the plan: {plan} or {why}.
-function draft({ epic, state, children, env, claude }) {
+async function draft({ epic, state, children, env, claude }) {
   const epicText = run('desk-jira', ['get', epic], env);
   const expansion = readJson(join(state, 'expansion.json'), {});
   const prompt = draftPrompt({ epic, epicText: epicText.status === 0 ? epicText.stdout : '', criteria: expansion.criteria, children, fields: fieldsSection(DRAFT_FIELDS, env) });
   writeFileSync(join(state, 'plan-draft.prompt.md'), prompt);
-  const r = headless(claude, prompt, env);
+  const r = await runLater(claude, headlessArgs(prompt), env, { timeout: DRAFT_TIMEOUT_MS });
   if (r.error || r.status !== 0) return { why: `the plan drafter failed (${lastLine(r)})` };
   const p = readDraft(r.stdout);
   return p.why ? p : { plan: { epic, spine: null, draft: p.draft, owners: p.owners, contributors: p.contributors, untestable: p.untestable }, cost: p.cost };
@@ -336,8 +353,10 @@ export const planFile = (state) => join(state, 'plan.md');
 export const planQuestion = (epic, n, path, feature, ask = null) => `${FEATURE_PLAN_PREFIX}: ${feature ? 'the spine and owner table' : 'the plan'} for ${epic} ${feature ? 'are' : 'is'} drafted, with ${n} ${n === 1 ? 'child' : 'children'} held behind it${ask ? `, but ${ask}` : ''}: read ${path}, then ${ask ? 'edit or discard it' : 'start, edit or discard it'}`;
 
 // Starts epic `key`'s feature batch, triaged rec `rec` (its `branch` is the feature branch), and leaves
-// its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind.
-export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
+// its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind, and
+// carries `limited`, the child's triage.sh run, when that triage stopped at a usage limit (exit 3).
+// `say` is called with each of `lines` as it happens, and as each child's triage starts and ends.
+export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say = () => {} } = {}) {
   const branch = rec?.branch;
   if (!branch) return { why: `its triage record names no branch for the feature batch: run /desk-autopilot ${key}` };
   const noBranch = ensureBranch(branch);
@@ -348,7 +367,9 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   if (st.status !== 0) return { why: lastLine(st).replace(/^batch: /, '') };
   mkdirSync(state, { recursive: true });
   writeFileSync(join(state, START_MARK), `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
-  const lines = [`started feature batch ${key} on ${branch}, beside the standing batch`];
+  const lines = [];
+  const tell = (line) => { lines.push(line); say(line); };
+  tell(`started feature batch ${key} on ${branch}, beside the standing batch`);
   const discard = (why) => {
     const d = node('batch.mjs', ['discard', key], env);
     return { why: `${why}; batch ${key} ${d.status === 0 ? 'discarded' : `not discarded (${lastLine(d)})`}` };
@@ -362,9 +383,13 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
 
   const recs = {};
   for (const c of children) {
-    const t = run(join(HERE, 'triage.sh'), [c], env);
+    const began = Date.now();
+    say(`triage: started ${c} in batch ${key}`);
+    // eslint-disable-next-line no-await-in-loop
+    const t = await triageRun(c, env);
     const r = t.status === 0 ? readJson(join(state, 'triage', `${c}.json`), null) : null;
-    if (!r) return discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`);
+    say(triageDone(c, r, Date.now() - began));
+    if (!r) return { ...discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`), ...(t.status === 3 ? { limited: t } : {}) };
     recs[c] = r;
   }
   const never = untriggeredOn(branch, children.map((c) => recs[c].branch ?? null));
@@ -375,10 +400,10 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
   const wantsPlan = wantsSpine(v, key);
   let ask = null;
   if (wantsPlan) {
-    const d = draft({ epic: key, state, env, claude, children: children.map((c) => ({ key: c, summary: recs[c].summary, files: recs[c].files_in_scope })) });
+    const d = await draft({ epic: key, state, env, claude, children: children.map((c) => ({ key: c, summary: recs[c].summary, files: recs[c].files_in_scope })) });
     if (d.why) return discard(d.why);
     writeFileSync(join(state, 'feature.json'), `${JSON.stringify(d.plan, null, 2)}\n`);
-    lines.push(`drafted ${key}'s spine and owner table headless${d.cost != null ? ` ($${d.cost.toFixed(2)})` : ''}`);
+    tell(`drafted ${key}'s spine and owner table headless${d.cost != null ? ` ($${d.cost.toFixed(2)})` : ''}`);
     v = planOf(children, env);
     if (v.why) return discard(v.why);
     const spine = readSpine(d.plan.draft, env);
@@ -397,7 +422,7 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude' } = {}) {
     ?? q(['set-batch', 'supervised=true']);
   if (why) return discard(`its batch could not be written (${why})`);
   rmSync(join(state, START_MARK), { force: true });
-  lines.push(`${key}'s ${children.length} ${children.length === 1 ? 'child is' : 'children are'} held behind it, and its plan waits for you in /desk-needs-you; the batch is handed to the supervisor`);
+  tell(`${key}'s ${children.length} ${children.length === 1 ? 'child is' : 'children are'} held behind it, and its plan waits for you in /desk-needs-you; the batch is handed to the supervisor`);
   return { batch: key, children, lines };
 }
 
