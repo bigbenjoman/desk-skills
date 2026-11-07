@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { modelTier, parseWorkerModels } from '../desk/bin/desk-env.mjs';
+import { modelTier, parseWorkerEffort, parseWorkerModels } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -23,6 +23,17 @@ t('lane A, no size: high', modelTier(rec('A', null)), 'high');
 t('lane A, size missing from the record: high', modelTier({ lane: 'A' }), 'high');
 t('lowercase size reads the same', modelTier(rec('A', 's')), 'standard');
 t('no record at all: high', modelTier(), 'high');
+
+// Config §3b "Worker effort"; the launch arguments it gives run in test_worker_tools.mjs.
+const effort = (...items) => { try { return JSON.stringify(parseWorkerEffort(items)); } catch (e) { return e.message; } };
+t('effort: none names no start', effort('none'), '{}');
+t('effort: pairs in one span', effort('0=medium 4b=high task=low resume=max 9=xhigh'), '{"0":"medium","9":"xhigh","4b":"high","task":"low","resume":"max"}');
+t('effort: pairs in two spans, or split by a comma', effort('0=low', '3=high, 7=low'), '{"0":"low","3":"high","7":"low"}');
+t('effort AC4: an unknown value is refused, naming it and the row', /Worker effort.*unknown effort `turbo`/.test(effort('0=medium 4b=turbo')), true);
+t('effort AC4: the CLI\'s case is not guessed at', /unknown effort `High`/.test(effort('0=High')), true);
+t('effort: an unknown start is refused, naming it', /unknown start `2`/.test(effort('2=low')), true);
+t('effort: a word that is not a pair is refused', /`medium` is not a pair/.test(effort('medium')), true);
+t('effort: a start named twice is refused', /start `3` is named twice/.test(effort('3=low 3=high')), true);
 
 const models = (v) => { try { return JSON.stringify(parseWorkerModels(v)); } catch (e) { return `refused: ${/Worker models/.test(e.message) ? 'names the row' : e.message}`; } };
 t('default: no model passed', models('default'), '{"off":true}');

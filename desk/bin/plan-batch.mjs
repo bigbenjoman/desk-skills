@@ -13,7 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget } from './desk-env.mjs';
+import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn } from './desk-env.mjs';
 import { placement } from './cloud-worker.mjs';
 import { SIZES } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
@@ -358,7 +358,8 @@ try { location = workerLocation(); budget = location === 'cloud' ? workerBudget(
 const featureRole = (k) => (!feature?.on ? null
   : k === feature.spine ? 'it is the feature spine, whose specs are checked in a local worktree before it parks for approval'
     : Object.values(feature.plan?.owners ?? {}).includes(k) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null);
-const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(r.ticket) })]));
+const effort = location === 'cloud' && leverOn('effort');
+const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(r.ticket), effort })]));
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {

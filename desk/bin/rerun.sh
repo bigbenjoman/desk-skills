@@ -2,7 +2,7 @@
 # CI reruns, one implementation for both callers: merge-driver.sh sources it for a ready PR, and
 # pass.mjs runs it for a draft whose red checks were all cancelled or timed out (undraft.mjs):
 #   RERUN_PERM=<§3 ci-rerun> rerun.sh <driver state dir> <owner/repo> <n> <sha>   with the gate JSON on stdin,
-#   { "gate": { "pending": [...], "failedRuns": [...], "failedJobs": [{ runId, jobId, name }],
+#   { "gate": { "pending": [...], "failedRuns": [...], "failedJobs": [{ runId, jobId, name, why? }],
 #               "failing": [{ name, runId }], "reasons": [...], "stateFailing": [{ name, kind, why, rerunWith? }] } }
 # RERUN_PERM unset reruns nothing, as `no` does. A check in stateFailing (§4 State checks) is logged and
 # never rerun: only the rest of `failing` counts here.
@@ -30,7 +30,7 @@ EOF_STATE
   pend=$(printf '%s' "$g" | jq -r '.gate.pending | length')
   [ "$pend" = 0 ] || { log "#$1 red, but $pend check(s) still running — waiting for them before any rerun"; return; }
   ids=$(printf '%s' "$g" | jq -r '.gate.failedRuns[]?')
-  jobs=$(printf '%s' "$g" | jq -r '.gate.failedJobs[]? | "\(.runId)\t\(.jobId)\t\(.name)"')
+  jobs=$(printf '%s' "$g" | jq -r '.gate.failedJobs[]? | "\(.runId)\t\(.jobId)\t\(.name)\t\(.why // "not the run, which holds a red state check")"')
   [ -n "$ids" ] || [ -n "$jobs" ] || { log "#$1 red with nothing a rerun could fix ($(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')) — report it"; return; }
   # At most twice per check per head: a check red after two reruns is red, not flaky.
   while IFS= read -r name; do
@@ -52,9 +52,9 @@ EOF_NAMES
     else log "#$1 rerun of $rid refused"; all_ok=""; fi
   done
   # A run that also holds a red state check: each other red job on its own, so the state check is not rerun.
-  while IFS=$'\t' read -r rid jid name; do
+  while IFS=$'\t' read -r rid jid name why; do
     [ -n "$jid" ] || continue
-    log "#$1 red + completed -> rerun job $jid of run $rid (\"$name\"), not the run, which holds a red state check"
+    log "#$1 red + completed -> rerun job $jid of run $rid (\"$name\"), $why"
     if gh run rerun --job "$jid" --repo "$REPO" >/dev/null 2>&1; then echo "$now" > "$cd_file"; ok="$ok$name
 "
     else log "#$1 rerun of job $jid refused"; all_ok=""; fi

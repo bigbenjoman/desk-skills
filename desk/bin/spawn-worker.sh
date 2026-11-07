@@ -85,6 +85,19 @@ MODEL="${AUTOPILOT_MODEL:-}"
 MODEL_ARGS=()
 [ -n "$MODEL" ] && MODEL_ARGS=(--model "$MODEL")
 
+# What this session starts as, and the effort config §3b Worker effort names for it. With the effort
+# lever off it is `default` and no --effort is passed. A malformed row is refused here, before the
+# preflight, naming the value, whichever session is starting: the preflight sets no start of its own.
+START="${AUTOPILOT_START_STAGE:-0}"
+[ -n "${AUTOPILOT_TASK:-}" ] && START=task
+[ -n "${AUTOPILOT_RESUME:-}" ] && START=resume
+if ! EFFORT="$(node "$DESK_ENV_MJS" effort "$START" 2>/dev/null </dev/null)"; then
+  echo "FAIL: $(node "$DESK_ENV_MJS" effort "$START" 2>&1 >/dev/null </dev/null) — refusing to spawn $TICKET" >&2
+  exit 1
+fi
+EFFORT_ARGS=()
+[ "$EFFORT" != default ] && EFFORT_ARGS=(--effort "$EFFORT")
+
 DRY_NOTE=""
 if [ -n "${AUTOPILOT_DRY_RUN:-}" ]; then
   DRY_NOTE=" This is a DRY RUN: pushing, opening a PR, posting a review and every Jira write are blocked on purpose. Commit locally, do everything else in full, then print AUTOPILOT_DONE saying what you would have pushed. Do not treat those blocks as errors to work around."
@@ -139,7 +152,10 @@ desk_tool_args none || { echo "FAIL: could not read the tool list (worker-tools.
 NO_TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})
 desk_tool_args worker || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
 TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})
-[ -d "$DESK_MEMORY_DIR" ] && ADD_DIRS+=(--add-dir "$DESK_MEMORY_DIR")
+# With the memory lever on (config §3b Phase 0 levers), auto-memory is off for the worker and its
+# folder is not granted: a fresh session's brief carries a digest of the index instead (below).
+MEMORY_LEVER="$(node "$DESK_ENV_MJS" levers memory 2>/dev/null </dev/null || true)"
+[ "$MEMORY_LEVER" != on ] && [ -d "$DESK_MEMORY_DIR" ] && ADD_DIRS+=(--add-dir "$DESK_MEMORY_DIR")
 
 if [ -n "${AUTOPILOT_PREFLIGHT:-}" ]; then
   CANARY="$DESK_REPO_ROOT/.preflight-should-not-exist.tmp"
@@ -332,6 +348,24 @@ if [ -n "$BRIEFING" ] && [ -f "$BRIEFING" ] && [ -z "${AUTOPILOT_RESUME:-}" ]; t
 $(cat "$BRIEFING")"
   if [ -n "${AUTOPILOT_TASK:-}" ]; then SYSTEM="$SYSTEM$BRIEF_TEXT"; else PROMPT="$PROMPT$BRIEF_TEXT"; fi
 fi
+# The memory digest goes where the briefing does, and its size into the log after the preflight's
+# cost line. No index is no digest; a resumed session already holds the one it started with.
+if [ "$MEMORY_LEVER" = on ] && [ -z "${AUTOPILOT_RESUME:-}" ]; then
+  DIGEST="$(node "$BIN/memory-digest.mjs" "$DESK_MEMORY_DIR" --log "$LOG" 2>/dev/null </dev/null || true)"
+  if [ -n "$DIGEST" ]; then
+    DIGEST="
+
+$DIGEST"
+    if [ -n "${AUTOPILOT_TASK:-}" ]; then SYSTEM="$SYSTEM$DIGEST"; else PROMPT="$PROMPT$DIGEST"; fi
+  fi
+fi
+
+# The desk commit and levers this start runs on, and the bytes it is handed, one line per start for
+# phase0-report.mjs, and its start, model and effort into the log for worker-cost.mjs. A record that
+# cannot be written never stops a spawn.
+node "$BIN/phase0-report.mjs" spawn-line --ticket "$TICKET" --session "$SID" --stage "$START" --model "${MODEL:-default}" \
+  --effort "$EFFORT" --log "$LOG" --system-bytes "$(printf '%s' "$SYSTEM" | wc -c | tr -d ' ')" --prompt-bytes "$(printf '%s' "$PROMPT" | wc -c | tr -d ' ')" \
+  >> "$STATE/workers/$TICKET.runs.jsonl" 2>/dev/null || true
 
 cd "$WT"
 # Marks the worker as headless for desk-jira, which then refuses config §4 Priorities only you set.
@@ -353,6 +387,7 @@ desk_detach claude -p "$PROMPT" \
   --exclude-dynamic-system-prompt-sections \
   ${BUDGET_ARGS[@]+"${BUDGET_ARGS[@]}"} \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+  ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} \
   >> "$LOG" 2>&1 < /dev/null &
 disown $! 2>/dev/null || true
 

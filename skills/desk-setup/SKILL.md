@@ -154,10 +154,19 @@ together then, as one page and one push. For worker models, say that the row can
 `finder=<alias>` for self-review finders and a `text=<model>` for the Stage 7 PR and Jira session,
 and that both are unset by default, so finders and that session run on the worker's model: another
 model is set only after the eval harness (`desk/bin/skill-eval.mjs`) has run a review task
-set on each model and the findings held. Never set either on the user's behalf. For worker location,
+set on each model and the findings held. Never set either on the user's behalf. For worker effort,
+Recommended is `none`: say that the row is read only with the `effort` lever on, when each session
+runs at the effort named for how it starts and at `medium` where none is named, that every ticket
+then runs locally, since a cloud session cannot be given an effort, and that the way in
+is every start at `medium`, then one start lowered at a time against the Phase 0 baseline (at worker
+location `cloud`, against that all-`medium` stretch, since the first step moves tickets here). For worker location,
 Recommended is `local`; say that `cloud` runs each ticket that needs nothing on this computer in a
 Claude Code cloud session, whose tokens and cost are not reported, so its cost cannot be compared
 with local.
+
+**Phase 0 levers are not asked.** A new config gets `none` (every lever off). On a re-run keep what
+the row holds, never turning a lever on or off for the user, and run `desk-env levers`: say its `on:`
+line, and any `unknown:` line it prints in one sentence naming each value, which is read as off.
 
 **The dev-server port is read, not recalled.** Run `desk-env ports --cap <the cap half of the
 autopilot worker concurrency answer>` (not the test worker cap): it reads every config under `~/.config/desk/repos/` and prints each repo's port and worker block
@@ -185,6 +194,8 @@ location: a path only, never the token.
 - Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.
+- A `NODEV` line from `desk-env drift` is offered as a §4 Dev server item for that directory, as
+  step 1's *Dev server* proposes it, whether or not the user asked to change the row.
 - Re-detect §4 GitHub and CI on every re-run (protection and required checks change) and show any
   difference as a before/after.
 - Run §4 step 1 (the deny-only plan) on every re-run; it is a no-op when nothing is missing.

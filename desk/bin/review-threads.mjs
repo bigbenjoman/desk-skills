@@ -26,7 +26,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, verdictCarries, pairs, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { latestReview, verdictAt, verdictAtHead, verdictCarries, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { pairs } from './desk-env.mjs';
 import { LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){

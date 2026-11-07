@@ -39,8 +39,8 @@ import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT } from './gate.mjs';
-import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy, triesMade } from './fix-tries.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since } from './gate.mjs';
+import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
@@ -68,11 +68,6 @@ const STATE_W = 13;
 const pad = (s, n) => { s = String(s ?? ''); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };
 const rpad = (s, n) => { s = String(s ?? ''); return ' '.repeat(Math.max(0, n - s.length)) + s; };
 const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
-// A span as "4m", "3h 24m" or, from a day, "3d 4h".
-const since = (ms) => {
-  const m = Math.floor(ms / 60000);
-  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor(m / 60) % 24}h`;
-};
 const ago = (ms) => (ms == null ? 'never' : ms < 60000 ? 'just now' : `${since(ms)} ago`);
 // A span as `since` writes it, with a zero second unit dropped: "2h 5m", "3h", "1d 1h".
 const span = (ms) => since(ms).replace(/ 0[mh]$/, '');
@@ -131,6 +126,9 @@ const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.bat
 // No pass clears that, so it needs the person until a pass finds the worktree clean and drops the record.
 export const worktreeBusy = (t) => (t?.state === 'triaged' && t.worktree_busy?.why ? t.worktree_busy : null);
 export const worktreeBusyText = (w) => `worktree in use: ${w.why} · commit, push or discard it`;
+// The park a requeue cleared on a ticket its worktree then held back, before any worker started on it
+// (queue.mjs keeps it as `prev_park`; a spawn sets `session_id`): why its last worker stopped.
+export const busyPark = (t) => (worktreeBusy(t) && t.session_id == null && t.prev_park?.question ? t.prev_park : null);
 export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
 export const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
@@ -262,7 +260,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // What no fix try can move: a check only a person clears, or one still red after both tries.
   const stuck = stuckOf(t, ctx);
   if (stuck) return needs({ code: 'stuck', stuck }, [stuck.why, null]);
-  if (ps.isDraft === true) return draftNeed(q, t, needs, merging);
+  if (ps.isDraft === true) return draftNeed(q, t, needs, merging, now);
   // The merge driver records a PR into the default branch under §4 Merge holds (`merge hold: <why> —
   // <glob>, …`, then `; routine `<command>` not run: …` or `… failed at <sha> (exit <n>): <step>` where
   // the hold names one) and leaves it for a person, so the item says the hold's step.
@@ -362,11 +360,21 @@ function runningCheck(checks, now) {
   return [`${c.name} ${c.runner ? 'running' : 'queued'}${age}`, null];
 }
 
+// The unfinished check pending longest, as { name, age }, once that is PENDING_LIMIT_MS or more; else null.
+function pendingPast(checks, now) {
+  const ages = (checks ?? []).filter((c) => c.status !== 'completed' && startedMs(c) != null).map((c) => ({ name: c.name, age: now - startedMs(c) }));
+  const c = ages.sort((a, b) => b.age - a.age)[0];
+  return c && c.age >= PENDING_LIMIT_MS ? c : null;
+}
+
 // A draft PR: merging while the pass takes it out of draft (checks still running, or out of draft at
 // its next pass), else what the person has to do first, as the pass recorded it (undraft.mjs).
-function draftNeed(q, t, needs, merging) {
+function draftNeed(q, t, needs, merging, now = Date.now()) {
   const u = t.undraft;
   if (heldDraft(t)) return needs({ code: 'held' }, ['held by you in draft', null], [' · undraft it to release it', null]);
+  // A check stuck pending: its job re-run, or its run cancelled so the next pass re-runs it.
+  if (u?.call === 'cancel') return merging(['draft', null], [' · stuck check\'s run cancelled to re-run it, out of draft once green', null]);
+  if (u?.call === 'rerun' && /so that job is re-run$/.test(u.why ?? '')) return merging(['draft', null], [' · stuck job re-run, out of draft once green', null]);
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
@@ -374,6 +382,9 @@ function draftNeed(q, t, needs, merging) {
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
   // Its evidence run failed for the repo, and a fix ticket in the batch takes it on for every PR it failed.
   if (u?.call === 'evidence-fix') return merging(['draft', null], [` · evidence workflow broken, ${/; (\S+) fixes it/.exec(u.why ?? '')?.[1] ?? 'a fix ticket'} fixes it, then screenshots are taken again`, null]);
+  // A check pending past the limit says how long, rather than reading as checks running.
+  const old = u?.call === 'wait' && /^checks/.test(u.why ?? '') ? pendingPast(prStatusOf(t)?.checks, now) : null;
+  if (old) return merging([`${old.name} pending ${since(old.age)}`, WARN], [' · stuck: the next pass re-runs it', null]);
   if (u?.call === 'wait') return merging(['draft', null], [` · ${/^checks/.test(u.why ?? '') ? 'checks running' : 'GitHub is still checking for conflicts'}, out of draft once green`, null]);
   if (u?.call === 'ready' || u?.call === 'failed') return merging(['draft', null], [' · out of draft at the next pass', null]);
   if (t.key === q?.spine) return needs({ code: 'spine' }, ['draft', null], [' · feature spine: approve its specs', null]);
@@ -813,6 +824,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
 // Why an epic has no date: its undated children, by what holds them.
 function epicWhy(r, F, e, checkin) {
   if (F.paused) return 'no date while passes are stopped';
+  if (F.none) return `No date: ${r.name} has ${F.count} of the ${MIN_HISTORY} merged tickets dates need`;
   // Short: it is the last column of a row, cut at the window's edge.
   if (r.workers === 0) return 'No date: 0 workers';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
@@ -1177,23 +1189,57 @@ export const daysScreen = (repos, slug, opts) => joined(daysParts(repos, slug, o
 // The Epics view: each open epic, soonest first, with a bar of its children done, queued and not
 // queued yet, its SHIPS and the child that sets it. Enter opens the epic.
 const EP_BAR = 16;
+// When a batch last read epic `key`'s children: the newest of its triage records for them.
+function epicReadAt(r, F, key) {
+  let at = -Infinity;
+  for (const k of Object.keys(r.q?.tickets ?? {})) {
+    if (F.of[k] !== key && triageOf(r.stateDir, k)?.epic?.key !== key) continue;
+    try { at = Math.max(at, statSync(join(r.stateDir, 'triage', `${k}.json`)).mtimeMs); } catch { /* no record */ }
+  }
+  return at;
+}
+// One row per repo and epic. Where several of a repo's batches hold its children, the counts are the
+// latest read of its children list, with the other batches' queued children counted as queued (with
+// no list read, every batch's children summed); the date is the latest, since an epic ships when its
+// last child merges, or none, with the reason of a batch that has none. `undated` are the epics of
+// batches that cannot date anything: each joins a row another batch lists, and adds none of its own.
+function epicPerRepo(list, undated = []) {
+  const groups = new Map();
+  const idOf = (x) => `${x.r.slug}\0${x.e.key}`;
+  for (const x of list) groups.set(idOf(x), [...(groups.get(idOf(x)) ?? []), x]);
+  for (const x of undated) groups.get(idOf(x))?.push(x);
+  return [...groups.values()].map((g) => {
+    if (g.length === 1) return g[0];
+    const read = g.filter((x) => x.e.missing != null);
+    const fresh = (read.length ? read : g).map((x) => ({ x, at: epicReadAt(x.r, x.F, x.e.key) })).reduce((a, b) => (b.at > a.at ? b : a)).x;
+    const sum = (f) => g.reduce((n, x) => n + x.e[f], 0);
+    const elsewhere = sum('queued') - fresh.e.queued;
+    const e = fresh.e.missing == null ? { ...fresh.e, total: sum('total'), done: sum('done'), queued: sum('queued') }
+      : { ...fresh.e, queued: Math.min(fresh.e.total - fresh.e.done, fresh.e.queued + elsewhere), missing: Math.max(0, fresh.e.missing - elsewhere) };
+    const by = g.find((x) => !x.d) ?? g.reduce((a, b) => (b.d.likely > a.d.likely ? b : a));
+    return { r: by.r, F: by.F, e, d: by.d, name: by.r.repo };
+  });
+}
 function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = null, pinUsage = false } = {}) {
   const s = etaScope(repos, slug, { now, checkin, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   const all = !slug;
-  // A paused batch's epics are listed undated, under its note.
-  const list = s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null })))
+  // A paused batch's epics are listed undated, under its note. A batch with too little history, or
+  // nothing left for autopilot, lists none, but leaves undated an epic whose children it still holds.
+  const undated = s.per.filter((p) => p.note && !p.stopped && p.r.q && !p.r.error).map(({ r }) => ({ r, F: forecastOf(r, { now, checkin }) }))
+    .filter(({ F }) => F?.none || F?.idle).flatMap(({ r, F }) => Object.values(F.epics).filter((e) => e.queued).map((e) => ({ r, F, e, d: null })));
+  const list = epicPerRepo(s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null }))), undated)
     .sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
   const head = [...s.head, ''];
   if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
   // The children bar is solid on screen, not-yet-queued children grey; with no colour, □ tells them apart.
   const notYet = solidBars(width) ? '■' : '□';
-  const rows = list.map(({ r, F, e, d }) => {
+  const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
     const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
-    return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(r.repo ?? r.name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
+    return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
       [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: r.id, epic: e.key });
   });
@@ -1976,7 +2022,7 @@ function prSegs(r, t, now) {
 function fixSegs(f, running, wait = null) {
   const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
   const who = running ? 'a worker' : wait ? `${wait}, then a worker` : 'next free worker';
-  if (f.kind === 'gaps') return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
+  if (personCall(f)) return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
   if (f.kind === 'capture') return [[`#${f.pr}`, PR_SGR], [' · ', null], [`${f.files?.length ?? 0} screenshot(s) never taken`, WARN], [` · ${who} takes them`, null]];
   return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, FAIL], [` · ${who} repairs it, try ${f.try} of ${f.of}`, null]];
 }
@@ -2024,7 +2070,7 @@ function needSegs(r, x, now = Date.now()) {
   if (heldAsks(t)) return [[`${t.open_questions} triage question(s) open: answer them`, null]];
   if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
   const wb = worktreeBusy(t);
-  if (wb) return [[worktreeBusyText(wb), null]];
+  if (wb) return [[`${busyPark(t) ? `${busyPark(t).question} · ` : ''}${worktreeBusyText(wb)}`, null]];
   const f = fixOn(t);
   if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t));
   if (k === 'running') return [[runningStage(r, x), null]];
@@ -2211,7 +2257,7 @@ function moveOf(r, row, k, t, h, now) {
       lead: `If it can start without them, say so, in ${r.name}:`, cmds: [answerCmd(t.key)] };
   }
   const wb = worktreeBusy(t);
-  if (wb) return { text: `Needs you. No worker starts on it: ${wb.why}. Commit, push or discard that (or end the session working in it), and the next pass that finds it clean starts it.` };
+  if (wb) return { text: `Needs you. ${busyPark(t) ? `Its last worker parked: ${busyPark(t).question}. ` : ''}No worker starts on it: ${wb.why}. Commit, push or discard that (or end the session working in it), and the next pass that finds it clean starts it.` };
   // A fix worker that parked or gave up leaves its try open: the ticket needs the user, as its row says.
   if (f && groupOf(k) !== 'needs') {
     if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
@@ -2393,7 +2439,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   if (row && !row.pr) { for (const [label, segs] of timingFields(r, forecastOf(r, { now, checkin }), row, h, now)) field(label, segs); out.push(''); }
   // The PR's fix try and what no fix try can move, as the last pass recorded them on the ticket.
   const stuck = t.stuck && !t.merged_at ? stuckOf(t, r.ctx) : null;
-  if (t.fix?.kind === 'gaps') field('Your call', [[t.fix.what, null]]);
+  if (personCall(t.fix)) field('Your call', [[t.fix.what, null]]);
   else if (t.fix) field('Fix try', [[`${t.fix.try} of ${t.fix.of} · ${t.fix.what}`, null]]);
   if (stuck) field('For you', [[stuck.why, WARN]]);
   if (t.fix || stuck) out.push('');

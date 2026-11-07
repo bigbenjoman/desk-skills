@@ -2130,5 +2130,17 @@ t('DS-454 AC4 two repos held for the same reason each keep their note',
   `${notes454('one').join(' / ')} | ${notes454('two').join(' / ')}`,
   `nothing started or merged for 3h 5m. Last pass: ${mem454}. | nothing started or merged for 3h 5m. Last pass: ${mem454}.`);
 
+// ---- DS-490: a draft waiting on a check pending past the limit says how long, not "checks running".
+const pending490 = (h) => ({ name: 'Cookie Notice (local build)', status: 'in_progress', conclusion: null, started: new Date(NOW - h * 36e5).toISOString(), runner: true });
+const wait490 = { call: 'wait', why: 'checks still running (Cookie Notice (local build))' };
+put(I.T, I.env, 'stuck490', { port: 5690, conc: '3 / 5', beat: 1, perms: { 'autopilot-merge': 'yes', 'pr-merge-green': 'yes' }, queue: { batch: 'stuck490', concurrency: 3, supervised: true, tickets: {
+  'V-697': { ...prOn(697, [okCheck('tests'), pending490(76)], { isDraft: true }), undraft: wait490 },
+  'V-699': { ...prOn(699, [okCheck('tests'), pending490(1)], { isDraft: true }), undraft: wait490 },
+} } });
+const r490 = Q.loadRepos(NOW).find((r) => r.name === 'stuck490');
+r490.machine = { running: 0, cap: 10 };
+t('DS-490 AC3 a draft on a check pending past the limit says how long it has been pending', railText(Q.ticketScreen(r490, 'V-697', { now: NOW })).includes('Cookie Notice (local build) pending 3d 4h · stuck: the next pass re-runs it'), true);
+t('DS-490 AC3 negative control: one pending under the limit reads as checks running', railText(Q.ticketScreen(r490, 'V-699', { now: NOW })).includes('draft · checks running, out of draft once green'), true);
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
