@@ -44,6 +44,12 @@ the row, then requeue the ticket. Lever on or off, each start's stage, model and
 ticket's log, and the batch report's worker table shows them per session, with `default` where
 nothing was passed.
 
+**With the `effort` lever on, no ticket runs in a cloud session**, because nothing gives one an
+effort. At config §3b Worker location `cloud`, the plan keeps every ticket local and its `runs:` line
+says why, and a ticket already placed in the cloud parks at its start, as does one starting with a
+malformed Worker effort row. With the lever off, a cloud session starts as before, and its report row
+shows start `0`, model `default` and effort `default`, since it is passed neither.
+
 **Where workers run is config §3b "Worker location"**: `local` (also when the row is absent) or
 `cloud`. Any other value refuses the plan, naming the row. At `cloud`, the batch plan's `workers:`
 and `budget:` lines say how many tickets run in a cloud session and that a cloud session takes no

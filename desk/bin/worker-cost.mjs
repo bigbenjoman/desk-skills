@@ -166,10 +166,12 @@ const preflightOnly = (text) => text.split('\n').every((l) => {
 // assistant usage at all. `sessions` is each run's `{ starts, cost }`: a run is one session, so one
 // log, and `starts` is empty for a log written before starts were recorded.
 // A cloud worker writes no log here and nothing reports its tokens or cost: its row is its session
-// URL and its wall time from session start to PR (`cloud`), and its usage stays null.
+// URL and its wall time from session start to PR (`cloud`), and its usage stays null. Its one session
+// starts at Stage 0 with no model or effort passed, which is what startFields gives for nothing.
 export function ticketCost(stateDir, ticket) {
   if (ticket.location === 'cloud' && ticket.cloud) {
     return { key: ticket.key, runs: 1, unknown: 0, usage: null, preflight: { n: 0, cost: 0, unknown: 0 }, first: null, stages: null,
+      sessions: [{ starts: [startFields({})], cost: null }],
       cloud: { url: ticket.cloud.url ?? null, ms: cloudWall(ticket.cloud) } };
   }
   const round = (f) => { const m = f.match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
@@ -242,7 +244,7 @@ export function costTable(rows) {
   // Each worker's sessions sit under its row, then its stages in the order its runs reached them.
   const startOf = (s) => `start ${s.stage}, model ${s.model}, effort ${s.effort}`;
   const sessionLines = (r) => (r.sessions ?? []).map((s) =>
-    `      session: ${s.starts.length ? s.starts.map(startOf).join('; ') : 'start, model and effort not recorded'}: ${s.cost == null ? 'cost unknown' : usd(s.cost)}`);
+    `      session: ${s.starts.length ? s.starts.map(startOf).join('; ') : 'start, model and effort not recorded'}: ${r.cloud ? 'cost not reported for cloud' : s.cost == null ? 'cost unknown' : usd(s.cost)}`);
   const stageLines = (r) => {
     if (r.cloud) return [`      cloud session: ${r.cloud.url ?? 'unknown'}`];
     if (!r.stages) return ['      stages: unknown (no usage in the log)'];

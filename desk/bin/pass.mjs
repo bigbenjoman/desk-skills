@@ -25,7 +25,7 @@ import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
-import { cloudPrompt, startCloud, findCloudPr, cloudWall } from './cloud-worker.mjs';
+import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
@@ -1871,6 +1871,10 @@ function spawnCloud(t) {
     report.parked.push(`${t.key}: ${line}`);
     return;
   }
+  // Placed before the effort lever went on, or with a malformed row: the plan keeps these local now.
+  let effort;
+  try { effort = E.workerEffort('0'); } catch (e) { park(e.message); return; }
+  if (effort !== E.NO_EFFORT) { park(CLOUD_NO_EFFORT); return; }
   let text;
   try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }
