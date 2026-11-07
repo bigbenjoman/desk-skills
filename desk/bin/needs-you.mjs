@@ -59,7 +59,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan } from './undraft.mjs';
-import { gapsFix, instructionFix, personReviewFix } from './fix-tries.mjs';
+import { gapsFix, instructionFix, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
@@ -160,7 +160,11 @@ function stuckPlain(r, n, s) {
     return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}, so nothing desk has can fill ${k === 1 ? 'its cell' : 'their cells'}. Edit the PR body so no cell is left; the next pass then takes it out of draft.`;
   }
   // Before the conflict test: a review reason names the conflict tries it was made after.
-  if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}. ${personReviewFix({}, { why }) ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.`;
+  if (/^review not clean/.test(why)) {
+    const left = stuckFindings(why);
+    const named = left.length ? `: ${left.map((f) => `${f.sev} ${one(f.text)}`).join('; ')}` : '';
+    return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}${named}. ${left.length ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.`;
+  }
   const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
   if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
   if (/conflict/.test(why)) return `${n} is in conflict with ${r.ctx?.base ?? 'its base'}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
@@ -179,7 +183,10 @@ function draftPlain(r, n, u) {
     const gaps = Number(kv.find(([k]) => k === 'gaps')?.[1] ?? 0);
     const what = andList([...(found.length ? [`${andList(found)} finding${found.length === 1 && found[0].startsWith('1 ') ? '' : 's'}`] : []), ...(gaps ? [`${gaps} requirement gap${gaps === 1 ? '' : 's'}`] : [])]);
     if (gaps) return `${n} is a draft, and its code review left ${what}. Say how to settle ${gaps === 1 && !found.length ? 'it' : 'them'}; a worker on the PR carries out your call.`;
-    if (what) return `${n} is a draft, and its code review found ${what} that ${REPAIRED}. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.`;
+    // No fix try ran on these: one that did and ran out is stuck (stuckPlain), so the reason is the review's.
+    const it = found.length === 1 && found[0].startsWith('1 ') ? 'it' : 'them';
+    const unsent = kv.some(([k]) => k === 'deferred') ? `which it marks deferred, so desk sends no worker to ${it}` : `which it does not list with a file:line a worker can fix, so desk sends no worker to ${it}`;
+    if (what) return `${n} is a draft, and its code review found ${what}, ${unsent}. Fix ${it} on its branch and post a fresh review; the next pass then takes it out of draft.`;
   }
   if (/Clean review verdict is not set/.test(why)) return `${n} is a draft, and desk can not read its code review because §4 Clean review verdict is not set. Set it with /desk-setup; the next pass then reads the review.`;
   if (/clean and green/.test(why)) return `${n} is a draft with a clean review and green checks. Undraft it; ${thenMerge(r)}.`;
