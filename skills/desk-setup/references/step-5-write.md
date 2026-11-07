@@ -60,7 +60,8 @@ repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other re
 
 Then run `desk-env drift` on the file just written. Any `UNLISTED` line blocks: that §4 command item
 can never be allow-listed for a worker, so fix the row with the user (one plain command, or a repo
-script run as `bash <path>.sh`) and write it again before going on.
+script run as `bash <path>.sh`) and write it again before going on. A `NODEV` line is offered as a
+§4 Dev server item for its directory (step 1, *Dev server*).
 
 **Then offer the instruction-file audit**, `/desk-cleanup instructions`: it measures everything a
 session in this repo loads at launch (the `CLAUDE.md` and `AGENTS.md` chain, rules, `MEMORY.md`,

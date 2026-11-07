@@ -49,8 +49,7 @@ comes back as a new `plan` item naming why), `triage`
 `worktree` (no worker spawns into its worktree until it is clean), `usage` (a usage limit holds the batch:
 one item, `usage-limit`, that lifts by itself or sooner after a subscription
 switch) or `base-push` (approve the sync); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
-outside GitHub (a build, a staging migration) has none: its need names the step, and it leaves the
-list once its check is green.
+outside GitHub has none: its need names the step, and it leaves once its check is green.
 
 ## 2. Ask, four at a time
 
@@ -59,17 +58,16 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
 - **header**: the ticket key.
 - **question**: `<repo> <TICKET>: <what is needed>`, in one line.
 - **options**: the recommendation first, labelled `(Recommended)` with its reason as the
-  description, then the other actions. With no recommendation, none is labelled. You get four options at most, and the free-text "Other"
-  is always added.
-- For `resume`, `answer` and `reject`, the answer text is what gets recorded. Where the question
-  offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Where it does
-  not, the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
+  description, then the other actions. With no recommendation, none is labelled. At most four options; free-text "Other" is always added.
+- For `resume`, `answer` and `reject`, the answer text is recorded. Where the question
+  offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Otherwise
+  the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
   resume, so it never stays parked once answered. A `session` item has none either: once its step
   is done, `resume` takes what was done and hands it to a worker. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
-  `record` posts on the PR and sends to a worker on it.
-- An `override <id>` action takes the user's choice as its text.
-- A `move` takes the batch's name (`standing` for the standing batch). An answer to move the
-  ticket to another batch is a `move`, never a `resume`.
+  `record` posts on the PR and sends to a worker on it. An open PR's `resume` sends a worker an instruction, unposted.
+- `override <id>` takes the user's choice as its text.
+- A `move` takes the batch's name (`standing` for the standing batch). Moving a ticket to another
+  batch is a `move`, never a `resume`.
 
 Ask the next round only after recording this one.
 
@@ -80,8 +78,8 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for `start`, `requeue`, `fix`, `drop`, `approve`, `not-now`, `open`, `admit` and `done`. Each prints one
-line on what it recorded. Keep it for the end.
+Leave `"<text>"` off for `start`, `requeue`, `fix`, `drop`, `approve`, `not-now`, `waiting`, `open`, `admit` and `done`. Each prints one
+line on what it recorded.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
   answered but not requeued, and desk-q shows it waiting on that session. `SendMessage` that text to the session named `<name>`. If that name is
@@ -91,10 +89,11 @@ line on what it recorded. Keep it for the end.
 - **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the
   `/desk-ticket` or `/desk-admit` to run.
 - **`not-now`**: puts it in the not-now register; `list` and `left` hide it until its
-  question, blocker or PR head changes or it gains an action. Not asked again this run.
+  question, blocker or PR head changes or it gains an action.
+- **`waiting`**: as `not-now`, until the PR gets an approval or its head moves.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 
-Where the supervisor runs the batch, nothing more is needed: its next pass picks the answer up.
+Where the supervisor runs the batch, its next pass picks the answer up.
 
 Never run `queue.mjs`, `answer.mjs` or `digest.mjs` yourself, and never edit a queue: `record` runs
 them against the right repo.

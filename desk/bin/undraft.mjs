@@ -8,10 +8,15 @@
 //           the head conflicts with its base (it reports UNKNOWN until it has, after every base move)
 //   rerun   every red check was cancelled or timed out, so it never tested the code: where §3 ci-rerun
 //           is yes the pass reruns `runs` through rerun.sh, within the merge driver's per-head cap
-//           and cooldown (`gate` is what rerun.sh reads)
-//   build   every red check is one §4 Check builds names, and no build has run at this head: the pass
+//           and cooldown (`gate` is what rerun.sh reads); or a check stuck pending whose run has
+//           completed, re-run as that one job (stuckCall)
+//   cancel  a check pending past PENDING_LIMIT_MS while its run is still in progress: the pass cancels
+//           the run, once per check per head, so the next pass re-runs it as a cancelled check
+//   build  every red check is one §4 Check builds names, and no build has run at this head: the pass
 //           starts its command on the host, in the ticket's worktree at the head (check-build.mjs)
 //   rebuilt that build succeeded: the pass re-runs the checks' runs with --failed, once per head
+//   sync    that build failed at a head behind its base (cfg.behind): the pass sends it to a fix worker
+//           that merges the base (fix-tries.mjs syncFix), and to the person once no try is left
 //   evidence  screenshot cells are left and §4 Evidence workflow names the workflow that fills them:
 //           the pass starts it, once per head (evidence.mjs), and the next pass reads the body again
 //   evidence-failed  that run failed, or filled no cell: the pass groups the same failure across PRs
@@ -44,19 +49,15 @@
 // queue.mjs approve does that once the person has approved its specs. A `ready` call carries the
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
-import { evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, isHuman } from './gate.mjs';
-import { RERUNS_MAX, reviewFindings } from './fix-tries.mjs';
-import { dragCells, hasEvidenceBlock, runFailed } from './evidence.mjs';
+import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
+import { RERUNS_MAX, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
+import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
+import { pairs } from './desk-env.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 // The name of desk-gate.yml's verdict job, the check that runs review-gate.mjs verdict.
 export const VERDICT_CHECK = 'desk-review verdict';
-
-// key=value pairs, as the §4 Clean review verdict row writes them.
-export function pairs(text) {
-  return Object.fromEntries([...String(text ?? '').matchAll(/([a-z0-9_]+)=(\S+)/gi)].map((m) => [m[1], m[2]]));
-}
 
 // A posted desk-review's verdict as the review gate reads it, or null. Values are strings, in
 // marker order, as the §4 Clean review verdict row compares them; the heading is left out.
@@ -225,12 +226,52 @@ function rerunCall(gate, cfg) {
   };
 }
 
+// A pending check that will never finish on its own: its run completed without it (an orphaned job, no
+// runner), or it has been pending past PENDING_LIMIT_MS. cfg.runOf(runId) -> { status, startedAt, jobs:
+// [{ databaseId, name, status, startedAt }] } or null (gh run view), cfg.now, and cfg.reruns(name) and
+// cfg.cancels(name), what was tried for it at this head. The first stuck check gives a `rerun` of its job
+// (an orphan) or a `cancel` of its run (still in progress), and the person once one was tried at this
+// head or §3 ci-rerun is not yes. Null while every pending check may yet finish.
+const isoMs = (s) => (s && !String(s).startsWith('0001-') ? Date.parse(s) || null : null);
+function stuckCall(gate, checks, cfg, n) {
+  if (!cfg.runOf || !gate.pending.length) return null;
+  const now = cfg.now ?? Date.now();
+  const open = latestPerCheck(checks ?? []).filter((c) => c.status !== 'completed' && c.runId && gate.pending.includes(c.name));
+  for (const c of open) {
+    const run = cfg.runOf(String(c.runId));
+    if (!run) continue;
+    const job = (run.jobs ?? []).find((j) => j.name === c.name);
+    // The run's own record of the job is newer than the PR's rollup: finished there, it is not stuck.
+    if (String(job?.status ?? '').toLowerCase() === 'completed') continue;
+    const orphan = String(run.status ?? '').toLowerCase() === 'completed';
+    const from = isoMs(job?.startedAt) ?? isoMs(c.startedAt) ?? isoMs(run.startedAt);
+    const age = from == null ? null : now - from;
+    if (!orphan && !(age >= PENDING_LIMIT_MS)) continue;
+    const what = orphan ? `"${c.name}" is still ${c.status} though its run ${c.runId} has completed`
+      : `"${c.name}" has been ${c.status} for ${since(age)} with its run ${c.runId} still in progress, past the ${since(PENDING_LIMIT_MS)} limit`;
+    const person = (why) => ({ call: 'person', why, action: `re-run job "${c.name}" of run ${c.runId} on #${n} once a runner can take it`, job: c.name });
+    if (cfg.rerun !== 'yes') return person(`${what}, and config §3 ci-rerun is "${cfg.rerun ?? 'no'}"`);
+    // A run still in progress counts only its own cancels: a rerun of the check for an earlier cancel
+    // is not this expiry's one try. An orphan's job rerun is recorded as a rerun, so it counts those.
+    const tried = (cfg.cancels?.(c.name) ?? 0) + (orphan ? (cfg.reruns?.(c.name) ?? 0) : 0);
+    if (tried > 0) return person(`${what}, after it was re-run once at this head`);
+    if (!orphan) return { call: 'cancel', why: `${what}, so the run is cancelled and its checks re-run`, runs: [String(c.runId)], checks: [c.name] };
+    if (job?.databaseId == null) return person(`${what}, and its job id could not be read to re-run it`);
+    return {
+      call: 'rerun', why: `${what}, so that job is re-run`, runs: [String(c.runId)],
+      gate: { pending: [], failedRuns: [], failedJobs: [{ runId: String(c.runId), jobId: String(job.databaseId), name: c.name, why: 'whose run completed without it' }], reasons: gate.reasons, failing: [{ name: c.name, runId: String(c.runId) }] },
+    };
+  }
+  return null;
+}
+
 // A red gate whose every failing check §4 Check builds names (cfg.builds, [{ name, command }]), while
 // §3 ci-rerun is yes: the build that clears it, once per head (cfg.built(head), check-build.mjs
 // buildRecord). `build` starts it, `wait` while it or another check runs, `rebuilt` re-runs the checks with --failed once
-// it succeeded, and `person` when it failed, its re-run was refused, or the checks are still red after
-// it. Anything else is null, handled as any red check.
-function buildCall(gate, cfg, n, head) {
+// it succeeded, `sync` when it failed at a head behind its base (cfg.behind(head) -> the base's name, or
+// null when the head has it or git cannot say), and `person` when it failed at a head up to date with its base,
+// its re-run was refused, or the checks are still red after it. Anything else is null, handled as any red check.
+function buildCall(gate, cfg, n, head, t) {
   const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
   const failing = gate.failing;
   if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
@@ -245,7 +286,10 @@ function buildCall(gate, cfg, n, head) {
   if (rec.state === 'running') return { call: 'wait', why: `its check build \`${command}\` is running at ${at}, then ${checks} is re-run` };
   if (rec.code !== 0) {
     const exit = rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`;
-    return { call: 'person', why: `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}` };
+    const failed = `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`;
+    const base = cfg.behind?.(head) ?? null;
+    if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base };
+    return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}` };
   }
   if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, checks: names, runs };
   if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}` };
@@ -301,7 +345,8 @@ export function buildPark(question, readPr, cfg) {
 // names the workflow that fills them (cfg.evidence, evidence.mjs), once per head (cfg.evidenceRun(head)):
 // `evidence` starts it, `wait` while it runs, `evidence-failed` once it failed or filled no cell (the pass
 // groups those into one fix for the repo, evidence.mjs evidenceFixPlan), and `person` once it has run and
-// cells are still left. Anything else is null: the cells are the person's, as before.
+// cells are still left, which undraftCall sends to a capture worker first where their files are missing.
+// Anything else is null: no workflow fills them.
 function evidenceCall(pr, cfg) {
   const wf = cfg.evidence?.workflow;
   if (!wf || !hasEvidenceBlock(pr.body)) return null;
@@ -311,13 +356,57 @@ function evidenceCall(pr, cfg) {
   const rec = cfg.evidenceRun?.(pr.head) ?? null;
   if (!rec) return { call: 'evidence', why: `${left} screenshot cell(s) left at ${at}, which §4 Evidence workflow \`${wf}\` fills`, workflow: wf, cells: left };
   if (rec.state === 'running') return { call: 'wait', why: `its evidence workflow \`${wf}\` is taking the screenshots at ${at}${rec.url ? ` (${rec.url})` : ''}` };
-  const action = `fill the cells it could not on #${n}, or fix its \`evidence\` block and re-run \`gh workflow run ${wf} -f pr=${n}\``;
+  const action = `fix its \`evidence\` block and re-run \`gh workflow run ${wf} -f pr=${n}\`, or ${noCellsLeft(n)}`;
   // A run that failed, or filled no cell, is the repo's to fix, not cells only the person can reach.
   if (runFailed(rec, left)) {
     const how = rec.conclusion === 'failure' ? 'failed' : 'filled none of its cells';
     return { call: 'evidence-failed', why: `its evidence workflow \`${wf}\` ${how} at ${at}${rec.url ? ` (${rec.url})` : ''} and left ${left} screenshot cell(s)`, action, workflow: wf, runId: rec.runId, url: rec.url ?? null, conclusion: rec.conclusion, at: rec.at ?? null };
   }
-  return { call: 'person', why: `its evidence workflow \`${wf}\` ran at ${at} (${rec.conclusion}${rec.url ? `, ${rec.url}` : ''}) and left ${left} screenshot cell(s)`, action };
+  return { call: 'person', why: `its evidence workflow \`${wf}\` ran at ${at} (${rec.conclusion}${rec.url ? `, ${rec.url}` : ''}) and left ${left} screenshot cell(s): ${dragFiles(pr.body).join(', ')}`, action };
+}
+// What a person does about cells nothing of desk's can fill. They are never asked to upload.
+const noCellsLeft = (n) => `edit the body of #${n} so no \`_drag <file>_\` cell is left`;
+
+// The call for a draft's `_drag <file>_` cells, or null with none left: only the cells hold it here,
+// however its upload ended. Each goes to what can fill it: §4 Evidence workflow, then for any it left
+// with no file a capture worker (fix-tries.mjs captureTry), then for files desk holds the §3 pr-images
+// upload, and the person only once none can. cfg as undraftCall's (evidence, evidenceRun, missingShots).
+export function cellCall(t, pr, cfg) {
+  const cells = dragCells(pr.body);
+  if (!cells) return null;
+  const n = pr.number;
+  const person = (why, action) => ({ call: 'person', why, action });
+  const evidence = evidenceCall(pr, cfg);
+  if (evidence && evidence.call !== 'person') return evidence;
+  const missing = cfg.missingShots?.(pr.body) ?? [];
+  if (missing.length) {
+    return { ...person(`${missing.length} screenshot(s) in its body were never taken: ${missing.join(', ')}`, noCellsLeft(n)), call: 'capture', files: missing };
+  }
+  const left = `${cells} screenshot cell(s) left: ${dragFiles(pr.body).join(', ')}`;
+  if (t.images_reported === true && t.images_uploaded !== true) {
+    return { ...person(`${left}, whose files are saved, but config §3 pr-images leaves their upload to you`, `approve it with \`DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs ${n} <its screenshot directory>\``), unapproved: true };
+  }
+  if (evidence) return evidence;
+  return person(`${left}, whose files desk holds but could not put in the body`, noCellsLeft(n));
+}
+
+// What desk does about each file a draft's cells name, read off the call cellCall makes for it, so the
+// person who says done is told what the pass will do: [{ file, doing }].
+export function cellPlan(t, pr, cfg) {
+  const c = cellCall(t, pr, cfg);
+  if (!c) return [];
+  const wf = `\`${cfg.evidence?.workflow}\``;
+  const spent = c.call === 'capture' && captureTry(t, { pr: pr.number, head: pr.head, files: c.files })?.call === 'stuck';
+  const doing = (file) => {
+    if (c.call === 'evidence') return `${wf} takes it at the next pass`;
+    if (c.call === 'wait') return `${wf} is taking it now`;
+    if (c.call === 'evidence-failed') return `${wf} ${c.conclusion === 'failure' ? 'failed' : 'filled none of its cells'}, so desk fixes the workflow for the repo and runs it again`;
+    if (c.call === 'capture' && c.files.includes(file)) return spent ? "desk's capture try could not take it" : 'a capture worker takes it at the next pass';
+    if (c.unapproved) return 'its file is saved, and config §3 pr-images leaves its upload to you';
+    if (/^its evidence workflow/.test(c.why ?? '')) return `${wf} ran and could not take it`;
+    return 'desk holds its file but could not put it in the body';
+  };
+  return dragFiles(pr.body).map((file) => ({ file, doing: doing(file) }));
 }
 
 // Whether anyone but `handle`, and not a bot, has reviewed or commented on the PR: the line between
@@ -346,12 +435,13 @@ export function personHold(t, n, redrafts = []) {
 // the head, as verdictCarries does). cfg: { spine, perm, approved, localReview, clean, handle, required,
 // advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
 // cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
-// check build recorded at that head, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
+// check build recorded at that head, behind(head) -> the base's name when the head is behind it, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
 // evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
 // the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
 // pr-conflict-unreviewed and -reviewed), untriggered(base, head, branch) -> gate.mjs untriggeredChecks's map
 // for a required check that never reported, stale(base, head, branch, baseHead) -> staleTriggers's
-// { behind, reopen } for one the pass's base sync or reopen starts }.
+// { behind, reopen } for one the pass's base sync or reopen starts, runOf(runId), cancels(name) and now
+// for a check stuck pending (stuckCall) }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -389,7 +479,9 @@ export function undraftCall(t, pr, cfg) {
     const untriggered = cfg.untriggered(pr.base, pr.head, pr.branch ?? null) ?? {};
     if (Object.keys(untriggered).length) gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [], untriggered });
   }
-  if (gate.state === 'pending') return { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  // A wait on a check that will never finish is no wait: it is re-run, or put to the person.
+  const stuck = () => stuckCall(gate, pr.checks, cfg, n);
+  if (gate.state === 'pending') return stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   // One the base's or the default branch's copy of the workflow runs waits for the pass, which syncs the
   // base and reopens the PR so it gets a run.
   if (gate.state === 'absent' && !gate.failing.length && pr.base && cfg.stale) {
@@ -408,9 +500,9 @@ export function undraftCall(t, pr, cfg) {
   const red = gate.state !== 'pass' && !skipped;
   if (red) {
     const rr = rerunCall(gate, cfg);
-    if (rr) return rr;
-    const bc = buildCall(gate, cfg, n, pr.head);
-    if (bc) return bc;
+    if (rr) return (rr.call === 'wait' && stuck()) || rr;
+    const bc = buildCall(gate, cfg, n, pr.head, t);
+    if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
   const codeRed = gate.failing.filter((f) => f.name !== VERDICT_CHECK);
   // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.
@@ -431,16 +523,8 @@ export function undraftCall(t, pr, cfg) {
     const why = `its ${VERDICT_CHECK} check reads only a verdict posted on the head${carried ? `, and its verdict is carried from ${carried.slice(0, 9)}` : ''}`;
     return withCarried({ ...person(why, `review #${n} at its head`), call: 'review' });
   }
-  const evidence = dragCells(pr.body) ? evidenceCall(pr, cfg) : null;
-  // Cells §4 Evidence workflow does not fill and whose file was never taken go to a capture worker
-  // (fix-tries.mjs captureTry); the person gets them only once its try is spent.
-  const missing = evidence ? [] : cfg.missingShots?.(pr.body) ?? [];
-  if (missing.length) {
-    return { ...person(`${missing.length} screenshot(s) in its body were never taken: ${missing.join(', ')}`, `take ${missing.join(', ')} and upload them to #${n}`), call: 'capture', files: missing };
-  }
-  const unsent = t.images_uploaded === 'partial' || (t.images_reported === true && t.images_uploaded !== true);
-  if (unsent) return person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
-  if (dragCells(pr.body)) return evidence ?? person('its screenshots are not in the body yet (a `_drag <file>_` cell is left)', `upload the screenshots to #${n}`);
+  const shots = cellCall(t, pr, cfg);
+  if (shots) return shots;
   if (skipped) return person(SKIPPED_ON_DRAFT, `undraft #${n}`);
   const read = plain ? v.verdict : verdict;
   if (cfg.perm === 'yes') return withCarried({ call: 'ready', why: null, note: null, verdict: read });

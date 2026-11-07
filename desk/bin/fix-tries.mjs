@@ -5,12 +5,14 @@
 // yes a requirement gap (reviewFix), FIX_TRIES_MAX review fix tries of its own within FIX_TRIES_TOTAL
 // tries in all (a try that cleared what it quoted not counted, up to REVIEW_TRIES_CEILING), and one
 // whose review gaps the person
-// ruled on through desk-needs-you (gapsFix), outside them. A draft whose required check is red
+// ruled on through desk-needs-you (gapsFix), or that the person sent back with an instruction
+// (instructionFix), outside them. A draft whose required check is red
 // (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
 // (reviewTry), or a ready PR whose §4 State check reading its verdict is red, or that the merge driver
 // holds for want of a clean verdict at its head (verdictTry), to a review
 // worker, both within the same tries, and so does a draft in conflict with
-// its base that §3 lets a worker resolve (conflictFix). A draft whose screenshots were never taken goes
+// its base that §3 lets a worker resolve (conflictFix), or whose §4 Check builds build failed at a
+// head behind its base (syncFix). A draft whose screenshots were never taken goes
 // to a capture worker, once (captureTry).
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
@@ -153,7 +155,7 @@ function triesByKind(done) {
 // reason ends with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as
 // result.summary) when that try was a conflict try whose worker has finished.
 const conflictTry = (base, files, draft) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null });
-const lastSaid = (t) => (t.fix?.kind === 'conflict' && t.fix.finished && t.result?.summary ? `; the last try said: ${t.result.summary}` : '');
+const lastSaid = (t, kind = 'conflict') => (t.fix?.kind === kind && t.fix.finished && t.result?.summary ? `; the last try said: ${t.result.summary}` : '');
 const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(done.length)}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
 
 // t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, stateChecks (§4 State
@@ -326,6 +328,17 @@ export function reviewFix(t, review, opts = {}) {
 // the FIX_TRIES_MAX tries, which are the pass's own.
 export const gapsFix = ({ pr, head, answer }) => ({ kind: 'gaps', pr, head: head ?? null, what: 'review gaps: your call', answer });
 
+// The person's instruction on an open PR (desk-needs-you `resume`), as the fix it sends back: like a
+// gaps call, not one of the pass's tries; numbered as the last of the tries made, for the views that
+// show a try's number. `ready` is a PR out of draft, which its worker leaves out of draft and the merge
+// driver holds (merge-driver.sh instruction_held) until this fix is finished.
+export function instructionFix(t, { pr, head, ready, answer }) {
+  const n = triesMade(t.fix_tries) + 1;
+  return { try: n, of: n, kind: 'instruction', pr, head: head ?? null, ready: ready === true, what: 'your instruction', answer };
+}
+// A fix that carries out what the person said, rather than repairing what the pass found.
+export const personCall = (f) => f?.kind === 'gaps' || f?.kind === 'instruction';
+
 // A review stuck reason's findings (reviewFix's `stuck` why, `P0: <text>; P1: <text>`) as the review
 // fix the person sends back for one more try (desk-needs-you `fix`), marked `person`: not one of the
 // pass's tries, so the review of its new head that still lists one goes back to the person; numbered
@@ -444,6 +457,21 @@ export function conflictFix(t, { pr, head, base, files }) {
   return spent(done, fixedAt(done, head)) ? { call: 'stuck', why: stillInConflict(t, done, base, files) } : nextTry(done, pr, head, conflictTry(base, files, true));
 }
 
+// A draft whose §4 Check builds build failed at a head behind its base (undraft.mjs `sync`) goes to a
+// fix worker that merges the base, fixes what the merge breaks and pushes, under the same tries as
+// conflictFix; the pass then builds the new head. `why` is the build's failure as undraft.mjs gave it.
+// Stuck, the reason names what the last sync try said.
+export function syncFix(t, { pr, head, base, why }) {
+  if (!head) return null;
+  const done = t.fix_tries ?? [];
+  if (spent(done, fixedAt(done, head))) return { call: 'stuck', why: `still behind ${base} with its check build failing after ${tries(done.length)}: ${why}${lastSaid(t, 'sync')}` };
+  return nextTry(done, pr, head, { kind: 'sync', draft: true, what: `draft behind ${base}, its check build failed`, base, build: why });
+}
+// What the last sync try said, once its worker finished: for a check build that still fails at the
+// head it left.
+export const syncSaid = (t) => (t.fix?.kind === 'sync' && t.fix.finished
+  ? `, after sync try ${t.fix.try} of ${t.fix.of} merged ${t.fix.base}${t.result?.summary ? `, which said: ${t.result.summary}` : ''}` : '');
+
 // A draft whose body has `_drag <file>_` cells for screenshots nobody took (undraft.mjs `capture`) goes
 // to a capture worker, which takes them on the PR's branch for the pass to upload. One capture try per
 // PR, outside FIX_TRIES_MAX: cells still missing after it are the person's, with the screens and what
@@ -478,6 +506,11 @@ export function fixBrief(t) {
       `Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
       ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
   }
+  if (f.kind === 'instruction') {
+    return [`## The person's instruction on PR #${f.pr}`, '',
+      `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, and the person sent it back to you with this instruction:`, '',
+      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that instruction, and nothing else.', ''].join('\n');
+  }
   if (f.kind === 'rereview') {
     return [f.extra ? `## Review try for a merge from the base: PR #${f.pr}` : `## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
       f.held
@@ -495,6 +528,11 @@ export function fixBrief(t) {
       ? `Your PR #${f.pr} is a draft on this branch, and it conflicts with ${f.base}, so the pass cannot take it out of draft. Its review was for the old head, so the new head needs one of its own.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
     lines.push(f.files?.length ? `Conflicting files: ${f.files.join(', ')}.` : `The conflicting files were not listed: \`git merge-tree --write-tree --name-only origin/${f.base} HEAD\` names them.`);
+  } else if (f.kind === 'sync') {
+    lines.push(`Your PR #${f.pr} is a draft on this branch, and its head ${String(f.head).slice(0, 12)} is behind ${f.base}. Its check build failed there: ${f.build}`, '',
+      `Merge origin/${f.base} into your branch (git merge, never a rebase or a force push). A merge git reports clean can still break the branch: two migrations with the same parent, a renamed symbol, a changed signature or fixture. ` +
+      'Run the repo\'s checks on the merged head (desk-ticket Stage 4), and fix each break the merge brought in, in a commit of its own after the merge commit, before you push.',
+      'Do not run the check build yourself: once you push, the pass runs it at your new head and re-runs the check.');
   } else if (f.kind === 'feedback') {
     lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
     if (f.threads?.length) {
@@ -533,7 +571,8 @@ export function fixBrief(t) {
     lines.push('', `${f.person ? "desk's own fix tries were spent, and the person sent this one more." : `This is try ${f.try} of ${f.of}.`} A finding${f.gaps?.length ? ' or gap' : ''} quoted here that the review of your new head still lists goes to the person.`, '');
     return lines.join('\n');
   }
-  const left = f.kind === 'feedback' ? 'holding unresolved review feedback' : f.kind === 'conflict' && f.draft ? 'in conflict' : f.draft ? 'red' : 'red or in conflict';
+  const left = f.kind === 'feedback' ? 'holding unresolved review feedback' : f.kind === 'conflict' && f.draft ? 'in conflict'
+    : f.kind === 'sync' ? `behind ${f.base} with its check build failing` : f.draft ? 'red' : 'red or in conflict';
   lines.push('', `This is try ${f.try} of ${f.of}. A PR still ${left} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
 }
@@ -556,15 +595,17 @@ export function fixTask(t) {
       'Change no code and do not edit the PR body: the pass uploads them and fills its cells. ' +
       `Open no new PR, leave the PR in draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status> said=<all taken, or for each screen you could not take, <file>: <why>>.`;
   }
-  const gaps = f.kind === 'gaps';
+  const gaps = f.kind === 'gaps', instruction = f.kind === 'instruction';
   // A draft's red checks or conflict are fixed in draft and reviewed again, as a review fix is, and so
-  // is a ready PR's review feedback or review.
-  const review = f.kind === 'review' || f.kind === 'feedback' || gaps || f.draft === true;
+  // is a ready PR's review feedback or review, and whatever the person sent back.
+  const review = f.kind === 'review' || f.kind === 'feedback' || personCall(f) || f.draft === true;
   const inDraft = review && !f.ready && f.kind !== 'feedback';
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
+    : f.kind === 'sync' ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push), run the repo's checks on the merged head, and fix each break the merge brought in, in a commit of its own after the merge: this task is your authority to merge it`
     : f.kind === 'feedback' ? 'validate each review thread it quotes (desk-review-response), fix what is right, answer every thread with gh pr comment naming it, and park on one you cannot fix, naming it and what blocks it'
     : gaps ? 'do what the call says about each gap, and nothing else'
+    : instruction ? 'do what the instruction says, and nothing else'
       : f.kind === 'review' ? (f.gaps?.length
         ? `${f.findings?.length ? `fix each ${findingKinds(f.findings)} finding it quotes and ` : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
         : `fix each ${findingKinds(f.findings)} finding it quotes${f.findings?.some((x) => x.sev === 'P2') ? ', or carry one in your review of the new head where fixing it would mean another round' : ''}, and nothing else`)
@@ -572,9 +613,11 @@ export function fixTask(t) {
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
   const after = review ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : '';
   // A conflict try's DONE line is the reason a PR stuck after its last try gives (stillInConflict).
-  const said = f.kind === 'conflict' ? ' said=<one line: what you resolved, or what is still in conflict and why>' : '';
+  const said = f.kind === 'conflict' ? ' said=<one line: what you resolved, or what is still in conflict and why>'
+    : f.kind === 'sync' ? ' said=<one line: what the merge broke and how you fixed it, or what still fails and why>' : '';
   const task = gaps
     ? `Your task is to carry out the person's call on the review gaps of PR #${f.pr}, already open on your branch: the "Your call" section of your briefing quotes it. `
+    : instruction ? `Your task is to carry out the person's instruction on PR #${f.pr}, already open on your branch: the "The person's instruction" section of your briefing quotes it. `
     : `Your task is ${f.person ? 'the fix try the person sent' : `fix try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. `;
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     task +

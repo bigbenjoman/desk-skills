@@ -190,7 +190,9 @@ function twins(cmd) {
 // arguments, or that a locked row's item extends (its prefix rule would match that item), takes that
 // row's lock. Where such rows take different locks, no one lock is right for every command its
 // prefix rule matches, so the item is left to those rows too. Either way a locked command never
-// gains a `nolock` form, or another lock's. The rest take `nolock`, as pre-push.sh runs them.
+// gains a `nolock` form, or another lock's. Of the rest, an item whose command names `typecheck` (a
+// filtered typecheck is as heavy as the full one) takes `tsc`, and the others `nolock`, as
+// pre-push.sh's lock_for runs them.
 const normDir = (d) => d.replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
 for (let i = items.length - 1; i >= 0; i--) {
   const p = items[i];
@@ -201,6 +203,7 @@ for (let i = items.length - 1; i >= 0; i--) {
   const locks = new Set(rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `)))).map((x) => E.lockFor(x.id)));
   if (locks.size > 1) items.splice(i, 1);
   else if (locks.size) p.lock = [...locks][0];
+  else if (p.cmd.includes('typecheck')) p.lock = 'tsc';
 }
 const withPrefix = (c) => [c, ...(PREFIX ? [`${PREFIX} ${c}`] : [])];
 
@@ -689,8 +692,13 @@ if (mode === 'triage') {
   const templates = join(E.deskHome(), 'templates');
   if (existsSync(templates)) dirs.add(templates);
 
+  // With the memory lever on, the worker's auto-memory is off (it gets a digest of the index in its
+  // brief instead) and the memory folder is neither granted nor writable.
   const mem = E.memoryDir();
-  if (existsSync(mem)) dirs.add(mem);
+  if (E.leverOn('memory')) {
+    opt.autoMemoryOff = true;
+    deny.push(`Edit(${abs(mem)}/**)`);
+  } else if (existsSync(mem)) dirs.add(mem);
   const lock = E.lockDir();
   dirs.add(lock);
   try { const real = realpathSync(lock); if (real !== lock) dirs.add(real); } catch { /* created on first lock */ }
@@ -699,6 +707,7 @@ if (mode === 'triage') {
 }
 
 const settings = { permissions: { allow: [...new Set(allow)], deny: [...new Set(deny)], additionalDirectories: [...dirs] } };
+if (opt.autoMemoryOff) settings.autoMemoryEnabled = false;
 // Claude Code's bundled skills are the only ones in a worker's skill listing (--setting-sources ""
 // drops the user's), and that listing is resent every turn: 13 skills, ~6,200 characters, measured
 // 2026-09-30. Hide the ones no worker uses, but keep any the §4 Local review command names (e.g.

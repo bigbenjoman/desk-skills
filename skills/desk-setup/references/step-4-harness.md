@@ -26,7 +26,7 @@ REPO_RULES=(--settings "$ROOT/.claude/settings.local.json" --ledger "$CREDS/harn
    the settings file is unreadable; stop §4 and say so.
    Then `python3 $H "${REPO_RULES[@]}" retire`, also not a question: it only takes capability away.
    `retire`, `add` and `baseline` all first drop any rule in the script's `RETIRED` list that setup
-   recorded (printed `RETIRED`, backed up first; today the unpinned `gh pr merge` allows and the
+   recorded (printed `RETIRED`, backed up first; the list holds the unpinned `gh pr merge` allows and the
    `desk-jira create *assignee*` ask), and `baseline --check` lists them as `retired`. A retired rule
    the user added themselves is printed `retired … yours` with what it still does, and left alone:
    pass that on. Retiring the assignee ask writes the `desk-jira create *--route*` ask in its place

@@ -35,6 +35,9 @@
 //                                             when nothing may merge this batch's green PRs
 //   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, `none` if
 //                                             unset (no override), exit 4 if the row is malformed
+//   node desk-env.mjs effort <start>          print the effort a worker session starting there runs at
+//                                             (`default` with the lever off), exit 4 if §3b Worker
+//                                             effort is malformed
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
@@ -58,7 +61,8 @@
 //                                             the warning on stderr) when it is dontAsk
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
-//                                             may run (UNLISTED), a dontAsk settings file (DONTASK);
+//                                             may run (UNLISTED), an app directory other command rows
+//                                             name with no Dev server item (NODEV), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
@@ -310,6 +314,8 @@ export const CONFIG_ROWS = Object.freeze({
   'slack-channels': { section: '4', row: 'Slack channels' },
   // A `###` table of the user's own rows rather than one row: every Ask, with its Detail.
   'review-asks': { section: '4', row: 'What review here consistently asks for', table: true },
+  'code-reviewer': { section: '4', row: 'Code reviewer' },
+  'product-owner': { section: '4', row: 'Product owner' },
   'repo-instructions': { section: '5', row: 'Repo instructions' },
   'subagents-without-asking': { section: '3b', row: 'Subagents that may run without asking' },
   'test-cap': { section: '3b', row: 'Test worker cap under the test lock' },
@@ -322,6 +328,7 @@ export const CONFIG_ROWS = Object.freeze({
   'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
   'intake-query': { section: '3b', row: 'Intake query' },
+  'triage-concurrency': { section: '3b', row: 'Triage concurrency' },
   'maintenance-window': { section: '3b', row: 'Maintenance window' },
   'maintenance-drain': { section: '3b', row: 'Maintenance drain limit (minutes)' },
   'env-files': { section: '4', row: 'Env files' },
@@ -345,6 +352,8 @@ export const CONFIG_ROWS = Object.freeze({
   'borrow-idle': { section: '3b', row: 'Borrow idle workers' },
   'batches-run-by': { section: '3b', row: 'Batches run by' },
   'status-table': { section: '3b', row: 'Orchestrator status table' },
+  levers: { section: '3b', row: 'Phase 0 levers' },
+  'worker-effort': { section: '3b', row: 'Worker effort' },
 });
 
 export class DeskConfigError extends Error {}
@@ -603,6 +612,38 @@ function configValuesIn(parsed, id) {
 }
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
 
+// key=value pairs, as the §4 Clean review verdict row writes them.
+export function pairs(text) {
+  return Object.fromEntries([...String(text ?? '').matchAll(/([a-z0-9_]+)=(\S+)/gi)].map((m) => [m[1], m[2]]));
+}
+
+// Whether a §4 Local review command item posts a desk-review verdict marker: /desk-review does, and a
+// review skill the repo ships does where its SKILL.md names the marker.
+export function postsVerdict(item, root) {
+  const name = /^\/([\w-]+)(?=\s|$)/.exec(String(item ?? '').trim())?.[1];
+  if (!name) return false;
+  if (name === 'desk-review') return true;
+  return ['.agents', '.claude'].some((d) => {
+    try { return readFileSync(join(root, d, 'skills', name, 'SKILL.md'), 'utf8').includes('desk-review:verdict'); } catch { return false; }
+  });
+}
+
+// The review to run and post, under §4 Local review command (`rows`, its items) and §4 Clean review
+// verdict (`clean`): { run, clash }. A verdict row in counts form reads only a desk-review verdict
+// marker, so with no item that posts one `run` is /desk-review and `clash` says the rows contradict
+// each other. `run` is `none` with no review, and null with the row unset.
+export function reviewPlan(rows, clean, root) {
+  const items = [].concat(rows ?? []);
+  if (!items.length) return { run: null, clash: null };
+  if (isNone(items) || !Object.keys(pairs(clean)).length) return { run: items[0], clash: null };
+  const posting = items.find((x) => postsVerdict(x, root));
+  if (posting) return { run: posting, clash: null };
+  return {
+    run: '/desk-review',
+    clash: `config §4 Local review command (${items.map((x) => `\`${x}\``).join(' ')}) and §4 Clean review verdict (\`${clean}\`) contradict each other: that verdict reads only a desk-review verdict marker, and that command posts none, so workers run /desk-review in its place. Run /desk-setup to set §4 Local review command to /desk-review`,
+  };
+}
+
 // The lock a §4 command row's items take under with-lock.sh; every other row runs `nolock`.
 export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser', 'storybook-cmd': 'browser' };
 // Rows a worker runs only under their lock, never bare.
@@ -774,6 +815,47 @@ export function parseWorkerLocation(raw) {
 }
 export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: 'local' }));
 
+// Config §3b "Phase 0 levers": the Phase 0 changes switched on, one name per backtick span (a span may
+// hold several, split on commas and spaces). No row, an unset row or `none` is every lever off, and so
+// is no config at all: off is the side that changes nothing. A name desk does not know is kept in
+// `unknown`, for the caller to name, and is never on.
+//   -> { on: [lever], unknown: [name] }
+export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers']);
+export function parseLevers(items) {
+  const names = [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter((x) => x && !isNone(x)))];
+  return { on: names.filter((n) => LEVERS.includes(n)), unknown: names.filter((n) => !LEVERS.includes(n)) };
+}
+export function levers() {
+  try { return parseLevers(configValues('levers')); } catch (e) { if (e instanceof NoRepoConfigError) return parseLevers(null); throw e; }
+}
+export const leverOn = (name, l = levers()) => l.on.includes(name);
+
+// Config §3b "Worker effort": `<start>=<effort>` pairs, read only with the effort lever on. A start is
+// the stage a session starts at, `task` (a fix or review try) or `resume`. A value or start desk does
+// not know is refused, naming it, whichever session is starting.
+//   -> { <start>: <effort> }, or throws DeskConfigError
+export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
+export const RESUME_STAGES = Object.freeze(['3', '4', '4b', '5', '6', '7', '8', '9']);
+export const EFFORT_STARTS = Object.freeze(['0', ...RESUME_STAGES, 'task', 'resume']);
+export const DEFAULT_EFFORT = 'medium';
+export const NO_EFFORT = 'default';
+export function parseWorkerEffort(items) {
+  const row = (items ?? []).join(' ').trim();
+  const bad = (why) => new DeskConfigError(`desk: config §3b "Worker effort" is "${row}" — ${why}want \`none\`, or \`<start>=<effort>\` pairs: a start of ${EFFORT_STARTS.join(', ')}, and an effort of ${EFFORTS.join(', ')}. Refusing to guess.`);
+  const out = {};
+  for (const pair of row.split(/[\s,]+/).filter((p) => p && !isNone(p))) {
+    const [start, effort, ...rest] = pair.split('=');
+    if (effort === undefined || rest.length) throw bad(`\`${pair}\` is not a pair; `);
+    if (!EFFORT_STARTS.includes(start)) throw bad(`unknown start \`${start}\`; `);
+    if (!EFFORTS.includes(effort)) throw bad(`unknown effort \`${effort}\`; `);
+    if (out[start]) throw bad(`start \`${start}\` is named twice; `);
+    out[start] = effort;
+  }
+  return out;
+}
+// The effort a session starting at `start` is launched at: NO_EFFORT (no --effort) with the lever off.
+export const workerEffort = (start) => (leverOn('effort') ? parseWorkerEffort(configValues('worker-effort'))[start] ?? DEFAULT_EFFORT : NO_EFFORT);
+
 // Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
 // `standard`; lane B, size M and an unsized ticket are `high`.
 export function modelTier({ lane, size } = {}) {
@@ -789,6 +871,8 @@ export const jiraName = () => {
   catch { return resolve({ env: 'DESK_JIRA_NAME', id: 'name', identity: true }); }
 };
 export const repoRoot = () => resolve({ env: 'DESK_REPO_ROOT', id: 'repo-root', identity: true }).replace(/\/+$/, '');
+// reviewPlan on this repo's rows.
+export const reviewRows = () => reviewPlan(configValues('local-review'), configValue('clean-verdict'), repoRoot());
 export const worktreesDir = () => resolve({
   env: 'DESK_WORKTREES_DIR', id: 'worktrees-dir',
   fallback: () => { const r = repoRoot(); return join(dirname(r), `${basename(r)}-worktrees`); },
@@ -1253,7 +1337,7 @@ export const STALLING_ROWS = Object.freeze({
 // Unprotected, nothing on GitHub stops a red merge, so these stay recommended at `ask` (desk-setup §2).
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 
-// -> { missing: [{section, label}], stalls: [{key, reason}], dontAsk: file | null }
+// -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, dontAsk: file | null }
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1280,14 +1364,47 @@ export function configDrift({ config, template = templatePath(), root = null, ho
       if (why) unlisted.push({ row: CONFIG_ROWS[id].row, item, why });
     }
   }
-  return { missing, stalls, unlisted, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], dontAsk: mode === 'dontAsk' ? file : null };
 }
 
-export function driftLines({ missing, stalls, unlisted = [], dontAsk }) {
+// App directories the other §4 command rows name, whose package.json has a `dev` script, that §4 Dev
+// server has no item for: a worker on a ticket there is refused that app's dev server. A Dev server
+// item's own directory serves it, and so does a `--filter`/`-F` naming its package or path. The root
+// is never a gap: its `dev` script runs the workspace, not a second app.
+// -> [{ dir, rows: [row name] }]. None while the Dev server row is unset or `none`.
+export function devServerGaps(parsed, root) {
+  const dev = configValuesIn(parsed, 'dev-cmd');
+  if (!dev || isNone(dev)) return [];
+  const served = new Set();
+  for (const item of dev) {
+    const { dir, cmd } = parseCommandItem(item);
+    served.add(dir);
+    for (const m of cmd.matchAll(/(?:--filter[=\s]|-F\s)\s*['"]?([^\s'"]+)/g)) served.add(m[1].replace(/^\.\//, '').replace(/\/+$/, ''));
+  }
+  const pkg = (dir) => { try { return JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')); } catch { return null; } };
+  const named = new Map();
+  for (const id of WORKER_COMMAND_IDS.filter((x) => x !== 'dev-cmd')) {
+    const values = configValuesIn(parsed, id);
+    if (!values || isNone(values)) continue;
+    for (const item of values) {
+      const { dir } = parseCommandItem(item);
+      if (dir === '.' || served.has(dir)) continue;
+      if (!named.has(dir)) named.set(dir, []);
+      if (!named.get(dir).includes(CONFIG_ROWS[id].row)) named.get(dir).push(CONFIG_ROWS[id].row);
+    }
+  }
+  return [...named]
+    .map(([dir, rows]) => ({ dir, rows, p: pkg(dir) }))
+    .filter(({ p }) => p?.scripts?.dev && !served.has(p.name))
+    .map(({ dir, rows }) => ({ dir, rows }));
+}
+
+export function driftLines({ missing, stalls, unlisted = [], noDev = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
+    ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
   return lines.length ? lines : ['no drift'];
@@ -1401,6 +1518,25 @@ if (isMain) {
         console.log(expandHome(v));
         break;
       }
+      case 'review-cmd': {
+        const { run } = reviewRows();
+        if (run == null) process.exit(3);
+        console.log(run);
+        break;
+      }
+      case 'levers': {
+        // `levers <name>` prints on or off; bare, every lever on and every name desk does not know.
+        const l = levers();
+        const known = `known: ${LEVERS.join(', ')}`;
+        if (args[0]) {
+          console.log(leverOn(args[0], l) ? 'on' : 'off');
+          if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
+          break;
+        }
+        console.log(`on: ${l.on.join(' ') || 'none'}`);
+        if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (config §3b "${CONFIG_ROWS.levers.row}" names levers desk does not know; each is read as off; ${known})`);
+        break;
+      }
       case 'batch-base': {
         const b = batchBase();
         if (!b) process.exit(3);
@@ -1444,6 +1580,11 @@ if (isMain) {
         console.log(workerModels()[args[0]] || 'none');
         break;
       }
+      case 'effort':
+        // What spawn-worker.sh launches a session at; a malformed §3b Worker effort row exits 4.
+        if (!args[0]) throw new Error(`usage: desk-env.mjs effort ${EFFORT_STARTS.join('|')}`);
+        console.log(workerEffort(args[0]));
+        break;
       case 'budget': {
         const b = args[0] === 'batch' ? batchBudget() : args[0] === 'worker' ? workerBudget() : null;
         if (!b) throw new Error('usage: desk-env.mjs budget worker|batch');
@@ -1689,7 +1830,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs');
+        console.error('usage: desk-env.mjs where|get|review-cmd|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs');
         process.exit(2);
     }
   } catch (e) {

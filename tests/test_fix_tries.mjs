@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 import { readVerdict, localReviewSet } from '../desk/bin/review-threads.mjs';
 let fails = 0;
@@ -352,6 +352,29 @@ t('DS-318 AC5 the same for a conflict out of draft', fixCall(tk({ ...said318, fi
   'still in conflict with main after 2 fix tries; the last try said: pr=702 jira=In Progress said=src/a.ts left unresolved: both sides rename the export');
 t('DS-318 AC5 a last try that was not for the conflict gave no reason for it', conflictFix(tk({ ...said318, fix: { try: 2, kind: 'review', finished: '2026-10-29T12:00:00Z' } }), { pr: 702, head: HEAD, base: 'main' })?.why,
   'still in conflict with main after 2 fix tries');
+
+// ---- DS-440: a check build that failed behind the base goes to a sync try, one of the FIX_TRIES_MAX.
+const build440 = "its check build `./scripts/ensure-flows-image.sh` exited 1 at aaaaaaaaa: main's backend/ has changed; its head is behind main";
+const s440 = syncFix(tk(), { pr: 855, head: HEAD, base: 'main', why: build440 });
+t('DS-440 AC1 a sync try is requeued as try 1 on the draft', `${s440?.call} ${s440?.fix.try}/${s440?.fix.of} ${s440?.fix.kind} ${s440?.fix.draft} ${s440?.fix.base}`, `requeue 1/${FIX_TRIES_MAX} sync true main`);
+t('DS-440 a sync try counts against FIX_TRIES_MAX', syncFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }] }), { pr: 855, head: HEAD, base: 'main', why: build440 })?.fix.try, 2);
+t('DS-440 and so does a conflict try after it', conflictFix(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'sync' }] }), { pr: 855, head: HEAD, base: 'main' })?.fix.try, 2);
+const brief440 = fixBrief(tk({ fix: s440.fix }));
+t('DS-440 AC2 the brief merges the base, runs the checks and fixes a break the merge brought in, in its own commit',
+  brief440.includes('Merge origin/main into your branch (git merge, never a rebase or a force push)') && brief440.includes('two migrations with the same parent') && brief440.includes('in a commit of its own after the merge commit, before you push') && brief440.includes(build440), true);
+t('DS-440 AC3 the brief leaves the build to the pass, at the new head', brief440.includes('the pass runs it at your new head and re-runs the check'), true);
+t('DS-440 the brief names the person as next once the tries are spent', brief440.includes('A PR still behind main with its check build failing after try 2 goes to the person.'), true);
+const task440 = fixTask(tk({ fix: s440.fix }));
+t('DS-440 AC2 the task merges the base, fixes what it breaks, reviews the new head and leaves the PR in draft',
+  task440.includes('merge origin/main into your branch') && task440.includes('fix each break the merge brought in') && task440.includes('review the new head with desk-review') && task440.includes('leave the PR in draft'), true);
+t('DS-440 AC5 the task asks for the outcome on its DONE line', task440.includes('said=<one line: what the merge broke and how you fixed it, or what still fails and why>.'), true);
+t('DS-440 a sync try already made at this head is not made again', syncFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'sync' }] }), { pr: 855, head: HEAD, base: 'main', why: build440 })?.call, 'stuck');
+const said440 = { fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'sync' }, { try: 2, head: 'c'.repeat(40), kind: 'sync' }], fix: { try: 2, of: 2, kind: 'sync', base: 'main', finished: '2026-11-06T10:00:00Z' }, result: { summary: 'pr=855 jira=In Progress said=alembic heads still split' } };
+t('DS-440 AC5 out of tries it is stuck, naming the build and what the last sync try said', syncFix(tk(said440), { pr: 855, head: HEAD, base: 'main', why: build440 })?.why,
+  `still behind main with its check build failing after 2 fix tries: ${build440}; the last try said: pr=855 jira=In Progress said=alembic heads still split`);
+t('DS-440 AC5 a last try of another kind says nothing for it', syncFix(tk({ ...said440, fix: { ...said440.fix, kind: 'conflict' } }), { pr: 855, head: HEAD, base: 'main', why: build440 })?.why,
+  `still behind main with its check build failing after 2 fix tries: ${build440}`);
+t('DS-440 AC5 the conflict reason still ignores a sync try\'s summary', conflictFix(tk(said440), { pr: 855, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 2 fix tries');
 
 // ---- DS-375: a stuck reason names the step each run failed at, keeps its checks by name, and leaves a
 // §4 Check builds check (out of draft) or a §4 Pre-merge steps one to the person, with what clears it.

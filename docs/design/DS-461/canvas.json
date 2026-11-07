@@ -1,0 +1,161 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Main.dc.html": {
+      "h": 800,
+      "title": "Home: the login new workers start on",
+      "w": 880,
+      "x": 0,
+      "y": 0
+    },
+    "Setup.dc.html": {
+      "h": 800,
+      "title": "/desk-setup: rotation rules, once per computer",
+      "w": 880,
+      "x": 0,
+      "y": 1360
+    },
+    "SetupDone.dc.html": {
+      "h": 800,
+      "title": "/desk-setup on a second repo: rules already set",
+      "w": 880,
+      "x": 960,
+      "y": 1360
+    },
+    "StateAllOut.dc.html": {
+      "h": 800,
+      "title": "Every login at its limit",
+      "w": 880,
+      "x": 2880,
+      "y": 2540
+    },
+    "StateBenched.dc.html": {
+      "h": 800,
+      "title": "A login benched at its limit",
+      "w": 880,
+      "x": 1920,
+      "y": 2540
+    },
+    "StateOne.dc.html": {
+      "h": 800,
+      "title": "One login only: as today",
+      "w": 880,
+      "x": 0,
+      "y": 2540
+    },
+    "StateSignIn.dc.html": {
+      "h": 800,
+      "title": "No reading yet, and a login signed out",
+      "w": 880,
+      "x": 960,
+      "y": 2540
+    },
+    "Usage.dc.html": {
+      "h": 800,
+      "title": "6 Usage: every login, 5h and 7d",
+      "w": 880,
+      "x": 960,
+      "y": 0
+    },
+    "UsageAdd.dc.html": {
+      "h": 800,
+      "title": "6 Usage: adding a login",
+      "w": 880,
+      "x": 2880,
+      "y": 0
+    },
+    "UsageRule.dc.html": {
+      "h": 800,
+      "title": "6 Usage: changing a login's rule",
+      "w": 880,
+      "x": 1920,
+      "y": 0
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-11-06T12:00:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "noteOrder": [
+    "t1",
+    "t2",
+    "t3",
+    "key",
+    "col",
+    "setup",
+    "states"
+  ],
+  "notes": {
+    "col": {
+      "color": "gray",
+      "text": "Colours are desk-q's own (desk-q.mjs:860–880 and 1627): One Dark truecolor, labels grey 247 #9E9E9E, bar track 239 #4E4E4E, selected row 236 #303030.\n\nBars keep today's thresholds: green under 60%, yellow 60–84%, red at 85% and over.",
+      "w": 440,
+      "x": 3840,
+      "y": 620
+    },
+    "key": {
+      "color": "blue",
+      "text": "How rotation works, as drawn\n\nEach login has one rule:\n● in rotation  new workers start on the one with the most room\n○ standby  used only when every login in rotation is at its limit\n◌ off  never used\n\nspace on view 6 cycles a login's rule. It saves at once, with u to undo, so there is no confirm step.\n\nRules are per computer, not per repo: every repo here shares them. /desk-setup asks for them once. desk-q view 6 changes them after.\n\nThe same rules apply to Codex logins.\n\nThe emails and plans are example data (Ben's logins). Nothing in desk names them.",
+      "w": 440,
+      "x": 3840,
+      "y": 0
+    },
+    "setup": {
+      "color": "gray",
+      "text": "If you pick \"Choose which rotate\", a second question lists the logins to tick. Every login you leave unticked goes on standby. AskUserQuestion shows 4 options at most, so with more than 4 logins setup lists them in the reply and asks you to name the ones to rotate.\n\nCodex gets the same question, after Claude, when more than one Codex login is signed in.",
+      "w": 440,
+      "x": 1920,
+      "y": 1360
+    },
+    "states": {
+      "color": "gray",
+      "text": "With one login and no rotation set, home keeps today's line: \"Claude usage  5h … · 7d …\".\n\nStandby and off logins are read less often than logins in rotation: a probe costs tokens on that login, and none of its workers write readings. Their cells show \"as of\" when the reading is over 5 minutes old.",
+      "w": 440,
+      "x": 3840,
+      "y": 2540
+    },
+    "t1": {
+      "kind": "title1",
+      "maxW": 3760,
+      "text": "desk-q at 104 columns: whose subscription the work runs on",
+      "w": 240,
+      "x": 0,
+      "y": -260
+    },
+    "t2": {
+      "kind": "title1",
+      "maxW": 1840,
+      "text": "Set once per computer, in /desk-setup",
+      "w": 240,
+      "x": 0,
+      "y": 1100
+    },
+    "t3": {
+      "kind": "title1",
+      "maxW": 3760,
+      "text": "States",
+      "w": 240,
+      "x": 0,
+      "y": 2280
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Usage.dc.html",
+    "UsageRule.dc.html",
+    "UsageAdd.dc.html",
+    "Setup.dc.html",
+    "SetupDone.dc.html",
+    "StateOne.dc.html",
+    "StateSignIn.dc.html",
+    "StateBenched.dc.html",
+    "StateAllOut.dc.html"
+  ],
+  "pages": [],
+  "title": "desk-q 6 Usage: subscriptions and rotation"
+}

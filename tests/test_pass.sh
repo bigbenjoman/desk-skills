@@ -43,8 +43,10 @@ EOF
 # would touch GitHub, a browser, a worktree or a worker.
 for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
 cat > "$T/desk/bin/upload-images.mjs" <<EOF
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
+// \$T/upload-left, when it exists, is an upload that left cells: what upload-images says, and its exit 4.
+if (existsSync('$T/upload-left')) { process.stdout.write(readFileSync('$T/upload-left', 'utf8')); process.exit(4); }
 console.log('done: 1 image(s) in the body, 0 placeholder(s) left');
 EOF
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
@@ -321,11 +323,11 @@ spawn_one P-175
 check "DS-305 AC4 an unreadable named batch's queue does not stop the spawn, and the report names it" '[ "$(field P-175 state)" = "\"running\"" ] && [ "$(field P-175 port)" = 47501 ] && echo "$out" | grep -qF "ports: $X1/queue.json is not valid JSON ("'
 rm -rf "$T/desk/repos/acme__other/batches"; other '{"tickets": not json'
 
-# DS-121: a worker at the 5-hour usage limit. The event is built from the provisional fixture (the
-# real event at the limit has not been captured yet), with its reset moved to suit each case. Each
-# case is a running ticket whose log stopped growing five passes ago, one pass from the stall killer.
+# DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker,
+# with its reset moved to suit each case. Each case is a running ticket whose log stopped growing
+# five passes ago, one pass from the stall killer.
 export DESK_QUEUE="$T/queue-u.json" DESK_AUTOPILOT_STATE="$T/state-u" AUTOPILOT_PORT_FLOOR=47601; mkdir -p "$T/state-u/logs"
-limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); if (process.argv[3]) e.rate_limit_info.rateLimitType = process.argv[3]; console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.provisional.json" "$1" "${2:-}"; }
+limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); if (process.argv[3]) e.rate_limit_info.rateLimitType = process.argv[3]; console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.json" "$1" "${2:-}"; }
 # The registry stub also answers the probe call (claude -p): what the probe says is $T/probe.out.
 # probe_says limited <resetsAt> [type] | ok
 probe_says(){ if [ "$1" = ok ]; then { say "ok"; echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; } > "$T/probe.out"
@@ -381,6 +383,16 @@ quiet_running U-9 live-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-344 a rejection with no reset time is a pause, not a stall" '[ "$(field U-9 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: U-9 on the 5-hour usage limit, then it resumes"'
 q set U-9 state=done
+
+# U-10: the tail a real worker wrote at the limit, its reset moved an hour ahead. After the
+# rejection come the error messages written in the model's place and a subagent's reply to a request
+# already in flight; neither is the model answering, so the session's 429 is the same 5-hour limit.
+{ say "AUTOPILOT_STAGE: 4/9 verify"; node -e 'const fs = require("fs"); process.stdout.write(fs.readFileSync(process.argv[1], "utf8").replaceAll("1792768800", process.argv[2]))' "$S/fixtures/usage-limit-five-hour-session.jsonl" $((now + 3600)); } > "$T/state-u/logs/U-10.log"
+quiet_running U-10 live-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-174 AC2 a real worker's tail at the limit is paused on the 5-hour limit with its reset time" '[ "$(field U-10 state)" = "\"running\"" ] && echo "$out" | grep -q "^paused on the usage limit: U-10 on the 5-hour usage limit until $(date -u -r $((now + 3600)) "+%Y-%m-%d %H:%M" 2>/dev/null || date -u -d "@$((now + 3600))" "+%Y-%m-%d %H:%M") UTC, then it resumes"'
+check "DS-174 AC2 and is neither unrecognised nor recorded as resumed" '! echo "$out" | grep -q "unrecognised usage-limit event: U-10" && ! grep -q "^- \[U-10\] resumed" "$T/state-u/batch-notes.md"'
+q set U-10 state=done
 
 # U-4: a rate-limit event that is neither traffic under the limit nor a rejection is named, not
 # guessed at, and the stall check runs as before. U-5's only event is ordinary traffic, and the limit
@@ -493,6 +505,21 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-140 AC8 the next pass lists an overridden decision under WAITING ON YOU" 'echo "$out" | awk "/^WAITING ON YOU/,0" | grep -qF "C-3: decision overridden — \"Badge colour?\" is now \"neutral\" (was \"brand\"), by Ben at 2026-10-22T09:00:00.000Z"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-140 AC8 and only once" '! echo "$out" | grep -q "decision overridden"'
+# §4 rows no review of the command can read clean. Each config is the fixture's plus its two rows.
+review_rows(){ { cat "$T/config.md"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Local review command | `%s` |\n| Clean review verdict | `%s` |\n' "$1" "$2"; } > "$T/config-rows.md"; out=$(DESK_CONFIG="$T/config-rows.md" node "$B/pass.mjs" 2>&1); }
+review_rows /code-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 a pass logs that the review rows contradict each other, naming both" 'echo "$out" | grep -F "review rows: config §4 Local review command (\`/code-review\`) and §4 Clean review verdict (\`p0=0 p1=0 gaps=0\`) contradict each other" | grep -qF "/desk-setup"'
+review_rows /code-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 and only once" '! echo "$out" | grep -q "review rows:"'
+review_rows /other-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 a different pair of rows is logged afresh" 'echo "$out" | grep -qF "(\`/other-review\`)"'
+rm -f "$T/state-c/review-rows-reported.txt"
+review_rows /desk-review 'p0=0 p1=0 gaps=0'
+check "DS-439 negative control: /desk-review beside the counts logs nothing" '! echo "$out" | grep -q "review rows:"'
+review_rows /code-review 'no findings'
+check "DS-439 negative control: /code-review beside a plain-text verdict logs nothing" '! echo "$out" | grep -q "review rows:"'
+review_rows none 'p0=0 p1=0 gaps=0'
+check "DS-439 AC6 §4 Local review command none logs nothing" '! echo "$out" | grep -q "review rows:"'
 rm "$T/digest/last.json"
 out=$(node "$B/pass.mjs" --json 2>&1)
 check "DS-140 AC1 a pass past a slot builds the digest and pushes it" 'pushes | grep -q "^digest:20" && ls "$T/digest"/*.md >/dev/null 2>&1'
@@ -631,6 +658,22 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: PR #88"'
 check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: PR #88 (no marker printed"'
 q set Y-7 state=done
+# The same exits on the person's instruction: an open PR does not show it was carried out, and a ticket
+# recorded done has its fix closed in that pass, which frees the merge.
+instruction_fix='fix={"try":1,"of":1,"kind":"instruction","pr":88,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}'
+killed Y-61 sess-y61; q set Y-61 "$instruction_fix"; result_event >> "$T/state-k/logs/Y-61.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-501 a worker on the person's instruction that ended with no marker parks, its fix left open" '[ "$(field Y-61 state)" = "\"parked\"" ] && [ "$(field Y-61 fix.finished)" = null ] && [ "$(field Y-61 result)" = null ] && field Y-61 park.question | grep -q "your instruction on PR #88 may not be carried out" && ! echo "$out" | grep -q "Y-61: PR #88 (no marker printed"'
+q requeue Y-61
+check "DS-501 a requeue of that park keeps the instruction for its next worker" '[ "$(field Y-61 state)" = "\"triaged\"" ] && [ "$(field Y-61 fix.answer)" = "\"rename it\"" ] && [ "$(field Y-61 fix.finished)" = null ]'
+q set Y-61 state=done
+killed Y-62 sess-y62; q set Y-62 "$instruction_fix" resumes=2
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-501 so does a worker on the instruction killed past its resumes" '[ "$(field Y-62 state)" = "\"parked\"" ] && [ "$(field Y-62 fix.finished)" = null ] && field Y-62 park.question | grep -q "your instruction on PR #88"'
+q set Y-62 state=done
+killed Y-63 sess-y63; q set Y-63 "$instruction_fix" fix.finished=2026-01-01T00:00:00Z; result_event >> "$T/state-k/logs/Y-63.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: PR #88 (no marker printed"'
 probe_says limited $(( $(date +%s) + 3600 ))
 killed Y-6 sess-y6; usage_exit Y-6 $(( $(date +%s) + 3600 ))
 out=$(node "$B/pass.mjs" 2>&1)
@@ -905,6 +948,18 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-158 AC1 the spawn line shows the preflight's cost and turns" 'echo "$out" | grep -q "^spawned: P-1 port=.*; preflight \$0.43, 9 turn(s)"'
 check "DS-158 AC1 and the ticket's log holds them" 'grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.4321,\"num_turns\":9" "$T/state-p/logs/P-1.log"'
 check "DS-158 a failed preflight's cost is in the failure and the ticket's log too" '[ "$(field P-2 state)" = "\"failed\"" ] && echo "$out" | grep -q "preflight \$0.05, 2 turn(s)" && grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.05,\"num_turns\":2" "$T/state-p/logs/P-2.log"'
+# A skipped preflight spends nothing, so a fresh ticket with no log yet spawns with none.
+cat > "$T/desk/bin/spawn-worker.sh" <<'EOF'
+if [ "$3" = preflight ] && [ "$1" = P-4 ]; then printf '[preflight] %s\n[preflight] skipped: its last pass had this fingerprint\n[preflight] pass\n' "$1"; exit 0; fi
+if [ "$3" = preflight ] && [ "$1" = P-2 ]; then printf '[preflight] %s\n[preflight] cost=0.05 turns=2\n  W_IN   BLOCKED  FAIL (wanted OK)\n' "$1"; exit 1; fi
+if [ "$3" = preflight ]; then printf '[preflight] %s\n[preflight] cost=0.4321 turns=9\n[preflight] pass\n' "$1"; exit 0; fi
+echo "[spawn] ticket=$1"
+EOF
+q add P-4; q set P-4 state=triaged lane=A branch=fix/P-4
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-451 AC1 the spawn line says the preflight was skipped on a matching fingerprint" 'echo "$out" | grep -q "^spawned: P-4 port=.*; preflight skipped on a matching fingerprint"'
+check "DS-451 AC1 and no preflight line reaches the log, so nothing reads as an unknown cost" '[ "$(field P-4 state)" = "\"running\"" ] && [ "$(field P-4 log_bytes)" = 0 ] && ! grep -qs desk_preflight "$T/state-p/logs/P-4.log"'
+q set P-4 state=done
 # P-1's worker is in long model turns: with no partial messages its log grows only when a message
 # ends, here once every five passes. Today's threshold, six quiet passes, still applies.
 q set P-1 session_id=live-1 idle_passes=0 "log_bytes=$(wc -c < "$T/state-p/logs/P-1.log" | tr -d ' ')"
@@ -944,6 +999,32 @@ check "DS-194 AC2 a merged PR is recorded merged" '[ "$(field G-2 pr_status.stat
 check "DS-194 one gh call per done ticket with a PR, none for one without" '[ "$(grep -c "^pr view" "$T/gh-calls")" = 2 ] && [ "$(field G-3 pr_status)" = null ]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-194 AC2 the next pass reads the open PR again and makes no call for the merged one" '[ "$(cut -d" " -f1-3 "$T/gh-calls")" = "pr view 300" ]'
+
+# ---- A failed check keeps the error its job gave, read once per job, and the PR who approved its head
+export DESK_QUEUE="$T/queue-ga.json" DESK_AUTOPILOT_STATE="$T/state-ga"
+mkdir -p "$T/state-ga/logs"
+FIX="$S/fixtures/review-gate-annotations.json"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 310 "*) echo '{"state":"OPEN","headRefOid":"abc","reviews":[{"state":"APPROVED","author":{"login":"old"},"commit":{"oid":"zzz"}},{"state":"APPROVED","author":{"login":"mousedown"},"commit":{"oid":"abc"}},{"state":"COMMENTED","author":{"login":"me"},"commit":{"oid":"abc"}}],"statusCheckRollup":[{"__typename":"CheckRun","name":"Review gate","workflowName":"gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/7/job/70"},{"__typename":"CheckRun","name":"tests","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/80"},{"__typename":"CheckRun","name":"Lint","workflowName":"ci","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/81"}]}' ;;
+  "api repos/"*"/check-runs/70/annotations") jq -c '.protected' "$FIX" ;;
+  "api repos/"*"/check-runs/81/annotations") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+q init ga
+q add GA-1; q set GA-1 state=done result.pr=310
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 AC1 a failed check keeps its gate's error line, not GitHub's exit code line" 'field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required — 2 protected file(s): "'
+check "DS-499 a passing check is not read, and one whose annotations could not be read keeps no error" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name != \"Review gate\") | has(\"error\")]")" = "[false,false]" ] && ! grep -q "check-runs/80" "$T/gh-calls"'
+check "DS-499 AC2 who approved the head is recorded, and an approval of an older commit is not" '[ "$(field GA-1 pr_status.approvals | jq -c .)" = "[\"mousedown\"]" ]'
+touch "$T/annotations-ok"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 the next pass keeps a job's error without reading it again, and reads one it could not" '! grep -q "check-runs/70" "$T/gh-calls" && grep -q "check-runs/81" "$T/gh-calls" && field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 a job with no error line is not read again" '! grep -q "check-runs/" "$T/gh-calls"'
 
 # ---- DS-175: a merge is recorded however the PR was merged, and a missing eta history is built once
 ago(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 3600e3).toISOString())' "$1"; }
@@ -1319,7 +1400,7 @@ EOF
 cat > "$T/desk/bin/intake.mjs" <<EOF
 import { appendFileSync, existsSync } from 'node:fs';
 appendFileSync('$T/admits', process.argv.slice(2).join(' ') + '\n');
-if (existsSync('$T/admit-refuse')) { console.log('not admitted ' + process.argv[3] + ': batch ev is run by a session, not the supervisor'); process.exit(1); }
+if (existsSync('$T/admit-refuse')) { console.log('triage: done ' + process.argv[3] + ' lane A (1s)\nnot admitted ' + process.argv[3] + ': batch ev is run by a session, not the supervisor\nsummary: 0 of 1 admitted, 1 not admitted (1s)'); process.exit(1); }
 console.log('admitted ' + process.argv[3]);
 EOF
 uconfig yes; printf '| Evidence workflow | `pr-evidence.yml` |\n' >> "$T/config-u.md"
@@ -1337,6 +1418,8 @@ check "DS-415 AC2 three drafts failing the same way file one fix and try to admi
 check "DS-415 AC2 its ticket names the run and the error line" 'grep -q "Error: did not set a _vercel_jwt cookie for the bypass secret" "$T/state-ev/tickets/$fixkey.md" && grep -q "#801 (E-801), #802 (E-802), #803 (E-803)" "$T/state-ev/tickets/$fixkey.md"'
 check "DS-415 a fix the batch refuses is one item, on the lowest PR, naming the others, not one per PR" \
   '[ "$(field E-801 undraft.call)" = "\"person\"" ] && [ "$(field E-802 undraft.call)" = "\"evidence-fix\"" ] && [ "$(field E-803 undraft.call)" = "\"evidence-fix\"" ] && [ "$(echo "$out" | grep -c "DRAFT — PR #80")" = 1 ] && echo "$out" | grep "DRAFT — PR #801" | grep -q "/desk-admit $fixkey. PR(s) #802, #803 fail the same way"'
+check "a refused fix keeps the refusal's reason, not the summary line after it" \
+  'echo "$out" | grep -q "but it was not admitted (not admitted $fixkey: batch ev is run by a session, not the supervisor)" && ! echo "$out" | grep -q "summary: 0 of 1"'
 rm -f "$T/admit-refuse"; : > "$T/gh-calls"; : > "$T/admits"; out=$(node "$B/pass.mjs" 2>&1)
 q add "$fixkey"
 check "DS-415 AC1 AC2 once the fix is admitted, each PR waits on it, and none goes to the person" \
@@ -1354,6 +1437,24 @@ check "DS-415 AC3 and the next pass waits on those runs, starting none again" \
   '! grep -q "^workflow run pr-evidence.yml .* -f pr=80[12]$" "$T/gh-calls" && [ "$(field E-801 undraft.call)" = "\"wait\"" ]'
 check "DS-415 a run GitHub refused to start again is started at the next pass, not read as failing after the fix" \
   'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=803$" "$T/gh-calls" && [ "$(field E-803 undraft.call)" = "\"evidence\"" ]'
+
+# ---- A batch on its own base: the evidence workflow runs from §0 Default branch, not the base --------
+# The base goes straight onto the queue: set-batch asks origin for it, and this repo has no origin.
+export DESK_QUEUE="$T/queue-eb.json" DESK_AUTOPILOT_STATE="$T/state-eb"
+mkdir -p "$T/state-eb/logs" "$T/state-eb/evidence-runs"; : > "$T/admits"
+q init eb; q add E-804; q set E-804 state=done result.pr=804
+q add E-805; q set E-805 state=done result.pr=805
+printf '{"workflow":"pr-evidence.yml","runId":"9805","url":"https://github.com/acme/widgets/actions/runs/9805","at":"2026-11-01T19:28:00Z","cells":2}\n' > "$T/state-eb/evidence-runs/805-$HEAD_A.json"
+node -e 'const fs = require("fs"), f = process.argv[1], q = JSON.parse(fs.readFileSync(f, "utf8")); q.base = "feat/x"; fs.writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+: > "$T/gh-calls"; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-373 AC1 a dry-run pass on a batch base prints the dispatch with --ref the default branch" \
+  'echo "$out" | grep -q "would run \`gh workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=804\`" && ! grep -q "^workflow run" "$T/gh-calls"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-373 AC1 the pass starts it there too" \
+  'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=804$" "$T/gh-calls" && ! grep -q "^workflow run .*--ref feat/x" "$T/gh-calls"'
+ebfix=$(node -e 'const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(Object.values(f).map((r) => r.fix).join(" "))' "$T/state-eb/evidence-runs/fixes.json" 2>/dev/null)
+check "DS-373 the fix ticket for a failed run reproduces it where the pass runs it" \
+  'grep -qF -- "--ref main -f pr=805" "$T/state-eb/tickets/$ebfix.md" && ! grep -q "feat/x" "$T/state-eb/tickets/$ebfix.md"'
 
 # ---- DS-278: a ready PR red after the driver's reruns, or in conflict, goes back to a fix worker twice
 # The fake gh answers each PR from $T/fx/<n>.json. The driver's rerun record is written as the driver
@@ -1552,6 +1653,8 @@ else if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readF
 else if (a[0] === 'pr' && a[1] === 'ready') fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), isDraft: false }));
 else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'workflow' && a[1] === 'run' && fs.existsSync('$T/wf-refuse-' + a[a.length - 1].replace('pr=', ''))) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
+else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
 else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
 else process.exit(1);
 EOF
@@ -1674,7 +1777,7 @@ check "DS-379 AC1 the capture try is not one of the fix tries" '[ "$(field S-1 f
 check "DS-379 AC3 still missing after the capture try, it is the person's, naming each screen and why" \
   '[ "$(field S-2 state)" = "\"done\"" ] && [ "$(field S-2 stuck.why | jq -r .)" = "2 screenshot(s) still not taken after a capture try: s-2-before.png, s-2-after.png; the capture try said: s-2-before.png: the page needs a signed-in admin; s-2-after.png: same" ] && echo "$out" | grep -qF "S-2: STUCK — PR #762: 2 screenshot(s) still not taken"'
 check "DS-379 AC4 screenshots taken but not approved for upload wait for the person, as before" \
-  '[ "$(field S-3 state)" = "\"done\"" ] && [ "$(field S-3 fix)" = null ] && echo "$out" | grep -qF "S-3: DRAFT — PR #763 stays draft: its screenshots are not in the body yet (a \`_drag <file>_\` cell is left). Upload the screenshots to #763"'
+  '[ "$(field S-3 state)" = "\"done\"" ] && [ "$(field S-3 fix)" = null ] && echo "$out" | grep -qF "S-3: DRAFT — PR #763 stays draft: 2 screenshot cell(s) left: s-3-before.png, s-3-after.png, whose files are saved, but config §3 pr-images leaves their upload to you"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-379 AC1 the capture worker's task is to take them and print AUTOPILOT_IMAGES" \
   'grep -q "^S-1 .*Your task is the capture try on PR #761.*print AUTOPILOT_IMAGES" "$T/spawns" && grep -q "^- s-1-after.png$" "$T/state-s/briefings/S-1.md"'
@@ -1689,6 +1792,59 @@ check "DS-379 AC2 what the capture worker took is uploaded into the PR's body, a
   'grep -qx "761 $T/state-s/images/S-1/" "$T/uploads" && [ "$(field S-1 images_uploaded)" = true ] && grep -q "^pr ready 761" "$T/gh-calls"'
 check "DS-379 AC3 what a capture worker said is kept whole, past the summary's 200 characters, even opening with a bracket" \
   '[ "$(field S-1 state)" = "\"done\"" ] && [ "$(field S-1 result.done.said | jq -r .)" = "$said1" ] &&[ "$(field S-1 result.summary | jq -r . | wc -c | tr -d " ")" -le 201 ]'
+
+# ---- DS-492: an upload that leaves cells goes to whatever fills them, with nothing put to the person,
+# and a body with no cell left leaves draft however the upload ended.
+: > "$T/spawns"
+mixed='Before | After
+<img alt="s-4-before" src="https://github.com/user-attachments/assets/4"> | _drag s-4-after.png_
+
+```evidence
+s-4-after.png | after | /x | 1280
+```'
+printf '| Evidence workflow | `pr-evidence.yml` |\n' >> "$T/config-s.md"
+q add S-4; q set S-4 state=running session_id=gone lane=A branch=fix/S-4 result.pr=764; frx 764 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 764 "$mixed"
+mkdir -p "$T/state-s/images/S-4"; : > "$T/state-s/images/S-4/s-4-before.png"
+say "AUTOPILOT_IMAGES: $T/state-s/images/S-4/" "AUTOPILOT_DONE: pr=764 jira=Done" > "$T/state-s/logs/S-4.log"
+printf '%s\n' '[upload] done: 1 image(s) in the body, 1 placeholder(s) left' > "$T/upload-left"
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-492 AC1 what is on disk is uploaded and what the workflow takes is started, in one pass" \
+  'grep -qx "764 $T/state-s/images/S-4/" "$T/uploads" && [ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=764$" "$T/gh-calls"'
+check "DS-492 AC1 and nothing is put to the person while it runs" \
+  '[ "$(field S-4 undraft.call)" = "\"evidence\"" ] && ! echo "$out" | grep -q "S-4: DRAFT" && ! echo "$out" | grep -q "S-4: image upload" && ! grep -q "^pr ready 764" "$T/gh-calls"'
+check "DS-492 AC1 the upload is reported as advanced, naming the cells left for the undraft step" \
+  'echo "$out" | grep -qF "S-4 images → #764, 1 cell(s) left for the undraft step"'
+rm -f "$T/upload-left"
+dragbody 764 "Before | After
+<img alt=\"s-4-before\" src=\"https://github.com/user-attachments/assets/4\"> | <img alt=\"s-4-after\" src=\"https://github.com/user-attachments/assets/5\">"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-492 AC2 every cell filled, the next pass takes it out of draft though the upload was partial" \
+  '[ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^pr ready 764" "$T/gh-calls"'
+# S-5: an upload that matched no cell at all still goes to the person, as before.
+q add S-5; q set S-5 state=running session_id=gone lane=A branch=fix/S-5 result.pr=765; frx 765 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 765 "_drag s-5.png_"
+mkdir -p "$T/state-s/images/S-5"; : > "$T/state-s/images/S-5/other.png"
+say "AUTOPILOT_IMAGES: $T/state-s/images/S-5/" "AUTOPILOT_DONE: pr=765 jira=Done" > "$T/state-s/logs/S-5.log"
+printf '%s\n' '[upload] uploaded, but found no _drag placeholders matching the files' > "$T/upload-left"
+out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-left"
+check "DS-492 an upload that matched no cell is partial and put to the person, never re-uploaded" \
+  '[ "$(field S-5 images_uploaded)" = "\"partial\"" ] && echo "$out" | grep -q "S-5: image upload to PR #765 is INCOMPLETE — .*do not re-upload\.$"'
+# S-6: an evidence workflow that cannot start asks for it to be run, never for an upload.
+q add S-6; q set S-6 state=done lane=A branch=fix/S-6 result.pr=766 images_uploaded=none; frx 766 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 766 "$mixed"
+: > "$T/wf-refuse-766"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/wf-refuse-766"
+check "DS-492 an evidence workflow that could not start asks for its run, not an upload" \
+  'echo "$out" | grep -qF "S-6: DRAFT — PR #766 stays draft: its evidence workflow \`pr-evidence.yml\` could not start: HTTP 502: Bad Gateway. Run \`gh workflow run pr-evidence.yml -f pr=766\`" && ! echo "$out" | grep "S-6: DRAFT" | grep -q upload'
+# S-7: the person's done recorded no cell left (undraft `filled`, its capture stuck cleared): the next
+# pass undrafts it. S-8, the same but put back to draft by a person, stays held.
+for k in 7 8; do q add "S-$k"; q set "S-$k" state=done lane=A "branch=fix/S-$k" "result.pr=76$k" images_uploaded=none stuck=null \
+  'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"capture","what":"take 1"}]' 'undraft={"call":"filled","why":"no screenshot cell is left in its body","action":null,"pr":76'"$k"'}'
+  frx "76$k" "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody "76$k" 'Before | After
+<img alt="a" src="https://github.com/user-attachments/assets/7"> | <img alt="b" src="https://github.com/user-attachments/assets/8">'; done
+printf '2026-11-06T10:00:00Z\tben\n' > "$T/fr/768.events"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-492 AC4 a draft the person's done recorded as filled is taken out of draft by the next pass" \
+  'grep -q "^pr ready 767" "$T/gh-calls" && [ "$(field S-7 undraft.call)" = "\"ready\"" ]'
+check "DS-492 AC4 negative control: put back to draft by a person, it stays held" \
+  '! grep -q "^pr ready 768" "$T/gh-calls" && [ "$(field S-8 undraft.call)" = "\"held\"" ]'
 
 # ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix
 # worker, and a verdict carries across merges of the base alone. $T/carry is a real clone: C-1's
@@ -1970,6 +2126,44 @@ check "DS-327 AC3 still red after the build and its re-run: the command is not r
 check "DS-327 AC3 and the PR is put to the person, naming the check" \
   'echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Flows image\" is still red at ${HB1:0:9} after its check build \`sh $T/build-ok.sh\` ran and the check was re-run. Fix \"Flows image\" on #761"'
 
+# ---- DS-490: a draft's check stuck pending, its run completed without it or pending past the limit, is
+# re-run once, then put to the person naming the job. The fake gh also answers run view from
+# $T/fb/run-<id>.json and takes run rerun and run cancel.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/run-' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && (a[1] === 'rerun' || a[1] === 'cancel')) { /* accepted */ }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { /* no PR was put back to draft */ }
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+# The pass runs rerun.sh from the installed bin directory, which here is under the test's home.
+mkdir -p "$T/desk/bin" && cp "$B/rerun.sh" "$T/desk/bin/rerun.sh"
+fbx 761 "$HB1" tests:SUCCESS "Cookie Notice:PENDING:9101"
+printf '%s' '{"status":"completed","startedAt":"2026-11-03T07:00:00Z","jobs":[{"databaseId":91011,"name":"Cookie Notice","status":"in_progress","startedAt":"2026-11-03T07:00:00Z"}]}' > "$T/fb/run-9101.json"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC1 a job its completed run left in progress is re-run as that job only" \
+  '[ "$(grep -c "^run rerun" "$T/gh-calls")" = 1 ] && grep -q "^run rerun --job 91011 --repo acme/widgets$" "$T/gh-calls" && [ "$(field V-1 undraft.call)" = "\"rerun\"" ]'
+check "DS-490 AC1 and the pass logs which job and why" \
+  'echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Cookie Notice\" is still in_progress though its run 9101 has completed, so that job is re-run (#761 red + completed -> rerun job 91011 of run 9101 (\"Cookie Notice\"), whose run completed without it)"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC1 still stuck after its re-run: the person, naming the job, and nothing re-run again" \
+  '! grep -q "^run rerun" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Cookie Notice\" is still in_progress though its run 9101 has completed, after it was re-run once at this head. Re-run job \"Cookie Notice\" of run 9101 on #761 once a runner can take it"'
+fbx 761 "$HB1" tests:SUCCESS "Slow job:PENDING:9102"
+printf '%s' '{"status":"in_progress","startedAt":"2026-11-03T07:00:00Z","jobs":[{"databaseId":91021,"name":"Slow job","status":"in_progress","startedAt":"2026-11-03T07:00:00Z"}]}' > "$T/fb/run-9102.json"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC2 pending past the limit with its run in progress: the run is cancelled, so its check is re-run" \
+  'grep -q "^run cancel 9102 --repo acme/widgets$" "$T/gh-calls" && [ "$(field V-1 undraft.call)" = "\"cancel\"" ] && grep -qx "Slow job" "$T/state-b/merge-driver/cancels-761-$HB1" && ! echo "$out" | grep -q "V-1: DRAFT"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-490 AC2 on a second expiry the person, naming the job, and nothing cancelled again" \
+  '! grep -q "^run cancel" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Slow job\" has been in_progress for .* with its run 9102 still in progress, past the 6h 0m limit, after it was re-run once at this head. Re-run job \"Slow job\" of run 9102 on #761"'
+fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
+
 # ---- DS-402: a worker that parks only on a red check §4 Check builds names is recorded done, and built
 # V-4 parks as VPL-603's worker did (asking for this config's command, then the steps not reached), its draft red only on "Flows image"; V-5 parks the same way on a
 # draft red on "lint" too. The fake gh answers pr list for a branch from $T/fb/list-<branch>.json.
@@ -2214,6 +2408,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field CW-3 state)" = "\"parked\"" ] && field CW-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
 check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
 check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
+# DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
+# an effort, so it parks rather than run at the session default, and a malformed row names its value.
+effort_cfg(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `effort` |\n| Worker effort | `none` | `%s` |\n' "$1"; } > "$T/config-ef.md"; }
+effort_cfg 0=low; cloud_ticket CW-4
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "DS-450 AC1 with the effort lever on, a cloud ticket parks and says why" '[ "$(field CW-4 state)" = "\"parked\"" ] && field CW-4 park.question | grep -q "the effort lever is on, and a cloud session cannot be given an effort"'
+check "DS-450 AC1 and no session starts for it, here or in the cloud" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-4" ] && ! echo "$out" | grep -q "CW-4 port="'
+effort_cfg 0=turbo; cloud_ticket CW-5
+out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
+check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
 
 # ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
 # W-1's worktree is another process's working directory. W-2 and W-3 are fix tries: W-2's worktree
@@ -2303,6 +2507,17 @@ check "DS-388 AC3 a fix try whose own worker was killed with its worktree dirty 
   'grep -qx "W-5 sess-w5 resume=yes" "$T/wb-spawns" && [ "$(field W-5 state)" = "\"running\"" ] && [ "$(field W-5 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-5: WORKTREE IN USE" && echo "$out" | grep -q "W-5 resumed after it was killed" && ! echo "$out" | grep -q "W-5: PR #55"'
 check "DS-388 AC4 a fix try whose worktree holds changes no worker of its own is resuming is still held" \
   '[ "$(field W-6 state)" = "\"triaged\"" ] && ! grep -q "^W-6 " "$T/wb-spawns" && echo "$out" | grep -qF "W-6: WORKTREE IN USE — its worktree $T/wt/W-6 has uncommitted changes (a.txt)" && [ "$(field W-6 resume)" = null ]'
+
+# W-7 parked with a commit origin lacks, on a branch origin has never seen; the note goes once it is pushed.
+git clone -q "$T/wb-origin.git" "$T/wt/W-7" 2>/dev/null; git -C "$T/wt/W-7" checkout -q -b fix/W-7
+git -C "$T/wt/W-7" commit -q --allow-empty -m "not pushed"
+q add W-7; q set W-7 lane=A branch=fix/W-7 "worktree=$T/wt/W-7"; q park W-7 "git push was refused: remote rejected"
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-497 a pass keeps what a parked ticket's worktree holds that origin does not on its park" \
+  '[ "$(field W-7 park.unpushed)" = "\"its worktree $T/wt/W-7 has 1 commit(s) not on origin\"" ]'
+git -C "$T/wt/W-7" push -q origin fix/W-7 2>/dev/null
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-497 and drops it once they are pushed" '[ "$(field W-7 park.unpushed)" = null ] && [ "$(field W-7 state)" = "\"parked\"" ]'
 
 # ---- DS-397: routine recoveries the pass settles by script, with no decider and no person -----------
 # D-1's branch adds nothing to main, where merged PR #88 names it. P-2 parked on a refused push with its

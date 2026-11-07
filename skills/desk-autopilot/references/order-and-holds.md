@@ -68,6 +68,10 @@ the ticket is built and reviewed as any other, and the merge driver holds its PR
 step Done, when the pass lifts it and the PRs merge in the batch's own order. Needs you lists the
 step once, as `step:<KEY>`, naming every PR and ticket waiting on it.
 
+**The person's instruction on an open PR holds its merge too.** From needs-you `resume` until the pass
+closes that fix, the merge driver leaves the PR alone, red or green, and a worker that parks or fails
+on it keeps it held. One that ends with no marker is parked, not done, so it keeps it held too.
+
 **Behind a failed or parked blocker, a held ticket is not a question of its own.** That blocker is
 already in front of the person (its `FAILED` line, or its park), so what is held behind it, at any
 depth, is listed once under `WAITING ON A PARK` and in `on_park`, never under `stuck` or `waiting`:
@@ -85,4 +89,4 @@ state.
 Every ticket should carry a size (desk-jira's scale: XS, S, M, L, XL), from the project's `Size`
 field or a first description line `Size: M`. **L and XL park** (`size L — split it before
 batching`): they are split into smaller tickets, not run. A ticket with no size is reported
-`! no size` and runs on its lane as before.
+`! no size` and runs on its lane.

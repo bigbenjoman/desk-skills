@@ -32,6 +32,9 @@ checkSize({ t, root, name: 'desk-setup', core, before });
 // The headings counted include the `# §0 this repo` comments of step 1's detection block.
 const REWRITTEN = [
   ['DS-368', 'P2s a third round carried are out of `p2`', 1], // round 2 carries P2s too
+  ['DS-457', '**Then §3b** (five rounds)', 1], // every row of the template's §3b table is asked
+  ['DS-457', 'runs unchecked, as it does today', 1], // stated as the rule now stands
+  ['DS-457', 'backed up first; today the unpinned', 1],
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 33, minRows: 40, rewritten: REWRITTEN });
 

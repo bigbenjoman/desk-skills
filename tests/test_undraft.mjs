@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
@@ -156,6 +156,48 @@ rerunSh('yes');
 t('DS-330 AC1 a second rerun inside the cooldown is not made', read('gh.log').split('\n').filter(Boolean).length, 2);
 rmSync(tmp, { recursive: true, force: true });
 
+// DS-490: a check pending with its run completed (an orphaned job), or pending past the limit, is
+// re-run once, then put to the person naming the job.
+const NOW = Date.parse('2026-11-06T10:00:00Z');
+const at = (h) => new Date(NOW - h * 36e5).toISOString();
+const ORPHAN = { name: 'Cookie Notice (local build)', status: 'in_progress', conclusion: null, runId: '41593194273', startedAt: at(75) };
+const doneRun = { status: 'completed', startedAt: at(75), jobs: [{ databaseId: 9001, name: ORPHAN.name, status: 'in_progress', startedAt: at(75) }, { databaseId: 9002, name: 'tests', status: 'completed' }] };
+const runs490 = [];
+const stuckPr = (checks, run, more = {}) => rerunPr([{ name: 'tests', status: 'completed', conclusion: 'success', runId: '41593194273' }, ...checks], { now: NOW, cancels: () => 0, runOf: (id) => { runs490.push(id); return run; }, ...more });
+const o490 = stuckPr([ORPHAN], doneRun);
+t('DS-490 AC1 a job left in progress by a completed run is re-run as that job only', `${o490?.call} | ${o490?.why}`, `rerun | "${ORPHAN.name}" is still in_progress though its run 41593194273 has completed, so that job is re-run`);
+t('DS-490 AC1 with the gate rerun.sh reads, by job id', JSON.stringify(o490?.gate?.failedJobs), `[{"runId":"41593194273","jobId":"9001","name":"${ORPHAN.name}","why":"whose run completed without it"}]`);
+t('DS-490 AC1 and no whole-run rerun', `${o490?.gate?.failedRuns.length} ${o490?.gate?.pending.length}`, '0 0');
+t('DS-490 AC1 the run is read by the check\'s run id', runs490[0], '41593194273');
+t('DS-490 AC1 a job the run already reports completed is not re-run (the rollup lags)', stuckPr([ORPHAN], { ...doneRun, jobs: [{ ...doneRun.jobs[0], status: 'completed' }] })?.call, 'wait');
+t('DS-490 AC1 negative control: a young check in a running run still waits', `${stuckPr([{ ...ORPHAN, startedAt: at(1) }], { ...doneRun, status: 'in_progress', jobs: [{ ...doneRun.jobs[0], startedAt: at(1) }] })?.call}`, 'wait');
+t('DS-490 AC1 negative control: an unreadable run waits', stuckPr([ORPHAN], null)?.call, 'wait');
+t('DS-490 AC1 an orphan beside a cancelled check is re-run rather than waited on', stuckPr([ORPHAN, { name: 'lint', status: 'completed', conclusion: 'cancelled', runId: '12' }], doneRun)?.call, 'rerun');
+const live = { ...doneRun, status: 'in_progress' };
+const c490 = stuckPr([ORPHAN], live);
+t('DS-490 AC2 pending past the limit with its run in progress: the run is cancelled to re-run it', `${c490?.call} | ${c490?.runs} | ${c490?.checks} | ${c490?.why}`,
+  `cancel | 41593194273 | ${ORPHAN.name} | "${ORPHAN.name}" has been in_progress for 3d 3h with its run 41593194273 still in progress, past the 6h 0m limit, so the run is cancelled and its checks re-run`);
+t('DS-490 AC2 just under the limit it waits', stuckPr([{ ...ORPHAN, startedAt: at(5.9) }], { ...live, jobs: [{ ...live.jobs[0], startedAt: at(5.9) }] })?.call, 'wait');
+const second = stuckPr([ORPHAN], live, { cancels: (n) => (n === ORPHAN.name ? 1 : 0) });
+t('DS-490 AC2 on a second expiry it is the person\'s, naming the job', `${second?.call} | ${second?.job} | ${second?.action}`, `person | ${ORPHAN.name} | re-run job "${ORPHAN.name}" of run 41593194273 on #701 once a runner can take it`);
+t('DS-490 AC2 a rerun for an earlier cancel is not this expiry\'s try: the run is still cancelled once', stuckPr([ORPHAN], live, { reruns: (n) => (n === ORPHAN.name ? 1 : 0) })?.call, 'cancel');
+t('DS-490 AC2 an orphan already re-run at this head is the person\'s', `${stuckPr([ORPHAN], doneRun, { reruns: (n) => (n === ORPHAN.name ? 1 : 0) })?.why}`, `"${ORPHAN.name}" is still in_progress though its run 41593194273 has completed, after it was re-run once at this head`);
+t('DS-490 with ci-rerun not yes a stuck check is the person\'s', stuckPr([ORPHAN], doneRun, { rerun: 'ask' })?.why.endsWith('config §3 ci-rerun is "ask"'), true);
+t('DS-490 a queued job with no start reads its age from the run', stuckPr([{ ...ORPHAN, status: 'queued', startedAt: '0001-01-01T00:00:00Z' }], { ...live, jobs: [{ ...live.jobs[0], status: 'queued', startedAt: '0001-01-01T00:00:00Z' }] })?.call, 'cancel');
+
+// DS-490: rerun.sh re-runs the orphaned job by its id, and logs which and why.
+const tmp490 = mkdtempSync(join(tmpdir(), 'undraft-orphan-'));
+mkdirSync(join(tmp490, 'bin'));
+writeFileSync(join(tmp490, 'bin', 'gh'), `#!/usr/bin/env bash\necho "$*" >> "${tmp490}/gh.log"\n`, { mode: 0o755 });
+const orphanRun = spawnSync('bash', [fileURLToPath(new URL('../desk/bin/rerun.sh', import.meta.url)), join(tmp490, 'sd'), 'o/r', '701', HEAD], {
+  input: JSON.stringify({ gate: o490.gate }), encoding: 'utf8', env: { ...process.env, PATH: `${join(tmp490, 'bin')}:${process.env.PATH}`, RERUN_PERM: 'yes' },
+});
+const read490 = (f) => { try { return readFileSync(join(tmp490, f), 'utf8'); } catch { return ''; } };
+t('DS-490 AC1 rerun.sh re-runs that job only', read490('gh.log'), 'run rerun --job 9001 --repo o/r\n');
+t('DS-490 AC1 and logs the job and why', orphanRun.stdout.trim(), `#701 red + completed -> rerun job 9001 of run 41593194273 ("${ORPHAN.name}"), whose run completed without it`);
+t('DS-490 AC2 the rerun is recorded, so a second expiry is the person\'s', read490(`sd/reruns-701-${HEAD}`), `${ORPHAN.name}\n`);
+rmSync(tmp490, { recursive: true, force: true });
+
 // DS-327: a draft red only on checks §4 Check builds names gets that build, once per head, then a re-run.
 const FLOWS = { name: 'Flows image', status: 'completed', conclusion: 'failure', runId: 21 };
 const builds = [{ name: 'Flows image', command: './scripts/ensure-flows-image.sh' }];
@@ -181,6 +223,20 @@ t('DS-327 AC4 a red check the row does not name beside it is handled as before',
 t('DS-327 AC4 so is any red check with no row', buildPr([FLOWS], null, { builds: [] })?.call, 'checks');
 t('DS-327 a named check still pending beside another waits', buildPr([FLOWS, { name: 'lint', status: 'in_progress', conclusion: null }])?.call, 'wait');
 for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'checks');
+
+// DS-440: a check build that failed at a head behind its base goes to a worker that merges the base.
+const behindTail = { ...ok, code: 1, tail: "main's backend/ has changed since this branch was cut" };
+const behind = buildPr([FLOWS], behindTail, { behind: (h) => (h === HEAD ? 'main' : null) });
+t('DS-440 AC1 a failed build behind the base is a sync, naming the base', `${behind?.call} | ${behind?.base} | ${behind?.why}`,
+  `sync | main | its check build \`./scripts/ensure-flows-image.sh\` exited 1 at ${HEAD.slice(0, 9)}: main's backend/ has changed since this branch was cut; its head is behind main`);
+t('DS-440 AC4 a failed build at a head up to date with its base is the person\'s, as before', buildPr([FLOWS], behindTail, { behind: () => null })?.call, 'person');
+t('DS-440 AC4 so is one where git cannot say', buildPr([FLOWS], behindTail)?.call, 'person');
+t('DS-440 a build that succeeded behind the base is re-run, not synced', buildPr([FLOWS], ok, { behind: () => 'main' })?.call, 'rebuilt');
+const afterSync = undraftCall({ key: 'T-1', fix: { try: 1, of: 2, kind: 'sync', base: 'main', finished: '2026-11-06T10:00:00Z' }, result: { summary: 'pr=701 jira=In Review said=renumbered migration 125 to 126' } },
+  { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'tests', status: 'completed', conclusion: 'success' }, FLOWS] },
+  { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], rerun: 'yes', reruns: () => 0, cooledDown: true, builds, built: () => behindTail, behind: () => null });
+t('DS-440 AC5 a build still failing at the head a sync try left names that try\'s outcome', afterSync?.why,
+  `its check build \`./scripts/ensure-flows-image.sh\` exited 1 at ${HEAD.slice(0, 9)}: main's backend/ has changed since this branch was cut, after sync try 1 of 2 merged main, which said: pr=701 jira=In Review said=renumbered migration 125 to 126`);
 
 // DS-327 AC5: /desk-setup proposes the row from the instructions, and the row is a config row.
 const doc = (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8');
@@ -250,10 +306,46 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   const after = ev(EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'success', url: 'https://x/actions/runs/1' }) });
   t('EV cells still left after the run are the person\'s', after?.call, 'person');
   t('EV and the person is told how to re-run it', after?.action.includes('gh workflow run pr-evidence.yml -f pr=740'), true);
-  t('EV no evidence block: the person uploads them, as before', ev('_drag a.png_')?.action, 'upload the screenshots to #740');
-  t('EV no §4 row: the person uploads them, as before', ev(EVB, { evidence: null })?.action, 'upload the screenshots to #740');
-  t('EV a local upload left partial is the person\'s, whatever the row', undraftCall({ key: 'T-1', images_uploaded: 'partial' }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: EVB, reviews: [review(marker(ALL_ZERO))], checks: green },
-    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' } })?.call, 'person');
+  const LEFT = 'edit the body of #740 so no `_drag <file>_` cell is left';
+  t('EV no evidence block, every file held: the person is told what to do, never to upload', ev('_drag a.png_')?.action, LEFT);
+  t('EV no §4 row: the same', ev(EVB, { evidence: null })?.action, LEFT);
+  // DS-492: a local upload that left cells stands aside for the workflow that fills them, and holds nothing once the cells are gone.
+  const shotDraft = (tt, body, cfgX = {}) => undraftCall({ key: 'T-1', ...tt }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body, reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' }, ...cfgX });
+  const part = { images_uploaded: 'partial' };
+  const have = (files) => ({ missingShots: (body) => missingShots(body, files) });
+  t('DS-492 AC1 a partial upload whose cells the evidence workflow fills starts it', `${shotDraft(part, EVB)?.call} ${shotDraft(part, EVB)?.cells}`, 'evidence 2');
+  t('DS-492 AC1 and the PR waits on it, with nothing put to the person', shotDraft(part, EVB, { evidenceRun: () => ({ state: 'running', url: null }) })?.call, 'wait');
+  t('DS-492 AC1 a run that fails after a partial upload is the repo\'s to fix, not the person\'s', shotDraft(part, EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'failure', runId: '7', url: null }) })?.call, 'evidence-failed');
+  const ranSome = { evidenceRun: () => ({ state: 'done', conclusion: 'success', runId: '7', url: null, cells: 3 }) };
+  const rest = shotDraft(part, EVB, { ...ranSome, ...have(['a-before.png']) });
+  t('DS-492 cells the run left with no file go to a capture worker', `${rest?.call} ${rest?.files}`, 'capture a-after.png');
+  t('DS-492 negative control: cells left with no evidence block still go to capture', shotDraft(part, '_drag a.png_', have([]))?.call, 'capture');
+  const filled = EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)');
+  t('DS-492 AC2 a partial upload with every cell filled leaves draft', shotDraft(part, filled, have([]))?.call, 'ready');
+  t('DS-492 AC2 screenshots held for approval with no cell left in the body hold nothing', shotDraft({ images_reported: true }, filled, have([]))?.call, 'ready');
+  t('DS-492 AC2 negative control: one cell left stays draft', shotDraft(part, `${filled}\n_drag a.png_`, { evidence: null, ...have(['a.png']) })?.call, 'person');
+  // AC5: what done tells the person about each cell is read off the same call, so it says what the pass does.
+  const plan = (tt, body, cfgX = {}) => cellPlan({ key: 'T-1', ...tt }, { number: 740, head: HEAD, body }, { evidence: { workflow: 'pr-evidence.yml' }, ...cfgX })
+    .map((c) => `${c.file}: ${c.doing}`).join('; ');
+  t('DS-492 AC5 no run yet: the workflow takes each cell', plan(part, EVB), 'a-before.png: `pr-evidence.yml` takes it at the next pass; a-after.png: `pr-evidence.yml` takes it at the next pass');
+  t('DS-492 AC5 a run going: it is taking them', plan(part, EVB, { evidenceRun: () => ({ state: 'running', url: null }) }).endsWith('a-after.png: `pr-evidence.yml` is taking it now'), true);
+  t('DS-492 AC5 a failed run: desk fixes the workflow, never a capture worker', plan(part, EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'failure', runId: '7', url: null }), ...have([]) }).endsWith('a-after.png: `pr-evidence.yml` failed, so desk fixes the workflow for the repo and runs it again'), true);
+  t('DS-492 AC5 a run that left a cell with no file: a capture worker, the held one named as held', plan(part, EVB, { ...ranSome, ...have(['a-before.png']) }), 'a-before.png: desk holds its file but could not put it in the body; a-after.png: a capture worker takes it at the next pass');
+  t('DS-492 AC5 the capture try spent: it says so', plan({ ...part, fix_tries: [{ kind: 'capture' }] }, '_drag a.png_', { evidence: null, ...have([]) }), "a.png: desk's capture try could not take it");
+  t('DS-492 AC5 a run that left cells desk holds the files for', plan(part, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) }).endsWith('a-after.png: `pr-evidence.yml` ran and could not take it'), true);
+  t('DS-492 AC5 no cell: nothing to say', plan(part, filled, have([])), '');
+  // Files desk holds whose upload §3 pr-images left to the person: the approval fills them, whether or not a run came first.
+  const unsent = { images_reported: true, images_uploaded: null };
+  const approve = shotDraft(unsent, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) });
+  t('DS-492 AC3 a run that left cells whose files wait for the upload approval: the person approves it', `${approve?.call} ${approve?.action.startsWith('approve it with `DESK_UPLOAD_APPROVED=1')}`, 'person true');
+  t('DS-492 AC5 and done says the same', plan(unsent, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) }).endsWith('a-after.png: its file is saved, and config §3 pr-images leaves its upload to you'), true);
+  t('DS-492 negative control: approved, the run\'s own call stands', /^its evidence workflow/.test(shotDraft(part, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) })?.why), true);
+  const stuckCell = shotDraft(part, 'x _drag a.png_ _drag b.png_', { evidence: null, ...have(['a.png', 'b.png']) });
+  t('DS-492 AC3 a cell nothing fills is named, with why', stuckCell?.why, '2 screenshot cell(s) left: a.png, b.png, whose files desk holds but could not put in the body');
+  t('DS-492 AC3 and the person is not asked to upload', stuckCell?.action, LEFT);
+  const ranAll = shotDraft(part, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) });
+  t('DS-492 AC3 cells an evidence run left with their files held are named', `${ranAll?.call} ${/left 2 screenshot cell\(s\): a-before\.png, a-after\.png$/.test(ranAll?.why)} ${/upload/.test(ranAll?.action)}`, 'person true false');
   t('EV cells filled: it is undrafted', ev(EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)'))?.call, 'ready');
   t('EV red checks come first: no run while a check is red', ev(EVB, {})?.call === 'evidence' && undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: EVB, reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'tests', status: 'completed', conclusion: 'failure' }] },
     { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' } })?.call === 'checks', true);
@@ -265,8 +357,10 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-379 AC1 its why names the files', cap?.why, '1 screenshot(s) in its body were never taken: a-after.png');
   t('DS-379 AC1 a partial upload whose left cells have no file goes to capture too', undraftCall({ key: 'T-1', images_uploaded: 'partial' }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
     { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots([]) })?.call, 'capture');
-  t('DS-379 AC4 every file taken but the upload not approved: the person uploads them, as before', undraftCall({ key: 'T-1', images_reported: true }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
-    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots(['a.png']) })?.action, 'upload the screenshots to #740');
+  const unapproved = undraftCall({ key: 'T-1', images_reported: true }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots(['a.png']) });
+  t('DS-379 AC4 every file taken but the upload not approved: the person, naming the cell and the row', `${unapproved?.call} ${unapproved?.why}`, 'person 1 screenshot cell(s) left: a.png, whose files are saved, but config §3 pr-images leaves their upload to you');
+  t('DS-379 AC4 and what approves it', unapproved?.action.includes('DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs 740'), true);
   t('DS-379 an evidence workflow that fills the cells comes before a capture worker', ev(EVB, { missingShots: shots([]) })?.call, 'evidence');
   t('DS-379 a review not clean comes before a capture worker', undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO.replace('p2=0', 'p2=1')))], checks: green },
     { perm: 'yes', localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], missingShots: shots([]) })?.call !== 'capture', true);

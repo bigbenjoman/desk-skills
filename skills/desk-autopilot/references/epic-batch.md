@@ -62,7 +62,7 @@ node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900   # the batch 
 - Exit 4 means the key is not an epic: discard the batch (as for a declined plan) and run the key as
   an ordinary ticket in the standing slot. A story runs as its subtasks only when the user asks for
   exactly that (`--subtasks`); a bug or story named on its own with QA or checklist subtasks runs as
-  itself, as it always has. Exit 3: nothing open under it; discard the batch and say so.
+  itself. Exit 3: nothing open under it; discard the batch and say so.
 - **State the expanded list and every drop with its reason in the Stage 2 report.** A child the
   user named alongside the epic is one key, not two.
 - Triage reads the epic's description for context; each child's own criteria are its scope.

@@ -26,7 +26,7 @@ A `TODO` in a row this skill needs is not a gap to guess: stop, ask, and offer `
 §0 for the GitHub repo, §1 for the user's GitHub handle, §3 for whether you may push (`git-push`),
 post replies and resolve threads (`pr-reply`), §4 People for who the code reviewer and product owner
 are (name and GitHub handle), §4 Local review command and Clean review verdict for the fix review
-(`desk-env get local-review`, `desk-env get clean-verdict`), §4 What review here consistently asks
+(`desk-env review-cmd` prints the review to run, `desk-env get clean-verdict`), §4 What review here consistently asks
 for (`desk-env get review-asks`), §4 Typecheck and Lint (`desk-env cmds typecheck-cmd`,
 `desk-env cmds lint-cmd`), and §5 for the written register (Messages to colleagues)
 and AI attribution.
@@ -72,7 +72,7 @@ faster than changing the code and changing it back.
 ## Review the fixes before you reply
 
 A review fix is new code, and nobody has reviewed it — the reviewer's comment predates it. Run
-§4 Local review command at the new head before pushing, the same Stage 4b `desk-ticket` runs. A round
+the review `desk-env review-cmd` prints at the new head before pushing, the same Stage 4b `desk-ticket` runs. A round
 is clean when its report matches §4 Clean review verdict. §4 Local review command `none`: review the
 fix diff yourself against §4 What review here consistently asks for, run §4 Typecheck, Lint and the
 unit tests touching the changed files, and say plainly that no local review command ran.

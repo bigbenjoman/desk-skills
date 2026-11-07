@@ -9,8 +9,7 @@ are in `../SKILL.md`, already loaded. §4 Priority below is `desk-env list jira-
 
 - **Field values.** `field=@path` reads a file. JSON passes through untouched. A bare value is
   wrapped to the shape the field needs: `customfield_12345=P1` becomes `{"value":"P1"}`,
-  `assignee=me` becomes your accountId. If `desk-jira --help` doesn't mention `@file`, your copy
-  predates 2.0: re-run `install.sh`.
+  `assignee=me` becomes your accountId.
 - **Every `edit` prints the fields read back from Jira.** Check that output. A line saying
   `the write did not stick` is a failed write, even though the PUT returned 2xx.
 - **Bodies are positional.** `comment <KEY> <body-file|text>`, and `create`'s description the same

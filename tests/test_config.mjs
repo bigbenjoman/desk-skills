@@ -153,6 +153,26 @@ t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n')
 t('DS-395 AC4 and exits 1', d.code, 1);
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
 
+// An app directory other command rows name, with a dev script and no Dev server item, is named NODEV.
+mkdirSync(join(repoDir, 'apps/portal/apps/web'), { recursive: true });
+mkdirSync(join(repoDir, 'apps/api'), { recursive: true });
+writeFileSync(join(repoDir, 'apps/portal/apps/web/package.json'), JSON.stringify({ scripts: { dev: 'next dev', lint: 'eslint .' } }));
+writeFileSync(join(repoDir, 'apps/api/package.json'), JSON.stringify({ scripts: { test: 'vitest' } }));
+const rows4 = (dev) => `| Dev server | ${dev} |\n| Lint | \`bun run lint\` \`apps/portal/apps/web: bun run lint\` |\n| Typecheck | \`apps/portal/apps/web: bun run typecheck\` |\n| Unit tests | \`apps/api: bun run test\` |\n`;
+d = drift(`${conf()}${rows4('`bun run --filter studia-web dev`')}`);
+t('DS-437 AC1 a second app the other rows name is named NODEV with those rows', d.out,
+  'NODEV    §4 Dev server has no item for apps/portal/apps/web, which §4 Typecheck, Lint name and whose package.json has a dev script: a worker on a ticket there cannot run its dev server');
+t('DS-437 AC1 and exits 1', d.code, 1);
+t('DS-437 AC1 an item for that directory clears it', drift(`${conf()}${rows4('`bun run --filter studia-web dev` `apps/portal/apps/web: bun run dev`')}`).out, 'no drift');
+t('DS-437 AC1 a Dev server row of none is a decision, not drift', drift(`${conf()}${rows4('`none`')}`).out, 'no drift');
+writeFileSync(join(repoDir, 'apps/portal/apps/web/package.json'), JSON.stringify({ name: 'portal-web', scripts: { dev: 'next dev' } }));
+t('DS-437 AC1 a root item filtering to that package by name serves it', drift(`${conf()}${rows4('`bun run --filter portal-web dev`')}`).out, 'no drift');
+t('DS-437 AC1 a root item filtering to that directory by path serves it', drift(`${conf()}${rows4('`pnpm --filter=./apps/portal/apps/web dev`')}`).out, 'no drift');
+writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ scripts: { dev: 'turbo dev' } }));
+t('DS-437 AC1 the root is never a gap, though its package.json has a dev script', drift(`${conf()}${rows4('`apps/portal/apps/web: bun run dev`')}`).out, 'no drift');
+rmSync(join(repoDir, 'package.json'), { force: true });
+rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
+
 // --all: every repo under DESK_CONFIG_ROOT, by slug.
 const croot = join(T, 'cfgroot');
 for (const [slug, body] of [['acme__clean', conf()], ['acme__stale', conf({ omit: ['git-push'] })]]) {

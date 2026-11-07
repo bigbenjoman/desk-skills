@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- desk-skills: a monitor on a desk, prompt chevron on screen -->
+  <rect width="128" height="128" rx="28" fill="#1E2A4A"/>
+  <!-- monitor -->
+  <rect x="30" y="26" width="68" height="46" rx="7" fill="#FFFFFF"/>
+  <rect x="37" y="33" width="54" height="32" rx="3" fill="#1E2A4A"/>
+  <polygon points="43,40 48,36 60,49 48,62 43,58 51,49" fill="#FF8A3D" stroke="#FF8A3D" stroke-width="1.5" stroke-linejoin="round"/>
+  <rect x="61" y="53" width="18" height="6" rx="3" fill="#FF8A3D"/>
+  <!-- stand -->
+  <rect x="58" y="72" width="12" height="10" fill="#FFFFFF"/>
+  <!-- desk top and legs -->
+  <rect x="18" y="82" width="92" height="9" rx="4.5" fill="#FFFFFF"/>
+  <rect x="26" y="89" width="8" height="18" rx="3" fill="#FFFFFF"/>
+  <rect x="94" y="89" width="8" height="18" rx="3" fill="#FFFFFF"/>
+</svg>

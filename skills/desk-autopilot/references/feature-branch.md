@@ -73,4 +73,4 @@ whose output it could not read (workers run that one in full). Each worker's bri
 `Baseline checks` section telling it to check with `desk-env baseline typecheck|lint`, which fails
 only on errors its branch adds. A base that cannot be recorded (a dirty base worktree, a failed
 install) goes under `WAITING ON YOU` and leaves no baseline, so workers run the full checks. CI and
-the pre-push hook are unchanged.
+the pre-push hook do not read the baseline.

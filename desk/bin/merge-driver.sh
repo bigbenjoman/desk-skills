@@ -73,6 +73,10 @@
 #   - waits on the person's step             its ticket's merge_after names blockers in no batch that are
 #                                            steps only the person takes: held, green or not, until
 #                                            pass.mjs reads each Done in Jira and lifts it
+#   - waits on the person's instruction      its ticket's fix is the person's instruction (needs-you
+#                                            resume) and pass.mjs has not closed it: held before any
+#                                            other step, with nothing rerun or updated, and read again
+#                                            just before the merge
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
@@ -597,12 +601,31 @@ EOF_ROUTINES
   if [ "$head" != "$sha" ]; then log "#$n head is ${head:-unreadable}, not ${sha:0:9} where its routine ran — not merging"; return 1; fi
 }
 
+# The person's instruction on a ready PR (needs-you resume, fix-tries.mjs instructionFix) leaves it open
+# for a worker to change: until pass.mjs closes that fix, its head is not yet what the person asked for,
+# and a worker that parked or failed has not done it. A queue that cannot be read holds it too.
+instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge waits on the instruction
+  local open
+  [ -f "$DESK_QUEUE" ] || return 1
+  if ! open=$(jq -r --arg k "$2" '(.tickets[$k].fix // {}) | .kind == "instruction" and (.finished | not)' "$DESK_QUEUE" 2>/dev/null); then
+    log "#$1 could not read the queue for the person's instruction — not merging it this loop"
+  elif [ "$open" = true ]; then
+    log "#$1 HELD: a worker has still to carry out the person's instruction on it — not merging until that fix is finished"
+  else
+    return 1
+  fi
+  [ "$(printf '%s' "$3" | jq -r .autoMerge)" = true ] && gh pr merge "$1" --repo "$REPO" --disable-auto >/dev/null 2>&1
+  rm -f "$SD/green-$1"
+}
+
 try_pr(){ # try_pr <n> <key> -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$BASE_BRANCH" ] || { log "#$n is not based on $BASE_BRANCH — not the batch's to merge"; return 1; }
+  # First, so nothing updates or reruns a branch a worker is on, and an armed auto-merge is disarmed red or green.
+  instruction_held "$n" "$key" "$g" && return 1
 
   holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
   met=$(printf '%s' "$g" | jq -r '(.holdsMet // [])[] | "\(.why) — \(.glob)"' | paste -sd ';' -)
@@ -752,6 +775,8 @@ EOF_RESOLVE
     fi
     if ! run_routines "$n" "$sha" "$key" "$routines"; then rm -f "$SD/green-$n"; return 1; fi
   fi
+  # Read again here: the reads above and a routine can take minutes, and the person may answer in them.
+  instruction_held "$n" "$key" "$g" && return 1
   if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then

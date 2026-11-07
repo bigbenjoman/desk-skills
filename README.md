@@ -284,8 +284,50 @@ node ~/.claude/desk/bin/skill-eval.mjs --skill <name|dir> --tasks <tasks.json> -
 
 `evals/desk-pr.json` is desk-pr's task set; its last report is `docs/evals/desk-pr/report.md`.
 
+**`bench.mjs`** runs named arms over frozen tasks taken from real merged tickets. Each run gets a
+throwaway checkout of the task's repo at the commit the ticket started from: a repository of its
+own with no remote and no later history, so the merged fix is not there to read and there is
+nowhere to push. The merged PR's tests are kept outside it (a test file the PR changed is there in
+its base version, as the ticket's worker found it) and copied in only after the run, then
+run with that repo's §4 Unit tests under the test lock. The task is **accepted** if every one
+passes and **rejected** if one fails. A run that errors, times out or is stopped is **failed**,
+which counts as neither. Arms run on a worker's permission set for that repo with gh, Jira, the web
+and pushes taken out. Any attempt to push, open a PR or reach Jira is recorded in that run's
+result. Arm order is shuffled per task from `--seed`, and prompt caching stays at the CLI's
+default. A result scored at the same base and arm settings is reused. Each run keeps its diff, its
+stream-json transcript, its test output and its tokens (uncached, cache write, cache read, output)
+under the output folder:
+
+```
+node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<effort>]] [--arm …] \
+  --max-budget-usd <usd> [--total-budget-usd 5] [--out <dir>] [--timeout 1800] [--seed <n>]
+```
+
+Keep the task set outside this repo. Its paths are relative to the file:
+
+```json
+{"tasks": [{"id": "ds-123", "repo": "owner/name", "base": "<full SHA>", "prompt": "<ticket text>",
+  "hidden_tests": {"dir": "hidden/ds-123", "files": ["tests/test_x.mjs"]}}]}
+```
+
 ```json
 {"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
+```
+
+**`bench-blind.mjs`** turns a bench run into blind scoring sheets. `export` reads the output
+folder's `run.json` and writes, under `<out>/blind`, one Markdown sheet per task in `sheets/`: the
+ticket text, the rubric (`desk/bin/bench-rubric.md`, or `--rubric <file>`) and every arm's diff
+under a letter drawn at random per task, with an arm that made no diff, or whose run failed, shown
+as "no change produced". Names of models, arms and efforts in a diff (a co-author trailer, a comment, a branch
+name) become `[redacted]`. It also writes `scores.csv`, a `task,letter,score` template with the
+scores blank, and `key.json`, which maps each letter to its arm and is named by no sheet. Fill in
+each score from 1 to 5, then `join` attaches them to the arms through the key and writes
+`joined.json`. A sheet with a missing, out-of-range or unknown score is listed and none of its
+scores count:
+
+```
+node ~/.claude/desk/bin/bench-blind.mjs export --tasks <tasks.json> [--out <dir>] [--dest <dir>] [--rubric <file>]
+node ~/.claude/desk/bin/bench-blind.mjs join --tasks <tasks.json> [--out <dir>] [--dest <dir>]
 ```
 
 ## Subagents
@@ -367,8 +409,12 @@ which version is installed, as one of three source types:
 | `checkout` | your own skills, and upstreams you want to track live | a git clone at `~/.agents/skills/<name>`; nothing in `vendor/`. A repo holding several skills (`subskills`, e.g. `clerk/skills`) is cloned once to `~/.agents/sources/<name>` and each listed sub-skill linked in | `origin/<branch>` has commits you have not pulled |
 
 `vendor/<name>/` is never edited by hand: its `tree_sha256` in `sources.json` is checked by
-`skills-upstream verify`. A local change belongs upstream, or in a repo-level override
-(`<repo>/.claude/skills/<name>`, which Claude Code prefers).
+`skills-upstream verify`. A local change belongs upstream, in a repo-level override
+(`<repo>/.claude/skills/<name>`, which Claude Code prefers), or, for one every machine should get,
+in a patch: a diff relative to the skill folder under `vendor-patches/`, named in the entry's
+`patches` list. `upgrade` re-applies each patch to the new upstream before it reaches `vendor/`, and
+records the hash after patching; a patch that no longer applies refuses that skill (exit 1) and
+leaves `vendor/<name>` and its pin as they were, so rework the patch and upgrade again.
 
 Claude Code only sees a skill through `~/.claude/skills/<name>/SKILL.md`; an installed copy with no
 link there is "Unknown skill". `skills-upstream links` checks every skill desk installs (`desk-*`,
@@ -588,6 +634,9 @@ git aliases or write outside its worktree:
 ```bash
 AUTOPILOT_PREFLIGHT=1 ~/.claude/desk/bin/spawn-worker.sh <TICKET> <worktree> preflight
 ```
+
+With the `preflight` lever on (config §3b Phase 0 levers), a ticket whose last preflight passed on
+the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` to force one.
 
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 

@@ -10,9 +10,11 @@
 //   <dir>/fixes.json        the repo-level fixes started for runs that failed (readFixes)
 //
 // The run is read back by its id (gh workflow run prints the run's URL). A run whose id was not
-// printed is read as done once DISPATCH_GRACE_MS has passed, so its cells are the person's from then.
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+// printed is read as done once DISPATCH_GRACE_MS has passed, so its cells go on from then as any left
+// by a finished run do (undraft.mjs undraftCall).
+import { readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { SCREENSHOT_FILE, expandHome } from './desk-env.mjs';
 
 export const DISPATCH_GRACE_MS = 30 * 60 * 1000;
 
@@ -44,7 +46,11 @@ export const dragFiles = (body) => [...new Set([...outsideCode(body).matchAll(/_
 // The files a body's cells name that `shots` (the file names in the ticket's screenshot directory)
 // does not hold: screenshots nobody took, which a capture try (fix-tries.mjs captureTry) takes.
 export const missingShots = (body, shots) => dragFiles(body).filter((f) => !(shots ?? []).includes(f));
-
+// The screenshot files a ticket's directory holds: the one its worker was briefed with, or the one a
+// handed-off session printed (images_dir).
+export const ticketShots = (t, stateDir) => {
+  try { return readdirSync(expandHome(t.images_dir ?? join(stateDir, 'images', t.key))).filter((f) => SCREENSHOT_FILE.test(f)); } catch { return []; }
+};
 // The run id in gh workflow run's output (it prints the run's URL), or null.
 export function runIdFrom(out) {
   const m = String(out ?? '').match(/\/actions\/runs\/(\d+)/);
