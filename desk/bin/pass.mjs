@@ -10,7 +10,7 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, grantPush } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -864,9 +864,9 @@ function pushParked(t, c) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`, `park.recovery=${JSON.stringify(why)}`);
     throw new Error(why);
   };
-  // A person's one-off grant for this exact branch and SHA stands in for the lease row.
-  const leaseRow = c.lease && !grantPush(t.grant, { branch: c.branch, remote: c.lease });
-  const rows = ['git-push', ...(leaseRow ? ['git-force-with-lease'] : [])].filter((k) => E.permission(k) !== 'yes');
+  // Only §3 lets a pass force-push. A ticket's one-off grant does not: a yes to a park that merely
+  // mentions a force-push records one, so it stays for the next worker, whose report a person reads.
+  const rows = ['git-push', ...(c.lease ? ['git-force-with-lease'] : [])].filter((k) => E.permission(k) !== 'yes');
   if (rows.length) stop(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
   if (c.branch !== t.branch) stop(`it names ${c.branch}, and the ticket's branch is ${t.branch ?? 'not recorded'}`);
   if (!t.worktree || !existsSync(t.worktree)) stop('it has no worktree to push from');
