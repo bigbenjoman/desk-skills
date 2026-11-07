@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
 import { costTable, ticketCost } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 let fails = 0;
@@ -31,6 +31,9 @@ t('AC3 every reason is given', at(rec({ renders: true, needs_db: true })).split(
 t('AC3 a record that never answered needs_local stays local, and says so', at({ ticket: 'K-1', lane: 'A' }).includes('re-run triage.sh'), true);
 const spine = placement(rec({}), 'cloud', { feature: 'it is the feature spine' });
 t('AC3 a feature spine or spec owner runs locally, and says so', `${spine.where}: ${spine.why}`, 'local: it is the feature spine');
+const leverOnAt = (loc) => { const p = placement(rec({}), loc, { effort: true }); return `${p.where}: ${p.why}`; };
+t('DS-450 AC1 with the effort lever on, a ticket that could run in the cloud runs locally, and says why', leverOnAt('cloud'), `local: ${CLOUD_NO_EFFORT}`);
+t('DS-450 AC5 at local the lever gives no reason to state', leverOnAt('local'), 'local: null');
 
 // ---- the maintenance window counts only workers on this computer --------------
 t('a cloud session is not running here', runningHere({ state: 'running', location: 'cloud' }), false);
@@ -97,6 +100,7 @@ const k1 = table.find((l) => l.startsWith('  K-1 ')) ?? '';
 t('AC2 its tokens and cost read "not reported for cloud", never $0', (k1.match(/not reported for cloud/g) ?? []).length >= 3 && !/\$0\.00/.test(k1), true);
 t('AC2 its wall time is session start to PR', k1.includes('40m 00s'), true);
 t('AC2 its session URL is under its row', table.some((l) => l.trim() === `cloud session: ${started.url}`), true);
+t('DS-450 AC3 its session line shows start, model and effort, with no cost invented', table.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
 t('AC2 one with no PR yet has no wall time', (table.find((l) => l.startsWith('  K-2 ')) ?? '').includes('no PR yet'), true);
 t('AC2 the total leaves cloud workers out and says so', table.at(-2).includes('2 cloud worker(s) not counted') || table.at(-1).includes('2 cloud worker(s) not counted'), true);
 

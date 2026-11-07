@@ -35,6 +35,9 @@
 //                                             when nothing may merge this batch's green PRs
 //   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, `none` if
 //                                             unset (no override), exit 4 if the row is malformed
+//   node desk-env.mjs effort <start>          print the effort a worker session starting there runs at
+//                                             (`default` with the lever off), exit 4 if §3b Worker
+//                                             effort is malformed
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
@@ -349,6 +352,7 @@ export const CONFIG_ROWS = Object.freeze({
   'batches-run-by': { section: '3b', row: 'Batches run by' },
   'status-table': { section: '3b', row: 'Orchestrator status table' },
   levers: { section: '3b', row: 'Phase 0 levers' },
+  'worker-effort': { section: '3b', row: 'Worker effort' },
 });
 
 export class DeskConfigError extends Error {}
@@ -824,6 +828,32 @@ export function levers() {
   try { return parseLevers(configValues('levers')); } catch (e) { if (e instanceof NoRepoConfigError) return parseLevers(null); throw e; }
 }
 export const leverOn = (name, l = levers()) => l.on.includes(name);
+
+// Config §3b "Worker effort": `<start>=<effort>` pairs, read only with the effort lever on. A start is
+// the stage a session starts at, `task` (a fix or review try) or `resume`. A value or start desk does
+// not know is refused, naming it, whichever session is starting.
+//   -> { <start>: <effort> }, or throws DeskConfigError
+export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
+export const RESUME_STAGES = Object.freeze(['3', '4', '4b', '5', '6', '7', '8', '9']);
+export const EFFORT_STARTS = Object.freeze(['0', ...RESUME_STAGES, 'task', 'resume']);
+export const DEFAULT_EFFORT = 'medium';
+export const NO_EFFORT = 'default';
+export function parseWorkerEffort(items) {
+  const row = (items ?? []).join(' ').trim();
+  const bad = (why) => new DeskConfigError(`desk: config §3b "Worker effort" is "${row}" — ${why}want \`none\`, or \`<start>=<effort>\` pairs: a start of ${EFFORT_STARTS.join(', ')}, and an effort of ${EFFORTS.join(', ')}. Refusing to guess.`);
+  const out = {};
+  for (const pair of row.split(/[\s,]+/).filter((p) => p && !isNone(p))) {
+    const [start, effort, ...rest] = pair.split('=');
+    if (effort === undefined || rest.length) throw bad(`\`${pair}\` is not a pair; `);
+    if (!EFFORT_STARTS.includes(start)) throw bad(`unknown start \`${start}\`; `);
+    if (!EFFORTS.includes(effort)) throw bad(`unknown effort \`${effort}\`; `);
+    if (out[start]) throw bad(`start \`${start}\` is named twice; `);
+    out[start] = effort;
+  }
+  return out;
+}
+// The effort a session starting at `start` is launched at: NO_EFFORT (no --effort) with the lever off.
+export const workerEffort = (start) => (leverOn('effort') ? parseWorkerEffort(configValues('worker-effort'))[start] ?? DEFAULT_EFFORT : NO_EFFORT);
 
 // Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
 // `standard`; lane B, size M and an unsized ticket are `high`.
@@ -1549,6 +1579,11 @@ if (isMain) {
         console.log(workerModels()[args[0]] || 'none');
         break;
       }
+      case 'effort':
+        // What spawn-worker.sh launches a session at; a malformed §3b Worker effort row exits 4.
+        if (!args[0]) throw new Error(`usage: desk-env.mjs effort ${EFFORT_STARTS.join('|')}`);
+        console.log(workerEffort(args[0]));
+        break;
       case 'budget': {
         const b = args[0] === 'batch' ? batchBudget() : args[0] === 'worker' ? workerBudget() : null;
         if (!b) throw new Error('usage: desk-env.mjs budget worker|batch');
