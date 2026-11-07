@@ -83,6 +83,10 @@ if [ "$name" = test ] || [ "$name" = tsc ]; then
 fi
 # Slot i's lock path: slot 1 is the original path.
 slot_path() { if [ "$1" -eq 1 ]; then echo "$lock"; else echo "$lock.$1"; fi; }
+# Where flock's lock is taken and then exec'd into the command, record the command's pid (exec keeps
+# it) beside slot $1, so a reader can tell the holder: the autopilot pass, telling a worker running its
+# suite from a wedged one. The file outlives the holder; a reader checks the pid is still there.
+holder() { echo "$$" > "$(slot_path "$1").pid" 2>/dev/null || true; }
 
 if command -v flock >/dev/null 2>&1; then
   if [ "$slots" -eq 1 ]; then
@@ -91,6 +95,7 @@ if command -v flock >/dev/null 2>&1; then
     # inherits fd 9, so the lock is held until it exits.
     exec 9>>"$lock" || exit 2
     flock -w "$timeout" 9 || gave_up
+    holder 1
     exec "$@"
   fi
   # Several slots: try each without blocking, and wait 2 s between rounds.
@@ -99,7 +104,7 @@ if command -v flock >/dev/null 2>&1; then
     i=1
     while [ "$i" -le "$slots" ]; do
       exec 9>>"$(slot_path "$i")" || exit 2
-      flock -n 9 && exec "$@"
+      flock -n 9 && { holder "$i"; exec "$@"; }
       exec 9>&-
       i=$((i + 1))
     done
