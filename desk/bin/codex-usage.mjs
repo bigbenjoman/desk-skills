@@ -10,25 +10,16 @@ import { closeSync, openSync, readFileSync, readdirSync, readSync, statSync } fr
 import { join } from 'node:path';
 import * as zlib from 'node:zlib';
 import { subscriptionsPath } from './desk-env.mjs';
-import { defaultLogin, foundLogin, isDir, readSubscriptions, unlistedFolders } from './logins.mjs';
+import { isDir, readSubscriptions, toolLogins } from './logins.mjs';
 
-export const CODEX_WINDOWS = { five_hour: 300, seven_day: 10080 };
+const CODEX_WINDOWS = { five_hour: 300, seven_day: 10080 };
 const KEYS = Object.keys(CODEX_WINDOWS);
 const SLOTS = ['primary', 'secondary'];
 const ROLLOUT = /(^|\/)rollout-[^/]*\.jsonl(\.zst)?$/;
 
 // The Codex logins whose folders exist: the default ~/.codex, the subscriptions file's Codex rows,
 // then the folders under ~/.codex-logins it does not list, each once by folder.  -> [login]
-export function codexLogins() {
-  const subs = readSubscriptions(subscriptionsPath());
-  const out = [];
-  const add = (l) => { if (!out.some((o) => o.dir === l.dir)) out.push(l); };
-  const fileDefault = subs.logins.find((l) => l.tool === 'codex' && l.dir === defaultLogin('codex').dir);
-  add(fileDefault ?? defaultLogin('codex'));
-  for (const l of subs.logins) if (l.tool === 'codex') add(l);
-  for (const dir of unlistedFolders('codex', out)) add(foundLogin('codex', dir, subs));
-  return out.filter((l) => isDir(l.dir));
-}
+export const codexLogins = () => toolLogins('codex', readSubscriptions(subscriptionsPath())).filter((l) => isDir(l.dir));
 
 // One rate_limits record as a reading: each window by length as { used, resetsAt, limited }, `none`
 // the windows it lacks (its plan has no such window), `plan` its plan_type as logged. A window is at
@@ -55,7 +46,7 @@ function readingOf(rl, at) {
 }
 
 // The last reading in one log's text, or null. `at` is the event's own timestamp, else `fallbackAt`.
-export function lastReading(text, fallbackAt = null) {
+function lastReading(text, fallbackAt = null) {
   const lines = String(text ?? '').split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
@@ -100,12 +91,13 @@ function readingIn(path, st) {
   return reading;
 }
 
-// One Codex login's newest reading, from the newest session log under its own folder that holds one.
-// A window whose reset has passed is no reading (null, and not in `none`), never its old figure.
-// `limit` is the window the login is at the limit of, the one resetting last, or null.
-//   -> { five_hour, seven_day, at, none: [window], plan, limit: { window, resetsAt } | null }
+// One Codex login's newest reading, by the reading's own time, from the session logs under its own
+// folder. Logs are read newest-written first, stopping at one last written before the newest reading so
+// far: it cannot hold a newer one. A window whose reset has passed is no reading (null, and not in
+// `none`), never its old figure; one at its limit is `limited` until its reset.
+//   -> { five_hour, seven_day, at, none: [window], plan }
 export function readCodexUsage({ login, now = Date.now() }) {
-  const empty = { five_hour: null, seven_day: null, at: null, none: [], plan: null, limit: null };
+  const empty = { five_hour: null, seven_day: null, at: null, none: [], plan: null };
   const root = join(login.dir, 'sessions');
   let names = [];
   try { names = readdirSync(root, { recursive: true }).map(String).filter((n) => ROLLOUT.test(n)); } catch { return empty; }
@@ -115,16 +107,16 @@ export function readCodexUsage({ login, now = Date.now() }) {
     try { const st = statSync(path); if (st.isFile()) logs.push({ path, st }); } catch { /* gone */ }
   }
   logs.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
+  let best = null;
   for (const { path, st } of logs) {
+    if (best && st.mtimeMs < best.at) break;
     const r = readingIn(path, st);
-    if (!r) continue;
-    const out = { ...r, none: [...r.none], limit: null };
-    for (const k of KEYS) if (out[k] && out[k].resetsAt * 1000 <= now) out[k] = null;
-    const limited = KEYS.filter((k) => out[k]?.limited).sort((a, b) => out[b].resetsAt - out[a].resetsAt);
-    if (limited.length) out.limit = { window: limited[0], resetsAt: out[limited[0]].resetsAt };
-    return out;
+    if (r && (!best || r.at > best.at)) best = r;
   }
-  return empty;
+  if (!best) return empty;
+  const out = { ...best, none: [...best.none] };
+  for (const k of KEYS) if (out[k] && out[k].resetsAt * 1000 <= now) out[k] = null;
+  return out;
 }
 
 // Every Codex login with its reading.  -> [{ login, reading }]

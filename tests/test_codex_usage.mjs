@@ -86,18 +86,20 @@ writeFileSync(newest, rollout([{ primary: win(100, 10080, 30), plan: 'prolite' }
 stamp(newest);
 const full = read(A);
 t('AC4 a window at 100% is at its limit', full.seven_day?.limited, true);
-t('AC4 until its reset time', `${full.limit?.window} ${full.limit?.resetsAt === inHours(30)}`, 'seven_day true');
+t('AC4 until its reset time', full.seven_day?.resetsAt, inHours(30));
 writeFileSync(newest, rollout([{ primary: win(97, 300, 2), secondary: win(40, 10080, 30), plan: 'pro', reached: 'primary' }]));
 stamp(newest);
 const reached = read(A);
 t('AC4 a limit-reached type naming a slot puts that window at its limit', `${reached.five_hour?.limited} ${reached.seven_day?.limited}`, 'true false');
-t('AC4 the login is at the 5-hour limit until it resets', `${reached.limit?.window} ${reached.limit?.resetsAt === inHours(2)}`, 'five_hour true');
+t('AC4 the login is at the 5-hour limit until it resets', reached.five_hour?.resetsAt, inHours(2));
 writeFileSync(newest, rollout([{ primary: win(60, 300, 2), secondary: win(99, 10080, 30), plan: 'pro', reached: 'rate_limit_reached' }]));
 stamp(newest);
-t('AC4 a type naming no slot is the fullest window\'s', read(A).limit?.window, 'seven_day');
+const fullest = read(A);
+t('AC4 a type naming no slot is the fullest window\'s', `${fullest.five_hour?.limited} ${fullest.seven_day?.limited}`, 'false true');
 writeFileSync(newest, rollout([{ primary: win(16, 300, 4), secondary: win(27, 10080, 70), plan: 'pro' }]));
 stamp(newest);
-t('AC4 a reading under its limits is at none', read(A).limit, null);
+const under = read(A);
+t('AC4 a reading under its limits is at none', `${under.five_hour?.limited} ${under.seven_day?.limited}`, 'false false');
 
 // ---- AC5: a window past its reset is no reading, never its old figure.
 writeFileSync(newest, rollout([{ primary: win(100, 300, -1), secondary: win(55, 10080, -2), plan: 'pro' }]));
@@ -105,14 +107,23 @@ stamp(newest);
 const past = read(A);
 t('AC5 a reset that has passed reads as no reading', `${past.five_hour} ${past.seven_day}`, 'null null');
 t('AC5 and not as a window the plan lacks', past.none.join(), '');
-t('AC5 and a limit past its reset holds nothing', past.limit, null);
 
 // ---- AC6: the newest log is compressed.
 writeFileSync(newest, rollout([{ primary: win(16, 300, 4), secondary: win(27, 10080, 70), plan: 'pro' }]));
 stamp(newest);
-const zst = log(A, '11-00-00-zst', rollout([{ primary: win(44, 300, 3), secondary: win(33, 10080, 70), plan: 'pro' }]), 1, { zst: true });
+const zst = log(A, '11-00-00-zst', rollout([{ primary: win(44, 300, 3), secondary: win(33, 10080, 70), plan: 'pro', hAgo: 0.02 }]), 1, { zst: true });
 const z = read(A);
 t('AC6 a compressed newest log is read', `${z.five_hour?.used} ${z.seven_day?.used}`, '44 33');
+
+// ---- AC1: the newest reading is the newest by its own time, not the last-written log's.
+// An older session gets a tool result after another session's newer reading: its log is written last,
+// but its last reading is older.
+const other = log(A, '11-30-00-later', rollout([{ primary: win(70, 300, 3), secondary: win(66, 10080, 70), plan: 'pro', hAgo: 0.01 }]), 0.5);
+const stale = log(A, '07-00-00-stale', rollout([{ primary: win(3, 300, 3), secondary: win(4, 10080, 70), plan: 'plus', hAgo: 3 }])
+  + `${JSON.stringify({ timestamp: iso(0), type: 'response_item', payload: { type: 'function_call_output', output: 'done' } })}\n`, 0.1);
+t('AC1 a log written last with an older reading does not win', `${read(A).seven_day?.used} ${read(A).plan}`, '66 pro');
+rmSync(other);
+rmSync(stale);
 
 // ---- AC7: login B reads only its own folder's logs, though login A's are newer.
 log(B, '09-00-00-b', rollout([{ primary: win(9, 10080, 100), plan: 'prolite' }]), 60);
