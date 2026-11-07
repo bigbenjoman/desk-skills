@@ -317,8 +317,8 @@ Keep the task set outside this repo. Its paths are relative to the file:
 **`bench-blind.mjs`** turns a bench run into blind scoring sheets. `export` reads the output
 folder's `run.json` and writes, under `<out>/blind`, one Markdown sheet per task in `sheets/`: the
 ticket text, the rubric (`desk/bin/bench-rubric.md`, or `--rubric <file>`) and every arm's diff
-under a letter drawn at random per task, with an arm that made no diff shown as "no change
-produced". Names of models, arms and efforts in a diff (a co-author trailer, a comment, a branch
+under a letter drawn at random per task, with an arm that made no diff, or whose run failed, shown
+as "no change produced". Names of models, arms and efforts in a diff (a co-author trailer, a comment, a branch
 name) become `[redacted]`. It also writes `scores.csv`, a `task,letter,score` template with the
 scores blank, and `key.json`, which maps each letter to its arm and is named by no sheet. Fill in
 each score from 1 to 5, then `join` attaches them to the arms through the key and writes

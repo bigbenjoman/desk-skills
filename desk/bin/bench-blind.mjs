@@ -7,12 +7,12 @@
 // <out> is bench.mjs's output folder (bench-out beside the task set by default), and its run.json
 // says which runs to export. <dest> defaults to <out>/blind. export writes there:
 //   sheets/<task>.md  the ticket text, the rubric and every arm's diff under a letter, letters drawn
-//                     at random per task; an arm with no diff shows as "no change produced"
+//                     at random per task; an arm with no diff, or a failed run, shows as "no change produced"
 //   scores.csv        task,letter,score with the score blank, one row per diff to score
 //   key.json          letter -> arm per task. No sheet names it; open it only to join
 // Names of models, arms and efforts in a diff are replaced with [redacted]. An arm name shorter than
 // three characters is replaced only after "arm", since it would otherwise hit ordinary words.
-// join reads scores.csv through key.json, writes joined.json (each arm's scores and mean) and lists
+// join reads scores.csv through key.json, writes joined.json (each arm's scores) and lists
 // each sheet left out for a missing, out-of-range or unknown score; none of a left-out sheet's
 // scores count.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
@@ -51,13 +51,15 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const word = (s) => `(?<![A-Za-z0-9])${esc(s)}(?![A-Za-z0-9])`;
 
 // A diff with every name that could tell its arm replaced: co-author trailers, model family names,
-// and each arm's own name, model and effort.
+// and each arm's own name, model and effort. The arms' names go before the model families, so a
+// family inside one (opus-high) cannot leave the rest of it showing.
 export function scrub(text, arms) {
-  let s = text.replace(/(co-authored-by:)[^\n]*/gi, `$1 ${PLACEHOLDER}`).replace(FAMILY, PLACEHOLDER);
+  let s = text.replace(/(co-authored-by:)[^\n]*/gi, `$1 ${PLACEHOLDER}`);
   const names = [...new Set(arms.flatMap((a) => [a.name, a.model]).filter((n) => n && n.length >= 3))]
     .sort((a, b) => b.length - a.length);
   for (const n of names) s = s.replace(new RegExp(word(n), 'gi'), PLACEHOLDER);
   for (const n of new Set(arms.map((a) => a.name).filter(Boolean))) s = s.replace(new RegExp(`(\\barm[-_ :]*)${esc(n)}(?![A-Za-z0-9])`, 'gi'), `$1${PLACEHOLDER}`);
+  s = s.replace(FAMILY, PLACEHOLDER);
   const levels = [...new Set([...LEVELS.split('|'), ...arms.map((a) => a.effort).filter(Boolean)])].map(esc).join('|');
   return s.replace(new RegExp(`(\\beffort["']?\\s*[:=]?\\s*["']?)(?:${levels})(?![A-Za-z0-9])`, 'gi'), `$1${PLACEHOLDER}`)
     .replace(new RegExp(`(?<![A-Za-z0-9])(?:${levels})([-_ ]effort\\b)`, 'gi'), `${PLACEHOLDER}$1`);
@@ -77,14 +79,16 @@ const readJson = (file, what) => {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new Error(`cannot read ${what} ${file}: ${e.message}`); }
 };
 
-// Each run run.json lists, with its arm's settings from result.json and its diff, if it made one.
+// Each run run.json lists, with its arm's settings from result.json and its diff, if it made one. A
+// failed run (out of budget, timed out, never scored) keeps the diff it got to, but made no change.
 function loadRuns(out) {
   const run = readJson(join(out, 'run.json'), 'the bench run');
   return (run.tasks ?? []).map((t) => ({
     task: t.task,
     runs: t.runs.map((r) => {
       const result = r.dir && existsSync(join(r.dir, 'result.json')) ? readJson(join(r.dir, 'result.json'), 'a run result') : {};
-      const patch = r.dir && existsSync(join(r.dir, 'diff.patch')) ? readFileSync(join(r.dir, 'diff.patch'), 'utf8') : '';
+      const failed = (result.status ?? r.status) === 'failed';
+      const patch = !failed && r.dir && existsSync(join(r.dir, 'diff.patch')) ? readFileSync(join(r.dir, 'diff.patch'), 'utf8') : '';
       return { arm: r.arm, model: result.model ?? null, effort: result.effort ?? null, diff: patch.trim() ? patch : null };
     }),
   }));
@@ -124,7 +128,7 @@ export function exportBlind(o) {
   return { dest: o.dest, sheets: runs.length, rows: rows.length - 1 };
 }
 
-// key + the scores.csv text -> { arms: {name: {scores: [{task, score}], mean}}, left_out: [{task, why}], no_change: [{task, arm}] }
+// key + the scores.csv text -> { arms: {name: {scores: [{task, score}]}}, left_out: [{task, why}], no_change: [{task, arm}] }
 export function joinScores(key, csv) {
   const given = new Map();
   const problems = new Map();
@@ -133,17 +137,17 @@ export function joinScores(key, csv) {
     if (!line.trim() || (n === 0 && /^\s*task\s*,/i.test(line))) continue;
     const [task, letter, score, ...extra] = line.split(',').map((x) => x.trim());
     if (letter == null || extra.length) { note(task || `line ${n + 1}`, `line ${n + 1} is not task,letter,score`); continue; }
-    const sheetKey = key.tasks[task];
+    const sheetKey = Object.hasOwn(key.tasks, task) ? key.tasks[task] : null;
     if (!sheetKey) { note(task, `task ${task} is not in the export`); continue; }
-    if (!sheetKey[letter]?.change) { note(task, `letter ${letter} has no change to score`); continue; }
+    if (!(Object.hasOwn(sheetKey, letter) && sheetKey[letter].change)) { note(task, `letter ${letter} has no change to score`); continue; }
     const scores = given.get(task) ?? new Map();
     if (scores.has(letter)) note(task, `letter ${letter} is scored twice`);
     scores.set(letter, score ?? '');
     given.set(task, scores);
   }
-  const arms = {};
+  const arms = Object.create(null);
   const noChange = [];
-  for (const sheetKey of Object.values(key.tasks)) for (const e of Object.values(sheetKey)) arms[e.arm] ??= { scores: [], mean: null };
+  for (const sheetKey of Object.values(key.tasks)) for (const e of Object.values(sheetKey)) arms[e.arm] ??= { scores: [] };
   for (const [task, sheetKey] of Object.entries(key.tasks)) {
     for (const [letter, e] of Object.entries(sheetKey)) {
       if (!e.change) { noChange.push({ task, arm: e.arm }); continue; }
@@ -154,7 +158,6 @@ export function joinScores(key, csv) {
     if (problems.has(task)) continue;
     for (const [letter, e] of Object.entries(sheetKey)) if (e.change) arms[e.arm].scores.push({ task, score: Number(given.get(task).get(letter)) });
   }
-  for (const a of Object.values(arms)) if (a.scores.length) a.mean = Math.round((a.scores.reduce((x, y) => x + y.score, 0) / a.scores.length) * 100) / 100;
   return { arms, left_out: [...problems].map(([task, why]) => ({ task, why: why.join('; ') })), no_change: noChange };
 }
 
@@ -182,7 +185,7 @@ if (isMain) {
       console.log(`key: ${join(r.dest, 'key.json')} (do not open it until every score is in)`);
     } else {
       const { path, joined } = joinBlind(o);
-      for (const [arm, a] of Object.entries(joined.arms)) console.log(`${arm}: ${a.mean == null ? 'no scores' : `mean ${a.mean.toFixed(2)} over ${a.scores.length} change(s)`}`);
+      for (const [arm, a] of Object.entries(joined.arms)) console.log(`${arm}: ${a.scores.length} score(s)`);
       for (const l of joined.left_out) console.log(`left out ${l.task}: ${l.why}`);
       console.log(`joined: ${path}`);
     }

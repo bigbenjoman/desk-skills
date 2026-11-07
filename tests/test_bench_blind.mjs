@@ -32,9 +32,10 @@ function benchOut(name, tasks) {
   const report = tasks.map((x) => ({ task: x.id, order: ARMS.map((a) => a.name), runs: ARMS.map((a) => {
     const d = join(out, 'runs', `${x.id}.${a.name}.k`);
     mkdirSync(d, { recursive: true });
-    writeFileSync(join(d, 'result.json'), JSON.stringify({ task: x.id, arm: a.name, model: a.model, effort: a.effort, status: 'accepted' }));
+    const status = x.failed === a.name ? 'failed' : 'accepted';
+    writeFileSync(join(d, 'result.json'), JSON.stringify({ task: x.id, arm: a.name, model: a.model, effort: a.effort, status }));
     writeFileSync(join(d, 'diff.patch'), x.diffs?.[a.name] ?? (x.only && x.only !== a.name ? '' : plainDiff(a)));
-    return { arm: a.name, status: 'accepted', dir: d };
+    return { arm: a.name, status, dir: d };
   }) }));
   writeFileSync(join(out, 'run.json'), JSON.stringify({ seed: '7', tasks: report }));
   return { set, out, blind: join(out, 'blind') };
@@ -57,6 +58,7 @@ const tagged = [
 const tasks = Array.from({ length: 24 }, (_, i) => ({ id: `t${i}` }));
 tasks[0].diffs = { alpha: tagged };
 tasks[1].only = 'bravo';
+tasks[3].failed = 'alpha';
 const b = benchOut('main', tasks);
 let r = run('export', '--tasks', b.set);
 if (r.status !== 0) console.log(r.stderr);
@@ -90,6 +92,7 @@ t('AC2 the effort goes', s0.includes(`[redacted] effort on arm`) && s0.includes(
 t('AC2 ordinary words stay', s0.includes('+a high bar, a medium cup, the low road') && s0.includes('+++ b/x.mjs'), true);
 t('a fence in a diff does not close the block', /````diff[\s\S]*```inner fence```[\s\S]*````/.test(s0), true);
 t('scrub with no names leaves text alone', scrub('+plain line\n', []), '+plain line\n');
+t('AC2 an arm name holding a model family goes whole', scrub('+// arm opus-high\n', [{ name: 'opus-high', model: 'opus', effort: 'high' }]), `+// arm ${PLACEHOLDER}\n`);
 
 // AC6: one arm made a diff; the others show without a name and take no score.
 const s1 = sheetOf(b, 't1');
@@ -100,6 +103,10 @@ t('AC6 the others are "no change produced"', (s1.match(/No change produced\./g) 
 t('AC6 and named by letter only', /alpha|bravo|\bc\b.*no change/i.test(s1), false);
 const csv = readFileSync(join(b.blind, 'scores.csv'), 'utf8');
 t('AC6 only the diff takes a score', csv.split('\n').filter((l) => l.startsWith('t1,')).join(), `t1,${madeIt},`);
+const k3 = key.tasks.t3;
+const failedAt = Object.keys(k3).find((l) => k3[l].arm === 'alpha');
+t('AC6 a failed run\'s diff is "no change produced"', k3[failedAt].change === false && sheetOf(b, 't3').includes(`## Change ${failedAt}\n\nNo change produced.`), true);
+t('AC6 and takes no score', csv.split('\n').some((l) => l === `t3,${failedAt},`), false);
 
 // A second export into the same place would orphan the scores.
 r = run('export', '--tasks', b.set);
@@ -131,11 +138,10 @@ if (r.status !== 0) console.log(r.stderr);
 t('join runs', r.status, 0);
 const joined = JSON.parse(readFileSync(join(small.blind, 'joined.json'), 'utf8'));
 t('AC5 each score reaches its arm', JSON.stringify(joined.arms.alpha.scores), '[{"task":"ok","score":5},{"task":"one","score":4}]');
-t('AC5 the mean is over counted scores', joined.arms.alpha.mean, 4.5);
 t('AC5 a missing score is listed', joined.left_out.find((x) => x.task === 'gap')?.why, `letter ${letterOf('gap', 'c')} has no score`);
 t('AC5 an out-of-range score is listed', /score 7 is not a whole number from 1 to 5/.test(joined.left_out.find((x) => x.task === 'big')?.why), true);
 t('AC5 a left-out sheet counts for no arm', Object.values(joined.arms).some((a) => a.scores.some((x) => x.task === 'gap' || x.task === 'big')), false);
-t('AC5 and the join says so', /left out gap: letter . has no score/.test(r.stdout) && /alpha: mean 4\.50 over 2/.test(r.stdout), true);
+t('AC5 and the join says so', /left out gap: letter . has no score/.test(r.stdout) && /alpha: 2 score\(s\)/.test(r.stdout), true);
 t('AC6 an arm with no change is recorded as such', JSON.stringify(joined.no_change.filter((x) => x.task === 'one').map((x) => x.arm).sort()), '["bravo","c"]');
 
 // The join's own checks on the scores file.
@@ -144,7 +150,10 @@ t('a score for a letter with no change is listed', joinScores(k, 'x,A,3\nx,B,2\n
 t('a letter scored twice is listed', joinScores(k, 'x,A,3\nx,A,4\n').left_out[0].why, 'letter A is scored twice');
 t('a task not in the export is listed', joinScores(k, 'x,A,3\ny,A,4\n').left_out[0].why, 'task y is not in the export');
 t('a score of 3.5 is out of range', /3\.5 is not/.test(joinScores(k, 'x,A,3.5\n').left_out[0].why), true);
-t('a clean sheet counts', JSON.stringify(joinScores(k, 'task,letter,score\r\nx,A, 4 \r\n').arms.p), '{"scores":[{"task":"x","score":4}],"mean":4}');
+t('a clean sheet counts', JSON.stringify(joinScores(k, 'task,letter,score\r\nx,A, 4 \r\n').arms.p), '{"scores":[{"task":"x","score":4}]}');
+const proto = { tasks: { x: { A: { arm: 'constructor', change: true } } } };
+t('an arm named like an object property joins', JSON.stringify(joinScores(proto, 'x,A,4\n').arms.constructor), '{"scores":[{"task":"x","score":4}]}');
+t('a task named like an object property is not in the export', joinScores(proto, 'toString,A,4\n').left_out[0].why, 'task toString is not in the export');
 
 t('no --tasks refuses', /--tasks is required/.test(run('export').stderr), true);
 t('an unknown command refuses', run('score', '--tasks', 'x').status, 2);
