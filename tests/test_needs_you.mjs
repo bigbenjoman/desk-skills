@@ -650,11 +650,11 @@ t('DS-499 AC1 protected files: the reason in plain words and the approver, not "
 t('DS-499 AC1 the file limit', v1['V-2']?.need, `PR #122 needs Chris Anthony's approval: it has 37 changed files, over the 30-file limit. ${TAIL}`);
 t('DS-499 AC1 another protected file is named, and an approval of an older commit is said', v1['V-3']?.need, `PR #123 needs Chris Anthony's approval: it changes \`apps/web/package.json\`. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
 t('DS-499 AC1 desk\'s own gate line reads the same', v1['V-4']?.need, `PR #124 needs Chris Anthony's approval: it changes a database migration and 1 more protected file, and it has 31 changed files, over the 30-file limit. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
-t('DS-499 AC3 a line naming neither cause is as today', `${v1['V-5']?.need} | ${v1['V-5']?.actions.map(([a]) => a).join()}`, `PR #125: "${GATE}" (failed at "${GATE_STEP}") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | done,not-now`);
+t('DS-499 AC3 a line naming neither cause is as today', `${v1['V-5']?.need} | ${v1['V-5']?.actions.map(([a]) => a).join()}`, `PR #125: "${GATE}" (failed at "${GATE_STEP}") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | done,resume,not-now`);
 t('DS-499 AC1 beside a check a person fixes, that check is asked for and the approval said after it', v1['V-6']?.need, `PR #126: "${LINT}" (failed at "Run eslint") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. It also needs Chris Anthony's approval: it changes a database migration and the database schema.`);
-t('DS-499 AC2 beside another red check there is no waiting to do', v1['V-6']?.actions.map(([a]) => a).join(), 'done,not-now');
+t('DS-499 AC2 beside another red check there is no waiting to do', v1['V-6']?.actions.map(([a]) => a).join(), 'done,resume,not-now');
 t('DS-499 AC1 a §4 State check the driver noted reads the same', v1['V-7']?.need, `PR #127 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
-t('DS-499 AC2 the item offers waiting first', `${v1['V-1']?.kind} ${v1['V-1']?.actions.map(([a]) => a).join()}`, 'pr waiting,done,not-now');
+t('DS-499 AC2 the item offers waiting first', `${v1['V-1']?.kind} ${v1['V-1']?.actions.map(([a]) => a).join()}`, 'pr waiting,done,resume,not-now');
 t('DS-499 AC2 waiting is not an action on any other PR', N.record({ word: 'phi', ticket: 'V-5', action: 'waiting' }).ok, false);
 t('DS-499 AC2 waiting is recorded', N.record({ word: 'phi', ticket: 'V-1', action: 'waiting' }).ok, true);
 N.record({ word: 'phi', ticket: 'V-8', action: 'waiting' });
