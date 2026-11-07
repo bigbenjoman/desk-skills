@@ -18,7 +18,7 @@
 // <fixtures>/<KEY>/<name>.json, where the requeued worker reads it as an untrusted API response.
 import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { startDetached, detachedRecord, anyRunning, hooklessGit, lastLine, dirtyPaths } from './check-build.mjs';
+import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
 import { parseOperatorChecks } from './fix-tries.mjs';
 import { parkOnlyNames } from './undraft.mjs';
 
@@ -86,7 +86,7 @@ export function startRead(dir, { key, head, name, command, cwd, base }) {
 // person sees what did. { ok: true, sha } or { ok: false, why }.
 export function prepareCheckout(dir, { origin, branch }) {
   const git = hooklessGit(120000);
-  const tail = lastLine;
+  const tail = gitError;
   if (!origin) return { ok: false, why: 'the primary checkout has no origin remote to clone it from' };
   if (!existsSync(join(dir, '.git'))) {
     if (existsSync(dir) && readdirSync(dir).length) return { ok: false, why: `${dir} is not a git checkout, and is not empty` };

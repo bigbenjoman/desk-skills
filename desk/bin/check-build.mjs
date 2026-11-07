@@ -33,7 +33,7 @@ const alive = (pid) => {
 // a runner under which no hook runs, whatever the checkout's own config says; the last line a failed
 // run printed; and the paths `git status --porcelain` listed, the first five named.
 export const hooklessGit = (timeout) => (...a) => spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...a], { encoding: 'utf8', timeout });
-export const lastLine = (r) => String(r.stderr || r.stdout || r.error?.message || '').trim().split('\n').pop() || `exit ${r.status}`;
+export const gitError = (r) => String(r.stderr || r.stdout || r.error?.message || '').trim().split('\n').pop() || `exit ${r.status}`;
 export const dirtyPaths = (out) => {
   const lines = String(out).split('\n').filter(Boolean);
   return `${lines.slice(0, 5).map((l) => l.slice(3)).join(', ')}${lines.length > 5 ? `, and ${lines.length - 5} more` : ''}`;
@@ -104,7 +104,7 @@ export function startBuild(dir, { n, head, command, checks, cwd, tree, base }) {
 // { ok: true } or { ok: false, why }.
 export function prepareTree(dir, { origin, seed, head, branch, base }) {
   const git = hooklessGit(300000);
-  const tail = lastLine;
+  const tail = gitError;
   if (!origin) return { ok: false, why: 'the primary checkout has no origin remote to fetch the head from' };
   if (!/^[0-9a-f]{40}$/.test(String(head))) return { ok: false, why: `the head ${head} is not a commit SHA` };
   if (!existsSync(join(dir, '.git'))) {
