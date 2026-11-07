@@ -61,7 +61,8 @@ function put(name, r) {
     `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n\n` +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
-    (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : ''));
+    (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
@@ -541,6 +542,60 @@ t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done 
 t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
   sg['S-6']?.actions[0][2], `the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "${LINT}", "Flows image" are green`);
 t('DS-375 a reason recorded before the pass kept its checks still names them', sg['S-5']?.need, 'PR #105 has failing checks desk\'s own repairs did not fix: Lint. Fix them on its branch; desk then merges it once its checks are green.');
+// ---- DS-499: a review gate that wants a person's approval, from error lines recorded on studia-web
+// PRs #2555 and #2546, and the lines desk's own review-gate.mjs writes.
+const { failureLine } = await import('../desk/bin/gate.mjs');
+const GATE_NOTES = JSON.parse(readFileSync(join(ROOT, 'tests', 'fixtures', 'review-gate-annotations.json'), 'utf8'));
+const GATE = '🔐 Review gate', GATE_STEP = 'Require an approval unless a small fix, docs or chore change';
+const gateRed = (error) => ({ name: GATE, status: 'completed', conclusion: 'failure', error });
+const gateStuck = (pr, error, more = {}) => stuckPr(pr, [gateRed(error), ...passed], why375([{ name: GATE, step: GATE_STEP }, ...(more.checks ?? [])]));
+const protectedLine = failureLine(GATE_NOTES.protected), limitLine = failureLine(GATE_NOTES['file-limit']);
+t('DS-499 the error line is the gate\'s, not GitHub\'s exit code line', protectedLine.startsWith('Approval required — 2 protected file(s)'), true);
+const staleLine = 'Approval required — 1 protected file(s): `apps/web/package.json` — and mousedown\'s approval predates 9354a90.';
+const deskLine = 'It touches `db/migrations/1.sql`, `src/a.ts` and 3 more with a `feat` title, and only fix, docs, chore merge without an approval; **31** changed files, over the 30-file limit (900 lines). One approval at the head from someone with write access clears it. mousedown approved an earlier commit; it needs approving again at this head.';
+const otherLine = 'Approval required — a `feat(messaging):` title, and only fix, docs, chore merge without an approval.';
+const approved499 = { name: GATE, status: 'completed', conclusion: 'success' };
+const gateTickets = {
+  'V-1': gateStuck(121, protectedLine),
+  'V-2': gateStuck(122, limitLine),
+  'V-3': gateStuck(123, staleLine),
+  'V-4': gateStuck(124, deskLine),
+  'V-5': gateStuck(125, otherLine),
+  'V-6': stuckPr(126, [lintRed, gateRed(protectedLine), ...passed], why375([{ name: LINT, step: 'Run eslint' }, { name: GATE, step: GATE_STEP }])),
+  'V-7': { ...greenPr(127), merge_blocked: `approval: "${GATE}" needs approval from a human reviewer at abc123456: a person approves it before desk merges it`, pr_status: { ...greenPr(127).pr_status, head: 'h127', checks: [gateRed(protectedLine), ...passed] } },
+  'V-8': gateStuck(128, protectedLine),
+};
+put('phi', { port: 4620, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)', 'Product owner': 'Sam' }, tickets: gateTickets });
+const vi = () => Object.fromEntries(N.collect({ word: 'phi' }).items.map((i) => [i.t.key, i]));
+const v1 = vi();
+const TAIL = 'No code change clears it, only an approving review on GitHub at its latest commit; desk then merges it once its checks are green.';
+t('DS-499 AC1 protected files: the reason in plain words and the approver, not "fix it on its branch"', v1['V-1']?.need, `PR #121 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
+t('DS-499 AC1 the file limit', v1['V-2']?.need, `PR #122 needs Chris Anthony's approval: it has 37 changed files, over the 30-file limit. ${TAIL}`);
+t('DS-499 AC1 another protected file is named, and an approval of an older commit is said', v1['V-3']?.need, `PR #123 needs Chris Anthony's approval: it changes \`apps/web/package.json\`. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
+t('DS-499 AC1 desk\'s own gate line reads the same', v1['V-4']?.need, `PR #124 needs Chris Anthony's approval: it changes a database migration, \`src/a.ts\` and 3 more protected files, and it has 31 changed files, over the 30-file limit. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
+t('DS-499 AC3 a line naming neither cause is as today', `${v1['V-5']?.need} | ${v1['V-5']?.actions.map(([a]) => a).join()}`, `PR #125: "${GATE}" (failed at "${GATE_STEP}") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | done,not-now`);
+t('DS-499 AC1 beside a check a person fixes, that check is asked for and the approval said after it', v1['V-6']?.need, `PR #126: "${LINT}" (failed at "Run eslint") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. It also needs Chris Anthony's approval: it changes a database migration and the database schema.`);
+t('DS-499 AC2 beside another red check there is no waiting to do', v1['V-6']?.actions.map(([a]) => a).join(), 'done,not-now');
+t('DS-499 AC1 a §4 State check the driver noted reads the same', v1['V-7']?.need, `PR #127 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
+t('DS-499 AC2 the item offers waiting first', `${v1['V-1']?.kind} ${v1['V-1']?.actions.map(([a]) => a).join()}`, 'pr waiting,done,not-now');
+t('DS-499 AC2 waiting is not an action on any other PR', N.record({ word: 'phi', ticket: 'V-5', action: 'waiting' }).ok, false);
+t('DS-499 AC2 waiting is recorded', N.record({ word: 'phi', ticket: 'V-1', action: 'waiting' }).ok, true);
+N.record({ word: 'phi', ticket: 'V-8', action: 'waiting' });
+t('DS-499 AC2 it is not listed again, and desk-q counts it put off', `${'V-1' in vi()} ${N.collect({ word: 'phi' }).putOff}`, 'false 2');
+const again = (key, change) => { const q = queueOf('phi').tickets; put('phi', { port: 4620, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)' }, tickets: { ...q, [key]: change(q[key]) } }); };
+again('V-1', (x) => ({ ...x, pr_status: { ...x.pr_status, approvals: ['mousedown'] } }));
+t('DS-499 AC2 an approval brings it back, saying so', vi()['V-1']?.need.endsWith('approvals none → mousedown.)'), true);
+again('V-8', (x) => ({ ...x, stuck: { ...x.stuck, head: 'h128b' }, pr_status: { ...x.pr_status, head: 'h128b' } }));
+t('DS-499 AC2 a new head brings it back', vi()['V-8']?.need.includes('pr-head h128 → h128b'), true);
+again('V-2', (x) => ({ ...x, pr_status: { ...x.pr_status, checks: [approved499, ...passed] } }));
+t('DS-499 AC2 a gate gone green leaves nothing to ask', 'V-2' in vi(), false);
+put('chi', { port: 4630, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'none', 'Product owner': 'Sam, @sam' }, tickets: { 'W-1': gateStuck(131, limitLine) } });
+put('psi', { port: 4640, beat: 1, supervised: true, merge: 'yes', tickets: { 'W-2': gateStuck(132, limitLine) } });
+put('omega499', { port: 4650, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'you' }, tickets: { 'W-3': gateStuck(133, limitLine) } });
+t('DS-499 AC1 no reviewer falls back to the product owner', N.collect({ word: 'chi' }).items[0]?.need.startsWith('PR #131 needs Sam\'s approval:'), true);
+t('DS-499 AC1 neither row: a person with approval rights', N.collect({ word: 'psi' }).items[0]?.need.startsWith('PR #132 needs approval from a person with approval rights:'), true);
+t('DS-499 AC1 a row that is the user', N.collect({ word: 'omega499' }).items[0]?.need.startsWith('PR #133 needs your approval:'), true);
+
 // ---- DS-410: a ready PR into a feature base held on a required check its workflow never runs there.
 const why410 = 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/ci.yml runs on pull requests into main, production)';
 const ready410 = (pr, untriggered) => ({ state: 'done', lane: 'A', result: { pr },
