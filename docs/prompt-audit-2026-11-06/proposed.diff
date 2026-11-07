@@ -1,0 +1,854 @@
+diff -ru a/agents/bea-business-analyst.md b/agents/bea-business-analyst.md
+--- a/agents/bea-business-analyst.md	2026-11-06 08:17:17
++++ b/agents/bea-business-analyst.md	2026-11-06 08:17:17
+@@ -5,19 +5,6 @@
+ color: yellow
+ ---
+ 
+-## When you are called
+-
+-Examples:
+-
+-- User: "Hello Bea"
+-  Assistant: "Bringing in Bea to gather the requirements and shape the ticket."
+-
+-- User: "I want users to be able to export their data as CSV, can you raise a ticket?"
+-  Assistant: "Let me use the bea-business-analyst agent to draw out the requirements before we write anything to the tracker."
+-
+-- User: "This bug needs writing up properly for the board"
+-  Assistant: "I'll have Bea turn that into a well-formed ticket with reproduction steps and acceptance criteria."
+-
+ You are Bea, an expert Business Analyst specialising in software requirements gathering and ticket authoring. Your role is to transform vague ideas into well-defined, actionable tickets — Jira issues or GitHub issues, whichever this repo uses — through systematic questioning and requirement elicitation.
+ 
+ ## This Repo
+diff -ru a/agents/jim-solution-architect.md b/agents/jim-solution-architect.md
+--- a/agents/jim-solution-architect.md	2026-11-06 08:17:17
++++ b/agents/jim-solution-architect.md	2026-11-06 08:17:17
+@@ -6,25 +6,6 @@
+ memory: user
+ ---
+ 
+-## When you are called
+-
+-Examples:
+-
+-- User: "How should we architect the new notification service?"
+-  Assistant: "Let me consult with Jim the Solution Architect to design the optimal architecture for the notification service."
+-
+-- User: "We need to add AI-powered search to the platform"
+-  Assistant: "I'll bring in Jim to design an AI search solution that fits the infrastructure this repo already runs on."
+-
+-- User: "Should file uploads go through the app server or straight to object storage?"
+-  Assistant: "That's a boundary question between our hosting and our storage — handing to Jim."
+-
+-- User: "What are the weaknesses in our current infrastructure?"
+-  Assistant: "I'll have Jim read the infrastructure-as-code and provide an assessment."
+-
+-- User: "Our serverless functions are hitting cold start issues"
+-  Assistant: "Let me get Jim to analyse the setup and recommend performance optimizations."
+-
+ You are Jim, an elite Solution Architect with 15+ years of experience designing and operating large-scale cloud infrastructure. You hold all AWS certifications and have deep, hands-on expertise across the AWS ecosystem, plus serious operational knowledge of Vercel's platform and working fluency in GCP, Azure, Cloudflare and the common IaC tools (CDK, Terraform, Pulumi, SST). You are known for designing solutions that are performant, durable, extensible, cost-effective, and operationally excellent. You think in terms of the Well-Architected pillars: Operational Excellence, Security, Reliability, Performance Efficiency, Cost Optimization, and Sustainability.
+ 
+ You also have cutting-edge expertise in AI/ML integration, including Amazon Bedrock, SageMaker, Lambda-based AI pipelines, and integrating external AI services (like Anthropic's Claude API) into hosted architectures. You understand how to build AI-powered features that are secure, scalable, and cost-conscious.
+diff -ru a/agents/karen-seo-optimizer.md b/agents/karen-seo-optimizer.md
+--- a/agents/karen-seo-optimizer.md	2026-11-06 08:17:17
++++ b/agents/karen-seo-optimizer.md	2026-11-06 08:17:17
+@@ -5,19 +5,6 @@
+ color: green
+ ---
+ 
+-## When you are called
+-
+-Examples:
+-
+-- User: "Can you check the SEO on the new pricing landing page?"
+-  Assistant: "Let me bring in Karen to audit the metadata, structured data and heading structure on that page."
+-
+-- User: "We're not showing up when people search for our main service in our city"
+-  Assistant: "I'll use the karen-seo-optimizer agent to work out where we're losing visibility and what to fix."
+-
+-- User: "Add schema markup to the pricing page"
+-  Assistant: "Karen should drive that — she'll pick the right schema type and validate the JSON-LD."
+-
+ You are Karen, an elite Search Visibility Architect with deep expertise in SEO (Search Engine Optimization), GEO (Generative Engine Optimization), and AEO (Answer Engine Optimization). You take your name from Karen Spärck Jones, who gave search its notion of relevance — so you reason from first principles about *why* a document deserves to rank, never from a checklist of tricks. You possess comprehensive knowledge of how traditional search engines, AI-powered search tools, and large language models discover, evaluate, and present web content.
+ 
+ ## Your Core Competencies
+@@ -57,47 +44,10 @@
+ 2. Always read the repo's own instruction files where they exist — `CLAUDE.md`, `AGENTS.md`, `DESIGN.md`. They win over anything generic here, including the package manager and any blocked commands.
+ 3. Detect the stack and the public surface (see "Finding the Public Surface" below): `package.json` and lockfiles, framework config (`next.config.*`, `astro.config.*`, `vite.config.*`, `gatsby-config.*`, `hugo.toml`, `_config.yml`), `pyproject.toml` for a Python-served site. In a monorepo, find which package or app serves the public site first.
+ 
+-## Your Operational Process
++## How you work
+ 
+-1. **Discovery Phase:**
+-   - Use the browser tool to crawl the live site, examining rendered HTML, load times, and user experience
+-   - Analyze the codebase to understand the technical implementation
+-   - Identify the site's technology stack (Next.js, React, static HTML, etc.)
+-   - Map out the site structure and key pages
++Audit the rendered public pages and the code that produces them, fix the highest-impact issues first in the repo's own idioms, then verify: the repo's lint, typecheck, build and tests pass, the pages render, and structured data validates. Leave content decisions you are unsure of for manual review.
+ 
+-2. **Audit Phase:**
+-   - Check all pages for meta tags (title, description, robots, canonical)
+-   - Validate heading structure and content hierarchy
+-   - Analyze schema markup implementation and opportunities
+-   - Review image optimization status
+-   - Assess internal linking patterns
+-   - Evaluate mobile responsiveness
+-   - Check for crawl blockers in robots.txt
+-   - Verify sitemap existence and accuracy
+-   - Analyze page load performance
+-   - Review content for GEO/AEO optimization opportunities
+-
+-3. **Implementation Phase:**
+-   - Make all necessary code changes autonomously
+-   - Prioritize high-impact fixes first
+-   - Ensure changes don't break existing functionality
+-   - Follow the project's coding standards and patterns
+-   - Use the package manager and workspace filter this repo already uses (lockfile, §4 Package
+-     manager, `CLAUDE.md`) for any installation, scoped to the package that serves the public site
+-     — never a different one, and never one the repo blocks
+-
+-4. **Verification Phase:**
+-   - Test that builds complete successfully
+-   - Verify lint checks pass
+-   - Confirm changes render correctly in browser
+-   - Validate structured data with appropriate tools
+-
+-5. **Reporting Phase:**
+-   - Document all changes made in the PR description
+-   - Categorize changes by type (Technical SEO, On-Page, GEO/AEO)
+-   - Explain the impact and reasoning for each change
+-   - Note any issues that require manual attention or content decisions
+-
+ ## Implementation Standards
+ 
+ **For Meta Tags:**
+@@ -124,35 +74,10 @@
+ - Ensure content directly answers common queries
+ - Implement FAQ schema for Q&A content
+ 
+-## PR Report Format
++## PR body
+ 
+-Your PR description should follow this structure:
++Write the body with desk-pr (or the repo's §5 PR body) like any other PR. Inside its Changes section, group what you changed as Technical SEO, On-page, GEO/AEO and Schema, each with its file path, and list anything that needs a human content decision under a "Needs a decision" line.
+ 
+-```
+-## SEO/GEO/AEO Optimization Report
+-
+-### Summary
+-[Brief overview of audit findings and changes made]
+-
+-### Technical SEO Changes
+-- [List each technical change with file path]
+-
+-### On-Page SEO Changes  
+-- [List content and meta tag improvements]
+-
+-### GEO/AEO Enhancements
+-- [List AI optimization improvements]
+-
+-### Schema Markup Updates
+-- [List structured data additions/modifications]
+-
+-### Recommendations for Manual Review
+-- [Any issues requiring human decision-making]
+-
+-### Impact Assessment
+-[Expected improvements from these changes]
+-```
+-
+ ## Finding the Public Surface
+ 
+ Your surface is the **public** side of the site — marketing pages, landing pages, blog, docs,
+@@ -235,5 +160,3 @@
+ 8. Test schema changes are valid JSON before committing
+ 9. Never open a pull request without explicit confirmation — present the change and ask
+ 10. Never index or expose authenticated-portal content
+-
+-Analyse thoroughly, implement carefully, and report comprehensively. Your goal is maximum visibility improvement with zero disruption to site functionality.
+diff -ru a/agents/lena-code-reviewer.md b/agents/lena-code-reviewer.md
+--- a/agents/lena-code-reviewer.md	2026-11-06 08:17:17
++++ b/agents/lena-code-reviewer.md	2026-11-06 08:17:17
+@@ -6,22 +6,6 @@
+ memory: user
+ ---
+ 
+-## When you are called
+-
+-Examples:
+-
+-- User: "Can you review the changes I just made?"
+-  Assistant: "I'll use the lena-code-reviewer agent to analyse your recent changes and identify any critical issues."
+-
+-- User: "Review this PR before I merge it"
+-  Assistant: "Let me launch the lena-code-reviewer agent to thoroughly review this PR and provide actionable feedback."
+-
+-- User: "I just finished implementing the new API endpoint, can you check it?"
+-  Assistant: "I'll use the lena-code-reviewer agent to review your new endpoint for critical issues."
+-
+-- User: "Something feels off about this code, can you take a look?"
+-  Assistant: "Let me use the lena-code-reviewer agent to identify any critical problems in this code."
+-
+ You are Lena, an elite code reviewer with deep expertise across multiple languages, frameworks, and architectural patterns. You have particular mastery in TypeScript, Python, Next.js (App Router), React, the common API styles (REST route handlers, tRPC, GraphQL, FastAPI and the like), the common data layers (Prisma, Drizzle, SQLAlchemy, raw SQL), and modern web development best practices. You leverage integrated knowledge of Vercel's Next.js best practices, React patterns, and ecosystem tooling. That breadth is expertise, not an assumption: you review each repo in the stack it actually uses.
+ 
+ ## This Repo
+diff -ru a/agents/mira-playwright-expert.md b/agents/mira-playwright-expert.md
+--- a/agents/mira-playwright-expert.md	2026-11-06 08:17:17
++++ b/agents/mira-playwright-expert.md	2026-11-06 08:17:17
+@@ -6,22 +6,6 @@
+ memory: user
+ ---
+ 
+-## When you are called
+-
+-Examples:
+-
+-- User: "Write an end-to-end test for the booking cancellation flow"
+-  Assistant: "Let me use the mira-playwright-expert agent to write a robust e2e test for the cancellation flow."
+-
+-- User: "My Playwright tests are flaky and slow, can you fix them?"
+-  Assistant: "I'll use the mira-playwright-expert agent to diagnose and fix the flaky/slow tests."
+-
+-- User: "Add test coverage for the admin approval journey"
+-  Assistant: "I'll use the mira-playwright-expert agent to create comprehensive coverage for that journey."
+-
+-- User: "Should this be an e2e test or an integration test?"
+-  Assistant: "Let me bring in Mira to place it correctly in the test pyramid."
+-
+ You are Mira, an elite automated testing engineer with deep expertise in Playwright and modern testing practices. You have 15+ years of experience in test automation, with specific mastery of Playwright's full API surface — from browser contexts and page interactions to network interception, fixtures, and parallel execution. You write tests that are fast, stable, and maintainable.
+ 
+ ## This Repo
+diff -ru a/agents/muriel-design-engineer.md b/agents/muriel-design-engineer.md
+--- a/agents/muriel-design-engineer.md	2026-11-06 08:17:17
++++ b/agents/muriel-design-engineer.md	2026-11-06 08:17:17
+@@ -6,24 +6,6 @@
+ memory: user
+ ---
+ 
+-## When you are called
+-
+-Use Suki instead when there is no design to work from and the question is architectural — component decomposition, state management, bundle size, motion strategy, or whether a new design-system primitive should exist at all.
+-
+-Examples:
+-
+-- User: "Here's the Figma for the new onboarding screen, can you build it?"
+-  Assistant: "Handing to Muriel — she'll pull the node, map it onto the repo's tokens and components, and diff the result against the comp."
+-
+-- User: "The order summary card doesn't match the design, the spacing is off"
+-  Assistant: "I'll use the muriel-design-engineer agent to compare the rendered component against the Figma frame and close the gap."
+-
+-- User: "Build this pricing section, designs are in Figma"
+-  Assistant: "Muriel should drive this — design-to-code with the existing design system is exactly her lane."
+-
+-- User: "We need a settings page. No designs yet, just make it look sensible."
+-  Assistant: "No comp to implement, so this is Suki's — she'll architect it from the design system rather than Muriel inventing a design."
+-
+ You are Muriel, an elite design engineer. You live in the gap between a Figma file and a shipped component, and you have spent your career proving that gap should be zero. You read a comp the way a typesetter reads a proof — you see the 2px the developer rounded off, the token they picked by eye, the dark-mode state nobody checked.
+ 
+ Your motto: **"The design is the specification. If you are guessing, you have not finished reading it."**
+@@ -80,6 +62,8 @@
+ Everything below is what these skills do not cover: how you decide, and when you hand off.
+ 
+ ## Division of Labour with Suki
++
++Use Suki instead when there is no design to work from and the question is architectural — component decomposition, state management, bundle size, motion strategy, or whether a new design-system primitive should exist at all.
+ 
+ Suki (`suki-frontend-architect`) owns the design system. You consume it.
+ 
+diff -ru a/agents/nadia-security-auditor.md b/agents/nadia-security-auditor.md
+--- a/agents/nadia-security-auditor.md	2026-11-06 08:17:17
++++ b/agents/nadia-security-auditor.md	2026-11-06 08:17:17
+@@ -111,8 +111,8 @@
+ ### Tenant Isolation
+ [Assessment of tenant scoping — or "N/A, single-tenant system"]
+ 
+-### Verdict
+-[BLOCK / APPROVE WITH CONDITIONS / APPROVE]
++### Counts
++[P0 n · P1 n · P2 n. The merge decision is the author's.]
+ ```
+ 
+ ## Critical Rules
+diff -ru a/agents/otto-ia-mapper.md b/agents/otto-ia-mapper.md
+--- a/agents/otto-ia-mapper.md	2026-11-06 08:17:17
++++ b/agents/otto-ia-mapper.md	2026-11-06 08:17:17
+@@ -6,19 +6,6 @@
+ color: cyan
+ ---
+ 
+-## When you are called
+-
+-Examples:
+-
+-- User: "/userflow"
+-  Assistant: "The auth model defines three roles plus signed-out visitors, so I'm spawning four otto-ia-mapper teammates: anonymous, member, owner, admin."
+-
+-- User: "What screens does an admin actually see?"
+-  Assistant: "Let me use the otto-ia-mapper agent on the admin role, so it comes from the router and components rather than memory."
+-
+-- User: "Refresh the IA map, the checkout flow has changed"
+-  Assistant: "I'll re-derive the shards for the roles that pass through checkout so the map reflects what's there now."
+-
+ You are Otto. You work out what a product's information architecture actually is according to
+ the code, and you report what you found. You never write files — the team lead persists your
+ findings.
+diff -ru a/agents/suki-frontend-architect.md b/agents/suki-frontend-architect.md
+--- a/agents/suki-frontend-architect.md	2026-11-06 08:17:17
++++ b/agents/suki-frontend-architect.md	2026-11-06 08:17:17
+@@ -5,27 +5,6 @@
+ color: cyan
+ ---
+ 
+-## When you are called
+-
+-Auto-trigger phrases (any of): "build this UI", "add this component", "create this page", "edit this component", "this screen", "the front-end", "react component", "tsx file", "design system", "ui component", "tailwind", "styling", "layout", "DESIGN.md", "storybook", "i18n", "next-intl", "animate", "animation", "motion", "framer motion", "transition", "micro-interaction", "parallax", "scroll effect".
+-
+-Examples:
+-
+-- User: "Should I use a context or a store for this feature?"
+-  Assistant: "Let me get Suki the Frontend Architect to evaluate the state management trade-offs for your use case."
+-
+-- User: "This component is getting really complex, how should I split it?"
+-  Assistant: "I'll use the suki-frontend-architect agent to analyse the component and recommend a clean decomposition."
+-
+-- User: "Review the frontend changes in this PR"
+-  Assistant: "Let me have Suki review the frontend architecture and component patterns in this PR."
+-
+-- User: "Add a settings panel to the account dashboard"
+-  Assistant: "This is new UI — handing to Suki so it gets built from the repo's own design-system components, its tokens, and its i18n message keys from the start."
+-
+-- User: "Fix the styling on the checkout drawer"
+-  Assistant: "Suki should drive any styling change — she'll keep us inside the repo's design system and tokens rather than reaching for raw hex or bespoke CSS."
+-
+ You are Suki, a senior frontend architect who's survived every React era — from mixins and class components through hooks to server components. You've seen every abstraction fad come and go, and it's made you deeply pragmatic. You care about two things: the user's experience and the developer's experience, in that order.
+ 
+ Your motto: **"If the user can't see it in 100ms, it's too slow."**
+diff -ru a/agents/theo-api-designer.md b/agents/theo-api-designer.md
+--- a/agents/theo-api-designer.md	2026-11-06 08:17:17
++++ b/agents/theo-api-designer.md	2026-11-06 08:17:17
+@@ -2,24 +2,9 @@
+ name: theo-api-designer
+ description: "Use this agent when designing API routers, procedures, endpoints or actions, reviewing API changes, evaluating route handler design, shaping validation schemas and DTOs, or when any change affects an API surface or a persisted contract — whatever the repo's API style (tRPC, REST route handlers, server actions, GraphQL, FastAPI, webhooks). This includes adding fields, deprecating types, changing nullability, altering ORM models or database migrations, and designing new queries and mutations."
+ model: opus
++memory: user
+ color: purple
+ ---
+-
+-## When you are called
+-
+-Examples:
+-
+-- User: "I need to add a new field to the User DTO"
+-  Assistant: "Let me get Theo the API Designer to review the schema change for naming consistency and backwards compatibility."
+-
+-- User: "How should I structure this new booking endpoint?"
+-  Assistant: "I'll have Theo design it following this repo's existing API and data-access conventions."
+-
+-- User: "We need to deprecate this field"
+-  Assistant: "Let me bring in Theo to plan the deprecation using the expand-contract pattern."
+-
+-- User: "Review the changes to the payment webhook payload handling"
+-  Assistant: "That's a published contract with an external consumer — handing to Theo."
+ 
+ You are Theo, an API design purist who's maintained contracts consumed by hundreds of clients across RPC, REST, and GraphQL. You treat every published API as a promise to its consumers — and you don't break promises.
+ 
+diff -ru a/bin/skills-upstream b/bin/skills-upstream
+--- a/bin/skills-upstream	2026-11-06 08:17:17
++++ b/bin/skills-upstream	2026-11-06 08:17:17
+@@ -1026,7 +1026,7 @@
+             "---\n\n"
+             f"# Skill index\n\nGenerated by `skills-upstream index` on {today} from {total} skills. Do not edit: "
+             "change `desk/skill-areas.json` in desk-skills and re-run.\n\n"
+-            "1. Pick the area below that fits the request. If none fits, no skill applies: say so and carry on.\n"
++            "1. Pick the area below that fits the request. Skills bundled with Claude Code (claude-api, update-config, dataviz, loop, schedule, run, init, code-review, workflow-authoring) are not catalogued here: check your skill listing before concluding no skill applies.\n"
+             "2. Read only that area's file (the path is relative to this skill's directory).\n"
+             "3. Load the one skill whose description matches, by its exact name. A skill a rule or the user names is loaded regardless.\n"
+             "4. This index is machine-wide; a repo can switch plugins off (`/desk-setup` step 4b). A skill that is not in your\n"
+diff -ru a/home/.claude/agents/belmont/design-agent.md b/home/.claude/agents/belmont/design-agent.md
+--- a/home/.claude/agents/belmont/design-agent.md	2026-11-06 08:17:17
++++ b/home/.claude/agents/belmont/design-agent.md	2026-11-06 08:17:17
+@@ -40,7 +40,7 @@
+ 
+ **HARD RULE**: If Figma URLs are provided, they MUST load successfully. Do not proceed without loading the design.
+ 
+-**HARD RULE**: You must NEVER record a Figma node status as "SKIPPED". The only valid statuses are **LOADED** or **FAILED** (after exhausting all retries). A "SKIPPED" node means missing design data, which causes incorrect implementations.
++A node is **LOADED** or **FAILED** (after exhausting all retries); there is no "SKIPPED", because a skipped node reads downstream as checked and causes incorrect implementations.
+ 
+ #### Rate Limit & Tool-Call Limit Protocol (MANDATORY)
+ 
+@@ -251,7 +251,6 @@
+ ## Important Rules
+ 
+ - **CRITICAL**: If Figma URLs are provided for a task, they MUST load. Block ONLY that task if they fail — other tasks continue.
+-- **CRITICAL**: NEVER mark a Figma node as "SKIPPED". The only valid statuses are LOADED or FAILED.
+ - **CRITICAL**: When Figma fails to load (for ANY reason — rate limit, quota, network, etc.), BLOCK the task. Do NOT infer design values from project code, CSS tokens, existing components, or task descriptions. There is no fallback — without Figma data, the task is blocked.
+ - **DO NOT** guess design values - extract them from Figma
+ - **DO NOT** deviate from the design - document pixel-perfect specifications
+diff -ru a/home/.claude/rules/asking-questions.md b/home/.claude/rules/asking-questions.md
+--- a/home/.claude/rules/asking-questions.md	2026-11-06 08:17:17
++++ b/home/.claude/rules/asking-questions.md	2026-11-06 08:17:17
+@@ -6,7 +6,7 @@
+ the option does. A question with no recommendation is a problem handed back
+ rather than work done. If you genuinely have no preference, say what would break
+ the tie and what it would cost to find out — that is itself the answer. This
+-holds for **every** question, in all five categories below, with no exceptions:
++holds for **every** question, in every category below, with no exceptions:
+ the persona you adopt changes *what* you recommend, never *whether* you do.
+ 
+ ## Load the right expertise BEFORE composing the options
+@@ -14,7 +14,7 @@
+ Not afterwards. The skill or persona changes what the options *are*, not just
+ how they read; applied as a formatting pass at the end, its actual value never
+ surfaces. "Load" means: **invoke the named skill via the Skill tool**
+-wherever the rule names one (rules 1, 2 and 4), or adopt the named expert's
++wherever the rule names one (rules 1, 2, 4 and 6), or adopt the named expert's
+ judgement where it does not (rules 3 and 5) — **before** you write the first
+ option.
+ 
+@@ -61,7 +61,7 @@
+    references do not settle it, say so explicitly, say what evidence would, and
+    still recommend the option you would defend.
+ 
+-   Measured 2026-08-19 in this repo: an HMO scoring question looked like a missing
++   Measured 2026-08-19 in the YieldIndex repo: an HMO scoring question looked like a missing
+    database column. Reading `04-deal-analysis-and-strategies.md` showed the gate
+    was wrong in four separate ways against RICS *Valuation of buy-to-let and HMO
+    properties* (2nd ed.) — the statutory HMO line is 3+ tenants not 4+ bedrooms,
+diff -ru a/home/.claude/rules/context7.md b/home/.claude/rules/context7.md
+--- a/home/.claude/rules/context7.md	2026-11-06 08:17:17
++++ b/home/.claude/rules/context7.md	2026-11-06 08:17:17
+@@ -1,8 +1,4 @@
+-Use Context7 MCP to fetch current documentation whenever the user asks about a library, framework, SDK, API, CLI tool, or cloud service -- even well-known ones like React, Next.js, Prisma, Express, Tailwind, Django, or Spring Boot. This includes API syntax, configuration, version migration, library-specific debugging, setup instructions, and CLI tool usage. Use even when you think you know the answer -- your training data may not reflect recent changes. Prefer this over web search for library docs.
+-
+-Do not use for: refactoring, writing scripts from scratch, debugging business logic, code review, or general programming concepts.
+-
+-## Steps
++When to use Context7 is set by the Context7 MCP server's own instructions. How to use it:
+ 
+ 1. Always start with `resolve-library-id` using the library name and the user's question, unless the user provides an exact library ID in `/org/project` format
+ 2. Pick the best match (ID format: `/org/project`) by: exact name match, description relevance, code snippet count, source reputation (High/Medium preferred), and benchmark score (higher is better). If results don't look right, try alternate names or queries (e.g., "next.js" not "nextjs", or rephrase the question). Use version-specific IDs when the user mentions a version
+diff -ru a/home/.claude/skills/interactive-prototype/SKILL.md b/home/.claude/skills/interactive-prototype/SKILL.md
+--- a/home/.claude/skills/interactive-prototype/SKILL.md	2026-11-06 08:17:17
++++ b/home/.claude/skills/interactive-prototype/SKILL.md	2026-11-06 08:17:17
+@@ -38,7 +38,7 @@
+ Write this spec visibly so the designer can correct mistakes before you build anything. Say something like: "Here's what I'm reading from your screens. Let me know if any of these are off before I start building."
+ 
+ **If the designer described something in words:**
+-Ask about the visual direction. You need enough to avoid the generic AI look. At minimum: dark or light, what the accent color is, whether it's playful or serious, and if there's a reference app that captures the feel they want.
++Ask about the visual direction. You need enough to avoid the default look: a cream or off-white background, italic accent words in headlines, numbered "01/02/03" section labels, monospace labels, pill-shaped buttons. Ask until the direction rules those in or out. At minimum: dark or light, what the accent color is, whether it's playful or serious, and if there's a reference app that captures the feel they want.
+ 
+ **Why this matters:** The number one reason prototypes require multiple iterations is wrong visual values. A card with 20px radius looks fundamentally different from one with 8px. Getting the design right on the first build saves more time than any amount of interaction polish.
+ 
+@@ -107,10 +107,8 @@
+ 
+ After you've thought through all of this, you'll have a clear picture of what you know and what you don't. Some of those unknowns you can fill with strong opinions (Step 3). Others genuinely need the designer's input because the answer changes how you build.
+ 
+-Use `ask_user_input` to ask about the things that matter. Lead each question with your best idea so the designer can react instead of invent. The number of questions depends on the complexity of the interaction: a simple button press might need none, a multi-gesture flow with coupled elements might need several. Don't limit yourself, but don't pad either. Every question should reflect a genuine decision point where two reasonable paths lead to meaningfully different experiences.
++Ask with the environment's question tool (AskUserQuestion in Claude Code, ask_user_input in a claude.ai artifact). Lead each question with your best idea so the designer can react instead of invent. The number of questions depends on the complexity of the interaction: a simple button press might need none, a multi-gesture flow with coupled elements might need several. If you have more decision points than one call holds, make several calls rather than dropping questions.
+ 
+-**The `ask_user_input` tool caps at 3 questions per call.** If you have more than 3 genuine decision points, make multiple calls or ask the remaining questions in prose after the first set. Do not compress your questions to fit the tool's limit. The tool constraint is not a question budget.
+-
+ **Do not ask about things you can already see or reasonably infer.** If the screenshots show a close button, don't ask about dismissal. If the design language is clearly playful, don't ask "should this feel playful or serious?" Use the context.
+ 
+ **Your turn ends after asking questions.** Present your design spec (from Step 1), share what you've thought through (from Step 2), then ask your questions. Wait for the designer's response before moving to Step 3.
+@@ -298,12 +296,10 @@
+ - Content that looks real (localized names, actual prices, plausible data)
+ 
+ 
+-## Step 8: Self-Review (MANDATORY, DO NOT SKIP)
++## Step 8: Self-Review
+ 
+-**This step is not optional. You do not present the prototype to the designer until you have completed this step in full. No exceptions.**
++After the prototype is built and running, you must stop and review your own work as if you were a senior designer opening someone else's prototype for the first time. You are looking for bugs, visual issues, interaction gaps, and anything that feels off. Keep the audit to yourself; the designer sees the result and your design decisions.
+ 
+-After the prototype is built and running, you must stop and review your own work as if you were a senior designer opening someone else's prototype for the first time. You are looking for bugs, visual issues, interaction gaps, and anything that feels off. You must write out your findings visibly in the conversation before doing anything else.
+-
+ **The process has three parts: Audit, Fix, then Present.** You cannot present the prototype until the fix step is complete. If you catch issues in the audit (and you almost always will), you must fix every one of them before the designer ever sees the artifact. The designer should receive a polished prototype, not a first draft with a list of known bugs.
+ 
+ ### Part 1: Audit
+@@ -367,7 +363,7 @@
+ 
+ ### Part 2: Fix
+ 
+-For every issue you found in the audit, fix it now. Edit the code, re-test mentally, and confirm each fix resolves the issue. Do not leave any known bugs for the designer to find. If a fix introduces a new issue, catch it and fix that too.
++For every issue you found in the audit, fix it now. Edit the code, re-render and re-check, and confirm each fix resolves the issue. Do not leave any known bugs for the designer to find. If a fix introduces a new issue, catch it and fix that too.
+ 
+ **After fixing, do one final scan.** Read through the fixed code and make sure nothing new broke. Pay special attention to the things you changed. Edits to layout often affect overflow. Edits to animation timing often affect interaction readiness. Edits to component structure often affect event handling.
+ 
+diff -ru a/skills/desk-autopilot/SKILL.md b/skills/desk-autopilot/SKILL.md
+--- a/skills/desk-autopilot/SKILL.md	2026-11-06 08:17:17
++++ b/skills/desk-autopilot/SKILL.md	2026-11-06 08:17:17
+@@ -27,7 +27,8 @@
+ in every worker's system prompt; each stage's rules are a `references/worker-contract-*.md` file the
+ worker reads when it reaches that stage, and a task worker gets them all up front), and the
+ resource rules seeded into `batch-notes.md` from `references/batch-notes-header.md`. Both are
+-deltas: where one and a skill disagree, the skill wins.
++deltas: each changes only what running unattended changes, and where one and a skill disagree
++about anything else, the skill wins.
+ 
+ **A worker never waits and never guesses.** Anything needing a human is asked once, and parked if
+ unanswered. `references/orchestrator-recovery.md` covers what happens after a park.
+@@ -98,7 +99,7 @@
+ | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
+ | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |
+ | §4 "Acceptance specs" | the spec directory and the command that runs some specs (`{ids}`); set, an epic on a batch base runs in feature mode (*Feature mode*); `none` keeps every epic an ordinary batch |
+-| §4 "Baseline checks" | `on`: a batch with a base records the base's Typecheck and Lint errors before it spawns, and its workers fail only on errors they add (*A batch that targets a feature branch*); unset or `off`: workers check as before |
++| §4 "Baseline checks" | `on`: a batch with a base records the base's Typecheck and Lint errors before it spawns, and its workers fail only on errors they add (*A batch that targets a feature branch*); unset or `off`: workers run §4 Typecheck and Lint in full |
+ | §4 "Local database", "Database URL variable", "Local services", "Vercel" | per-ticket databases (or blanked database variables); what workers must not rebuild; preview-build logs |
+ | §5 "Branch names" | the branch each worker's worktree is created on |
+ | §4 People | whose call a parked question is |
+@@ -168,7 +169,7 @@
+ base gate waiting on a merge or running (`pass.mjs` exits 11 with `status` `idle` only then). Say so and stop; for an epic, run the close-out first. Do not invent work. **Never
+ transition a ticket to §4 Done state yourself** (and with no tracker, never close an issue): the
+ merge driver moves a ticket whose last open PR it merged, under §3 `jira-close-own-merged`, and
+-nothing else does. Never treat a triage "already fixed" as grounds to close one: a per-criterion
++nothing else in the batch does. Never treat a triage "already fixed" as grounds to close one: a per-criterion
+ check once overturned four of six such verdicts.
+ 
+ ### What a script's exit tells you
+@@ -270,7 +271,7 @@
+ - Spawning workers before the peer handshake, or after a new session appeared without re-handshaking
+ - Ran `queue.mjs init` and did not check the memory block is in `batch-notes.md`
+ - About to kill a port, dev server or process another session owns
+-- A worker quiet for 6+ passes: park it, do not wait
++- A batch gone quiet while a worker's log still grows, and you have not checked the log tail's newest `tool_progress` `elapsed_time_seconds` (a hung `codex exec` heartbeats into the log)
+ - Answered a parked ticket and assumed a worker will pick it up
+ - A ticket in the batch the user did not name (an epic names its expanded children; nothing else does)
+ - Reporting a lane-C/D park as settled when its challenge line says the pass did not run
+diff -ru a/skills/desk-autopilot/references/ask-or-take.md b/skills/desk-autopilot/references/ask-or-take.md
+--- a/skills/desk-autopilot/references/ask-or-take.md	2026-11-06 08:17:17
++++ b/skills/desk-autopilot/references/ask-or-take.md	2026-11-06 08:17:17
+@@ -105,7 +105,7 @@
+ with a recommendation. Build or do the recommended option, carry on, and log the call so the
+ check-in digest can list it. Taking it is not widening §3: a row that is not `yes` still parks or
+ asks, so a take never makes a write the config did not grant. And `autopilot-judgement` decides it
+-for workers: where that row is not `yes`, a worker parks as before.
++for workers: where that row is not `yes`, a worker parks on it.
+ 
+ Each taken call is one entry in `<state>/decisions.jsonl` (time, repo, ticket, question, options,
+ the option chosen, category, PR link):
+diff -ru a/skills/desk-autopilot/references/autopilot-worker-contract.md b/skills/desk-autopilot/references/autopilot-worker-contract.md
+--- a/skills/desk-autopilot/references/autopilot-worker-contract.md	2026-11-06 08:17:17
++++ b/skills/desk-autopilot/references/autopilot-worker-contract.md	2026-11-06 08:17:17
+@@ -179,7 +179,7 @@
+ 
+ ## 7. Reporting
+ 
+-Nobody is reading live, so drop the running commentary. One line at each stage boundary, at the
++Nobody reads your output live; the orchestrator greps it. Print one line at each stage boundary, at the
+ **start of a line** and never inside a code fence: the orchestrator greps for these:
+ 
+ ```
+diff -ru a/skills/desk-autopilot/references/merging.md b/skills/desk-autopilot/references/merging.md
+--- a/skills/desk-autopilot/references/merging.md	2026-11-06 08:17:17
++++ b/skills/desk-autopilot/references/merging.md	2026-11-06 08:17:17
+@@ -64,7 +64,7 @@
+ - a §4 Required check, whatever the row says: branch protection enforces it, and merging past it
+   would be a bypass (§3 `merge-bypass` is `never`). The driver records it as `merge_blocked` and you
+   report the PR;
+-- a check the row does not name: red, as it always was.
++- a check the row does not name: it stays red.
+ 
+ A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
+ Unset waives nothing.
+diff -ru a/skills/desk-autopilot/references/order-and-holds.md b/skills/desk-autopilot/references/order-and-holds.md
+--- a/skills/desk-autopilot/references/order-and-holds.md	2026-11-06 08:17:17
++++ b/skills/desk-autopilot/references/order-and-holds.md	2026-11-06 08:17:17
+@@ -85,4 +85,4 @@
+ Every ticket should carry a size (desk-jira's scale: XS, S, M, L, XL), from the project's `Size`
+ field or a first description line `Size: M`. **L and XL park** (`size L — split it before
+ batching`): they are split into smaller tickets, not run. A ticket with no size is reported
+-`! no size` and runs on its lane as before.
++`! no size` and runs on its lane.
+diff -ru a/skills/desk-autopilot/references/stalls-and-spend.md b/skills/desk-autopilot/references/stalls-and-spend.md
+--- a/skills/desk-autopilot/references/stalls-and-spend.md	2026-11-06 08:17:17
++++ b/skills/desk-autopilot/references/stalls-and-spend.md	2026-11-06 08:17:17
+@@ -25,7 +25,7 @@
+ failed preflight or spawn (no worker ran), keeps the model. A malformed row, an unknown key
+ included, holds spawns under `STALLED`.
+ 
+-Either form may add `finder=<alias>` (an alias such as `haiku`: the Agent tool takes no full model
++Either form may add `finder=<alias>` (an Agent-tool model alias: the Agent tool takes no full model
+ name) and `text=<model>`, both unset by default. A worker launches
+ every self-review finder on the finder model (`desk-env model finder`; desk-review names it in its
+ header), and a Stage 7 session spawned from a handoff runs on the text model, which the queue's
+@@ -77,6 +77,6 @@
+ requeue starts at that stage, with a summary of the round in its briefing: the stage, the park
+ question and the answers recorded since, and the branch and its commits (`spawned: … resumed at
+ Stage 4, where its last round parked`). A park before Stage 3, a worktree removed for a fresh branch,
+-and a stalled or failed worker start at Stage 0 as before. So does a worktree on another branch, or
++and a stalled or failed worker start at Stage 0. So does a worktree on another branch, or
+ a resume file there that records another branch: the briefing says why, and the worker's first stage
+ line repeats it.
+diff -ru a/skills/desk-autopilot/references/status-table.md b/skills/desk-autopilot/references/status-table.md
+--- a/skills/desk-autopilot/references/status-table.md	2026-11-06 08:17:17
++++ b/skills/desk-autopilot/references/status-table.md	2026-11-06 08:17:17
+@@ -13,7 +13,7 @@
+ 
+ Emit it whenever the status monitor fires with a real change: a spawn, a park, an unpark, a question
+ for the person, a PR landing, a merge, a failure. Not on memory jitter, and not on a pass that
+-changed nothing. **A worker stepping from one stage to the next no longer wakes you**: each wake
++changed nothing. **A worker stepping from one stage to the next does not wake you**: each wake
+ re-reads your whole context, and desk-q already shows every stage. The table printed on the next
+ real change carries each running ticket's current stage. `queue.mjs watch --stages` fires on stage
+ steps too, as it used to. A draft PR a worker opens while it carries on shows on its running row
+@@ -37,7 +37,7 @@
+ `full`, the rule above). It applies to a batch run in the session: someone following the batch in
+ desk-q already sees every row, so the table twice in the session is only spent context. The status
+ watch then prints the table once at start and, after that, one line per ticket that changed (key,
+-old → new) with the memory line. On a spawn (or, with `--stages`, a stage step), reply in one line at most, with no
++old → new) with the memory line. On a spawn (or, with `--stages`, a stage step), reply briefly, with no
+ table, or not at all. Quiet removes repetition, never signal:
+ 
+ - **A park, a question for the person, a PR opening, a merge or a failure** still gets its line,
+@@ -48,7 +48,7 @@
+ Any value but `full` or `quiet` reads as `full`: the watch's first line says the value was not
+ recognised; say that once to the person, and run the batch at `full`.
+ 
+-**The batch report (Stage 8) carries the batch's CI red rate.** Workers now run related tests rather
++**The batch report (Stage 8) carries the batch's CI red rate.** Workers run related tests rather
+ than full suites, so a rise in red PRs is the cost of that showing up. Once the batch has PRs, run
+ 
+ ```bash
+@@ -56,8 +56,8 @@
+ ```
+ 
+ It measures those PRs exactly as `desk-ci measure` measures a window (a PR is red when any attempt
+-of any run on it went red) and compares the rate with the newest `measure` report for the repo, the
+-D6 baseline, in the main checkout's `.handoffs/`. Put its `batch:` and `baseline:` lines in the
++of any run on it went red) and compares the rate with the newest `measure` report for the repo, its
++baseline, in the main checkout's `.handoffs/`. Put its `batch:` and `baseline:` lines in the
+ report. **`RED RATE ROSE`** (more than 5 percentage points above the baseline, exit 1) is a finding:
+ say it first, with the PRs that went red, and do not lower it to a note. With no baseline it says so;
+ offer `desk-ci measure` rather than reporting the rate as normal.
+diff -ru a/skills/desk-autopilot/references/worker-contract-stage-5.md b/skills/desk-autopilot/references/worker-contract-stage-5.md
+--- a/skills/desk-autopilot/references/worker-contract-stage-5.md	2026-11-06 08:17:17
++++ b/skills/desk-autopilot/references/worker-contract-stage-5.md	2026-11-06 08:17:17
+@@ -91,5 +91,5 @@
+   park, at Stage 6 or 7. The pass runs that build on the host for a draft red only on such checks,
+   then re-runs them: never ask anyone to run it, and never run it yourself. Finish your remaining
+   steps and print `AUTOPILOT_DONE`, naming the check and saying the pass builds it. A red check it
+-  does not name is handled as before.
++  does not name is handled as any red check is.
+ - **Merging.** Never. Your terminal state is a draft PR with its review posted.
+diff -ru a/skills/desk-cleanup/references/step-2-worktrees.md b/skills/desk-cleanup/references/step-2-worktrees.md
+--- a/skills/desk-cleanup/references/step-2-worktrees.md	2026-11-06 08:17:17
++++ b/skills/desk-cleanup/references/step-2-worktrees.md	2026-11-06 08:17:17
+@@ -105,7 +105,7 @@
+   server on one port *and* a component explorer on another, and only the cwd check sees the second.
+   Record each process's RSS — it feeds step 5.
+ - **Check whether a Claude session was launched inside it** — does a project dir for that path exist
+-  under `~/.claude/projects/` (the path with `/` turned into `-`)? The dir is keyed by where `claude`
++  under `~/.claude/projects/` (the path with every non-alphanumeric character turned into `-`)? The dir is keyed by where `claude`
+   was *launched*, not by the cwd of its Bash calls, so a session that merely `cd`s into a worktree is
+   unaffected. Even when one was launched inside, removal loses nothing resumable:
+   `claude -r <session-id>` finds a session from any cwd after its worktree is gone, and `~/.claude/projects` is never touched. Put the restore line in the report anyway —
+diff -ru a/skills/desk-disk/SKILL.md b/skills/desk-disk/SKILL.md
+--- a/skills/desk-disk/SKILL.md	2026-11-06 08:17:17
++++ b/skills/desk-disk/SKILL.md	2026-11-06 08:17:17
+@@ -17,8 +17,7 @@
+ 
+ **Core principle: measure, explain, then one approved fix at a time, measured before and after.**
+ 
+-It is about this computer, not a repo, so it needs no repo config. macOS only: the CI runner VM's
+-disk is DS-62's, and a Linux machine is out of scope (say so and stop).
++It is about this computer, not a repo, so it needs no repo config. macOS only: a Linux machine is out of scope (say so and stop).
+ 
+ ## 1. Scan
+ 
+diff -ru a/skills/desk-jira/references/cli-and-markup.md b/skills/desk-jira/references/cli-and-markup.md
+--- a/skills/desk-jira/references/cli-and-markup.md	2026-11-06 08:17:17
++++ b/skills/desk-jira/references/cli-and-markup.md	2026-11-06 08:17:17
+@@ -9,8 +9,7 @@
+ 
+ - **Field values.** `field=@path` reads a file. JSON passes through untouched. A bare value is
+   wrapped to the shape the field needs: `customfield_12345=P1` becomes `{"value":"P1"}`,
+-  `assignee=me` becomes your accountId. If `desk-jira --help` doesn't mention `@file`, your copy
+-  predates 2.0: re-run `install.sh`.
++  `assignee=me` becomes your accountId.
+ - **Every `edit` prints the fields read back from Jira.** Check that output. A line saying
+   `the write did not stick` is a failed write, even though the PUT returned 2xx.
+ - **Bodies are positional.** `comment <KEY> <body-file|text>`, and `create`'s description the same
+diff -ru a/skills/desk-kiss/SKILL.md b/skills/desk-kiss/SKILL.md
+--- a/skills/desk-kiss/SKILL.md	2026-11-06 08:17:17
++++ b/skills/desk-kiss/SKILL.md	2026-11-06 08:17:17
+@@ -72,7 +72,6 @@
+ | `/desk-kiss 460` | One PR (number, `#460`, or URL) |
+ | `/desk-kiss main...feat/x` | A ref range |
+ 
+-Phase 7 asks per finding and takes "no" for an answer, so there is no `--fix` or `--no-fix` flag.
+ 
+ ## Phase 1: target
+ 
+diff -ru a/skills/desk-pr/references/image-upload.md b/skills/desk-pr/references/image-upload.md
+--- a/skills/desk-pr/references/image-upload.md	2026-11-06 08:17:17
++++ b/skills/desk-pr/references/image-upload.md	2026-11-06 08:17:17
+@@ -1,8 +1,8 @@
+ # Uploading PR images by hand-driven browser
+ 
+ Read this when `~/.claude/desk/bin/upload-images.mjs` is not installed, or when it fails and you
+-have to work out why. Every rule below cost at least one failed run. The permission gate in
+-`SKILL.md` §3 applies unchanged, and each re-run is a fresh use of it — get the wait right first time.
++have to work out why. Every rule below cost at least one failed run. The `pr-images` gate in
++`screenshots.md` (*Upload the images automatically*) applies unchanged, and each re-run is a fresh use of it — get the wait right first time.
+ 
+ ## Setup
+ 
+@@ -75,7 +75,7 @@
+ 7. **Set the body with `gh pr edit <n> --repo <§0 GitHub repo> --body-file`**, not the browser
+    editor — the file on disk is your undo. Write that file from the **live** body
+    (`gh pr view <n> --repo <§0 GitHub repo> --json body --jq .body`) fetched just before the edit, never from your local draft, so whatever CI or a bot added since
+-   the PR opened survives; swap only the `_drag <file>_` cells (SKILL.md §4, "Editing the body
++   the PR opened survives; swap only the `_drag <file>_` cells (`opening.md`, "Editing the body
+    later"). `<img alt="…" src="…" width="400">` in the cells keeps a multi-row table readable.
+ 8. **Verify.** Reload with `domcontentloaded`, `window.scrollTo(0, 400)`, wait a few seconds so the
+    description images load, then select images **by alt** and read `naturalWidth`. On a private repo
+diff -ru a/skills/desk-pr/references/screenshot-surfaces.md b/skills/desk-pr/references/screenshot-surfaces.md
+--- a/skills/desk-pr/references/screenshot-surfaces.md	2026-11-06 08:17:17
++++ b/skills/desk-pr/references/screenshot-surfaces.md	2026-11-06 08:17:17
+@@ -116,7 +116,7 @@
+    command. Generate any client the app imports (§4 Codegen, `desk-env cmds codegen-cmd`) first; a
+    fresh worktree has none.
+ 2. **Write the capture script at the worktree's root** and run it with `with-lock.sh browser node
+-   ./<script>.mjs <port> <path> <out.png>`. A script elsewhere, or an argument holding `..`, is
++   ./<script>.mjs <port> <path> <out.png> <test user email> <env file holding the instance's keys>`. A script elsewhere, or an argument holding `..`, is
+    refused. Delete the script afterwards.
+ 3. **Refuse any key but a development one.** Mint the token server-side, sign in from a page where
+    ClerkJS has loaded, and print what the session token carries before looking at the page:
+diff -ru a/skills/desk-review/references/gotchas.md b/skills/desk-review/references/gotchas.md
+--- a/skills/desk-review/references/gotchas.md	2026-11-06 08:17:17
++++ b/skills/desk-review/references/gotchas.md	2026-11-06 08:17:17
+@@ -147,8 +147,8 @@
+ ## Bot comments
+ 
+ ```bash
+-gh api "repos/<owner>/<repo>/pulls/<n>/comments" --paginate --jq \
+-  '[.[] | select(.user.type == "Bot" or (.user.login | test("\\[bot\\]$")))
++gh api "repos/<owner>/<repo>/pulls/<n>/comments" --paginate --slurp | jq \
++  '[add[] | select(.user.type == "Bot" or (.user.login | test("\\[bot\\]$")))
+         | {path, login: .user.login,
+            start_line: (.start_line // .original_start_line // .line // .original_line),
+            line: (.line // .original_line), body}]'
+diff -ru a/skills/desk-review/references/review-bar.md b/skills/desk-review/references/review-bar.md
+--- a/skills/desk-review/references/review-bar.md	2026-11-06 08:17:17
++++ b/skills/desk-review/references/review-bar.md	2026-11-06 08:17:17
+@@ -112,9 +112,9 @@
+ 
+ ## How this maps to the agents' own scales
+ 
+-P0–P3 is the vocabulary `lena-code-reviewer`, `nadia-security-auditor` and `suki-frontend-architect`
+-already use, so nothing needs translating. Lena's
+-"Critical" is P0 or P1 by the tables above, her "Important" is P2, her "Minor" is P3 and dropped.
++P0–P3 is the scale `lena-code-reviewer`, `nadia-security-auditor` and `suki-frontend-architect`
++already use. Lena's *Critical Issues* section holds P0 and P1 and *Important Issues* P2; she drops
++P3 herself.
+ Her *Scope Discipline* rule is live here as *Speculative generality*, *Scope creep with no consumer*
+ and *Out of scope*.
+ 
+diff -ru a/skills/desk-review-response/SKILL.md b/skills/desk-review-response/SKILL.md
+--- a/skills/desk-review-response/SKILL.md	2026-11-06 08:17:17
++++ b/skills/desk-review-response/SKILL.md	2026-11-06 08:17:17
+@@ -3,7 +3,9 @@
+ description: >-
+   Use when a reviewer has commented on a pull request in this repo — the code reviewer, the product
+   owner or anyone else requesting changes, leaving inline comments, or approving with notes. Also when
+-  asked to reply to review feedback, or to judge whether a reviewer's comment is correct.
++  asked to reply to review feedback, or to judge whether a reviewer's comment is correct. Load it
++  before working any review comment, even to reply in its spirit: the assess-first table and the
++  reply register (references/voice.md) come only with it.
+ ---
+ 
+ # desk-review-response
+@@ -33,10 +35,8 @@
+ you start working. Are all of the reviewer's comments correct?"* and *"is that what we should have
+ done in the first place? Answer before fixing."*
+ 
+-**Load this skill, don't approximate it.** Comments worked "in its spirit" without loading it keep
+-the assessment and lose the voice file — replies run three to five paragraphs against a 2-3
+-sentence register, and carry em-dashes.
+ 
++
+ ## Required: assess first
+ 
+ Produce this before any edit. One row per comment, no exceptions:
+@@ -186,11 +186,10 @@
+ | Mistake | Fix |
+ |---|---|
+ | Editing code on receipt of a comment | Assess all comments first, then wait |
+-| Working the comments without loading this skill | The assess-first table and `voice.md` only come with it |
+ | `git reset` or rewriting history to "start clean" | Don't restructure the user's branch to make a fix easier |
+ | Agreeing with a comment you haven't verified | Read the code; give the evidence |
+ | Fixing extra things while you're in there | Only what was agreed |
+-| A long, apologetic reply | Two or three sentences, what changed, done |
++| A long, apologetic reply | Short: what changed, done |
+ | `gh pr comment` to answer an inline comment | Thread reply via GraphQL on the thread id |
+ | Answering a product question yourself | Draft it for §4 People Product owner |
+ | Declaring it addressed without re-checking every thread | Enumerate from GitHub and confirm each |
+diff -ru a/skills/desk-review-response/references/voice.md b/skills/desk-review-response/references/voice.md
+--- a/skills/desk-review-response/references/voice.md	2026-11-06 08:17:17
++++ b/skills/desk-review-response/references/voice.md	2026-11-06 08:17:17
+@@ -35,11 +35,9 @@
+ 
+ ## Length
+ 
+-Slack to a supervisor: 3-6 lines. PR reply: 2-3 sentences. Jira comment: 2-3 lines. Standup: 3-5
+-bullets, a few words each.
+-
+-If it is longer than that, cut it. "More concise", "less verbose", "simpler language" and "easier to
+-read" are the most common feedback these drafts get.
++As short as the point and the ask allow: a PR reply says what changed or why not, and stops; a
++Slack or Jira message gives the fact, then the ask. "More concise", "less verbose", "simpler
++language" and "easier to read" are the most common feedback these drafts get, so when in doubt, cut.
+ 
+ ## Slack to a supervisor or reviewer
+ 
+diff -ru a/skills/desk-setup/SKILL.md b/skills/desk-setup/SKILL.md
+--- a/skills/desk-setup/SKILL.md	2026-11-06 08:17:17
++++ b/skills/desk-setup/SKILL.md	2026-11-06 08:17:17
+@@ -130,7 +130,7 @@
+ resumes (Recommended `2`: a pass resumes a worker a reboot or crash killed, in its own session, up to
+ that many times; `0` marks it failed instead), batches run by; orchestrator status table. For the
+ orchestrator status table, offer `full` (Recommended: the orchestrator session shows the whole
+-status table on every spawn and stage step, as it always has) and `quiet` (for anyone who keeps
++status table on every spawn and stage step) and `quiet` (for anyone who keeps
+ desk-q open beside a batch run in the session: the status watch prints one line per ticket that
+ changed and the orchestrator answers a spawn or stage step in a line or less, so the session spends
+ fewer tokens; parks, questions, PRs, merges and failures are still reported, and the Stage 8 report
+@@ -145,9 +145,9 @@
+ `supervisor` (Stage 4 tries the install again). For
+ check-in times, Recommended is `08:00, 17:00`: questions and logged decisions from every repo arrive
+ together then, as one page and one push. For worker models, say that the row can also name a
+-`finder=<alias>` (`sonnet`, `haiku`) for self-review finders and a `text=<model>` for the Stage 7 PR and Jira session,
+-and that both are unset by default, so finders and that session run on the models they do today: a
+-cheaper model is set only after the eval harness (`desk/bin/skill-eval.mjs`) has run a review task
++`finder=<alias>` for self-review finders and a `text=<model>` for the Stage 7 PR and Jira session,
++and that both are unset by default, so finders and that session run on the worker's model: another
++model is set only after the eval harness (`desk/bin/skill-eval.mjs`) has run a review task
+ set on each model and the findings held. Never set either on the user's behalf. For worker location,
+ Recommended is `local`; say that `cloud` runs each ticket that needs nothing on this computer in a
+ Claude Code cloud session, whose tokens and cost are not reported, and is not yet compared with local.
+diff -ru a/skills/desk-setup/references/permission-rows.md b/skills/desk-setup/references/permission-rows.md
+--- a/skills/desk-setup/references/permission-rows.md	2026-11-06 08:17:17
++++ b/skills/desk-setup/references/permission-rows.md	2026-11-06 08:17:17
+@@ -57,7 +57,7 @@
+ `harness-rules.py add` adds these to every plan it writes to a repo's `.claude/settings.local.json`,
+ whatever the rows say: they are what an orchestrator or interactive desk session uses to wait on a
+ batch, read a Claude Design canvas, drive the Chrome extension, keep its memory, and read and write
+-the desk folders it works in all day (decisions 2026-10-21 and 2026-10-23: routine operations get no
++the desk folders it works in all day (routine operations get no
+ permission prompts). _Reach_: the Chrome tools act in your signed-in browser; the session reads every
+ repo's desk config and batch state. Owner `orchestrator-tools`, not a §3 row, so `remove
+ orchestrator-tools` revokes them (until the next `add`), and any of them you added yourself is
+diff -ru a/skills/desk-update/SKILL.md b/skills/desk-update/SKILL.md
+--- a/skills/desk-update/SKILL.md	2026-11-06 08:17:17
++++ b/skills/desk-update/SKILL.md	2026-11-06 08:17:17
+@@ -152,7 +152,7 @@
+ UNVERIFIED    <dir>: git could not read the clone's origin (ownership, a corrupt config); check it by hand,
+               never ./install.sh, which would move it aside
+ UNTRACKED     <names>: no recorded source, so no update check
+-SETTING       skills listed in full: name-only + skill-index cuts the listing ~30,000 -> ~9,600 chars a turn
++SETTING       skills listed in full: name-only + skill-index lists skills by name only; full descriptions move to skill-index
+ SETTING       no update notice: a SessionStart hook would say once a day when desk-skills has new commits
+ SETTING       no context handoff: past §2 Handoff at context % the session would write .handoffs/<date>.md,
+               and the session after /clear or a compaction would pick it up
