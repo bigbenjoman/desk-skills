@@ -254,9 +254,10 @@ function bench(login, limit, by) {
   BENCHED[k] = { login: login.name, config_dir: login.configDir ?? null, ...(later ? { type: limit.type, resets_at: limit.resetsAt } : { type: was.type, resets_at: was.resets_at }),
     since: was?.since ?? PASS_AT, by: was?.by ?? by };
 }
-const oneUsable = () => {
+// Only one login can take new work, and every limit in play is on it: the batch holds as it always has.
+const onlyUsable = (logins) => {
   CHECKED ??= checkLogins(SUBS, { tools: ['claude'] });
-  return CHECKED.usable.length <= 1;
+  return CHECKED.usable.length === 1 && logins.every((l) => loginKey(l) === loginKey(CHECKED.usable[0]));
 };
 // Every login new work may start on is benched: the batch holds as it does with one login, its hold
 // naming each login's reset, earliest first, and one with no reset time last.
@@ -810,14 +811,20 @@ let USAGE_HOLD = null;
       q('set', h.key, `usage_paused=${JSON.stringify({ type: h.limit.type, resets_at: h.limit.resetsAt })}`);
     }
   }
-  // One usable login holds the batch as it always has, whatever else the subscriptions file lists.
-  // Logins are checked only once a limit is in play: checking asks each one for its sign-in.
-  const one = rotating && !!(usageHolds.length || Object.keys(BENCHED).length || queue().usage_hold) && oneUsable();
+  // One usable login holds the batch as it always has, whatever else the subscriptions file lists, so
+  // long as every limit in play is on it. Logins are checked only once a limit is in play: checking
+  // asks each one for its sign-in.
+  const kept = queue().usage_hold;
+  const keptLogin = kept?.preflight ? (kept.login_dir === undefined ? OWN_LOGIN : loginOf(kept.login_dir)) : null;
+  const inPlay = [...usageHolds.map((h) => h.login), ...Object.values(BENCHED).map((b) => loginOf(b.config_dir)), ...(keptLogin ? [keptLogin] : [])];
+  const one = rotating && inPlay.length > 0 && onlyUsable(inPlay);
   if (one) for (const k of Object.keys(BENCHED)) delete BENCHED[k];
   if (rotating && !one) {
     // A paused worker benches its login until its reset, and stays paused on it. A bench whose limit
     // lifted is cleared, and so is one on a login no longer in use, which is never probed.
     for (const h of usageHolds) if (h.limit.resetsAt == null || Date.now() < h.limit.resetsAt * 1000) bench(h.login, h.limit, h.key);
+    // A preflight hold kept from a pass that had one usable login benches that login instead.
+    if (keptLogin && (kept.resets_at == null || Date.now() < kept.resets_at * 1000)) bench(keptLogin, { type: kept.type ?? 'unknown', resetsAt: kept.resets_at ?? null }, kept.preflight);
     for (const [k, b] of Object.entries(BENCHED)) {
       const login = loginOf(b.config_dir);
       if (!IN_USE.some((l) => loginKey(l) === k)) { delete BENCHED[k]; continue; }
@@ -1823,7 +1830,7 @@ let usageStop = false;
 function preflightHitLimit(t, cost, login) {
   logPreflight(t.key, cost);
   const l = probeOnce(login).limit ?? { type: 'unknown', resetsAt: null };
-  if (rotating && !oneUsable()) {
+  if (rotating && !onlyUsable([login])) {
     // Only its login is benched: the ticket keeps its place and state, and the others take new work.
     bench(login, l, t.key);
     const all = benchHold();

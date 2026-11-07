@@ -395,6 +395,24 @@ t('AC9 one usable login: the report is today\'s', out.includes('Y-1: its preflig
 out = pass(env);
 t('AC9 one usable login: a pass later it still holds, with nothing spawned', `${batchOf().usage_hold?.preflight} ${calls('Y-1').filter((l) => !l.includes('|preflight|')).length} ${calls('Y-2').length}`, 'Y-1 0 0');
 t('AC9 one usable login: and the hold reads as today\'s', out.includes(`the 5-hour usage limit until ${resetText(RESET)} holds every spawn and resume`), true);
+// A worker paused at the limit of a login that can no longer take work holds nothing: new work goes to
+// the one usable login, which has room.
+env = world([['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10]], { 'K-2': PAUSED, 'Y-1': NEW('Y-1') });
+writeFileSync(join(state, 'logs', 'K-2.log'), rejected);
+signOut(dirOf('b'));
+atLimit(dirOf('b'));
+out = pass(env);
+t('a worker paused on a login signed out since holds nothing', `${row('Y-1').state} ${on('Y-1')} ${batchOf().usage_hold ?? null}`, 'running default null');
+t('and it stays paused on its own login', `${row('K-2').state} ${row('K-2').login.name}`, 'running b');
+// The one usable login refused next: the batch holds, and a pass later it still does, with no second preflight.
+env = world([['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10]], { 'K-2': PAUSED, 'Y-1': NEW('Y-1') });
+writeFileSync(join(state, 'logs', 'K-2.log'), rejected);
+signOut(dirOf('b'));
+atLimit(dirOf('b')); atLimit(DEF);
+pass(env);
+t('with the one usable login refused too, the batch holds', `${row('Y-1').state} ${batchOf().usage_hold?.preflight}`, 'triaged Y-1');
+pass(env);
+t('a pass later it still holds, with no second preflight', `${batchOf().usage_hold != null} ${calls('Y-1').length}`, 'true 1');
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
