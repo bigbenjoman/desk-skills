@@ -19,7 +19,9 @@
 # push) and AUTOPILOT_DATABASE (its `database=` line; migrate and seed are allowed only for a
 # per-ticket database). Standalone, the branch is read from the worktree and the database is none.
 # AUTOPILOT_START_STAGE starts a fresh session at that stage: 4b or 7 after a handoff, or Stage 3 on
-# when a requeue resumes the round its worker parked in.
+# when a requeue resumes the round its worker parked in. AUTOPILOT_LOGIN_DIR is the Claude login it
+# runs on, its preflight too: a config folder, or empty for the default login. Unset, it keeps the
+# caller's own.
 set -euo pipefail
 
 # shellcheck source=desk-env.sh
@@ -84,6 +86,10 @@ CODEX_PERM="$(desk_perm codex-review)"
 MODEL="${AUTOPILOT_MODEL:-}"
 MODEL_ARGS=()
 [ -n "$MODEL" ] && MODEL_ARGS=(--model "$MODEL")
+
+if [ -n "${AUTOPILOT_LOGIN_DIR+set}" ]; then
+  if [ -n "$AUTOPILOT_LOGIN_DIR" ]; then export CLAUDE_CONFIG_DIR="$AUTOPILOT_LOGIN_DIR"; else unset CLAUDE_CONFIG_DIR; fi
+fi
 
 DRY_NOTE=""
 if [ -n "${AUTOPILOT_DRY_RUN:-}" ]; then
@@ -336,8 +342,10 @@ $(cat "$BRIEFING")"
   if [ -n "${AUTOPILOT_TASK:-}" ]; then SYSTEM="$SYSTEM$BRIEF_TEXT"; else PROMPT="$PROMPT$BRIEF_TEXT"; fi
 fi
 # The memory digest goes where the briefing does, and its size into the log after the preflight's
-# cost line. No index is no digest; a resumed session already holds the one it started with.
-if [ "$MEMORY_LEVER" = on ] && [ -z "${AUTOPILOT_RESUME:-}" ]; then
+# cost line. No index is no digest; a resumed session already holds the one it started with. A worker
+# sent to another login takes it whatever the lever says: its auto-memory is that login's folder's,
+# which does not hold this repo's index.
+if { [ "$MEMORY_LEVER" = on ] || [ -n "${AUTOPILOT_LOGIN_DIR:-}" ]; } && [ -z "${AUTOPILOT_RESUME:-}" ]; then
   DIGEST="$(node "$BIN/memory-digest.mjs" "$DESK_MEMORY_DIR" --log "$LOG" 2>/dev/null </dev/null || true)"
   if [ -n "$DIGEST" ]; then
     DIGEST="

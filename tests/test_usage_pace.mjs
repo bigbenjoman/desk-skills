@@ -112,6 +112,7 @@ t('a long log whose tail has no reading is read whole', P.newestUsage({ dirs: P.
 log(A, 'A-1', [event(0.4, resetIn(real, 2 * DAY))], 7 * HOUR);
 log(B, 'B-1', ['{"type":"assistant"}'], 0);
 t('AC3 unit: a log last written over 6 hours ago does not count', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real }), null);
+t('DS-465 AC4 unit: a wider `recent` reads it', P.newestReading({ dirs: P.stateDirs({ self: A, root }), now: real, recent: P.WEEK_MS }).seven_day?.utilization, 0.4);
 writeFileSync(join(B, 'logs', 'B-2.log.round1.gz'), gzipSync(`${event(0.5, resetIn(real, 2 * DAY))}\n`));
 t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.5);
 // A named batch's logs sit under its repo's state directory, in batches/<name>/.
