@@ -50,8 +50,7 @@ silently skipped:
   other. It picks the branch prefix exactly as a Jira type would.
 - **Every Jira step is skipped**: no assignment at Stage 0, no transition at Stage 2, no comment or
   transition at Stage 8, no move to a done state after merge. Nothing in §3 lets a skill comment on,
-  label, assign or close a GitHub issue that is the ticket (§3 `gh-close-linked-issue` closes only an
-  issue a Jira ticket's web links name), so never do any of those; the PR body references the issue
+  label, assign or close a GitHub issue, so never do any of those; the PR body references the issue
   in the form §5 PR body uses, and adds a closing keyword only if that convention does.
 - **"The ticket is done"** means the PR merged (and, for an issue, that it is closed).
 
