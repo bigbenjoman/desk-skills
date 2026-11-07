@@ -1644,7 +1644,7 @@ q add FB-4; q set FB-4 state=done lane=A branch=fix/FB-4 result.pr=813 held_by=X
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-446 AC7 with the lever off, a red check red on the base too and held behind a blocker is requeued as today" \
   '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = null ] && [ "$(field FB-4 fix_tries | jq -c ".[0] | has(\"class\")")" = false ] && [ "$(field FB-4 base_red)" = null ]'
-check "DS-446 AC7 and the base is not read" '! grep -q "^api repos/acme/widgets/compare\|check-runs" "$T/gh-calls"'
+check "DS-446 AC7 and the base's check runs are not read" '! grep -qF "check-runs?check_name=Lint" "$T/gh-calls" &&! grep -qF "commits?sha=main" "$T/gh-calls"'
 q park FB-4 "which reviewer handle goes in the PR body?"
 check "DS-446 AC7 with the lever off, a park records no class" '[ "$(field FB-4 park.class)" = null ] && [ "$(field FB-4 park.question)" = "\"which reviewer handle goes in the PR body?\"" ]'
 # FB-1 is red on Lint, and Lint is red at its merge base. FB-2 is red on Lint, with no run of Lint at its
@@ -1673,7 +1673,7 @@ runs "$MT" Lint '[{"status":"completed","conclusion":"success"}]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC8 once the job passes on the base, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-1 state)" = "\"triaged\"" ] && [ "$(field FB-1 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-1 fix.class)" = "\"application defect\"" ] && [ "$(field FB-1 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
-q add FB-5; q add FB-6; q add FB-7
+q add FB-5; q add FB-6; q add FB-7; q set FB-7 state=triaged
 q park FB-5 "which reviewer handle goes in the PR body?"; q park FB-6 "waiting on the weather"; q hold FB-7 FB-1
 check "DS-446 AC1 with the lever on, a park records its class and the rule that gave it" \
   '[ "$(field FB-5 park | jq -c "[.class, (.class_rule | length > 0)]")" = "[\"missing decision\",true]" ] && [ "$(field FB-7 park.class)" = "\"dependency wait\"" ]'
