@@ -22,6 +22,8 @@
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
+//   node desk-env.mjs lines <file> <A>[,<B>]  with the wrappers lever on, print what `sed -n A,Bp <file>`
+//                                             prints, refusing a file a worker may not read; exit 3 lever off
 //   node desk-env.mjs list <config id>        print every item of a list row, one per line, exit 3 if unset
 //   node desk-env.mjs cmds <config id>        print each command item as DIR<TAB>CMD (nothing for `none`)
 //   node desk-env.mjs required-fields <type>  print §4 Required fields for an issue type as JSON (requiredFields)
@@ -1576,6 +1578,28 @@ if (isMain) {
         }
         console.log(`on: ${l.on.join(' ') || 'none'}`);
         if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (config §3b "${CONFIG_ROWS.levers.row}" names levers desk does not know; each is read as off; ${known})`);
+        break;
+      }
+      case 'lines': {
+        // The wrappers lever's one wrapper: `sed -n A,Bp <file>` as one command, refused whatever a
+        // worker's reading tools are refused (desk-lines.mjs).
+        if (!leverOn('wrappers')) {
+          console.error(`desk-env lines: refused: the wrappers lever is off (config §3b "${CONFIG_ROWS.levers.row}"). Read the range with the Read tool's offset and limit`);
+          process.exit(3);
+        }
+        const L = await import('./desk-lines.mjs');
+        const range = L.parseRange(args[1]);
+        if (!args[0] || !range || args.length > 2) { console.error('usage: desk-env lines <file> <A>[,<B>|,$]   (prints what sed -n A,Bp <file> prints)'); process.exit(2); }
+        let reads;
+        try { reads = L.workerReads(); } catch (e) { console.error(`desk-env lines: refused: ${e.message}`); process.exit(1); }
+        let creds = reads?.creds ?? null;
+        try { creds ??= credsDir(); } catch { /* no repo config: no credentials directory to keep out of */ }
+        const why = L.readRefusal(args[0], { creds, dirs: reads?.dirs ?? null });
+        if (why) { console.error(`desk-env lines: refused: ${why}`); process.exit(1); }
+        let text;
+        try { text = readFileSync(args[0], 'latin1'); }
+        catch (e) { console.error(`desk-env lines: ${args[0]}: ${e.code === 'ENOENT' ? 'No such file or directory' : e.code === 'EISDIR' ? 'Is a directory' : e.message}`); process.exit(1); }
+        process.stdout.write(L.sliceLines(text, range), 'latin1');
         break;
       }
       case 'batch-base': {

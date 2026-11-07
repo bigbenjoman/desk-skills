@@ -517,6 +517,11 @@ task it started is still running, which `claude -p` would kill, and logs a secon
 compaction. It refuses a worker's Read of a file and range it has already read in this session when
 the file's content (by hash) has not changed since, naming the earlier read. A changed file, a new
 range, a compaction, a subagent's Read or `DESK_ALLOW_REREAD=1` in the environment lets it through.
+**`desk-worker-hints.py`** is registered the same way, on the worker's Bash calls, and only with the
+`wrappers` lever on (config §3b Phase 0 levers). A command the worker's allow-list refuses anyway is
+refused naming the single command that does the same: the command without a `cd` into its own
+worktree, `desk-env lines <file> A,B` for a `sed -n A,Bp` line range, or §4 Unit tests with the one
+test file it ran directly. It only ever denies, and stays silent on any command it cannot be sure of.
 - **Never** writes a repo config. That is `/desk-setup`'s job, per repo.
 
 Requirements (`./install.sh --check` names anything missing):
