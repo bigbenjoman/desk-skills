@@ -317,6 +317,8 @@ export const CONFIG_ROWS = Object.freeze({
   'slack-channels': { section: '4', row: 'Slack channels' },
   // A `###` table of the user's own rows rather than one row: every Ask, with its Detail.
   'review-asks': { section: '4', row: 'What review here consistently asks for', table: true },
+  'code-reviewer': { section: '4', row: 'Code reviewer' },
+  'product-owner': { section: '4', row: 'Product owner' },
   'repo-instructions': { section: '5', row: 'Repo instructions' },
   'subagents-without-asking': { section: '3b', row: 'Subagents that may run without asking' },
   'test-cap': { section: '3b', row: 'Test worker cap under the test lock' },
