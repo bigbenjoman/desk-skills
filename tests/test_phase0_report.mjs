@@ -102,6 +102,8 @@ t('AC8: the spawn line records the levers on', JSON.stringify(line.levers), '["e
 t('AC8: no installed commit is null, never a guess', line.desk_commit, null);
 t('AC8: an empty byte count is null', `${line.system_bytes} ${line.prompt_bytes} ${line.stage}`, '12 null 4b');
 t('AC8: records are read back', spawnRecords(S).length, 2);
+t('the spawn line records the effort', JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', effort: 'high', installed: null, levers: { on: [], unknown: [] } })).effort, 'high');
+t('the spawn line reads default with no effort passed', line.effort, 'default');
 
 const ghCalls = [];
 const gh = (args) => {
@@ -135,7 +137,7 @@ has('AC2: the installed desk commit', out, /^installed desk: abcdef123456, insta
 has('AC2: the instructions a worker loads now', out, /^instructions a worker loads now: worker contract core [\d,]+ bytes, memory index none$/);
 has('AC2 / AC9: the desk commit each start used, a start before records, in a recorded log too, not recorded', batch, /desk commit workers ran on: abcdef123456 \(2 start\(s\)\) · not recorded \(2 start\(s\)\)$/);
 has('AC2: instruction bytes per start', batch, /instructions loaded at start: 3,000 bytes on average over 2 start\(s\) \(system prompt 2,000, first message 1,000\)/);
-has('AC2: each session\'s desk commit and bytes on its own line', batch, /start A-1 session s1 at \S+ \(stage 0\): desk abcdef123456, levers codex, 1,500 bytes loaded$/);
+has('AC2: each session\'s desk commit and bytes on its own line', batch, /start A-1 session s1 at \S+ \(stage 0, effort default\): desk abcdef123456, levers codex, 1,500 bytes loaded$/);
 has('AC7: the levers on for the batch', batch, /levers on: codex \(1 start\(s\)\) · none \(1 start\(s\)\) · not recorded \(2 start\(s\)\)$/);
 has('AC6: the report names an unknown lever as off', out, /^levers row now: on none; unknown, read as off: turbo$/);
 t('the only gh calls are reads', ghCalls.every((c) => /^run (list|view) /.test(c)), true);
@@ -228,17 +230,16 @@ const S3 = join(T, 'state3');
 mkdirSync(join(S3, 'workers'), { recursive: true });
 const step = spawn.slice(from, to);
 const spawnEnv = (extra) => {
-  const e = { ...env(mixed), BIN: join(ROOT, 'desk', 'bin'), TICKET: 'W-9', SID: 'sid-9', STATE: S3, SYSTEM: 'héllo', PROMPT: 'abc', MODEL: 'opus', ...extra };
-  for (const k of ['AUTOPILOT_TASK', 'AUTOPILOT_RESUME', 'AUTOPILOT_START_STAGE']) if (!(k in extra)) delete e[k];
-  return e;
+  return { ...env(mixed), BIN: join(ROOT, 'desk', 'bin'), TICKET: 'W-9', SID: 'sid-9', STATE: S3, LOG: join(S3, 'W-9.log'), SYSTEM: 'héllo', PROMPT: 'abc', MODEL: 'opus', EFFORT: 'high', ...extra };
 };
-execFileSync('bash', ['-c', step], { env: spawnEnv({ AUTOPILOT_START_STAGE: '4b' }) });
-execFileSync('bash', ['-c', step], { env: spawnEnv({ AUTOPILOT_RESUME: '1' }) });
-execFileSync('bash', ['-c', step], { env: spawnEnv({ BIN: join(T, 'no-bin') }) });
+execFileSync('bash', ['-c', step], { env: spawnEnv({ START: '4b' }) });
+execFileSync('bash', ['-c', step], { env: spawnEnv({ START: 'resume' }) });
+execFileSync('bash', ['-c', step], { env: spawnEnv({ START: '0', BIN: join(T, 'no-bin') }) });
 const written = readFileSync(join(S3, 'workers', 'W-9.runs.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const [w1, w2] = written;
 t('AC8: a start writes one line per start, a failed record none and no error', written.length, 2);
 t('AC8: the line names the ticket, session, stage and model', `${w1.ticket} ${w1.session} ${w1.stage} ${w1.model} ${w2.stage}`, 'W-9 sid-9 4b opus resume');
+t('the line and the worker\'s log both record the effort', `${w1.effort} ${JSON.parse(readFileSync(join(S3, 'W-9.log'), 'utf8').split('\n')[0]).effort}`, 'high high');
 t('AC8: the line records the levers on and the unknown ones', `${JSON.stringify(w1.levers)} ${JSON.stringify(w1.unknown_levers)}`, '["codex","effort","memory"] ["turbo"]');
 t('AC8: the bytes handed over, counted in bytes', `${w1.system_bytes} ${w1.prompt_bytes}`, '6 3');
 t('AC8: the record is read back by the report', spawnRecords(S3).length, 2);

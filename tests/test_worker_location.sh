@@ -78,6 +78,14 @@ check "DS-124 AC3 one that renders runs locally, and the plan says why"     'ech
 check "DS-124 AC2 the queue sends the cloud ticket to the cloud, and only it" '[ "$(node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); console.log([\"KAN-1\", \"KAN-2\", \"KAN-3\"].map((k) => q.tickets[k].location).join())" "$DESK_QUEUE")" = ",cloud," ]'
 check "DS-124 AC1 a malformed budget refuses the plan at cloud"             'out=$(AUTOPILOT_BUDGET_USD="25 USD" node "$B/plan-batch.mjs" KAN-2 2>&1); [ $? != 0 ] && echo "$out" | grep -q "per-worker budget"'
 
+# DS-450: with the effort lever on, the ticket that would run in the cloud stays local, and the queue agrees.
+config cloud
+{ cat "$T/config.md"; printf '\n## 3b. Levers\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `effort` |\n'; } > "$T/config-lever.md"
+node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(DESK_CONFIG="$T/config-lever.md" AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-2 2>&1); rc=$?
+check "DS-450 AC1 the plan puts no ticket in the cloud with the effort lever on" '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: cloud — 0 of 1 admitted"'
+check "DS-450 AC1 and says why on its runs line"                            'echo "$out" | grep -A3 "^KAN-2 " | grep -qx "  runs: local — the effort lever is on, and a cloud session cannot be given an effort"'
+check "DS-450 AC1 and the queue runs it here"                               '[ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[\"KAN-2\"].location ?? \"local\")" "$DESK_QUEUE")" = local ]'
+
 config local; plan
 check "local reads as local"                                                 '[ "$rc" = 0 ] && echo "$out" | grep -qx "workers: local"'
 
