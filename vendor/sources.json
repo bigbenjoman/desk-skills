@@ -871,8 +871,8 @@
         "installer": "install-statusline.sh"
       },
       "pin": {
-        "commit": "5031c5778",
-        "date": "2026-08-15"
+        "commit": "e76887908",
+        "date": "2026-11-07"
       },
       "license": "MIT",
       "notes": "Ben's two-line status line, kept as its own public repo (DS-34). Its installer writes ~/.claude/statusline-command.sh and merges a statusLine entry into ~/.claude/settings.json, so install.sh asks first, and asks separately before replacing a statusLine command that is not this one."
