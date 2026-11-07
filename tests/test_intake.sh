@@ -1027,6 +1027,17 @@ check "DS-507 AC2: the child's end follows, and no epic line is printed twice" '
 rec SF-1 A '"type":"Epic","branch":"feat/SF-1-lines"'; epicget SF-1; rec SF-2 A; touch "$T/recs/SF-2.fails"; printf 'SF-2\n' > "$T/children/SF-1"
 out=$(admit SF-1 --by ben); rc=$?
 check "DS-507 AC2: a child's triage that left no record says so before the epic is refused" '[ $rc -eq 11 ] && grep -Eq "^triage: done SF-2 no record \([0-9]+s\)$" <<< "$out" && grep -q "^not admitted SF-1: an epic, and its feature batch was not started: child SF-2 could not be triaged" <<< "$out"'
+# Those triages leave the rest free to say they finished: SG-2 ends during SG-3's triage as SG-1's child,
+# and SJ-2 during SJ-1's triage again in the feature batch it joins.
+after(){ sed -n "/^triage: done $1 /,\$p" <<< "$out" | grep -q "^triage: done $2 "; }
+rec SG-1 A '"type":"Epic","branch":"feat/SG-1-lines"'; epicget SG-1; rec SG-2 A; rec SG-3 A; echo 1 > "$T/recs/SG-2.sleep"; echo 3 > "$T/recs/SG-3.sleep"
+printf 'SG-3\n' > "$T/children/SG-1"
+pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit SG-1 SG-2 --by ben); rc=$?
+check "DS-507 AC2: a ticket's triage that ends while an epic's child is in triage says so at once" '[ $rc -eq 0 ] && after SG-2 SG-3'
+rec SJ-1 A '"epic":{"key":"SC-1","summary":"a feature"}'; rec SJ-2 A; echo 2 > "$T/recs/SJ-1.sleep"; echo 3 > "$T/recs/SJ-2.sleep"
+out=$(DESK_MEM_AVAIL_GB=64 admit SJ-1 SJ-2 --by ben); rc=$?
+check "DS-507 AC2: a ticket's triage that ends while another joins a batch says so at once" \
+  '[ $rc -eq 0 ] && grep -qx "triage: started SJ-1 in batch SC-1" <<< "$out" && [ "$(sed -n "/^triage: done SJ-2 /,\$p" <<< "$out" | grep -c "^triage: done SJ-1 ")" = 1 ] && grep -q "^admitted SJ-2 " <<< "$out"'
 rec JS-1 A; pool 1; out=$(admit JS-1 --by ben --json)
 check "DS-507 AC2: --json stays one object, holding the same lines" '[ "$(wc -l <<< "$out" | tr -d " ")" = 1 ] && [ "$(node -e "console.log(JSON.parse(process.argv[1]).lines.at(-1).replace(/ \(\d+s\)$/, \"\"))" "$out")" = "summary: 1 of 1 admitted" ]'
 for k in DA DB DC DD; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done

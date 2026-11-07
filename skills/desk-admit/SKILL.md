@@ -77,7 +77,7 @@ it runs. It prints each line as it happens, in the order things happen: `triage:
 done` and `waiting:` lines are progress, and its last line is a `summary:` of the call. While it runs
 in the background those lines land in its output file: read that when the user asks how it is going.
 An epic's children, and a ticket joining another batch, are triaged in turn, each with its own
-`triage:` lines, and every other ticket's lines wait behind that triage.
+`triage:` lines, and no other triage starts and nothing else is placed until that ends.
 Exit 0: every ticket was admitted
 or was already where it belongs (`<TICKET> is already in batch <B> (<state>)`, its epic's feature
 batch included: ask nothing about it), any epic had its feature batch started, and any other epic is one to

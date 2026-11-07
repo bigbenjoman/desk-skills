@@ -9,7 +9,7 @@
 // feature-mode.md) with the person's plan approval moved to needs-you. Anything that fails before the
 // batch is handed over discards it (batch.mjs discard), so a refusal leaves nothing behind.
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
@@ -43,6 +43,18 @@ function batchEnv(epic) {
 }
 const run = (cmd, args, env, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', env, maxBuffer: 64 << 20, ...opts });
 const node = (script, args, env) => run(process.execPath, [join(HERE, script), ...args], env);
+// One triage.sh run that leaves the event loop free, so what else is in flight can say it finished: a
+// promise of its result, as spawnSync gives it.
+export function triageRun(key, env) {
+  return new Promise((resolve) => {
+    const out = { stdout: '', stderr: '' };
+    const c = spawn(join(HERE, 'triage.sh'), [key], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    c.stdout.setEncoding('utf8').on('data', (d) => { out.stdout += d; });
+    c.stderr.setEncoding('utf8').on('data', (d) => { out.stderr += d; });
+    c.on('error', (error) => resolve({ ...out, status: null, error }));
+    c.on('close', (status, signal) => resolve({ ...out, status, signal }));
+  });
+}
 
 // In a batch's state from its start until it is handed to the supervisor. A start killed in between
 // (the supervisor's intake timeout) never reaches its discard, so the next one finds this left behind
@@ -342,7 +354,7 @@ export const planQuestion = (epic, n, path, feature, ask = null) => `${FEATURE_P
 // its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind, and
 // carries `limited`, the child's triage.sh run, when that triage stopped at a usage limit (exit 3).
 // `say` is called with each of `lines` as it happens, and as each child's triage starts and ends.
-export function startEpic(key, rec, { by = 'hand', claude = 'claude', say = () => {} } = {}) {
+export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say = () => {} } = {}) {
   const branch = rec?.branch;
   if (!branch) return { why: `its triage record names no branch for the feature batch: run /desk-autopilot ${key}` };
   const noBranch = ensureBranch(branch);
@@ -371,7 +383,8 @@ export function startEpic(key, rec, { by = 'hand', claude = 'claude', say = () =
   for (const c of children) {
     const began = Date.now();
     say(`triage: started ${c} in batch ${key}`);
-    const t = run(join(HERE, 'triage.sh'), [c], env);
+    // eslint-disable-next-line no-await-in-loop
+    const t = await triageRun(c, env);
     const r = t.status === 0 ? readJson(join(state, 'triage', `${c}.json`), null) : null;
     say(triageDone(c, r, Date.now() - began));
     if (!r) return { ...discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`), ...(t.status === 3 ? { limited: t } : {}) };
