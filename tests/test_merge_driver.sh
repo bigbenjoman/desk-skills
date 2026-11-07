@@ -850,4 +850,40 @@ check "DS-433: a clean verdict carried across a clean merge of the base merges, 
 rvloop
 check "DS-433: one its own commits moved past is held for a review" '! grep -q "^212 " "$T/merges.log" && echo "$out" | grep -q "#212 green at ${RC:0:9}, HELD with no clean review at its head: its review verdict is for ${RA:0:9}"'
 
+# ---- DS-508: an epic batch not in feature mode lands its base through its epic PR into main ---------
+# ep_q <case> <draft>: batch base feat/E for epic T-300, its one child merged, and epic PR #301
+# (feat/E → main), green, recorded as the queue's promotion.
+SHA301=e301111111111111111111111111111111111111
+git -C "$T/repo" push -q origin main:feat/E
+ep_q(){
+  : > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-*; q init "merge-epic-$1"
+  q set-batch base=feat/E epic=T-300 feature=false 'promotion={"pr":301}'
+  q add T-31 Story A; q set T-31 branch=fix/T-31 state=done result.pr=310 merged_at=2026-11-06T10:00:00Z
+  jq -n --arg s "$SHA301" --arg pl "$T/vp-301.json" --argjson d "$2" \
+    '{ "301": { head: "feat/E", base: "main", sha: $s, state: "open", draft: $d, title: "T-300: promote feat/E to main", payload: $pl, checks: [["test", "SUCCESS"]] } }' > "$T/prs.json"
+  RV_TICKETS="T-31"
+}
+vp 301 "$SHA301" "$CLEAN"
+ep_q ready false; rvloop; rvloop
+check "DS-508 AC2: a ready epic PR into main, green with a clean review at its head, is merged by the driver, pinned to its head" '[ "$(merged)" = 301 ] && grep -qx "301 main $SHA301" "$T/merges.log" && echo "$out" | grep -q "#301 MERGED (T-300)"'
+check "DS-508 AC2: and its merge is recorded on the queue's promotion, not as a ticket" '[ "$(jq -r .promotion.merged_at "$DESK_QUEUE")" != null ] && [ "$(jq -r ".tickets[\"T-300\"]" "$DESK_QUEUE")" = null ]'
+# GitHub shown as open again, so only the queue's promotion.merged_at can keep the driver off it.
+: > "$T/merges.log"; jq '."301".state = "open"' "$T/prs.json" > "$T/prs.json.new" && mv "$T/prs.json.new" "$T/prs.json"
+rvloop
+check "DS-508 AC2: a merged epic PR is not tried again" '[ -z "$(merged)" ] && ! echo "$out" | grep -q "#301"'
+ep_q draft true; rvloop; rvloop
+check "DS-508 AC2: a draft epic PR is not merged" '[ -z "$(merged)" ] && echo "$out" | grep -q "epic PR #301 draft (still reviewing)"'
+vp 301 "$SHA301" -
+ep_q noreview false; rvloop; rvloop
+check "DS-508 AC2: one with no clean review at its head is held for one" '[ -z "$(merged)" ] && echo "$out" | grep -q "#301 green at e30111111, HELD with no clean review at its head"'
+vp 301 "$SHA301" "$CLEAN"
+ep_q carried false; q set T-31 'promotion_hold=deploys the stack — infra/**'; rvloop; rvloop
+check "DS-508 AC3: §4 Merge holds its children carried into the base leave the epic PR to a person" '[ -z "$(merged)" ] && echo "$out" | grep -q "epic PR #301 HELD: its children carried §4 Merge holds into feat/E"'
+sed 's/| Merge holds | `none` |/| Merge holds | `infra\/**: deploys the stack` |/' "$T/config-rv.md" > "$T/config-rv-hold.md"
+ep_q hold false; jq '."301".files = ["infra/x.tf"]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+RV_CONFIG="$T/config-rv-hold.md"; rvloop; rvloop
+check "DS-508 AC3: a §4 Merge hold the epic PR touches holds it, noted on the queue's promotion" '[ -z "$(merged)" ] && jq -r .promotion.merge_blocked "$DESK_QUEUE" | grep -q "^merge hold: deploys the stack — infra/\*\*, 1 file(s)"'
+out=$(DESK_CONFIG="$T/config-rv-hold.md" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; RV_CONFIG=""
+check "DS-508 AC3: and the pass puts it to the person, naming the hold, exit 11" '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^EPIC PR: #301 is out of draft, but the merge driver holds it: merge hold: deploys the stack"'
+
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
