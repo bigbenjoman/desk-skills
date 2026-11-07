@@ -7,8 +7,10 @@
 //
 // The task set is JSON, kept outside desk-skills, with paths relative to the file:
 //   {"tasks": [{"id", "repo": "<owner/name>", "base": "<full commit SHA>", "prompt": "<ticket text>",
-//               "hidden_tests": {"dir": "<directory holding the copies>", "files": ["<repo path>", …]}}]}
-// Each file's copy is <dir>/<repo path>. The repo needs a desk config on this machine: its §2 Primary
+//               "hidden_tests": {"dir": "<directory holding the copies>", "files": ["<repo path>", …],
+//                                "run": ["<repo path>", …]}}]}
+// Each file's copy is <dir>/<repo path>. `run` (default: every file) names the files handed to the
+// test command; the rest (fixtures, helpers) are only copied in. The repo needs a desk config on this machine: its §2 Primary
 // repo root is where the base is fetched from and its §4 Unit tests are what score the hidden tests.
 //
 // A task's result is one of: accepted (every hidden test passed), rejected (one failed) or failed
@@ -82,8 +84,14 @@ export function loadBenchTasks(file) {
       if (typeof f !== 'string' || isAbsolute(f) || f.split('/').includes('..')) throw new Error(`task ${t.id}: hidden test ${JSON.stringify(f)} must be a path inside the repo`);
       if (!existsSync(join(h.dir, f))) throw new Error(`task ${t.id}: no hidden test copy at ${join(h.dir, f)}`);
     }
+    if (h.run !== undefined && (!Array.isArray(h.run) || !h.run.length || h.run.some((f) => !h.files.includes(f)))) {
+      throw new Error(`task ${t.id}: hidden_tests.run must list at least one of its files, and only those`);
+    }
   });
 }
+
+// The hidden files the test command is given.
+const runFiles = (task) => task.hidden_tests.run ?? task.hidden_tests.files;
 
 // The arms in this task's order: a shuffle seeded by the run's seed and the task, so a seed repeats
 // its order and the first arm differs from task to task.
@@ -161,7 +169,7 @@ const armEnv = () => Object.fromEntries(Object.entries(otherRepoEnv())
 const both = (p) => [...new Set([p, realpathSync(p)])];
 const shq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
 
-function deskEnv(repo, ...args) {
+export function deskEnv(repo, ...args) {
   const r = spawnSync(process.execPath, [join(HERE, 'desk-env.mjs'), ...args], { cwd: repo.root ?? tmpdir(), env: repo.env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`desk-env ${args.join(' ')} for ${repo.name}: ${(r.stderr || '').trim()}`);
   return r.stdout.trim();
@@ -169,7 +177,7 @@ function deskEnv(repo, ...args) {
 
 // One repo's desk facts, read through a child so each repo's config decides. Throws on anything that
 // would only fail after a run was spent.
-function readRepo(name) {
+export function readRepo(name) {
   const config = join(repoConfigDir(slugOf(name)), 'config.md');
   if (!existsSync(config)) throw new Error(`no desk config for ${name} (looked at ${config}): run /desk-setup there`);
   const repo = { name, env: { ...otherRepoEnv(), DESK_CONFIG: config } };
@@ -194,7 +202,7 @@ const git = (wt, ...args) => {
 
 // A throwaway checkout at the task's base, exactly as the ticket's worker found it: a test file the PR
 // changed is there in its base version, and the PR's version arrives only when the run is scored.
-function makeCheckout(repo, task, wt) {
+export function makeCheckout(repo, task, wt) {
   const r = spawnSync('bash', [join(HERE, 'setup-worktree.sh'), '--for-worker', '--frozen', task.base, wt, task.id, 'bench'],
     { cwd: repo.root, env: repo.env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`could not set up the checkout: ${(r.stderr || r.stdout || '').trim().split('\n').pop()}`);
@@ -230,18 +238,18 @@ function saveDiff(wt, baseline, file) {
   if (r.status !== 0) throw new Error('git diff failed');
 }
 
-// Copies the hidden tests in and runs them. -> { status, why? }
-function score(repo, task, wt, dir) {
+// Copies the hidden tests in and runs them, writing test-output.log in `dir`. -> { status, why? }
+export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
   for (const f of task.hidden_tests.files) {
     mkdirSync(dirname(join(wt, f)), { recursive: true });
     cpSync(join(task.hidden_tests.dir, f), join(wt, f), { force: true });
   }
   const log = [];
   let failed = null;
-  for (const { dir: d, cmd, files } of testRuns(repo.items, task.hidden_tests.files).runs) {
+  for (const { dir: d, cmd, files } of testRuns(repo.items, runFiles(task)).runs) {
     const cap = repo.cap && takesFiles(cmd) ? ` --maxWorkers=${repo.cap}` : '';
     const line = `${cmd}${cap} ${files.map(shq).join(' ')}`;
-    const r = runItem({ bin: HERE, root: wt, dir: d, cmd: line, lock: 'test', prefix: repo.prefix, env: armEnv(), timeout: SCORE_TIMEOUT_MS });
+    const r = runItem({ bin: HERE, root: wt, dir: d, cmd: line, lock: 'test', prefix: repo.prefix, env: armEnv(), timeout });
     log.push(`$ ${line}\n${r.out}\nexit ${r.code}\n`);
     writeFileSync(join(dir, 'test-output.log'), log.join('\n'));
     if (r.stopped) return { status: 'failed', why: `the hidden tests did not finish: ${line}` };
@@ -285,7 +293,7 @@ export function runBench(opts, log = () => {}) {
   const repos = new Map();
   for (const t of tasks) {
     if (!repos.has(t.repo)) repos.set(t.repo, readRepo(t.repo));
-    const { orphans } = testRuns(repos.get(t.repo).items, t.hidden_tests.files);
+    const { orphans } = testRuns(repos.get(t.repo).items, runFiles(t));
     if (orphans.length) throw new Error(`task ${t.id}: no §4 Unit tests item covers ${orphans.join(', ')}`);
   }
   const out = resolve(opts.out || join(dirname(resolve(opts.tasks)), 'bench-out'));

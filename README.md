@@ -310,6 +310,25 @@ Keep the task set outside this repo. Its paths are relative to the file:
   "hidden_tests": {"dir": "hidden/ds-123", "files": ["tests/test_x.mjs"]}}]}
 ```
 
+`hidden_tests.run` (default: every file) names the files handed to the test command; the rest,
+such as fixtures, are only copied in.
+
+**`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
+merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and
+description as they read when the PR's first commit was authored: later edits are undone from the
+Jira changelog, and comments are never read. A ticket created after that commit is dropped, since
+all of its text came after the work. The size is the Size field's, else a first description line
+`Size: M`. The PR's added or changed test files at the merge go to `<set dir>/<task id>/hidden/`,
+where the task id is `<owner>__<name>-<n>`. A task is kept only if those tests fail at the base and pass at the
+merge, run as `bench.mjs` scores them. A PR with no test changes is skipped. The rest are dropped
+with the reason: tests that pass at the base, fail at the merge, or cannot run. The file counts the
+tasks per repo and per size, and lists the dropped PRs. A PR already in the set, kept or dropped, is
+left alone unless `--rewrite` is given, so a frozen set stays frozen:
+
+```
+node ~/.claude/desk/bin/bench-build.mjs --set <tasks.json> --pr <owner/name>#<n> [--pr …] [--rewrite] [--timeout 3600]
+```
+
 ```json
 {"tasks": [{"id": "names-the-ticket", "prompt": "…", "checks": [{"name": "title has the key", "matches": "DS-[0-9]+"}]}]}
 ```
