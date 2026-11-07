@@ -73,7 +73,7 @@ docs          : <pages citing a changed file, or "none">
 infra         : <infra paths touched, or "none">
 siblings      : <helper → n sites migrated, m under Not migrated | none>
 unrelated     : none | <files> → own PR
-self-review   : <§4 Local review command (desk-env get local-review)'s counts at <sha> · refuted by <codex|same-vendor> + any caveat, or "not run — why">
+self-review   : <§4 Local review command (desk-env review-cmd)'s counts at <sha> · refuted by <codex|same-vendor> + any caveat, or "not run — why">
 pre-push      : <passed at <sha> in <n>s, plus any item skipped on the lock | failed: <command> | not set (§4 Pre-push checks (desk-env list pre-push-checks) <none|unset>)>
 ```
 

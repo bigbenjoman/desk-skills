@@ -108,6 +108,6 @@ yours to rebuild or reset. A ticket that needs it rebuilt parks (config §3 `loc
 
 ## REVIEW SWEEPS
 
-A PR review task is done when the §4 Local review command's review is ON the PR, not when the fixes
+A PR review task is done when the review `desk-env review-cmd` prints is ON the PR, not when the fixes
 are made. Post it unconditionally (clean reviews included) after the final push, then re-read the PR
 to confirm it landed. `posted=yes` without having seen it is a false claim.

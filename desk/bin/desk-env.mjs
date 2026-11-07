@@ -605,6 +605,38 @@ function configValuesIn(parsed, id) {
 }
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
 
+// key=value pairs, as the §4 Clean review verdict row writes them.
+export function pairs(text) {
+  return Object.fromEntries([...String(text ?? '').matchAll(/([a-z0-9_]+)=(\S+)/gi)].map((m) => [m[1], m[2]]));
+}
+
+// Whether a §4 Local review command item posts a desk-review verdict marker: /desk-review does, and a
+// review skill the repo ships does where its SKILL.md names the marker.
+export function postsVerdict(item, root) {
+  const name = /^\/([\w-]+)(?=\s|$)/.exec(String(item ?? '').trim())?.[1];
+  if (!name) return false;
+  if (name === 'desk-review') return true;
+  return ['.agents', '.claude'].some((d) => {
+    try { return readFileSync(join(root, d, 'skills', name, 'SKILL.md'), 'utf8').includes('desk-review:verdict'); } catch { return false; }
+  });
+}
+
+// The review to run and post, under §4 Local review command (`rows`, its items) and §4 Clean review
+// verdict (`clean`): { run, clash }. A verdict row in counts form reads only a desk-review verdict
+// marker, so with no item that posts one `run` is /desk-review and `clash` says the rows contradict
+// each other. `run` is `none` with no review, and null with the row unset.
+export function reviewPlan(rows, clean, root) {
+  const items = [].concat(rows ?? []);
+  if (!items.length) return { run: null, clash: null };
+  if (isNone(items) || !Object.keys(pairs(clean)).length) return { run: items[0], clash: null };
+  const posting = items.find((x) => postsVerdict(x, root));
+  if (posting) return { run: posting, clash: null };
+  return {
+    run: '/desk-review',
+    clash: `config §4 Local review command (${items.map((x) => `\`${x}\``).join(' ')}) and §4 Clean review verdict (\`${clean}\`) contradict each other: that verdict reads only a desk-review verdict marker, and that command posts none, so workers run /desk-review in its place. Run /desk-setup to set §4 Local review command to /desk-review`,
+  };
+}
+
 // The lock a §4 command row's items take under with-lock.sh; every other row runs `nolock`.
 export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser', 'storybook-cmd': 'browser' };
 // Rows a worker runs only under their lock, never bare.
@@ -806,6 +838,8 @@ export const jiraName = () => {
   catch { return resolve({ env: 'DESK_JIRA_NAME', id: 'name', identity: true }); }
 };
 export const repoRoot = () => resolve({ env: 'DESK_REPO_ROOT', id: 'repo-root', identity: true }).replace(/\/+$/, '');
+// reviewPlan on this repo's rows.
+export const reviewRows = () => reviewPlan(configValues('local-review'), configValue('clean-verdict'), repoRoot());
 export const worktreesDir = () => resolve({
   env: 'DESK_WORKTREES_DIR', id: 'worktrees-dir',
   fallback: () => { const r = repoRoot(); return join(dirname(r), `${basename(r)}-worktrees`); },
@@ -1451,6 +1485,12 @@ if (isMain) {
         console.log(expandHome(v));
         break;
       }
+      case 'review-cmd': {
+        const { run } = reviewRows();
+        if (run == null) process.exit(3);
+        console.log(run);
+        break;
+      }
       case 'levers': {
         // `levers <name>` prints on or off; bare, every lever on and every name desk does not know.
         const l = levers();
@@ -1752,7 +1792,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs');
+        console.error('usage: desk-env.mjs where|get|review-cmd|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs');
         process.exit(2);
     }
   } catch (e) {
