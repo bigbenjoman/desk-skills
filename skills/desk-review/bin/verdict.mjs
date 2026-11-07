@@ -67,7 +67,8 @@ const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seat
 const CODEX_ROLES = ['finder', 'refuter']
 const CODEX_RUN = /^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z]+$/
 // With more than one Codex login, the logins the calls ran on, as `desk-codex: on Codex login <name>` names them.
-const CODEX_LOGINS = /^[A-Za-z0-9][A-Za-z0-9._-]*(, [A-Za-z0-9][A-Za-z0-9._-]*)*$/
+// A found login is named after its folder, so a name is any text on one line with no edge spaces.
+const codexLogins = (s) => typeof s === 'string' && s.split(', ').every((n) => n && n === n.trim() && !/[\u0000-\u001f]/.test(n))
 const ACCEPTED = ['gap', 'by', 'at', 'url']
 // The record of an acceptance: a comment or a review on a pull request, linked by its anchor.
 const ACCEPT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+#(?:issuecomment-\d+|pullrequestreview-\d+|discussion_r\d+)$/
@@ -137,7 +138,7 @@ export function tally(r) {
   if (r.codex != null) {
     keysOf(r.codex, [...CODEX_ROLES, 'login'], 'codex')
     for (const role of CODEX_ROLES) if (role in r.codex && !CODEX_RUN.test(String(r.codex[role]))) no(`codex.${role} is <model>:<effort>, as desk-codex settings prints it`)
-    if ('login' in r.codex && !CODEX_LOGINS.test(String(r.codex.login))) no('codex.login names the Codex logins the calls ran on, as desk-codex prints them, comma-separated')
+    if ('login' in r.codex && !codexLogins(r.codex.login)) no('codex.login names the Codex logins the calls ran on, as desk-codex prints them, comma-separated')
   }
   // Correctness fires on every review, so a results file without it is a run that never finished.
   if (!seats.has('correctness')) no('seats must include correctness, which runs on every review')

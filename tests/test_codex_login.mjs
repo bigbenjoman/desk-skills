@@ -68,11 +68,12 @@ const week = (used, resetH = 50) => win(used, 10080, resetH);
 const DEFAULT = join(H, '.codex');
 const dir = (name) => (name === 'default' ? DEFAULT : join(H, '.codex-logins', name));
 // A login's folder and its newest reading: a token_count event with the windows given.
-const reading = (name, primary, secondary = null) => {
+// `reached` is Codex's rate_limit_reached_type: it puts a window under 100% at its limit.
+const reading = (name, primary, secondary = null, reached = null) => {
   const d = join(dir(name), 'sessions', '2026', '11', '07');
   mkdirSync(d, { recursive: true });
   writeFileSync(join(d, 'rollout-2026-11-07T10-00-00-a.jsonl'), `${JSON.stringify({ timestamp: new Date(now - 60000).toISOString(), type: 'event_msg',
-    payload: { type: 'token_count', rate_limits: { primary, secondary, plan_type: 'pro', rate_limit_reached_type: null } } })}\n`);
+    payload: { type: 'token_count', rate_limits: { primary, secondary, plan_type: 'pro', rate_limit_reached_type: reached } } })}\n`);
 };
 const subs = (...rows) => writeFileSync(SUBS, ['| Tool | Name | Folder | Rule |', '|---|---|---|---|',
   ...rows.map(([name, rule]) => `| codex | ${name} | ${dir(name)} | ${rule} |`)].join('\n') + '\n');
@@ -88,6 +89,8 @@ t('AC9 one login: the probe records no login', [r.status, JSON.parse(readFileSyn
 
 // AC1: two logins in rotation: the one with the most room, named for the review record.
 reading('login-2', five(20), week(10));
+r = codex('refuter', 'x');
+t('AC9 a second folder but no subscriptions file: still one login, the caller\'s environment', [r.status, r.home, r.on, r.statuses], [0, 'unset', null, 0]);
 subs(['default', 'in rotation'], ['login-2', 'in rotation']);
 r = codex('refuter', 'x');
 t('AC1 the call runs on the login with the most room, with CODEX_HOME set for it', [r.status, r.home, r.on], [0, dir('login-2'), 'login-2']);
@@ -101,18 +104,19 @@ reading('login-2', week(30));
 r = codex('refuter', 'x');
 t('AC2 a weekly-only login at 30% beats one at 10% (5h) and 60% (week)', r.on, 'login-2');
 
-// AC3: a login at its limit is benched until that window resets.
-reading('login-2', five(100, 3), week(5));
+// AC3: a login at its limit is benched until that window resets, even with more room left than the
+// other: Codex says the limit was reached at 40%.
+reading('login-2', five(40, 3), week(5), 'primary');
 reading('default', five(80), week(80));
 r = codex('refuter', 'x');
 t('AC3 a login at its limit is not used while it lasts', [r.status, r.on], [0, 'default']);
-reading('login-2', five(100, -1), week(5));
+reading('login-2', five(40, -1), week(5), 'primary');
 r = codex('refuter', 'x');
 t('AC3 once its reset has passed it is used again', r.on, 'login-2');
 
-// AC4: every login in rotation benched: the one on standby.
-reading('login-2', five(100, 3), week(5));
-reading('default', five(40), week(100, 20));
+// AC4: every login in rotation benched, each with room left over the standby login: the one on standby.
+reading('login-2', five(40, 3), week(5), 'primary');
+reading('default', five(30), week(60, 20), 'secondary');
 reading('spare', five(50), week(50));
 subs(['default', 'in rotation'], ['login-2', 'in rotation'], ['spare', 'standby']);
 r = codex('refuter', 'x');

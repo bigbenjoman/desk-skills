@@ -1,5 +1,5 @@
-// The Codex login a desk-codex call runs on. With one Codex login there is nothing to choose and the
-// call keeps the caller's environment. With more, it runs on the usable login (signed in, in rotation
+// The Codex login a desk-codex call runs on. With one Codex login, or no subscriptions file, there is
+// nothing to choose and the call keeps the caller's environment. With more, it runs on the usable login (signed in, in rotation
 // or on standby) with the most room, ranked as a Claude login's is (login-choice.mjs) on whichever
 // windows its plan has. A login whose newest reading is at a limit is benched until that window
 // resets; with every usable login benched, or none usable, no call runs and `dead` says why.
@@ -20,9 +20,13 @@ export function benchedUntil(reading) {
 
 // -> { login, env, dead }: the login chosen (null when the caller's own is kept), the environment the
 // call runs in, and, when no call may run, the reason.
-export function codexCallLogin({ env = process.env, now = Date.now(), check = checkLogins } = {}) {
-  if (codexLogins().length <= 1) return { login: null, env, dead: null };
-  const { usable } = check(readSubscriptions(subscriptionsPath()), { tools: ['codex'], env });
+export function codexCallLogin({ env = process.env, now = Date.now() } = {}) {
+  const keep = { login: null, env, dead: null };
+  if (codexLogins().length <= 1) return keep;
+  // With no subscriptions file desk has one login per tool, whatever folders exist (logins.mjs).
+  const subs = readSubscriptions(subscriptionsPath());
+  if (!subs.exists) return keep;
+  const { usable } = checkLogins(subs, { tools: ['codex'], env });
   if (!usable.length) return { login: null, env, dead: 'no Codex login is signed in with a rule of in rotation or standby (desk-env logins check)' };
   const read = usable.map((login) => {
     const reading = readCodexUsage({ login, now });
