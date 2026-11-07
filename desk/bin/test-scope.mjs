@@ -184,5 +184,11 @@ export function packageManager(root, configured) {
   for (const [file, pm] of PM_LOCKS) { try { statSync(join(root, file)); return pm; } catch { /* not this one */ } }
   return 'npm';
 }
-// What runs a workspace package's own test script, in its directory.
-export const workspaceTestCmd = (pm) => `${pm} run test`;
+// What runs a workspace package's own test script, in its directory. A Vitest or Jest script gets the
+// worker cap (`cap`, config §3b) here, since the command alone does not show the runner.
+export function workspaceTestCmd(pm, script = '', cap = null) {
+  const cmd = `${pm} run test`;
+  const n = /^\s*([1-9][0-9]*)\b/.exec(String(cap ?? ''))?.[1];
+  if (!n || !takesFiles(String(script))) return cmd;
+  return `${cmd}${pm === 'npm' ? ' --' : ''} --maxWorkers=${n}`;
+}

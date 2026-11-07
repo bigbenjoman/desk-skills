@@ -3,7 +3,7 @@
 // What a worker tests before pushing (related tests, or the full suites when a change reaches past the
 // import graph), and the `desk-env mem status` line. Scratch repos only.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,7 +83,10 @@ t('packageManager: the configured row wins', packageManager(ws, 'pnpm (npm, npx 
 t('packageManager: none falls back to npm with no lockfile', packageManager(ws, 'none'), 'npm');
 writeFileSync(join(ws, 'yarn.lock'), '');
 t('packageManager: a root lockfile names it', packageManager(ws, null), 'yarn');
-t('workspaceTestCmd', workspaceTestCmd('pnpm'), 'pnpm run test');
+t('workspaceTestCmd: no cap with no runner shown', workspaceTestCmd('pnpm', 'node --test', '4'), 'pnpm run test');
+t('workspaceTestCmd: a Vitest script takes the cap', workspaceTestCmd('pnpm', 'vitest run', '4, 2 while the spawn gate says hold'), 'pnpm run test --maxWorkers=4');
+t('workspaceTestCmd: npm passes it after --', workspaceTestCmd('npm', 'jest', '2'), 'npm run test -- --maxWorkers=2');
+t('workspaceTestCmd: no cap set', workspaceTestCmd('pnpm', 'jest', null), 'pnpm run test');
 
 t('takesFiles: vitest', takesFiles('pnpm vitest related --run'), true);
 t('takesFiles: a path to jest', takesFiles('node node_modules/.bin/jest --findRelatedTests'), true);
@@ -135,14 +138,16 @@ put('apps/portal/package.json', '{"name":"portal","scripts":{"test":"vitest run"
 put('apps/portal/src/main.tsx', 'export const App = () => null;\n');
 m('add', '.'); m('commit', '-qm', 'base'); m('remote', 'add', 'origin', join(T, 'mono.git')); m('push', '-q', 'origin', 'main');
 m('switch', '-qc', 'feat/portal');
-const monoCfg = cfg('| Package manager | `pnpm` |\n| Unit tests | `apps/web: pnpm test` |\n| Related tests | `apps/web: pnpm vitest related --run` |\n');
+const monoCfg = join(T, 'cfg-mono.md');
+writeFileSync(monoCfg, readFileSync(cfg('| Package manager | `pnpm` |\n| Unit tests | `apps/web: pnpm test` |\n| Related tests | `apps/web: pnpm vitest related --run` |\n'), 'utf8')
+  + '\n## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Test worker cap under the test lock | `4` | `3` |\n');
 const monoCli = () => spawnSync('node', [BIN, 'test-scope'], { cwd: mono, encoding: 'utf8',
   env: { ...process.env, DESK_CONFIG: monoCfg, DESK_MACHINE: join(T, 'none.md'), HOME: T, DESK_DEFAULT_BRANCH: '' } }).stdout.replace(/\n+$/, '').split('\n');
 put('apps/web/src/a.ts', 'export const a = 2;\n');
 put('apps/portal/src/main.tsx', 'export const App = () => 1;\n');
 m('commit', '-qam', 'touch two workspaces');
 t('DS-495 AC1 cli: a second touched workspace no item covers runs its test script too', monoCli().join(' | '),
-  'scope=related | reason=2 changed file(s): no lockfile, config, shared package, deletion or rename | changed=2 | workspace=apps/portal (portal) has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: vitest run | apps/web\tpnpm vitest related --run\tsrc/a.ts | apps/portal\tpnpm run test\t');
+  'scope=related | reason=2 changed file(s): no lockfile, config, shared package, deletion or rename | changed=2 | workspace=apps/portal (portal) has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: vitest run | apps/web\tpnpm vitest related --run\tsrc/a.ts | apps/portal\tpnpm run test --maxWorkers=3\t');
 put('pnpm-lock.yaml', 'lockfileVersion: 9\n# admin\n');
 put('apps/admin/package.json', '{"name":"admin","scripts":{"test":"jest"}}\n');
 put('apps/admin/src/x.ts', 'export const x = 1;\n');
@@ -150,7 +155,8 @@ put('apps/docs/package.json', '{"name":"docs"}\n');
 t('DS-495 AC2+AC3 cli: a new workspace runs its test script; one with none is named UNCOVERED', monoCli().join(' | '),
   'scope=full | reason=pnpm-lock.yaml is a lockfile | changed=6 | workspace=apps/admin (admin) has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: jest'
   + ' | workspace=apps/portal (portal) has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: vitest run'
-  + ' | apps/web\tpnpm test\t | apps/admin\tpnpm run test\t | apps/portal\tpnpm run test\t | UNCOVERED\tapps/docs (docs)\thas a changed file no §4 Related or Unit tests item covers, and its package.json has no test script');
+  + ' | apps/web\tpnpm test\t | apps/admin\tpnpm run test --maxWorkers=3\t | apps/portal\tpnpm run test --maxWorkers=3\t'
+  + ' | UNCOVERED\tapps/docs (docs)\thas a changed file no §4 Related or Unit tests item covers and no package.json test script: nothing ran for it, so the PR\'s Testing names it untested and never says its tests passed');
 
 // ---- `desk-env mem status` ----------------------------------------------------------------------
 // A profile written while desk had a CI runner still holds its reservation row, which nothing reads.

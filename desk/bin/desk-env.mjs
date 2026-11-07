@@ -1689,15 +1689,16 @@ if (isMain) {
         // A touched workspace no item covers runs its own test script, or is named UNCOVERED.
         const loose = TS.uncoveredWorkspaces(d, pkgs, suites);
         const pmItems = configValues('package-manager');
-        const wsCmd = TS.workspaceTestCmd(TS.packageManager(top, pmItems && !isNone(pmItems) ? pmItems[0] : null));
+        const pm = TS.packageManager(top, pmItems && !isNone(pmItems) ? pmItems[0] : null);
+        const cap = configValue('test-cap');
         const label = (w) => `${w.dir}${w.name ? ` (${w.name})` : ''}`;
         console.log(`scope=${d.scope}`);
         console.log(`reason=${d.reason}`);
         console.log(`changed=${d.files.length}`);
         for (const w of loose.filter((x) => x.test)) console.log(`workspace=${label(w)} has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: ${w.test}`);
         for (const r of TS.runs(d, suites)) console.log(`${r.dir}\t${r.cmd}\t${r.files.join(' ')}`);
-        for (const w of loose.filter((x) => x.test)) console.log(`${w.dir}\t${wsCmd}\t`);
-        for (const w of loose.filter((x) => !x.test)) console.log(`UNCOVERED\t${label(w)}\thas a changed file no §4 Related or Unit tests item covers, and its package.json has no test script`);
+        for (const w of loose.filter((x) => x.test)) console.log(`${w.dir}\t${TS.workspaceTestCmd(pm, w.test, cap)}\t`);
+        for (const w of loose.filter((x) => !x.test)) console.log(`UNCOVERED\t${label(w)}\thas a changed file no §4 Related or Unit tests item covers and no package.json test script: nothing ran for it, so the PR's Testing names it untested and never says its tests passed`);
         break;
       }
       case 'baseline': {
