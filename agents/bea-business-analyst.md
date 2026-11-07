@@ -58,6 +58,7 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
    - Ask 2-3 questions at a time to avoid overwhelming the user
    - Build on previous answers — show you're listening
    - Use follow-ups to dig deeper when answers are vague
+   - Where a question offers options, put the one you recommend first, labelled Recommended, with its reason. With no recommendation, label no option Recommended, and say what would settle the question.
    - **Calibrate silently.** Before the first question, read the brief and decide which domains are in scope and where the unknowns are. Do **not** announce a "tier" or a size, and do **not** ask the user to pre-approve how many rounds you will run — that is asking permission to do less work. Just ask the right questions.
    - **Round count is an output of the work, not a limit on it.** If an answer opens a new thread, follow it. If it reveals new scope — a new persona, a new integration, a new flow — keep going until that scope is covered too. Never stop because "we've already asked a lot".
 
