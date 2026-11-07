@@ -1422,6 +1422,24 @@ check "DS-415 AC3 and the next pass waits on those runs, starting none again" \
 check "DS-415 a run GitHub refused to start again is started at the next pass, not read as failing after the fix" \
   'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=803$" "$T/gh-calls" && [ "$(field E-803 undraft.call)" = "\"evidence\"" ]'
 
+# ---- A batch on its own base: the evidence workflow runs from §0 Default branch, not the base --------
+# The base goes straight onto the queue: set-batch asks origin for it, and this repo has no origin.
+export DESK_QUEUE="$T/queue-eb.json" DESK_AUTOPILOT_STATE="$T/state-eb"
+mkdir -p "$T/state-eb/logs" "$T/state-eb/evidence-runs"; : > "$T/admits"
+q init eb; q add E-804; q set E-804 state=done result.pr=804
+q add E-805; q set E-805 state=done result.pr=805
+printf '{"workflow":"pr-evidence.yml","runId":"9805","url":"https://github.com/acme/widgets/actions/runs/9805","at":"2026-11-01T19:28:00Z","cells":2}\n' > "$T/state-eb/evidence-runs/805-$HEAD_A.json"
+node -e 'const fs = require("fs"), f = process.argv[1], q = JSON.parse(fs.readFileSync(f, "utf8")); q.base = "feat/x"; fs.writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+: > "$T/gh-calls"; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-373 AC1 a dry-run pass on a batch base prints the dispatch with --ref the default branch" \
+  'echo "$out" | grep -q "would run \`gh workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=804\`" && ! grep -q "^workflow run" "$T/gh-calls"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-373 AC1 the pass starts it there too" \
+  'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=804$" "$T/gh-calls" && ! grep -q "^workflow run .*--ref feat/x" "$T/gh-calls"'
+ebfix=$(node -e 'const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(Object.values(f).map((r) => r.fix).join(" "))' "$T/state-eb/evidence-runs/fixes.json" 2>/dev/null)
+check "DS-373 the fix ticket for a failed run reproduces it where the pass runs it" \
+  'grep -qF -- "--ref main -f pr=805" "$T/state-eb/tickets/$ebfix.md" && ! grep -q "feat/x" "$T/state-eb/tickets/$ebfix.md"'
+
 # ---- DS-278: a ready PR red after the driver's reruns, or in conflict, goes back to a fix worker twice
 # The fake gh answers each PR from $T/fx/<n>.json. The driver's rerun record is written as the driver
 # writes it: one line per check per rerun, in <state>/merge-driver/reruns-<n>-<head>.

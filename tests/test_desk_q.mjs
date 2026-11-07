@@ -502,11 +502,17 @@ t('DS-163 AC5 one that ends inside does not', tidyTl.filter((l) => /^ {2}T-\d .*
 
 const everyTl = lines(Q.timelineScreen(Q.loadRepos(FIXED), null, { now: FIXED }));
 t('DS-163 AC6 every repo groups tickets under a row per repo', everyTl.includes('  tidy · 7 tickets') && everyTl.includes('  slow · 4 tickets'), true);
-t('DS-163 AC6 a repo with too little history says so under the rows', everyTl.some((l) => l.startsWith('voicepa · No ship estimate')), true);
+t('DS-163 AC6 a repo with too little history says so under the rows', everyTl.some((l) => /^(note| {4}) {2}voicepa +no ship estimate yet, /.test(l)), true);
 const undatable = Q.loadRepos(FIXED).filter((r) => ['voicepa', 'pr-ninja'].includes(r.name));
 t('every repo with too little history: each says so, and none claims to have nothing unfinished',
-  [Q.timelineScreen(undatable, null, { now: FIXED }), Q.daysScreen(undatable, null, { now: FIXED })].map((s) => `${s.includes('voicepa · No ship estimate')} ${s.includes('pr-ninja · No ship estimate')} ${s.includes('Nothing unfinished')}`).join(', '),
+  [Q.timelineScreen(undatable, null, { now: FIXED }), Q.daysScreen(undatable, null, { now: FIXED })].map((s) => `${/ {2}voicepa +no ship estimate yet/.test(s)} ${/ {2}pr-ninja +no ship estimate yet/.test(s)} ${s.includes('Nothing unfinished')}`).join(', '),
   'true true false, true true false');
+// A named batch's full name carries its branch: its notes are tagged with the repo once and name the
+// batch in the text, never the full name twice, and the rows' repo column is the repo, not the name cut.
+const named = undatable.map((r) => ({ ...r, batch: 'VPL-626', name: `${r.name} · VPL-626 (feat/VPL-626-voice-pa-on-off-contacts)` }));
+const namedTl = lines(Q.timelineScreen(named, null, { now: FIXED, width: 100 }));
+t('a named batch\'s no-history note is the repo tag, then "batch <name>:", with no branch',
+  [namedTl.some((l) => /^(note| {4}) {2}voicepa +batch VPL-626: no ship estimate yet, with /.test(l)), namedTl.some((l) => l.includes('feat/VPL-626'))].join(), 'true,false');
 const Hc = screen({ kind: 'timeline', slug: null }, 120, () => FIXED);
 await sleep(20);
 await Hc.press('z');
