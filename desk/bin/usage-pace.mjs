@@ -79,7 +79,7 @@ export const probeLog = (dir = usageDir()) => join(dir, 'probe.log');
 // the probe's output, or null.
 export const newestUsage = ({ dirs = stateDirs(), files = [probeLog()], now = Date.now() } = {}) => newestReading({ dirs, files, now }).seven_day;
 
-// One login's newest reading of each window, across its worker logs written in the last RECENT_MS,
+// One login's newest reading of each window, across its worker logs written in the last `recent` ms,
 // plus any `files` named (that login's usage probe output). No login named is the default login, and
 // a worker log is its worker's login's (claude-logins.mjs), so one login's reading never stands for
 // another's. Events carry no time of their own, so the newest is the
@@ -89,7 +89,7 @@ export const newestUsage = ({ dirs = stateDirs(), files = [probeLog()], now = Da
 // unifiedWindows leaves out is in `none`, its subscription having no such window, and is null rather
 // than an older event's reading; one it lists but cannot be read comes from the newest event that has it.
 //   -> { five_hour, seven_day, at, none: [window] }
-export function newestReading({ dirs = stateDirs(), files = [], login = null, now = Date.now() } = {}) {
+export function newestReading({ dirs = stateDirs(), files = [], login = null, now = Date.now(), recent = RECENT_MS } = {}) {
   const best = { five_hour: null, seven_day: null }, from = {};
   let newest = null, newestAt = -Infinity;
   const mine = login?.configDir ?? null;
@@ -101,7 +101,7 @@ export function newestReading({ dirs = stateDirs(), files = [], login = null, no
   for (const { path, dir, name } of paths) {
     let st;
     try { st = statSync(path); } catch { continue; }
-    if (!st.isFile() || now - st.mtimeMs > RECENT_MS) continue;
+    if (!st.isFile() || now - st.mtimeMs > recent) continue;
     if (dir && logLoginDir(dir, name) !== mine) continue;
     for (const e of eventsOf(path, st)) {
       if (st.mtimeMs >= newestAt) { newest = e; newestAt = st.mtimeMs; }

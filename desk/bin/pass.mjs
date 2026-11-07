@@ -47,7 +47,7 @@ import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCel
 import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from './base-fix.mjs';
-import { usagePace, newestReading } from './usage-pace.mjs';
+import { usagePace, newestReading, WEEK_MS } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
@@ -1147,7 +1147,7 @@ for (const s of HEALTH.stalls) personStall(s);
 // probe: the hold would keep itself on its last figure, an old subscription's after a switch. So a pass
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
-const loginReading = (login) => newestReading({ files: [loginProbeLog(usageDir(), login)], login });
+const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(usageDir(), login)], login, recent });
 const paceReading = () => loginReading(OWN_LOGIN);
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
@@ -1702,12 +1702,14 @@ const rotating = SUBS.exists && !(IN_USE.length === 1 && IN_USE[0].dir === OWN_L
 const loginVars = (dir) => (dir === OWN_LOGIN.configDir ? {} : { AUTOPILOT_LOGIN_DIR: dir ?? '' });
 let CHECKED = null;
 // The login a new session starts on, as { login, vars, row, line }: the variables its spawn takes, its
-// queue field and its report text. Null when no login can take it.
+// queue field and its report text. Null when no login can take it. Its readings go back a week, not
+// the few hours pacing reads: a window's use only grows until its reset, so an unattended login at its
+// weekly limit stays out on an old reading, and one past its reset reads 0% (login-choice.mjs).
 function pickLogin() {
   if (!rotating) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
   CHECKED ??= checkLogins(SUBS, { tools: ['claude'] });
   const workers = Object.values(queue().tickets).filter((r) => r.state === 'running');
-  const login = chooseLogin(CHECKED.usable.map((l) => ({ login: l, reading: loginReading(l), running: workers.filter((r) => loginDirOf(r) === l.configDir).length })));
+  const login = chooseLogin(CHECKED.usable.map((l) => ({ login: l, reading: loginReading(l, WEEK_MS), running: workers.filter((r) => loginDirOf(r) === l.configDir).length })));
   if (!login) return null;
   return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir })}`,
     line: ` login=${login.name}${login.rule === 'standby' ? ' (standby: no login in rotation can take it)' : ''}` };

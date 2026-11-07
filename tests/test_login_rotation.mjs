@@ -2,7 +2,7 @@
 // login-choice.mjs with a fixed clock, then the real pass.mjs against a fake claude whose sign-in answers
 // per config folder, a stub spawn-worker.sh that records the login each call was given, and each login's
 // reading in its own probe log. A throwaway HOME: nothing reads this computer's logins.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -156,6 +156,24 @@ env = world([['default', 'in rotation', 100, 40], ['a', 'in rotation', 20, 100],
 out = pass(env);
 t('AC4 it spawns on the standby login', on('Y-1'), 's');
 t('AC4 the pass report says it used standby', /Y-1 port=.* login=s \(standby: no login in rotation can take it\)/.test(out), true);
+// The same with the reading days old: nothing has probed an unattended login, and its window has not reset.
+const aged = (days) => { const at = new Date(Date.now() - days * 86400000); utimesSync(join(process.env.DESK_USAGE_DIR, 'probe.log'), at, at); };
+env = world([['default', 'in rotation', 10, 100], ['s', 'standby', 30, 30]], fresh);
+aged(2);
+out = pass(env);
+t('AC4 a login at 100% on a two-day-old reading: standby', on('Y-1'), 's');
+t('AC4 the report says so', /login=s \(standby: no login in rotation can take it\)/.test(out), true);
+// An old reading whose window has reset leaves that login its room.
+env = world([['default', 'in rotation'], ['s', 'standby', 30, 30]], fresh);
+writeFileSync(join(process.env.DESK_USAGE_DIR, 'probe.log'), `${event(10, 100).replace(/("seven_day":\{"utilization":1,"resetsAt":)\d+/, `$1${Math.round(Date.now() / 1000) - 3600}`)}\n`);
+aged(2);
+pass(env);
+t('an old reading past its reset leaves the login in rotation', on('Y-1'), 'default');
+// Over a week old, both windows have reset since: it says nothing, so the login reads as no reading.
+env = world([['default', 'in rotation', 10, 100], ['s', 'standby', 30, 30]], fresh);
+aged(8);
+pass(env);
+t('a reading over a week old is no reading', on('Y-1'), 'default');
 
 // AC5: a login whose rule is off, whatever its room.
 env = world([['default', 'in rotation', 90, 90], ['c', 'in rotation', 80, 80], ['b', 'off', 0, 0]], fresh);
