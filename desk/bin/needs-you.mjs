@@ -59,7 +59,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan } from './undraft.mjs';
-import { conflictTriesMade, gapsFix, instructionFix, personReviewFix, stuckFindings } from './fix-tries.mjs';
+import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
@@ -147,7 +147,7 @@ function repairsMade(why) {
 // reported (the stuck reason's `the last try said`, else the finished try's DONE line).
 function conflictPlain(r, t, n, base, why = '') {
   const made = conflictTriesMade(t?.fix_tries);
-  const done = /; the last try said: (.+)$/.exec(why)?.[1] ?? (t?.fix?.kind === 'conflict' && t.fix.finished ? t.result?.summary : null);
+  const done = /; the last try said: (.+)$/.exec(why)?.[1] ?? lastTrySaid(t);
   const said = done ? one(/\bsaid=(.+)$/.exec(done)?.[1] ?? done) : '';
   const how = made ? `${REPAIRED} it${said ? `: its last repair said "${said}"` : ''}` : 'no repair by desk has tried it yet';
   return `${n} is in conflict with ${base ?? 'its base'}, and ${how}. Resolve the conflict on its branch; ${thenMerge(r)}.`;

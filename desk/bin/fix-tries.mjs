@@ -112,7 +112,8 @@ const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: triesMa
 export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // A review fix has FIX_TRIES_MAX of its own, counted over review fix tries only, so the conflict,
 // red-check and re-review tries before it leave it its own, within FIX_TRIES_TOTAL tries of every kind
-// that count. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always has one.
+// that count but conflict. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always
+// has one; a conflict has its own FIX_TRIES_MAX on top (conflictTriesMade), so its tries are not counted.
 // A review fix try that recorded what it quoted (`findings`, `gaps`) and whose findings all cleared,
 // none of them still in the review at the head, counts against neither: it moved the PR forward. Only
 // REVIEW_TRIES_CEILING bounds those, so a loop where every fix makes a new finding still ends.
@@ -125,7 +126,8 @@ const reviewTriesMade = (done) => (done ?? []).filter(isReviewTry).length;
 // they quoted, its own and no more than the overall cap leaves.
 function reviewTriesLeft(done) {
   const counted = (done ?? []).filter((x) => !(isReviewTry(x) && quoted(x)));
-  return Math.min(REVIEW_TRIES_CEILING - reviewTriesMade(done), FIX_TRIES_MAX - reviewTriesMade(counted), FIX_TRIES_TOTAL - triesMade(counted));
+  return Math.min(REVIEW_TRIES_CEILING - reviewTriesMade(done), FIX_TRIES_MAX - reviewTriesMade(counted),
+    FIX_TRIES_TOTAL - triesMade(counted.filter((x) => x.kind !== 'conflict')));
 }
 // A finding or gap as compared across heads: its first file:line, the path whole, so one holding
 // `[id]` or `(shop)` is not another file's, and its text with the markup, `F1 ·` label, severity,
@@ -161,7 +163,9 @@ const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && x.kind ==
 export const conflictTriesMade = (done) => conflictTries(done).length;
 const conflictSpent = (done, head) => conflictTriesMade(done) >= FIX_TRIES_MAX || conflictTries(done).some((x) => x.head === head);
 const nextConflictTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: conflictTriesMade(done) + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
-const lastSaid = (t, kind = 'conflict') => (t.fix?.kind === kind && t.fix.finished && t.result?.summary ? `; the last try said: ${t.result.summary}` : '');
+// What the ticket's last try of that kind reported, once its worker has finished; else null.
+export const lastTrySaid = (t, kind = 'conflict') => (t?.fix?.kind === kind && t.fix.finished && t.result?.summary) || null;
+const lastSaid = (t, kind = 'conflict') => (lastTrySaid(t, kind) ? `; the last try said: ${lastTrySaid(t, kind)}` : '');
 const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(conflictTriesMade(done))}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
 
 // t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, stateChecks (§4 State

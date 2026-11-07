@@ -140,8 +140,12 @@ t('DS-281 AC7 and a review try counts toward a checks try', fixCall(tk({ fix_tri
 const ds379 = [{ try: 1, head: 'f73edbe' + '0'.repeat(33), kind: 'conflict', what: 'draft conflicts with main' },
   { try: 2, head: '597a520' + '0'.repeat(33), kind: 'rereview', what: 'review its head: its review verdict is for fdcfe56, not the head 597a520' }];
 const p0At = (head) => ({ pr: 348, head, verdict: { p0: '1', p1: '0' }, body: reviewBody('p0=1 p1=0 p2=0', ['- **P0** `desk/bin/evidence.mjs:40` a code span splits the cell']) });
-const a1 = reviewFix(tk({ fix_tries: ds379 }), p0At(ds379[1].head));
-t('DS-384 AC1 after a conflict try and a rereview try, a P0 at the head goes to a review fix worker, as its last try', `${a1?.call} ${a1?.fix.kind} ${a1?.fix.try}/${a1?.fix.of}`, 'requeue review 1/1');
+// The overall cap, with a check try in the conflict try's place: since DS-435 a conflict's tries are its
+// own, so count toward neither of a review fix's caps.
+const capped379 = [{ ...ds379[0], kind: 'checks', what: 'red: tests' }, ds379[1]];
+t('DS-435 after DS-379\'s conflict try and rereview try, a P0 at the head gets both review fix tries', `${reviewFix(tk({ fix_tries: ds379 }), p0At(ds379[1].head))?.fix.try}/${reviewFix(tk({ fix_tries: ds379 }), p0At(ds379[1].head))?.fix.of}`, '1/2');
+const a1 = reviewFix(tk({ fix_tries: capped379 }), p0At(ds379[1].head));
+t('DS-384 AC1 after a check try and a rereview try, a P0 at the head goes to a review fix worker, as its last try', `${a1?.call} ${a1?.fix.kind} ${a1?.fix.try}/${a1?.fix.of}`, 'requeue review 1/1');
 t('DS-384 AC1 the try quotes the P0', a1?.fix.findings.map((x) => x.text).join('|'), '- **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
 t('DS-384 AC1 its brief says a finding it quotes that the next review still lists goes to the person', fixBrief(tk({ fix: a1.fix })).includes('This is try 1 of 1. A finding quoted here that the review of your new head still lists goes to the person.'), true);
 const reviewTries = (n, from = 3) => Array.from({ length: n }, (_, i) => ({ try: i + 1, head: `${from + i}`.repeat(40), kind: 'review' }));
@@ -149,12 +153,12 @@ const afterOne = reviewFix(tk({ fix_tries: [ds379[0]] }), p0At(HEAD));
 t('DS-384 one conflict try leaves a review fix both its tries', `${afterOne?.fix.try}/${afterOne?.fix.of}`, `1/${FIX_TRIES_MAX}`);
 const a2 = reviewFix(tk({ fix_tries: reviewTries(FIX_TRIES_MAX) }), p0At(HEAD));
 t('DS-384 AC2 once its review fix tries are spent, findings at the head go to the person', `${a2?.call} | ${a2?.why}`, 'stuck | review not clean after 2 fix tries (2 review): 1 P0 — P0: - **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
-const a3 = reviewFix(tk({ fix_tries: [...ds379, ...reviewTries(1)] }), p0At(HEAD));
-t('DS-384 AC3 with a review try of its own left but the overall cap reached, it goes to the person, naming the tries by kind', `${a3?.call} | ${a3?.why.split(':')[0]}`, 'stuck | review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review)');
+const a3 = reviewFix(tk({ fix_tries: [...capped379, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 AC3 with a review try of its own left but the overall cap reached, it goes to the person, naming the tries by kind', `${a3?.call} | ${a3?.why.split(':')[0]}`, 'stuck | review not clean after 3 fix tries (1 checks, 1 rereview, 1 review)');
 const ex = reviewFix(tk({ fix_tries: [ds379[0], { try: 1, head: 'e'.repeat(40), kind: 'rereview', extra: true }, ...reviewTries(1)] }), p0At(HEAD));
 t('DS-384 AC3 an extra review try a base merge earned counts toward neither cap', `${ex?.call} ${ex?.fix?.try}/${ex?.fix?.of}`, 'requeue 2/2');
-const cap = reviewFix(tk({ fix_tries: [{ try: 1, head: 'f'.repeat(40), kind: 'capture' }, ...ds379, ...reviewTries(1)] }), p0At(HEAD));
-t('DS-384 a capture try is not counted or named among the tries by kind', cap?.why.split(':')[0], 'review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review)');
+const cap = reviewFix(tk({ fix_tries: [{ try: 1, head: 'f'.repeat(40), kind: 'capture' }, ...capped379, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 a capture try is not counted or named among the tries by kind', cap?.why.split(':')[0], 'review not clean after 3 fix tries (1 checks, 1 rereview, 1 review)');
 
 // ---- a review fix try that cleared what it quoted does not use up the tries; one that did not, ends them
 // PR #367's three rounds: try 1 quoted round 1's finding at pass.mjs:617, try 2 round 2's gap, and the
@@ -363,6 +367,9 @@ const spent435 = [...gate435, { try: 1, head: 'b'.repeat(40), kind: 'conflict' }
 t('DS-435 FIX_TRIES_MAX conflict tries spend them, and the reason counts only those', conflictFix(tk({ fix_tries: spent435 }), { pr: 2594, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 2 fix tries');
 t('DS-435 still one conflict try per head', conflictFix(tk({ fix_tries: [...gate435, { try: 1, head: HEAD, kind: 'conflict' }] }), { pr: 2594, head: HEAD, base: 'main' })?.why, 'still in conflict with main after 1 fix try');
 t('DS-435 a red check after the conflict tries still counts every kind', draftChecksFix(tk({ fix_tries: spent435.slice(2) }), { pr: 2594, head: HEAD, failing: [{ name: 'tests', runId: 1 }] }, ctx())?.call, 'stuck');
+const rv435 = (done) => reviewFix(tk({ fix_tries: done }), { pr: 2594, head: 'd'.repeat(40), verdict: { p1: '1' }, body: inlineBody, comments: () => [inlineP1] });
+t('DS-435 a review fix after check tries and the conflict\'s own tries still has one',
+  [spent435.slice(0, 3), spent435].map((d) => `${rv435(d)?.call} ${rv435(d)?.fix?.try}`).join(' | '), 'requeue 1 | requeue 1');
 const brief435 = fixBrief(tk({ fix: d435.fix }));
 t('DS-435 AC2 the conflict brief takes the base\'s side of a generated file and runs §4 Codegen', brief435.includes("take main's version of it (`git checkout --theirs <file>` during the merge), run §4 Codegen (`desk-env cmds codegen-cmd`)"), true);
 t('DS-435 the conflict brief merges a branch far behind in steps', brief435.includes('merge main in steps'), true);
