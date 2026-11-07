@@ -647,8 +647,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     if (t.idle_passes) q('set', t.key, 'idle_passes=0');
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
-    // With no registry the worker cannot be stopped, so it is left for the next pass, never parked as stopped.
-    const stall = idle >= WEDGE_PASSES && !done && !handoff && registryOk;
+    const stall = idle >= WEDGE_PASSES && !done && !handoff;
     // Held since the first pass that found it so; the ceiling counts from then.
     const waitOn = stall ? suiteWait(t.worktree ?? join(WORKTREES, t.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir()) }) : null;
     const since = waitOn ? (t.suite_wait_since ?? Date.now()) : null;
@@ -656,7 +655,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     q('set', t.key, `idle_passes=${idle}`, ...(since !== (t.suite_wait_since ?? null) ? [`suite_wait_since=${since}`] : []));
     if (waitOn && !overCeiling) {
       report.quiet.push(`${t.key}: quiet for ${idle} passes, ${SUITE_WAIT_TEXT[waitOn]}`);
-    } else if (stall) {
+    } else if (stall && registryOk) {
+      // With no registry the worker cannot be stopped, so it is left for the next pass, never parked as stopped.
       // Free the slot. The worker's session id survives, so it can be resumed later with
       // its context intact; leaving it wedged blocks the whole batch.
       const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
