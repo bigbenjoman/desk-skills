@@ -236,7 +236,10 @@ function saveDiff(wt, baseline, file) {
 
 // Copies the hidden tests in and runs them. -> { status, why? }
 function score(repo, task, wt, dir) {
-  for (const f of task.hidden_tests.files) cpSync(join(task.hidden_tests.dir, f), join(wt, f), { force: true });
+  for (const f of task.hidden_tests.files) {
+    mkdirSync(dirname(join(wt, f)), { recursive: true });
+    cpSync(join(task.hidden_tests.dir, f), join(wt, f), { force: true });
+  }
   const log = [];
   let failed = null;
   for (const { dir: d, cmd, files } of testRuns(repo.items, task.hidden_tests.files).runs) {

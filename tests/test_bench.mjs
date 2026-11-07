@@ -82,6 +82,8 @@ const hidden = join(dir, 'hidden');
 mkdirSync(join(hidden, 'tests'), { recursive: true });
 writeFileSync(join(hidden, 'tests', 'old.sh'), FIXED);
 writeFileSync(join(hidden, 'tests', 'hidden.sh'), FIXED);
+mkdirSync(join(hidden, 'tests', 'deep'));
+writeFileSync(join(hidden, 'tests', 'deep', 'new.sh'), FIXED);
 
 // A stub claude: logs what the run could see, then acts on words in the prompt. Its stream-json holds
 // a tool call and its refusal where the prompt asks for a push.
@@ -261,8 +263,9 @@ t('and is listed', /two a: not run/.test(r.stdout), true);
 
 // The arm's own change is kept whether it committed or not; a new file counts.
 const newOut = join(dir, 'out-new');
-r = run(['--tasks', taskSet('new', [task('new', 'NEW-FILE')]), '--arm', 'a', ...flags('out-new')]);
+r = run(['--tasks', taskSet('new', [task('new', 'NEW-FILE FIX', ['tests/deep/new.sh'])]), '--arm', 'a', ...flags('out-new')]);
 t('AC9 an untracked file is in the diff', readFileSync(join(results(newOut)['new.a'].dir, 'diff.patch'), 'utf8').includes('notes.txt'), true);
+t('AC2 a hidden test in a new directory is scored', results(newOut)['new.a'].status, 'accepted');
 
 // Which test item runs which file.
 const items = [{ dir: '.', cmd: 'root' }, { dir: 'apps/api', cmd: 'api' }, { dir: 'apps/api', cmd: 'api2' }];
