@@ -112,11 +112,32 @@ export function stageUsage(logText) {
   return { first: first.input, stages: [...stages.values()] };
 }
 
+// One result event's tokens by kind. Tokens come from modelUsage, which counts subagents' calls as
+// the cost does; `usage` is the fallback for a result event without it.
+function resultTokens(d) {
+  const n = (v) => Number(v) || 0;
+  const models = Object.values(d.modelUsage ?? {});
+  const sum = (k) => models.reduce((s, m) => s + n(m[k]), 0);
+  return models.length
+    ? { uncached: sum('inputTokens'), cacheWrite: sum('cacheCreationInputTokens'), cacheRead: sum('cacheReadInputTokens'), output: sum('outputTokens') }
+    : { uncached: n(d.usage?.input_tokens), cacheWrite: n(d.usage?.cache_creation_input_tokens), cacheRead: n(d.usage?.cache_read_input_tokens), output: n(d.usage?.output_tokens) };
+}
+
+// One log's tokens by kind from its last result event, or null when it has none.
+export function logTokens(logText) {
+  let last = null;
+  for (const line of logText.split('\n')) {
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (d?.type === 'result') last = d;
+  }
+  return last && resultTokens(last);
+}
+
 // One log (one worker process), or null when it has no result event. A process that is woken again
 // after its turn ends writes a result event per turn: cost and modelUsage in each are running totals
 // for the session, so they come from the last one, and only duration_ms, which is per turn, is
-// summed. Tokens come from modelUsage, which counts subagents' calls as the cost does; `usage` is
-// the fallback for a result event without it.
+// summed.
 export function logUsage(logText) {
   let last = null;
   let ms = 0;
@@ -128,14 +149,8 @@ export function logUsage(logText) {
     ms += Number(d.duration_ms) || 0;
   }
   if (!last) return null;
-  const n = (v) => Number(v) || 0;
-  const models = Object.values(last.modelUsage ?? {});
-  const [input, output] = models.length
-    ? [models.reduce((s, m) => s + n(m.inputTokens) + n(m.cacheCreationInputTokens) + n(m.cacheReadInputTokens), 0),
-      models.reduce((s, m) => s + n(m.outputTokens), 0)]
-    : [n(last.usage?.input_tokens) + n(last.usage?.cache_creation_input_tokens) + n(last.usage?.cache_read_input_tokens),
-      n(last.usage?.output_tokens)];
-  return { input, output, cost: n(last.total_cost_usd), ms };
+  const t = resultTokens(last);
+  return { input: t.uncached + t.cacheWrite + t.cacheRead, output: t.output, cost: Number(last.total_cost_usd) || 0, ms };
 }
 
 // A ticket's logs in this batch: the current `<KEY>.log` and every round a respawn or requeue moved

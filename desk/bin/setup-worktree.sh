@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Create an isolated worktree for one ticket.
 #
-#   setup-worktree.sh [--for-worker] <TICKET> <branch>
+#   setup-worktree.sh [--for-worker] [--frozen <commit> <dir>] <TICKET> <branch>
 #
 # --for-worker   the worktree is for a detached autopilot worker (pass.mjs sets it). The primary
 #                checkout's .claude/settings.local.json (the human's own harness allow rules) is then
 #                NOT copied in, and an existing copy is disabled: a worker's permissions come only
 #                from the settings file spawn-worker.sh generates.
+# --frozen       a bench task's checkout (bench.mjs), in <dir> at the full SHA <commit>. It is a
+#                repository of its own rather than a linked worktree: a linked one shares every ref
+#                and the origin remote, so a run could read the merged fix and push. This holds only
+#                the history <commit> reaches, has no remote, and never gets a per-ticket database
+#                or the subagents. <TICKET> only labels it.
 #
 # Everything repo-specific comes from this repo's desk config (desk-env), never from this file:
 #   §0 Default branch          the base a new branch is cut from (origin/<default>)
@@ -54,15 +59,17 @@ desk_take_batch "$@" || exit 2
 set -- ${DESK_ARGS[@]+"${DESK_ARGS[@]}"}
 FOR_WORKER=""
 if [ "${1:-}" = "--for-worker" ]; then FOR_WORKER=1; shift; fi
-TICKET="${1:?usage: setup-worktree.sh [--for-worker] [--batch <name>] <TICKET> <branch>}"
-BRANCH="${2:?usage: setup-worktree.sh [--for-worker] [--batch <name>] <TICKET> <branch>}"
+FROZEN=""; FROZEN_DIR=""
+if [ "${1:-}" = "--frozen" ]; then FROZEN="${2:?--frozen needs a commit and a directory}"; FROZEN_DIR="${3:?--frozen needs a commit and a directory}"; shift 3; fi
+TICKET="${1:?usage: setup-worktree.sh [--for-worker] [--frozen <commit> <dir>] [--batch <name>] <TICKET> <branch>}"
+BRANCH="${2:?usage: setup-worktree.sh [--for-worker] [--frozen <commit> <dir>] [--batch <name>] <TICKET> <branch>}"
 
 # The ticket names a directory and a database: its shape is checked first (no /, no ..).
-node "$DESK_ENV_MJS" ticket-kind "$TICKET" >/dev/null || exit 2
+[ -n "$FROZEN" ] || node "$DESK_ENV_MJS" ticket-kind "$TICKET" >/dev/null || exit 2
 desk_load_paths || exit 1
 
 MAIN="$DESK_REPO_ROOT"
-WT="$DESK_WORKTREES_DIR/$TICKET"
+WT="${FROZEN_DIR:-$DESK_WORKTREES_DIR/$TICKET}"
 BASE="origin/$DESK_DEFAULT_BRANCH"
 MARKER="$WT/.desk-setup-incomplete"
 
@@ -206,6 +213,7 @@ elif [ -z "$DB_VARS" ]; then
 else
   DB_MODE=ticket
 fi
+if [ -n "$FROZEN" ]; then DB_MODE=none; fi
 [ "$DB_MODE" = ticket ] || [ -z "$DB_VARS" ] || say "every §4 Database URL variable ($(printf '%s' "$DB_VARS" | paste -sd ' ' -)) will be blanked in the copied env files"
 
 cfg_items list env-files || true
@@ -428,6 +436,13 @@ if [ -d "$WT" ]; then
   say "found $MARKER — a previous setup did not finish; completing it"
   grep -q '^created_branch=1' "$MARKER" 2>/dev/null && CREATED_BRANCH=1
   CREATED_WT=1
+elif [ -n "$FROZEN" ]; then
+  say "fetching $FROZEN from $MAIN, and only the history it reaches"
+  CREATED_WT=1
+  git init -q "$WT"
+  git -C "$WT" fetch -q --no-tags --upload-pack 'git -c uploadpack.allowAnySHA1InWant=true upload-pack' "$MAIN" "$FROZEN"
+  git -C "$WT" checkout -q -B "$BRANCH" FETCH_HEAD
+  rm -f "$WT/.git/FETCH_HEAD"
 else
   git -C "$MAIN" fetch origin --quiet
   if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
@@ -446,7 +461,7 @@ fi
 # copy-env.sh finds the primary checkout via the shared git common dir, so it is
 # portable and must run from inside the new worktree.
 say "seeding env files"
-( cd "$WT" && bash "$DESK_ENV_DIR/copy-env.sh" )
+( cd "$WT" && DESK_ENV_FROM="${FROZEN:+$MAIN}" bash "$DESK_ENV_DIR/copy-env.sh" )
 
 sync_local_settings
 databases
@@ -458,8 +473,10 @@ else
   say "config §4 Install is none — no install step"
 fi
 
-say "linking subagents"
-sync_agents strict
+if [ -z "$FROZEN" ]; then
+  say "linking subagents"
+  sync_agents strict
+fi
 
 if [ "$DB_MODE" = ticket ]; then migrate_db; fi
 

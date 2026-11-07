@@ -136,10 +136,10 @@ export function newProblems(problems, recorded) {
 }
 
 // One command item, in `root`, under its lock. -> { out, code }
-export function runItem({ bin, root, dir, cmd, lock, prefix = '' }) {
+export function runItem({ bin, root, dir, cmd, lock, prefix = '', env, timeout }) {
   const full = prefix ? `${prefix} ${cmd}` : cmd;
-  const r = spawnSync(join(bin, 'with-lock.sh'), [lock, '--cwd', dir, '--', 'sh', '-c', full], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  return { out: `${r.stdout ?? ''}${r.stderr ?? ''}`, code: r.status ?? 1 };
+  const r = spawnSync(join(bin, 'with-lock.sh'), [lock, '--cwd', dir, '--', 'sh', '-c', full], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env, timeout });
+  return { out: `${r.stdout ?? ''}${r.stderr ?? ''}`, code: r.status ?? 1, stopped: r.status == null };
 }
 
 export const baselineFile = (stateDir) => join(stateDir, 'baseline.json');
