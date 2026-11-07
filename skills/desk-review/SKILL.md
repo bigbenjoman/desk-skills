@@ -237,6 +237,9 @@ worker: at its worktree root, removed at the end with `git clean -f`):
 - `gaps`, `skipped_files`: the open requirement gaps and the files the oversized cap skipped. Every
   count is required, `0` when there are none: one left out is refused, never read as zero.
 - `since`: from round 2 on, the full SHA the previous round reviewed (the fix range's start).
+- `rests_on`: every seat's `FILES READ` paths (Phase 3), the changed files and, from round 2, the
+  last round's `rests_on`; any missing, leave it out. A verdict carries past a base move only while
+  the base changed none.
 
 Then:
 

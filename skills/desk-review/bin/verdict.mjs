@@ -42,6 +42,12 @@
 // Only a requirement gap can be accepted; a P0 or P1 is never. The count goes on a line of its own
 // after the heading, as the carried count does, so every gate reads gaps=0 and nothing new.
 //
+// "rests_on", when given, lists the repo-relative paths the seats read and the changed files, and from
+// round 2 the previous round's list too, since a fix-range round reads only part of what its verdict
+// attests. A list that cannot be whole is left out. It goes on a line of its own after the method
+// marker, for the autopilot pass to carry the verdict past a rebase or a base merge only while none of
+// them changed (desk/bin/undraft.mjs restsOnCarries). It never decides clean.
+//
 // The rules, each a false clean otherwise:
 //   - every count is computed here; a count the caller leaves out is refused, never read as zero;
 //   - a CONFIRMED or UNREFUTED finding is outstanding, and counts in its p field;
@@ -62,7 +68,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
 const FIX_RANGE_ROUND = 2
-const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seats', 'findings', 'codex']
+const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seats', 'findings', 'rests_on', 'codex']
 // With the codex lever on, the model and effort each codex role ran at, as `desk-codex settings` prints them.
 const CODEX_ROLES = ['finder', 'refuter']
 const CODEX_RUN = /^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z]+$/
@@ -200,12 +206,20 @@ export function tally(r) {
     if (f.result === 'UNREFUTED') n.unrefuted++
     if (f.deferred) n.deferred++
   }
+  let restsOn = null
+  if (r.rests_on != null) {
+    if (!Array.isArray(r.rests_on)) no('rests_on must list the repo-relative paths the seats read')
+    r.rests_on.forEach((p, i) => {
+      if (typeof p !== 'string' || !p || /[\r\n]/.test(p) || p.startsWith('/')) no(`rests_on[${i}] must be a repo-relative path on one line`)
+    })
+    restsOn = [...new Set(r.rests_on)].sort()
+  }
   const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => (s.reason ? `${s.role} (${s.reason.trim()})` : s.role))
   n.partial += died.length
   const fallback = [...seats.values()]
     .filter((s) => s.fallback === true || (NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose'))
     .map((s) => s.role)
-  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted,
+  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted, restsOn,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback, codex: r.codex ?? null,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
@@ -241,6 +255,8 @@ export function render(r) {
   if (t.since) lines.push(`<!-- desk-review:carried v=1 p2=${t.carried.length} since=${t.since} -->`)
   if (t.accepted.length) lines.push(`<!-- desk-review:accepted v=1 gaps=${t.accepted.length} -->`)
   lines.push(`<!-- desk-review:method v=1 fallback=${t.fallback.length} -->`)
+  // JSON with every ">" escaped, so no path can close the comment.
+  if (t.restsOn) lines.push(`<!-- desk-review:rests-on v=1 files=${JSON.stringify(t.restsOn).replace(/>/g, '\\u003e')} -->`)
   return lines.join('\n')
 }
 
