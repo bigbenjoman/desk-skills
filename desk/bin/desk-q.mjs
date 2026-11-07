@@ -1744,11 +1744,16 @@ export function usageOf(repos, now, shown = repos) {
 // A side is { login, reading, n, rotation, standby, out }: `login` null when every one of its `n` logins
 // is at its limit; `rotation` and `standby` the other open logins by rule; `out` each login at its limit
 // with when it lifts (`at`, epoch seconds, or null), the first to lift first.
+// One draw asks twice, for the line and for Home's notes, so the last answer is kept for its repos and time.
+let lastLogins = null;
 export function loginsNow(repos, now) {
+  if (lastLogins?.repos === repos && lastLogins.now === now) return lastLogins.v;
   let subs;
-  try { subs = readSubscriptions(subscriptionsPath()); } catch { return null; }
-  if (!subs.exists) return null;
-  return { claude: claudeSide(repos, now), codex: subs.logins.some((l) => l.tool === 'codex' && l.source === 'file') ? codexSide(now) : null };
+  try { subs = readSubscriptions(subscriptionsPath()); } catch { subs = null; }
+  const v = !subs?.exists ? null
+    : { claude: claudeSide(repos, now), codex: subs.logins.some((l) => l.tool === 'codex' && l.source === 'file') ? codexSide(now) : null };
+  lastLogins = { repos, now, v };
+  return v;
 }
 // Every login benched by a batch here whose limit has not lifted, by login key: the later lift where two
 // batches bench one login, one with no reset time outlasting any with one.
