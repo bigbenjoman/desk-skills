@@ -34,7 +34,7 @@ t('a window past its reset leaves all its room', loginRoom({ ...reading(100, 20)
 t('a subscription with no 5-hour window is judged on its weekly', loginRoom({ ...reading(null, 20), none: ['five_hour'] }, NOW).room, 80);
 t('no reading is no known room', loginRoom(NONE, NOW).room, null);
 t('the higher room wins', pick(c('a', 'in rotation', reading(10, 70)), c('b', 'in rotation', reading(60, 40))), 'b');
-t('the lower weekly use breaks a tie on room', pick(c('a', 'in rotation', reading(50, 40)), c('b', 'in rotation', reading(30, 50))), 'a');
+t('the lower weekly use breaks a tie on room', pick(c('b', 'in rotation', reading(30, 50)), c('a', 'in rotation', reading(50, 40))), 'a');
 t('then the fewest workers running there', pick(c('a', 'in rotation', reading(50, 40), 2), c('b', 'in rotation', reading(50, 40), 1)), 'b');
 t('and with nothing else between them, the listing order', pick(c('a', 'in rotation'), c('b', 'in rotation')), 'a');
 t('AC3 known room comes before unknown', pick(c('a', 'in rotation'), c('b', 'in rotation', reading(90, 90))), 'b');
