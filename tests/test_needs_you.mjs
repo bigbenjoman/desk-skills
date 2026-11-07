@@ -385,7 +385,7 @@ t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
 t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
 
-// ---- DS-501: an open PR takes the person's instruction for a worker on it; a merged or closed one says why not.
+// ---- An open PR takes the person's instruction for a worker on it; a merged or closed one says why not.
 const readyPr = (pr, extra = {}) => { const d = draftPr(pr, passed); return { ...d, ...extra, pr_status: { ...d.pr_status, isDraft: false } }; };
 put('instr', { port: 4210, beat: 1, supervised: true, tickets: {
   'SG-1': { ...draftPr(91, passed, { call: 'person', why: 'its review verdict at abc123456 is not clean (gaps=1)', action: 'settle the gaps on #91' }), branch: 'fix/SG-1-x' },
