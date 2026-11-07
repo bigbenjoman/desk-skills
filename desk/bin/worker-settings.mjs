@@ -442,6 +442,10 @@ if (mode === 'triage') {
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
   }
+  // desk-env test-scope prints `.<TAB>desk-env workspace-test <dir>` for a touched workspace no §4 item
+  // covers, which the worker runs under the test lock like any suite line. workspace-test re-reads the
+  // workspaces when it runs, so one rule covers a workspace the worker adds after spawn.
+  allow.push(...lockForms('test', '.', 'desk-env workspace-test').map((c) => rule(c, '')));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments

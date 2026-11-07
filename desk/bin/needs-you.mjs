@@ -59,7 +59,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan } from './undraft.mjs';
-import { gapsFix, instructionFix, personReviewFix, stuckFindings } from './fix-tries.mjs';
+import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
@@ -143,7 +143,17 @@ function repairsMade(why) {
   return `after desk's ${m[1]} ${m[1] === '1' ? 'repair' : 'repairs'} (${kinds.join(', ')})`;
 }
 
-function stuckPlain(r, n, s) {
+// A PR in conflict: no repair failed where no conflict try ran, and a failed one says what its worker
+// reported (the stuck reason's `the last try said`, else the finished try's DONE line).
+function conflictPlain(r, t, n, base, why = '') {
+  const made = conflictTriesMade(t?.fix_tries);
+  const done = /; the last try said: (.+)$/.exec(why)?.[1] ?? lastTrySaid(t);
+  const said = done ? one(/\bsaid=(.+)$/.exec(done)?.[1] ?? done) : '';
+  const how = made ? `${REPAIRED} it${said ? `: its last repair said "${said}"` : ''}` : 'no repair by desk has tried it yet';
+  return `${n} is in conflict with ${base ?? 'its base'}, and ${how}. Resolve the conflict on its branch; ${thenMerge(r)}.`;
+}
+
+function stuckPlain(r, n, s, t) {
   const checks = s?.checks ?? [];
   if (checks.length) {
     const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : ''}`;
@@ -167,7 +177,7 @@ function stuckPlain(r, n, s) {
   }
   const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
   if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
-  if (/conflict/.test(why)) return `${n} is in conflict with ${r.ctx?.base ?? 'its base'}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
+  if (/conflict/.test(why)) return conflictPlain(r, t, n, r.ctx?.base, why);
   if (/^no review verdict/.test(why)) return `${n} has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.`;
   const red = /^still red[^:]*:\s*(.+)$/.exec(why);
   if (red) return `${n} has failing checks ${REPAIRED}: ${plainWords(red[1])}. Fix them on its branch; ${thenMerge(r)}.`;
@@ -259,14 +269,14 @@ function prPlain(r, t) {
   const also = ask ? ` It also ${needsIt}` : '';
   switch (w.code) {
     case 'closed': return `${n} was closed without merging, so nothing will merge it. Drop the ticket, or requeue it; a requeued ticket gets a worker that opens a new PR.`;
-    case 'stuck': return `${stuckPlain(r, n, ask ? { ...w.stuck, checks: w.stuck.checks.filter((c) => !ask.names.has(c.name)) } : w.stuck)}${also}`;
+    case 'stuck': return `${stuckPlain(r, n, ask ? { ...w.stuck, checks: w.stuck.checks.filter((c) => !ask.names.has(c.name)) } : w.stuck, t)}${also}`;
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
     case 'draft': return draftPlain(r, n, w.undraft);
     case 'hold': return holdPlain(n, w);
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
-    case 'conflict': return `${n} is in conflict with ${w.base}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
+    case 'conflict': return conflictPlain(r, t, n, w.base);
     case 'red': {
       const red = ask ? ask.left : w.names;
       return `${n} has ${red.length === 1 ? 'a failing check' : `${red.length} failing checks`}, ${andList(red.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${red.length === 1 ? 'it' : 'them'}. Fix or re-run ${red.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.${also}`;

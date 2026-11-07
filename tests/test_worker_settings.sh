@@ -120,6 +120,18 @@ check "DS-395 AC1 related.sh row: no CONFIG_WARN"           '[[ "$out" != *CONFI
 settings '`bash tests/run.sh`' "| Related tests | \`bash -c 'bash tests/run.sh \$(node tests/scope_sections.mjs --json)'\` |"
 check "DS-395 the compound row warns and is not allowed"   '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Related tests item \"bash -c"*"is a compound or env-prefixed shell command"* ]] && ! jq -e ".permissions.allow[] | select(test(\"scope_sections\"))" "$T/ws.json" >/dev/null'
 
+# A workspace no §4 item runs is tested through test-scope's `desk-env workspace-test <dir>` suite line,
+# which reads the workspace at run time, so one the worker adds after spawn runs too: it is allowed under
+# the test lock as any suite line runs, and no per-workspace rule is written at spawn.
+mkdir -p "$T/repo/apps/portal"
+printf 'packages:\n  - apps/*\n' > "$T/repo/pnpm-workspace.yaml"
+printf '{"name":"portal","scripts":{"test":"vitest run"}}' > "$T/repo/apps/portal/package.json"
+PMROW='`pnpm`' settings '`apps/web: pnpm test`'
+check "DS-495 desk-env workspace-test is allowed under the test lock; no spawn-time workspace rule" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh test --cwd . -- desk-env workspace-test:*)" && allows "Bash($B/with-lock.sh test desk-env workspace-test:*)" \
+     && allows "Bash($B/with-lock.sh test --cwd $T/repo -- desk-env workspace-test:*)" && ! grep -q "nolock[^\"]*workspace-test" "$T/ws.json" && ! grep -q "cwd apps/portal" "$T/ws.json"'
+rm -rf "$T/repo/apps" "$T/repo/pnpm-workspace.yaml"
+
 # git rm and git mv inside the worktree; -C and --work-tree, which would reach outside it, stay denied
 denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
 settings '`bash tests/run.sh`'
