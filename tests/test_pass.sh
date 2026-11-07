@@ -43,8 +43,10 @@ EOF
 # would touch GitHub, a browser, a worktree or a worker.
 for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
 cat > "$T/desk/bin/upload-images.mjs" <<EOF
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
+// \$T/upload-left, when it exists, is an upload that left cells: what upload-images says, and its exit 4.
+if (existsSync('$T/upload-left')) { process.stdout.write(readFileSync('$T/upload-left', 'utf8')); process.exit(4); }
 console.log('done: 1 image(s) in the body, 0 placeholder(s) left');
 EOF
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
@@ -1649,6 +1651,7 @@ else if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readF
 else if (a[0] === 'pr' && a[1] === 'ready') fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), isDraft: false }));
 else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
 else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
 else process.exit(1);
 EOF
@@ -1771,7 +1774,7 @@ check "DS-379 AC1 the capture try is not one of the fix tries" '[ "$(field S-1 f
 check "DS-379 AC3 still missing after the capture try, it is the person's, naming each screen and why" \
   '[ "$(field S-2 state)" = "\"done\"" ] && [ "$(field S-2 stuck.why | jq -r .)" = "2 screenshot(s) still not taken after a capture try: s-2-before.png, s-2-after.png; the capture try said: s-2-before.png: the page needs a signed-in admin; s-2-after.png: same" ] && echo "$out" | grep -qF "S-2: STUCK — PR #762: 2 screenshot(s) still not taken"'
 check "DS-379 AC4 screenshots taken but not approved for upload wait for the person, as before" \
-  '[ "$(field S-3 state)" = "\"done\"" ] && [ "$(field S-3 fix)" = null ] && echo "$out" | grep -qF "S-3: DRAFT — PR #763 stays draft: its screenshots are not in the body yet (a \`_drag <file>_\` cell is left). Upload the screenshots to #763"'
+  '[ "$(field S-3 state)" = "\"done\"" ] && [ "$(field S-3 fix)" = null ] && echo "$out" | grep -qF "S-3: DRAFT — PR #763 stays draft: 2 screenshot cell(s) left: s-3-before.png, s-3-after.png, whose files are saved, but config §3 pr-images leaves their upload to you"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-379 AC1 the capture worker's task is to take them and print AUTOPILOT_IMAGES" \
   'grep -q "^S-1 .*Your task is the capture try on PR #761.*print AUTOPILOT_IMAGES" "$T/spawns" && grep -q "^- s-1-after.png$" "$T/state-s/briefings/S-1.md"'
@@ -1786,6 +1789,32 @@ check "DS-379 AC2 what the capture worker took is uploaded into the PR's body, a
   'grep -qx "761 $T/state-s/images/S-1/" "$T/uploads" && [ "$(field S-1 images_uploaded)" = true ] && grep -q "^pr ready 761" "$T/gh-calls"'
 check "DS-379 AC3 what a capture worker said is kept whole, past the summary's 200 characters, even opening with a bracket" \
   '[ "$(field S-1 state)" = "\"done\"" ] && [ "$(field S-1 result.done.said | jq -r .)" = "$said1" ] &&[ "$(field S-1 result.summary | jq -r . | wc -c | tr -d " ")" -le 201 ]'
+
+# ---- DS-492: an upload that leaves cells goes to whatever fills them, with nothing put to the person,
+# and a body with no cell left leaves draft however the upload ended.
+: > "$T/spawns"
+mixed='Before | After
+<img alt="s-4-before" src="https://github.com/user-attachments/assets/4"> | _drag s-4-after.png_
+
+```evidence
+s-4-after.png | after | /x | 1280
+```'
+printf '| Evidence workflow | `pr-evidence.yml` |\n' >> "$T/config-s.md"
+q add S-4; q set S-4 state=running session_id=gone lane=A branch=fix/S-4 result.pr=764; frx 764 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 764 "$mixed"
+mkdir -p "$T/state-s/images/S-4"; : > "$T/state-s/images/S-4/s-4-before.png"
+say "AUTOPILOT_IMAGES: $T/state-s/images/S-4/" "AUTOPILOT_DONE: pr=764 jira=Done" > "$T/state-s/logs/S-4.log"
+printf '%s\n' '[upload] done: 1 image(s) in the body, 1 placeholder(s) left' > "$T/upload-left"
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-492 AC1 what is on disk is uploaded and what the workflow takes is started, in one pass" \
+  'grep -qx "764 $T/state-s/images/S-4/" "$T/uploads" && [ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=764$" "$T/gh-calls"'
+check "DS-492 AC1 and nothing is put to the person while it runs" \
+  '[ "$(field S-4 undraft.call)" = "\"evidence\"" ] && ! echo "$out" | grep -q "S-4: DRAFT" && ! echo "$out" | grep -q "S-4: image upload" && ! grep -q "^pr ready 764" "$T/gh-calls"'
+rm -f "$T/upload-left"
+dragbody 764 "Before | After
+<img alt=\"s-4-before\" src=\"https://github.com/user-attachments/assets/4\"> | <img alt=\"s-4-after\" src=\"https://github.com/user-attachments/assets/5\">"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-492 AC2 every cell filled, the next pass takes it out of draft though the upload was partial" \
+  '[ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^pr ready 764" "$T/gh-calls"'
 
 # ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix
 # worker, and a verdict carries across merges of the base alone. $T/carry is a real clone: C-1's

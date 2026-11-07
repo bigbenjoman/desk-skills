@@ -54,9 +54,10 @@
 // its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
 // (show the person) on anything it refuses.
 import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { cellPlan, dragCells, evidenceRecord, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { gapsFix, instructionFix, personReviewFix } from './fix-tries.mjs';
 import { repoConfigValue, releaseCommand, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
@@ -109,6 +110,23 @@ const thenMerge = (r) => (r.ctx?.merges ? 'desk then merges it once its checks a
 const REPAIRED = "desk's own repairs did not fix";
 // A draft fix-tries.mjs captureTry left stuck: the screenshots still not taken, then what its worker said.
 const CAPTURE = /^(\d+) screenshot\(s\) still not taken after a capture try: (.+?)(?:; the capture try said: ([^]*))?$/;
+// Whether a draft's item is about its screenshots: what `done` on it reads is the body's cells.
+const shotsItem = (r, t) => {
+  const w = prWhy(r, t) ?? {};
+  return w.code === 'stuck' ? CAPTURE.test(String(w.stuck?.why ?? '')) : w.code === 'draft' && /screenshot|^its evidence workflow/.test(String(w.undraft?.why ?? ''));
+};
+// What desk does about each cell left in a body, for the person who said done on it.
+function cellWords(r, t, pr, v) {
+  const row = repoConfigValue(r.slug, 'evidence-workflow');
+  const plan = cellPlan(v.body, {
+    workflow: row ? parseEvidenceRow([row])?.workflow ?? null : null,
+    ran: evidenceRecord(join(r.stateDir, 'evidence-runs'), pr, v.headRefOid) != null,
+    shots: ticketShots(t, r.stateDir),
+    captured: (t.fix_tries ?? []).some((x) => x.kind === 'capture'),
+    unapproved: t.images_reported === true && t.images_uploaded !== true,
+  });
+  return plan.map((c) => `${c.file}: ${c.doing}`).join('; ');
+}
 // Those screens and the worker's reason, whole: the item's note, which listText prints after the need.
 const captureNote = (s) => {
   const m = CAPTURE.exec(String(s?.why ?? ''));
@@ -138,7 +156,7 @@ function stuckPlain(r, n, s) {
   const shots = CAPTURE.exec(why);
   if (shots) {
     const k = Number(shots[1]);
-    return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}. Take ${k === 1 ? 'it' : 'them'} and upload ${k === 1 ? 'it' : 'them'} to the PR; the next pass then takes it out of draft.`;
+    return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}, so nothing desk has can fill ${k === 1 ? 'its cell' : 'their cells'}. Edit the PR body so no cell is left; the next pass then takes it out of draft.`;
   }
   // Before the conflict test: a review reason names the conflict tries it was made after.
   if (/^review not clean/.test(why)) return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}. ${personReviewFix({}, { why }) ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.`;
@@ -259,7 +277,7 @@ function prPlain(r, t) {
 function doneNote(t) {
   const d = t.done_check;
   if (!d || (d.head ?? null) !== (t.pr_status?.head ?? null)) return '';
-  const shown = d.state === 'CLOSED' ? 'closed without merging' : `unmerged${d.draft ? ', still a draft' : ''}`;
+  const shown = d.cells ? `with ${d.cells} screenshot cell(s) left` : d.state === 'CLOSED' ? 'closed without merging' : `unmerged${d.draft ? ', still a draft' : ''}`;
   return `(You said done at ${String(d.at).slice(0, 16).replace('T', ' ')} UTC, and GitHub still showed it ${shown}.)`;
 }
 
@@ -711,9 +729,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
   };
   // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err }.
-  const readPr = (pr) => {
+  const readPr = (pr, more = '') => {
     const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
-    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'state,mergedAt,isDraft,headRefOid'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '' }; }
+    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', `state,mergedAt,isDraft,headRefOid${more}`],{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '' }; }
     catch (e) { return { v: null, err: one(e.stderr || e.message) }; }
   };
   // The person's instruction on an open PR: kept in the briefing and as the fix its next worker starts
@@ -735,7 +753,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // as it does any merge) and leaves the list; anything else is said, and noted on the item.
   const prDone = () => {
     const pr = x.t.result.pr;
-    const { v, err } = readPr(pr);
+    const { v, err } = readPr(pr, ',body');
     if (!v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not marked done and stays on your list.`);
     if (v.state === 'MERGED') {
       const at = v.mergedAt && !String(v.mergedAt).startsWith('0001-') ? v.mergedAt : new Date(now).toISOString();
@@ -749,9 +767,22 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       if (!m.ok) return say(false, `GitHub shows PR #${pr} out of draft, but recording it was refused: ${m.out}`);
       return say(true, `GitHub shows PR #${pr} out of draft, so it is released; the next pass takes it on from there.`);
     }
-    const check = { at: new Date(now).toISOString(), state: v.state, draft: v.isDraft === true, head: v.headRefOid ?? null };
+    // A draft's screenshot item asked only for its cells: taking it out of draft is desk's own step.
+    const shots = v.state === 'OPEN' && v.isDraft === true && shotsItem(r, x.t);
+    const cells = shots ? dragCells(v.body) : 0;
+    if (shots && !cells) {
+      const rec = { call: 'filled', why: 'no screenshot cell is left in its body', action: null, sha: v.headRefOid ?? null, carried_from: null, pr, at: new Date(now).toISOString() };
+      const m = queueCmd(r, ['set', ticket, 'stuck=null', `undraft=${JSON.stringify(rec)}`]);
+      if (!m.ok) return say(false, `GitHub shows no screenshot cell left in PR #${pr}'s body, but recording it was refused: ${m.out}`);
+      return say(true, `GitHub shows no screenshot cell left in PR #${pr}'s body, so it is off your list; the next pass takes it out of draft.`);
+    }
+    const check = { at: new Date(now).toISOString(), state: v.state, draft: v.isDraft === true, head: v.headRefOid ?? null, ...(cells ? { cells } : {}) };
     const shows = v.state === 'CLOSED' ? 'closed without merging' : `unmerged${check.draft ? ', still a draft' : ''}`;
     const m = queueCmd(r, ['set', ticket, `done_check=${JSON.stringify(check)}`]);
+    if (cells) {
+      const still = `GitHub still shows ${cells} screenshot cell(s) in PR #${pr}'s body`;
+      return say(false, m.ok ? `${still}, so it stays on your list: ${cellWords(r, x.t, pr, v)}.` : `${still}; noting it on the item was refused: ${m.out}`);
+    }
     if (!m.ok) return say(false, `GitHub still shows PR #${pr} ${shows}; noting it on the item was refused: ${m.out}`);
     const moved = check.head && x.t.pr_status?.head && check.head !== x.t.pr_status.head;
     return say(false, `GitHub still shows PR #${pr} ${shows}${moved ? ', though it has new commits the next pass reads' : ''}, so it stays on your list with that note.`);

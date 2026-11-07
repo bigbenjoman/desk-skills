@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, personHold, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
@@ -306,10 +306,31 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   const after = ev(EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'success', url: 'https://x/actions/runs/1' }) });
   t('EV cells still left after the run are the person\'s', after?.call, 'person');
   t('EV and the person is told how to re-run it', after?.action.includes('gh workflow run pr-evidence.yml -f pr=740'), true);
-  t('EV no evidence block: the person uploads them, as before', ev('_drag a.png_')?.action, 'upload the screenshots to #740');
-  t('EV no §4 row: the person uploads them, as before', ev(EVB, { evidence: null })?.action, 'upload the screenshots to #740');
-  t('EV a local upload left partial is the person\'s, whatever the row', undraftCall({ key: 'T-1', images_uploaded: 'partial' }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: EVB, reviews: [review(marker(ALL_ZERO))], checks: green },
-    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' } })?.call, 'person');
+  const LEFT = 'edit the body of #740 so no `_drag <file>_` cell is left';
+  t('EV no evidence block, every file held: the person is told what to do, never to upload', ev('_drag a.png_')?.action, LEFT);
+  t('EV no §4 row: the same', ev(EVB, { evidence: null })?.action, LEFT);
+  // DS-492: a local upload that left cells stands aside for the workflow that fills them, and holds nothing once the cells are gone.
+  const shotDraft = (tt, body, cfgX = {}) => undraftCall({ key: 'T-1', ...tt }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body, reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' }, ...cfgX });
+  const part = { images_uploaded: 'partial' };
+  const have = (files) => ({ missingShots: (body) => missingShots(body, files) });
+  t('DS-492 AC1 a partial upload whose cells the evidence workflow fills starts it', `${shotDraft(part, EVB)?.call} ${shotDraft(part, EVB)?.cells}`, 'evidence 2');
+  t('DS-492 AC1 and the PR waits on it, with nothing put to the person', shotDraft(part, EVB, { evidenceRun: () => ({ state: 'running', url: null }) })?.call, 'wait');
+  t('DS-492 AC1 a run that fails after a partial upload is the repo\'s to fix, not the person\'s', shotDraft(part, EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'failure', runId: '7', url: null }) })?.call, 'evidence-failed');
+  const ranSome = { evidenceRun: () => ({ state: 'done', conclusion: 'success', runId: '7', url: null, cells: 3 }) };
+  const rest = shotDraft(part, EVB, { ...ranSome, ...have(['a-before.png']) });
+  t('DS-492 cells the run left with no file go to a capture worker', `${rest?.call} ${rest?.files}`, 'capture a-after.png');
+  t('DS-492 negative control: cells left with no evidence block still go to capture', shotDraft(part, '_drag a.png_', have([]))?.call, 'capture');
+  const filled = EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)');
+  t('DS-492 AC2 a partial upload with every cell filled leaves draft', shotDraft(part, filled, have([]))?.call, 'ready');
+  t('DS-492 AC2 screenshots held for approval with no cell left in the body hold nothing', shotDraft({ images_reported: true }, filled, have([]))?.call, 'ready');
+  t('DS-492 AC2 negative control: one cell left stays draft', shotDraft(part, `${filled}\n_drag a.png_`, { evidence: null, ...have(['a.png']) })?.call, 'person');
+  t('DS-492 AC4 a body the person\'s done recorded as filled is no hold by a person', personHold({ undraft: { call: 'filled', pr: 740 } }, 740), null);
+  const stuckCell = shotDraft(part, 'x _drag a.png_ _drag b.png_', { evidence: null, ...have(['a.png', 'b.png']) });
+  t('DS-492 AC3 a cell nothing fills is named, with why', stuckCell?.why, '2 screenshot cell(s) left: a.png, b.png, whose files desk holds but could not put in the body');
+  t('DS-492 AC3 and the person is not asked to upload', stuckCell?.action, LEFT);
+  const ranAll = shotDraft(part, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) });
+  t('DS-492 AC3 cells an evidence run left with their files held are named', `${ranAll?.call} ${/left 2 screenshot cell\(s\): a-before\.png, a-after\.png$/.test(ranAll?.why)} ${/upload/.test(ranAll?.action)}`, 'person true false');
   t('EV cells filled: it is undrafted', ev(EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)'))?.call, 'ready');
   t('EV red checks come first: no run while a check is red', ev(EVB, {})?.call === 'evidence' && undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: EVB, reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'tests', status: 'completed', conclusion: 'failure' }] },
     { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], evidence: { workflow: 'pr-evidence.yml' } })?.call === 'checks', true);
@@ -321,8 +342,10 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-379 AC1 its why names the files', cap?.why, '1 screenshot(s) in its body were never taken: a-after.png');
   t('DS-379 AC1 a partial upload whose left cells have no file goes to capture too', undraftCall({ key: 'T-1', images_uploaded: 'partial' }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
     { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots([]) })?.call, 'capture');
-  t('DS-379 AC4 every file taken but the upload not approved: the person uploads them, as before', undraftCall({ key: 'T-1', images_reported: true }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
-    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots(['a.png']) })?.action, 'upload the screenshots to #740');
+  const unapproved = undraftCall({ key: 'T-1', images_reported: true }, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO))], checks: green },
+    { perm: 'yes', localReview: '/desk-review', clean: 'p0=0 p1=0 gaps=0', handle: 'ben', required: ['tests'], missingShots: shots(['a.png']) });
+  t('DS-379 AC4 every file taken but the upload not approved: the person, naming the cell and the row', `${unapproved?.call} ${unapproved?.why}`, 'person 1 screenshot cell(s) left: a.png, whose files are saved, but config §3 pr-images leaves their upload to you');
+  t('DS-379 AC4 and what approves it', unapproved?.action.includes('DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs 740'), true);
   t('DS-379 an evidence workflow that fills the cells comes before a capture worker', ev(EVB, { missingShots: shots([]) })?.call, 'evidence');
   t('DS-379 a review not clean comes before a capture worker', undraftCall(tk, { number: 740, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '_drag a.png_', reviews: [review(marker(ALL_ZERO.replace('p2=0', 'p2=1')))], checks: green },
     { perm: 'yes', localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], missingShots: shots([]) })?.call !== 'capture', true);
