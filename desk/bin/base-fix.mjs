@@ -27,7 +27,8 @@ export function baseFixCall(rec, c) {
   if (c.push && !c.push.ok) {
     return { call: 'person', why: `config §3 ${c.push.key} is "${c.push.perm}", so no worker may push the resolved base${c.push.perm === 'ask' ? ' (run passes with AUTOPILOT_BASE_PUSH_APPROVED=1 to let one)' : ''}` };
   }
-  const done = rec?.tries ?? [];
+  // The epic PR's review tries (kind `review`) share the record and the worktree, not the count.
+  const done = (rec?.tries ?? []).filter((x) => x.kind !== 'review');
   const last = done[done.length - 1] ?? null;
   if (rec?.running && c.alive) return { call: 'wait', try: last };
   if (triesSpent(done, c.head)) {
@@ -75,4 +76,46 @@ export function baseFixTask({ base, source, fix }) {
     `Fix only that: git fetch origin, then merge origin/${source} into ${base} (git merge, never a rebase or a force push) and resolve the conflicts, keeping both sides' intent: this task is your authority to resolve them. ` +
     `Then verify the merged tree (desk-ticket Stage 4) and self-review the resolution (Stage 4b). Before you push, git log --oneline origin/${base}..HEAD --not origin/${source} must list only your merge commit and any commit that finishes it; anything else parks. ` +
     `Push with git push origin ${base}. Open no PR, and leave the promotion PR and every ticket's Jira as they are. End with AUTOPILOT_DONE: pr=none jira=none.`;
+}
+
+// An epic batch not in feature mode lands its base through one epic PR, which leaves draft only once a
+// clean review stands at its head. A review try is a worker in the base worktree, recorded on base_fix
+// as a try of kind `review`: at most FIX_TRIES_MAX of them, and one per head.
+//   rec: base_fix · v: { pr, head } · alive: the running try's worker is live
+//   -> wait | stuck (why) | spawn (fix)
+export function epicReviewCall(rec, v, { alive }) {
+  const done = (rec?.tries ?? []).filter((x) => x.kind === 'review');
+  const last = done[done.length - 1] ?? null;
+  if (rec?.running && alive) return { call: 'wait', try: last };
+  if (done.some((x) => x.head === v.head) || done.length >= FIX_TRIES_MAX) {
+    return { call: 'stuck', why: `no clean review at ${short(v.head)} after ${done.length} review ${done.length === 1 ? 'try' : 'tries'}${last?.outcome ? `; the last try ${last.outcome}` : ''}` };
+  }
+  return { call: 'spawn', fix: { kind: 'review', try: done.length + 1, of: FIX_TRIES_MAX, head: v.head, pr: v.pr } };
+}
+
+export function epicReviewTicket({ key, base, source, epic, fix }) {
+  return [
+    `# ${key}`, '',
+    `Source: the autopilot pass, which opened epic PR #${fix.pr} (${base} → ${source}) for ${epic} once every child had merged into ${base}`, '',
+    `Epic PR #${fix.pr} lands ${base} on ${source}. It leaves draft, and the merge driver merges it, only once a clean review stands at its head.`, '',
+    'Acceptance criteria:',
+    `- A clean review (§4 Clean review verdict) of PR #${fix.pr} is posted on it at its head.`,
+    `- Every P0 to P2 finding the review confirms is fixed on ${base}, and the batch's tests pass there.`, '',
+  ].join('\n');
+}
+
+export function epicReviewBrief({ base, source, epic, fix }) {
+  return [
+    `## Epic PR review try ${fix.try} of ${fix.of}: #${fix.pr}`, '',
+    `Epic PR #${fix.pr} for ${epic} merges ${base} (at ${short(fix.head)}) into ${source}. Every child has merged into ${base}, so this PR is the whole epic as one change.`,
+    `This is try ${fix.try} of ${fix.of}. A head with no clean review after a try, or after try ${fix.of}, goes to the person.`, '',
+  ].join('\n');
+}
+
+export function epicReviewTask({ base, source, fix }) {
+  return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. It is epic PR #${fix.pr}, which merges this batch's base ${base} into ${source}. ` +
+    `Your worktree is $WT, the base's own worktree, on ${base}. Your dev-server port is $PORT. ` +
+    `Your task is review try ${fix.try} of ${fix.of}: the "Epic PR review" section of your briefing says what it covers. Start at desk-ticket Stage 4: git fetch origin and bring ${base} to origin/${base}, verify it (Stage 4), then run the review desk-env review-cmd prints over origin/${source}..${base} (Stage 4b). ` +
+    `Fix every P0 to P2 finding it confirms on ${base}, commit, push with git push origin ${base}, and review the new head. Post the final review on PR #${fix.pr} at its head (§3 pr-self-review-comment). ` +
+    `Never mark the PR ready, merge it, rebase or force-push ${base}, or touch any ticket's Jira. End with AUTOPILOT_DONE: pr=${fix.pr} jira=none.`;
 }

@@ -17,7 +17,7 @@ git config --global init.defaultBranch main
 # An autopilot worker inherits spawn-worker's exports, which would point this suite at the real repo.
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR AUTOPILOT_BATCH_BUDGET_USD \
-  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED
+  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -497,5 +497,77 @@ node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
 echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; tip=$(origin_tip); pass; pass
 check "DS-416 AC5 a check main's workflow does not run on the base either is untriggered: no sync, no reopen" \
   '[ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered.tests" "$DESK_QUEUE")" != null ] && [ "$(origin_tip)" = "$tip" ] && [ "$(reopens)" = 0 ]'
+
+# DS-508: an epic batch not in feature mode lands its base through one epic PR, opened once every child
+# has merged. gh serves each PR from $T/ep/<n>.json and its GraphQL review read from $T/ep/<n>.graphql;
+# `pr create` opens #300 (refused while $T/ep/create.fail exists), and `pr ready` takes it out of draft.
+mkdir -p "$T/ep"
+cat > "$T/stub/gh" <<EOF
+#!$(node -p process.execPath)
+const fs = require('fs');
+const a = process.argv.slice(2);
+const at = (f) => a[a.indexOf(f) + 1];
+fs.appendFileSync('$T/ghlog', a.join(' ') + '\n');
+const file = (n, ext = 'json') => '$T/ep/' + n + '.' + ext;
+if (a[0] === 'pr' && a[1] === 'view' && fs.existsSync(file(a[2]))) {
+  const p = JSON.parse(fs.readFileSync(file(a[2]), 'utf8'));
+  console.log(at('--jq') === '.state' ? p.state : JSON.stringify(p));
+} else if (a[0] === 'pr' && a[1] === 'create') {
+  if (fs.existsSync('$T/ep/create.fail')) { console.error('GraphQL: Resource not accessible by integration'); process.exit(1); }
+  fs.writeFileSync(file(300), JSON.stringify({ state: 'OPEN', isDraft: a.includes('--draft'), headRefOid: 'e'.repeat(40) }));
+  console.log('https://github.com/acme/widgets/pull/300');
+} else if (a[0] === 'pr' && a[1] === 'ready') {
+  const p = JSON.parse(fs.readFileSync(file(a[2]), 'utf8')); p.isDraft = false; fs.writeFileSync(file(a[2]), JSON.stringify(p));
+} else if (a[0] === 'api' && a.includes('graphql')) {
+  const n = (a.find((x) => x.startsWith('n=')) ?? '').slice(2);
+  if (fs.existsSync(file(n, 'graphql'))) process.stdout.write(fs.readFileSync(file(n, 'graphql'), 'utf8'));
+}
+EOF
+chmod +x "$T/stub/gh"
+# review <counts, or - for none>: PR #300's GraphQL read, with the user's desk-review at its head.
+EH=$(printf 'e%.0s' $(seq 1 40))
+review(){ node -e 'const [f, sha, c] = process.argv.slice(1);
+  const nodes = c === "-" ? [] : [{ id: "R1", author: { login: "tester" }, commit: { oid: sha }, body: ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${c} vendor=codex round=1 -->`].join("\n") }];
+  require("fs").writeFileSync(f, JSON.stringify({ data: { repository: { pullRequest: { headRefOid: sha, reviewDecision: null, reviews: { nodes }, reviewThreads: { nodes: [] } } } } }));' "$T/ep/300.graphql" "$EH" "$1"; }
+epicrows(){ printf '| `pr-open` | Open a draft PR | `yes` | `yes` |\n| `pr-ready` | Undraft | `yes` | `yes` |\n| `pr-conflict-unreviewed` | Resolve a conflict | `yes` | `yes` |\n' >> "$C/config.md"
+  printf '\n## 1. Who you are\n| Field | Value |\n|---|---|\n| GitHub handle | `tester` |\n\n## 4. Tools\n| Field | Value |\n|---|---|\n| Local review command | `/desk-review` |\n| Clean review verdict | `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0` |\n' >> "$C/config.md"; }
+fresh epic508; epicrows; rm -f "$T/ep"/*; : > "$T/spawns"; : > "$T/ghlog"; rm -f "$T/agents.json"
+node "$B/queue.mjs" set-batch epic=E-8 feature=false >/dev/null
+node "$B/queue.mjs" set T-1 state=done result.pr=801 merged_at=2026-11-06T10:00:00Z >/dev/null
+echo '{"state":"MERGED","mergedAt":"2026-11-06T10:00:00Z"}' > "$T/ep/801.json"
+node "$B/queue.mjs" add T-2 >/dev/null
+node "$B/queue.mjs" set T-2 state=parked 'park={"question":"held by orchestrator: behind T-1, E-8"}' 'held_by=T-1|E-8' held_outside=E-8 >/dev/null
+touch "$T/ep/create.fail"; pass
+check "DS-508 AC4 an epic PR that cannot be opened is put to the person with the reason, exit 11, never 10" \
+  '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"epic PR: not opened — gh pr create failed: GraphQL: Resource not accessible by integration. Every child has merged into feat/x, and nothing lands on main until it is open"* ]]'
+check "DS-508 AC5 a ticket held behind the epic waits on the epic PR, saying why there is none, not on a merge" \
+  '[[ "$out" == *"WAITING ON EPIC PR: T-2 (E-8: no epic PR: gh pr create failed"* ]] && [[ "$out" != *"WAITING ON MERGE"* ]]'
+pass
+check "DS-508 AC4 it is tried again, and said again, on the next pass" '[ $rc -eq 11 ] && [ "$(grep -c "^pr create" "$T/ghlog")" = 2 ] && [[ "$out" == *"epic PR: not opened"* ]]'
+rm "$T/ep/create.fail"; pass
+check "DS-508 AC1 once every child has merged, the epic PR opens as a draft from the base, and is recorded" \
+  'grep -q "^pr create --repo acme/widgets --draft --base main --head feat/x --title E-8: promote feat/x to main" "$T/ghlog" && [ "$(jq -r .promotion.pr "$DESK_QUEUE")" = 300 ] && [[ "$out" == *"epic PR #300 opened as a draft, feat/x → main"* ]]'
+check "DS-508 AC1 and the batch is not idle" '[[ "$out" != *"IDLE"* ]]'
+review -; pass
+check "DS-508 AC2 a draft epic PR with no clean review gets a review try in the base worktree" \
+  'grep -q "^base-feat-x $C/wt/base-feat-x feat/x .*It is epic PR #300, which merges this batch.s base feat/x into main" "$T/spawns" && [ "$(jq -r ".base_fix.tries[0].kind" "$DESK_QUEUE")" = review ] && [[ "$out" == *"epic PR review try 1 of 2 on feat/x, PR #300"* ]]'
+check "DS-508 AC5 and the held ticket says it waits on the epic PR by number" '[[ "$out" == *"WAITING ON EPIC PR: T-2 (E-8: epic PR #300, in draft until a clean review stands at its head)"* ]]'
+live; pass
+check "DS-508 AC2 a live review try is waited on, not doubled" '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [[ "$out" == *"epic PR #300: review try 1 of 2 is at it"* ]]'
+ended "AUTOPILOT_DONE: pr=300 jira=none"; rm -f "$T/agents.json"; pass
+check "DS-508 AC2 a try that ended with no clean review at the same head goes to the person, exit 11" \
+  '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"EPIC PR: #300 stays draft: no clean review at eeeeeeeeeeee after 1 review try; the last try finished: pr=300 jira=none"* ]] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
+review "p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0"; pass
+check "DS-508 AC2 a clean review at its head takes it out of draft" 'grep -q "^pr ready 300 --repo acme/widgets" "$T/ghlog" && [ "$(jq -r .isDraft "$T/ep/300.json")" = false ]'
+pass
+check "DS-508 AC3 out of draft with no merge driver granted, it is put to the person naming the rows, exit 11" \
+  '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"EPIC PR: #300 is out of draft, but no merge driver merges it (config §3 autopilot-merge"* ]]'
+echo '{"state":"MERGED","mergedAt":"2026-11-07T09:00:00Z"}' > "$T/ep/300.json"; pass
+check "DS-508 AC6 once the epic PR merges, it is recorded and the epic is lifted from the held ticket" \
+  '[ "$(jq -r .promotion.merged_at "$DESK_QUEUE")" = 2026-11-07T09:00:00Z ] && [[ "$(jq -r ".tickets[\"T-2\"].held_by // \"\"" "$DESK_QUEUE")" != *E-8* ]] && [[ "$out" == *"outside hold: T-2: E-8 landed on main through its epic PR"* ]]'
+pass
+check "DS-508 AC6 and with its other blocker merged, it is released" '[ "$(jq -r ".tickets[\"T-2\"].state" "$DESK_QUEUE")" != parked ]'
+node "$B/queue.mjs" drop T-2 >/dev/null; pass
+check "DS-508 AC6 with the epic PR merged and nothing left, the batch reads idle" '[[ "$out" == *"IDLE"* ]] && [ "$(grep -c "^pr create" "$T/ghlog")" = 3 ]'
 
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]

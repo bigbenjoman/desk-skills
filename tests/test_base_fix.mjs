@@ -1,5 +1,6 @@
 // suite: base conflict fix (a batch base in conflict with the default branch goes to a worker, twice)
-import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
+import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
+import { epicDue } from '../desk/bin/batch-state.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -55,5 +56,35 @@ const task = baseFixTask(ctx);
 t('the task merges, never rebases', task.includes('merge origin/main into feat/x (git merge, never a rebase or a force push)'), true);
 t('the task pushes only the base', task.includes('Push with git push origin feat/x.'), true);
 t('the task opens no PR', task.includes('Open no PR'), true);
+
+// DS-508 AC2: the epic PR's review tries share base_fix, one per head and at most FIX_TRIES_MAX.
+const v1 = { pr: 300, head: H1 };
+const r1 = epicReviewCall(null, v1, { alive: false });
+t('DS-508 AC2 a draft epic PR with no clean review starts review try 1', `${r1.call} ${r1.fix.kind} ${r1.fix.try} of ${r1.fix.of} #${r1.fix.pr}`, `spawn review 1 of ${FIX_TRIES_MAX} #300`);
+const reviewing = { tries: [{ kind: 'review', try: 1, head: H1, pr: 300 }], running: 'sid-r' };
+t('DS-508 AC2 a live review try is waited on', epicReviewCall(reviewing, v1, { alive: true }).call, 'wait');
+const reviewed = { tries: [{ kind: 'review', try: 1, head: H1, pr: 300, outcome: 'finished: pr=300 jira=none' }], running: null };
+const rs = epicReviewCall(reviewed, v1, { alive: false });
+t('DS-508 AC2 a try already made at this head goes to the person, naming it', `${rs.call}: ${rs.why}`, `stuck: no clean review at ${H1.slice(0, 12)} after 1 review try; the last try finished: pr=300 jira=none`);
+t('DS-508 AC2 a head the try moved gets the next try', epicReviewCall(reviewed, { pr: 300, head: H2 }, { alive: false }).fix?.try, 2);
+const twice = { tries: [{ kind: 'review', try: 1, head: H1 }, { kind: 'review', try: 2, head: H2 }], running: null };
+t('DS-508 AC2 after the last try, the person', epicReviewCall(twice, { pr: 300, head: '3'.repeat(40) }, { alive: false }).call, 'stuck');
+t('DS-508 conflict tries do not count review tries', baseFixCall(twice, c()).fix?.try, 1);
+const ectx = { key: 'base-feat-x', base: 'feat/x', source: 'main', epic: 'E-9', fix: r1.fix };
+t('DS-508 the review ticket names the PR and the clean review it needs', epicReviewTicket(ectx).includes('A clean review (§4 Clean review verdict) of PR #300 is posted on it at its head.'), true);
+t('DS-508 the review briefing has its section', epicReviewBrief(ectx).startsWith('## Epic PR review try 1 of 2: #300'), true);
+const etask = epicReviewTask(ectx);
+t('DS-508 the review task names its ticket the way every task does', /Your ticket is \$TICKET\. /.test(etask), true);
+// DS-508 AC1, AC6: an epic batch's epic PR is due once every child merged into the base, a ticket held
+// behind the epic itself aside, and again only once a child merges after it.
+const kid = (key, at) => ({ key, state: 'done', result: { pr: 1 }, merged_at: at });
+const eq = (o = {}) => ({ base: 'feat/E', epic: 'E-1', feature: false, tickets: { 'A-1': kid('A-1', '2026-11-06T10:00:00Z'), 'A-2': { key: 'A-2', state: 'parked', held_by: 'A-1|E-1' } }, ...o });
+t('DS-508 AC1 every child merged, one held behind the epic: due', epicDue(eq()), true);
+t('DS-508 AC1 a child still open: not due', epicDue(eq({ tickets: { 'A-1': { ...kid('A-1', null) } } })), false);
+t('DS-508 AC1 feature mode is the base gate\'s, not this', epicDue(eq({ feature: true })), false);
+t('DS-508 AC1 no epic: not an epic batch', epicDue(eq({ epic: null })), false);
+t('DS-508 AC6 merged epic PR: not due', epicDue(eq({ promotion: { pr: 9, merged_at: '2026-11-07T00:00:00Z' } })), false);
+t('DS-508 AC6 a child merged after it: due again', epicDue(eq({ promotion: { pr: 9, merged_at: '2026-11-05T00:00:00Z' } })), true);
+t('DS-508 the review task posts the review and never undrafts or merges', etask.includes('Post the final review on PR #300 at its head') && etask.includes('Never mark the PR ready, merge it'), true);
 
 process.exit(fails ? 1 : 0);

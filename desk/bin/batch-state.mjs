@@ -279,3 +279,18 @@ export function batchIdle(q, prState = () => null) {
   return batchSettled(q, prState) && Object.values(q.tickets ?? {})
     .every((t) => t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr)));
 }
+
+// An epic batch not in feature mode lands its base on the default branch through one epic PR (the
+// queue's `promotion`), opened once every child has merged into the base. A ticket held behind the
+// epic key itself waits on that PR, so it is not a child the PR waits for.
+export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
+const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
+// Due, so the base still has to land: every child done and merged into the base, one of them since the
+// last epic PR merged (`merged_at`, or `since` on the one opened after it).
+export function epicDue(q) {
+  if (!epicBatch(q)) return false;
+  const kids = epicChildren(q);
+  const last = q.promotion?.merged_at ?? q.promotion?.since ?? null;
+  return kids.length > 0 && kids.every((t) => t.state === 'done' && !!t.merged_at)
+    && (last == null || kids.some((t) => Date.parse(t.merged_at) > Date.parse(last)));
+}
