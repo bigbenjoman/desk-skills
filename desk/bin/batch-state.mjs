@@ -86,6 +86,11 @@ export function spinePark(t) {
 export const FEATURE_PLAN_PREFIX = 'feature plan awaiting your answer';
 export const planPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(FEATURE_PLAN_PREFIX);
 
+// A park waiting on the §4 Live reads it named (live-read.mjs), which a pass runs on the host and
+// settles: it waits on the pass, not on the person.
+export const LIVE_READ = 'live-read';
+export const waitingOnRead = (t) => t?.state === 'parked' && t.park?.clears_when?.kind === LIVE_READ;
+
 // Why a triage record's design is not one a worker can build from, or null when its Design section
 // links at least one Claude Design canvas and each is saved on the batch's base or snapshotted
 // (ticket-facts.mjs records `design`).
@@ -267,10 +272,10 @@ export function batchConcurrency(q, { def, cap }) {
   return { n, user, line: `workers: concurrency ${raw === n ? n : `${raw} → ${n}`}, ${why}` };
 }
 
-// Settled: nothing running, nothing left to spawn, nothing waiting on a merge to be released, and no
-// spine waiting on the person's approval. A done ticket's own PR may still be open.
+// Settled: nothing running, nothing left to spawn, nothing waiting on a merge to be released or on a
+// live read, and no spine waiting on the person's approval. A done ticket's own PR may still be open.
 export function batchSettled(q, prState) {
-  return Object.values(q.tickets ?? {}).every((t) => ['done', 'parked', 'failed'].includes(t.state) && !waitingOnMerge(q, t, prState) && !spinePark(t));
+  return Object.values(q.tickets ?? {}).every((t) => ['done', 'parked', 'failed'].includes(t.state) && !waitingOnMerge(q, t, prState) && !spinePark(t) && !waitingOnRead(t));
 }
 
 // Idle: settled, and every done ticket's PR merged or closed, so the merge driver has nothing left.

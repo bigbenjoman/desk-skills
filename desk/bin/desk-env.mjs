@@ -309,6 +309,7 @@ export const CONFIG_ROWS = Object.freeze({
   'state-checks': { section: '4', row: 'State checks' },
   'operator-checks': { section: '4', row: "Checks workers can't fix" },
   'check-builds': { section: '4', row: 'Check builds' },
+  'live-reads': { section: '4', row: 'Live reads' },
   'pre-merge-steps': { section: '4', row: 'Pre-merge steps' },
   'evidence-workflow': { section: '4', row: 'Evidence workflow' },
   'worker-workflows': { section: '4', row: 'Worker workflows' },

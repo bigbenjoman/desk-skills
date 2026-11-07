@@ -339,14 +339,18 @@ export function instructionFix(t, { pr, head, ready, answer }) {
 // A fix that carries out what the person said, rather than repairing what the pass found.
 export const personCall = (f) => f?.kind === 'gaps' || f?.kind === 'instruction';
 
-// A review stuck reason's findings (reviewFix's `stuck` why, `P0: <text>; P1: <text>`) as the review
-// fix the person sends back for one more try (desk-needs-you `fix`), marked `person`: not one of the
-// pass's tries, so the review of its new head that still lists one goes back to the person; numbered
-// as the last of the tries made, for the views that show a try's number. null for a reason that is
-// not a review's, or quotes no finding.
-export function personReviewFix(t, { pr, head, why }) {
+// The findings a review stuck reason quotes (reviewFix's `stuck` why, `P0: <text>; P2: <text>`), as
+// { sev, text }; [] for a reason that is not a review's, or quotes none.
+export function stuckFindings(why) {
   const m = /^review not clean\b.*? — (?:still open after the fix try that quoted it: )?(.+)$/.exec(String(why ?? ''));
-  const findings = (m?.[1].split(/; (?=P[01]: )/) ?? []).map((x) => /^(P[01]): (.+)$/.exec(x)).filter(Boolean).map(([, sev, text]) => ({ sev, text }));
+  return (m?.[1].split(/; (?=P[0-2]: )/) ?? []).map((x) => /^(P[0-2]): (.+)$/.exec(x)).filter(Boolean).map(([, sev, text]) => ({ sev, text }));
+}
+// A review stuck reason's findings as the review fix the person sends back for one more try
+// (desk-needs-you `fix`), marked `person`: not one of the pass's tries, so the review of its new head
+// that still lists one goes back to the person; numbered as the last of the tries made, for the views
+// that show a try's number. null for a reason that is not a review's, or quotes no finding.
+export function personReviewFix(t, { pr, head, why }) {
+  const findings = stuckFindings(why);
   const n = triesMade(t.fix_tries) + 1;
   return findings.length ? { try: n, of: n, kind: 'review', person: true, pr, head: head ?? null, what: 'review not clean: sent back by the person for one more try', findings } : null;
 }
