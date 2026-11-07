@@ -62,6 +62,7 @@ function put(name, r) {
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
@@ -987,6 +988,30 @@ t('DS-492 AC5 a cell the capture try could not take says so', spent.line.endsWit
 onGitHub(175, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'no cells' });
 const review5 = N.record({ word: 'sigma', ticket: 'H-5', action: 'done' });
 t('DS-492 negative control: done on a draft held for another reason is still refused', `${review5.ok} ${/still shows PR #175 unmerged, still a draft/.test(review5.line)}`, 'false true');
+// A repo whose §4 Evidence workflow fills the cells, and whose §3 pr-ready leaves undrafting to the person.
+const noStart = (pr) => `its evidence workflow \`pr-evidence.yml\` could not start: HTTP 502 for #${pr}`;
+const EVC = '_drag e-after.png_\n\n```evidence\ne-after.png | after | /x | 1280\n```\n';
+put('tau', { port: 5310, beat: 1, supervised: true, merge: 'yes', prReady: 'no', evidence: 'pr-evidence.yml', tickets: {
+  'U-1': shotDraft(181, noStart(181)),
+  'U-2': shotDraft(182, noStart(182)),
+  'U-3': { ...shotDraft(183, '1 screenshot cell(s) left: u.png, whose files are saved, but config §3 pr-images leaves their upload to you'), images_reported: true },
+} });
+onGitHub(181, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'all in' });
+const tau1 = N.record({ word: 'tau', ticket: 'U-1', action: 'done' });
+t('DS-492 AC4 an evidence workflow that could not start is a screenshot item too, and done with no cell left is accepted', tau1.ok, true);
+t('DS-492 AC4 with §3 pr-ready not yes, done says the undraft is the person\'s, not the next pass\'s', tau1.line.endsWith('so it is off your list; config §3 pr-ready is "no", so the next pass leaves undrafting #181 to you.'), true);
+onGitHub(182, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: EVC });
+t('DS-492 AC5 a cell the evidence workflow fills: done names the workflow', N.record({ word: 'tau', ticket: 'U-2', action: 'done' }).line.endsWith('e-after.png: `pr-evidence.yml` takes it at the next pass.'), true);
+const stateTau = loadRepos().find((x) => x.slug === 'acme__tau').stateDir;
+mkdirSync(join(stateTau, 'evidence-runs'), { recursive: true });
+writeFileSync(join(stateTau, 'evidence-runs', `182-${'h'.repeat(40)}.json`), JSON.stringify({ workflow: 'pr-evidence.yml', runId: null, url: null, at: minsAgo(60), cells: 1 }));
+mkdirSync(join(stateTau, 'images', 'U-2'), { recursive: true });
+writeFileSync(join(stateTau, 'images', 'U-2', 'e-after.png'), '');
+t('DS-492 AC5 once it ran and left the cell, done says so', N.record({ word: 'tau', ticket: 'U-2', action: 'done' }).line.endsWith('e-after.png: `pr-evidence.yml` ran and could not take it.'), true);
+mkdirSync(join(stateTau, 'images', 'U-3'), { recursive: true });
+writeFileSync(join(stateTau, 'images', 'U-3', 'u.png'), '');
+onGitHub(183, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag u.png_' });
+t('DS-492 AC5 a file whose upload waits for approval: done says so', N.record({ word: 'tau', ticket: 'U-3', action: 'done' }).line.endsWith('u.png: its file is saved, and config §3 pr-images leaves its upload to you.'), true);
 
 // ---- DS-380: a parked ticket moved into the repo's other running batch, on that batch's base
 put('omega', { port: 3900, beat: 1, supervised: true, tickets: {

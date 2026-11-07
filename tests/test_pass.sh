@@ -1651,6 +1651,7 @@ else if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readF
 else if (a[0] === 'pr' && a[1] === 'ready') fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), isDraft: false }));
 else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'workflow' && a[1] === 'run' && fs.existsSync('$T/wf-refuse-' + a[a.length - 1].replace('pr=', ''))) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
 else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
 else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
 else process.exit(1);
@@ -1809,12 +1810,39 @@ check "DS-492 AC1 what is on disk is uploaded and what the workflow takes is sta
   'grep -qx "764 $T/state-s/images/S-4/" "$T/uploads" && [ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=764$" "$T/gh-calls"'
 check "DS-492 AC1 and nothing is put to the person while it runs" \
   '[ "$(field S-4 undraft.call)" = "\"evidence\"" ] && ! echo "$out" | grep -q "S-4: DRAFT" && ! echo "$out" | grep -q "S-4: image upload" && ! grep -q "^pr ready 764" "$T/gh-calls"'
+check "DS-492 AC1 the upload is reported as advanced, naming the cells left for the undraft step" \
+  'echo "$out" | grep -qF "S-4 images → #764, 1 cell(s) left for the undraft step"'
 rm -f "$T/upload-left"
 dragbody 764 "Before | After
 <img alt=\"s-4-before\" src=\"https://github.com/user-attachments/assets/4\"> | <img alt=\"s-4-after\" src=\"https://github.com/user-attachments/assets/5\">"
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-492 AC2 every cell filled, the next pass takes it out of draft though the upload was partial" \
   '[ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^pr ready 764" "$T/gh-calls"'
+# S-5: an upload that matched no cell at all still goes to the person, as before.
+q add S-5; q set S-5 state=running session_id=gone lane=A branch=fix/S-5 result.pr=765; frx 765 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 765 "_drag s-5.png_"
+mkdir -p "$T/state-s/images/S-5"; : > "$T/state-s/images/S-5/other.png"
+say "AUTOPILOT_IMAGES: $T/state-s/images/S-5/" "AUTOPILOT_DONE: pr=765 jira=Done" > "$T/state-s/logs/S-5.log"
+printf '%s\n' '[upload] uploaded, but found no _drag placeholders matching the files' > "$T/upload-left"
+out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-left"
+check "DS-492 an upload that matched no cell is partial and put to the person, never re-uploaded" \
+  '[ "$(field S-5 images_uploaded)" = "\"partial\"" ] && echo "$out" | grep -q "S-5: image upload to PR #765 is INCOMPLETE — .*do not re-upload\.$"'
+# S-6: an evidence workflow that cannot start asks for it to be run, never for an upload.
+q add S-6; q set S-6 state=done lane=A branch=fix/S-6 result.pr=766 images_uploaded=none; frx 766 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 766 "$mixed"
+: > "$T/wf-refuse-766"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/wf-refuse-766"
+check "DS-492 an evidence workflow that could not start asks for its run, not an upload" \
+  'echo "$out" | grep -qF "S-6: DRAFT — PR #766 stays draft: its evidence workflow \`pr-evidence.yml\` could not start: HTTP 502: Bad Gateway. Run \`gh workflow run pr-evidence.yml -f pr=766\`" && ! echo "$out" | grep "S-6: DRAFT" | grep -q upload'
+# S-7: the person's done recorded no cell left (undraft `filled`, its capture stuck cleared): the next
+# pass undrafts it. S-8, the same but put back to draft by a person, stays held.
+for k in 7 8; do q add "S-$k"; q set "S-$k" state=done lane=A "branch=fix/S-$k" "result.pr=76$k" images_uploaded=none stuck=null \
+  'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"capture","what":"take 1"}]' 'undraft={"call":"filled","why":"no screenshot cell is left in its body","action":null,"pr":76'"$k"'}'
+  frx "76$k" "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody "76$k" 'Before | After
+<img alt="a" src="https://github.com/user-attachments/assets/7"> | <img alt="b" src="https://github.com/user-attachments/assets/8">'; done
+printf '2026-11-06T10:00:00Z\tben\n' > "$T/fr/768.events"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-492 AC4 a draft the person's done recorded as filled is taken out of draft by the next pass" \
+  'grep -q "^pr ready 767" "$T/gh-calls" && [ "$(field S-7 undraft.call)" = "\"ready\"" ]'
+check "DS-492 AC4 negative control: put back to draft by a person, it stays held" \
+  '! grep -q "^pr ready 768" "$T/gh-calls" && [ "$(field S-8 undraft.call)" = "\"held\"" ]'
 
 # ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix
 # worker, and a verdict carries across merges of the base alone. $T/carry is a real clone: C-1's

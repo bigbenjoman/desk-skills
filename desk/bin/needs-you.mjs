@@ -57,9 +57,10 @@ import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellPlan, dragCells, evidenceRecord, parseEvidenceRow, ticketShots } from './evidence.mjs';
+import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
+import { cellPlan } from './undraft.mjs';
 import { gapsFix, instructionFix, personReviewFix } from './fix-tries.mjs';
-import { repoConfigValue, releaseCommand, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
+import { repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
@@ -115,15 +116,15 @@ const shotsItem = (r, t) => {
   const w = prWhy(r, t) ?? {};
   return w.code === 'stuck' ? CAPTURE.test(String(w.stuck?.why ?? '')) : w.code === 'draft' && /screenshot|^its evidence workflow/.test(String(w.undraft?.why ?? ''));
 };
-// What desk does about each cell left in a body, for the person who said done on it.
-function cellWords(r, t, pr, v) {
+// What desk does about each cell left in a body, for the person who said done on it: the pass's own
+// cell call (undraft.mjs cellPlan), read with what the pass reads.
+function cellWords(r, t, pr, v, repo) {
   const row = repoConfigValue(r.slug, 'evidence-workflow');
-  const plan = cellPlan(v.body, {
-    workflow: row ? parseEvidenceRow([row])?.workflow ?? null : null,
-    ran: evidenceRecord(join(r.stateDir, 'evidence-runs'), pr, v.headRefOid) != null,
-    shots: ticketShots(t, r.stateDir),
-    captured: (t.fix_tries ?? []).some((x) => x.kind === 'capture'),
-    unapproved: t.images_reported === true && t.images_uploaded !== true,
+  const view = (id) => { try { return JSON.parse(execFileSync('gh', ['run', 'view', String(id), '--repo', repo, '--json', 'status,conclusion'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; } };
+  const plan = cellPlan(t, { number: pr, head: v.headRefOid ?? null, body: v.body }, {
+    evidence: row ? parseEvidenceRow([row]) : null,
+    evidenceRun: (head) => evidenceRecord(join(r.stateDir, 'evidence-runs'), pr, head, view),
+    missingShots: (body) => missingShots(body, ticketShots(t, r.stateDir)),
   });
   return plan.map((c) => `${c.file}: ${c.doing}`).join('; ');
 }
@@ -774,14 +775,18 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const rec = { call: 'filled', why: 'no screenshot cell is left in its body', action: null, sha: v.headRefOid ?? null, carried_from: null, pr, at: new Date(now).toISOString() };
       const m = queueCmd(r, ['set', ticket, 'stuck=null', `undraft=${JSON.stringify(rec)}`]);
       if (!m.ok) return say(false, `GitHub shows no screenshot cell left in PR #${pr}'s body, but recording it was refused: ${m.out}`);
-      return say(true, `GitHub shows no screenshot cell left in PR #${pr}'s body, so it is off your list; the next pass takes it out of draft.`);
+      // The pass undrafts it itself only as undraftCall's pr-ready gate allows; otherwise it comes back as the person's undraft.
+      const perm = repoPermission(r.slug, 'pr-ready');
+      const next = perm === 'yes' || (perm === 'ask' && r.q?.approved?.undraft === true) ? 'the next pass takes it out of draft'
+        : `config §3 ${PERMISSION_KEYS['pr-ready']} is "${perm}", so the next pass leaves undrafting #${pr} to you`;
+      return say(true, `GitHub shows no screenshot cell left in PR #${pr}'s body, so it is off your list; ${next}.`);
     }
     const check = { at: new Date(now).toISOString(), state: v.state, draft: v.isDraft === true, head: v.headRefOid ?? null, ...(cells ? { cells } : {}) };
     const shows = v.state === 'CLOSED' ? 'closed without merging' : `unmerged${check.draft ? ', still a draft' : ''}`;
     const m = queueCmd(r, ['set', ticket, `done_check=${JSON.stringify(check)}`]);
     if (cells) {
       const still = `GitHub still shows ${cells} screenshot cell(s) in PR #${pr}'s body`;
-      return say(false, m.ok ? `${still}, so it stays on your list: ${cellWords(r, x.t, pr, v)}.` : `${still}; noting it on the item was refused: ${m.out}`);
+      return say(false, m.ok ? `${still}, so it stays on your list: ${cellWords(r, x.t, pr, v, repo)}.` : `${still}; noting it on the item was refused: ${m.out}`);
     }
     if (!m.ok) return say(false, `GitHub still shows PR #${pr} ${shows}; noting it on the item was refused: ${m.out}`);
     const moved = check.head && x.t.pr_status?.head && check.head !== x.t.pr_status.head;

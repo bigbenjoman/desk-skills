@@ -51,19 +51,6 @@ export const missingShots = (body, shots) => dragFiles(body).filter((f) => !(sho
 export const ticketShots = (t, stateDir) => {
   try { return readdirSync(expandHome(t.images_dir ?? join(stateDir, 'images', t.key))).filter((f) => SCREENSHOT_FILE.test(f)); } catch { return []; }
 };
-// What desk does about each file a body's cells name, in the order undraftCall tries them: [{ file, doing }].
-// workflow: §4 Evidence workflow's file or null. ran: a run was started at this head. shots: the ticket's
-// files. captured: its capture try is spent. unapproved: §3 pr-images left its upload to the person.
-export function cellPlan(body, { workflow = null, ran = false, shots = [], captured = false, unapproved = false } = {}) {
-  const fills = workflow && !ran && hasEvidenceBlock(body);
-  const doing = (file) => {
-    if (fills) return `\`${workflow}\` takes it at the next pass`;
-    if (!shots.includes(file)) return captured ? "desk's capture try could not take it" : 'a capture worker takes it at the next pass';
-    return unapproved ? 'its file is saved, and config §3 pr-images leaves its upload to you' : 'desk holds its file but could not put it in the body';
-  };
-  return dragFiles(body).map((file) => ({ file, doing: doing(file) }));
-}
-
 // The run id in gh workflow run's output (it prints the run's URL), or null.
 export function runIdFrom(out) {
   const m = String(out ?? '').match(/\/actions\/runs\/(\d+)/);

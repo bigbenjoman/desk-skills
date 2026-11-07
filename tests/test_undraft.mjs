@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, personHold, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
@@ -325,7 +325,22 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-492 AC2 a partial upload with every cell filled leaves draft', shotDraft(part, filled, have([]))?.call, 'ready');
   t('DS-492 AC2 screenshots held for approval with no cell left in the body hold nothing', shotDraft({ images_reported: true }, filled, have([]))?.call, 'ready');
   t('DS-492 AC2 negative control: one cell left stays draft', shotDraft(part, `${filled}\n_drag a.png_`, { evidence: null, ...have(['a.png']) })?.call, 'person');
-  t('DS-492 AC4 a body the person\'s done recorded as filled is no hold by a person', personHold({ undraft: { call: 'filled', pr: 740 } }, 740), null);
+  // AC5: what done tells the person about each cell is read off the same call, so it says what the pass does.
+  const plan = (tt, body, cfgX = {}) => cellPlan({ key: 'T-1', ...tt }, { number: 740, head: HEAD, body }, { evidence: { workflow: 'pr-evidence.yml' }, ...cfgX })
+    .map((c) => `${c.file}: ${c.doing}`).join('; ');
+  t('DS-492 AC5 no run yet: the workflow takes each cell', plan(part, EVB), 'a-before.png: `pr-evidence.yml` takes it at the next pass; a-after.png: `pr-evidence.yml` takes it at the next pass');
+  t('DS-492 AC5 a run going: it is taking them', plan(part, EVB, { evidenceRun: () => ({ state: 'running', url: null }) }).endsWith('a-after.png: `pr-evidence.yml` is taking it now'), true);
+  t('DS-492 AC5 a failed run: desk fixes the workflow, never a capture worker', plan(part, EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'failure', runId: '7', url: null }), ...have([]) }).endsWith('a-after.png: `pr-evidence.yml` failed, so desk fixes the workflow for the repo and runs it again'), true);
+  t('DS-492 AC5 a run that left a cell with no file: a capture worker, the held one named as held', plan(part, EVB, { ...ranSome, ...have(['a-before.png']) }), 'a-before.png: desk holds its file but could not put it in the body; a-after.png: a capture worker takes it at the next pass');
+  t('DS-492 AC5 the capture try spent: it says so', plan({ ...part, fix_tries: [{ kind: 'capture' }] }, '_drag a.png_', { evidence: null, ...have([]) }), "a.png: desk's capture try could not take it");
+  t('DS-492 AC5 a run that left cells desk holds the files for', plan(part, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) }).endsWith('a-after.png: `pr-evidence.yml` ran and could not take it'), true);
+  t('DS-492 AC5 no cell: nothing to say', plan(part, filled, have([])), '');
+  // Files desk holds whose upload §3 pr-images left to the person: the approval fills them, whether or not a run came first.
+  const unsent = { images_reported: true, images_uploaded: null };
+  const approve = shotDraft(unsent, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) });
+  t('DS-492 AC3 a run that left cells whose files wait for the upload approval: the person approves it', `${approve?.call} ${approve?.action.startsWith('approve it with `DESK_UPLOAD_APPROVED=1')}`, 'person true');
+  t('DS-492 AC5 and done says the same', plan(unsent, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) }).endsWith('a-after.png: its file is saved, and config §3 pr-images leaves its upload to you'), true);
+  t('DS-492 negative control: approved, the run\'s own call stands', /^its evidence workflow/.test(shotDraft(part, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) })?.why), true);
   const stuckCell = shotDraft(part, 'x _drag a.png_ _drag b.png_', { evidence: null, ...have(['a.png', 'b.png']) });
   t('DS-492 AC3 a cell nothing fills is named, with why', stuckCell?.why, '2 screenshot cell(s) left: a.png, b.png, whose files desk holds but could not put in the body');
   t('DS-492 AC3 and the person is not asked to upload', stuckCell?.action, LEFT);

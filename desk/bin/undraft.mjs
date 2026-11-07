@@ -50,7 +50,7 @@
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { RERUNS_MAX, reviewFindings, syncSaid } from './fix-tries.mjs';
+import { RERUNS_MAX, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { pairs } from './desk-env.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
@@ -361,6 +361,48 @@ function evidenceCall(pr, cfg) {
 // What a person does about cells nothing of desk's can fill. They are never asked to upload.
 const noCellsLeft = (n) => `edit the body of #${n} so no \`_drag <file>_\` cell is left`;
 
+// The call for a draft's `_drag <file>_` cells, or null with none left: only the cells hold it here,
+// however its upload ended. Each goes to what can fill it: §4 Evidence workflow, then for any it left
+// with no file a capture worker (fix-tries.mjs captureTry), then for files desk holds the §3 pr-images
+// upload, and the person only once none can. cfg as undraftCall's (evidence, evidenceRun, missingShots).
+export function cellCall(t, pr, cfg) {
+  const cells = dragCells(pr.body);
+  if (!cells) return null;
+  const n = pr.number;
+  const person = (why, action) => ({ call: 'person', why, action });
+  const evidence = evidenceCall(pr, cfg);
+  if (evidence && evidence.call !== 'person') return evidence;
+  const missing = cfg.missingShots?.(pr.body) ?? [];
+  if (missing.length) {
+    return { ...person(`${missing.length} screenshot(s) in its body were never taken: ${missing.join(', ')}`, noCellsLeft(n)), call: 'capture', files: missing };
+  }
+  const left = `${cells} screenshot cell(s) left: ${dragFiles(pr.body).join(', ')}`;
+  if (t.images_reported === true && t.images_uploaded !== true) {
+    return { ...person(`${left}, whose files are saved, but config §3 pr-images leaves their upload to you`, `approve it with \`DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs ${n} <its screenshot directory>\``), unapproved: true };
+  }
+  if (evidence) return evidence;
+  return person(`${left}, whose files desk holds but could not put in the body`, noCellsLeft(n));
+}
+
+// What desk does about each file a draft's cells name, read off the call cellCall makes for it, so the
+// person who says done is told what the pass will do: [{ file, doing }].
+export function cellPlan(t, pr, cfg) {
+  const c = cellCall(t, pr, cfg);
+  if (!c) return [];
+  const wf = `\`${cfg.evidence?.workflow}\``;
+  const spent = c.call === 'capture' && captureTry(t, { pr: pr.number, head: pr.head, files: c.files })?.call === 'stuck';
+  const doing = (file) => {
+    if (c.call === 'evidence') return `${wf} takes it at the next pass`;
+    if (c.call === 'wait') return `${wf} is taking it now`;
+    if (c.call === 'evidence-failed') return `${wf} ${c.conclusion === 'failure' ? 'failed' : 'filled none of its cells'}, so desk fixes the workflow for the repo and runs it again`;
+    if (c.call === 'capture' && c.files.includes(file)) return spent ? "desk's capture try could not take it" : 'a capture worker takes it at the next pass';
+    if (c.unapproved) return 'its file is saved, and config §3 pr-images leaves its upload to you';
+    if (/^its evidence workflow/.test(c.why ?? '')) return `${wf} ran and could not take it`;
+    return 'desk holds its file but could not put it in the body';
+  };
+  return dragFiles(pr.body).map((file) => ({ file, doing: doing(file) }));
+}
+
 // Whether anyone but `handle`, and not a bot, has reviewed or commented on the PR: the line between
 // §3 pr-conflict-unreviewed and pr-conflict-reviewed. With no handle to tell them apart, everyone counts.
 export function humanReviewed(pr, handle) {
@@ -475,24 +517,8 @@ export function undraftCall(t, pr, cfg) {
     const why = `its ${VERDICT_CHECK} check reads only a verdict posted on the head${carried ? `, and its verdict is carried from ${carried.slice(0, 9)}` : ''}`;
     return withCarried({ ...person(why, `review #${n} at its head`), call: 'review' });
   }
-  // Only the body's cells hold a PR here, however its upload ended. Each goes to what can fill it: §4
-  // Evidence workflow, then for any it left with no file a capture worker (fix-tries.mjs captureTry),
-  // and the person only once neither can.
-  const cells = dragCells(pr.body);
-  const evidence = cells ? evidenceCall(pr, cfg) : null;
-  if (evidence && evidence.call !== 'person') return evidence;
-  const missing = cells ? cfg.missingShots?.(pr.body) ?? [] : [];
-  if (missing.length) {
-    return { ...person(`${missing.length} screenshot(s) in its body were never taken: ${missing.join(', ')}`, noCellsLeft(n)), call: 'capture', files: missing };
-  }
-  if (evidence) return evidence;
-  if (cells) {
-    const left = `${cells} screenshot cell(s) left: ${dragFiles(pr.body).join(', ')}`;
-    if (t.images_reported === true && t.images_uploaded !== true) {
-      return person(`${left}, whose files are saved, but config §3 pr-images leaves their upload to you`, `approve it with \`DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs ${n} <its screenshot directory>\``);
-    }
-    return person(`${left}, whose files desk holds but could not put in the body`, noCellsLeft(n));
-  }
+  const shots = cellCall(t, pr, cfg);
+  if (shots) return shots;
   if (skipped) return person(SKIPPED_ON_DRAFT, `undraft #${n}`);
   const read = plain ? v.verdict : verdict;
   if (cfg.perm === 'yes') return withCarried({ call: 'ready', why: null, note: null, verdict: read });
