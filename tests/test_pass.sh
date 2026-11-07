@@ -2251,6 +2251,17 @@ check "DS-388 AC3 a fix try whose own worker was killed with its worktree dirty 
 check "DS-388 AC4 a fix try whose worktree holds changes no worker of its own is resuming is still held" \
   '[ "$(field W-6 state)" = "\"triaged\"" ] && ! grep -q "^W-6 " "$T/wb-spawns" && echo "$out" | grep -qF "W-6: WORKTREE IN USE — its worktree $T/wt/W-6 has uncommitted changes (a.txt)" && [ "$(field W-6 resume)" = null ]'
 
+# W-7 parked with a commit origin lacks, on a branch origin has never seen; the note goes once it is pushed.
+git clone -q "$T/wb-origin.git" "$T/wt/W-7" 2>/dev/null; git -C "$T/wt/W-7" checkout -q -b fix/W-7
+git -C "$T/wt/W-7" commit -q --allow-empty -m "not pushed"
+q add W-7; q set W-7 lane=A branch=fix/W-7 "worktree=$T/wt/W-7"; q park W-7 "git push was refused: remote rejected"
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-497 a pass keeps what a parked ticket's worktree holds that origin does not on its park" \
+  '[ "$(field W-7 park.unpushed)" = "\"its worktree $T/wt/W-7 has 1 commit(s) not on origin\"" ]'
+git -C "$T/wt/W-7" push -q origin fix/W-7 2>/dev/null
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-497 and drops it once they are pushed" '[ "$(field W-7 park.unpushed)" = null ] && [ "$(field W-7 state)" = "\"parked\"" ]'
+
 # ---- DS-397: routine recoveries the pass settles by script, with no decider and no person -----------
 # D-1's branch adds nothing to main, where merged PR #88 names it. P-2 parked on a refused push with its
 # PR body in its log. R-1 parked on a scope call it recommends an option for; R-2's recommendation is a

@@ -126,6 +126,9 @@ const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.bat
 // No pass clears that, so it needs the person until a pass finds the worktree clean and drops the record.
 export const worktreeBusy = (t) => (t?.state === 'triaged' && t.worktree_busy?.why ? t.worktree_busy : null);
 export const worktreeBusyText = (w) => `worktree in use: ${w.why} · commit, push or discard it`;
+// The park a requeue cleared on a ticket its worktree then held back, before any worker started on it
+// (queue.mjs keeps it as `prev_park`; a spawn sets `session_id`): why its last worker stopped.
+export const busyPark = (t) => (worktreeBusy(t) && t.session_id == null && t.prev_park?.question ? t.prev_park : null);
 export const keysOf = (s) => String(s ?? '').split('|').filter(Boolean);
 // The open Jira blockers outside the batch the last pass recorded.
 export const outsideOf = (t) => (Array.isArray(t?.outside_blockers) ? t.outside_blockers : []);
@@ -2058,7 +2061,7 @@ function needSegs(r, x, now = Date.now()) {
   if (heldAsks(t)) return [[`${t.open_questions} triage question(s) open: answer them`, null]];
   if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
   const wb = worktreeBusy(t);
-  if (wb) return [[worktreeBusyText(wb), null]];
+  if (wb) return [[`${busyPark(t) ? `${busyPark(t).question} · ` : ''}${worktreeBusyText(wb)}`, null]];
   const f = fixOn(t);
   if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t));
   if (k === 'running') return [[runningStage(r, x), null]];
@@ -2245,7 +2248,7 @@ function moveOf(r, row, k, t, h, now) {
       lead: `If it can start without them, say so, in ${r.name}:`, cmds: [answerCmd(t.key)] };
   }
   const wb = worktreeBusy(t);
-  if (wb) return { text: `Needs you. No worker starts on it: ${wb.why}. Commit, push or discard that (or end the session working in it), and the next pass that finds it clean starts it.` };
+  if (wb) return { text: `Needs you. ${busyPark(t) ? `Its last worker parked: ${busyPark(t).question}. ` : ''}No worker starts on it: ${wb.why}. Commit, push or discard that (or end the session working in it), and the next pass that finds it clean starts it.` };
   // A fix worker that parked or gave up leaves its try open: the ticket needs the user, as its row says.
   if (f && groupOf(k) !== 'needs') {
     if (!r.live) return { text: `Will not move until passes resume: ${segText(fixSegs(f, false))}.`, lead: `${capital(resumeOf(r))}.` };
