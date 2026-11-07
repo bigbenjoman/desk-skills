@@ -946,7 +946,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-158 AC1 the spawn line shows the preflight's cost and turns" 'echo "$out" | grep -q "^spawned: P-1 port=.*; preflight \$0.43, 9 turn(s)"'
 check "DS-158 AC1 and the ticket's log holds them" 'grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.4321,\"num_turns\":9" "$T/state-p/logs/P-1.log"'
 check "DS-158 a failed preflight's cost is in the failure and the ticket's log too" '[ "$(field P-2 state)" = "\"failed\"" ] && echo "$out" | grep -q "preflight \$0.05, 2 turn(s)" && grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.05,\"num_turns\":2" "$T/state-p/logs/P-2.log"'
-# DS-451: a skipped preflight spends nothing, so a fresh ticket with no log yet spawns with none.
+# A skipped preflight spends nothing, so a fresh ticket with no log yet spawns with none.
 cat > "$T/desk/bin/spawn-worker.sh" <<'EOF'
 if [ "$3" = preflight ] && [ "$1" = P-4 ]; then printf '[preflight] %s\n[preflight] skipped: its last pass had this fingerprint\n[preflight] pass\n' "$1"; exit 0; fi
 if [ "$3" = preflight ] && [ "$1" = P-2 ]; then printf '[preflight] %s\n[preflight] cost=0.05 turns=2\n  W_IN   BLOCKED  FAIL (wanted OK)\n' "$1"; exit 1; fi
