@@ -7,15 +7,16 @@
 // A probe given a login runs in that login's config folder, and its output and start time are kept as
 // that login's: probe.log and probe.at for the default login, probe.<login>.log and probe.<login>.at
 // for another, so another login's reading is never read as the default's.
-import { mkdirSync, openSync, closeSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { newestReading, stateDirs, usageDir, probeLog } from './usage-pace.mjs';
+import { WINDOWS, newestReading, stateDirs, usageDir, probeLog } from './usage-pace.mjs';
 import { takeBorrowLock } from './borrow.mjs';
-import { usageLimit } from './usage-limit.mjs';
+import { resetText, usageLimit } from './usage-limit.mjs';
 import { loginEnv } from './logins.mjs';
-import { loginKey } from './claude-logins.mjs';
+import { claudeLogins, loginKey } from './claude-logins.mjs';
 
 export const PROBE_EVERY_MS = 5 * 60 * 1000;
 // However many desk-q windows are open, at most one probe starts in this long.
@@ -27,16 +28,34 @@ const forLogin = (login) => (login?.configDir ? `.${loginKey(login)}` : '');
 export const loginProbeLog = (dir = usageDir(), login = null) => (forLogin(login) ? join(dir, `probe${forLogin(login)}.log`) : probeLog(dir));
 const probeStamp = (dir, login) => join(dir, `probe${forLogin(login)}.at`);
 
-// The newest reading of both windows: every repo's worker logs and the last probe's output, the same
-// sources a pass's newestUsage reads.
+// A login's newest reading of both windows, the default's with none named: its worker logs in every
+// repo and its last probe's output, the same sources a pass's pacing reads.
 //   -> { five_hour, seven_day, at, none }
 export const readUsage = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), login = null, now = Date.now() } = {}) =>
-  newestReading({ dirs, files: [loginProbeLog(dir, login)], now });
+  newestReading({ dirs, files: [loginProbeLog(dir, login)], login, now });
 
-// The newest reading of a login other than the default: its own probe's output and nothing else, as
-// no worker log is yet kept as a login's.
+// A login's newest reading from its own probe's output alone, which is what its next probe is judged on.
 export const readLoginUsage = ({ login, dir = usageDir(), now = Date.now() }) =>
   newestReading({ dirs: [], files: [loginProbeLog(dir, login)], now });
+
+// Every Claude login with its reading.  -> [{ login, reading }]
+export const usageByLogin = ({ dir = usageDir(), dirs = stateDirs({ self: dir }), logins = claudeLogins(), now = Date.now() } = {}) =>
+  logins.map((login) => ({ login, reading: readUsage({ dir, dirs, login, now }) }));
+
+// One login's line: its name, then each window's use and reset time. A login with no recent reading
+// says so rather than showing a figure, and a window its subscription lacks is named as lacking. A
+// window whose reset has passed reads 0%, as desk-q's bars do.
+const WINDOW_NAMES = { five_hour: ['5h', '5-hour'], seven_day: ['7d', '7-day'] };
+function windowText(k, reading, now) {
+  const [label, long] = WINDOW_NAMES[k], w = reading[k];
+  if (reading.none.includes(k)) return `no ${long} window`;
+  if (!w) return `${label} no reading`;
+  return w.resetsAt * 1000 <= now ? `${label} 0%, reset ${resetText(w.resetsAt)}` : `${label} ${Math.round(w.utilization * 100)}%, resets ${resetText(w.resetsAt)}`;
+}
+export function readingsText(rows, now) {
+  const width = Math.max(...rows.map((r) => r.login.name.length));
+  return rows.map(({ login, reading }) => `${login.name.padEnd(width)}  ${reading.at == null ? 'no reading' : WINDOWS.map((k) => windowText(k, reading, now)).join(' · ')}`).join('\n');
+}
 
 // A probe is due only with no worker running on what it reads and no reading in the last PROBE_EVERY_MS.
 export const probeDue = ({ running, reading, now }) => running === 0 && (reading?.at == null || now - reading.at > PROBE_EVERY_MS);
@@ -103,4 +122,20 @@ export function probeNow({ dir = usageDir(), claude = 'claude', env = process.en
     : r.error ? r.error.message
     : `${claude} exited ${r.status ?? r.signal} with no answer${(r.stderr ?? '').trim() ? `: ${r.stderr.trim().split('\n').pop().slice(0, 200)}` : ''}`;
   return { ok: false, limit, why };
+}
+
+// ---- CLI ---------------------------------------------------------------------------------------
+//   readings        each Claude login by name, with its 5-hour and 7-day use and reset times
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+if (isMain) {
+  if (process.argv[2] === 'readings') {
+    const now = Date.now();
+    console.log(readingsText(usageByLogin({ now }), now));
+  } else {
+    console.error('usage: usage-probe.mjs readings');
+    process.exit(2);
+  }
 }

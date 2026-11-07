@@ -653,7 +653,7 @@ export function runningOn(repos, login) {
 const ownLogin = () => { try { return loginOf(process.env.CLAUDE_CONFIG_DIR); } catch { return null; } };
 // The probes an open desk-q makes now. With one login, its probe while no worker anywhere keeps the
 // reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
-// worker runs on it, judged on that login's own probe reading: a worker log could be any login's.
+// worker runs on it, judged on that login's own probe reading.
 //   -> [{ login }]
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
@@ -1683,10 +1683,11 @@ function machineLine(running, cap, room, avail) {
     [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
 
-// The usage reading every header shows: the newest of both windows, how many workers run in every
-// repo here, and which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each
-// repo by its own §3b row, so a repo set to off is never held). A pass reads the same worker logs and
-// probe output (newestUsage), so the hold is judged on the 7-day figure shown.
+// The usage reading every header shows: the newest of both windows on desk-q's own login, which is the
+// default login unless CLAUDE_CONFIG_DIR says otherwise, how many workers run in every repo here, and
+// which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each repo by its own
+// §3b row, so a repo set to off is never held). A pass reads its own login's worker logs and probe
+// output the same way, so the hold is judged on the 7-day figure shown.
 export function usageOf(repos, now, shown = repos) {
   const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), login: ownLogin(), now });
   const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
