@@ -124,7 +124,8 @@ Your settings are an **allow-list**: anything not named here is refused.
 - **Reading tools**: `rg`, `grep`, `find` (without `-exec`/`-delete`), `ls`, `cat`, `head`, `tail`,
   `wc`, `diff`, `jq`, `tr`, `cut`, `stat`, `du`, `file`, `mkdir`, `ps`, `pgrep`, and `echo`,
   `printf` and `true` to stdout. **Not** `sed`,
-  `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`: edit files with Edit/Write.
+  `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`: edit files with Edit/Write. With the
+  `wrappers` lever on, `desk-env lines <file> A,B` prints a line range as one command.
 - **A repo your ticket depends on**: only where §4 Worker read-only repos (`desk-env list worker-read-repos`)
   lists it. Your prompt names its clone's path, which the pass refreshed before you spawned. Read it
   with the Read tool and the reading tools above, by that path. Edits to it and `git clone` are

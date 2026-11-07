@@ -400,6 +400,8 @@ cd "$WT"
 export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
+# Where desk-env lines finds what this worker may read (worker-settings.mjs writes it beside these settings).
+export DESK_WORKER_SETTINGS="$SETTINGS"
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
 desk_detach claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \

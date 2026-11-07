@@ -740,6 +740,13 @@ install_file "$SRC/hooks/desk-worker-reread.py" "$WORKER_REREAD_HOOK"
 chmod +x "$WORKER_REREAD_HOOK"
 wrote "hook     ~/.claude/hooks/desk-worker-reread.py (autopilot workers only; nothing to register)"
 
+# Autopilot worker Bash hook: with the wrappers lever on, a refused command is refused naming the
+# single command that does the same. Registered the same way, only with that lever on.
+WORKER_HINTS_HOOK="$CLAUDE_DIR/hooks/desk-worker-hints.py"
+install_file "$SRC/hooks/desk-worker-hints.py" "$WORKER_HINTS_HOOK"
+chmod +x "$WORKER_HINTS_HOOK"
+wrote "hook     ~/.claude/hooks/desk-worker-hints.py (autopilot workers only; nothing to register)"
+
 # The deny-only plan (skills/desk-setup/references/baseline-deny.json): Slack send and write
 # tools, gh pr merge --admin, and best-effort force, delete and mirror pushes. It only takes
 # capability away, whatever /desk-setup is later answered.

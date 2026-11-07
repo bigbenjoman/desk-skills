@@ -67,10 +67,11 @@
 //     rule for a binary, allow or deny, is built by `bash()` below; never write one by hand.
 import { writeFileSync, readFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { platform } from 'node:os';
 import * as E from './desk-env.mjs';
 import { grantPush } from './batch-state.mjs';
+import { wrappersFile } from './desk-lines.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
 const opt = {};
@@ -714,7 +715,15 @@ if (mode === 'triage') {
   dirs.add(lock);
   try { const real = realpathSync(lock); if (real !== lock) dirs.add(real); } catch { /* created on first lock */ }
   if (platform() === 'linux') dirs.add('/proc');
-  opt.probes = [...probeBins].map((b) => `${PREFIX ? `${PREFIX} ` : ''}${b} --version`);
+  // With the wrappers lever on, what `desk-env lines` and the hints hook need to know about this
+  // worker, written beside its settings: what it may read, and how it runs one test file.
+  if (E.leverOn('wrappers')) {
+    opt.wrappers = {
+      worktree: WTS, dirs: [...WTS, ...dirs], creds: CREDS || null, lock: `${BIN_FORMS[BIN_FORMS.length - 1]}/with-lock.sh`,
+      tests: items.filter((i) => i.id === 'test-cmd').map((i) => ({ dir: i.dir, cmd: `${PREFIX ? `${PREFIX} ` : ''}${i.cmd}` })),
+    };
+  }
+  opt.probes =[...probeBins].map((b) => `${PREFIX ? `${PREFIX} ` : ''}${b} --version`);
 }
 
 const settings = { permissions: { allow: [...new Set(allow)], deny: [...new Set(deny)], additionalDirectories: [...dirs] } };
@@ -746,6 +755,15 @@ if (existsSync(REREAD_HOOK)) {
   const hooks = settings.hooks || {};
   settings.hooks = { ...hooks, PreToolUse: [...(hooks.PreToolUse || []), h('Read')], PostToolUse: [...(hooks.PostToolUse || []), h('Read')], PreCompact: [h()] };
 }
+// With the wrappers lever on, a command the allow-list refuses anyway is refused naming the single
+// command that does the same (desk-env lines, the one test file through §4 Unit tests, no `cd`).
+// It only ever denies, so it grants nothing; with the lever off it is not registered.
+const HINTS_HOOK = join(E.HOME, '.claude', 'hooks', 'desk-worker-hints.py');
+const sq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+if (opt.wrappers && existsSync(HINTS_HOOK)) {
+  const hooks = settings.hooks || {};
+  settings.hooks = { ...hooks, PreToolUse: [...(hooks.PreToolUse || []), { matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${HINTS_HOOK}" ${sq(resolve(opt.out))} ${sq(resolve(wrappersFile(opt.out)))}`, timeout: 10 }] }] };
+}
 
 // Validate before writing: a silently-ignored settings file is full permissions.
 const p = JSON.parse(JSON.stringify(settings)).permissions;
@@ -764,6 +782,7 @@ if (wholesale.length) { console.error(`FAIL: wholesale allow rule would bypass t
 
 mkdirSync(dirname(opt.out), { recursive: true });
 writeFileSync(opt.out, `${JSON.stringify(settings, null, 2)}\n`);
+if (opt.wrappers) writeFileSync(wrappersFile(opt.out), `${JSON.stringify(opt.wrappers, null, 2)}\n`);
 for (const d of denied) console.log(`CONFIG_DENIED: ${d}`);
 for (const g of granted) console.log(`CONFIG_GRANT: ${g}`);
 for (const w of warns) console.log(`CONFIG_WARN: ${w}`);

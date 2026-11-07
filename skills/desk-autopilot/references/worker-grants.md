@@ -86,6 +86,14 @@ requeueing: the worker would only park again. desk-needs-you offers such a park 
 and the pass never requeues it. Triage puts a change that writes under `.claude/` in
 lane C for the same reason.
 
+**The `wrappers` lever (config §3b Phase 0 levers) adds no capability.** On, `desk-env lines <file>
+A,B` prints what `sed -n A,Bp <file>` does, refusing any file the worker's reading tools are refused
+(this repo's credentials directory, anything outside its worktree and granted directories), and
+`desk-worker-hints.py` turns the refusal of a command that would be refused anyway into one naming
+what to run instead: the same command without a `cd` into its own worktree, `desk-env lines` for a
+line range, or §4 Unit tests with the one test file it ran directly. Off, `desk-env lines` refuses
+naming the lever and the hook is not registered, so a worker's settings are exactly as before.
+
 It may run `desk-env …` and the §4 toolchain rows, a directory item as
 `~/.claude/desk/bin/with-lock.sh <test|tsc|browser|nolock> --cwd <dir> -- <cmd>`. **Database
 variables**: in each worker's worktree every §4 Database URL variable is repointed at its own
