@@ -44,7 +44,7 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | Field | Recommended | Your setting |
 |---|---|---|
 | Intake query | \`none\` | ${2-\`project = ACME AND labels = autopilot\`} |
-| Triage concurrency | \`3\` | \`${TRIAGE_K:-1}\` |
+| Triage concurrency | \`1\` | \`${TRIAGE_K:-TODO}\` |
 EOF
 }
 config yes
@@ -1046,8 +1046,8 @@ rec JS-1 A; pool 1; out=$(admit JS-1 --by ben --json)
 check "DS-507 AC2: --json stays one object, holding the same lines" '[ "$(wc -l <<< "$out" | tr -d " ")" = 1 ] && [ "$(node -e "console.log(JSON.parse(process.argv[1]).lines.at(-1).replace(/ \(\d+s\)$/, \"\"))" "$out")" = "summary: 1 of 1 admitted" ]'
 for k in DA DB DC DD; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
 pool TODO; out=$(DESK_MEM_AVAIL_GB=64 admit DA DB DC DD --by ben); rc=$?
-check "DS-507 AC3: with Triage concurrency left TODO, three triages run at once" '[ $rc -eq 0 ] && [ "$(most)" = 3 ]'
-check "DS-507 AC3: the template recommends 3" 'grep -q "^| Triage concurrency | \`3\` |" "$S/../desk-config.md"'
+check "DS-507 AC3: with Triage concurrency left TODO, one triage runs at a time" '[ $rc -eq 0 ] && [ "$(most)" = 1 ]'
+check "DS-507 AC3: the template recommends 1" 'grep -q "^| Triage concurrency | \`1\` |" "$S/../desk-config.md"'
 check "DS-507 AC1: the desk-admit skill starts more than 3 tickets in the background and waits for the notification" \
   'grep -q "^\*\*With more than 3 tickets, start the call in the background\*\* (\`run_in_background\`" "$SK" && grep -q "and wait for its notification" "$SK"'
 

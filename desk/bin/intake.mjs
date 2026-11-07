@@ -74,7 +74,7 @@ export const SEARCH_MAX = 100;
 // A triage that fails this many runs in a row is handed on rather than paid for again.
 export const TRIAGE_TRIES = 3;
 // Triages /desk-admit runs at once when config §3b "Triage concurrency" does not say.
-export const TRIAGE_DEFAULT = 3;
+export const TRIAGE_DEFAULT = 1;
 // Whether a line of an admit's output only reports how the run went, so a refusal's reason is not in it.
 export const isProgress = (line) => /^(triage|waiting|summary): /.test(line);
 
