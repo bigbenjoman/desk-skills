@@ -71,7 +71,7 @@ tests to run, `desk-env test-scope` decides from your branch's changes against t
 `origin/<default>`, untracked files included:
 
 ```bash
-desk-env test-scope   # scope=related|full|none, reason=, changed=, then DIR<TAB>CMD<TAB>FILES per suite
+desk-env test-scope   # scope=related|full|none, reason=, changed=, workspace=…, then DIR<TAB>CMD<TAB>FILES per suite, then UNCOVERED lines
 ```
 
 Run each suite line it prints under the lock exactly as above, with its FILES (if any) after the cap:
@@ -82,6 +82,20 @@ tests items; `scope=full` runs
 §4 Unit tests, because the change touches a lockfile, a root or test config, a shared workspace
 package, or deletes or renames a file (the `reason=` line says which), or §4 Related tests is `none`.
 Never narrow a `full` to the files you think matter, and say the scope and reason in the PR's Testing.
+
+**A touched workspace no suite covers still gets tested.** When a changed file sits in a workspace
+package that no §4 Related or Unit tests item's directory holds (a new app, say), `test-scope` prints
+a `workspace=<dir>` line naming that package's own package.json test script, and a suite line
+`<dir><TAB><pm> run test<TAB>` that runs it in its directory. Run it like any other line. The cap goes on it
+when the script that `workspace=` line names is Vitest or Jest (`<pm> run test --maxWorkers=<cap>`,
+with npm `npm run test -- --maxWorkers=<cap>`). A workspace with no test script prints
+`UNCOVERED<TAB><dir><TAB><why>` instead: nothing ran for it, so the PR's Testing names it as not
+tested and never says its tests passed. **Run every suite line before you push.** Report the tests
+as passing only when every line passed. A failing line is fixed like any other failure. Your settings are
+written when your session starts, so a workspace you created in this session has no allow rule yet
+and its line is refused: commit, list that line in the handoff's `verification` as not yet run, and
+the Stage 4b session (whose settings include it) runs it first. A line refused in any other case
+parks naming it.
 
 **Where your briefing has a `Baseline checks` section**, the batch base already has typecheck or
 lint errors, recorded by the orchestrator. Run `desk-env baseline typecheck` and `desk-env baseline

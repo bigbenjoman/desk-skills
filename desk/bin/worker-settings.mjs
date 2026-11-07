@@ -70,6 +70,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { platform } from 'node:os';
 import * as E from './desk-env.mjs';
+import * as TS from './test-scope.mjs';
 import { grantPush } from './batch-state.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
@@ -431,6 +432,16 @@ if (mode === 'triage') {
   // `npm install <pkg>` is a new dependency, so the configured command is allowed exactly. Wrapped
   // in with-lock.sh it is always exact, since the dependency denies below match only the bare forms.
   const depsOk = E.permission('worker-dependency-install') === 'yes';
+  // desk-env test-scope runs a touched workspace package that no §4 suite covers by its own test
+  // script, in its directory, under the test lock: allow that for each one that has a test script.
+  const wsPm = TS.packageManager(WT, PM || null);
+  if (BIN_NAME.test(wsPm) && !FORBIDDEN.includes(wsPm)) {
+    const wsCmd = TS.workspaceTestCmd(wsPm);
+    for (const w of TS.workspacePackages(WT).filter((p) => p.test)) {
+      if (items.some((i) => normDir(i.dir) === w.dir && E.lockFor(i.id) === 'test' && twins(i.cmd).includes(wsCmd))) continue;
+      items.push({ id: 'test-cmd', dir: w.dir, cmd: wsCmd, bin: wsPm });
+    }
+  }
   for (const it of items) {
     const form = (wrapped) => (c) => (it.id === 'install-cmd' && (wrapped || !depsOk) ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {

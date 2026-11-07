@@ -120,6 +120,20 @@ check "DS-395 AC1 related.sh row: no CONFIG_WARN"           '[[ "$out" != *CONFI
 settings '`bash tests/run.sh`' "| Related tests | \`bash -c 'bash tests/run.sh \$(node tests/scope_sections.mjs --json)'\` |"
 check "DS-395 the compound row warns and is not allowed"   '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Related tests item \"bash -c"*"is a compound or env-prefixed shell command"* ]] && ! jq -e ".permissions.allow[] | select(test(\"scope_sections\"))" "$T/ws.json" >/dev/null'
 
+# A workspace package with a test script that no §4 item runs gets its own test script, under the test lock only.
+mkdir -p "$T/repo/apps/web" "$T/repo/apps/portal" "$T/repo/apps/docs"
+printf 'packages:\n  - apps/*\n' > "$T/repo/pnpm-workspace.yaml"
+printf '{"name":"web","scripts":{"test":"vitest run"}}' > "$T/repo/apps/web/package.json"
+printf '{"name":"portal","scripts":{"test":"vitest run"}}' > "$T/repo/apps/portal/package.json"
+printf '{"name":"docs"}' > "$T/repo/apps/docs/package.json"
+PMROW='`pnpm`' settings '`apps/web: pnpm test`'
+check "DS-495 a workspace's test script is allowed in its directory under the test lock" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh test --cwd apps/portal -- pnpm run test:*)" && allows "Bash($B/with-lock.sh test --cwd $T/repo/apps/portal -- pnpm run test:*)" \
+     && ! allows "Bash(pnpm run test:*)" && ! grep -q "nolock --cwd apps/portal" "$T/ws.json"'
+check "DS-495 no rule for a workspace with no test script, none added beside a configured one" \
+  '! grep -q "cwd apps/docs" "$T/ws.json" && [ "$(jq "[.permissions.allow[] | select(. == \"Bash($B/with-lock.sh test --cwd apps/web -- pnpm run test:*)\")] | length" "$T/ws.json")" = 1 ]'
+rm -rf "$T/repo/apps" "$T/repo/pnpm-workspace.yaml"
+
 # git rm and git mv inside the worktree; -C and --work-tree, which would reach outside it, stay denied
 denies(){ jq -e --arg r "$1" '.permissions.deny | index($r)' "$T/ws.json" >/dev/null 2>&1; }
 settings '`bash tests/run.sh`'

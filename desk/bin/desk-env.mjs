@@ -46,7 +46,9 @@
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
 //   node desk-env.mjs mem <avail|used|rss|status>
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
-//                                             reason=, changed=, then DIR<TAB>CMD<TAB>FILES per suite to run
+//                                             reason=, changed=, workspace= per uncovered workspace run by its
+//                                             own test script, then DIR<TAB>CMD<TAB>FILES per suite to run, then
+//                                             UNCOVERED<TAB>DIR<TAB>WHY per touched workspace nothing runs
 //   node desk-env.mjs baseline typecheck|lint  run §4 Typecheck or Lint here; with §4 Baseline checks on and a
 //                                             recorded batch base, fail only on errors the base does not have
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
@@ -1681,11 +1683,21 @@ if (isMain) {
           ...git(top, 'ls-files', '--others', '--exclude-standard').split('\n').filter(Boolean).map((p) => `?? ${p}`)].join('\n'));
         const items = (id) => { const v = configValues(id); return v && !isNone(v) ? v.map(parseCommandItem) : []; };
         const relatedItems = items('related-test-cmd');
-        const d = TS.decide(changes, { shared: TS.sharedPackages(TS.workspacePackages(top)), related: relatedItems.length > 0 });
+        const pkgs = TS.workspacePackages(top);
+        const d = TS.decide(changes, { shared: TS.sharedPackages(pkgs), related: relatedItems.length > 0 });
+        const suites = { relatedItems, fullItems: items('test-cmd') };
+        // A touched workspace no item covers runs its own test script, or is named UNCOVERED.
+        const loose = TS.uncoveredWorkspaces(d, pkgs, suites);
+        const pmItems = configValues('package-manager');
+        const wsCmd = TS.workspaceTestCmd(TS.packageManager(top, pmItems && !isNone(pmItems) ? pmItems[0] : null));
+        const label = (w) => `${w.dir}${w.name ? ` (${w.name})` : ''}`;
         console.log(`scope=${d.scope}`);
         console.log(`reason=${d.reason}`);
         console.log(`changed=${d.files.length}`);
-        for (const r of TS.runs(d, { relatedItems, fullItems: items('test-cmd') })) console.log(`${r.dir}\t${r.cmd}\t${r.files.join(' ')}`);
+        for (const w of loose.filter((x) => x.test)) console.log(`workspace=${label(w)} has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: ${w.test}`);
+        for (const r of TS.runs(d, suites)) console.log(`${r.dir}\t${r.cmd}\t${r.files.join(' ')}`);
+        for (const w of loose.filter((x) => x.test)) console.log(`${w.dir}\t${wsCmd}\t`);
+        for (const w of loose.filter((x) => !x.test)) console.log(`UNCOVERED\t${label(w)}\thas a changed file no §4 Related or Unit tests item covers, and its package.json has no test script`);
         break;
       }
       case 'baseline': {
