@@ -1859,7 +1859,7 @@ t('DS-279 AC16 "failed" is said only of checks', [ov279.join('\n'), q279.join('\
 const fx = {
   'F-1': prOn(801, [...okChecks(2), { ...red, name: 'e2e' }]),
   'F-2': { ...prOn(802, [...okChecks(2), { ...red, name: 'Lint' }]), fix_tries: [{ try: 1 }, { try: 2 }] },
-  'F-3': { ...prOn(803, okChecks(2), { mergeable: 'CONFLICTING' }), fix_tries: [{ try: 1 }, { try: 2 }] },
+  'F-3': { ...prOn(803, okChecks(2), { mergeable: 'CONFLICTING' }), fix_tries: [{ try: 1, kind: 'conflict' }, { try: 2, kind: 'conflict' }] },
   'F-4': prOn(804, okChecks(2), { mergeable: 'CONFLICTING' }),
   'F-5': { state: 'parked', park: { question: 'which copy?' }, result: { pr: 805 }, fix: { try: 1, of: 2, pr: 805, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
 };
@@ -1986,6 +1986,9 @@ t('DS-420 AC2 a red PR declined for an approving review is in Needs you, as need
   `${Q.prWhy(r280, approval420)?.code} | ${need420(approval420)}`, 'approval | #922 · an approving review is required at abc123456: a person approves it before desk merges it · approve it');
 t('DS-420 AC3 a red PR in conflict says it has a conflict',
   need420(red420(923, {}, { mergeable: 'CONFLICTING' })), '#923 · merge conflict with main · the next pass sends it to a worker, try 1 of 2');
+t('DS-435 AC1 a PR in conflict whose tries all went on a check still has its own conflict try, not the person',
+  need420(red420(924, { fix_tries: [{ try: 1, head: 'h1', kind: 'checks' }, { try: 2, head: 'h1', kind: 'checks' }] }, { mergeable: 'CONFLICTING' })),
+  '#924 · merge conflict with main · the next pass sends it to a worker, try 1 of 2');
 t('DS-420 AC4 a PR the driver stopped rerunning says it is red after that many reruns',
   need420(red420(924, {}, { reruns: { Lint: 2, 'Backend tests': 2, 'CI gate': 2 } })), '#924 · red after 2 reruns: Lint +2 · a worker repairs it next');
 t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r280, ds280['M-4'])} | ${need420(ds280['M-4'])}`, 'null | #904 · check 1 running, 30m · 2 of 3 done');

@@ -89,7 +89,8 @@ head, and not waived above, or one GitHub reports in conflict with its base, has
 requeued for a fix worker on the same branch and PR. That worker's briefing names each failing
 check with its run URL, or the conflict with the files git lists, and the worker gets the fix as its
 task (`AUTOPILOT_TASK`). The try is kept on the ticket as `fix` (`try`, `of`, `what`, `head`) and
-appended to `fix_tries`, and a head gets one try at most. After two tries, or a try whose worker
+appended to `fix_tries`, and a head gets one try at most. A conflict counts only conflict tries, so
+tries spent on a check or a review still leave it two. After two tries, or a try whose worker
 left the head where it was, the PR is not requeued again: the ticket records `stuck`
 (`still red after 2 fix tries: <check>`, or the conflict) and it goes under `WAITING ON YOU`. A check
 §4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
@@ -264,8 +265,8 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   (`undraft.mjs` `buildPark`), so this step builds it. A park that asks anything else stays a park.
 - **A conflicted draft goes to a fix worker, not to `DRAFT`**, where §3 `pr-conflict-unreviewed`
   (no one but the user's handle has reviewed or commented) or `pr-conflict-reviewed` (someone has)
-  is `yes`: it merges `<default>` in, reviews its new head and posts that review, within the same two
-  tries as the fixes above (`fix-tries.mjs` `conflictFix`). A new head it leaves with no review of its
+  is `yes`: it merges `<default>` in, reviews its new head and posts that review, within two tries of
+  its own, one per head (`fix-tries.mjs` `conflictFix`): tries of another kind leave a conflict its own. A new head it leaves with no review of its
   own is a stale review, so it goes to a review worker as above. Such a draft reaches WAITING ON YOU
   only once its tries are spent, as `STUCK` with what the last try reported.
 - **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too

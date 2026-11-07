@@ -112,7 +112,8 @@ const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: triesMa
 export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // A review fix has FIX_TRIES_MAX of its own, counted over review fix tries only, so the conflict,
 // red-check and re-review tries before it leave it its own, within FIX_TRIES_TOTAL tries of every kind
-// that count. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always has one.
+// that count but conflict. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always
+// has one; a conflict has its own FIX_TRIES_MAX on top (conflictTriesMade), so its tries are not counted.
 // A review fix try that recorded what it quoted (`findings`, `gaps`) and whose findings all cleared,
 // none of them still in the review at the head, counts against neither: it moved the PR forward. Only
 // REVIEW_TRIES_CEILING bounds those, so a loop where every fix makes a new finding still ends.
@@ -125,7 +126,8 @@ const reviewTriesMade = (done) => (done ?? []).filter(isReviewTry).length;
 // they quoted, its own and no more than the overall cap leaves.
 function reviewTriesLeft(done) {
   const counted = (done ?? []).filter((x) => !(isReviewTry(x) && quoted(x)));
-  return Math.min(REVIEW_TRIES_CEILING - reviewTriesMade(done), FIX_TRIES_MAX - reviewTriesMade(counted), FIX_TRIES_TOTAL - triesMade(counted));
+  return Math.min(REVIEW_TRIES_CEILING - reviewTriesMade(done), FIX_TRIES_MAX - reviewTriesMade(counted),
+    FIX_TRIES_TOTAL - triesMade(counted.filter((x) => x.kind !== 'conflict')));
 }
 // A finding or gap as compared across heads: its first file:line, the path whole, so one holding
 // `[id]` or `(shop)` is not another file's, and its text with the markup, `F1 ·` label, severity,
@@ -151,12 +153,20 @@ function triesByKind(done) {
   return [...n].map(([k, c]) => `${c} ${k}`).join(', ');
 }
 
-// A conflict with the base, out of draft (fixCall) or in it (conflictFix), and its stuck reason. The
-// reason ends with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as
-// result.summary) when that try was a conflict try whose worker has finished.
+// A conflict with the base, out of draft (fixCall) or in it (conflictFix), and its stuck reason. A
+// conflict has FIX_TRIES_MAX tries of its own, counted over conflict tries only and one per head, so
+// tries of other kinds (a check no worker can clear, a review) never leave it none. The reason ends
+// with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as result.summary) when
+// that try was a conflict try whose worker has finished.
 const conflictTry = (base, files, draft) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null });
-const lastSaid = (t, kind = 'conflict') => (t.fix?.kind === kind && t.fix.finished && t.result?.summary ? `; the last try said: ${t.result.summary}` : '');
-const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(done.length)}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
+const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'conflict');
+export const conflictTriesMade = (done) => conflictTries(done).length;
+const conflictSpent = (done, head) => conflictTriesMade(done) >= FIX_TRIES_MAX || conflictTries(done).some((x) => x.head === head);
+const nextConflictTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: conflictTriesMade(done) + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
+// What the ticket's last try of that kind reported, once its worker has finished; else null.
+export const lastTrySaid = (t, kind = 'conflict') => (t?.fix?.kind === kind && t.fix.finished && t.result?.summary) || null;
+const lastSaid = (t, kind = 'conflict') => (lastTrySaid(t, kind) ? `; the last try said: ${lastTrySaid(t, kind)}` : '');
+const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(conflictTriesMade(done))}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
 
 // t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, stateChecks (§4 State
 // checks, parsed: never sent to a fix worker nor waited on for reruns), operator, builds and
@@ -192,9 +202,8 @@ export function fixCall(t, s, ctx) {
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
     fix = checksFix(mine, notMine, ctx.repo);
   }
-  if (spent(done, fixedAt(done, s.head))) {
-    return conflict ? { call: 'stuck', why: stillInConflict(t, done, ctx.base) } : stillRed(done, split.mine, split.notMine, ctx);
-  }
+  if (conflict) return conflictSpent(done, s.head) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base) } : nextConflictTry(done, s.pr, s.head, fix);
+  if (spent(done, fixedAt(done, s.head))) return stillRed(done, split.mine, split.notMine, ctx);
   return nextTry(done, s.pr, s.head, fix);
 }
 
@@ -453,12 +462,12 @@ export function draftChecksFix(t, { pr, head, failing }, ctx) {
 }
 
 // A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3
-// pr-conflict-unreviewed or -reviewed, goes back to a fix worker under the same tries as fixCall (one
-// per head, FIX_TRIES_MAX per PR). draft: { pr, head, base, files } (files: [file] | null).
+// pr-conflict-unreviewed or -reviewed, goes back to a fix worker under the same conflict tries as
+// fixCall's (one per head, FIX_TRIES_MAX per PR). draft: { pr, head, base, files } (files: [file] | null).
 export function conflictFix(t, { pr, head, base, files }) {
   if (!head) return null;
   const done = t.fix_tries ?? [];
-  return spent(done, fixedAt(done, head)) ? { call: 'stuck', why: stillInConflict(t, done, base, files) } : nextTry(done, pr, head, conflictTry(base, files, true));
+  return conflictSpent(done, head) ? { call: 'stuck', why: stillInConflict(t, done, base, files) } : nextConflictTry(done, pr, head, conflictTry(base, files, true));
 }
 
 // A draft whose §4 Check builds build failed at a head behind its base (undraft.mjs `sync`) goes to a
@@ -532,6 +541,8 @@ export function fixBrief(t) {
       ? `Your PR #${f.pr} is a draft on this branch, and it conflicts with ${f.base}, so the pass cannot take it out of draft. Its review was for the old head, so the new head needs one of its own.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
     lines.push(f.files?.length ? `Conflicting files: ${f.files.join(', ')}.` : `The conflicting files were not listed: \`git merge-tree --write-tree --name-only origin/${f.base} HEAD\` names them.`);
+    lines.push(`A conflicting file a generator writes is not resolved by hand where §4 Codegen is set: take ${f.base}'s version of it (\`git checkout --theirs <file>\` during the merge), run §4 Codegen (\`desk-env cmds codegen-cmd\`) once the other conflicts are resolved, and commit what it regenerates with the merge.`,
+      `Where the branch is far behind ${f.base} and one merge leaves too much in conflict, merge ${f.base} in steps (an older commit of it first, then the next), pushing once the last merge is done.`);
   } else if (f.kind === 'sync') {
     lines.push(`Your PR #${f.pr} is a draft on this branch, and its head ${String(f.head).slice(0, 12)} is behind ${f.base}. Its check build failed there: ${f.build}`, '',
       `Merge origin/${f.base} into your branch (git merge, never a rebase or a force push). A merge git reports clean can still break the branch: two migrations with the same parent, a renamed symbol, a changed signature or fixture. ` +
