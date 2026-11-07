@@ -133,7 +133,9 @@ manifest or lockfile and no repo configuration (`undraft.mjs` `restsOnCarries`).
 and the driver's log name the base range checked, and say the head itself was not reviewed. Otherwise
 the head is reviewed again, as with no verdict. A repo running desk-gate's `desk-review verdict` check
 gets no saving from a carry, as with the carry above: that check reads only a verdict posted on the
-head, so a head it holds red is reviewed again.
+head, so a head it holds red is reviewed again. That limit is kept on purpose: the gate is what a
+writer's review attests at the exact head, and a carry the orchestrator decides is not an attestation
+it can check, so `review-gate.mjs` still never reads one.
 
 The driver does not wait on GitHub's review decision: desk opens PRs from the person's own account,
 and GitHub never lets an author approve their own PR. A person's approval holds a PR in two cases only.
