@@ -280,7 +280,7 @@ put(join(nested, 'source.json'), JSON.stringify({ url: 'https://claude.ai/artifa
 put(join(nested, 'project/index.html'), '<h1>home</h1>');
 put(join(nested, 'project/about/team.html'), '<h1>team</h1>');
 t('collect: a page\'s home is its shallowest HTML, not the first alphabetically', collect(nested).home, 'project');
-t('collect: neither a canvas nor a page is refused', throws(() => collect(join(T, 'state/designs'))).startsWith('2:no canvas.json or page'), true);
+t('collect: neither a canvas, a deck nor a page is refused', throws(() => collect(join(T, 'state/designs'))).startsWith('2:no canvas.json, deck.json or page'), true);
 
 // ---- import: a design's self-contained HTML export ----
 const IST = join(T, 'import-state');
