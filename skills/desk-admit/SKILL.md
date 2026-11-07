@@ -69,12 +69,15 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 
 It triages each ticket afresh, which takes a minute or two each, as many at once as config §3b
 "Triage concurrency" allows, and admits each one as soon as it and its blockers in the call are
-triaged (at one at a time, a ticket behind another in the call waits for the last triage): give the
-call your longest foreground timeout, and if it moves to the background, wait for
-its notification rather than running it again. Exit 0: every ticket was admitted
+triaged (at one at a time, a ticket behind another in the call waits for the last triage).
+**With more than 3 tickets, start the call in the background** (`run_in_background`, at the longest
+timeout the tool takes) and wait for its notification; with 3 or fewer, give it your longest
+foreground timeout, and if it moves to the background, wait the same way. Never run it again while
+it runs. It prints each line as it happens, in the order things happen: `triage: started`, `triage:
+done` and `waiting:` lines are progress, and its last line is a `summary:` of the call. Exit 0: every ticket was admitted
 or was already where it belongs (`<TICKET> is already in batch <B> (<state>)`, its epic's feature
 batch included: ask nothing about it), any epic had its feature batch started, and any other epic is one to
-plan (step 1b). Print its lines, and stop unless there is an epic to plan or a blocker to admit next.
+plan (step 1b). Print its lines, less the progress, and stop unless there is an epic to plan or a blocker to admit next.
 
 A ticket blocked by one in no batch is admitted held by it (`waiting for <B>, outside the batch, until
 it is Done and on <base>`), and one blocked by a ticket in another live batch joins that batch. **An
