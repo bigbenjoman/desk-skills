@@ -40,7 +40,7 @@ integration suite in that band. The lock is what stops two suites landing in the
 is the case that actually kills the machine. It blocks until it frees and releases on exit,
 including on a crash: **do not add a timeout and do not work around a wait; waiting is the
 feature.** Blocked over ~20 minutes: say so in your output rather than bypassing it. If
-`with-lock.sh` is refused, check headroom, keep the cap, proceed, and **say in your output that you
+`with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you
 ran unlocked**.
 
 The typecheck takes the same lock, so typecheck and tests never overlap. Screenshot capture uses

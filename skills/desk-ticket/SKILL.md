@@ -125,7 +125,8 @@ answer of "not now" goes in with `not-now.mjs add`. `desk-autopilot` *Ask or tak
 
 **Decisions that stay questions go in a question carousel.** Ask with `AskUserQuestion`: one
 question per decision, your pick first labelled `(Recommended)`, a one-line trade-off on each
-option, rather than a prose list of defaults.
+option, rather than a prose list of defaults. With no recommendation, label no option
+`(Recommended)`, and say in the question what would settle it.
 
 ## The eight gates
 

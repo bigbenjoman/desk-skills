@@ -201,8 +201,9 @@ How to turn what you find into rows:
   changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
   each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the
   user confirms or writes `none`. **The row must be set**: `none` is a fine answer, but while it is
-  unset the merge driver refuses to start and clearance parks every PR. Say that autopilot and clearance will never merge a PR that
-  touches a held path: they report it with the reason and a person merges.
+  unset the merge driver refuses to start and clearance parks every PR. Say that clearance never merges a held PR, and
+  autopilot merges one only when `merge-hold-routine` is `yes` and the hold's routine passed at that head;
+  otherwise they report it with the reason and a person merges.
 
   **Then propose the holds on how CI checks things**, so a PR that changes the checks is never
   merged without a person. These are defaults the user confirms or declines one by one; a

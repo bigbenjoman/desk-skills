@@ -35,6 +35,7 @@ const REWRITTEN = [
   ['DS-457', '**Then §3b** (five rounds)', 1], // every row of the template's §3b table is asked
   ['DS-457', 'runs unchecked, as it does today', 1], // stated as the rule now stands
   ['DS-457', 'backed up first; today the unpinned', 1],
+  ['DS-511', 'Say that autopilot and clearance will never merge a PR', 1], // a hold's routine lets autopilot merge it
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 33, minRows: 40, rewritten: REWRITTEN });
 
