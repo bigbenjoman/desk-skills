@@ -7,7 +7,7 @@ file for those steps. The config, the diff hygiene block (§1) and the pre-push 
 in `opening.md`, beside this file, and the screenshots in `screenshots.md`.
 
 The §4 rows this file names are read with `desk-env cmds typecheck-cmd`, `desk-env cmds lint-cmd`,
-`desk-env get tracker`, `desk-env list staging`, `desk-env get local-review` and
+`desk-env get tracker`, `desk-env list staging`, `desk-env review-cmd` and
 `desk-env get clean-verdict`.
 
 ## 2. The body

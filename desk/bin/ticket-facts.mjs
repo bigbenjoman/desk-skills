@@ -33,7 +33,7 @@ import { join } from 'node:path';
 import { ghRepo, stateDir, ticketKind } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 import { baseRef, designFact } from './desk-design.mjs';
-import { SIZES, epicFact } from './desk-q-eta.mjs';
+import { SIZES, epicFact, blockersFact } from './desk-q-eta.mjs';
 
 const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').pop();
 const jira = (args) => JSON.parse(execFileSync('desk-jira', [...args, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }));
@@ -55,11 +55,6 @@ function epicOf(issue, kids = new Map()) {
   return out;
 }
 
-const blockersOf = (issue) => (issue.fields?.issuelinks ?? [])
-  .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
-  .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new',
-    summary: l.inwardIssue.fields?.summary ?? null, type: l.inwardIssue.fields?.issuetype?.name ?? null }));
-
 if (process.argv[2] === '--blockers') {
   let failed = 0;
   for (const key of process.argv.slice(3)) {
@@ -68,7 +63,7 @@ if (process.argv[2] === '--blockers') {
     try { rec = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: no readable triage record at ${path}`); continue; }
     let issue;
     try { issue = jira(['get', key]); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: ${lastLine(e) || 'desk-jira get failed'}`); continue; }
-    rec.blockers = blockersOf(issue);
+    rec.blockers = blockersFact(issue);
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(`[facts] ${key}  blocked by ${rec.blockers.map((b) => `${b.key} (${b.category})`).join(', ') || 'nothing'}`);
   }
@@ -135,7 +130,7 @@ if (kind.kind !== 'tracker') {
   }
   if (issue) {
     const links = issue.fields?.issuelinks ?? [];
-    rec.blockers = blockersOf(issue);
+    rec.blockers = blockersFact(issue);
     rec.other_links = links.filter((l) => !/block/i.test(l.type?.name ?? '') && !/^relates$/i.test(l.type?.name ?? '')).length;
     const sizeField = Object.entries(issue.names ?? {}).find(([, n]) => /^(t-shirt )?size$/i.test(String(n).trim()))?.[0];
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';
