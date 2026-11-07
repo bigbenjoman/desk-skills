@@ -33,13 +33,21 @@ for (let i = 0; i < args.length; i += 2) {
   }
 }
 
-const claude = (name, ...cmd) => {
+const claude = (name, pick, ...cmd) => {
   const r = spawnSync('claude', cmd, { encoding: 'utf8', timeout: CLAUDE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] });
-  if (r.status === 0 && r.stdout.trim()) parts[name] = r.stdout.trim();
+  if (r.status === 0 && r.stdout.trim()) parts[name] = pick(r.stdout.trim());
   else unread.push(`claude ${cmd.join(' ')}`);
 };
-claude('cli', '--version');
-claude('account', 'auth', 'status');
+// Only who is signed in, where the status is JSON: a field such as a token's expiry would change the
+// hash on every spawn without changing what the preflight proves.
+const identity = (s) => {
+  let d;
+  try { d = JSON.parse(s); } catch { return s; }
+  if (!d || typeof d !== 'object') return s;
+  return JSON.stringify(Object.entries(d).filter(([k]) => /email|org|account|uuid|auth|subscription|loggedIn/i.test(k)).sort(([a], [b]) => a.localeCompare(b)));
+};
+claude('cli', (s) => s, '--version');
+claude('account', identity, 'auth', 'status');
 
 // A dirty install's commit does not say what was installed, so its time stands in for the difference.
 const installed = readInstalled();

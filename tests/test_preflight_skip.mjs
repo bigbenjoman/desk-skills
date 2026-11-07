@@ -127,6 +127,9 @@ const whenChanged = (name, change, undo, extra = {}) => {
 };
 whenChanged('CLI version', () => say('version', '2.0.1 (Claude Code)'), () => say('version', '2.0.0 (Claude Code)'));
 whenChanged('account', () => say('account', '{"loggedIn":true,"email":"b@example.com"}'), () => say('account', '{"loggedIn":true,"email":"a@example.com"}'));
+say('account', '{"loggedIn":true,"email":"a@example.com","expiresAt":"later"}');
+t('a status field that is not who is signed in changes nothing', ran(preflight()), SKIPPED);
+say('account', '{"loggedIn":true,"email":"a@example.com"}');
 whenChanged('desk commit', () => installed({ commit: 'c2', dirty: false, at: 'x' }), () => installed({ commit: 'c1', dirty: false, at: 'x' }));
 whenChanged('dirty install', () => installed({ commit: 'c1', dirty: true, at: 'later' }), () => installed({ commit: 'c1', dirty: false, at: 'x' }));
 whenChanged('model', () => {}, () => {}, { AUTOPILOT_MODEL: 'opus' });
