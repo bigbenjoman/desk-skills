@@ -438,7 +438,9 @@ check "DS-390 AC1 and nothing wider" 'no "git push --force-with-lease origin fix
   "git push --force-with-lease=main:$SHA origin main" "git push --force origin fix/fix-thing" "git push -f origin fix/fix-thing" "git push origin +fix/fix-thing" "$LEASE --force" "git -C $W ${LEASE#git }"'
 check "DS-390 AC4 with the grant the pushed branch is still not rebased onto the base" 'no "git rebase origin/main" && ok "git merge origin/main"'
 check "DS-390 AC1 the only allow rule added is the push, in each spelling of git" \
-  '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-nogrant.json") | map(select(test(\"git push --force-with-lease=fix/fix-thing:$SHA origin fix/fix-thing\\\\)$\") | not))" "$T/ws.json")" = "[]" ] && allows "Bash($LEASE)"'
+  '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-nogrant.json") | map(select(test(\"(git push|push-retry.mjs|push-retry.mjs --more) --force-with-lease=fix/fix-thing:$SHA origin fix/fix-thing\\\\)$\") | not))" "$T/ws.json")" = "[]" ] && allows "Bash($LEASE)"'
+check "DS-496 push-retry runs the one-off lease, and no other" \
+  'ok "node $B/push-retry.mjs ${LEASE#git push }" "node $B/push-retry.mjs --more ${LEASE#git push }" && no "node $B/push-retry.mjs --force-with-lease origin fix/fix-thing"'
 # Spent: origin's branch moved off the lease, so the next settings leave the grant out.
 git -C "$T/repo" commit -q --allow-empty -m pushed; git -C "$T/repo" update-ref refs/remotes/origin/fix/fix-thing HEAD
 settings '`bash tests/run.sh`' '' "$PUSH3"
@@ -449,6 +451,18 @@ check "DS-390 a grant for another branch allows nothing here" '[[ "$out" != *CON
 rm -f "$DESK_QUEUE"
 settings '`bash tests/run.sh`' '' "$(rows3 git-push=yes git-force-with-lease=yes)"
 check "DS-390 AC4 lease yes: a pushed branch still rebases" 'ok "git rebase origin/main" "git push --force-with-lease origin fix/fix-thing"'
+RETRY="node $B/push-retry.mjs"
+check "DS-496 push-retry runs each push the worker may make, and --more each of them" \
+  'ok "$RETRY origin fix/fix-thing" "$RETRY -u origin fix/fix-thing" "$RETRY --set-upstream origin fix/fix-thing" "$RETRY --force-with-lease origin fix/fix-thing" "$RETRY --more origin fix/fix-thing" "$RETRY --more --force-with-lease origin fix/fix-thing"'
+check "DS-496 and nothing wider" 'no "$RETRY origin main" "$RETRY origin fix/other" "$RETRY --force origin fix/fix-thing" "$RETRY origin fix/fix-thing --force" "$RETRY" "$RETRY --more"'
+settings '`bash tests/run.sh`' '' "$PUSH3"
+check "DS-496 no lease grant: push-retry's lease form is refused, its plain form is not" 'no "$RETRY --force-with-lease origin fix/fix-thing" && ok "$RETRY origin fix/fix-thing"'
+settings '`bash tests/run.sh`' '' "$(rows3 git-push=no)"
+check "DS-496 no git-push grant: push-retry is refused too" 'no "$RETRY origin fix/fix-thing" "$RETRY --more origin fix/fix-thing"'
+settings '`bash tests/run.sh`' '' "$(rows3 git-push=yes git-force-with-lease=yes)"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
+check "DS-496 a dry run: push-retry is refused in every form, whatever §3 grants" \
+  '[ $rc -eq 0 ] && no "$RETRY origin fix/fix-thing" "$RETRY -u origin fix/fix-thing" "$RETRY --more origin fix/fix-thing" "$RETRY --force-with-lease origin fix/fix-thing" && [ "$(jq "[.permissions.allow[] | select(test(\"push-retry\"))] | length" "$T/ws.json")" = 0 ]'
 git -C "$T/repo" update-ref -d refs/remotes/origin/fix/fix-thing
 settings '`bash tests/run.sh`' '' "$PUSH3"
 check "DS-390 AC4 a branch not on origin yet rebases, lease ask or not" 'ok "git rebase origin/main"'

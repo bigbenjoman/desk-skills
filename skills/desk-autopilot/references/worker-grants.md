@@ -24,6 +24,8 @@ a worker cannot:
 - push anything but the exact commands `git push [-u|--set-upstream] origin <its branch>` (and
   `git push --force-with-lease origin <its branch>` where §3 `git-force-with-lease` is `yes`); bare
   `git push` is refused;
+- run `push-retry.mjs`, which retries a 5xx, for anything but those same pushes, with or without
+  `--more`;
 - rebase onto the base a branch already on origin, unless §3 `git-force-with-lease` is `yes`: it
   takes `git merge origin/<base>` instead;
 - run `git config`, `git -c …`, `git -C` on anything but its own worktree (and there only the
