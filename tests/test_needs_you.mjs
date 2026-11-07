@@ -62,6 +62,7 @@ function put(name, r) {
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
@@ -943,12 +944,74 @@ put('chi', { port: 5200, beat: 1, supervised: true, merge: 'yes', tickets: {
 } });
 const chi = Object.fromEntries(N.collect({ word: 'chi' }).items.map((i) => [i.t.key, i]));
 t('DS-379 AC3 a stuck capture try says what to do', chi['C-1']?.need,
-  'PR #151 is a draft, and desk\'s capture try could not take 2 of its screenshots. Take them and upload them to the PR; the next pass then takes it out of draft.');
+  'PR #151 is a draft, and desk\'s capture try could not take 2 of its screenshots, so nothing desk has can fill their cells. Edit the PR body so no cell is left; the next pass then takes it out of draft.');
 t('DS-379 AC3 its note names each screen and the worker\'s reason, whole', chi['C-1']?.note, `(Not taken: s-2-before.png, s-2-after.png. The capture try said: ${said379})`);
 const c1Line = cli('list', 'chi').out.split('\n').find((l) => l.startsWith('chi C-1 pr')) ?? '';
 t('DS-379 AC3 the listed line keeps the need and the note whole', c1Line.includes(`| ${chi['C-1'].need} ${chi['C-1'].note} |`), true);
 t('DS-379 AC3 one screen with nothing said still names it', `${chi['C-2']?.need} ${chi['C-2']?.note}`,
-  'PR #152 is a draft, and desk\'s capture try could not take one of its screenshots. Take it and upload it to the PR; the next pass then takes it out of draft. (Not taken: a-after.png.)');
+  'PR #152 is a draft, and desk\'s capture try could not take one of its screenshots, so nothing desk has can fill its cell. Edit the PR body so no cell is left; the next pass then takes it out of draft. (Not taken: a-after.png.)');
+
+// ---- DS-492: done on a screenshot item reads the PR's body, not its draft state, and the person is
+// never asked to upload.
+const shotDraft = (pr, why, extra = {}) => ({ state: 'done', result: { pr }, pr_status: { pr, state: 'OPEN', isDraft: true, head: 'h'.repeat(40), checks: [] },
+  undraft: { call: 'person', why, action: `edit the body of #${pr} so no \`_drag <file>_\` cell is left`, sha: 'h'.repeat(40), pr }, ...extra });
+const cellWhy = '1 screenshot cell(s) left: a.png, whose files desk holds but could not put in the body';
+put('sigma', { port: 5300, beat: 1, supervised: true, merge: 'yes', prReady: 'yes', tickets: {
+  'H-1': shotDraft(171, cellWhy),
+  'H-2': capturePr(172, ['a-after.png'], 'needs a signed-in admin'),
+  'H-3': shotDraft(173, cellWhy),
+  'H-4': { ...capturePr(174, ['a-after.png'], 'needs a signed-in admin'), fix_tries: [{ try: 1, head: 'h'.repeat(40), kind: 'capture' }] },
+  'H-5': { ...shotDraft(175, 'its review verdict at aaaaaaaaa is not clean (p2=1)'), undraft: { call: 'person', why: 'its review verdict at aaaaaaaaa is not clean (p2=1)', action: 'settle the findings or gaps on #175', pr: 175 } },
+} });
+const sig = () => Object.fromEntries(N.collect({ word: 'sigma' }).items.map((i) => [i.t.key, i]));
+t('DS-492 AC3 a cell desk holds but could not place is named, with why, and no upload is asked for', sig()['H-1']?.need,
+  'PR #171 is a draft: 1 screenshot cell(s) left: a.png, whose files desk holds but could not put in the body. Edit the body of #171 so no `_drag <file>_` cell is left; the next pass then picks it up.');
+onGitHub(171, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'Before | After\n<img alt="a" src="https://x/a.png">\n\nA cell reads `_drag <file>_`.' });
+const fine = N.record({ word: 'sigma', ticket: 'H-1', action: 'done' });
+t('DS-492 AC4 done with no cell in the body is accepted, though the PR is a draft', `${fine.ok} ${fine.line}`,
+  'true sigma H-1: GitHub shows no screenshot cell left in PR #171\'s body, so it is off your list; the next pass takes it out of draft.');
+t('DS-492 AC4 and it leaves the list, as desk\'s to undraft', `${sig()['H-1']?.kind ?? 'none'} ${queueOf('sigma').tickets['H-1'].undraft.call}`, 'none filled');
+onGitHub(172, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'done' });
+const fine2 = N.record({ word: 'sigma', ticket: 'H-2', action: 'done' });
+t('DS-492 AC4 a stuck capture try clears the same way', `${fine2.ok} ${queueOf('sigma').tickets['H-2'].stuck ?? null} ${sig()['H-2']?.kind ?? 'none'}`, 'true null none');
+const stateSigma = loadRepos().find((x) => x.slug === 'acme__sigma').stateDir;
+mkdirSync(join(stateSigma, 'images', 'H-3'), { recursive: true });
+writeFileSync(join(stateSigma, 'images', 'H-3', 'held.png'), '');
+onGitHub(173, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag held.png_ | _drag gone.png_ | _drag gone.png_' });
+const three = N.record({ word: 'sigma', ticket: 'H-3', action: 'done' });
+t('DS-492 AC5 done with cells left is refused, naming how many and what desk does about each', `${three.ok} ${three.line}`,
+  'false sigma H-3: GitHub still shows 3 screenshot cell(s) in PR #173\'s body, so it stays on your list: held.png: desk holds its file but could not put it in the body; gone.png: a capture worker takes it at the next pass.');
+t('DS-492 AC5 the item notes the cells, not the draft', /GitHub still showed it with 3 screenshot cell\(s\) left\.\)$/.test(sig()['H-3']?.note ?? ''), true);
+onGitHub(174, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag a-after.png_' });
+const spent = N.record({ word: 'sigma', ticket: 'H-4', action: 'done' });
+t('DS-492 AC5 a cell the capture try could not take says so', spent.line.endsWith('a-after.png: desk\'s capture try could not take it.'), true);
+onGitHub(175, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'no cells' });
+const review5 = N.record({ word: 'sigma', ticket: 'H-5', action: 'done' });
+t('DS-492 negative control: done on a draft held for another reason is still refused', `${review5.ok} ${/still shows PR #175 unmerged, still a draft/.test(review5.line)}`, 'false true');
+// A repo whose §4 Evidence workflow fills the cells, and whose §3 pr-ready leaves undrafting to the person.
+const noStart = (pr) => `its evidence workflow \`pr-evidence.yml\` could not start: HTTP 502 for #${pr}`;
+const EVC = '_drag e-after.png_\n\n```evidence\ne-after.png | after | /x | 1280\n```\n';
+put('tau', { port: 5310, beat: 1, supervised: true, merge: 'yes', prReady: 'no', evidence: 'pr-evidence.yml', tickets: {
+  'U-1': shotDraft(181, noStart(181)),
+  'U-2': shotDraft(182, noStart(182)),
+  'U-3': { ...shotDraft(183, '1 screenshot cell(s) left: u.png, whose files are saved, but config §3 pr-images leaves their upload to you'), images_reported: true },
+} });
+onGitHub(181, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: 'all in' });
+const tau1 = N.record({ word: 'tau', ticket: 'U-1', action: 'done' });
+t('DS-492 AC4 an evidence workflow that could not start is a screenshot item too, and done with no cell left is accepted', tau1.ok, true);
+t('DS-492 AC4 with §3 pr-ready not yes, done says the undraft is the person\'s, not the next pass\'s', tau1.line.endsWith('so it is off your list; config §3 pr-ready is "no", so the next pass leaves undrafting #181 to you.'), true);
+onGitHub(182, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: EVC });
+t('DS-492 AC5 a cell the evidence workflow fills: done names the workflow', N.record({ word: 'tau', ticket: 'U-2', action: 'done' }).line.endsWith('e-after.png: `pr-evidence.yml` takes it at the next pass.'), true);
+const stateTau = loadRepos().find((x) => x.slug === 'acme__tau').stateDir;
+mkdirSync(join(stateTau, 'evidence-runs'), { recursive: true });
+writeFileSync(join(stateTau, 'evidence-runs', `182-${'h'.repeat(40)}.json`), JSON.stringify({ workflow: 'pr-evidence.yml', runId: null, url: null, at: minsAgo(60), cells: 1 }));
+mkdirSync(join(stateTau, 'images', 'U-2'), { recursive: true });
+writeFileSync(join(stateTau, 'images', 'U-2', 'e-after.png'), '');
+t('DS-492 AC5 once it ran and left the cell, done says so', N.record({ word: 'tau', ticket: 'U-2', action: 'done' }).line.endsWith('e-after.png: `pr-evidence.yml` ran and could not take it.'), true);
+mkdirSync(join(stateTau, 'images', 'U-3'), { recursive: true });
+writeFileSync(join(stateTau, 'images', 'U-3', 'u.png'), '');
+onGitHub(183, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag u.png_' });
+t('DS-492 AC5 a file whose upload waits for approval: done says so', N.record({ word: 'tau', ticket: 'U-3', action: 'done' }).line.endsWith('u.png: its file is saved, and config §3 pr-images leaves its upload to you.'), true);
 
 // ---- DS-380: a parked ticket moved into the repo's other running batch, on that batch's base
 put('omega', { port: 3900, beat: 1, supervised: true, tickets: {

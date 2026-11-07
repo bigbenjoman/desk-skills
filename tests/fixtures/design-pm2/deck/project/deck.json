@@ -1,0 +1,12 @@
+{
+  "v": 4,
+  "createdOnFiles": { "v": 1, "at": "2026-10-24T14:30:00Z" },
+  "lists": "css",
+  "title": "Prana Motion online",
+  "order": ["short", "who", "gaps"],
+  "faces": {
+    "newsreader": { "family": "Newsreader", "href": "https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300..600;1,300..500&display=swap" },
+    "ibm-plex-mono": { "family": "IBM Plex Mono", "href": "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" }
+  },
+  "designSystems": []
+}

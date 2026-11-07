@@ -388,6 +388,9 @@ function draftNeed(q, t, needs, merging, now = Date.now()) {
   if (old) return merging([`${old.name} pending ${since(old.age)}`, WARN], [' · stuck: the next pass re-runs it', null]);
   if (u?.call === 'wait') return merging(['draft', null], [` · ${/^checks/.test(u.why ?? '') ? 'checks running' : 'GitHub is still checking for conflicts'}, out of draft once green`, null]);
   if (u?.call === 'ready' || u?.call === 'failed') return merging(['draft', null], [' · out of draft at the next pass', null]);
+  // `filled`: the person said done on its screenshots and GitHub showed no cell left (needs-you.mjs);
+  // whether the pass then undrafts it is §3 pr-ready's, which the next pass reads.
+  if (u?.call === 'filled') return merging(['draft', null], [' · screenshots in, the next pass takes it on', null]);
   if (t.key === q?.spine) return needs({ code: 'spine' }, ['draft', null], [' · feature spine: approve its specs', null]);
   // A pass from before skippedOnly recorded skipped checks as not green: its checks say otherwise.
   if (u?.call === 'person' && /^its checks are not green/.test(u.why ?? '') && skippedOnly(prStatusOf(t)?.checks)) return needs({ code: 'skipped' }, ['draft', null], [` · ${SKIPPED_ON_DRAFT}: undraft #${t.result.pr}`, null]);
