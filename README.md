@@ -362,6 +362,24 @@ node ~/.claude/desk/bin/bench-blind.mjs export --tasks <tasks.json> [--out <dir>
 node ~/.claude/desk/bin/bench-blind.mjs join --tasks <tasks.json> [--out <dir>] [--dest <dir>]
 ```
 
+**`bench-report.mjs`** writes one report per bench run to `<out>/report.md`, with each arm beside the
+Phase 0 baseline. For each arm it shows the tasks accepted out of the tasks run, the mean blind score
+from `joined.json`, and the runs that failed, which count in no other figure. Per accepted task, it
+gives the median uncached input, cache-write, cache-read and output tokens, and the median quota
+points per account. The baseline column comes from `phase0-report.mjs`'s output saved as
+`<out>/phase0-baseline.txt` (or `--baseline <file>`). It holds the baseline's tokens per accepted
+ticket, its 7-day quota points divided by the tickets it accepted, and its fix tries per accepted
+ticket, and it names the baseline's last day. With no baseline, the column reads "no baseline" and
+the report gives the command that produces one. Until the scores are joined, the score reads "not
+scored". A run the cap or budget never started is listed as not run. When the arms did not run the
+same tasks, the report puts no two arms side by side: each arm gets its own table beside the
+baseline. The report states figures and gives no verdict:
+
+```
+node ~/.claude/desk/bin/phase0-report.mjs --days 7 > <out>/phase0-baseline.txt
+node ~/.claude/desk/bin/bench-report.mjs --tasks <tasks.json> [--out <dir>] [--blind <dir>] [--baseline <file>]
+```
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
