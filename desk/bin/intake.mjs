@@ -331,12 +331,12 @@ const doneInSearch = (issue) => (issue?.fields?.status?.statusCategory?.key === 
 // done, else null, and `blockers`, its Blocks links (blockersFact), which order the triages. Only a
 // tracker key is read, and a read that fails is neither: triage reads the ticket and reports it.
 function readJira(key) {
-  const none = { done: null, blockers: [] };
+  const none = { done: null, blockers: [], epic: false };
   const k = E.ticketKind(key);
   if (!k.ok || k.kind !== 'tracker') return none;
   const r = spawnSync('desk-jira', ['get', key, '--json'], { encoding: 'utf8', env: process.env, maxBuffer: 64 << 20 });
   if (r.status !== 0) return none;
-  try { const issue = JSON.parse(r.stdout); return { done: doneInSearch(issue), blockers: blockersFact(issue) }; } catch { return none; }
+  try { const issue = JSON.parse(r.stdout); return { done: doneInSearch(issue), blockers: blockersFact(issue), epic: isEpic(issue.fields?.issuetype) }; } catch { return none; }
 }
 
 // Whether `path` is on origin's `base`, as the passes fetch it.
@@ -615,9 +615,10 @@ function joinFeature(key, epic, { by }) {
 
 // Up to triageConcurrency() triages run at once, a ticket's Jira blockers dispatched before it, and each
 // ticket is placed as soon as its triage is done and every blocker its record names in this call is
-// placed or refused. One at a time keeps a run in sequence: triages in the order given, and a ticket
-// behind another in this call placed after the last triage, so only a free ticket is placed early. A
-// triage at a usage limit starts no more: those in flight finish, and the rest are named to admit again.
+// placed or refused, and every epic in this call has started or been refused. One at a time keeps a run
+// in sequence: triages in the order given, and a ticket behind another in this call placed after the
+// last triage, so only a free ticket is placed early. A triage at a usage limit starts no more: those
+// in flight finish, and the rest are named to admit again.
 // Whichever finishes first, the lines read in the order given, then what placement said.
 async function byHand(keys, { state, by, front, now }) {
   const lines = [];
@@ -657,7 +658,7 @@ async function byHand(keys, { state, by, front, now }) {
     if (q?.tickets?.[key]) { early.get(key).push(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`); continue; }
     const jira = readJira(key);
     if (jira.done) { early.get(key).push(`${key} is already done in Jira (${jira.done}): nothing triaged or admitted`); continue; }
-    links[key] = { blockers: jira.blockers };
+    links[key] = { blockers: jira.blockers, epic: jira.epic };
   }
   // Whether `key` needs no triage, being in another batch: asked when its turn comes, since an epic
   // started in this call may have just taken it into its feature batch.
@@ -753,8 +754,11 @@ async function byHand(keys, { state, by, front, now }) {
   const order = k === 1 ? Object.keys(links) : blockersFirst(links);
   // Tickets placement has taken, whether it admitted them or not.
   const tried = new Set();
-  // A child waits for its epic in this call too, whose feature batch it joins once that is started.
-  const waits = (key) => [...openBlockers(recs[key]), ...(recs[key].epic?.key ? [recs[key].epic.key] : [])]
+  // Nothing is placed before an epic of this call settles: its start may take the ticket into its feature
+  // batch, or route it there, whatever the ticket's record says. A record naming an epic Jira's read
+  // did not show as one waits for it too.
+  const epicAhead = () => Object.keys(links).some((key) => links[key].epic && unsettled.has(key));
+  const waits = (key) => epicAhead() || [...openBlockers(recs[key]), ...(recs[key].epic?.key ? [recs[key].epic.key] : [])]
     .some((b) => b !== key && (unsettled.has(b) || (k === 1 && tried.has(b))));
   const settle = (key) => { tried.add(key); place(key); delete recs[key]; unsettled.delete(key); };
   // Places every triaged ticket with nothing in this call left to wait for, in triage order, until

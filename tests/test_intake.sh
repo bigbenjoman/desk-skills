@@ -972,6 +972,20 @@ check "DS-506 AC6: and a ticket behind another is placed after the free ones, as
 echo 0.3 > "$T/recs/JX-2.sleep"; echo 0.3 > "$T/recs/JX-3.sleep"
 pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit JX-1 JX-3 JX-2 --by ben)
 check "DS-506: with more than one at once, a blocker Jira links is triaged before what it blocks" '[ "$(tail -1 "$T/triage.calls")" = JX-1 ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
+# AC7: a subtask the epic lists has no epic on its record, and is named before it: nothing is placed
+# until the epic has started. SP-3 is named between them, and SP-4 is blocked by a child the call leaves out.
+epicget(){ printf '{"key":"%s","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1},"status":{"name":"To Do","statusCategory":{"key":"new"}}}}\n' "$1" > "$T/get/$1.json"; }
+rec SP-1 A '"type":"Epic","branch":"feat/SP-1-subtask"'; epicget SP-1; rec SP-2 A; rec SP-3 A; rec SP-5 A; rec SP-4 A '"blockers":[{"key":"SP-5","category":"new"}]'
+printf 'SP-2\nSP-5\n' > "$T/children/SP-1"
+cat > "$T/claude.out" <<'EOF'
+{"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: the AC1 spec\", \"owners\": {\"AC1\": \"SP-2\"}}"}
+EOF
+pool ''; out=$(admit SP-2 SP-3 SP-4 SP-1 --by ben); rc=$?
+check "DS-506 AC7: an epic named last still starts, with the subtask it lists in its feature batch and not the standing one" \
+  'grep -q "^started feature batch SP-1 on feat/SP-1-subtask" <<< "$out" && [ "$(eget SP-1 tickets.SP-2.admitted_by)" = ben ] && [ "$(qget tickets.SP-2)" = undefined ]'
+check "DS-506 AC6: a ticket between them is placed once the epic has started, as today" '[ "$(started SP-1)" = 0 ] && [ "$(qget tickets.SP-3.state)" = triaged ]'
+check "DS-506 AC7: a ticket blocked by a child the call leaves out joins the feature batch it routes to" \
+  '[ "$(qget tickets.SP-4)" = undefined ] && [ "$(eget SP-1 tickets.SP-4.admitted_by)" = ben ] && grep -q "^admitted SP-4 by ben into feature batch SP-1 " <<< "$out"'
 # AC8: the spawn gate holding brings the pool down to one.
 for k in MA MB MC; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
 pool 3; out=$(DESK_MEM_AVAIL_GB=2 admit MA MB MC --by ben); rc=$?
