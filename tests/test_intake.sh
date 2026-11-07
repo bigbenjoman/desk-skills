@@ -1013,6 +1013,20 @@ wait "$pid"; rc=$?
 out=$(sed -E 's/\([0-9]+s\)$/(t)/' "$T/admit.out")
 check "DS-507 AC2: each line is printed in order while the run is still going" '[ "$running" -eq 0 ] && [ "$sofar" = "$(printf "%s\n" "triage: started SL-1 (1/4 running)" "triage: started SL-2 (2/4 running)" "triage: done SL-1 lane A (t)" "admitted SL-1 by ben into batch b1 (lane A, size S)" "triage: started SL-3 (2/4 running)" "triage: done SL-3 lane A (t)" "waiting: SL-3 for blocker SL-2" "triage: started SL-4 (2/4 running)" "triage: done SL-4 lane C (t)" "not admitted SL-4: lane C: needs a plan")" ]'
 check "DS-507 AC2: the rest follows when the blocker ends, a final summary last, and nothing is printed twice" '[ $rc -eq 11 ] && [ "$out" = "$(printf "%s\n" "$sofar" "triage: done SL-2 lane A (t)" "admitted SL-2 by ben into batch b1 (lane A, size S)" "admitted SL-3 by ben into batch b1 (lane A, size S), held behind SL-2" "the supervisor'\''s next tick picks them up" "summary: 3 of 4 admitted, 1 not admitted (t)")" ]'
+# An epic's children are triaged in its feature batch, and each says so while the epic is still starting.
+rec SC-1 A '"type":"Epic","branch":"feat/SC-1-lines"'; epicget SC-1; rec SC-2 A; rec SC-3 A; echo 2 > "$T/recs/SC-3.sleep"
+printf 'SC-2\nSC-3\n' > "$T/children/SC-1"
+pool 1; (cd "$T/repo" && exec node "$T/bin/intake.mjs" admit SC-1 --by ben > "$T/admit.out" 2>&1) & pid=$!
+i=0; while ! grep -q "^triage: started SC-3" "$T/admit.out" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+kill -0 "$pid" 2>/dev/null; running=$?
+sofar=$(sed -E 's/\([0-9]+s\)$/(t)/' "$T/admit.out")
+wait "$pid"; rc=$?
+out=$(sed -E 's/\([0-9]+s\)$/(t)/' "$T/admit.out")
+check "DS-507 AC2: an epic's start and each child's triage are printed while the epic is still starting" '[ "$running" -eq 0 ] && [ "$sofar" = "$(printf "%s\n" "triage: started SC-1 (1/1 running)" "triage: done SC-1 lane A (t)" "started feature batch SC-1 on feat/SC-1-lines, beside the standing batch" "triage: started SC-2 in batch SC-1" "triage: done SC-2 lane A (t)" "triage: started SC-3 in batch SC-1")" ]'
+check "DS-507 AC2: the child's end follows, and no epic line is printed twice" '[ $rc -eq 0 ] && grep -q "^triage: done SC-3 lane A (t)$" <<< "$out" && [ "$(grep -c "^started feature batch SC-1" <<< "$out")" = 1 ] && [ "$(grep -c "held behind it, and its plan waits" <<< "$out")" = 1 ]'
+rec SF-1 A '"type":"Epic","branch":"feat/SF-1-lines"'; epicget SF-1; rec SF-2 A; touch "$T/recs/SF-2.fails"; printf 'SF-2\n' > "$T/children/SF-1"
+out=$(admit SF-1 --by ben); rc=$?
+check "DS-507 AC2: a child's triage that left no record says so before the epic is refused" '[ $rc -eq 11 ] && grep -Eq "^triage: done SF-2 no record \([0-9]+s\)$" <<< "$out" && grep -q "^not admitted SF-1: an epic, and its feature batch was not started: child SF-2 could not be triaged" <<< "$out"'
 rec JS-1 A; pool 1; out=$(admit JS-1 --by ben --json)
 check "DS-507 AC2: --json stays one object, holding the same lines" '[ "$(wc -l <<< "$out" | tr -d " ")" = 1 ] && [ "$(node -e "console.log(JSON.parse(process.argv[1]).lines.at(-1).replace(/ \(\d+s\)$/, \"\"))" "$out")" = "summary: 1 of 1 admitted" ]'
 for k in DA DB DC DD; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done

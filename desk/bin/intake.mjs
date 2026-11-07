@@ -63,7 +63,7 @@ import { machineCap } from './borrow.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, personStep } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
-import { startEpic, clearAbandoned } from './epic-plan.mjs';
+import { startEpic, clearAbandoned, elapsed, triageDone } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -276,9 +276,6 @@ export function triageConcurrency({ raw = E.configValue('triage-concurrency'), m
 }
 // What the person does next about a triage that left no record.
 const triageAgain = (t, key) => (t.limit ? `run /desk-admit ${key} again once the limit lifts` : `fix it and run /desk-admit ${key} again`);
-const elapsed = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`; };
-// The progress line for triage outcome `t`, which took `ms`.
-const triageDone = (key, t, ms) => `triage: done ${key} ${t.rec ? `lane ${t.rec.lane ?? '?'}` : 'no record'} (${elapsed(ms)})`;
 
 // Every reason a triaged ticket stays out of this batch, given its holds (holdsFor): [] admits it. A
 // blocker that failed in the batch leaves nothing to release the ticket.
@@ -609,7 +606,7 @@ function joinFeature(key, epic, { by, say = () => {} }) {
   const began = Date.now();
   say(`triage: started ${key} in batch ${epic}`);
   const t = triage(key, b.state, batchEnv(b));
-  say(triageDone(key, t, Date.now() - began));
+  say(triageDone(key, t.rec, Date.now() - began));
   if (!t.rec) return { why: `${t.why} in feature batch ${epic}: ${triageAgain(t, key)}`, limit: t.limit ?? null };
   let fq;
   try { fq = readQueueAt(b.queue); } catch (e) { return { why: `feature batch ${epic}'s queue cannot be read (${e.message})` }; }
@@ -707,13 +704,12 @@ async function byHand(keys, { state, by, front, now, onLine }) {
         return;
       }
       if (limit) return putOff(key);
-      const s = startEpic(key, t.rec, { by });
+      const s = startEpic(key, t.rec, { by, say });
       // A child's triage at a usage limit stops the pool as the epic's own would.
       if (s.limited) limit ??= triageOutcome(key, state, s.limited).limit;
       if (s.why) return refuse(key, `an epic, and its feature batch was not started: ${s.why}${s.limited ? `: run /desk-admit ${key} again once the limit lifts` : ''}`);
       noteEpic(state, key, s, by, now);
       epics.push(key);
-      s.lines.forEach(say);
       return;
     }
     // A design no worker can read is snapshotted by the person's session before the admit, never after.
@@ -810,7 +806,7 @@ async function byHand(keys, { state, by, front, now, onLine }) {
     // eslint-disable-next-line no-await-in-loop
     const [key, t, ms] = await Promise.race(inFlight.values());
     inFlight.delete(key);
-    say(triageDone(key, t, ms));
+    say(triageDone(key, t.rec, ms));
     limit ??= t.limit ?? null;
     triaged(key, t);
     if (!recs[key]) unsettled.delete(key);
