@@ -1,5 +1,5 @@
 // suite: bench quota (the per-computer cap, the interactive reserve and unreadable readings)
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -45,6 +45,21 @@ t('no event is no reading, not zero', Q.claudeWeekly(probed('{"type":"result"}')
 t('a plan with no weekly window says so', Q.claudeWeekly(probed(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: reset } } } })), now).why, 'its plan logs no weekly window');
 t('a stale reading names its age', Q.claudeWeekly({ ...probed(event({ utilization: 0.4, resetsAt: reset })), at: now - 45 * 60000 }, now).why, 'its newest weekly reading is 45 minutes old, past the 30-minute freshness window');
 t('a window past its reset is unreadable', /since reset/.test(Q.claudeWeekly(atFresh(probed(event({ utilization: 0.4, resetsAt: Math.floor(now / 1000) - 60 }))), now).why), true);
+
+// readWeekly: a probe that prints nothing leaves the last probe's file, and that file is no reading of
+// now even when it was written a moment ago (a quick run's after-probe lands within the same second).
+const stubBin = join(T, 'stub-bin');
+mkdirSync(stubBin, { recursive: true });
+const stubClaude = (body) => { writeFileSync(join(stubBin, 'claude'), `#!/bin/sh\n${body}\n`); chmodSync(join(stubBin, 'claude'), 0o755); };
+const probeEnv = { ...process.env, PATH: `${stubBin}:${process.env.PATH}` };
+const claudeAccount = Q.accountFor('claude', {});
+const usageAt = join(T, 'usage');
+stubClaude(`echo '${event({ utilization: 0.3, resetsAt: reset })}'\necho '{"type":"result","is_error":false,"result":"ok"}'`);
+t('a probe that answers is a reading', Q.readWeekly(claudeAccount, { dir: usageAt, env: probeEnv }).used, 30);
+stubClaude('exit 1');
+t('a silent probe right after one that answered is no new reading', /^no new weekly reading: the usage probe failed/.test(Q.readWeekly(claudeAccount, { dir: usageAt, env: probeEnv }).why ?? ''), true);
+stubClaude(`echo '${event({ utilization: 0.35, resetsAt: reset })}'\necho '{"type":"result","is_error":false,"result":"ok"}'`);
+t('the next probe that answers is read again', Q.readWeekly(claudeAccount, { dir: usageAt, env: probeEnv }).used, 35);
 
 // Codex readings from a rollout's rate_limits block, read by codex-usage.mjs.
 const codexHome = join(T, 'codex');

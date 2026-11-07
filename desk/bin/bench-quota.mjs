@@ -13,7 +13,7 @@
 // (codex-usage.mjs). Either is refused when older than FRESH_MS. The points each run used are kept per
 // computer in <usage dir>/bench-quota.jsonl, one line per run, written before the run starts (its
 // `after` and `points` null) and again once it ends; the last line for a run's id stands.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { machineValue } from './desk-env.mjs';
 import { loginProbeLog, probeNow, readLoginUsage, usageDir } from './usage-probe.mjs';
@@ -98,21 +98,23 @@ export const codexWeekly = (r, now = Date.now()) => weeklyOf(r, (w) => w.used, n
 
 // The account's weekly reading now: for Claude, a probe on its login and then that probe's output,
 // which counts only if this probe wrote it. A probe that prints nothing leaves the last one's output in
-// place, and that is not a reading of now.
+// place, and that is not a reading of now, however recent: the file is compared with what it held
+// before the probe, never judged by its age, since a quick run's two probes can land within a second.
+const snapshot = (file) => { try { return { at: statSync(file).mtimeMs, text: readFileSync(file, 'utf8') }; } catch { return null; } };
 export function readWeekly(account, { dir = usageDir(), env = process.env, now = () => Date.now() } = {}) {
   if (account.vendor === 'codex') return codexWeekly(readCodexUsage({ login: account.login, now: now() }), now());
   const l = account.login.configDir ? account.login : null;
-  const start = now();
+  const file = loginProbeLog(dir, l);
+  const prior = snapshot(file);
   const p = probeNow({ dir, env, login: l });
   const failed = p.ok ? '' : `: the usage probe failed (${p.why})`;
-  const file = loginProbeLog(dir, l);
-  if (!existsSync(file)) return { why: `no weekly reading${failed}` };
-  const at = statSync(file).mtimeMs;
-  if (now() - at > FRESH_MS) return { why: `${staleWhy(now() - at)}${failed}` };
-  if (at < start - 1000) return { why: `no new weekly reading${failed || ': the usage probe printed nothing'}` };
+  const after = snapshot(file);
+  if (!after) return { why: `no weekly reading${failed}` };
+  if (now() - after.at > FRESH_MS) return { why: `${staleWhy(now() - after.at)}${failed}` };
+  if (prior && prior.at === after.at && prior.text === after.text) return { why: `no new weekly reading${failed || ': the usage probe printed nothing'}` };
   const r = claudeWeekly(readLoginUsage({ login: l, dir, now: now() }), now());
   // Rate-limit events none of which could be read are a reading that cannot be parsed, not no reading.
-  if (r.why === 'no weekly reading' && readFileSync(file, 'utf8').includes('"rate_limit_event"')) return { why: `its weekly reading could not be parsed${failed}` };
+  if (r.why === 'no weekly reading' && after.text.includes('"rate_limit_event"')) return { why: `its weekly reading could not be parsed${failed}` };
   return r.why ? { why: `${r.why}${failed}` } : r;
 }
 
