@@ -2087,10 +2087,24 @@ fbx(){
     require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, body: "## Summary",
       reviews: [{ id: `PRR_${n}`, author: { login: "ben" }, body }], statusCheckRollup: checks }))' "$T/fb" "$@"
 }
-for k in 1 2 3; do git init -q -b "fix/V-$k" "$T/wt/V-$k"; git -C "$T/wt/V-$k" commit -q --allow-empty -m "V-$k"; done
+# The primary checkout $T/brepo has an origin, $T/bo-origin.git, whose main holds scripts/ensure.sh;
+# each V-<k> worktree is a clone of it with its branch pushed. A build runs from the pass's checkout
+# of origin's main ($BCO), with the head as DESK_CHECK_HEAD and DESK_CHECK_TREE (DS-489).
+git init -q --bare -b main "$T/bo-origin.git"
+git init -q -b main "$T/brepo"; git -C "$T/brepo" remote add origin "$T/bo-origin.git"; mkdir -p "$T/brepo/scripts"
+cat > "$T/brepo/scripts/ensure.sh" <<EOF
+printf 'main %s %s %s\n' "\$(pwd -P)" "\$DESK_CHECK_HEAD" "\$DESK_CHECK_TREE" >> "$T/c-built"
+ls -A >> "$T/c-cwd"; ls -A "\$DESK_CHECK_TREE" >> "$T/c-tree"
+EOF
+chmod +x "$T/brepo/scripts/ensure.sh"; printf '.env\n' > "$T/brepo/.gitignore"
+git -C "$T/brepo" add -A; git -C "$T/brepo" commit -q -m main; git -C "$T/brepo" push -q origin main 2>/dev/null
+BCO="$T/state-b/live-read-checkout"
+# vwt <key>: a worktree cloned from origin, one commit on its branch, pushed.
+vwt(){ git clone -q "$T/bo-origin.git" "$T/wt/$1" 2>/dev/null; git -C "$T/wt/$1" checkout -q -b "fix/$1"; git -C "$T/wt/$1" commit -q --allow-empty -m "$1"; git -C "$T/wt/$1" push -q origin "fix/$1" 2>/dev/null; }
+for k in 1 2 3; do vwt "V-$k"; done
 HB1=$(git -C "$T/wt/V-1" rev-parse HEAD); HB2=$(git -C "$T/wt/V-2" rev-parse HEAD); HB3=$(git -C "$T/wt/V-3" rev-parse HEAD)
 cat > "$T/build-ok.sh" <<EOF
-printf '%s %s\n' "\$(pwd -P)" "\$(git rev-parse HEAD)" >> "$T/built"
+printf '%s %s %s\n' "\$(pwd -P)" "\$DESK_CHECK_HEAD" "\$(git -C "\$DESK_CHECK_TREE" rev-parse HEAD)" >> "$T/built"
 echo "pushed flows-lambda:staging-tree-1"
 EOF
 cat > "$T/build-fail.sh" <<'EOF'
@@ -2112,7 +2126,7 @@ cat > "$T/config-b.md" <<EOF
 ## 2. Paths
 | Field | Value |
 |---|---|
-| Primary repo root | \`$T/repo\` |
+| Primary repo root | \`$T/brepo\` |
 | Worktrees directory | \`$T/wt\` |
 
 ## 3. Permissions
@@ -2139,8 +2153,8 @@ fbx 763 "$HB3" tests:SUCCESS "Lambda image:FAILURE:9003"
 # Waits for PR n's build at head to write its exit code.
 built(){ for _ in $(seq 1 100); do [ -f "$T/state-b/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1); built 761 "$HB1"; built 763 "$HB3"
-check "DS-327 AC1 a draft red only on a named check gets its command, once, in its worktree at its head" \
-  '[ "$(cat "$T/built")" = "$(cd "$T/wt/V-1" && pwd -P) $HB1" ] && echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Flows image\" red at ${HB1:0:9}, which §4 Check builds clears"'
+check "DS-327 AC1 a draft red only on a named check gets its command, once, from the pass's checkout of main, given its head (DS-489)" \
+  '[ "$(cat "$T/built")" = "$(cd "$BCO" && pwd -P) $HB1 $HB1" ] && echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Flows image\" red at ${HB1:0:9}, which §4 Check builds clears"'
 check "DS-327 AC1 while it runs, the PR is not put to the person" '[ "$(field V-1 undraft.call)" = "\"build\"" ] && ! echo "$out" | grep -q "V-1: DRAFT"'
 check "DS-327 AC4 a red check the row does not name is handled as before: nothing is built, and a fix worker gets it (DS-316)" \
   '[ ! -e "$T/state-b/check-builds/762-$HB2.json" ] && [ "$(field V-2 state)" = "\"triaged\"" ] && echo "$out" | grep -q "fix try 1 of 2: V-2 requeued for PR #762"'
@@ -2213,7 +2227,7 @@ else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { /* no PR was pu
 else process.exit(1);
 EOF
 printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
-for k in 4 5; do git init -q -b "fix/V-$k" "$T/wt/V-$k"; git -C "$T/wt/V-$k" commit -q --allow-empty -m "V-$k"; done
+for k in 4 5; do vwt "V-$k"; done
 HB4=$(git -C "$T/wt/V-4" rev-parse HEAD); HB5=$(git -C "$T/wt/V-5" rev-parse HEAD)
 fbx 764 "$HB4" tests:SUCCESS "Flows image:FAILURE:9004"
 fbx 765 "$HB5" tests:SUCCESS "lint:FAILURE:9005" "Flows image:FAILURE:9005"
@@ -2224,11 +2238,55 @@ for k in 4 5; do say "AUTOPILOT_PARK: $P603" "AUTOPILOT_IMAGES: $T/imgs-V-$k" > 
 check "DS-402 AC2 a park only on a red Check builds check is recorded done on its PR" \
   '[ "$(field V-4 state)" = "\"done\"" ] && [ "$(field V-4 result.pr)" = 764 ] && [ "$(field V-4 park)" = null ] && echo "$out" | grep -qF "V-4: PR #764 recorded done, not parked: its park waited only on \"Flows image\" red at ${HB4:0:9}"'
 check "DS-402 AC2 and the same pass runs its build at the head" \
-  '[ "$(cat "$T/built")" = "$(cd "$T/wt/V-4" && pwd -P) $HB4" ] && [ "$(field V-4 undraft.call)" = "\"build\"" ]'
+  '[ "$(cat "$T/built")" = "$(cd "$BCO" && pwd -P) $HB4 $HB4" ] && [ "$(field V-4 undraft.call)" = "\"build\"" ]'
 check "DS-402 AC2 its screenshots are read as a DONE worker's: the directory it printed is kept, and none there is recorded" \
   '[ "$(field V-4 images_dir)" = "\"$T/imgs-V-4\"" ] && [ "$(field V-4 images_uploaded)" = "\"none\"" ]'
 check "DS-402 AC3 a park whose draft is red on a check the row does not name is parked as today" \
   '[ "$(field V-5 state)" = "\"parked\"" ] && [ ! -e "$T/state-b/check-builds/765-$HB5.json" ]'
+
+# ---- DS-489: a check build runs the default branch's script, from the pass's checkout, never the worktree
+# The row names ./scripts/ensure.sh, relative as voicepa's is. C-1's branch changes that script and
+# leaves an ignored .env and an untracked script in its worktree; C-2's head was never pushed.
+sed -e "s#^| Check builds .*#| Check builds | \`Flows image: ./scripts/ensure.sh\` |#" "$T/config-b.md" > "$T/config-c.md"
+export DESK_CONFIG="$T/config-c.md" DESK_QUEUE="$T/queue-c.json" DESK_AUTOPILOT_STATE="$T/state-c"
+mkdir -p "$T/state-c/logs"; q init c; q set-batch concurrency=5
+CCO="$T/state-c/live-read-checkout"
+vwt C-1
+printf 'touch "%s/branch-built"\n' "$T" > "$T/wt/C-1/scripts/ensure.sh"
+git -C "$T/wt/C-1" commit -q -am "C-1 changes the build script"; git -C "$T/wt/C-1" push -q origin fix/C-1 2>/dev/null
+echo "SECRET=worker-wrote" > "$T/wt/C-1/.env"; echo "echo worker" > "$T/wt/C-1/helper.sh"
+git clone -q "$T/bo-origin.git" "$T/wt/C-2" 2>/dev/null; git -C "$T/wt/C-2" checkout -q -b fix/C-2; git -C "$T/wt/C-2" commit -q --allow-empty -m C-2
+HC1=$(git -C "$T/wt/C-1" rev-parse HEAD); HC2=$(git -C "$T/wt/C-2" rev-parse HEAD)
+for k in 1 2; do q add "C-$k"; q set "C-$k" state=done lane=A "branch=fix/C-$k" "worktree=$T/wt/C-$k" "result.pr=77$k"; done
+fbx 771 "$HC1" tests:SUCCESS "Flows image:FAILURE:9011"
+fbx 772 "$HC2" tests:SUCCESS "Flows image:FAILURE:9012"
+cbuilt(){ for _ in $(seq 1 100); do [ -f "$T/state-c/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
+: > "$T/c-built"; : > "$T/c-cwd"; : > "$T/c-tree"; out=$(node "$B/pass.mjs" 2>&1); cbuilt 771 "$HC1"
+CTREE="$T/state-c/check-trees/771"
+check "DS-489 AC1 the script that runs is the one on origin's main, and the head's version does not run" \
+  '[ ! -e "$T/branch-built" ] && [ "$(cut -d" " -f1 "$T/c-built")" = main ] && [ "$(wc -l < "$T/c-built" | tr -d " ")" = 1 ]'
+check "DS-489 AC2 it runs from the pass's checkout of origin's main, and its record names that, never the ticket's worktree" \
+  '[ "$(cut -d" " -f2 "$T/c-built")" = "$(cd "$CCO" && pwd -P)" ] && [ "$(jq -r .cwd "$T/state-c/check-builds/771-$HC1.json")" = "$CCO" ] && [ "$(git -C "$CCO" rev-parse HEAD)" = "$(git -C "$T/brepo" rev-parse main)" ] && [ -z "$(git -C "$CCO" status --porcelain --ignored)" ]'
+check "DS-489 AC3 its environment has DESK_CHECK_HEAD, the head, and DESK_CHECK_TREE, the pass's clean checkout of it" \
+  '[ "$(cut -d" " -f3- "$T/c-built")" = "$HC1 $CTREE" ] && [ "$(git -C "$CTREE" rev-parse HEAD)" = "$HC1" ] && echo "$out" | grep -qF "undraft: PR #771 (C-1) stays draft: \"Flows image\" red at ${HC1:0:9}, which §4 Check builds clears: \`./scripts/ensure.sh\` runs at the head, then the check is re-run (started from the pass'"'"'s clean checkout of origin/main"'
+check "DS-489 AC4 the files the worker left uncommitted or ignored are in neither its working directory nor DESK_CHECK_TREE" \
+  '! grep -qxE "\.env|helper\.sh" "$T/c-cwd" && ! grep -qxE "\.env|helper\.sh" "$T/c-tree" && grep -qx scripts "$T/c-cwd" && grep -qx scripts "$T/c-tree"'
+check "DS-489 AC6 a head whose checkout cannot be made runs nothing, and the draft goes to the person with the reason" \
+  '[ "$(field C-2 undraft.call)" = "\"person\"" ] && ! ls "$T/state-c/check-builds" | grep -q "^772-" && echo "$out" | grep -qF "C-2: DRAFT — PR #772 stays draft: its check build \`./scripts/ensure.sh\` could not start: a clean checkout of its head could not be made: fetching the head ${HC2:0:9} from origin"'
+# C-3 needs a build once something has written into the pass's checkout.
+echo stray > "$CCO/stray.txt"
+vwt C-3; HC3=$(git -C "$T/wt/C-3" rev-parse HEAD)
+q add C-3; q set C-3 state=done lane=A branch=fix/C-3 "worktree=$T/wt/C-3" result.pr=773
+fbx 773 "$HC3" tests:SUCCESS "Flows image:FAILURE:9013"
+: > "$T/c-built"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-489 AC5 a default-branch checkout that is not clean runs nothing, and the draft goes to the person with the reason" \
+  '[ ! -s "$T/c-built" ] && [ "$(field C-3 undraft.call)" = "\"person\"" ] && ! ls "$T/state-c/check-builds" | grep -q "^773-" && echo "$out" | grep -qF "C-3: DRAFT — PR #773 stays draft: its check build \`./scripts/ensure.sh\` could not start: the pass'"'"'s checkout could not be brought to origin'"'"'s main: $CCO is not clean (stray.txt)"'
+git -C "$CCO" clean -fq stray.txt
+# Once C-1's PR merges, its checkout of the head goes; C-2's, still open, stays.
+node -e 'const fs = require("fs"); const f = `${process.argv[1]}/771.json`; const v = JSON.parse(fs.readFileSync(f, "utf8")); fs.writeFileSync(f, JSON.stringify({ ...v, state: "MERGED", isDraft: false, mergedAt: "2026-11-07T09:00:00Z" }));' "$T/fb"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-489 a PR's checkout of its head is removed once the PR merges, and an open PR's is kept" \
+  '[ ! -e "$CTREE" ] && [ -d "$T/state-c/check-trees/772" ]'
 
 # ---- DS-426: a park naming only a §4 Live reads entry gets its command run on the host, then a requeue
 # Each runs from the pass's own clean checkout of origin's main ($T/state-l/live-read-checkout), cloned
@@ -2251,7 +2309,7 @@ EOF
 chmod +x "$T/lrepo/scripts/fetch-gateway-models.sh"; printf '.env\n' > "$T/lrepo/.gitignore"
 git -C "$T/lrepo" add -A; git -C "$T/lrepo" commit -q -m main; git -C "$T/lrepo" push -q origin main 2>/dev/null
 LBASE=$(git -C "$T/lrepo" rev-parse HEAD); LCO="$T/state-l/live-read-checkout"
-sed -e '/^| Check builds /d' -e "s#| Primary repo root | \`$T/repo\` |#| Primary repo root | \`$T/lrepo\` |#" "$T/config-b.md" > "$T/config-l.md"
+sed -e '/^| Check builds /d' -e "s#| Primary repo root | \`$T/brepo\` |#| Primary repo root | \`$T/lrepo\` |#" "$T/config-b.md" > "$T/config-l.md"
 printf '| Live reads | `gateway-models: ./scripts/fetch-gateway-models.sh` `bad-read: sh %s/read-fail.sh` `big-read: sh %s/read-big.sh` |\n' "$T" "$T" >> "$T/config-l.md"
 export DESK_CONFIG="$T/config-l.md" DESK_QUEUE="$T/queue-l.json" DESK_AUTOPILOT_STATE="$T/state-l"
 mkdir -p "$T/state-l/logs"; q init l; q set-batch concurrency=5

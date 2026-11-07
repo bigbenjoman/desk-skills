@@ -167,8 +167,11 @@ How to turn what you find into rows:
   propose it for §4 Check builds as well as the row above, as `` `<check>: <command>` ``, the check
   named exactly as GitHub shows it and the command as the instructions give it, run from the repo
   root. Never leave it as prose only. The user confirms each; `none` is the default. Say that the
-  autopilot pass runs the command once per head on this computer, in the ticket's worktree, for a
-  draft whose only red checks it names, then re-runs them, and that it needs whatever that command
+  autopilot pass runs the command once per head on this computer, from a clean checkout of the
+  default branch the pass owns (never the ticket's worktree, so a worker's change to the script does
+  not run), for a draft whose only red checks it names, then re-runs them; that the command receives
+  the PR's tree as `DESK_CHECK_TREE` (a clean checkout of the head, whose SHA is `DESK_CHECK_HEAD`)
+  and must build from that, or it builds the default branch; and that it needs whatever that command
   needs in the supervisor's environment (a Docker context, cloud credentials).
 - **Live reads.** Detect nothing: ask the user for each read-only call to a live API whose response
   a worker needs but cannot fetch for want of a secret (a staging model list behind an SSM key),

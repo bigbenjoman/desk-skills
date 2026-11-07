@@ -243,9 +243,15 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   on it alone goes to a review worker. Such a draft is under WAITING ON YOU only once those tries are
   spent, or when its red check is one §4 Checks workers can't fix names.
 - **A draft red only on checks §4 Check builds names gets their build from the pass**, where §3
-  `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, in the
-  ticket's worktree at the PR's head, detached so a pass that ends leaves it running, with its output
-  and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
+  `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, from the
+  pass's clean checkout of origin's default branch (`<state>/live-read-checkout`, the one Live reads
+  run from), never the ticket's worktree, so no script or file the worker wrote runs. It receives the
+  PR's tree as `DESK_CHECK_TREE`, a clean checkout of the head the pass owns
+  (`<state>/check-trees/<n>`, reset to the head before each build and removed once the PR merges or
+  closes), with the head's SHA as `DESK_CHECK_HEAD`; a command that ignores them builds the default
+  branch. Where either checkout cannot be made (a failed fetch, a dirty checkout), nothing runs and the
+  draft goes to the person with the reason. It runs detached so a pass that ends leaves it running,
+  with its output and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
   `--failed`. A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
   `syncFix`, one of the fix tries): its worker merges the base, fixes what the merge breaks in a commit
   of its own and pushes, and the pass builds the new head. A command that fails at a head up to date

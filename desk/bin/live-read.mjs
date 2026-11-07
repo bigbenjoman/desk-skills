@@ -19,7 +19,7 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { startDetached, detachedRecord } from './check-build.mjs';
+import { startDetached, detachedRecord, anyRunning } from './check-build.mjs';
 import { parseOperatorChecks } from './fix-tries.mjs';
 import { parkOnlyNames } from './undraft.mjs';
 
@@ -72,11 +72,7 @@ export function readRecord(dir, key, head, name) {
 }
 
 // Whether any read recorded in dir is still running: the checkout it runs in is not to be moved.
-export function readsRunning(dir) {
-  let names = [];
-  try { names = readdirSync(dir).filter((f) => f.endsWith('.json')); } catch { return false; }
-  return names.some((f) => detachedRecord(dir, f.slice(0, -5))?.state === 'running');
-}
+export const readsRunning = (dir) => anyRunning(dir);
 
 // Starts `command` with sh in cwd (the checkout prepareCheckout made, at commit `base`), detached
 // (check-build.mjs startDetached): stdout and stderr to their files, its exit code to the code file.
