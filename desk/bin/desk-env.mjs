@@ -46,9 +46,11 @@
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
 //   node desk-env.mjs mem <avail|used|rss|status>
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
-//                                             reason=, changed=, workspace= per uncovered workspace run by its
-//                                             own test script, then DIR<TAB>CMD<TAB>FILES per suite to run, then
+//                                             reason=, changed=, workspace= per uncovered workspace to run with
+//                                             workspace-test, then DIR<TAB>CMD<TAB>FILES per suite to run, then
 //                                             UNCOVERED<TAB>DIR<TAB>WHY per touched workspace nothing runs
+//   node desk-env.mjs workspace-test <dir>    run workspace package <dir>'s package.json test script there,
+//                                             under the test lock, capped for Vitest or Jest; PASS|FAIL line
 //   node desk-env.mjs baseline typecheck|lint  run §4 Typecheck or Lint here; with §4 Baseline checks on and a
 //                                             recorded batch base, fail only on errors the base does not have
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
@@ -82,7 +84,7 @@
 //                                             --actions-budget <usd>, --credit <profile>=<usd>@<YYYY-MM-DD>
 //   node desk-env.mjs costs show [--json]     print the saved cost sources; a missing file is "no cost sources"
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -1688,17 +1690,34 @@ if (isMain) {
         const suites = { relatedItems, fullItems: items('test-cmd') };
         // A touched workspace no item covers runs its own test script, or is named UNCOVERED.
         const loose = TS.uncoveredWorkspaces(d, pkgs, suites);
-        const pmItems = configValues('package-manager');
-        const pm = TS.packageManager(top, pmItems && !isNone(pmItems) ? pmItems[0] : null);
-        const cap = configValue('test-cap');
         const label = (w) => `${w.dir}${w.name ? ` (${w.name})` : ''}`;
         console.log(`scope=${d.scope}`);
         console.log(`reason=${d.reason}`);
         console.log(`changed=${d.files.length}`);
-        for (const w of loose.filter((x) => x.test)) console.log(`workspace=${label(w)} has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: ${w.test}`);
+        for (const w of loose.filter((x) => x.test)) console.log(`workspace=${label(w)} has a changed file no §4 Related or Unit tests item covers: run its package.json test script (${w.test}) with \`desk-env workspace-test ${w.dir}\`, which takes the test lock and the cap itself`);
         for (const r of TS.runs(d, suites)) console.log(`${r.dir}\t${r.cmd}\t${r.files.join(' ')}`);
-        for (const w of loose.filter((x) => x.test)) console.log(`${w.dir}\t${TS.workspaceTestCmd(pm, w.test, cap)}\t`);
         for (const w of loose.filter((x) => !x.test)) console.log(`UNCOVERED\t${label(w)}\thas a changed file no §4 Related or Unit tests item covers and no package.json test script: nothing ran for it, so the PR's Testing names it untested and never says its tests passed`);
+        break;
+      }
+      case 'workspace-test': {
+        // One workspace package's own package.json test script, in its directory, under the test lock,
+        // capped where it is Vitest or Jest. The package is read from the worktree now, so a workspace
+        // the branch added runs too, and nothing but a workspace package's test script runs here.
+        const top = git(process.cwd(), 'rev-parse', '--show-toplevel');
+        if (!top) throw new Error('desk-env workspace-test: not inside a git work tree');
+        if (args.length !== 1) { console.error('usage: desk-env.mjs workspace-test <workspace dir>'); process.exit(2); }
+        const want = args[0].replace(/^(\.\/)+/, '').replace(/\/+$/, '');
+        const w = TS.workspacePackages(top).find((p) => p.dir === want);
+        if (!w) { console.error(`desk-env workspace-test: ${args[0]} is not a workspace package of ${top}`); process.exit(2); }
+        if (!w.test) { console.error(`desk-env workspace-test: ${w.dir} has no package.json test script`); process.exit(2); }
+        const pmItems = configValues('package-manager');
+        const cmd = TS.workspaceTestCmd(TS.packageManager(top, pmItems && !isNone(pmItems) ? pmItems[0] : null), w.test, configValue('test-cap'));
+        const pre = configValue('command-prefix');
+        const prefix = pre && !isNone(pre) ? pre.trim() : '';
+        const r = spawnSync(join(binDir(), 'with-lock.sh'), ['test', '--cwd', w.dir, '--', ...(prefix ? ['sh', '-c', `${prefix} ${cmd}`] : cmd.split(' '))], { cwd: top, stdio: 'inherit' });
+        const code = r.status ?? 1;
+        console.log(`${code === 0 ? 'PASS' : 'FAIL'} ${w.dir}: ${cmd} (exit ${code})`);
+        process.exitCode = code === 0 ? 0 : 1;
         break;
       }
       case 'baseline': {

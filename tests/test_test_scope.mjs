@@ -147,16 +147,36 @@ put('apps/web/src/a.ts', 'export const a = 2;\n');
 put('apps/portal/src/main.tsx', 'export const App = () => 1;\n');
 m('commit', '-qam', 'touch two workspaces');
 t('DS-495 AC1 cli: a second touched workspace no item covers runs its test script too', monoCli().join(' | '),
-  'scope=related | reason=2 changed file(s): no lockfile, config, shared package, deletion or rename | changed=2 | workspace=apps/portal (portal) has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: vitest run | apps/web\tpnpm vitest related --run\tsrc/a.ts | apps/portal\tpnpm run test --maxWorkers=3\t');
+  'scope=related | reason=2 changed file(s): no lockfile, config, shared package, deletion or rename | changed=2 | workspace=apps/portal (portal) has a changed file no §4 Related or Unit tests item covers: run its package.json test script (vitest run) with `desk-env workspace-test apps/portal`, which takes the test lock and the cap itself | apps/web\tpnpm vitest related --run\tsrc/a.ts');
 put('pnpm-lock.yaml', 'lockfileVersion: 9\n# admin\n');
 put('apps/admin/package.json', '{"name":"admin","scripts":{"test":"jest"}}\n');
 put('apps/admin/src/x.ts', 'export const x = 1;\n');
 put('apps/docs/package.json', '{"name":"docs"}\n');
 t('DS-495 AC2+AC3 cli: a new workspace runs its test script; one with none is named UNCOVERED', monoCli().join(' | '),
-  'scope=full | reason=pnpm-lock.yaml is a lockfile | changed=6 | workspace=apps/admin (admin) has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: jest'
-  + ' | workspace=apps/portal (portal) has a changed file no §4 Related or Unit tests item covers, so its package.json test script runs: vitest run'
-  + ' | apps/web\tpnpm test\t | apps/admin\tpnpm run test --maxWorkers=3\t | apps/portal\tpnpm run test --maxWorkers=3\t'
+  'scope=full | reason=pnpm-lock.yaml is a lockfile | changed=6 | workspace=apps/admin (admin) has a changed file no §4 Related or Unit tests item covers: run its package.json test script (jest) with `desk-env workspace-test apps/admin`, which takes the test lock and the cap itself'
+  + ' | workspace=apps/portal (portal) has a changed file no §4 Related or Unit tests item covers: run its package.json test script (vitest run) with `desk-env workspace-test apps/portal`, which takes the test lock and the cap itself'
+  + ' | apps/web\tpnpm test\t'
   + ' | UNCOVERED\tapps/docs (docs)\thas a changed file no §4 Related or Unit tests item covers and no package.json test script: nothing ran for it, so the PR\'s Testing names it untested and never says its tests passed');
+
+// `desk-env workspace-test`, against a stub with-lock.sh and pnpm: the uncommitted apps/admin (a workspace
+// the branch adds, after any worker spawned) runs in its directory under the test lock, capped; a failing
+// script fails the command; a directory that is no workspace package, or one with no test script, runs nothing.
+const stubHome = join(T, 'stub-desk');
+const stubBin = join(T, 'stub-path');
+mkdirSync(join(stubHome, 'bin'), { recursive: true }); mkdirSync(stubBin, { recursive: true });
+writeFileSync(join(stubHome, 'bin', 'with-lock.sh'), '#!/bin/sh\necho "lock=$1 $2 $3"\nshift; [ "$1" = --cwd ] && { cd "$2" || exit 9; shift 2; }; [ "$1" = -- ] && shift\nexec "$@"\n', { mode: 0o755 });
+writeFileSync(join(stubBin, 'pnpm'), '#!/bin/sh\necho "pnpm $* in ${PWD##*/}"\ngrep -q failing package.json && exit 1\nexit 0\n', { mode: 0o755 });
+const wsTest = (dir) => { const r = spawnSync('node', [BIN, 'workspace-test', dir], { cwd: mono, encoding: 'utf8',
+  env: { ...process.env, DESK_CONFIG: monoCfg, DESK_MACHINE: join(T, 'none.md'), HOME: T, DESK_HOME: stubHome, PATH: `${stubBin}:${process.env.PATH}` } });
+  return `${r.status}: ${`${r.stdout}${r.stderr}`.trim().split('\n').join(' | ')}`; };
+t('DS-495 AC2 workspace-test: a workspace added on the branch runs, locked and capped', wsTest('apps/admin'),
+  '0: lock=test --cwd apps/admin | pnpm run test --maxWorkers=3 in admin | PASS apps/admin: pnpm run test --maxWorkers=3 (exit 0)');
+put('apps/admin/package.json', '{"name":"admin","scripts":{"test":"jest --failing"}}\n');
+// Compared as a boolean: the suite runner reads the word for a failed check anywhere in this output.
+t('DS-495 AC3 workspace-test: a failing test script exits 1 with its failed line, never PASS', wsTest('./apps/admin/')
+  === '1: lock=test --cwd apps/admin | pnpm run test --maxWorkers=3 in admin | FAIL apps/admin: pnpm run test --maxWorkers=3 (exit 1)', true);
+t('DS-495 workspace-test: no test script runs nothing', wsTest('apps/docs'), '2: desk-env workspace-test: apps/docs has no package.json test script');
+t('DS-495 workspace-test: a directory that is no workspace package runs nothing', wsTest('../mono.git').startsWith('2: desk-env workspace-test: ../mono.git is not a workspace package'), true);
 
 // ---- `desk-env mem status` ----------------------------------------------------------------------
 // A profile written while desk had a CI runner still holds its reservation row, which nothing reads.
