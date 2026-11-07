@@ -92,6 +92,25 @@ const slowFirst = r;
 r = await run(['--more', 'origin', 'b'], [E5], 200);
 t('AC1 --more with a slow push ends inside them too', [r.code, r.secs < 600], [TRANSIENT_EXIT, true]);
 t('AC1 and a slow push needs both runs to pass ten minutes', [slowFirst.secs < 600, slowFirst.secs + r.secs >= 600], [true, true]);
+// The hooks the fixed waits fell short with (170s, 280s) and the edges round them, a try in the two
+// runs taking different times too. The last try is what counts, so a --more run may not end on a wait.
+const SLOW = [1, 30, 100, 165, 166, 170, 200, 270, 271, 280, 285, 286, 290, 299, 300, 400, 560];
+const short = [];
+for (const a of SLOW) {
+  const one = await run(['origin', 'b'], [E5], a);
+  for (const b of SLOW) {
+    const two = await run(['--more', 'origin', 'b'], [E5], b);
+    if (one.code !== TRANSIENT_EXIT || two.code !== TRANSIENT_EXIT || one.secs >= 600 || two.secs >= 600
+      || one.secs + two.secs < 600 || two.slept.length !== two.calls.length - 1) short.push([a, b, one.secs, two.secs]);
+  }
+}
+t('AC1 whatever a try takes, each run stays inside ten minutes, and the last try ends past them', short, []);
+r = await run(['origin', 'b'], [E5], 170);
+t('AC1 a run cut short says why it waits, and for how long', [r.slept, r.said.some((l) => /would not fit this run: waiting 200s/.test(l)), /in 570s\. Run this next/.test(r.said.at(-1))], [[30, 200], true, true]);
+r = await run(['origin', 'b'], [E5], 580);
+t('AC1 a try past the limit adds no wait', [r.code, r.slept], [TRANSIENT_EXIT, []]);
+r = await run(['--more', 'origin', 'b'], [E5], 280);
+t('AC1 a --more run cut short parks at once', [r.slept, /AUTOPILOT_PARK_CLEARS_WHEN/.test(r.said.at(-1))], [[], true]);
 r = await run(['origin', 'b'], [NFF]);
 t('AC3 a non-fast-forward: one try, no wait, git\'s exit', [r.code, r.calls.length, r.slept], [1, 1, []]);
 r = await run(['origin', 'b'], [{ status: 128, out: 'fatal: could not read Username' }]);

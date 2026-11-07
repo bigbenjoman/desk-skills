@@ -78,10 +78,17 @@ export async function pushWithRetry({ more, push }, { git, sleep, now, say }) {
     const spent = Math.round((now() - began) / 1000);
     const last = Math.round((now() - tried) / 1000);
     if (secs == null || spent + secs + last > RUN_LIMIT_S) {
+      // A first run cut short by slow tries waits out its limit, so the --more run's first try is
+      // past ten minutes however long a try takes. Its waits may not fit: only a wait here can.
+      const rest = !more && secs != null ? Math.max(0, RUN_LIMIT_S - spent) : 0;
+      if (rest) {
+        say(`push-retry: GitHub answered 5xx on try ${tries}, and another try would not fit this run: waiting ${rest}s before it ends`);
+        await sleep(rest * 1000);
+      }
       const again = ['node', process.argv[1], '--more', ...push.slice(1)].join(' ');
       say(more
         ? `push-retry: GitHub still answers 5xx after ${tries} tries in ${spent}s. Park with AUTOPILOT_PARK_CLEARS_WHEN: ${parkCond(push, git)}`
-        : `push-retry: GitHub still answers 5xx after ${tries} tries in ${spent}s. Run this next, with the same ten-minute timeout: ${again}`);
+        : `push-retry: GitHub still answers 5xx after ${tries} tries in ${spent + rest}s. Run this next, with the same ten-minute timeout: ${again}`);
       return TRANSIENT_EXIT;
     }
     say(`push-retry: GitHub answered 5xx on try ${tries}, trying again in ${secs}s`);
