@@ -970,6 +970,32 @@ check "DS-194 one gh call per done ticket with a PR, none for one without" '[ "$
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-194 AC2 the next pass reads the open PR again and makes no call for the merged one" '[ "$(cut -d" " -f1-3 "$T/gh-calls")" = "pr view 300" ]'
 
+# ---- A failed check keeps the error its job gave, read once per job, and the PR who approved its head
+export DESK_QUEUE="$T/queue-ga.json" DESK_AUTOPILOT_STATE="$T/state-ga"
+mkdir -p "$T/state-ga/logs"
+FIX="$S/fixtures/review-gate-annotations.json"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 310 "*) echo '{"state":"OPEN","headRefOid":"abc","reviews":[{"state":"APPROVED","author":{"login":"old"},"commit":{"oid":"zzz"}},{"state":"APPROVED","author":{"login":"mousedown"},"commit":{"oid":"abc"}},{"state":"COMMENTED","author":{"login":"me"},"commit":{"oid":"abc"}}],"statusCheckRollup":[{"__typename":"CheckRun","name":"Review gate","workflowName":"gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/7/job/70"},{"__typename":"CheckRun","name":"tests","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/80"},{"__typename":"CheckRun","name":"Lint","workflowName":"ci","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/81"}]}' ;;
+  "api repos/"*"/check-runs/70/annotations") jq -c '.protected' "$FIX" ;;
+  "api repos/"*"/check-runs/81/annotations") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+q init ga
+q add GA-1; q set GA-1 state=done result.pr=310
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 AC1 a failed check keeps its gate's error line, not GitHub's exit code line" 'field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required — 2 protected file(s): "'
+check "DS-499 a passing check is not read, and one whose annotations could not be read keeps no error" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name != \"Review gate\") | has(\"error\")]")" = "[false,false]" ] && ! grep -q "check-runs/80" "$T/gh-calls"'
+check "DS-499 AC2 who approved the head is recorded, and an approval of an older commit is not" '[ "$(field GA-1 pr_status.approvals | jq -c .)" = "[\"mousedown\"]" ]'
+touch "$T/annotations-ok"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 the next pass keeps a job's error without reading it again, and reads one it could not" '! grep -q "check-runs/70" "$T/gh-calls" && grep -q "check-runs/81" "$T/gh-calls" && field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-499 a job with no error line is not read again" '! grep -q "check-runs/" "$T/gh-calls"'
+
 # ---- DS-175: a merge is recorded however the PR was merged, and a missing eta history is built once
 ago(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 3600e3).toISOString())' "$1"; }
 SPAWNED=$(ago 5); MERGED=$(ago 2)

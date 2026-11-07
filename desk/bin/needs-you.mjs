@@ -29,6 +29,8 @@
 //                           batch's `base-push` item records approved.base_push on its queue
 //       override <id> "<choice>"    a decision its worker took (digest.mjs override)
 //       not-now             put it off (the not-now register), asked again once its inputs change
+//       waiting             a PR held only by a person's approval: put off the same way, with the PR's head
+//                           and who approved it as its inputs, so it is back once it gets one or its head moves
 //       open                a lane C or D park, or one on a step no worker is allowed (aws, curl, gh
 //                           api, …): names the desk-ticket session to open; records nothing
 //       admit               a ticket held by open tickets outside its batch that no batch holds: names
@@ -54,7 +56,7 @@ import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gapsFix, personReviewFix } from './fix-tries.mjs';
-import { repoConfigValue, releaseCommand, repoPermissionUnset, PERMISSION_KEYS } from './desk-env.mjs';
+import { repoConfigValue, releaseCommand, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
@@ -175,13 +177,56 @@ function holdPlain(n, w) {
   return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
 }
 
+// ---- A red check that wants a person's approval, as its error line says: a review gate on protected
+// files or over its file limit, in the wording of desk's review-gate.mjs or a repo's own gate.
+const FILE_WORDS = [[/(^|\/)migrations?\//, 'a database migration'], [/(^|\/)schema\.(prisma|sql)$/, 'the database schema']];
+const fileWords = (f) => FILE_WORDS.find(([re]) => re.test(f))?.[1] ?? `\`${f}\``;
+// What `line` asks for, or null where it names neither cause: { why, then }, the reason and what else it says.
+function approvalCause(line) {
+  const s = String(line ?? '');
+  if (!/approv/i.test(s)) return null;
+  const listed = /(\d+) protected file\(s\):(.*)$/.exec(s), touches = /^It touches (.+?) with /.exec(s);
+  const over = /\*{0,2}(\d+)\*{0,2} changed files, over the (\d+)-file limit/.exec(s);
+  if (!listed && !touches && !over) return null;
+  const files = [...String(listed?.[2] ?? touches?.[1] ?? '').matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  const more = listed ? Number(listed[1]) - files.length : Number(/ and (\d+) more$/.exec(touches?.[1] ?? '')?.[1] ?? 0);
+  const named = [...new Set(files.map(fileWords)), ...(more > 0 ? [`${more} more protected file${more === 1 ? '' : 's'}`] : [])];
+  const why = [...(named.length ? [`it changes ${andList(named)}`] : []), ...(over ? [`it has ${over[1]} changed files, over the ${over[2]}-file limit`] : [])].join(', and ');
+  const stale = /— and (.+?)'s approval predates/.exec(s)?.[1] ?? /\. ([^.]+?) approved an earlier commit/.exec(s)?.[1];
+  return { why, then: stale ? ` ${stale} approved an earlier commit, so it needs approving again.` : '' };
+}
+// The role §4 People gives an approval to: the code reviewer, else the product owner, by name.
+function approverOf(r) {
+  const row = ['code-reviewer', 'product-owner'].map((id) => repoConfigValue(r.slug, id)).find((v) => v && !isNone(v));
+  if (!row) return 'approval from a person with approval rights';
+  if (/^you\b/i.test(row)) return 'your approval';
+  return `${row.split(/\s*[(,]|\s+@|\s+[—–-]\s/)[0] || row}'s approval`;
+}
+// The approval holding an unmerged PR: { cause, names, left }, the red checks asking for it and the
+// others holding the PR beside them; null where no check's error asks for one, or a reason that is not
+// its checks holds the PR.
+function approvalAsk(t, w) {
+  const held = w.code === 'red' ? w.names : w.code === 'approval' ? []
+    : w.code !== 'stuck' ? null : w.stuck.checks.length ? w.stuck.checks.map((c) => c.name) : /^still red/.test(String(w.stuck.why ?? '')) ? [] : null;
+  if (!held) return null;
+  const asks = (t.pr_status?.checks ?? []).filter((c) => approvalCause(c.error));
+  if (!asks.length) return null;
+  const names = new Set(asks.map((c) => c.name));
+  return { cause: approvalCause(asks[0].error), names, left: held.filter((x) => !names.has(x)) };
+}
+
 // An unmerged PR's need, from the reason desk-q has it need the person (prWhy).
 function prPlain(r, t) {
   const n = `PR #${t.result.pr}`;
   const w = prWhy(r, t) ?? {};
+  const ask = approvalAsk(t, w);
+  const needsIt = ask && `needs ${approverOf(r)}: ${ask.cause.why}.${ask.cause.then}`;
+  if (ask && !ask.left.length) return `${n} ${needsIt} No code change clears it, only an approving review on GitHub at its latest commit; ${thenMerge(r)}.`;
+  // Beside other red checks, those are worded as ever, and the approval is said after them.
+  const also = ask ? ` It also ${needsIt}` : '';
   switch (w.code) {
     case 'closed': return `${n} was closed without merging, so nothing will merge it. Drop the ticket, or requeue it; a requeued ticket gets a worker that opens a new PR.`;
-    case 'stuck': return stuckPlain(r, n, w.stuck);
+    case 'stuck': return `${stuckPlain(r, n, ask ? { ...w.stuck, checks: w.stuck.checks.filter((c) => !ask.names.has(c.name)) } : w.stuck)}${also}`;
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
     case 'draft': return draftPlain(r, n, w.undraft);
@@ -189,7 +234,10 @@ function prPlain(r, t) {
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
     case 'conflict': return `${n} is in conflict with ${w.base}, and ${REPAIRED} it. Resolve the conflict on its branch; ${thenMerge(r)}.`;
-    case 'red': return `${n} has ${w.names.length === 1 ? 'a failing check' : `${w.names.length} failing checks`}, ${andList(w.names.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${w.names.length === 1 ? 'it' : 'them'}. Fix or re-run ${w.names.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.`;
+    case 'red': {
+      const red = ask ? ask.left : w.names;
+      return `${n} has ${red.length === 1 ? 'a failing check' : `${red.length} failing checks`}, ${andList(red.map((c) => `"${c}"`))}, and nothing here re-runs or repairs ${red.length === 1 ? 'it' : 'them'}. Fix or re-run ${red.length === 1 ? 'it' : 'them'}; ${thenMerge(r)}.${also}`;
+    }
     case 'trigger': return `${n} is not green: ${one(w.text)}. Re-running cannot help, as no run exists: add ${w.base ?? 'its base'} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${andList(w.names.map((c) => `"${c}"`))}, a change to the repo; its next push then runs the check, and ${thenMerge(r)}.`;
     case 'behind': return `${n} is not green: ${one(w.text)}. Nothing here may sync ${w.base ?? 'its base'}: merge the default branch into it, then close and reopen ${n} so its checks run; ${thenMerge(r)}.`;
     case 'gate': return `${n} is not green: ${plainWords(w.text ?? 'a required check did not pass')}. Fix that check, or §4 Required checks if it should not be required; ${thenMerge(r)}.`;
@@ -368,6 +416,9 @@ function itemOf(r, x) {
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
     if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
     if (reviewGaps(t)) return { kind: 'pr', need, note, actions: [['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done'], ['not-now']] };
+    // Held by nothing but a person's approval: once asked for, there is nothing to do but wait for it.
+    const ask = approvalAsk(t, prWhy(r, t) ?? {});
+    if (ask && !ask.left.length) return { kind: 'pr', approval: true, need, note, actions: [['waiting', 'once the approval is asked for, waiting keeps it off this list until it gets one or its head moves'], ['done'], ['not-now']] };
     // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
     // and the item leaves the list once every check it is still stuck on is green.
     const outside = stuck?.outside ?? [];
@@ -444,6 +495,7 @@ function putOffKey(r, t, item) {
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
+  if (item.approval) inputs.approvals = (t.pr_status?.approvals ?? []).join(', ') || 'none';
   // A worktree item led by its park's reason holds the worktree's state in its note: a new hold brings it back.
   if (item.kind === 'worktree' && item.note) inputs.hold = item.note;
   const blockers = blockerStates(r, t);
@@ -622,6 +674,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
   if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
+  const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
   // reads it, and taken back if the requeue is refused. null once both are made, else what refused.
   const sendFix = (fix) => {
@@ -740,8 +793,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
         stampItem(r, x, item);
         return say(true, 'put off (not-now register).');
       }
-      addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
+      putOff();
       return say(true, `put off (${notNowPath(r.stateDir)}).`);
+    }
+    case 'waiting': {
+      putOff();
+      return say(true, `waiting on its approval (${notNowPath(r.stateDir)}): not listed again until it gets one or its head moves.`);
     }
     // Into another running batch of the repo, by its name, `<repo>:<name>`, or `standing`. Made here
     // whoever runs either batch: the move holds both queue locks, and the next pass there spawns it.
