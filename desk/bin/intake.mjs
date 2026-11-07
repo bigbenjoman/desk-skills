@@ -182,6 +182,13 @@ const readQueue = () => { const qf = E.queueFile(); return existsSync(qf) ? JSON
 
 const queueCmdIn = (env, args) => spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { encoding: 'utf8', env });
 const queueCmd = (...args) => queueCmdIn(process.env, args);
+// /desk-admit --front for `key`, in the batch `env` points queue.mjs at, as one line: a ticket whose
+// worker has started or finished (`state`) has no place left in the spawn order, so it stays.
+const toFrontIn = (env, key, state) => {
+  if (['running', 'done', 'failed'].includes(state)) return `${key} not moved to the front: it is ${state}, so it has no place left in the spawn order`;
+  const f = queueCmdIn(env, ['front', key]);
+  return f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`;
+};
 // The environment that points queue.mjs and triage.sh at named batch `b` (listBatches), whatever this
 // one pins: the batch's base comes from its queue, never this process's default branch.
 const batchEnv = (b) => {
@@ -656,7 +663,11 @@ async function byHand(keys, { state, by, front, now, onLine }) {
   const links = {};
   for (const key of keys) {
     if (!E.SAFE_ID.test(key)) { refuse(key, 'not a ticket id'); continue; }
-    if (q?.tickets?.[key]) { say(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`); continue; }
+    if (q?.tickets?.[key]) {
+      say(`${key} is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`);
+      if (front) say(toFrontIn(process.env, key, q.tickets[key].state));
+      continue;
+    }
     const jira = readJira(key);
     if (jira.done) { say(`${key} is already done in Jira (${jira.done}): nothing triaged or admitted`); continue; }
     links[key] = { blockers: jira.blockers, epic: jira.epic };
@@ -664,11 +675,18 @@ async function byHand(keys, { state, by, front, now, onLine }) {
   // Whether `key` needs no triage, being in another batch: asked when its turn comes, since an epic
   // started in this call may have just taken it into its feature batch.
   const inBatch = (key, held, batch) => held && placedThere(key, held, q) && `${key} is already in batch ${batch} (${held.ticket})`;
+  // Says a ticket is already in the other batch `held` names, and with --front moves it there.
+  const sayThere = (key, held, there) => {
+    say(there);
+    if (!front) return;
+    const b = liveFeatureBatches().find((x) => x.name === held.name);
+    say(b ? toFrontIn(batchEnv(b), key, held.ticket) : `${key} not moved to the front: batch ${held.name} is no longer live`);
+  };
   const taken = (key) => {
     const away = belongsElsewhere(key, null, E.queueFile());
     if (!away) return false;
     const there = inBatch(key, away.held, away.batch);
-    if (there) say(there);
+    if (there) sayThere(key, away.held, there);
     else refuse(key, away.why);
     return true;
   };
@@ -719,7 +737,7 @@ async function byHand(keys, { state, by, front, now, onLine }) {
     if (r.started) { started = r.started; say(`started standing batch ${started}, handed to the supervisor`); }
     // An epic started while this ticket was in triage took it into its feature batch.
     const there = inBatch(key, r.elsewhere?.held, r.elsewhere?.batch);
-    if (there) return say(there);
+    if (there) return sayThere(key, r.elsewhere.held, there);
     // A child of an epic whose feature batch is live joins that batch, and so does a ticket whose files
     // are on another running batch's base: the standing queue is untouched.
     let feature = null;
@@ -746,10 +764,7 @@ async function byHand(keys, { state, by, front, now, onLine }) {
     say(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}`);
     const open = new Set(openBlockers(rec));
     for (const b of r.outside ?? []) if (open.has(b) && !keys.includes(b)) next.add(b);
-    if (front) {
-      const f = feature ? queueCmdIn(batchEnv(feature), ['front', key]) : queueCmd('front', key);
-      say(f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`);
-    }
+    if (front) say(toFrontIn(feature ? batchEnv(feature) : process.env, key));
   };
   const { k, why: fewer } = Object.keys(links).length > 1 ? triageConcurrency() : { k: 1, why: null };
   if (fewer) say(`triaging one at a time: ${fewer}`);
