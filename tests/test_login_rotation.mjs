@@ -2,7 +2,7 @@
 // login-choice.mjs with a fixed clock, then the real pass.mjs against a fake claude whose sign-in answers
 // per config folder, a stub spawn-worker.sh that records the login each call was given, and each login's
 // reading in its own probe log. A throwaway HOME: nothing reads this computer's logins.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -58,9 +58,15 @@ mkdirSync(join(W, 'wt'), { recursive: true });
 mkdirSync(join(H, '.claude'), { recursive: true });
 for (const f of ['queue.mjs', 'harvest.mjs', 'desk-env.mjs', 'batch-state.mjs', 'briefing.mjs']) symlinkSync(join(BIN, f), join(bin, f));
 writeFileSync(join(bin, 'setup-worktree.sh'), 'mkdir -p "$WT_DIR/$2"; echo "[setup-worktree] worktree=$WT_DIR/$2"; echo "[setup-worktree] branch=$3"\n');
+// A folder listed in LIMITED, as `<folder> <reset epoch seconds | none>`, is at its usage limit: its
+// preflight is refused and its probe rejected.
+const LIMITED = join(T, 'limited');
 // One line per call: ticket, session or `preflight`, the login it was given, and whether it resumes.
 writeFileSync(join(bin, 'spawn-worker.sh'), `printf '%s|%s|%s|%s\\n' "$1" "$3" "\${AUTOPILOT_LOGIN_DIR-unset}" "\${AUTOPILOT_RESUME:+resume}" >> "${CALLS}"
-if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket=$1"; fi\n`);
+ld="\${AUTOPILOT_LOGIN_DIR:-${H}/.claude}"
+if [ "$3" = preflight ]; then
+  if grep -qF "$ld " "${LIMITED}" 2>/dev/null; then echo "[preflight] usage-limit: the account is at its usage limit"; else echo "[preflight] pass"; fi
+else echo "[spawn] ticket=$1"; fi\n`);
 // Sign-in per folder: a folder's name is its account, or its .account file's, and a signed-out folder
 // answers loggedIn false. Every `auth` call is recorded.
 const AUTHS = join(T, 'auths');
@@ -71,7 +77,10 @@ case "$1" in
   auth) echo "$d" >> "${AUTHS}"
     if grep -qx "$d" "${SIGNED_OUT}" 2>/dev/null; then echo '{"loggedIn":false}'; exit 1; fi
     a="$(cat "$d/.account" 2>/dev/null || basename "$d")"; printf '{"loggedIn":true,"email":"%s@example.com"}\\n' "$a" ;;
-  -p) echo '{"type":"result","is_error":false}' ;;
+  -p) lim="$(grep -F "$d " "${LIMITED}" 2>/dev/null | head -n 1 | cut -d' ' -f2)"
+    if [ "$lim" = none ]; then echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}'; echo '{"type":"result","is_error":true}'; exit 1; fi
+    if [ -n "$lim" ]; then printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":%s}}\\n' "$lim"; echo '{"type":"result","is_error":true}'; exit 1; fi
+    echo '{"type":"result","is_error":false}' ;;
 esac
 `);
 chmodSync(join(W, 'stub', 'claude'), 0o755);
@@ -101,7 +110,7 @@ const event = (five, week) => JSON.stringify({ type: 'rate_limit_event', rate_li
 
 // `logins` is [name, rule, five, week]: `default` is ~/.claude, any other a folder under ~/.claude-logins.
 function world(logins, tickets) {
-  for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, AUTHS, SIGNED_OUT, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins')]) rmSync(p, { recursive: true, force: true });
+  for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins')]) rmSync(p, { recursive: true, force: true });
   mkdirSync(join(state, 'logs'), { recursive: true });
   mkdirSync(join(state, 'workers'), { recursive: true });
   mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
@@ -259,6 +268,151 @@ env = { ...world(null, RESUMING('pending', { login: undefined })), CLAUDE_CONFIG
 mkdirSync(join(T, 'own'), { recursive: true });
 pass(env);
 t('AC12 a pass under its own config folder resumes a worker with no record on it', calls('K-1').at(-1), 'K-1|sess-1|unset|resume');
+
+// ---- a login at its usage limit is benched ------------------------------------------------------
+const { resetText } = await import(join(BIN, 'usage-limit.mjs'));
+const DEF = join(H, '.claude');
+const RESET = Math.round(Date.now() / 1000) + 7200;
+const atLimit = (dir, at = RESET) => appendFileSync(LIMITED, `${dir} ${at ?? 'none'}\n`);
+const batchOf = () => JSON.parse(readFileSync(QF, 'utf8'));
+const preset = (benched) => writeFileSync(QF, JSON.stringify({ ...batchOf(), benched }));
+const benchRow = (name, at = RESET) => ({ login: name, config_dir: name === 'default' ? null : dirOf(name), type: 'five_hour', resets_at: at, since: '2026-11-07T00:00:00.000Z', by: 'X-1' });
+const TWO = { 'Y-1': NEW('Y-1'), 'Y-2': NEW('Y-2') };
+
+// AC1, AC2: the preflight on the roomier login is refused; that login is benched, and the next ticket
+// spawns on the other in the same pass.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], TWO);
+atLimit(DEF);
+out = pass(env);
+t('AC1 a preflight refused at the limit benches its login until the reset', JSON.stringify([Object.keys(batchOf().benched ?? {}), batchOf().benched?.default?.resets_at]), JSON.stringify([['default'], RESET]));
+t('AC1 the report names the login and the time', out.includes(`Y-1: its preflight on login default was refused at the 5-hour usage limit until ${resetText(RESET)}`), true);
+t('AC1 the refused ticket keeps its place', row('Y-1').state, 'triaged');
+t('AC2 the next ticket spawns on the other login', `${row('Y-2').state} ${on('Y-2')}`, 'running b');
+t('AC2 the batch is not held', batchOf().usage_hold ?? null, null);
+// The next pass: the bench is kept, so the ticket goes to the other login.
+out = pass(env);
+t('AC2 a pass later the benched login is still benched', Object.keys(batchOf().benched ?? {}).join(), 'default');
+t('AC2 and the refused ticket spawns on the other login', `${row('Y-1').state} ${on('Y-1')}`, 'running b');
+t('AC2 with no preflight on the benched login', calls('Y-1').filter((l) => l.includes('|preflight|') && l.endsWith('|unset|')).length, 1);
+
+// AC1 for a worker: one that ended at the limit on login B benches B, and stays paused there (AC8).
+const PAUSED = { key: 'K-2', state: 'running', open_questions: 0, session_id: 'sess-2', branch: 'fix/K-2', worktree: join(W, 'wt', 'K-2'), login: { name: 'b', config_dir: dirOf('b') } };
+mkdirSync(join(W, 'wt', 'K-2'), { recursive: true });
+const rejected = `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":${RESET}}}\n`;
+env = world([['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10]], { 'K-2': PAUSED, 'Y-1': NEW('Y-1') });
+writeFileSync(join(state, 'logs', 'K-2.log'), rejected);
+atLimit(dirOf('b'));
+out = pass(env);
+t('AC1 a worker at the limit benches its login', batchOf().benched?.b?.resets_at, RESET);
+t('AC1 the report names the login and the time', out.includes(`login b benched on the 5-hour usage limit until ${resetText(RESET)}`), true);
+t('AC2 new work spawns on the other login, though B has more room', `${row('Y-1').state} ${on('Y-1')}`, 'running default');
+t('AC8 the paused worker stays paused on its own login', `${row('K-2').state} ${row('K-2').login.name} ${calls('K-2').length}`, 'running b 0');
+t('AC2 nothing holds the batch', batchOf().usage_hold ?? null, null);
+
+// AC8: a killed worker of a benched login waits to resume there, and is not moved.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 90, 90]], RESUMING('pending'));
+preset({ b: benchRow('b') });
+atLimit(dirOf('b'));
+out = pass(env);
+t('AC8 a resume on a benched login waits', `${row('K-1').state} ${row('K-1').resume} ${calls('K-1').length}`, 'triaged pending 0');
+t('AC8 and says it waits for its own login', out.includes('K-1 resumes on its own login b once that is back'), true);
+
+// AC3: every login in rotation benched, one on standby.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 10, 10], ['s', 'standby', 50, 50]], fresh);
+preset({ default: benchRow('default'), b: benchRow('b') });
+atLimit(DEF); atLimit(dirOf('b'));
+out = pass(env);
+t('AC3 it spawns on the standby login', `${row('Y-1').state} ${on('Y-1')}`, 'running s');
+t('AC3 and the batch is not held', batchOf().usage_hold ?? null, null);
+
+// AC4: every login benched, standby too. The hold names each reset, earliest first, none last.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 10, 10], ['s', 'standby', 50, 50]], fresh);
+preset({ s: benchRow('s', null), b: benchRow('b', RESET + 3600), default: benchRow('default') });
+atLimit(DEF); atLimit(dirOf('b'), RESET + 3600); atLimit(dirOf('s'), null);
+out = pass(env);
+t('AC4 nothing spawns', `${row('Y-1').state} ${calls('Y-1').length}`, 'triaged 0');
+t('AC4 the batch holds on the first login back', JSON.stringify([batchOf().usage_hold?.type, batchOf().usage_hold?.resets_at]), JSON.stringify(['five_hour', RESET]));
+t('AC4 the report names each reset', out.includes(`every Claude login is benched (default: the 5-hour usage limit until ${resetText(RESET)}; b: the 5-hour usage limit until ${resetText(RESET + 3600)}; s: the 5-hour usage limit, no reset time)`), true);
+// The last open login's preflight refused: the batch holds there and then.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], TWO);
+preset({ b: benchRow('b') });
+atLimit(DEF); atLimit(dirOf('b'));
+out = pass(env);
+t('AC4 the last login refused holds the batch', `${batchOf().usage_hold != null} ${Object.keys(batchOf().benched ?? {}).sort().join()} ${row('Y-2').state} ${calls('Y-2').length}`, 'true b,default triaged 0');
+t('AC4 and the report says every login is benched', out.includes('Every login is now benched, so nothing else spawns until one is back'), true);
+// A pass after the first reset lifts the hold.
+preset({ ...batchOf().benched, default: benchRow('default', Math.round(Date.now() / 1000) - 60) });
+rmSync(LIMITED);
+atLimit(dirOf('b'));
+out = pass(env);
+t('AC5 a reset passed lifts the hold', batchOf().usage_hold ?? null, null);
+
+// AC5: a bench whose reset has passed is cleared, and the login takes spawns again.
+env = world([['default', 'in rotation', 90, 90], ['b', 'in rotation', 10, 10]], fresh);
+preset({ b: benchRow('b', Math.round(Date.now() / 1000) - 60), default: benchRow('default') });
+atLimit(DEF);
+out = pass(env);
+t('AC5 the login is unbenched', Object.keys(batchOf().benched ?? {}).join(), 'default');
+t('AC5 the report says it is back', out.includes('login b is back: the 5-hour usage limit lifted (its reset at'), true);
+t('AC5 and it takes the spawn', `${row('Y-1').state} ${on('Y-1')}`, 'running b');
+
+// AC6: a probe that succeeds before the reset unbenches the login.
+env = world([['default', 'in rotation', 90, 90], ['b', 'in rotation', 10, 10]], fresh);
+preset({ b: benchRow('b'), default: benchRow('default') });
+atLimit(DEF);
+out = pass(env);
+t('AC6 a probe that succeeds unbenches the login', Object.keys(batchOf().benched ?? {}).join(), 'default');
+t('AC6 the report says a probe call lifted it', out.includes('login b is back: the 5-hour usage limit lifted (a probe call succeeded)'), true);
+t('AC6 and it takes the spawn', `${row('Y-1').state} ${on('Y-1')}`, 'running b');
+
+// AC7: a limit with no reset time stays benched until a probe on it succeeds, and no time is guessed.
+env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], fresh);
+atLimit(DEF, null);
+out = pass(env);
+t('AC7 benched with no reset time', JSON.stringify(batchOf().benched?.default?.resets_at), 'null');
+t('AC7 and the report names none', out.includes('Y-1: its preflight on login default was refused at the 5-hour usage limit — not failed'), true);
+out = pass(env);
+t('AC7 still benched a pass later, with the probe still refused', Object.keys(batchOf().benched ?? {}).join(), 'default');
+rmSync(LIMITED);
+out = pass(env);
+t('AC7 unbenched once a probe succeeds', batchOf().benched ?? null, null);
+
+// AC9: one login only. The hold and its report are today's, and nothing is benched.
+env = world([['default', 'in rotation', 50, 50]], TWO);
+atLimit(DEF);
+out = pass(env);
+t('AC9 one login: the batch holds on the preflight', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at]), JSON.stringify(['Y-1', RESET]));
+t('AC9 one login: nothing is benched', batchOf().benched ?? null, null);
+t('AC9 one login: the report is today\'s', out.includes('Y-1: its preflight was refused at the 5-hour usage limit — not failed, and nothing else spawns until the limit lifts'), true);
+t('AC9 one login: nothing else spawns', calls('Y-2').length, 0);
+// One usable login: a second listed but signed out. Its hold and report are today's too.
+env = world([['default', 'in rotation', 50, 50], ['b', 'in rotation', 10, 10]], TWO);
+signOut(dirOf('b'));
+atLimit(DEF);
+out = pass(env);
+t('AC9 one usable login: the batch holds on the preflight', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at, batchOf().benched ?? null]), JSON.stringify(['Y-1', RESET, null]));
+t('AC9 one usable login: the report is today\'s', out.includes('Y-1: its preflight was refused at the 5-hour usage limit — not failed, and nothing else spawns until the limit lifts'), true);
+out = pass(env);
+t('AC9 one usable login: a pass later it still holds, with nothing spawned', `${batchOf().usage_hold?.preflight} ${calls('Y-1').filter((l) => !l.includes('|preflight|')).length} ${calls('Y-2').length}`, 'Y-1 0 0');
+t('AC9 one usable login: and the hold reads as today\'s', out.includes(`the 5-hour usage limit until ${resetText(RESET)} holds every spawn and resume`), true);
+// A worker paused at the limit of a login that can no longer take work holds nothing: new work goes to
+// the one usable login, which has room.
+env = world([['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10]], { 'K-2': PAUSED, 'Y-1': NEW('Y-1') });
+writeFileSync(join(state, 'logs', 'K-2.log'), rejected);
+signOut(dirOf('b'));
+atLimit(dirOf('b'));
+out = pass(env);
+t('a worker paused on a login signed out since holds nothing', `${row('Y-1').state} ${on('Y-1')} ${batchOf().usage_hold ?? null}`, 'running default null');
+t('and it stays paused on its own login', `${row('K-2').state} ${row('K-2').login.name}`, 'running b');
+// The one usable login refused next: the batch holds, and a pass later it still does, with no second preflight.
+env = world([['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10]], { 'K-2': PAUSED, 'Y-1': NEW('Y-1') });
+writeFileSync(join(state, 'logs', 'K-2.log'), rejected);
+signOut(dirOf('b'));
+atLimit(dirOf('b')); atLimit(DEF);
+pass(env);
+t('with the one usable login refused too, the batch holds', `${row('Y-1').state} ${batchOf().usage_hold?.preflight}`, 'triaged Y-1');
+pass(env);
+t('a pass later it still holds, with no second preflight', `${batchOf().usage_hold != null} ${calls('Y-1').length}`, 'true 1');
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
