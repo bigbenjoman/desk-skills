@@ -87,6 +87,10 @@ n=0; while [ ! -f "$T/held" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); do
 push origin main
 check "lock busy past the timeout: typecheck skipped, the rest ran" '[ $rc -eq 0 ] && [ "$ran" = "gen lint " ]'
 check "the skip says CI will run it"                  '[[ "$out" == *"skip  sh tc.sh (in sub): the box-wide test lock stayed busy for 0s; CI will run it"* ]]'
+# A filtered typecheck is not the Typecheck row's exact text, and is as heavy, so its name takes the lock too.
+config '`sh gen.sh` `sub: sh tc.sh typecheck` `sh lint.sh`'; commit filtered; push origin main
+check "an item naming typecheck takes the lock"       '[ $rc -eq 0 ] && [ "$ran" = "gen lint " ] && [[ "$out" == *"skip  sh tc.sh typecheck (in sub): the box-wide test lock stayed busy for 0s"* ]]'
+config "$ROW"
 
 # with-lock.sh --timeout on its own
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c "echo ran >> '$T/wl'" 2>&1); rc=$?

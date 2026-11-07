@@ -712,11 +712,19 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // means a PR exists, NOT that the review posted or that it merged — verify those separately.
     const pr = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch ?? '',
       '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
-    if (/^\d+$/.test(pr)) {
+    const prOpen = /^\d+$/.test(pr);
+    // The person's instruction is the exception: an open PR says nothing about whether it was carried
+    // out, and done would close the fix that holds the merge (merge-driver.sh instruction_held).
+    const instruction = t.fix?.kind === 'instruction' && !t.fix.finished;
+    if (prOpen && !instruction) {
       recordDone(t, { log, h, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)` });
     } else {
       logDecisions(t, log, null);
-      if (stop?.fail) {
+      if (prOpen) {
+        const why = `its worker ended with no marker, so your instruction on PR #${pr} may not be carried out, and the PR stays held from merging. Requeue it for a new worker on the same instruction — check ${log}`;
+        q('park', t.key, why);
+        report.parked.push(`${t.key}: ${why}`);
+      } else if (stop?.fail) {
         q('set', t.key, 'state=failed');
         report.failed.push(`${t.key}: killed before it finished (${killed}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
       } else if (stop?.park) {
@@ -1298,6 +1306,8 @@ const CEILING = E.memoryCeiling();
 // the feature's children are built and tested against the base as one.
 const BASE = E.batchBase();
 const SOURCE = E.configValue('default-branch');
+// §0 Default branch, not DEFAULT_BRANCH, which a named batch sets to its base.
+const REPO_DEFAULT = String(SOURCE ?? '').trim() || 'main';
 // Config §3b "Promotion slice size (children)": how many children merge into the base between base
 // gates in feature mode. Unset is 8; anything but a whole number from 5 to 10 is said and read as 8.
 const SLICE_ROW = E.CONFIG_ROWS['promotion-slice'].row;
@@ -1683,7 +1693,8 @@ async function freePort(own = null) {
 // Prove the generated permissions behave before committing a worker to a ticket: `failure` is null on
 // a pass, else what failed. §3b Worker models' finder and text models are proved too, on every
 // preflight, so a value the CLI rejects stops the ticket before any worker of it runs. `cost` is the
-// preflight call's { usd, turns }, each null when it reported none.
+// preflight call's { usd, turns }, each null when it reported none, and `skipped` when spawn-worker.sh
+// made no call because a pass on the same fingerprint stands.
 function preflight(key, wt, workerEnv) {
   const pre = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, 'preflight'], {
     cwd: MAIN,
@@ -1691,7 +1702,7 @@ function preflight(key, wt, workerEnv) {
   }).out;
   const m = /\[preflight\] cost=(\S+) turns=(\S+)/.exec(pre);
   const num = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
-  const cost = { usd: num(m?.[1]), turns: num(m?.[2]) };
+  const cost = { usd: num(m?.[1]), turns: num(m?.[2]), skipped: /^\[preflight\] skipped/m.test(pre) };
   const failure = /\[preflight\] pass/.test(pre) ? null : `${pre.split('\n').filter((l) => /FAIL|!!/.test(l)).join('\n') || pre.slice(-300)}\n${preflightNote(cost)}`;
   // A call refused at the usage limit (spawn-worker.sh says so): nothing about the worker failed.
   return { failure, cost, limit: !!failure && /^\[preflight\] usage-limit/m.test(pre) };
@@ -1707,16 +1718,17 @@ function preflightHitLimit(t, cost) {
   usageStop = true;
   report.stalled.push(`${t.key}: its preflight was refused at ${limitName(USAGE_HOLD.type)} — not failed, and nothing else spawns until the limit lifts`);
 }
-const preflightNote = ({ usd, turns }) =>
-  `preflight ${usd == null ? 'cost unknown' : `$${usd.toFixed(2)}`}, ${turns == null ? 'turns unknown' : `${turns} turn(s)`}`;
+const preflightNote = ({ usd, turns, skipped }) => (skipped ? 'preflight skipped on a matching fingerprint'
+  : `preflight ${usd == null ? 'cost unknown' : `$${usd.toFixed(2)}`}, ${turns == null ? 'turns unknown' : `${turns} turn(s)`}`);
 // Into the log the worker is about to write, so the batch report counts it with that run; a failed
-// one goes into the log as it stands, and the next spawn moves it aside with that round. Returns the
-// log's size, the stall check's starting point: the line is not the worker's output.
+// one goes into the log as it stands, and the next spawn moves it aside with that round. A skipped one
+// made no call, so it has no line. Returns the log's size, the stall check's starting point: the line
+// is not the worker's output.
 const logPreflight = (key, cost) => {
   const log = join(STATE, 'logs', `${key}.log`);
   mkdirSync(join(STATE, 'logs'), { recursive: true });
-  appendFileSync(log, preflightLine(cost));
-  return statSync(log).size;
+  if (!cost.skipped) appendFileSync(log, preflightLine(cost));
+  return existsSync(log) ? statSync(log).size : 0;
 };
 const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn refused — ${out.split('\n').slice(-3).join(' ')}`);
 
@@ -2432,9 +2444,7 @@ const workflowsAt = (ref) => cached(`workflows:${ref}`, () => readWorkflows({
 const triggersOf = (base, head, branch) => {
   const atHead = untriggeredChecks(gateLists().required, base, workflowsAt(head), { branch });
   if (!Object.keys(atHead).length) return { untriggered: {}, behind: {}, reopen: {} };
-  // §0 Default branch, not DEFAULT_BRANCH, which a named batch sets to its base.
-  const main = String(SOURCE ?? '').trim() || 'main';
-  return staleTriggers(atHead, base, { branch, defaultBranch: main, atBase: workflowsAt(base), atDefault: workflowsAt(main) });
+  return staleTriggers(atHead, base, { branch, defaultBranch: REPO_DEFAULT, atBase: workflowsAt(base), atDefault: workflowsAt(REPO_DEFAULT) });
 };
 const untriggeredOf = (base, head, branch) => triggersOf(base, head, branch).untriggered;
 // An open PR whose gate is absent keeps those maps on pr_status as `untriggered`, `behind` and
@@ -2744,7 +2754,7 @@ function startCheckBuild(t, n, head, c, rec) {
 // A draft whose screenshot cells §4 Evidence workflow fills gets that workflow, on the default branch,
 // once per head (evidence.mjs). Where it cannot start, the cells are the person's.
 function startEvidence(t, n, head, c, rec) {
-  const cmd = ['workflow', 'run', c.workflow, '--repo', GH_REPO, '--ref', DEFAULT_BRANCH, '-f', `pr=${n}`];
+  const cmd = ['workflow', 'run', c.workflow, '--repo', GH_REPO, '--ref', REPO_DEFAULT, '-f', `pr=${n}`];
   if (DRY) { out.push(`undraft (dry run): would run \`gh ${cmd.join(' ')}\` for PR #${n} (${t.key}): ${c.why}`); return rec; }
   const r = shOut('gh', cmd);
   if (r.ok) {
@@ -2861,7 +2871,7 @@ function evidenceFixState(key) {
 // Files the fix for one failure (desk-jira's gate, §3 jira-create; with no tracker, a ticket file) and
 // admits it: { fix, why } (why: it was filed but not admitted), or { why } when nothing was filed.
 function fileEvidenceFix(g) {
-  const { summary, body } = fixTicket(g, { repo: GH_REPO, base: DEFAULT_BRANCH });
+  const { summary, body } = fixTicket(g, { repo: GH_REPO, base: REPO_DEFAULT });
   // A failure that comes back after its fix is filed again, so the id is this filing's, not the key's.
   const id = createHash('sha1').update(`${g.key}\n${PASS_AT}`).digest('hex').slice(0, 8);
   let fix;
@@ -3493,7 +3503,7 @@ if (!DRY && PROMOTION_REF) {
   const merged = Object.values(qEnd.tickets).map((t) => (t.state === 'done' ? t.result?.pr : null)).filter((n) => n != null && prState(n) === 'MERGED');
   try {
     const u = urgentPromotion({
-      inputs: { slug: SLUG, root: E.repoRoot(), ghRepo: GH_REPO, def: E.configValue('default-branch') ?? 'main', ref: PROMOTION_REF, staging: E.configValues('staging') },
+      inputs: { slug: SLUG, root: E.repoRoot(), ghRepo: GH_REPO, def: REPO_DEFAULT, ref: PROMOTION_REF, staging: E.configValues('staging') },
       state: STATE, dir: digestDir(), merged,
     });
     if (u) push.push(u.push);

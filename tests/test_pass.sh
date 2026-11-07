@@ -656,6 +656,22 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-388 a worker with an open PR killed mid-run is resumed in its own session, not done" 'spawned_for Y-7 | grep -q "^Y-7 sess-y7 .*resume=yes$" && [ "$(field Y-7 result)" = null ] && ! echo "$out" | grep -q "Y-7: PR #88"'
 check "DS-388 AC5 a worker with an open PR that ended normally with no marker is done as before" '[ "$(field Y-8 state)" = "\"done\"" ] && [ "$(field Y-8 result.pr)" = 88 ] && echo "$out" | grep -q "Y-8: PR #88 (no marker printed"'
 q set Y-7 state=done
+# The same exits on the person's instruction: an open PR does not show it was carried out, and a ticket
+# recorded done has its fix closed in that pass, which frees the merge.
+instruction_fix='fix={"try":1,"of":1,"kind":"instruction","pr":88,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}'
+killed Y-61 sess-y61; q set Y-61 "$instruction_fix"; result_event >> "$T/state-k/logs/Y-61.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-501 a worker on the person's instruction that ended with no marker parks, its fix left open" '[ "$(field Y-61 state)" = "\"parked\"" ] && [ "$(field Y-61 fix.finished)" = null ] && [ "$(field Y-61 result)" = null ] && field Y-61 park.question | grep -q "your instruction on PR #88 may not be carried out" && ! echo "$out" | grep -q "Y-61: PR #88 (no marker printed"'
+q requeue Y-61
+check "DS-501 a requeue of that park keeps the instruction for its next worker" '[ "$(field Y-61 state)" = "\"triaged\"" ] && [ "$(field Y-61 fix.answer)" = "\"rename it\"" ] && [ "$(field Y-61 fix.finished)" = null ]'
+q set Y-61 state=done
+killed Y-62 sess-y62; q set Y-62 "$instruction_fix" resumes=2
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-501 so does a worker on the instruction killed past its resumes" '[ "$(field Y-62 state)" = "\"parked\"" ] && [ "$(field Y-62 fix.finished)" = null ] && field Y-62 park.question | grep -q "your instruction on PR #88"'
+q set Y-62 state=done
+killed Y-63 sess-y63; q set Y-63 "$instruction_fix" fix.finished=2026-01-01T00:00:00Z; result_event >> "$T/state-k/logs/Y-63.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: PR #88 (no marker printed"'
 probe_says limited $(( $(date +%s) + 3600 ))
 killed Y-6 sess-y6; usage_exit Y-6 $(( $(date +%s) + 3600 ))
 out=$(node "$B/pass.mjs" 2>&1)
@@ -930,6 +946,18 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-158 AC1 the spawn line shows the preflight's cost and turns" 'echo "$out" | grep -q "^spawned: P-1 port=.*; preflight \$0.43, 9 turn(s)"'
 check "DS-158 AC1 and the ticket's log holds them" 'grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.4321,\"num_turns\":9" "$T/state-p/logs/P-1.log"'
 check "DS-158 a failed preflight's cost is in the failure and the ticket's log too" '[ "$(field P-2 state)" = "\"failed\"" ] && echo "$out" | grep -q "preflight \$0.05, 2 turn(s)" && grep -q "\"type\":\"desk_preflight\",\"total_cost_usd\":0.05,\"num_turns\":2" "$T/state-p/logs/P-2.log"'
+# A skipped preflight spends nothing, so a fresh ticket with no log yet spawns with none.
+cat > "$T/desk/bin/spawn-worker.sh" <<'EOF'
+if [ "$3" = preflight ] && [ "$1" = P-4 ]; then printf '[preflight] %s\n[preflight] skipped: its last pass had this fingerprint\n[preflight] pass\n' "$1"; exit 0; fi
+if [ "$3" = preflight ] && [ "$1" = P-2 ]; then printf '[preflight] %s\n[preflight] cost=0.05 turns=2\n  W_IN   BLOCKED  FAIL (wanted OK)\n' "$1"; exit 1; fi
+if [ "$3" = preflight ]; then printf '[preflight] %s\n[preflight] cost=0.4321 turns=9\n[preflight] pass\n' "$1"; exit 0; fi
+echo "[spawn] ticket=$1"
+EOF
+q add P-4; q set P-4 state=triaged lane=A branch=fix/P-4
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-451 AC1 the spawn line says the preflight was skipped on a matching fingerprint" 'echo "$out" | grep -q "^spawned: P-4 port=.*; preflight skipped on a matching fingerprint"'
+check "DS-451 AC1 and no preflight line reaches the log, so nothing reads as an unknown cost" '[ "$(field P-4 state)" = "\"running\"" ] && [ "$(field P-4 log_bytes)" = 0 ] && ! grep -qs desk_preflight "$T/state-p/logs/P-4.log"'
+q set P-4 state=done
 # P-1's worker is in long model turns: with no partial messages its log grows only when a message
 # ends, here once every five passes. Today's threshold, six quiet passes, still applies.
 q set P-1 session_id=live-1 idle_passes=0 "log_bytes=$(wc -c < "$T/state-p/logs/P-1.log" | tr -d ' ')"
@@ -1407,6 +1435,24 @@ check "DS-415 AC3 and the next pass waits on those runs, starting none again" \
   '! grep -q "^workflow run pr-evidence.yml .* -f pr=80[12]$" "$T/gh-calls" && [ "$(field E-801 undraft.call)" = "\"wait\"" ]'
 check "DS-415 a run GitHub refused to start again is started at the next pass, not read as failing after the fix" \
   'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=803$" "$T/gh-calls" && [ "$(field E-803 undraft.call)" = "\"evidence\"" ]'
+
+# ---- A batch on its own base: the evidence workflow runs from §0 Default branch, not the base --------
+# The base goes straight onto the queue: set-batch asks origin for it, and this repo has no origin.
+export DESK_QUEUE="$T/queue-eb.json" DESK_AUTOPILOT_STATE="$T/state-eb"
+mkdir -p "$T/state-eb/logs" "$T/state-eb/evidence-runs"; : > "$T/admits"
+q init eb; q add E-804; q set E-804 state=done result.pr=804
+q add E-805; q set E-805 state=done result.pr=805
+printf '{"workflow":"pr-evidence.yml","runId":"9805","url":"https://github.com/acme/widgets/actions/runs/9805","at":"2026-11-01T19:28:00Z","cells":2}\n' > "$T/state-eb/evidence-runs/805-$HEAD_A.json"
+node -e 'const fs = require("fs"), f = process.argv[1], q = JSON.parse(fs.readFileSync(f, "utf8")); q.base = "feat/x"; fs.writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+: > "$T/gh-calls"; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-373 AC1 a dry-run pass on a batch base prints the dispatch with --ref the default branch" \
+  'echo "$out" | grep -q "would run \`gh workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=804\`" && ! grep -q "^workflow run" "$T/gh-calls"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-373 AC1 the pass starts it there too" \
+  'grep -q "^workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=804$" "$T/gh-calls" && ! grep -q "^workflow run .*--ref feat/x" "$T/gh-calls"'
+ebfix=$(node -e 'const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(Object.values(f).map((r) => r.fix).join(" "))' "$T/state-eb/evidence-runs/fixes.json" 2>/dev/null)
+check "DS-373 the fix ticket for a failed run reproduces it where the pass runs it" \
+  'grep -qF -- "--ref main -f pr=805" "$T/state-eb/tickets/$ebfix.md" && ! grep -q "feat/x" "$T/state-eb/tickets/$ebfix.md"'
 
 # ---- DS-278: a ready PR red after the driver's reruns, or in conflict, goes back to a fix worker twice
 # The fake gh answers each PR from $T/fx/<n>.json. The driver's rerun record is written as the driver

@@ -40,7 +40,7 @@ import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, stuckWhy, triesMade } from './fix-tries.mjs';
+import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { pacingSetting, usagePace, stateDirs } from './usage-pace.mjs';
@@ -727,6 +727,8 @@ const startsCell = (F, x, now) => {
 };
 const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
+// The same under a note's repo tag, which already names the repo.
+const noHistoryText = (F) => `no ship estimate yet, with ${F.count} of the ${MIN_HISTORY} merged autopilot tickets an estimate needs (the last ${WINDOW_DAYS} days).`;
 // A stopped batch has no dates: the forecast assumes passes keep running.
 const stoppedNote = (r, now) => (r.last == null ? 'no pass yet, so no dates until passes start' : `passes stopped ${ago(now - r.last)}, so no dates until they resume`);
 export { needsSession };
@@ -823,7 +825,8 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
 function epicWhy(r, F, e, checkin) {
   if (F.paused) return 'no date while passes are stopped';
   if (F.none) return `No date: ${r.name} has ${F.count} of the ${MIN_HISTORY} merged tickets dates need`;
-  if (r.workers === 0) return 'No date: workers set to 0, so nothing starts';
+  // Short: it is the last column of a row, cut at the window's edge.
+  if (r.workers === 0) return 'No date: 0 workers';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
   const needs = new Set(needsCount(r).rows);
@@ -939,16 +942,23 @@ const segRow = (id, segs, open) => {
 // other reasons plain lines in `notes`. With `width`, each line is wrapped to it.
 function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsage = false }) {
   const list = slug ? repos.filter((r) => r.id === slug) : repos.filter(hasBatch);
+  // `note` is the one-line form `desk-q ships` prints; `text` the same under a note's repo tag.
   const per = list.map((r) => {
-    if (r.error) return { r, note: `${r.name} · queue unreadable: ${r.error}` };
-    if (!r.q) return { r, note: `${r.name} · no autopilot batch yet, so nothing to date.` };
+    const say = (note, text) => ({ r, note: `${r.name} · ${note}`, text });
+    if (r.error) return say(`queue unreadable: ${r.error}`, `queue unreadable: ${r.error}`);
+    if (!r.q) return say('no autopilot batch yet, so nothing to date.', 'no autopilot batch yet, so nothing to date.');
     const F = forecastOf(r, { now, checkin });
-    if (F.idle) return { r, note: `${r.name} · ${idleNote(r)}` };
-    return F.none ? { r, note: `${r.name} · ${noHistory(r, F)}` } : F.paused ? { r, note: `${r.name} · ${stoppedNote(r, now)}.`, stopped: F } : { r, F };
+    if (F.idle) return say(idleNote(r), idleNote(r).replace(/^Nothing left for autopilot: /, 'nothing left for autopilot, as '));
+    return F.none ? say(noHistory(r, F), noHistoryText(F)) : F.paused ? { r, note: `${r.name} · ${stoppedNote(r, now)}.`, stopped: F } : { r, F };
   });
-  const fit = (s) => (width == null ? [s] : wrap(s, width));
   const dated = per.filter((p) => p.F);
-  const notes = per.filter((p) => p.note && !p.stopped).flatMap((p) => fit(p.note));
+  // Each note in the overview's template: a grey "note", the repo, then the text, a named batch first.
+  // A batch's full name carries its branch, too long for the tag column.
+  const tagOf = (r) => r.repo ?? r.name;
+  const lead = (r) => (r.batch ? `${batchName(r)}: ` : '');
+  const w = Math.max(12, ...per.map((p) => tagOf(p.r).length + 2));
+  const notes = noteLines(per.filter((p) => p.note && !p.stopped).map(({ r, text }) => ({ tag: tagOf(r), sgr: null,
+    text: [[`${lead(r)}${text.charAt(0).toLowerCase()}${text.slice(1)}`, null]] })), w, width);
   const items = per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => {
     const G = F ?? stopped;
     return r.rows.filter((x) => !epic || G.of[x.t.key] === epic).map((x) => ({ r, F: G, x, e: etaOf(G, x.t.key) }));
@@ -957,8 +967,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
   const head = [...tabHead(repos, slug, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list[0] : null)] : [])].flatMap(wrapped);
-  const w = Math.max(12, ...per.map((p) => p.r.name.length + 2));
-  const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[`${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
+  const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${tagOf(r)}`, sgr: WARN, text: [[`${lead(r)}${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
   return { list, per, notes, items, head, stopped };
 }
 
@@ -1166,7 +1175,7 @@ function daysParts(repos, slug, { now = Date.now(), width = null, checkin = fals
     for (const i of list) {
       const [cell, left] = i.e ? [`${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}  `, tw] : whyCell(why(i), 27, tw);
       const title = cut(tt(summaryOf(i)), left);
-      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.name, 12) : ''}`), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...ticketLead(i, `    ${all ? pad(i.r.repo ?? i.r.name, 12) : ''}`), [cell, i.e ? null : STATE_SGR[i.x.k]], [title, null]], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -1225,7 +1234,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
   // The children bar is solid on screen, not-yet-queued children grey; with no colour, □ tells them apart.
   const notYet = solidBars(width) ? '■' : '□';
-  const rows = list.map(({ r, F, e, d, name = r.name }) => {
+  const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
     const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
@@ -2013,7 +2022,7 @@ function prSegs(r, t, now) {
 function fixSegs(f, running, wait = null) {
   const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
   const who = running ? 'a worker' : wait ? `${wait}, then a worker` : 'next free worker';
-  if (f.kind === 'gaps') return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
+  if (personCall(f)) return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
   if (f.kind === 'capture') return [[`#${f.pr}`, PR_SGR], [' · ', null], [`${f.files?.length ?? 0} screenshot(s) never taken`, WARN], [` · ${who} takes them`, null]];
   return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, FAIL], [` · ${who} repairs it, try ${f.try} of ${f.of}`, null]];
 }
@@ -2430,7 +2439,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   if (row && !row.pr) { for (const [label, segs] of timingFields(r, forecastOf(r, { now, checkin }), row, h, now)) field(label, segs); out.push(''); }
   // The PR's fix try and what no fix try can move, as the last pass recorded them on the ticket.
   const stuck = t.stuck && !t.merged_at ? stuckOf(t, r.ctx) : null;
-  if (t.fix?.kind === 'gaps') field('Your call', [[t.fix.what, null]]);
+  if (personCall(t.fix)) field('Your call', [[t.fix.what, null]]);
   else if (t.fix) field('Fix try', [[`${t.fix.try} of ${t.fix.of} · ${t.fix.what}`, null]]);
   if (stuck) field('For you', [[stuck.why, WARN]]);
   if (t.fix || stuck) out.push('');

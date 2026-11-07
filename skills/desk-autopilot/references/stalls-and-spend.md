@@ -44,6 +44,15 @@ the row, then requeue the ticket. Lever on or off, each start's stage, model and
 ticket's log, and the batch report's worker table shows them per session, with `default` where
 nothing was passed.
 
+**With the `preflight` lever on (config §3b "Phase 0 levers"), a ticket does not pay for the same
+preflight twice.** A pass is recorded in `$DESK_STATE/workers/<TICKET>.preflight.json` as a fingerprint
+of the worker settings, the ticket's agents file, the tool list, the models, every start's effort,
+the installed claude CLI version, the desk commit, the worktree and the account. A spawn or resume
+with the same fingerprint runs no preflight, makes no line in the ticket's log, and its spawn line
+says it was skipped. Any change runs one, at low effort, and so does a spawn after a failure or a
+usage limit, which leave no record, or with an input that cannot be read. Delete the record to force
+one. Off, every preflight runs as it did, with no `--effort`.
+
 **With the `effort` lever on, no ticket runs in a cloud session**, because nothing gives one an
 effort. At config §3b Worker location `cloud`, the plan keeps every ticket local and its `runs:` line
 says why, and a ticket already placed in the cloud parks at its start, as does one starting with a
