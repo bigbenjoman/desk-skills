@@ -37,7 +37,7 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessage, FAILED } from './gate.mjs';
 import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran } from './check-build.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -2399,17 +2399,19 @@ const prStates = {};
 // counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
 const PR_FINAL = ['MERGED', 'CLOSED'];
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
   // gh writes a time GitHub has not set as the zero time, 0001-01-01.
   const time = (s) => (s && !s.startsWith('0001-') ? s : null);
-  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued', runId: c.runId ?? null }));
+  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued', runId: c.runId ?? null, jobId: c.jobId ?? null }));
   const headCommit = (v.commits ?? []).find((c) => c?.oid && c.oid === v.headRefOid);
+  // Who approved this head: `latestReviews` carries no commit, so `reviews` is read.
+  const approvals = [...new Set((v.reviews ?? []).filter((r) => r?.state === 'APPROVED' && r.commit?.oid === v.headRefOid).map((r) => r.author?.login).filter(Boolean))].sort();
   return {
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
-    isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, mergeable: v.mergeable ?? null,
+    isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, approvals, mergeable: v.mergeable ?? null,
     mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null, head_at: time(headCommit?.committedDate),
     base: v.baseRefName ?? null, branch: v.headRefName ?? null, base_head: v.baseRefOid ?? null,
     checks, at: new Date().toISOString(),
@@ -2466,6 +2468,19 @@ function withHistory(s, was) {
   const kept = was?.pr === s.pr && was.changed_at && seen(was) === seen(s);
   return { ...s, reruns, rerun_at: last ? new Date(last * 1000).toISOString() : null, changed_at: kept ? was.changed_at : s.at };
 }
+// An open PR's failed checks each keep the error their job gave (`error`), for needs-you, which makes no
+// network call: read once per job, and left unset where its annotations could not be read, so the next
+// pass reads them again.
+function withErrors(s, was) {
+  if (s.state !== 'OPEN') return s;
+  const checks = s.checks.map((c) => {
+    if (!c.jobId || !FAILED.has(c.conclusion)) return c;
+    const old = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
+    const error = old && 'error' in old ? old.error : failureMessage(GH_REPO, c.jobId);
+    return error === undefined ? c : { ...c, error };
+  });
+  return { ...s, checks };
+}
 // A merge is recorded here whoever made it, the merge driver or anyone else: merged_at on the ticket
 // and its eta-history line (queue.mjs merged keeps the first merge time and appends a key once).
 const merges = [];
@@ -2488,7 +2503,7 @@ for (const t of Object.values(qNow.tickets)) {
   if (!s) {
     s = readPrStatus(n);
     if (!s) continue;
-    s = withUntriggered(withHistory(s, t.pr_status));
+    s = withErrors(withUntriggered(withHistory(s, t.pr_status)), t.pr_status);
     // A closed PR still owed its reopen counts as open, so the batch is not idle and no ticket held
     // behind it reads as stuck while the reopen is outstanding.
     prStates[n] = owed && s.state === 'CLOSED' ? 'OPEN' : s.state;
