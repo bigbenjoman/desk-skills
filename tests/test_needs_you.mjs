@@ -1162,6 +1162,14 @@ const kfOnly = () => N.needsCount(repoRow([kfBatch()]));
 t('DS-407 AC2 put off from the feature batch, it is put off in the standing batch\'s register', `${kfOff.ok} ${kfOff.line.includes(join('.desk-autopilot', 'acme__kappa407', 'not-now'))}`, 'true true');
 t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alone, and the list', `${N.needsCount(kRow()).shown} ${N.needsCount(kfBatch()).putOff} ${kfOnly().shown} ${kp().filter((i) => i.kind === 'step').length}`, '0 1 0 0');
 
+// DS-439 AC3: the pass undrafted a PR on the desk-review a worker posted, so nothing is left for the person.
+put('tau', { port: 4300, beat: 1, supervised: true, tickets: {
+  'V-1': { ...landed(61), undraft: { call: 'ready', sha: 'a', pr: 61 } },
+  'V-2': { ...landed(62), undraft: { call: 'person', why: 'no review stating "no findings" is posted on it', action: 'review #62', sha: 'a', pr: 62 } },
+} });
+t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative control: one the pass left to the person is listed',
+  N.collect({ word: 'tau' }).items.map((i) => i.t.key).join(), 'V-2');
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

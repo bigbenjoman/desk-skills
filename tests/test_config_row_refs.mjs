@@ -60,7 +60,7 @@ const ROWS = Object.entries(CONFIG_ROWS).filter(([, r]) => r.section === '4' || 
 // The ids of rows a text names as `§<n> <label>` (quotes and bold allowed) with no
 // `desk-env get|list|cmds <id>` at or before the paragraph of the first mention.
 // Rows a dedicated desk-env command reads, which names them as well as `get` does.
-const READ_BY = { 'worker-models': 'desk-env\\s+model\\b' };
+const READ_BY = { 'worker-models': 'desk-env\\s+model\\b', 'local-review': 'desk-env\\s+review-cmd\\b' };
 // A skill's frontmatter description says what the skill is, not what to read, so it is left out.
 function bareRows(text) {
   const paras = text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/);

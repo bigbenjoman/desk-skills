@@ -324,6 +324,14 @@ How to turn what you find into rows:
 - **Local review command.** Offer what the repo ships first (a review skill in `.agents/skills` or
   `.claude/skills`), then `/desk-review`, then `/code-review`, then `none`. With `/desk-review`,
   propose §4 Clean review verdict `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.
+- **A counts-form Clean review verdict beside a command that posts no verdict marker.** Compare the
+  two rows whenever you reach either. A §4 Clean review verdict of `key=value` counts reads only a
+  `desk-review:verdict` marker, which `/desk-review` posts and `/code-review` does not; a review skill
+  the repo ships posts one only where its `SKILL.md` names that marker. Beside any other command, say
+  that the pair can never read clean, and offer `/desk-review` for §4 Local review command as the
+  recommended fix, or a plain-text §4 Clean review verdict that the command states. Do not write the
+  pair as it stands without saying so: a worker would run `/desk-review` in the command's place, and
+  the pass logs the contradiction once.
 - **Review bar.** `default` unless the repo has its own bar file (search `review-bar`, `REVIEW.md`,
   a review section in `CLAUDE.md`); then its path. Offer to copy desk-review's
   `references/review-bar.md` into the repo as a starting point only if the user asks.

@@ -503,6 +503,21 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-140 AC8 the next pass lists an overridden decision under WAITING ON YOU" 'echo "$out" | awk "/^WAITING ON YOU/,0" | grep -qF "C-3: decision overridden — \"Badge colour?\" is now \"neutral\" (was \"brand\"), by Ben at 2026-10-22T09:00:00.000Z"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-140 AC8 and only once" '! echo "$out" | grep -q "decision overridden"'
+# DS-439: §4 rows no review of the command can read clean. Each config is the fixture's plus its two rows.
+review_rows(){ { cat "$T/config.md"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Local review command | `%s` |\n| Clean review verdict | `%s` |\n' "$1" "$2"; } > "$T/config-rows.md"; out=$(DESK_CONFIG="$T/config-rows.md" node "$B/pass.mjs" 2>&1); }
+review_rows /code-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 a pass logs that the review rows contradict each other, naming both" 'echo "$out" | grep -F "review rows: config §4 Local review command (\`/code-review\`) and §4 Clean review verdict (\`p0=0 p1=0 gaps=0\`) contradict each other" | grep -qF "/desk-setup"'
+review_rows /code-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 and only once" '! echo "$out" | grep -q "review rows:"'
+review_rows /other-review 'p0=0 p1=0 gaps=0'
+check "DS-439 AC5 a different pair of rows is logged afresh" 'echo "$out" | grep -qF "(\`/other-review\`)"'
+rm -f "$T/state-c/review-rows-reported.txt"
+review_rows /desk-review 'p0=0 p1=0 gaps=0'
+check "DS-439 negative control: /desk-review beside the counts logs nothing" '! echo "$out" | grep -q "review rows:"'
+review_rows /code-review 'no findings'
+check "DS-439 negative control: /code-review beside a plain-text verdict logs nothing" '! echo "$out" | grep -q "review rows:"'
+review_rows none 'p0=0 p1=0 gaps=0'
+check "DS-439 AC6 §4 Local review command none logs nothing" '! echo "$out" | grep -q "review rows:"'
 rm "$T/digest/last.json"
 out=$(node "$B/pass.mjs" --json 2>&1)
 check "DS-140 AC1 a pass past a slot builds the digest and pushes it" 'pushes | grep -q "^digest:20" && ls "$T/digest"/*.md >/dev/null 2>&1'
