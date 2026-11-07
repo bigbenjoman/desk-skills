@@ -22,6 +22,10 @@ origin with `git-force-with-lease` not `yes` takes `git merge origin/<default>` 
 no force push. Your settings refuse that rebase. Where your prompt names a force-push the person
 approved once, your branch was rebased before that park: bring a moved base in with
 `git merge origin/<default>`, then push with exactly that lease, through `push-retry.mjs` as below.
+A park asking for a force-push names the SHA it would overwrite: its question gives the exact
+`git push --force-with-lease=<branch>:<sha> origin <branch>`, and `AUTOPILOT_PARK_INPUTS` holds
+`"lease": "<sha>"`, origin's branch as `git rev-parse origin/<branch>` reads it. A yes to that park is
+then a yes to that one overwrite, which a pass may make for you if GitHub refuses it with a 5xx.
 
 **A conflict is yours to resolve, not a park.** Resolve each conflicted file keeping both sides'
 intent: their change lands, and so does yours. Where their side renamed, moved or reshaped
