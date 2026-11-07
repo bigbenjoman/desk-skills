@@ -150,9 +150,6 @@ evidence: <file:line citations from the actual code>
 suggested_fix: <specific change, or "none">
 ```
 
-Each seat ends its answer, after its blocks or `NO FINDINGS`, with one line
-`FILES READ: <path>, <path>, …`: every repo-relative file it opened, the diff's included.
-
 ## Rounds
 
 ### Re-reviews (round 2 and above)
@@ -238,9 +235,9 @@ worker: at its worktree root, removed at the end with `git clean -f`):
 - `gaps`, `skipped_files`: the open requirement gaps and the files the oversized cap skipped. Every
   count is required, `0` when there are none: one left out is refused, never read as zero.
 - `since`: from round 2 on, the full SHA the previous round reviewed (the fix range's start).
-- `rests_on`: every seat's `FILES READ` paths, the changed files and, from round 2, the last
-  round's `rests_on`. Any of those missing: leave it out. verdict.mjs prints it after the method
-  line; the pass carries a verdict past a rebase or base merge only while the base changed none.
+- `rests_on`: every seat's `FILES READ` paths (Phase 3), the changed files and, from round 2, the
+  last round's `rests_on`; any missing, leave it out. A verdict carries past a base move only while
+  the base changed none.
 
 Then:
 

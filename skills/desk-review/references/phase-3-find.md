@@ -20,7 +20,9 @@ no override and each finder runs on the model it always has (its agent file's `m
 Bea, the refuters and codex keep their own models either way. Outside a worker the row does not apply.
 
 Each Claude prompt carries what the core's *Every seat's prompt* lists, in that order, and answers
-in its `FINDING` format.
+in its `FINDING` format. Every seat, codex included, ends its answer, after its blocks or
+`NO FINDINGS`, with one line `FILES READ: <path>, <path>, …`: every repo-relative file it opened,
+the diff's included. They make the results file's `rests_on` (the core's *The verdict*).
 
 **A seat that dies is partial coverage, never a clean seat.** A finder, Bea, the simplicity finder or
 codex that errors, times out, or answers with neither `FINDING` blocks nor `NO FINDINGS`: re-run it
