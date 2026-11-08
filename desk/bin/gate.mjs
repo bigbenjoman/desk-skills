@@ -38,7 +38,7 @@
 //   failureLines(notes)      a job's annotations -> every error its run gave, in order
 //   jobAnnotations(repo, jobId) -> a job's annotations read from GitHub; undefined when they cannot be read
 //   failureMessages(repo, jobId) -> failureLines read from GitHub; undefined when they cannot be read
-//   runnerFault(notes, job)  a failed job the runner killed or lost rather than its code -> { kind, why }, or null
+//   runnerFault(notes, job)  a red job the runner killed or lost rather than its code -> why, or null
 //   failureMessage(repo, jobId) -> the first of them; undefined when they cannot be read
 //   approvalFiles(line)      an error line asking for an approval for protected files -> { files, more }, or null
 //   staleVerdict(line)       an error line saying the review verdict is missing, stale or in a form it cannot read

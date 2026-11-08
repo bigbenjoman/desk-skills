@@ -132,6 +132,19 @@ t('DS-498 AC2 a hosted runner that lost communication is a lost runner', whyOf('
 t('DS-498 AC2 steps left unfinished with none failed and no error line is a lost runner', whyOf('lost'), 'the runner was lost: steps were left unfinished with no error line');
 t('DS-498 a type error is the code\'s, not the runner\'s', whyOf('code'), null);
 t('DS-498 a bare exit 1 is the code\'s, not the runner\'s', whyOf('exit1'), null);
+// Recorded from GitHub (gh run view --attempt 1 --json jobs, and the job's check-run annotations), trimmed
+// to the fields read: bigbenjoman/pr-ninja run 41470904289 job 125364562971 (exit 137) and run 41789422277
+// job 126439706836 (a self-hosted runner lost mid-job, its steps left in_progress and pending).
+const pending = (name) => step(name, 'pending', '');
+const RECORDED = {
+  oom959: { notes: [{ annotation_level: 'warning', message: 'Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache/restore@v4, actions/checkout@v4, actions/setup-node@v4, pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1.' }, note('Process completed with exit code 137.'), note('@repo/api#type-check: command (/home/runner/_work/pr-ninja/pr-ninja/packages/api) /home/runner/setup-pnpm/node_modules/.bin/pnpm run type-check exited (137)')],
+    job: { name: 'Run unit tests', conclusion: 'failure', steps: [setUp, step('Type-check every workspace except web (web is gated by the build)', 'completed', 'failure'), step('Post Run actions/setup-node@v4', 'completed', 'skipped')] } },
+  lost956: { notes: [note('The self-hosted runner lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.')],
+    job: { name: 'Run unit tests', conclusion: 'failure', steps: [setUp, step('Generate Prisma client', 'completed', 'success'), step('Run apps/web vitest suite', 'in_progress', ''), pending('Run apps/portal vitest suite'), pending('Complete runner')] } },
+};
+t('DS-498 AC1 a recorded exit 137 is the runner out of memory', runnerFault(RECORDED.oom959.notes, RECORDED.oom959.job), 'exit code 137: the runner ran out of memory and killed it');
+t('DS-498 AC2 a recorded lost self-hosted runner is a lost runner', runnerFault(RECORDED.lost956.notes, RECORDED.lost956.job), 'the runner lost communication with GitHub mid-job');
+t('DS-498 AC2 and its unfinished steps alone, with no error line, are too', runnerFault([], RECORDED.lost956.job), 'the runner was lost: steps were left unfinished with no error line');
 t('DS-498 unfinished steps beside an error line are not a lost runner', runnerFault([note('boom: assertion failed')], LOGS.lost.job), null);
 t('DS-498 annotations that could not be read classify nothing', runnerFault(undefined, LOGS.lost.job), null);
 const killedPr = (k, more = {}) => rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 21 }], { fault: () => runnerFault(LOGS[k].notes, LOGS[k].job), ...more });
