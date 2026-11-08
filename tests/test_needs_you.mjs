@@ -1163,6 +1163,7 @@ t('DS-380 a worktree holding untracked files is never removed, and nothing moves
     `${prompt.includes(`${moveCmd} acme__omega <TICKET> <batch>`)} ${prompt.includes('The batches running beside this one: F-1 (on feat/f)')} ${prompt.includes('move it there instead (a requeue would respawn it here, on this base)')}`, 'true true true');
   const allow = D.deciderSettings({ bin: BIN, state: oState }).permissions.allow;
   t('DS-425 AC1 the decider may run needs-you\'s move and no other needs-you action', JSON.stringify(allow.filter((a) => a.includes('needs-you.mjs'))), JSON.stringify([`Bash(${moveCmd}:*)`]));
+  t('DS-514 AC4 the decider cannot record an answer, so no grant comes from it', allow.filter((a) => a.includes('answer.mjs')).length, 0);
   // What the decider runs for M-8's answer, as its allow rule lets it.
   const run = (...a) => spawnSync(process.execPath, [join(BIN, 'needs-you.mjs'), 'move', ...a], { encoding: 'utf8', env: process.env, cwd: T });
   const mv8 = run('acme__omega', 'M-8', 'F-1');
@@ -1232,8 +1233,8 @@ spawnSync('git', ['-C', grWt, 'update-ref', 'refs/remotes/origin/fix/GR-1', leas
 const KAN636 = 'Rebased onto origin/main to clear the conflict; the branch is already on origin, so it needs `git push --force-with-lease origin fix/GR-1`, which my settings deny (§3 git-force-with-lease is ask). Approve the force-push?';
 const AWS = 'Reading the voicepa-ci account needs the aws CLI, which is refused by my worker settings. Can you read it?';
 put('grantee', { port: 5300, beat: 1, supervised: true, tickets: {
-  'GR-1': { ...parked('A', 30, KAN636), branch: 'fix/GR-1', worktree: grWt },
-  'GR-2': { ...parked('A', 20, KAN636), branch: 'fix/GR-1', worktree: grWt },
+  'GR-1': { ...parked('A', 30, KAN636), park: { ...parked('A', 30, KAN636).park, inputs: { lease: leaseSha } }, branch: 'fix/GR-1', worktree: grWt },
+  'GR-2': { ...parked('A', 20, KAN636), park: { ...parked('A', 20, KAN636).park, inputs: { lease: leaseSha } }, branch: 'fix/GR-1', worktree: grWt },
   'GR-3': parked('B', 10, AWS),
 } });
 const BS = await import('../desk/bin/batch-state.mjs');
@@ -1264,22 +1265,36 @@ t('DS-390 AC3 an answer approving it is not requeued to a worker', `${gr3.ok} ${
 t('DS-390 AC3 open names the session and says why', /not requeued \(a step no worker is allowed\).*\/desk-ticket GR-3/.test(N.record({ word: 'grantee', ticket: 'GR-3', action: 'open' }).line), true);
 const BSg = BS.grantFor({ t: { state: 'parked', branch: 'fix/GR-9', park: { question: KAN636, inputs: { lease: 'a'.repeat(40) } } }, text: 'ok' });
 t('DS-390 a lease the park names wins over the worktree read', BSg.grant?.lease, 'a'.repeat(40));
-t('DS-390 --approve grants with an answer that does not open with a yes', BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'Push it over abc', approve: true, remoteSha: () => 'b'.repeat(40) }).grant?.lease, 'b'.repeat(40));
-t('DS-390 no lease to read: no grant, saying why', /no lease SHA/.test(BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes' }).why), true);
+t('DS-390 --approve grants with an answer that does not open with a yes', BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636, inputs: { lease: 'b'.repeat(40) } } }, text: 'Push it over abc', approve: true }).grant?.lease, 'b'.repeat(40));
+t('DS-390 no lease named: no grant, saying why', /no lease SHA/.test(BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes' }).why), true);
 // DS-496 AC2: only a grant whose park named the SHA lets a pass make the lease push unattended.
 const a40 = 'a'.repeat(40), b40 = 'b'.repeat(40);
 t('DS-496 a park naming the lease in its inputs gives a pinned grant', BSg.grant?.pinned, true);
 t('DS-496 and one naming the exact push in its question',
-  BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: `GitHub refused git push --force-with-lease=b:${b40} origin b, force-push refused` } }, text: 'yes', remoteSha: () => b40 }).grant?.pinned, true);
-const unpinned = BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes', remoteSha: () => b40 }).grant;
-t('DS-496 a park that merely mentions a force-push gives an unpinned grant', `${unpinned?.lease === b40} ${unpinned?.pinned ?? null}`, 'true null');
+  BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: `GitHub refused git push --force-with-lease=b:${b40} origin b, force-push refused` } }, text: 'yes' }).grant?.pinned, true);
+t('DS-514 AC1 a yes to a park naming no SHA grants nothing, whatever origin holds', BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes' }).grant ?? null, null);
+t('DS-514 a lease in the question for another branch is not named for this one', BS.namedLease({ question: `needs git push --force-with-lease=c:${b40} origin c` }, 'b'), null);
+t('DS-514 AC3 asking for a force-push, from a refusal, a command or an approval',
+  [KAN636, 'GitHub refused the force-push of feat/x with a 5xx', 'Needs `git push --force-with-lease origin b`.', 'May I force-push this branch?', 'Rebasing would also need a force-with-lease push, which config §3 git-force-with-lease does not grant', 'Should I force-push this branch?', 'Force-push feat/x?', 'Force-push of feat/x. Please approve.', 'Can I force-push without losing the remote changes?', 'Rebased instead of merging, so the branch needs a force-push. Approve?'].map(BS.asksForcePush).join(), Array(10).fill('true').join());
+t('DS-514 AC3 a park that only mentions a force-push is not asking for one',
+  ['should I merge rather than force-push?', 'Should I force-push or merge?', 'I merged instead of a force-push, since §3 git-force-with-lease is ask.', 'Needs a product call; git-force-with-lease is not yes.', 'Which copy?', 'force-push is not allowed, so I merged instead.', 'No force-push needed; which copy should the banner use?', 'My force-push was refused, so I merged the base in. Which copy?', 'The force-push was denied, so I merged origin/main. Which copy should the banner use?', 'Is a force-push needed or merge?'].map(BS.asksForcePush).join(), Array(10).fill('false').join());
+t('DS-514 AC3 a yes to a park that only mentions a force-push grants nothing, even naming a SHA', BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: 'should I merge rather than force-push?', inputs: { lease: a40 } } }, text: 'yes' }).grant ?? null, null);
+t('DS-514 a lease in the inputs that differs from the one the question names is no lease', BS.namedLease({ question: `needs git push --force-with-lease=b:${b40} origin b`, inputs: { lease: a40 } }, 'b'), null);
+t('DS-514 a question naming two different leases for its branch is no lease; the same one twice is', [BS.namedLease({ question: `was --force-with-lease=b:${a40} now --force-with-lease=b:${b40}` }, 'b'), BS.namedLease({ question: `--force-with-lease=b:${a40} and --force-with-lease=b:${a40}` }, 'b')].join(), `,${a40}`);
+t('DS-514 AC1 the refused worker is told why, the round after and no later',
+  [BS.leaseRefusedBrief({ branch: 'b', lease_refused: { question: 'q1' }, prev_park: { question: 'q1' } })?.includes('--force-with-lease=b:<sha> origin b'), BS.leaseRefusedBrief({ branch: 'b', lease_refused: { question: 'q1' }, prev_park: { question: 'q2' } })].join(), 'true,');
+t('DS-514 AC1 unnamedForcePush: asked with no SHA; not with one in inputs or question; not a mention',
+  [BS.unnamedForcePush({ question: KAN636 }, 'b'), BS.unnamedForcePush({ question: KAN636, inputs: { lease: a40 } }, 'b'), BS.unnamedForcePush({ question: `${KAN636} --force-with-lease=b:${b40}` }, 'b'), BS.unnamedForcePush({ question: 'should I merge rather than force-push?' }, 'b')].join(), 'true,false,false,false');
+const RA = await import('../desk/bin/recoveries.mjs');
+t('DS-514 AC4 a pass answering with a recommended option approves nothing, even one that says yes', BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636, inputs: { lease: a40 } } }, text: RA.recommendedAnswer({ chose: 'yes', category: 'engineering' }) }).why, 'the answer approves nothing');
+const unpinned = { step: 'force-push', branch: 'b', lease: b40 };
 // DS-496 AC2: a lease park's clears-when names its SHA, which the pass keeps on its inputs, so its grant is pinned.
 const leased = BS.withLeaseInput({ step: 'push' }, { kind: 'push-ok', branch: 'b', lease: a40 });
 t('DS-496 withLeaseInput: a lease push condition adds its SHA to inputs naming none', JSON.stringify(leased), JSON.stringify({ step: 'push', lease: a40 }));
 t('DS-496 withLeaseInput: the inputs\' own lease, a plain push, a short SHA and none are left as they are',
   [BS.withLeaseInput({ lease: b40 }, { kind: 'push-ok', branch: 'b', lease: a40 }).lease, JSON.stringify(BS.withLeaseInput({}, { kind: 'push-ok', branch: 'b' })),
     JSON.stringify(BS.withLeaseInput({}, { kind: 'push-ok', branch: 'b', lease: 'abc' })), JSON.stringify(BS.withLeaseInput(undefined, { kind: 'none' }))].join(' '), `${b40} {} {} {}`);
-const leasedGrant = BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636, inputs: leased, clears_when: { kind: 'none' } } }, text: 'yes', remoteSha: () => b40 }).grant;
+const leasedGrant = BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636, inputs: leased, clears_when: { kind: 'none' } } }, text: 'yes' }).grant;
 t('DS-496 AC2 a yes to that park, its condition since cleared, is a pinned grant the pass may push',
   `${leasedGrant?.lease === a40} ${leasedGrant?.pinned} ${BS.passLeaseGrant(leasedGrant, { kind: 'push-ok', branch: 'b', lease: a40 })}`, 'true true true');
 t('DS-496 passLeaseGrant: a pinned grant for that branch and SHA', BS.passLeaseGrant({ step: 'force-push', branch: 'b', lease: a40, pinned: true }, { kind: 'push-ok', branch: 'b', lease: a40 }), true);

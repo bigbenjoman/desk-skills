@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -391,6 +391,24 @@ function recommendsOf(t, question, log) {
   return r.ok ? r.decision : null;
 }
 
+// A worker's park that asks for a force-push and names no lease SHA goes back to a worker, told to name
+// it (writeBrief), and is true when it went. Once a ticket: a second one stays parked, saying why no yes
+// can grant it, so a worker that never names the SHA cannot loop. It records that park as the refused
+// one, so if the person requeues it the next worker is told why too (leaseRefusedBrief).
+function refuseUnnamedLease(t, question) {
+  const left = (why) => { q('set', t.key, `park.recovery=${why}`); return false; };
+  if (DRY) return false;
+  if (t.lease_refused) {
+    q('set', t.key, `lease_refused=${JSON.stringify({ question })}`);
+    return left('it asks for a force-push naming no lease SHA, for the second time, so no answer can grant it: a requeue tells its next worker to name one');
+  }
+  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  if (!rq.ok) return left(`it asks for a force-push naming no lease SHA, and the requeue to name one was refused (${rq.out.split('\n').pop()})`);
+  q('set', t.key, `lease_refused=${JSON.stringify({ question })}`);
+  report.advanced.push(`${t.key}: its park asked for a force-push naming no lease SHA: refused back to a worker, no grant recorded. The park: ${question}`);
+  return true;
+}
+
 // A session that handed off (AUTOPILOT_HANDOFF: 4b or 7) is queued to start that stage in a fresh
 // session, ahead of new tickets, in the same worktree and on the same branch (spawnHandoff below). A
 // stage no session starts at, a worktree or branch that is gone, or a handoff briefing that cannot be
@@ -716,10 +734,12 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     const recommends = recommendsOf(t, park.trim(), log);
     q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []));
+    // Before the requeue, which moves this round's log aside.
+    logDecisions(t, log, null);
+    if (!wedged && !read && !needsSession({ ...t, park: { question: park.trim() } }) && unnamedForcePush({ question: park.trim(), inputs: reg.inputs }, t.branch) && refuseUnnamedLease(t, park.trim())) continue;
     if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${READ_BRANCH} (${READ_CHECKOUT}), never the ticket's worktree; requeued once they finish. The park: ${park.trim()}`);
     else if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
     else report.parked.push(`${t.key}: ${park.trim()}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
-    logDecisions(t, log, null);
   }
   else if (handoff) handedOff(t, handoff, { log, h, imgs: logImgDir, stopped });
   else if (done) {
@@ -2019,6 +2039,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
       'Read it and run §4 Database migrate yourself before trusting anything that needs data; if it still fails, say so rather than reporting a data-dependent check as passed.\n',
     t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
+    leaseRefusedBrief(t),
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
     notes && existsSync(notesFile) ? `${notesHead}${capNotes(readFileSync(notesFile, 'utf8'), notesFile, MAX_NOTES - notesHead.length)}` : '',
   ].filter(Boolean).join('\n');
