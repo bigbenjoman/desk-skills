@@ -1425,10 +1425,11 @@ if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWan
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
 const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
-const plan = borrowPlan({
-  on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: running.length, wanted: spawnable.length,
+const planFor = (workers) => borrowPlan({
+  on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: workers, wanted: spawnable.length,
   others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
 });
+const plan = planFor(running.length);
 // This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
 const ownBaseFix = fresh.base_fix?.running ? 1 : 0;
 const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
@@ -1852,8 +1853,9 @@ const triageBrief = (t) => {
 
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing. A base conflict fix worker still at it
-// holds one.
-let attempts = baseFixLive ? 1 : 0;
+// holds one of the batch's own number; the machine and repo budgets have counted it already.
+const ticketSlots = baseFixLive ? Math.min(slots, planFor(running.length + 1).slots) : slots;
+let attempts = 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two
 // batches' worker blocks can meet, and a worker's port is unbound until it starts a server, so probing
 // cannot see one another batch's pass has just handed out. Only running tickets and a running base
@@ -2256,7 +2258,7 @@ for (const { name, why } of pruneReadRepos()) report.failed.push(`read-only clon
 let readRepoFailures = null;
 for (const t of spawnable) {
   // usageStop: the base fix's preflight above was refused at the usage limit.
-  if (baseHold || usageStop || !(attempts < slots)) break;
+  if (baseHold || usageStop || !(attempts < ticketSlots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
   // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.

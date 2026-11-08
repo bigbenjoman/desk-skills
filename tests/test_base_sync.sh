@@ -166,6 +166,32 @@ check "DS-320 AC2 the next pass finds the base current and clears the tries" \
   '[[ "$out" == *"try 1 of 2 on feat/x finished: pr=none jira=none"* ]] && [[ "$out" == *"feat/x is current with main again, after 1 fix try"* ]] && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
 check "DS-320 AC2 and spawns resume" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && origin_has_main'
 
+# A live base conflict fix holds one worker, counted once. holding <case> <concurrency row> <batch's
+# number> [machine cap]: not feature mode, one ready ticket, the fix's session live, borrowing on.
+holding(){
+  : > "$T/spawns"; fresh "$1"
+  printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `%s` |\n| Borrow idle workers | `off` | `on` |\n' "$2" >> "$C/config.md"
+  node "$B/queue.mjs" set-batch "concurrency=$3" 'base_fix={"tries":[{"try":1,"head":"abc"}],"running":"sid-fix","port":3510}' >/dev/null
+  mkdir -p "$C/state/logs"; : > "$C/state/logs/base-feat-x.log"
+  jq -n '[{sessionId: "sid-fix", pid: 1}]' > "$T/agents.json"
+  printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / %s` | x |\n' "${4:-10}" > "$C/machine.md"
+  DESK_MACHINE="$C/machine.md" pass
+  rm -f "$T/agents.json"
+}
+holding bslot '3 / 3' 2
+check "DS-519 AC1 a live base fix and one free repo slot: the ready ticket starts" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && [[ "$out" == *"spawned: T-1"* ]]'
+holding bborrow '1 / 2' 1
+check "DS-519 AC1 a slot borrowed above the batch's own number starts it too" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ]'
+holding bone '1 / 1' 1
+check "DS-519 AC2 a batch of 1: the base fix holds its one worker, and no ticket starts" '[ ! -s "$T/spawns" ] && [[ "$out" == *"conflict fix try 1 of 2 is merging main into feat/x"* ]]'
+holding bmachine '3 / 3' 2 1
+check "DS-519 AC3 a machine cap with no room: no ticket starts" '[ ! -s "$T/spawns" ]'
+: > "$T/spawns"; fresh bnofix
+node "$B/queue.mjs" add T-2 >/dev/null; node "$B/queue.mjs" set T-2 state=triaged branch=feat/T-2 >/dev/null
+node "$B/queue.mjs" add T-3 >/dev/null; node "$B/queue.mjs" set T-3 state=triaged branch=feat/T-3 >/dev/null
+node "$B/queue.mjs" set-batch concurrency=2 >/dev/null; pass
+check "DS-519 AC4 with no base fix a batch of 2 starts 2 of 3 ready" '[ "$(grep -c "^T-" "$T/spawns")" = 2 ]'
+
 # AC4: a try whose worker left the base where it was is the last at that head: the person, with the
 # files and what the try did.
 : > "$T/spawns"; fresh bstuck; feature; fixrow yes; conflict; pass
