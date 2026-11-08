@@ -136,4 +136,39 @@ t('AC7 lever off: no base fields on the try or the call', ['base_red', 'base'].s
 const { checks: operator } = parseOperatorChecks(['Flows image missing: build it: ensure-flows-image.sh']);
 t('AC7 lever off: a draft as today', JSON.stringify(draftChecksFix({ key: 'T-1' }, { pr: 701, head: HEAD, failing: [red('Lint')] }, { repo: 'acme/widgets', operator })), JSON.stringify({ call: 'requeue', fix: { try: 1, of: 2, pr: 701, head: HEAD, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint', url: 'https://github.com/acme/widgets/actions/runs/9' }], not_mine: [], draft: true } }));
 
+// ---- a draft's red check classed runner or resource is re-run once before a fix try
+const NOSPACE = 'ENOSPC: no space left on device, write';
+const spaced = (name, runId) => ({ ...red(name, runId), errors: [NOSPACE] });
+const crun = (o = {}) => ({ perm: 'yes', reruns: () => 0, rerunsOk: () => 0, ...o });
+const draftOf = (failing, checks, classRerun, more = {}, tk2 = {}) => draftChecksFix({ key: 'T-1', ...tk2 }, { pr: 701, head: HEAD, failing, checks }, { repo: 'acme/widgets', base: 'main', ...(classRerun ? { classRerun } : {}), ...more });
+const once = draftOf([red('Lint', '9')], [ok('tests'), spaced('Lint', '9')], crun());
+t('DS-488 AC1 a draft\'s only red check classed runner or resource is re-run, with no fix try', `${once?.call} ${once?.fix} ${once?.gate?.failedRuns}`, 'rerun undefined 9');
+t('DS-488 AC1 and says why', once?.why, 'its "Lint" check is classed runner or resource, so it is re-run once before any fix worker');
+t('DS-488 AC1 the rerun\'s gate is as rerun.sh reads it', JSON.stringify(once?.gate), JSON.stringify({ pending: [], failedRuns: ['9'], reasons: [], failing: [{ name: 'Lint', runId: '9' }] }));
+t('DS-488 AC1 two such checks across runs are both re-run', draftOf([red('Lint', '9'), red('Unit', '8')], [spaced('Lint', '9'), spaced('Unit', '8')], crun())?.gate.failedRuns.join(), '9,8');
+const againBoth = (o) => draftOf([red('Lint', '9')], [spaced('Lint', '9')], crun(o));
+const again = againBoth({ reruns: () => 1, rerunsOk: () => 1 });
+t('DS-488 AC3 red again after its rerun: the fix try proceeds', `${again?.call} ${again?.fix.try}`, 'requeue 1');
+t('DS-488 AC3 and its item says one rerun was already tried', again?.fix.what, 'red: Lint; classed runner or resource; one rerun was already tried at this head and it failed again');
+t('DS-488 AC3 its brief says so too', fixBrief({ fix: again.fix }).includes('Their errors name the runner or a resource rather than the code: classed runner or resource; one rerun was already tried at this head and it failed again.'), true);
+t('DS-488 AC3 the try is classed runner or resource', fixClass(again.fix, { key: 'T-1' }).class, 'runner or resource');
+t('DS-488 a refused rerun is tried again', againBoth({ reruns: () => 1 })?.call, 'rerun');
+t('DS-488 both reruns refused: the fix try goes ahead and says so', againBoth({ reruns: () => 2 })?.fix.what, 'red: Lint; classed runner or resource; GitHub refused desk\'s 2 reruns at this head');
+const spentAgain = draftOf([red('Lint', '9')], [spaced('Lint', '9')], crun({ reruns: () => 1, rerunsOk: () => 1 }), {}, { fix_tries: [...allTried] });
+t('DS-488 AC3 with no try left, the stuck reason says so too', spentAgain?.why, `still red after 3 fix tries: Lint says "${NOSPACE}"; classed runner or resource; one rerun was already tried at this head and it failed again`);
+const appDefect = draftOf([red('Lint', '9')], [{ ...red('Lint', '9'), errors: [LINE] }], crun());
+t('DS-488 AC4 classed anything else: no rerun, the fix try as today', `${appDefect?.call} ${appDefect?.fix.what}`, 'requeue red: Lint');
+const beside = draftOf([red('Lint', '9'), red('Unit', '8')], [spaced('Lint', '9'), { ...red('Unit', '8'), errors: [LINE] }], crun());
+t('DS-488 AC4 one such check beside a code error: no rerun', `${beside?.call} ${beside?.fix.what}`, 'requeue red: Lint, Unit');
+t('DS-488 AC4 a check with no error line: no rerun', draftOf([red('Lint', '9')], [red('Lint', '9')], crun())?.call, 'requeue');
+for (const perm of ['no', 'ask', undefined]) {
+  const c = draftOf([red('Lint', '9')], [spaced('Lint', '9')], { perm, reruns: () => 0, rerunsOk: () => 0 });
+  t(`DS-488 AC5 ci-rerun ${perm}: no rerun, and the item says reruns are not granted`, `${c?.call} | ${c?.fix.what}`, `requeue | red: Lint; classed runner or resource; config §3 ci-rerun is "${perm ?? 'no'}", so reruns are not granted`);
+}
+t('DS-488 AC6 lever off: exactly as today', JSON.stringify(draftOf([red('Lint', '9')], [spaced('Lint', '9')], null)), JSON.stringify({ call: 'requeue', fix: { try: 1, of: 2, pr: 701, head: HEAD, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint', url: 'https://github.com/acme/widgets/actions/runs/9' }], not_mine: [], draft: true } }));
+const heldFirst = draftOf([red('Lint', '9')], [spaced('Lint', '9')], crun(), { baseRead: read({ Lint: 'fail' }) });
+t('DS-488 red on the base too stays held rather than re-run', heldFirst?.call, 'held');
+const beatsRecord = draftOf([red('Lint', '9'), red('Unit', '8')], [spaced('Lint', '9'), spaced('Unit', '8')], crun(), { baseRead: read({ Lint: 'fail' }) });
+t('DS-488 beside a base red check, only its own run is re-run and the hold is kept', `${beatsRecord?.call} ${beatsRecord?.gate.failedRuns} ${beatsRecord?.base_red?.checks}`, 'rerun 8 Lint');
+
 if (fails) { console.log(`${fails} check(s) failed`); process.exit(1); }

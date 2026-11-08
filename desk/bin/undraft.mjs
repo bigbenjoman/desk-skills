@@ -55,7 +55,7 @@
 // commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
 // review-reuse lever on restsOnCarries, whose base range checked is `range`).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { RERUNS_MAX, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
+import { RERUNS_MAX, RUNNER_RERUNS, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
@@ -352,7 +352,6 @@ export function undraftComment(verdict, head, clean, carried = null, range = nul
 // with ci-rerun not yes, since no change on its branch clears it. A rerun call carries the gate as
 // rerun.sh reads it.
 const INTERRUPTED = new Set(['cancelled', 'timed_out']);
-export const RUNNER_RERUNS = 1;
 export const RUNNER_FIX = 'give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit)';
 function rerunCall(gate, cfg, n) {
   const failing = gate.failing;
