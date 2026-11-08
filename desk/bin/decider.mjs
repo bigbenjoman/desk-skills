@@ -198,7 +198,6 @@ export function deciderSettings({ bin, state }) {
         `Bash(node ${join(bin, 'needs-you.mjs')} move:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} clears-when:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} render)`,
-        `Bash(node ${join(bin, 'answer.mjs')}:*)`,
         'Bash(desk-jira get:*)',
         'Bash(gh pr view:*)',
         `Read(/${state}/**)`,

@@ -126,12 +126,7 @@ try {
   const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
   let granted = false;
   if (t?.state === 'parked' && !isHeld(t) && !putOffAnswer && refusedStep(t.park?.question)) {
-    const remoteSha = (branch) => {
-      if (!t.worktree) return null;
-      try { return execFileSync('git', ['-C', t.worktree, 'rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
-      catch { return null; }
-    };
-    const g = grantFor({ t, text, approve: approveFlag, remoteSha });
+    const g = grantFor({ t, text, approve: approveFlag });
     if (g.grant) {
       execFileSync('node', [QUEUE, 'set', ticket, `grant=${JSON.stringify(g.grant)}`], { stdio: 'ignore' });
       granted = true;
