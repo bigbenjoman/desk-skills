@@ -87,13 +87,13 @@ const NOTES = [
   "      ◌ forewatt     Its AWS bill couldn't be read today, so this shows the 25 Oct figure. desk-q tries again every hour.",
 ];
 const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs';
-const keysAt = (f) => f.findIndex((l) => l.startsWith('↑↓ select') || l.startsWith('←→ or 1–5 view') || l.startsWith('move  '));
+const keysAt = (f) => f.findIndex((l) => l.startsWith('↑↓ select') || l.startsWith('←→ or 1–6 view') || l.startsWith('move  '));
 
 // ---- AC1: home's tab line and keys
 const H = screen();
 await sleep(20);
 t('AC1 home\'s tab line has 5 Costs after 4 Epics', H.frame()[1].startsWith(ALL_TABS), true);
-t('AC1 home\'s keys read ←→ or 1–5 view', H.frame().slice(keysAt(H.frame())).join(' ').includes('←→ or 1–5 view'), true);
+t('AC1 home\'s keys read ←→ or 1–6 view', H.frame().slice(keysAt(H.frame())).join(' ').includes('←→ or 1–6 view'), true);
 
 // ---- AC2: 5 on home shows every name's charge, most first, then shared and the total
 await H.press('5');

@@ -4,7 +4,7 @@
 // points at, so each is read once per login.
 //
 // The registry covers every login whose folder exists, whatever its rule or sign-in: a worker started
-// on a login later turned off or signed out is still running. With one login, each reader makes one
+// on a login later turned off, signed out or removed is still running. With one login, each reader makes one
 // call, with no CLAUDE_CONFIG_DIR.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -24,6 +24,17 @@ const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: d
 export function claudeLogins(env = process.env) {
   const extra = env.CLAUDE_CONFIG_DIR ? [envLogin(resolve(env.CLAUDE_CONFIG_DIR))] : [];
   return toolLogins('claude', readSubscriptions(subscriptionsPath()), extra).filter((l, i) => i === 0 || isDir(l.dir));
+}
+
+// The logins work may be running on: every login above, then each removed one whose folder exists, as
+// a worker started on a login before it was removed is still running.
+//   -> [login]
+function runningLogins(env = process.env) {
+  const out = claudeLogins(env);
+  for (const r of readSubscriptions(subscriptionsPath()).removed) {
+    if (r.tool === 'claude' && isDir(r.dir) && !out.some((l) => l.dir === r.dir)) out.push(login({ tool: 'claude', name: r.name, folder: r.dir, rule: null, source: 'removed' }));
+  }
+  return out;
 }
 
 // A login desk may start or probe work on: in rotation or on standby.
@@ -47,7 +58,7 @@ export const loginKey = (l) => (l?.configDir ? String(l.name).replace(/[^A-Za-z0
 //   -> { ok: true, live: [{ ...agent, login, configDir }] } | { ok: false, live: null, why }
 export function readRegistry({ env = process.env } = {}) {
   const live = [];
-  for (const l of claudeLogins(env)) {
+  for (const l of runningLogins(env)) {
     const r = spawnSync('claude', ['agents', '--json'], { env: loginEnv(l, env), encoding: 'utf8', timeout: CHECK_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
     const at = `the registry of claude login ${l.name} (${l.folder})`;
     if (r.error || r.signal) return { ok: false, live: null, why: `${at}: ${r.error?.code === 'ETIMEDOUT' || r.signal ? `no answer within ${CHECK_TIMEOUT_MS / 1000}s` : r.error.message}` };
@@ -81,7 +92,7 @@ export function logLoginDir(stateDir, name) {
 }
 
 // Where every login keeps its session transcripts: <folder>/projects.
-export const projectsDirs = () => claudeLogins().map((l) => join(l.dir, 'projects'));
+export const projectsDirs = () => runningLogins().map((l) => join(l.dir, 'projects'));
 
 // ---- CLI ---------------------------------------------------------------------------------------
 //   agents          the registry across every login, one JSON list; exit 1 when a login cannot be read
