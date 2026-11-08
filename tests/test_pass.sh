@@ -2830,8 +2830,9 @@ ffx(){
     const reviews = [];
     if (review !== "-") {
       const [sha, counts] = [review.slice(0, 40), review.slice(41)];
-      const listed = /p0=[1-9]/.test(counts) ? ["", "P0 (1)", " src/clerk.ts:12    updateClerkUserMetadata signature changed on main"] : /p1=[1-9]/.test(counts) ? ["", "P1 (1)", " src/probe.ts:30    a hung DOB probe never times out"] : [];
-      reviews.push({ id: `PRR_${n}`, author: { login: "ben" }, commit: { oid: sha }, body: ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts} p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->`, "**desk-review, round 1**", ...listed].join("\n") });
+      const gaps = /gaps=(\d+)/.exec(counts)?.[1] ?? "0";
+      const listed = /p0=[1-9]/.test(counts) ? ["", "P0 (1)", " src/clerk.ts:12    updateClerkUserMetadata signature changed on main"] : /p1=[1-9]/.test(counts) ? ["", "P1 (1)", " src/probe.ts:30    a hung DOB probe never times out"] : gaps !== "0" ? ["", "### Requirement gaps", "- PERSON\x27S CALL · AC2: only the person can accept it"] : [];
+      reviews.push({ id: `PRR_${n}`, author: { login: "ben" }, commit: { oid: sha }, body: ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts.replace(/ gaps=\d+/, "")} p2=0 deferred=0 gaps=${gaps} unrefuted=0 partial=0 vendor=codex round=1 -->`, "**desk-review, round 1**", ...listed].join("\n") });
     }
     const nodes = threads.map((x) => { const [id, path, line, first] = x.split(":"); return { id, isResolved: false, isOutdated: false, path, line: Number(line), originalLine: Number(line),
       comments: { nodes: [{ author: { login: "pullbot" }, body: first, pullRequestReview: { id: `PRR_bot_${id}` } }] } }; });
@@ -2881,6 +2882,12 @@ check "DS-419 a worked thread GitHub would not resolve holds the next try, and t
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-419 the next pass resolves it, with no second reply, and starts no try" \
   '[ "$(grep -c "^PRRT_d" "$T/fb/replied.log")" = 1 ] && grep -qx PRRT_d "$T/fb/resolved.log" && [ "$(field B-4 state)" = "\"done\"" ] && [ "$(field B-4 fix_tries | jq length)" = 1 ]'
+# DS-513: with judgement on, a ready PR whose only gap is the person's starts no worker, and is put to them.
+q add B-5; q set B-5 state=done lane=A branch=fix/B-5 result.pr=805
+ffx 805 "$H1" "$H1 p0=0 p1=0 gaps=1"
+: > "$T/spawns"; out=$(DESK_CONFIG="$T/config-g.md" node "$B/pass.mjs" 2>&1)
+check "DS-513 AC1 a ready PR whose only gap is the person's call is stuck on it, with no fix try" \
+  '[ "$(field B-5 state)" = "\"done\"" ] && [ "$(field B-5 fix)" = null ] && field B-5 stuck.why | jq -r . | grep -qF "review gaps only you can settle: PERSON'\''S CALL · AC2" && ! grep -q "^B-5 " "$T/spawns"'
 
 # ---- DS-433: a green ready PR with no clean verdict at its head goes for review, where a driver may merge --
 # fix/C-1's head CB is a clean merge of main over CA, fix/C-2's head CC also has a commit of its own.

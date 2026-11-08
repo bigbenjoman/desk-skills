@@ -129,7 +129,8 @@ not merge, and the pass sends it to a review worker out of draft (`fix-tries.mjs
 to the person once no try is left. A review at the head that is not clean goes to a fix worker where
 it lists a P0, a P1, a P2 or, under §3 `autopilot-judgement`, a gap (`reviewFix`; P2s once nothing worse
 is left, and a later round may carry one), and otherwise to the person. A gap the review tags `PERSON'S
-CALL` earns no fix try and goes to the person, after any try the rest of the review earns.
+CALL` earns no fix try and goes to the person, after any try the rest of the review earns: on a draft
+or a ready PR, the needs-you item offers `answer`, and a worker on the PR carries out their call.
 
 With the `review-reuse` lever on (config §3b Phase 0 levers), the carry rests on what the review read
 instead: after a rebase or any merge of the base, a verdict holds at the new head only while the PR's

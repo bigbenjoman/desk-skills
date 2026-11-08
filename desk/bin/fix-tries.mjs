@@ -364,9 +364,22 @@ export function reviewFix(t, review, opts = {}) {
   return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}), ...(personGaps.length ? { person_gaps: personGaps } : {}) } };
 }
 
-// The person's call on a draft's review gaps (desk-needs-you), as the fix it sends back: not one of
-// the FIX_TRIES_MAX tries, which are the pass's own.
-export const gapsFix = ({ pr, head, answer }) => ({ kind: 'gaps', pr, head: head ?? null, what: 'review gaps: your call', answer });
+// A ready PR's review whose only open items are gaps it tags as the person's call, as the stuck call
+// that puts them to the person: a draft needs none, its undraft record says so (undraft.mjs). null for
+// any other review. Asked once reviewFix has returned null.
+const PERSON_GAPS = 'review gaps only you can settle: ';
+export const personGapsText = (why) => (String(why ?? '').startsWith(PERSON_GAPS) ? String(why).slice(PERSON_GAPS.length) : null);
+export function personGapsCall(review, opts = {}) {
+  const v = review.verdict, open = Number(v?.gaps) || 0;
+  if (opts.judgement !== 'yes' || !open || reviewCounts(v) || Number(v?.p2) > 0) return null;
+  const person = reviewGaps(review.body).filter(personsCall);
+  return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.join('; ')}` } : null;
+}
+
+// The person's call on a PR's review gaps (desk-needs-you), as the fix it sends back: not one of the
+// FIX_TRIES_MAX tries, which are the pass's own. `ready` is a PR out of draft, which its worker leaves
+// out of draft.
+export const gapsFix = ({ pr, head, ready, answer }) => ({ kind: 'gaps', pr, head: head ?? null, ready: ready === true, what: 'review gaps: your call', answer });
 
 // The person's instruction on an open PR (desk-needs-you `resume`), as the fix it sends back: like a
 // gaps call, not one of the pass's tries; numbered as the last of the tries made, for the views that
@@ -592,7 +605,7 @@ export function fixBrief(t) {
   }
   if (f.kind === 'gaps') {
     return [`## Your call on PR #${f.pr}'s review gaps`, '',
-      `Your PR #${f.pr} is a draft on this branch, and the desk-review posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
+      `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the desk-review posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
       ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
   }
   if (f.kind === 'instruction') {

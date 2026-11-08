@@ -406,6 +406,20 @@ t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actio
 
 // ---- An open PR takes the person's instruction for a worker on it; a merged or closed one says why not.
 const readyPr = (pr, extra = {}) => { const d = draftPr(pr, passed); return { ...d, ...extra, pr_status: { ...d.pr_status, isDraft: false } }; };
+// ---- DS-513: a ready PR stuck on gaps only the person can settle takes their call, as a draft does.
+const PG_WHY = "review gaps only you can settle: PERSON'S CALL · AC2: only the person can accept it";
+put('pg', { port: 4205, beat: 1, supervised: true, tickets: {
+  'PG-1': readyPr(85, { stuck: { why: PG_WHY, pr: 85, head: 'h85' } }),
+  'PG-2': readyPr(86, { stuck: { why: PG_WHY, pr: 86, head: 'older' } }),
+} });
+const pg = Object.fromEntries(N.collect({ word: 'pg' }).items.map((i) => [i.t.key, i]));
+t('DS-513 AC1 a ready PR on the person\'s gaps offers answer first', `${pg['PG-1']?.need} | ${pg['PG-1']?.actions.map((a) => a[0]).join()}`, "PR #85's code review left requirement gaps only you can settle: PERSON'S CALL · AC2: only the person can accept it. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now");
+t('DS-513 AC1 negative: a reason from an older head offers no answer', pg['PG-2']?.actions.some((a) => a[0] === 'answer') ?? false, false);
+const pgCall = 'Accept AC2 as built';
+const pgr = cli('record', 'pg', 'PG-1', 'answer', pgCall);
+const pgq = queueOf('pg').tickets['PG-1'];
+t('DS-513 AC1 the call is posted and a worker is queued on the ready PR', `${pgr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 85 --repo acme/pg --body')} ${pgq.state} ${pgq.fix?.kind} ${pgq.fix?.ready} ${pgq.fix?.answer === pgCall}`, '0 true triaged gaps true true');
+
 put('instr', { port: 4210, beat: 1, supervised: true, tickets: {
   'SG-1': { ...draftPr(91, passed, { call: 'person', why: 'its review verdict at abc123456 is not clean (gaps=1)', action: 'settle the gaps on #91' }), branch: 'fix/SG-1-x' },
   'SG-2': readyPr(92, { branch: 'fix/SG-2-x' }),
