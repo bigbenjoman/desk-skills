@@ -147,15 +147,16 @@ export function refusedStep(question) {
 }
 export const neverStep = (question) => { const s = refusedStep(question); return s && !s.grantable ? s.step : null; };
 
-// The SHA a park on `branch` says a force-push may overwrite: its inputs' `lease`, else the exact
-// `--force-with-lease=<branch>:<sha>` in its question, or null when it names none, or names two: the
-// person reads the question and never the inputs, so a yes cannot be to the SHA only the inputs hold.
+// The SHA a park on `branch` says a force-push may overwrite, from the exact
+// `--force-with-lease=<branch>:<sha>` in its question and its inputs' `lease`, or null when it names
+// none, or two that differ: a yes cannot say which it meant. A question naming none takes the inputs'
+// SHA, which the person does not see (a re-park's comes from its clears-when, withLeaseInput): the
+// grant is still only for this branch, and only while origin is at that SHA (grantPush).
 export function namedLease(park, branch) {
   const named = String(park?.inputs?.lease ?? '').trim();
-  let asked = null;
-  for (const m of String(park?.question ?? '').matchAll(/--force-with-lease=([^\s:`'"]+):([0-9a-f]{40})(?![0-9a-f])/g)) if (m[1] === branch) { asked = m[2]; break; }
-  if (!SHA.test(named)) return asked;
-  return asked && asked !== named ? null : named;
+  const leases = new Set([...String(park?.question ?? '').matchAll(/--force-with-lease=([^\s:`'"]+):([0-9a-f]{40})(?![0-9a-f])/g)].filter((m) => m[1] === branch).map((m) => m[2]));
+  if (SHA.test(named)) leases.add(named);
+  return leases.size === 1 ? [...leases][0] : null;
 }
 
 // Whether a park's question asks for a force-push, clause by clause, rather than mentions one: the
