@@ -107,6 +107,14 @@ and its briefing says the other is not the worker's to fix. desk-q shows each ti
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
 tickets wait and fix tries still start, within the batch's worker count.
 
+Before any of these, on every pass, each open child is compared with its base: a migration the base
+has renumbered since the child left it, that the child's own changed files still name by the old
+filename, sends the child to a worker with the old and new names (`migration-renames.mjs`, kind
+`renames` in `fix_tries`). That try is outside the two tries, once per rename, and a child naming
+none of the renamed files is left alone. A PR in conflict goes to its conflict tries first. The merge
+driver leaves that PR alone, red or green, until the pass closes the try, as it does for the person's
+instruction.
+
 Out of draft, a check §4 Check builds names is a person's too, with its command, and so is one that
 is, or failed at a step that is, a §4 Pre-merge steps item, with that step. A stuck reason names
 each check a worker could not fix with the step its run failed at (`Lint (failed step: Run eslint)`),

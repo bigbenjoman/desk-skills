@@ -667,6 +667,16 @@ q add T-63 Story A; q set T-63 branch=fix/T-63 state=done result.pr=163 'fix={"t
 iloop T-63; iloop T-63
 check "another kind of unfinished fix is not held by this" '[ "$(merged)" = 163 ] && ! echo "$out" | grep -q "HELD: a worker"'
 
+green_pr 166 $SHA62
+q init merge-renames-held
+q add T-66 Story A; q set T-66 branch=fix/T-66 state=queued result.pr=166 'fix={"try":0,"of":2,"extra":true,"kind":"renames","pr":166,"what":"names a renamed migration"}'
+: > "$T/merges.log"
+iloop T-66; iloop T-66
+check "a green PR is not merged while its migration rename worker runs" '[ -z "$(merged)" ] && echo "$out" | grep -q "#166 HELD: a worker has still to update the migrations"'
+q set T-66 state=done fix.finished=2026-11-07T00:00:00Z
+iloop T-66; iloop T-66
+check "once the rename try is finished, it merges" '[ "$(merged)" = 166 ]'
+
 green_pr 164 $SHA64
 q init merge-instruction-race
 q add T-64 Story A; q set T-64 branch=fix/T-64 state=done result.pr=164

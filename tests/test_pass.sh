@@ -671,6 +671,11 @@ killed Y-62 sess-y62; q set Y-62 "$instruction_fix" resumes=2
 out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
 check "DS-501 so does a worker on the instruction killed past its resumes" '[ "$(field Y-62 state)" = "\"parked\"" ] && [ "$(field Y-62 fix.finished)" = null ] && field Y-62 park.question | grep -q "your instruction on PR #88"'
 q set Y-62 state=done
+# DS-493: a migration rename try holds the merge the same way, and done would spend its one try.
+killed Y-64 sess-y64; q set Y-64 'fix={"try":1,"of":2,"extra":true,"kind":"renames","pr":88,"head":null,"renames":[{"old":"0007_a.sql","new":"0008_a.sql","to":"main","files":["src/x.ts"]}]}'; result_event >> "$T/state-k/logs/Y-64.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-493 a worker on a rename try that ended with no marker parks, its fix left open" '[ "$(field Y-64 state)" = "\"parked\"" ] && [ "$(field Y-64 fix.finished)" = null ] && [ "$(field Y-64 result)" = null ] && field Y-64 park.question | grep -q "the migrations PR #88 names may not be updated to their base.s new names (0007_a.sql → 0008_a.sql)" && ! echo "$out" | grep -q "Y-64: PR #88 (no marker printed"'
+q set Y-64 state=done
 killed Y-63 sess-y63; q set Y-63 "$instruction_fix" fix.finished=2026-01-01T00:00:00Z; result_event >> "$T/state-k/logs/Y-63.log"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: PR #88 (no marker printed"'
@@ -2011,6 +2016,30 @@ check "DS-492 AC4 a draft the person's done recorded as filled is taken out of d
   'grep -q "^pr ready 767" "$T/gh-calls" && [ "$(field S-7 undraft.call)" = "\"ready\"" ]'
 check "DS-492 AC4 negative control: put back to draft by a person, it stays held" \
   '! grep -q "^pr ready 768" "$T/gh-calls" && [ "$(field S-8 undraft.call)" = "\"held\"" ]'
+
+# ---- DS-493: a base that renumbers a migration sends the child naming it to a worker, before any other
+# fix try, and leaves a child naming none of it. A real clone, since the pass asks git.
+git init -q --bare -b main "$T/mig-origin.git"
+git init -q -b main "$T/mig"; git -C "$T/mig" remote add origin "$T/mig-origin.git"
+mcmt(){ mkdir -p "$(dirname "$T/mig/$1")"; echo "$2" > "$T/mig/$1"; git -C "$T/mig" add -A; git -C "$T/mig" commit -q -m "$1"; git -C "$T/mig" rev-parse HEAD; }
+mcmt db/migrations/128_add_model.py 'revision = 128' >/dev/null
+git -C "$T/mig" checkout -q -b fix/M-1; M1=$(mcmt tests/test_m.py 'open("128_add_model.py")')
+git -C "$T/mig" checkout -q -b fix/M-2 main; M2=$(mcmt tests/test_n.py 'nothing')
+git -C "$T/mig" checkout -q main; git -C "$T/mig" mv db/migrations/128_add_model.py db/migrations/129_add_model.py
+git -C "$T/mig" commit -q -m renumber; git -C "$T/mig" push -q origin main fix/M-1 fix/M-2
+sed "s#$T/repo#$T/mig#" "$T/config-r.md" > "$T/config-mig.md"
+export DESK_CONFIG="$T/config-mig.md" DESK_QUEUE="$T/queue-mig.json" DESK_AUTOPILOT_STATE="$T/state-mig"
+mkdir -p "$T/state-mig/logs"
+q init mig; q set-batch concurrency=6
+for k in 1 2; do q add "M-$k"; q set "M-$k" state=done lane=A "branch=fix/M-$k" "result.pr=76$k"; done
+frx 761 "$M1" "$M1" 'p0=0 p1=0 p2=0'; frx 762 "$M2" "$M2" 'p0=0 p1=0 p2=0'
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-493 AC1 a child naming the old filename goes to a worker with the old and new names" \
+  '[ "$(field M-1 state)" = "\"triaged\"" ] && [ "$(field M-1 fix | jq -c "[.kind, .extra, .draft, .renames[0].old, .renames[0].new, .renames[0].files]")" = "[\"renames\",true,true,\"128_add_model.py\",\"129_add_model.py\",[\"tests/test_m.py\"]]" ]'
+check "DS-493 AC1 it is kept with the renames it was sent for, and before any undraft" \
+  '[ "$(field M-1 fix_tries | jq -c ".[0] | [.kind, .extra, .renames[0].from]")" = "[\"renames\",true,\"db/migrations/128_add_model.py\"]" ] && ! grep -q "^pr ready 761" "$T/gh-calls"'
+check "DS-493 AC2 a child naming none of them is left alone" \
+  '[ "$(field M-2 fix)" = null ] && [ "$(field M-2 fix_tries)" = null ] && grep -q "^pr ready 762 --repo acme/widgets" "$T/gh-calls"'
 
 # ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix
 # worker, and a verdict carries across merges of the base alone. $T/carry is a real clone: C-1's
