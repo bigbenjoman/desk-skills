@@ -463,8 +463,9 @@ export function verdictTry(t, s, ctx) {
 // per head, only for a file no earlier one judged, and at most FIX_TRIES_MAX per PR, outside the fix
 // tries' count. A review verdict the check cannot read at the head (none, a stale one, an old format)
 // goes to a review try under reviewTry's tries, unless a §4 State check of kind verdict is the one red
-// (verdictTry takes that). null where neither applies, so fixCall decides as before.
-// s: its pr_status; ctx: { required, advisory, stateChecks, base, baseMerge }.
+// (verdictTry takes that) or another red check a worker can fix is (fixCall takes that). null where
+// neither applies, so fixCall decides as before.
+// s: its pr_status; ctx: fixCall's, with base and baseMerge.
 export function gateTry(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') return null;
@@ -472,7 +473,7 @@ export function gateTry(t, s, ctx) {
   if (gate.state !== 'fail' || gate.pending.length) return null;
   const failing = new Set(gate.failing.map((f) => f.name));
   const lines = (s.checks ?? []).filter((c) => failing.has(c.name))
-    .flatMap((c) => (c.errors ?? (c.error ? [c.error] : [])).map((line) => ({ name: c.name, line })));
+    .flatMap((c) => (c.errors ?? []).map((line) => ({ name: c.name, line })));
   const done = t.fix_tries ?? [];
   const before = done.filter((x) => x.kind === 'protected');
   const judged = new Set(before.flatMap((x) => x.paths ?? []));
@@ -487,6 +488,12 @@ export function gateTry(t, s, ctx) {
   const verdictChecks = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'verdict').map((x) => x.name));
   const stale = lines.filter((x) => !verdictChecks.has(x.name) && staleVerdict(x.line));
   if (!stale.length) return null;
+  // Another red check a worker can fix is fixCall's: its fix worker reviews the head it pushes, so a
+  // review try first would only spend one of that fix's tries.
+  const staleNames = new Set(stale.map((x) => x.name));
+  const state = stateFailing(gate.failing, ctx.stateChecks);
+  const rest = gate.failing.filter((f) => !staleNames.has(f.name) && !state.some((x) => x.name === f.name));
+  if (splitFailing(rest, ctx).mine.length) return null;
   const c = reviewTry(t, { pr: s.pr, head: s.head, why: `its "${stale[0].name}" check says: ${stale[0].line}`, base: ctx.base, baseMerge: ctx.baseMerge });
   return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : null;
 }

@@ -600,7 +600,8 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
 // ---- A Review gate failure a change on the branch may clear goes to a worker before the person. The
 // protected lines are the recorded studia-web ones and those desk's own review-gate.mjs writes.
 {
-  const { failureLine, approvalFiles, staleVerdict } = await import('../desk/bin/gate.mjs');
+  const { failureLines, approvalFiles, staleVerdict } = await import('../desk/bin/gate.mjs');
+  const failureLine = (notes) => failureLines(notes)[0] ?? null;
   const { checkApproval, checkVerdict } = await import('../desk/templates/scripts/desk/review-gate.mjs');
   const NOTES = JSON.parse(readFileSync(new URL('./fixtures/review-gate-annotations.json', import.meta.url), 'utf8'));
   const GATE = '🔐 Review gate';
@@ -656,7 +657,9 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-500 a verdict check of kind verdict is verdictTry\'s, not this', gateTry(tk(), pr([ok('tests'), gateRed(staleLine)]), gctx({ stateChecks: [{ name: GATE, kind: 'verdict' }] })), null);
   t('DS-500 a verdict that is there and not clean is a fix worker\'s', gateTry(tk(), pr([ok('tests'), gateRed(dirtyLine)]), gctx()), null);
   t('DS-500 a draft, a conflict or a pending check: not this', [pr([gateRed(pkgLine)], { isDraft: true }), pr([gateRed(pkgLine)], { mergeable: 'CONFLICTING' }), pr([gateRed(pkgLine), { name: 'tests', status: 'in_progress', conclusion: null }])].map((s) => gateTry(tk(), s, gctx())).join(), ',,');
-  t('DS-500 a check recorded before its errors were kept still reads its error', gateTry(tk(), pr([ok('tests'), { ...red(GATE, '7'), error: pkgLine }]), gctx())?.fix.kind, 'protected');
+  t('DS-500 AC2 beside another red check a worker can fix, the verdict is left to that check\'s fix try', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx()), null);
+  t('DS-500 AC2 which fixCall makes a red-checks fix', fixCall(tk(), pr([red('tests', '8'), gateRed(staleLine)]), ctx({ reruns: () => 2, required: ['tests'], stateChecks: STATE_BARE }))?.fix.kind, 'checks');
+  t('DS-500 AC2 beside a red check only a person runs, the review try still goes', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx({ operator: [{ name: 'tests', command: 'run the suite' }] }))?.fix.kind, 'rereview');
 }
 
 process.exit(fails ? 1 : 0);

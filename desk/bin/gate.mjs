@@ -36,9 +36,8 @@
 //   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
 //   stateFailing(failing, stateChecks) -> the failing checks that are state checks, each with its kind
 //   failureLines(notes)      a job's annotations -> every error its run gave, in order
-//   failureLine(notes)       the first of them, or null
 //   failureMessages(repo, jobId) -> failureLines read from GitHub; undefined when they cannot be read
-//   failureMessage(repo, jobId) -> failureLine read from GitHub; undefined when they cannot be read
+//   failureMessage(repo, jobId) -> the first of them; undefined when they cannot be read
 //   approvalFiles(line)      an error line asking for an approval for protected files -> { files, more }, or null
 //   staleVerdict(line)       an error line saying the review verdict is missing, stale or in a form it cannot read
 //   skippedOnly(checks)      every check finished, at least one was skipped, and the rest passed
@@ -598,7 +597,6 @@ export function failureLines(notes) {
   return (Array.isArray(notes) ? notes : []).filter((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()))
     .map((x) => String(x.message).split('\n')[0].trim().slice(0, 2000));
 }
-export const failureLine = (notes) => failureLines(notes)[0] ?? null;
 // failureLines for a job, or undefined when its annotations could not be read.
 export function failureMessages(repo, jobId) {
   if (!jobId) return [];
