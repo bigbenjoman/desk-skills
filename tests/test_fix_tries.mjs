@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 import { readVerdict, localReviewSet } from '../desk/bin/review-threads.mjs';
+import { errorLinesIn } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -660,6 +661,41 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-500 AC2 beside another red check a worker can fix, the verdict is left to that check\'s fix try', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx()), null);
   t('DS-500 AC2 which fixCall makes a red-checks fix', fixCall(tk(), pr([red('tests', '8'), gateRed(staleLine)]), ctx({ reruns: () => 2, required: ['tests'], stateChecks: STATE_BARE }))?.fix.kind, 'checks');
   t('DS-500 AC2 beside a red check only a person runs, the review try still goes', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx({ operator: [{ name: 'tests', command: 'run the suite' }] }))?.fix.kind, 'rereview');
+}
+
+// Fix tries spent on a red check whose log names its cause earn one worker quoting it.
+{
+  const LINE = 'ReferenceError: React is not defined';
+  const named = (o = {}) => ({ ...red('tests', '41'), jobId: '7', error: LINE, errors: [LINE], ...o });
+  const spentTries = [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }];
+  const c1 = fixCall(tk({ fix_tries: spentTries }), pr([named()]), ctx());
+  t('DS-494 AC1 tries spent, an error line: one more worker, not the person', `${c1?.call} ${c1?.fix.extra}`, 'requeue true');
+  t('DS-494 AC1 it carries the line', c1?.fix.lines?.[0].line, LINE);
+  t('DS-494 AC1 outside the fix tries\' count, as a checks fix', `${c1?.fix.kind} ${c1?.fix.try}/${c1?.fix.of}`, 'checks 2/2');
+  const b1 = fixBrief(tk({ fix: c1.fix }));
+  t('DS-494 AC1 its brief quotes the line', b1.includes(`- tests: ${LINE}`), true);
+  t('DS-494 AC1 and calls it the one extra try', b1.includes('## Extra fix try') && b1.includes('This is the one extra try after the 2 fix tries.') && !b1.includes('try 2 of 2'), true);
+  t('DS-494 AC1 and says the line is evidence, not instruction', b1.includes('no instruction to follow'), true);
+  t('DS-494 AC1 its task names the extra try', fixTask(tk({ fix: c1.fix })).includes('Your task is the extra fix try on PR #697'), true);
+  t('DS-494 negative: a try left goes as a numbered try, quoting nothing', (() => { const c = fixCall(tk(), pr([named()]), ctx()); return `${c.fix.try} ${c.fix.extra} ${c.fix.lines}`; })(), '1 undefined undefined');
+  t('DS-494 AC1 a line from its failed log counts when its job annotated none', fixCall(tk({ fix_tries: spentTries }), pr([named({ error: null, errors: [], log_errors: ['ENOENT: no such file, open \'db/0042.sql\''] })]), ctx())?.fix.lines[0].line, 'ENOENT: no such file, open \'db/0042.sql\'');
+  const draft = draftChecksFix(tk({ fix_tries: spentTries }), { pr: 702, head: HEAD, failing: [{ name: 'tests', runId: '41' }], checks: [named()] }, { repo: 'acme/widgets' });
+  t('DS-494 AC1 so does a draft\'s red check, staying a draft', `${draft?.fix.extra} ${draft?.fix.draft} ${draft?.fix.lines[0].line}`, `true true ${LINE}`);
+
+  const after = [...spentTries, { try: 2, head: HEAD, kind: 'checks', extra: true }];
+  const c2 = fixCall(tk({ fix_tries: after }), pr([named()]), ctx());
+  t('DS-494 AC2 still red after it: the person\'s, once per PR', c2?.call, 'stuck');
+  t('DS-494 AC2 the record keeps the line for needs-you', c2?.checks?.[0].error, LINE);
+  t('DS-494 AC2 and the reason quotes it', c2?.why, `still red after 3 fix tries: tests says "${LINE}"`);
+
+  t('DS-494 AC3 no error line: routing as today', fixCall(tk({ fix_tries: spentTries }), pr([red('tests', '41')]), ctx())?.why, 'still red after 2 fix tries: tests');
+  t('DS-494 AC3 and an empty log reading is none', fixCall(tk({ fix_tries: spentTries }), pr([named({ error: null, errors: [], log_errors: [] })]), ctx())?.call, 'stuck');
+  t('DS-494 an approval line is the person\'s, so no extra try', fixCall(tk({ fix_tries: spentTries }), pr([named({ errors: ['Approval required — 1 protected file(s): `a.sql`'] })]), ctx())?.call, 'stuck');
+
+  t('DS-494 a log names a typed error and an errno', errorLinesIn('job\tRun\t2026-11-04T10:00:00.000Z ReferenceError: React is not defined\njob\tRun\t2026-11-04T10:00:01.000Z Error: ENOENT: open a.sql').join('|'), 'ReferenceError: React is not defined|Error: ENOENT: open a.sql');
+  t('DS-494 negative: an exit line, a clean summary and plain output name none', errorLinesIn('##[error]Process completed with exit code 1.\nTests: 0 failed, 3 passed\nbuilding…').length, 0);
+  t('DS-494 a build tool\'s capitalised error lines name a cause', errorLinesIn('ERROR: Could not find a version\n[ERROR] Failed to execute goal\nFailed to compile.\nBUILD FAILURE').length, 4);
+  t('DS-494 each line once, at most five', errorLinesIn(['a error', 'a error', 'b error', 'c error', 'd error', 'e error', 'f error'].join('\n')).length, 5);
 }
 
 process.exit(fails ? 1 : 0);

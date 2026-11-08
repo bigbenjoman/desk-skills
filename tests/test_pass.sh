@@ -1045,6 +1045,7 @@ case "\$*" in
   "pr view 310 "*) echo '{"state":"OPEN","headRefOid":"abc","reviews":[{"state":"APPROVED","author":{"login":"old"},"commit":{"oid":"zzz"}},{"state":"APPROVED","author":{"login":"mousedown"},"commit":{"oid":"abc"}},{"state":"COMMENTED","author":{"login":"me"},"commit":{"oid":"abc"}}],"statusCheckRollup":[{"__typename":"CheckRun","name":"Review gate","workflowName":"gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/7/job/70"},{"__typename":"CheckRun","name":"tests","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/80"},{"__typename":"CheckRun","name":"Lint","workflowName":"ci","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/81"}]}' ;;
   "api repos/"*"/check-runs/70/annotations") jq -c '.protected' "$FIX" ;;
   "api repos/"*"/check-runs/81/annotations") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
+  "run view 8 "*"--job 81 --log-failed") printf 'Lint\tRun\t2026-10-23T10:00:00.000Z ReferenceError: React is not defined\n' ;;
   "pr list "*) echo '[]' ;;
   *) exit 1 ;;
 esac
@@ -1059,6 +1060,8 @@ touch "$T/annotations-ok"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-499 the next pass keeps a job's error without reading it again, and reads one it could not" '! grep -q "check-runs/70" "$T/gh-calls" && grep -q "check-runs/81" "$T/gh-calls" && field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required"'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-499 a job with no error line is not read again" '! grep -q "check-runs/" "$T/gh-calls"'
+check "DS-494 AC1 a job with no annotated error keeps what its failed log names" 'field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Lint\") | .log_errors[0]" | grep -q "^ReferenceError: React is not defined$"'
+check "DS-494 and its log is not read again" '! grep -q "log-failed" "$T/gh-calls"'
 
 # ---- DS-175: a merge is recorded however the PR was merged, and a missing eta history is built once
 ago(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 3600e3).toISOString())' "$1"; }

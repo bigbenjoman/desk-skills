@@ -45,7 +45,7 @@ import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver,
 import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
-import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
+import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -2927,15 +2927,23 @@ function withHistory(s, was) {
 }
 // An open PR's failed checks each keep the errors their job gave (`errors`, the first as `error`), for
 // needs-you, which makes no network call, and the gate tries: read once per job, and left unset where its
-// annotations could not be read, so the next pass reads them again.
+// annotations could not be read, so the next pass reads them again. A job with no annotated error keeps
+// what its failed log names as `log_errors` instead, read the same way: only a test reporter that
+// annotates puts a failing test's line in `errors`.
 function withErrors(s, was) {
   if (s.state !== 'OPEN') return s;
+  const logErrors = (c, old) => {
+    if (old?.log_errors) return { log_errors: old.log_errors };
+    if (!c.runId) return {};
+    const r = shOut('gh', ['run', 'view', String(c.runId), '--repo', GH_REPO, '--job', String(c.jobId), '--log-failed'], { maxBuffer: 64 * 1024 * 1024 });
+    return r.ok ? { log_errors: errorLinesIn(r.out) } : {};
+  };
   const checks = s.checks.map((c) => {
     if (!c.jobId || !FAILED.has(c.conclusion)) return c;
     const old = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
-    if (old && 'error' in old) return { ...c, error: old.error, errors: old.errors ?? (old.error == null ? [] : [old.error]) };
-    const errors = failureMessages(GH_REPO, c.jobId);
-    return errors === undefined ? c : { ...c, error: errors[0] ?? null, errors };
+    const errors = old && 'error' in old ? old.errors ?? (old.error == null ? [] : [old.error]) : failureMessages(GH_REPO, c.jobId);
+    if (errors === undefined) return c;
+    return { ...c, error: old && 'error' in old ? old.error : errors[0] ?? null, errors, ...(errors.length ? {} : logErrors(c, old)) };
   });
   return { ...s, checks };
 }
@@ -3135,7 +3143,7 @@ if (drafts.length) {
     };
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold ? null : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
-      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, ...clearsRows, builds: [] })
+      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing, checks: s.checks }, { repo: GH_REPO, ...clearsRows, builds: [] })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge, targeted: c.targeted })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) })
             // A check build that failed behind the base goes to a worker that merges it.
@@ -3586,7 +3594,7 @@ function applyFix(t, n, head, c) {
     return;
   }
   const f = c.fix;
-  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? 'an extra review try' : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
+  if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? `an extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
   q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
   const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
@@ -3600,7 +3608,7 @@ function applyFix(t, n, head, c) {
   const quoted = f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) }
     : f.kind === 'protected' ? { paths: f.paths } : {};
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), at: PASS_AT }])}`, 'stuck=null');
-  out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? 'extra review try' : `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
+  out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? `extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {
