@@ -58,7 +58,16 @@ ticket: <KEY>
 criterion: <quoted>
 gap: <what the diff does or fails to do>
 code_claim: yes | no
+settled_by: code | person
 ```
+
+`settled_by` is `person` when no change the ticket allows can close the gap, so all that is left is
+the person accepting it on the PR or amending the criterion. A gap a worker could close by changing
+code, or by an engineering call of its own, is `code`, and doubt is `code`. Post a `person` gap as one
+list item holding the literal tag `PERSON'S CALL`, its detail indented under it, on every round it
+stays open: `- PERSON'S CALL · AC2: "<criterion>" — <what is open, and how the person can settle it>`.
+The autopilot pass reads the tag (`desk/bin/fix-tries.mjs` `reviewFix`): a tagged gap earns no fix try,
+and it still counts in `gaps`.
 
 `code_claim` answers one question: *would this still read as a defect with the ticket deleted?* A
 gap marked `yes` is a claim about code that nothing has refuted, so it is **never posted**: it goes

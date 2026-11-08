@@ -23,8 +23,9 @@ P2 (2)
  apps/web/src/components/Pager.tsx:1   no consumer outside its own story
  apps/api/services/tz.py:31            timezone helper rewritten; traces to no AC on ABC-123 (scope, body only)
 
-REQUIREMENT GAPS (2, 1 unverified)  ABC-123
+REQUIREMENT GAPS (3, 1 unverified)  ABC-123
  AC3: "export includes VAT" — no VAT column in the CSV writer
+ PERSON'S CALL · AC4: "the job finishes within a minute" — takes 90s on the largest tenant; accept it on the PR or amend AC4
  AC1: "the cache is keyed per tenant" — UNVERIFIED CODE CLAIM, terminal only, not posted
 
 UNPROVEN PREMISES (1)

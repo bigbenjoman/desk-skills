@@ -303,6 +303,8 @@ export function reviewGaps(body) {
   }
   return gaps.filter((g) => !/UNVERIFIED CODE CLAIM/.test(g) && !/^none\b/i.test(g));
 }
+// The tag a review puts on a gap only the person can settle (desk-review phase-5-requirements.md).
+const personsCall = (gap) => /PERSON['’]S CALL/.test(gap);
 
 const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 
@@ -314,6 +316,9 @@ const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 // the tries made by kind. Where
 // config §3 autopilot-judgement is yes (opts.judgement), so do its requirement gaps: closing one is a
 // call the worker may make and record, or park when it needs a product or another person's ruling.
+// A gap the review tags as the person's call earns no try: alone it is the person's at once (null), and
+// beside anything a try can fix it is left out of the try and named in its brief. The verdict's count
+// less those tagged is what code can close, so an untagged paragraph in the section adds no try.
 // A P2 blocks a merge unless carried, so a review with nothing worse sends its P2s the same way, and the
 // fix's next round carries one where fixing it would mean another. One deferred on purpose is the
 // person's. So is a review that counts a finding but lists none with its file:line in its body or its
@@ -328,7 +333,10 @@ export function reviewFix(t, review, opts = {}) {
   const counts = reviewCounts(v) || (p2s ? `${p2s} P2` : '');
   const sevs = p2s ? ['P2'] : undefined;
   const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
-  const what = [counts, gapsOpen ? gapCount(gapsOpen) : ''].filter(Boolean).join(', ');
+  const allGaps = gapsOpen ? reviewGaps(review.body) : [];
+  const personGaps = allGaps.filter(personsCall);
+  const codeGaps = Math.max(0, gapsOpen - personGaps.length);
+  const what = [counts, codeGaps ? gapCount(codeGaps) : ''].filter(Boolean).join(', ');
   if (!what || !review.head) return null;
   const done = t.fix_tries ?? [];
   const made = reviewTriesMade(done);
@@ -338,7 +346,7 @@ export function reviewFix(t, review, opts = {}) {
   if (room <= 0 || fixedAt(done, review.head)) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
-    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...(gapsOpen ? reviewGaps(review.body) : [])];
+    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps];
     const lead = made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
       ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
     return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
@@ -348,12 +356,12 @@ export function reviewFix(t, review, opts = {}) {
   const comments = !counts || p2s ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
-  const gaps = gapsOpen ? reviewGaps(review.body) : [];
+  const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
   if (counts ? !findings.length : !gaps.length) return null;
   const survived = survivors(done, findings, gaps);
-  if (survived.length) return { call: 'stuck', why: `${after} — still open after the fix try that quoted it: ${survived.join('; ')}` };
+  if (survived.length) return { call: 'stuck', why: `${after} — still open after the fix try that quoted it: ${[...survived, ...personGaps].join('; ')}` };
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
-  return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}) } };
+  return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}), ...(personGaps.length ? { person_gaps: personGaps } : {}) } };
 }
 
 // The person's call on a draft's review gaps (desk-needs-you), as the fix it sends back: not one of
@@ -648,6 +656,12 @@ export function fixBrief(t) {
         'A call that leaves the code as it is still needs a new head for the fresh review to read it: commit it on its own with git commit --allow-empty, the call and its reason as the message. ' +
         'A gap that needs a product ruling or another person\'s, as the worker contract\'s Ask or take sorts it (an ask category such as a fact only the person holds, a call you have no recommendation for, or one a person has already ruled on the ticket), is not yours: park with that question (AUTOPILOT_PARK).', '');
       for (const g of f.gaps) lines.push(`- Gap: ${g}`);
+      lines.push('');
+    }
+    if (f.person_gaps?.length) {
+      lines.push('The review marks these requirement gaps as only the person\'s call, so they are not part of this try: change nothing for them and do not park on them. ' +
+        'Your review of the new head lists each one again with its PERSON\'S CALL tag, and they go to the person with the result:', '');
+      for (const g of f.person_gaps) lines.push(`- ${g}`);
       lines.push('');
     }
     if (!f.findings?.some((x) => x.sev === 'P2')) lines.push('Its P2 findings are not part of this try.');
