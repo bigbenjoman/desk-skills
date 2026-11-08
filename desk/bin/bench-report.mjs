@@ -9,7 +9,8 @@
 // <baseline> (default <out>/phase0-baseline.txt) is phase0-report.mjs's output saved to a file: its
 // total section gives the baseline column, which reads "no baseline" when there is none.
 //
-// A failed run counts in no figure but its own row. A task a run left unstarted is listed as not
+// A failed run counts in no figure but its own row. A task the run left out before any arm (run.json's
+// left_out, such as arm 1's tasks with no packet) is listed with why. A task a run left unstarted is listed as not
 // run, and when the arms did not run the same tasks each arm is shown on its own beside the
 // baseline, never beside another arm. The report states figures; it gives no verdict.
 import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
@@ -91,7 +92,7 @@ export function loadRun(out) {
       return { arm: r.arm, status: result?.status ?? r.status, why: r.why ?? result?.why ?? null, result };
     }),
   }));
-  return { seed: run.seed ?? null, arms: arms.sort(), tasks };
+  return { seed: run.seed ?? null, arms: arms.sort(), tasks, leftOut: run.left_out ?? [] };
 }
 
 const median = (values) => quantile(values, 0.5);
@@ -180,6 +181,11 @@ export function renderReport({ out, run, joined, baseline }) {
   text.push('## Tasks', '', `| Task | ${run.arms.map(cell).join(' | ')} |`, `|---|${run.arms.map(() => '---|').join('')}`);
   for (const t of run.tasks) text.push(`| ${cell(t.task)} | ${run.arms.map((a) => cell(t.runs.find((r) => r.arm === a)?.status ?? '—')).join(' | ')} |`);
   text.push('');
+  if (run.leftOut?.length) {
+    text.push('## Left out', '', 'These tasks ran on no arm:', '');
+    for (const l of run.leftOut) text.push(`- ${l.task}: ${l.why}`);
+    text.push('');
+  }
   const notRun = figures.flatMap((f) => f.notRun.map((n) => ({ ...n, arm: f.arm })));
   if (notRun.length) {
     text.push('## Not run', '', 'These runs never started, and count in no figure:', '');

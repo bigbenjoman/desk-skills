@@ -16,7 +16,7 @@
 // A task's result is one of: accepted (every hidden test passed), rejected (one failed) or failed
 // (the run errored, timed out or was stopped, or the hidden tests could not finish), and failed counts
 // neither way. Under <out>/runs/<task>.<arm>.<key>/ each run keeps result.json (order, tokens,
-// attempts), diff.patch, transcript.jsonl and test-output.log; <key> hashes the base and the arm's
+// attempts, and ran_at: the model and effort the session's own log says it ran at), diff.patch, transcript.jsonl and test-output.log; <key> hashes the base and the arm's
 // settings, so a run with an accepted or rejected result there is reused and a failed one runs again.
 // <out>/run.json lists this invocation's seed, per-task arm order and outcomes. <out> defaults to
 // bench-out beside the task set, so results outlive a run.
@@ -110,9 +110,29 @@ export function armOrder(arms, seed, taskId) {
   return a;
 }
 
+export const PACKET_HEADING = '## Task packet';
+
+// The prompt an arm starts from: the ticket text, with the task's packet after it on a packet arm.
+export const promptFor = (task, arm) => (arm.brief === 'packet' ? `${task.prompt}\n\n${PACKET_HEADING}\n\n${task.packet.trim()}` : task.prompt);
+
 // What makes a stored result the same run: the base and everything the arm starts with.
 export const runKey = (task, arm) => createHash('sha256')
-  .update(JSON.stringify([task.base, task.prompt, arm.model, arm.effort])).digest('hex').slice(0, 12);
+  .update(JSON.stringify([task.base, promptFor(task, arm), arm.model, arm.effort])).digest('hex').slice(0, 12);
+
+// The model and effort a session ran at, read from its own stream's init event, never from what it
+// was asked for. -> { model, effort, why } with each value the stream does not name null, and why.
+export function ranAt(transcript) {
+  let init = null;
+  for (const line of transcript.split('\n')) {
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (d?.type === 'system' && d.subtype === 'init') { init = d; break; }
+  }
+  const named = (v) => (typeof v === 'string' && v ? v : null);
+  const model = named(init?.model), effort = named(init?.effort ?? init?.effortLevel);
+  const missing = [!model && 'model', !effort && 'effort'].filter(Boolean);
+  return { model, effort, why: !init ? 'the session\'s log has no init event' : missing.length ? `the session's log names no ${missing.join(' or ')}` : null };
+}
 
 // Which §4 Unit tests items run which hidden files, each file going to the items in the deepest
 // directory holding it, relative to that directory. -> { runs: [{dir, cmd, files}], orphans: [path] }
@@ -228,12 +248,12 @@ function runClaude(task, arm, wt, settings, opts, dir) {
   const file = join(dir, 'transcript.jsonl');
   const fd = openSync(file, 'w');
   const err = openSync(join(dir, 'stderr.log'), 'w');
-  const args = claudeArgs({ prompt: task.prompt, arm: 'base', budget: opts.budget, model: arm.model, effort: arm.effort, format: 'stream-json', extra: ['--verbose', '--settings', settings] });
+  const args = claudeArgs({ prompt: promptFor(task, arm), arm: 'base', budget: opts.budget, model: arm.model, effort: arm.effort, format: 'stream-json', extra: ['--verbose', '--settings', settings] });
   const proc = spawnSync('claude', args, { cwd: wt, env: armEnv(), stdio: ['ignore', fd, err], timeout: opts.timeout * 1000, killSignal: 'SIGKILL' });
   closeSync(fd);
   closeSync(err);
   const stdout = readFileSync(file, 'utf8');
-  return { ...readRun({ ...proc, stdout }, opts.timeout), tokens: logTokens(stdout), attempts: reachAttempts(stdout) };
+  return { ...readRun({ ...proc, stdout }, opts.timeout), tokens: logTokens(stdout), attempts: reachAttempts(stdout), ranAt: ranAt(stdout) };
 }
 
 // The arm's whole change against the commit it started on, committed or not.
@@ -269,7 +289,7 @@ export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
 function runOne(repo, task, arm, order, opts, out, dir, secrets) {
   mkdirSync(dir, { recursive: true });
   const result = { task: task.id, arm: arm.name, repo: task.repo, base: task.base, model: arm.model, effort: arm.effort, order: order.map((a) => a.name),
-    status: 'failed', why: null, cost: null, tokens: null, attempts: [], at: new Date().toISOString() };
+    status: 'failed', why: null, cost: null, tokens: null, attempts: [], ran_at: null, at: new Date().toISOString() };
   const parent = mkdtempSync(join(realpathSync(tmpdir()), 'desk-bench-'));
   const wt = join(parent, 'checkout');
   try {
@@ -277,7 +297,7 @@ function runOne(repo, task, arm, order, opts, out, dir, secrets) {
     const settings = join(parent, 'settings.json');
     writeSettings(repo, task, wt, settings, secrets);
     const run = runClaude(task, arm, wt, settings, opts, dir);
-    Object.assign(result, { cost: run.cost, tokens: run.tokens, attempts: run.attempts, why: run.why ?? null });
+    Object.assign(result, { cost: run.cost, tokens: run.tokens, attempts: run.attempts, ran_at: run.ranAt, why: run.why ?? null });
     saveDiff(wt, task.base, join(dir, 'diff.patch'));
     if (run.ok) Object.assign(result, score(repo, task, wt, dir));
   } catch (e) {
@@ -294,12 +314,14 @@ function stored(file) {
   try { const r = JSON.parse(readFileSync(file, 'utf8')); return SCORED.has(r.status) ? r : null; } catch { return null; }
 }
 
-// Runs every task on every arm and writes run.json under the output folder.
+// Runs every task on every arm and writes run.json under the output folder. A caller that chose the
+// tasks itself passes them as `taskList`, the ones it left out (with why) as `leftOut`, and any more
+// paths no arm may read as `secrets`.
 export function runBench(opts, log = () => {}) {
   const settings = Q.quotaSettings();
   const ledger = Q.ledgerPath();
   log(Q.settingsLine(settings));
-  const tasks = loadBenchTasks(opts.tasks);
+  const tasks = opts.taskList ?? loadBenchTasks(opts.tasks);
   const repos = new Map();
   for (const t of tasks) {
     if (!repos.has(t.repo)) repos.set(t.repo, readRepo(t.repo));
@@ -315,7 +337,7 @@ export function runBench(opts, log = () => {}) {
   const report = tasks.map((task) => {
     const repo = repos.get(task.repo);
     const order = armOrder(opts.arms, opts.seed, task.id);
-    const secrets = [repo.root, resolve(opts.tasks), task.hidden_tests.dir, out].flatMap(both);
+    const secrets = [repo.root, resolve(opts.tasks), task.hidden_tests.dir, out, ...(opts.secrets ?? []).filter(existsSync)].flatMap(both);
     const runs = order.map((arm) => {
       const dir = join(out, 'runs', `${task.id}.${arm.name}.${runKey(task, arm)}`);
       const prior = stored(join(dir, 'result.json'));
@@ -347,8 +369,18 @@ export function runBench(opts, log = () => {}) {
   });
   const quotaReport = { cap: settings.cap, reserve: settings.reserve, defaults: settings.defaults, stopped, accounts: [...points.values()] };
   const path = join(out, 'run.json');
-  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent, quota: quotaReport, tasks: report }, null, 2)}\n`);
-  return { path, report, quota: quotaReport };
+  const leftOut = opts.leftOut ?? [];
+  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent, quota: quotaReport, tasks: report, ...(leftOut.length ? { left_out: leftOut } : {}) }, null, 2)}\n`);
+  return { path, report, quota: quotaReport, leftOut };
+}
+
+// runBench's result as the lines the command prints.
+export function printBench({ path, report, quota, leftOut = [] }) {
+  for (const t of report) for (const r of t.runs) console.log(`${t.task} ${r.arm}: ${r.status}${r.reused ? ' (reused)' : ''}${r.quota_points == null ? '' : ` (${r.quota_points} quota points)`}`);
+  for (const l of leftOut) console.log(`${l.task}: left out, ${l.why}`);
+  for (const line of quota.accounts) console.log(line);
+  if (quota.stopped) console.log(quota.stopped);
+  console.log(`results: ${path}`);
 }
 
 const isMain = (() => {
@@ -359,11 +391,7 @@ const isMain = (() => {
 if (isMain) {
   try {
     const opts = parseArgs(process.argv.slice(2));
-    const { path, report, quota } = runBench(opts, (m) => console.error(m));
-    for (const t of report) for (const r of t.runs) console.log(`${t.task} ${r.arm}: ${r.status}${r.reused ? ' (reused)' : ''}${r.quota_points == null ? '' : ` (${r.quota_points} quota points)`}`);
-    for (const line of quota.accounts) console.log(line);
-    if (quota.stopped) console.log(quota.stopped);
-    console.log(`results: ${path}`);
+    printBench(runBench(opts, (m) => console.error(m)));
   } catch (e) {
     console.error(e.message);
     process.exit(2);
