@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 import { readVerdict, localReviewSet } from '../desk/bin/review-threads.mjs';
 import { errorLinesIn } from '../desk/bin/evidence.mjs';
@@ -258,6 +258,45 @@ const p1g = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', 
 t('DS-319 a P1 and a gap go in one try, both quoted', `${p1g?.fix.what} | ${p1g?.fix.findings.length} | ${p1g?.fix.gaps}`, 'review not clean: 1 P1, 1 gap | 1 | AC3: src/csv.ts:4 no VAT column');
 t('DS-319 the terminal report\'s gaps are read, and an unverified code claim is not a gap', JSON.stringify(reviewGaps('REQUIREMENT GAPS (2, 1 unverified)  ABC-123\n AC3: "export includes VAT" — no VAT column\n AC1: "keyed per tenant" — UNVERIFIED CODE CLAIM, terminal only\n\nUNPROVEN PREMISES (1)\n src/a.ts:1 assumes retries')), JSON.stringify(['AC3: "export includes VAT" — no VAT column']));
 t('DS-319 a bold-only heading opens and ends the gaps section', JSON.stringify(reviewGaps('**Requirement gaps**\n- AC1: "x" — not done\n**Scope**\n- src/a.ts:3 out of scope')), JSON.stringify(['AC1: "x" — not done']));
+// ---- a gap the review tags as only the person's call earns no fix try
+const PERSON_GAP = `- PERSON'S CALL · AC2: "the pass tries the push" — only the person can accept it or amend AC2`;
+const CODE_GAP = '- AC3: "export includes VAT" — no VAT column';
+const personBody = (gaps, ...items) => gapBody('p0=0 p1=0 p2=0', gaps, ['### Requirement gaps', ...items, '', '### Scope', '- No out-of-scope hunks.']);
+const gapFix = (body, gaps, done = [], counts = {}) => reviewFix(tk({ fix_tries: done }), { pr: 702, head: HEAD, verdict: { gaps: String(gaps), ...counts }, body }, { judgement: 'yes' });
+const onlyPerson = personBody(1, PERSON_GAP);
+t('DS-513 AC1 a verdict whose only gap is the person\'s call spawns no fix try', gapFix(onlyPerson, 1), null);
+t('DS-513 AC1 and stays the findings call the person answers', `${undraftCall(tk(), draft(onlyPerson), judge)?.call} ${undraftCall(tk(), draft(onlyPerson), judge)?.why.match(/gaps=\d/)?.[0]}`, 'findings gaps=1');
+t('DS-513 AC1 tries already spent change nothing: it is not a stuck try', gapFix(onlyPerson, 1, tried), null);
+t('DS-513 AC1 a curly apostrophe is the same tag', gapFix(personBody(1, PERSON_GAP.replace("'", '’')), 1), null);
+t('DS-513 AC1 prose after a tagged gap earns no try: the verdict counts one gap', gapFix(personBody(1, PERSON_GAP, '', 'The requirements seat agrees the code is right.'), 1), null);
+const codeOnly = gapFix(personBody(1, CODE_GAP), 1);
+t('DS-513 AC2 a gap code can close spawns a try as before', `${codeOnly?.call} ${codeOnly?.fix.what} ${JSON.stringify(codeOnly?.fix.gaps)} ${codeOnly?.fix.person_gaps}`, `requeue review not clean: 1 gap ${JSON.stringify([CODE_GAP.slice(2)])} undefined`);
+t('DS-513 AC2 a gap merely saying the person might care is a code gap', gapFix(personBody(1, '- AC3: the person\'s call on VAT was recorded, but no column'), 1)?.call, 'requeue');
+const bothGaps = gapFix(personBody(2, PERSON_GAP, CODE_GAP), 2);
+t('DS-513 AC3 with both kinds the try is aimed only at the gap code can close', `${bothGaps?.call} ${bothGaps?.fix.what} ${JSON.stringify(bothGaps?.fix.gaps)}`, `requeue review not clean: 1 gap ${JSON.stringify([CODE_GAP.slice(2)])}`);
+t('DS-513 AC3 the person\'s gap is kept on the try', JSON.stringify(bothGaps?.fix.person_gaps), JSON.stringify([PERSON_GAP.slice(2)]));
+const bothBrief = fixBrief(tk({ fix: bothGaps.fix }));
+t('DS-513 AC3 the brief quotes the code gap to close and tells the worker to leave the person\'s', [`- Gap: ${CODE_GAP.slice(2)}`, 'not part of this try', `- ${PERSON_GAP.slice(2)}`].every((x) => bothBrief.includes(x)) && !bothBrief.includes(`- Gap: ${PERSON_GAP.slice(2)}`), true);
+const findingAndPerson = gapFix(`${p1Body}\n\n### Requirement gaps\n${PERSON_GAP}`, 1, [], { p0: '0', p1: '1' });
+t('DS-513 AC3 a P1 beside the person\'s gap gets its try, the gap carried', `${findingAndPerson?.fix.what} | ${findingAndPerson?.fix.findings.length} | ${findingAndPerson?.fix.gaps} | ${findingAndPerson?.fix.person_gaps?.length}`, 'review not clean: 1 P1 | 1 | undefined | 1');
+t('DS-513 AC3 out of tries, the stuck reason names the person\'s gap too', gapFix(personBody(2, PERSON_GAP, CODE_GAP), 2, tried)?.why.includes(PERSON_GAP.slice(2)), true);
+t('DS-513 AC3 a code gap that survived its try goes to the person with the person\'s gap', gapFix(personBody(2, PERSON_GAP, CODE_GAP), 2, [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [CODE_GAP.slice(2)] }])?.why.includes(PERSON_GAP.slice(2)), true);
+const stuckBeside = gapFix(`${p1Body}\n\n### Requirement gaps\n${PERSON_GAP}`, 1, tried, { p0: '0', p1: '1' });
+const sentBack = personReviewFix(tk(), { pr: 702, head: HEAD, why: stuckBeside?.why });
+t('DS-513 AC3 a try the person sends for the finding is not aimed at the person\'s gap', `${stuckBeside?.why.includes(PERSON_GAP.slice(2))} ${sentBack?.findings.length} ${sentBack?.findings.some((x) => x.text.includes('PERSON'))}`, 'true 1 false');
+t('DS-513 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: onlyPerson }), null);
+const gapsCall = (body, verdict, opts = { judgement: 'yes' }) => personGapsCall({ verdict, body }, opts);
+t('DS-513 a ready PR with only the person\'s gaps is stuck on them, its reason readable', JSON.stringify(personGapsIn(gapsCall(onlyPerson, { gaps: '1' })?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
+t('DS-513 AC3 a review stuck reason gives up the person\'s gap it carries', JSON.stringify(personGapsIn(stuckBeside?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
+t('DS-513 a ready PR with a code gap beside the person\'s is not stuck on them', gapsCall(personBody(2, PERSON_GAP, CODE_GAP), { gaps: '2' }), null);
+t('DS-513 nor with a finding beside the person\'s gap', gapsCall(onlyPerson, { gaps: '1', p1: '1' }), null);
+t('DS-513 nor a P2', gapsCall(onlyPerson, { gaps: '1', p2: '1' }), null);
+t('DS-513 a deferred P2 earns no try, so the person\'s gap still reaches them', gapsCall(onlyPerson, { gaps: '1', p2: '1', deferred: '1' })?.call, 'stuck');
+t('DS-513 nor with no gap counted', gapsCall(onlyPerson, { gaps: '0' }), null);
+t('DS-513 nor without autopilot-judgement yes', gapsCall(onlyPerson, { gaps: '1' }, {}), null);
+t('DS-513 another stuck reason is not a person\'s-gaps reason', personGapsIn('review not clean after 2 fix tries: 1 P1 — P1: src/a.ts:1 quotes PERSON\'S CALL').length, 0);
+const readyCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: true, answer: 'accept it' }) });
+t('DS-513 the person\'s call on a ready PR keeps it out of draft', `${fixBrief(readyCall).includes('open and out of draft')} ${/leave the PR out of draft/.test(fixTask(readyCall))}`, 'true true');
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));
 
 // ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix worker
