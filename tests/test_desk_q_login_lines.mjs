@@ -118,6 +118,16 @@ t('AC3 the line names the login taking spawns and ends with 1 at limit to its re
 t('AC3 drawn at 104 columns', (await drawn()).lines[0], AC3);
 const segs3 = Q.usageLines(Q.usageOf(Q.loadRepos(FIXED), FIXED), { now: FIXED, solid: true })[0].segs;
 t('AC3 "1 at limit" is red, its reset grey', JSON.stringify(segs3.slice(-2)), JSON.stringify([['1 at limit', '38;5;210'], [' to 14:05', '38;5;247']]));
+// A pass paces on its own login, desk-q's here, whichever login the line names. Plain Home lists no
+// repo without a row, so the line is read over every repo, as a repo's own screen reads it.
+const allLine = () => Q.usageLines(Q.usageOf(Q.loadRepos(FIXED), FIXED), { now: FIXED })[0].line;
+claudeReading(null, [0.31, at(24, 14, 5)], [0.9, at(27, 6, 0)]);
+t('AC3 weekly pace is judged on desk-q\'s own login: personal ahead of pace holds while the line names work',
+  allLine(), `${AC3}  ▲ solo ahead of pace: no new workers until it slows`);
+claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
+claudeReading('work', [0.5, at(24, 13, 20)], [0.9, at(26, 9, 0)]);
+t('AC3 and work ahead of pace while personal is not holds nothing', ((l) => `${l.startsWith('Claude  work  ')} ${l.includes('ahead of pace')}`)(allLine()), 'true false');
+claudeReading('work', [0.5, at(24, 13, 20)], [0.7, at(26, 9, 0)]);
 repo({ default: { login: 'personal', config_dir: null, type: 'five_hour', resets_at: at(24, 8, 30), since: FIXED - 90 * MIN, by: 'S-1' } });
 t('AC3 a bench whose reset has passed counts no more: personal takes spawns again', lines()[0].startsWith('Claude  personal  '), true);
 

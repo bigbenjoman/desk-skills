@@ -20,11 +20,38 @@ import { chooseLogin } from './login-choice.mjs';
 import { newestReading, WEEK_MS } from './usage-pace.mjs';
 import { loginProbeLog, usageDir } from './usage-probe.mjs';
 
+// Every bench in `maps` (queues' `benched`) whose limit has not lifted at `now`, by login key: where two
+// bench one login, the later lift, one with no reset time outlasting any with one (pass.mjs bench).
+export function liveBenches(maps, now) {
+  const out = {};
+  for (const m of maps) {
+    for (const [k, v] of Object.entries(m ?? {})) {
+      if (!v || (v.resets_at != null && now >= v.resets_at * 1000)) continue;
+      const was = out[k];
+      if (!was || v.resets_at == null || (was.resets_at != null && v.resets_at > was.resets_at)) out[k] = v;
+    }
+  }
+  return out;
+}
+
+// The Claude login new work starts on among `logins`, as a new worker's is (pass.mjs pickLogin): of
+// those `benched` does not hold, the one login-choice ranks first on its week-long probe reading, with
+// `running(login)` workers on it. `dirs` are the state folders whose worker logs count too.
+//   -> { login, out: [{ login, at }] }: `login` null when every one is benched; `out` each benched login
+//      with when it lifts (`at`, epoch seconds, or null)
+export function claudeChoice(logins, { benched, running, now = Date.now(), dirs } = {}) {
+  const out = logins.filter((l) => benched[loginKey(l)]).map((l) => ({ login: l, at: benched[loginKey(l)].resets_at ?? null }));
+  const open = logins.filter((l) => !benched[loginKey(l)]);
+  const login = chooseLogin(open.map((l) => ({ login: l, running: running(l),
+    reading: newestReading({ ...(dirs ? { dirs } : {}), files: [loginProbeLog(usageDir(), l)], login: l, now, recent: WEEK_MS }) })), now);
+  return { login, out };
+}
+
 // Every bench across this repo's batches, and the one the environment pins, whose limit has not lifted
 // at `now`, by login key, and the config folder of each running worker. A queue that cannot be read
 // benches nothing.
 function batchesNow(now) {
-  const benched = {};
+  const maps = [];
   const running = [];
   const batches = [];
   try { batches.push({ queue: queueFile(), state: stateDir() }); } catch { /* no pinned batch */ }
@@ -32,13 +59,11 @@ function batchesNow(now) {
   for (const b of batches) {
     let q;
     try { q = readQueue(b.queue); } catch { continue; }
-    for (const [k, r] of Object.entries(q.benched ?? {})) if (r && (r.resets_at == null || now < r.resets_at * 1000)) benched[k] = r;
+    maps.push(q.benched);
     for (const t of Object.values(q.tickets ?? {})) if (t.state === 'running') running.push(t.login ? t.login.config_dir ?? null : workerLoginDir(b.state, t.key));
   }
-  return { benched, running };
+  return { benched: liveBenches(maps, now), running };
 }
-
-const reading = (l) => newestReading({ files: [loginProbeLog(usageDir(), l)], login: l, recent: WEEK_MS });
 
 // -> { login, env, all }: the login chosen (null when the caller's own is kept), the environment the
 // call runs in, and whether every usable login is benched.
@@ -50,9 +75,8 @@ export function callLogin({ env = process.env, now = Date.now() } = {}) {
   if (!subs.exists || (inUse.length === 1 && inUse[0].dir === own.dir)) return keep;
   const { benched, running } = batchesNow(now);
   const { usable } = checkLogins(subs, { tools: ['claude'], env });
-  const open = usable.filter((l) => !benched[loginKey(l)]);
-  if (!open.length) return { ...keep, all: usable.length > 0 };
-  const login = chooseLogin(open.map((l) => ({ login: l, reading: reading(l), running: running.filter((d) => d === l.configDir).length })), now);
+  const { login, out } = claudeChoice(usable, { benched, running: (l) => running.filter((d) => d === l.configDir).length, now });
+  if (out.length === usable.length) return { ...keep, all: usable.length > 0 };
   if (!login || login.dir === own.dir) return keep;
   return { login, env: loginEnv(login, env), all: false };
 }

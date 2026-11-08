@@ -43,11 +43,11 @@ import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, 
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
-import { WINDOW_LABELS, WEEK_MS, newestReading, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
-import { readUsage, readLoginUsage, loginProbeLog, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
-import { chooseLogin } from './login-choice.mjs';
-import { asClaude, codexChoice } from './codex-login.mjs';
+import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
+import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { claudeLogins, inUse, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
+import { claudeChoice, liveBenches } from './call-login.mjs';
+import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
 import { readSubscriptions } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
@@ -1723,13 +1723,15 @@ function machineLine(running, cap, room, avail) {
 // workers start on with a subscriptions file, else lineLogin), how many workers run in every repo here,
 // and which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each repo by its own
 // §3b row, so a repo set to off is never held). A pass paces on its own login's worker logs and probe
-// output, so the hold is judged on the 7-day figure shown when the pass runs on the line's login.
-// Weekly pacing per login is not built yet. `logins` is loginsNow's.
+// output, so the hold is judged on lineLogin's 7-day figure, whichever login the line names: the one
+// shown when the pass runs on desk-q's login. Weekly pacing per login is not built yet. `logins` is
+// loginsNow's.
 const NO_READING = { five_hour: null, seven_day: null, at: null, none: [] };
 export function usageOf(repos, now, shown = repos) {
   const logins = loginsNow(repos, now);
-  const reading = logins?.claude ? logins.claude.reading ?? NO_READING : readUsage({ dirs: stateDirs({ self: usageDir() }), login: lineLogin(), now });
-  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: reading.seven_day, now });
+  const own = readUsage({ dirs: stateDirs({ self: usageDir() }), login: lineLogin(), now });
+  const reading = logins?.claude ? logins.claude.reading ?? NO_READING : own;
+  const pace = (r) => usagePace({ setting: pacingSetting(repoConfigValue(r.slug, 'usage-pacing')), usage: own.seven_day, now });
   const heldBy = shown.filter((r) => r.q && !r.error && ((p) => p.hold && !p.bad)(pace(r))).map((r) => r.name);
   return { reading, running: machineRunning(repos), held: heldBy.length > 0, heldBy, logins };
 }
@@ -1755,21 +1757,6 @@ export function loginsNow(repos, now) {
   lastLogins = { repos, now, v };
   return v;
 }
-// Every login benched by a batch here whose limit has not lifted, by login key: the later lift where two
-// batches bench one login, one with no reset time outlasting any with one.
-function benchesIn(repos, now) {
-  const out = {};
-  for (const r of repos) {
-    for (const b of r.batches ?? [r]) {
-      for (const [k, v] of Object.entries(b.q?.benched ?? {})) {
-        if (!v || (v.resets_at != null && now >= v.resets_at * 1000)) continue;
-        const was = out[k];
-        if (!was || v.resets_at == null || (was.resets_at != null && v.resets_at > was.resets_at)) out[k] = v;
-      }
-    }
-  }
-  return out;
-}
 function loginSide(logins, login, out, reading) {
   const others = logins.filter((l) => l !== login && !out.some((o) => o.login === l));
   const lifts = (o) => o.at ?? Infinity;
@@ -1779,21 +1766,18 @@ function loginSide(logins, login, out, reading) {
 function claudeSide(repos, now) {
   const logins = probeLogins();
   if (!logins.length) return null;
-  const benched = benchesIn(repos, now);
-  const out = logins.filter((l) => benched[loginKey(l)]).map((l) => ({ login: l, at: benched[loginKey(l)].resets_at ?? null }));
-  const open = logins.filter((l) => !benched[loginKey(l)]);
+  // Every login benched by a batch here whose limit has not lifted.
+  const benched = liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now);
   const dirs = stateDirs({ self: usageDir() });
-  const login = chooseLogin(open.map((l) => ({ login: l, running: runningOn(repos, l),
-    reading: newestReading({ dirs, files: [loginProbeLog(usageDir(), l)], login: l, now, recent: WEEK_MS }) })), now);
+  const { login, out } = claudeChoice(logins, { benched, running: (l) => runningOn(repos, l), now, dirs });
   return loginSide(logins, login, out, login ? readUsage({ dirs, login, now }) : null);
 }
 function codexSide(now) {
   const logins = codexLogins().filter(inUse);
   if (!logins.length) return null;
   const { login, read } = codexChoice(logins, now);
-  const r = read.find((x) => x.login === login)?.reading;
   return loginSide(logins, login, read.filter((x) => x.until != null).map((x) => ({ login: x.login, at: x.until })),
-    r ? { five_hour: asClaude(r.five_hour), seven_day: asClaude(r.seven_day), at: r.at, none: r.none } : null);
+    read.find((x) => x.login === login)?.claude ?? null);
 }
 
 // The usage line: a bar for the 5-hour and the 7-day window, each with its reset time; green under
@@ -1819,12 +1803,17 @@ function windowSegs(k, w, now, held, solid) {
   return [[`${label} `, GREY], ['█'.repeat(used), sgr], [(solid ? '█' : '·').repeat(USAGE_BAR - used), solid ? TRACK : GREY], [` ${pct}%`, sgr],
     [reset ? ` · reset ${clock(t)}` : ` ${resetText(t, now)}`, null]];
 }
+// A reading's bars, the 5-hour then the 7-day, leaving out a window its plan lacks; the 7-day one amber
+// while `held`.
+const barSegs = (r, held, now, solid) => [['five_hour', false], ['seven_day', held]].filter(([k]) => !r.none?.includes(k))
+  .flatMap(([k, h], i) => [...(i ? [[' · ', GREY]] : []), ...windowSegs(k, r[k], now, h, solid)]);
+// What ends a usage line: an old reading's time while no worker runs, then weekly pace's hold.
+const tailSegs = (r, { running, held, heldBy }, now) => [
+  ...(running === 0 && r?.at != null && now - r.at > PROBE_EVERY_MS ? [[`  as of ${clock(r.at)}`, GREY]] : []),
+  ...(held ? [[`  ${paceNote(heldBy)}`, WARN]] : [])];
 export function usageLine({ reading, running, held, heldBy }, { now, solid = false }) {
   if (reading.at == null) return segLine([['Claude usage  no reading yet', GREY]]);
-  const shown = [['five_hour', false], ['seven_day', held]].filter(([k]) => !reading.none?.includes(k));
-  const segs = [['Claude usage  ', GREY], ...shown.flatMap(([k, h], i) => [...(i ? [[' · ', GREY]] : []), ...windowSegs(k, reading[k], now, h, solid)])];
-  if (running === 0 && now - reading.at > PROBE_EVERY_MS) segs.push([`  as of ${clock(reading.at)}`, GREY]);
-  if (held) segs.push([`  ${paceNote(heldBy)}`, WARN]);
+  const segs = [['Claude usage  ', GREY], ...barSegs(reading, held, now, solid), ...tailSegs(reading, { running, held, heldBy }, now)];
   return segLine(segs.filter(([s]) => s));
 }
 
@@ -1833,7 +1822,8 @@ export function usageLine({ reading, running, held, heldBy }, { now, solid = fal
 // how many logins are at their limit and when the first lifts, else how many others are in rotation,
 // else how many are on standby. With every login out, the line says so and names the first back. The
 // Codex line has no "as of" or pace note: its reading changes only when Codex is used, which logs anew.
-// The names take the longest one's width, so the two lines' bars line up.
+// The names take the longest one's width, so the two lines' bars line up. Weekly pace is judged on
+// desk-q's own login (usageOf), which need not be the one named, so a hold is the note alone.
 function loginLine(tool, s, { now, solid = false, nameW = 0 }, { held = false, heldBy = [], running = null } = {}) {
   const label = [pad(tool, 8), GREY];
   if (!s.login) {
@@ -1844,12 +1834,11 @@ function loginLine(tool, s, { now, solid = false, nameW = 0 }, { held = false, h
   const r = s.reading;
   const segs = [label, [`${s.login.name.padEnd(nameW)}  `, null]];
   if (r?.at == null) segs.push(['no reading yet', GREY]);
-  else segs.push(...[['five_hour', false], ['seven_day', held]].filter(([k]) => !r.none?.includes(k)).flatMap(([k, h], i) => [...(i ? [[' · ', GREY]] : []), ...windowSegs(k, r[k], now, h, solid)]));
+  else segs.push(...barSegs(r, false, now, solid));
   if (s.out.length) segs.push(['  │ ', GREY], [`${s.out.length} at limit`, FAIL], ...(s.out[0].at != null ? [[` to ${resetText(s.out[0].at * 1000, now)}`, GREY]] : []));
   else if (s.rotation) segs.push([`  │ +${s.rotation} in rotation`, GREY]);
   else if (s.standby) segs.push([`  │ +${s.standby} standby`, GREY]);
-  if (running === 0 && r?.at != null && now - r.at > PROBE_EVERY_MS) segs.push([`  as of ${clock(r.at)}`, GREY]);
-  if (held) segs.push([`  ${paceNote(heldBy)}`, WARN]);
+  segs.push(...tailSegs(r, { running, held, heldBy }, now));
   return segLine(segs.filter(([x]) => x));
 }
 export function usageLines(u, opts) {

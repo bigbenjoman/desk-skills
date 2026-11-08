@@ -9,7 +9,7 @@ import { chooseLogin } from './login-choice.mjs';
 import { checkLogins, loginEnv, readSubscriptions } from './logins.mjs';
 
 // A Codex window in the shape login-choice reads a Claude one in.
-export const asClaude = (w) => (w ? { utilization: w.used / 100, resetsAt: w.resetsAt } : null);
+const asClaude =(w) => (w ? { utilization: w.used / 100, resetsAt: w.resetsAt } : null);
 
 // When a reading's limit lifts, in epoch seconds: the latest reset of a window at its limit, or null
 // with none at its limit. A window past its reset is already no reading (codex-usage.mjs).
@@ -37,15 +37,15 @@ export function codexCallLogin({ env = process.env, now = Date.now() } = {}) {
 }
 
 // The Codex login a call starts on among `logins`, with each one's reading and when its limit lifts.
-// `login` is null when every one is at its limit.
-//   -> { login, read: [{ login, reading, until }] }
+// `login` is null when every one is at its limit. `claude` is the reading in a Claude reading's shape.
+//   -> { login, read: [{ login, reading, claude, until }] }
 export function codexChoice(logins, now = Date.now()) {
   const read = logins.map((login) => {
     const reading = readCodexUsage({ login, now });
-    return { login, reading, until: benchedUntil(reading) };
+    return { login, reading, until: benchedUntil(reading),
+      claude: { five_hour: asClaude(reading.five_hour), seven_day: asClaude(reading.seven_day), at: reading.at, none: reading.none } };
   });
   const open = read.filter((r) => r.until == null);
-  const login = open.length ? chooseLogin(open.map((r) => ({ login: r.login, running: 0,
-    reading: { five_hour: asClaude(r.reading.five_hour), seven_day: asClaude(r.reading.seven_day) } })), now) : null;
+  const login = open.length ? chooseLogin(open.map((r) => ({ login: r.login, running: 0, reading: r.claude })), now) : null;
   return { login, read };
 }
