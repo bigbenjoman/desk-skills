@@ -30,8 +30,12 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
     both before writing either. An answer that is not a number exits 1 naming the bad value and
     writes nothing: say which value was refused and ask again. The bench prints the stored values
     in its `quota:` line at its next start.
-  - **No profile** (the user declined it): `machine set` refuses, so skip this and say the bench
-    will use 10 points and a 25% reserve until a profile exists.
+  - **No profile** (the user declined it): still ask both in the same carousel, with the same
+    Recommended answers, and say the answers are kept in the profile, so storing them means writing
+    it. Offer the profile again with the `desk-env machine propose` table already shown: on a yes,
+    `desk-env machine write`, then `desk-env machine set` with their answers. On a second no, write
+    nothing, since `machine set` refuses without a profile, and say the bench will use 10 points and
+    a 25% reserve until a profile exists.
 - **Then §3b.** The repo rows for worker concurrency, memory ceiling and test worker cap fall back to
   the profile when they are `TODO` or absent, and a set repo row wins. With a profile, the
   Recommended answer for each is the profile's value; say that writing `TODO` instead makes the row
