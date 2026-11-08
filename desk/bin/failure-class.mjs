@@ -38,6 +38,10 @@ export function parkClass(question) {
   return hit ? { class: hit.class, class_rule: hit.rule } : { class: 'unclassified', class_rule: UNCLASSIFIED_RULE, evidence: text };
 }
 
+// Whether a red check's error lines class it runner or resource: one of them reads so under the park
+// rules, which cost a check so classed one rerun at most.
+export const runnerOrResource = (lines) => (lines ?? []).some((l) => parkClass(l).class === 'runner or resource');
+
 // An item a fix try quotes (a gap, a thread, a finding) that only a person can settle.
 const ASKS_PERSON = /\b(?:product|design|copy|legal|pricing) (?:call|decision|question|ruling)\b|\bneeds? (?:a |the )?(?:person|user|owner|product owner|PO)(?:'s)? (?:call|decision|ruling|answer)\b|\bask (?:the )?(?:person|user|product owner)\b/i;
 const quotedItems = (f) => [...(f.gaps ?? []), ...(f.findings ?? []).map((x) => x.text), ...(f.threads ?? []).map((x) => x.text)].map(String);

@@ -275,7 +275,9 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   with each check's name and run, within the same two tries as a ready PR's fixes (`fix-tries.mjs`
   `reviewTry`, `draftChecksFix`). desk-gate's own verdict check reads only the head, so a draft red
   on it alone goes to a review worker. Such a draft is under WAITING ON YOU only once those tries are
-  spent, or when its red check is one §4 Checks workers can't fix names.
+  spent, or when its red check is one §4 Checks workers can't fix names. With the `failure-class`
+  lever on and §3 `ci-rerun` `yes`, a draft whose checks a worker would take all have error lines
+  classed runner or resource is re-run once first; red again, its fix try says one rerun was tried.
 - **A draft red only on checks §4 Check builds names gets their build from the pass**, where §3
   `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, from the
   pass's clean checkout of origin's default branch (`<state>/live-read-checkout`, the one Live reads
