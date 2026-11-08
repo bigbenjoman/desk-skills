@@ -96,18 +96,22 @@ export const codexWeekly = (r, now = Date.now()) => weeklyOf(r, (w) => w.used, n
 // which counts only if this probe wrote it. A probe that prints nothing leaves the last one's output in
 // place, and that is not a reading of now, however recent: the file is compared with what it held
 // before the probe, never judged by its age, since a quick run's two probes can land within a second.
-export const snapshot = (file) => { try { return { at: statSync(file).mtimeMs, text: readFileSync(file, 'utf8') }; } catch { return null; } };
+const snapshot = (file) => { try { return { at: statSync(file).mtimeMs, text: readFileSync(file, 'utf8') }; } catch { return null; } };
+//   -> { after: <the probe file now, or null>, fresh: <this probe wrote it>, failed: <': why', or ''> }
+export function freshProbe({ dir = usageDir(), env = process.env, login }) {
+  const file = loginProbeLog(dir, login);
+  const prior = snapshot(file);
+  const p = probeNow({ dir, env, login });
+  const after = snapshot(file);
+  return { after, fresh: Boolean(after) && !(prior && prior.at === after.at && prior.text === after.text), failed: p.ok ? '' : `: the usage probe failed (${p.why})` };
+}
 export function readWeekly(account, { dir = usageDir(), env = process.env, now = () => Date.now() } = {}) {
   if (account.vendor === 'codex') return codexWeekly(readCodexUsage({ login: account.login, now: now() }), now());
   const l = account.login.configDir ? account.login : null;
-  const file = loginProbeLog(dir, l);
-  const prior = snapshot(file);
-  const p = probeNow({ dir, env, login: l });
-  const failed = p.ok ? '' : `: the usage probe failed (${p.why})`;
-  const after = snapshot(file);
+  const { after, fresh, failed } = freshProbe({ dir, env, login: l });
   if (!after) return { why: `no weekly reading${failed}` };
   if (now() - after.at > FRESH_MS) return { why: `${staleWhy(now() - after.at)}${failed}` };
-  if (prior && prior.at === after.at && prior.text === after.text) return { why: `no new weekly reading${failed || ': the usage probe printed nothing'}` };
+  if (!fresh) return { why: `no new weekly reading${failed || ': the usage probe printed nothing'}` };
   const r = claudeWeekly(readLoginUsage({ login: l, dir, now: now() }), now());
   // Rate-limit events none of which could be read are a reading that cannot be parsed, not no reading.
   if (r.why === 'no weekly reading' && after.text.includes('"rate_limit_event"')) return { why: `its weekly reading could not be parsed${failed}` };

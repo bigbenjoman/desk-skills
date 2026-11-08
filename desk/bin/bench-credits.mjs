@@ -5,10 +5,18 @@
 // (tests/fixtures/usage-limit-allowed.json): overageStatus, overageDisabledReason and isUsingOverage.
 // Credits are off only when overage is rejected for a named reason other than out_of_credits: an empty
 // balance is not off, since a top-up would make the next request billable.
-import { snapshot, accountFor } from './bench-quota.mjs';
+import { accountFor, freshProbe } from './bench-quota.mjs';
 import { probeLogins } from './claude-logins.mjs';
-import { loginProbeLog, probeNow, usageDir } from './usage-probe.mjs';
+import { loginEnv } from './logins.mjs';
 import { EVENT } from './usage-pace.mjs';
+
+// Credentials Claude Code would use ahead of the signed-in login. A run carrying one bills somewhere
+// the check never read, so a Fable run and its checks run without them.
+const OUTRANK_LOGIN = /^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_USE_(BEDROCK|VERTEX|FOUNDRY))$/;
+const signedIn = (env) => Object.fromEntries(Object.entries(env).filter(([k]) => !OUTRANK_LOGIN.test(k)));
+
+// A Fable run's environment: on the signed-in login the check read, and nothing that outranks it.
+export const fableEnv = (env = process.env) => loginEnv(accountFor('claude', env).login, signedIn(env));
 
 const rateInfos = (text) => String(text ?? '').split('\n').flatMap((line) => {
   if (!line.startsWith(EVENT)) return [];
@@ -38,25 +46,21 @@ export function creditState(r) {
 }
 
 // One login's state from a probe made now, which counts only if this probe wrote its output.
-export function probedCredits(login, { dir = usageDir(), env = process.env } = {}) {
-  const file = loginProbeLog(dir, login);
-  const prior = snapshot(file);
-  const p = probeNow({ dir, env, login });
-  const after = snapshot(file);
-  if (!after || (prior && prior.at === after.at && prior.text === after.text)) return { state: 'unknown', reading: `no new rate-limit reading${p.ok ? '' : `: the usage probe failed (${p.why})`}` };
-  return creditState(newestCredits(after.text));
+function probedCredits(login, env) {
+  const { after, fresh, failed } = freshProbe({ env, login });
+  return fresh ? creditState(newestCredits(after.text)) : { state: 'unknown', reading: `no new rate-limit reading${failed}` };
 }
 
 // The logins the check covers: every one desk may start or probe work on (only the default login where
 // no subscriptions list exists), and the one the run itself is signed in with.
-export function creditLogins(env = process.env) {
+function creditLogins(env) {
   return [...new Map([...probeLogins(), accountFor('claude', env).login].map((l) => [l.dir, l])).values()];
 }
 
 // Null when every login reads credits off, else why the Fable side may not run, naming each login that
 // does not and its reading.
-export function fableRefusal({ env = process.env, dir = usageDir(), logins = creditLogins(env), read = probedCredits } = {}) {
-  const bad = logins.map((l) => ({ l, ...read(l, { dir, env }) })).filter((c) => c.state !== 'off');
+export function fableRefusal({ env = process.env } = {}) {
+  const bad = creditLogins(env).map((l) => ({ l, ...probedCredits(l, signedIn(env)) })).filter((c) => c.state !== 'off');
   if (!bad.length) return null;
   return `refusing the Fable side: ${bad.map(({ l, state, reading }) => `Claude login ${l.name} ${state === 'on' ? `does not read usage credits off (${reading})` : `has an unknown usage credit state (${reading})`}`).join('; ')}`;
 }

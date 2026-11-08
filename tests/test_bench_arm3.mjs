@@ -93,7 +93,7 @@ if (prompt === 'Reply with: ok') {
   return;
 }
 u.used += 0.001; fs.writeFileSync(process.env.STUB_USAGE, JSON.stringify(u));
-fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ tool: 'claude', args: a }) + '\\n');
+fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ tool: 'claude', args: a, credential: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN || null }) + '\\n');
 say({ type: 'system', subtype: 'init', model: 'claude-' + val('--model') + '-stub', ...(val('--effort') ? { effort: val('--effort') } : {}) });
 if (prompt.includes('OVERAGE') && val('--model').includes('fable')) {
   say({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', overageStatus: 'allowed', isUsingOverage: true } });
@@ -234,7 +234,7 @@ const hc = Object.values(hres).find((x) => x.arm.startsWith('codex'));
 t('AC2 a hung Codex side is ended at the bench timeout', `${hc?.status} ${hc?.why}`, 'failed timed out after 2s');
 t('AC2 well before the hidden-test ceiling', (Date.now() - start) < 60000, true);
 
-// DS-484: the Fable side and the usage-credit gate.
+// The Fable side and the usage-credit gate.
 const event = (info) => JSON.stringify({ type: 'rate_limit_event', rate_limit_info: info });
 const ORG_OFF = { overageStatus: 'rejected', overageDisabledReason: 'org_level_disabled', isUsingOverage: false };
 const EMPTY = { overageStatus: 'rejected', overageDisabledReason: 'out_of_credits', isUsingOverage: false };
@@ -277,11 +277,13 @@ t('AC3 an account with no reading is refused as unknown', `${r.status} ${/Claude
 
 setCredits({ default: ORG_OFF, work: ORG_OFF });
 const onSides = join(dir, 'out-fable');
-r = run(['--tasks', setFile, '--max-budget-usd', '1', '--total-budget-usd', '20', '--out', onSides, '--seed', '4', '--fable'], fableEnv('fable'));
+r = run(['--tasks', setFile, '--max-budget-usd', '1', '--total-budget-usd', '20', '--out', onSides, '--seed', '4', '--fable'], { ...fableEnv('fable'), ANTHROPIC_API_KEY: 'sk-test', CLAUDE_CODE_OAUTH_TOKEN: 'token-test' });
 if (r.status !== 0) console.log(r.stderr);
 const fableRes = results(onSides);
+const fableCalls = calls('claude').filter((c) => flag(c, '--model') === FABLE_ARM.model);
 t('AC1 with credits off everywhere it runs', r.status, 0);
-t('AC1 each task on the Fable model', calls('claude').filter((c) => flag(c, '--model') === FABLE_ARM.model).length, 2);
+t('AC1 each task on the Fable model', fableCalls.length, 2);
+t('a Fable run drops credentials that would bill instead of the login it checked, which the other sides keep', `${fableCalls.filter((c) => c.credential).length} ${calls('claude').filter((c) => flag(c, '--model') !== FABLE_ARM.model && c.credential).length}`, '0 4');
 t('AC1 and is scored like any side', `${fableRes['fix.fable'].status} ${fableRes['nofix.fable'].status}`, 'accepted rejected');
 const fableReport = renderReport({ out: onSides, run: loadRun(onSides), joined: { arms: Object.fromEntries([...ARMS, FABLE_ARM].map((a) => [a.name, { scores: [{ task: 'fix', score: 3 }] }])) }, baseline: { ok: false, why: 'none', path: 'x' } }).text;
 const fableRow = fableReport.split('\n').find((l) => l.startsWith('| Tasks accepted, of tasks run |'));

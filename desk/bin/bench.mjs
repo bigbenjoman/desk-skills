@@ -251,12 +251,12 @@ function writeSettings(repo, task, wt, file, secrets) {
 
 // One claude run, its stream going straight to the transcript. -> readRun's verdict plus usage.
 // `command` runs claude through a wrapper, which `killSignal` then ends at the timeout.
-export function runClaude(task, arm, wt, settings, opts, dir, { command = ['claude'], killSignal = 'SIGKILL' } = {}) {
+export function runClaude(task, arm, wt, settings, opts, dir, { command = ['claude'], killSignal = 'SIGKILL', env = armEnv() } = {}) {
   const file = join(dir, 'transcript.jsonl');
   const fd = openSync(file, 'w');
   const err = openSync(join(dir, 'stderr.log'), 'w');
   const args = claudeArgs({ prompt: promptFor(task, arm), arm: 'base', budget: opts.budget, model: arm.model, effort: arm.effort, format: 'stream-json', extra: ['--verbose', '--settings', settings] });
-  const proc = spawnSync(command[0], [...command.slice(1), ...args], { cwd: wt, env: armEnv(), stdio: ['ignore', fd, err], timeout: opts.timeout * 1000, killSignal });
+  const proc = spawnSync(command[0], [...command.slice(1), ...args], { cwd: wt, env, stdio: ['ignore', fd, err], timeout: opts.timeout * 1000, killSignal });
   closeSync(fd);
   closeSync(err);
   const stdout = readFileSync(file, 'utf8');

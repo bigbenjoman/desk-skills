@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { armEnv, parseArgs as benchArgs, printBench, promptFor, runBench, runClaude } from './bench.mjs';
 import { execArgs, KILL_GRACE_MS } from './codex-exec.mjs';
 import { accountFor } from './bench-quota.mjs';
-import { fableRefusal, usingOverage } from './bench-credits.mjs';
+import { fableEnv, fableRefusal, usingOverage } from './bench-credits.mjs';
 import { rolloutLogs } from './codex-usage.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
@@ -136,7 +136,7 @@ export const ARMS = Object.freeze([
 export function runFable(task, arm, wt, settings, opts, dir, { env = armEnv() } = {}) {
   const refused = fableRefusal({ env });
   if (refused) return { ok: false, why: refused, cost: 0, tokens: null, attempts: [], ranAt: null, stopArm: refused };
-  const run = runClaude(task, arm, wt, settings, opts, dir, { command: [process.execPath, join(HERE, 'overage-watch.mjs'), 'claude'], killSignal: 'SIGTERM' });
+  const run = runClaude(task, arm, wt, settings, opts, dir, { command: [process.execPath, join(HERE, 'overage-watch.mjs'), 'claude'], killSignal: 'SIGTERM', env: fableEnv(env) });
   if (!usingOverage(readFileSync(join(dir, 'transcript.jsonl'), 'utf8'))) return run;
   const why = `task ${task.id} on ${accountFor('claude', env).name} recorded a request using overage, so the run was ended`;
   return { ...run, ok: false, why, stopArm: why };
