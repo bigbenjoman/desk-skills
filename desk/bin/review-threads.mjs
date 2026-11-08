@@ -26,8 +26,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, verdictCarries, DESK_REVIEW_CLEAN } from './undraft.mjs';
-import { pairs } from './desk-env.mjs';
+import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { pairs, leverOn } from './desk-env.mjs';
 import { LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
@@ -74,21 +74,23 @@ export function readThreads(payload, { handle, clean }) {
 // Whether §4 Local review command names a review, so that a merge waits on its clean verdict.
 export const localReviewSet = rowSet;
 
-// Whether a clean review stands at the PR's head, for a merge: { head, clean, carried, why, settle,
-// person }. A clean verdict for an older head counts where only clean merges of the base came since
-// (carry(sha), as verdictCarries says). Not clean, `settle` is a review at the head that says so, and
+// Whether a clean review stands at the PR's head, for a merge: { head, clean, carried, range, said,
+// why, settle, person }. A clean verdict for an older head counts where it still holds at the head
+// (carry(sha, body), as verdictCarries or restsOnCarries says; `range` is the base range the latter
+// checked, and `said` the comment that tells the PR). Not clean, `settle` is a review at the head that says so, and
 // `person` a row only the person can set; with neither, a review worker has what it needs: there is
-// no verdict, a stale one, or one the gate cannot read.
-export function readVerdict(payload, { handle, clean, carry }) {
+// no verdict, a stale one, or one the gate cannot read, and `targeted` what that review need read only
+// (scope(sha, body), as reviewScope says), when a clean review for an older head narrows it.
+export function readVerdict(payload, { handle, clean, carry, scope }) {
   const pr = payload?.data?.repository?.pullRequest;
   if (!pr) return null;
   const head = pr.headRefOid ?? '';
   const row = String(clean ?? '').trim();
   if (!rowSet(row)) return { head, clean: false, carried: null, why: '§4 Clean review verdict is not set, so no review can be read as clean', settle: false, person: true };
-  const { v, carried } = verdictAtHead(pr.reviews?.nodes ?? [], handle, head, row, carry);
-  if (v.clean) return { head, clean: true, carried, why: null, settle: false, person: false };
+  const { v, carried, range, targeted } = verdictAtHead(pr.reviews?.nodes ?? [], handle, head, row, carry, scope);
+  if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false };
   // An unclean verdict carried from an older head is not at this one: reviewing the head posts it there.
-  return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false };
+  return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, ...(targeted ? { targeted } : {}) };
 }
 
 // A thread as one line names it: `path:line "first line"`, cut to a readable length.
@@ -117,8 +119,10 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   try {
     const payload = JSON.parse(readFileSync(0, 'utf8'));
     const head = payload?.data?.repository?.pullRequest?.headRefOid;
-    // Fetched only for a verdict at an older head, as the pass does before it asks the same thing.
-    const carry = (sha) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && verdictCarries({ from: sha, head, base: `origin/${base}`, git });
+    // Fetched only for a verdict at an older head, as the pass does before it asks the same thing, and
+    // carried as the pass carries it: under the review-reuse lever, only while what it rests on holds.
+    const reuse = leverOn('review-reuse');
+    const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && reviewCarries({ reuse, from: sha, head, base: `origin/${base}`, body, git });
     r = readVerdict(payload, { handle: at('--handle'), clean: at('--clean'), carry });
   } catch { /* unreadable: null */ }
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }

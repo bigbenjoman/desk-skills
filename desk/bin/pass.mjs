@@ -38,7 +38,7 @@ import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessage, FAILED } from './gate.mjs';
-import { undraftCall, buildPark, undraftComment, verdictCarries, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -2742,12 +2742,20 @@ const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
 const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // What git says about a PR's head and the base, for a head of the ticket's branch: whether a verdict for
 // an older head still holds at it (carry), and whether a merge from the base last moved it (baseMerge):
-// such a head, since the last try's, gets its own review try, outside the fix tries.
+// such a head, since the last try's, gets its own review try, outside the fix tries. With the
+// review-reuse lever on, a verdict holds only while the files its review rests on are unchanged
+// (restsOnCarries), after a rebase or any base merge; off, across clean base merges alone. On, a clean
+// verdict that does not hold is narrowed to what the base moved under it where it can be (scope:
+// reviewScope), so the head's review try reads only that.
+const reviewReuse = E.leverOn('review-reuse');
 const baseMoves = (t, head) => {
-  const fetched = () => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok;
+  // Fetched once for this head, however many of these ask.
+  let got;
+  const fetched = () => (got ??= !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok);
   const git = (args) => shOut('git', ['-C', MAIN, ...args]);
   return {
-    carry: (sha) => fetched() && verdictCarries({ from: sha, head, base: `origin/${DEFAULT_BRANCH}`, git }),
+    carry: (sha, body) => fetched() && reviewCarries({ reuse: reviewReuse, from: sha, head, base: `origin/${DEFAULT_BRANCH}`, body, git }),
+    scope: (sha, body) => reviewReuse && fetched() && reviewScope({ reuse: reviewReuse, from: sha, head, base: `origin/${DEFAULT_BRANCH}`, body, git }),
     baseMerge: (from) => fetched() && movedByBase({ from, head, base: `origin/${DEFAULT_BRANCH}`, git }),
     // The base's name when it has commits the head lacks; null when the head has them or git cannot say.
     behind: () => {
@@ -2832,8 +2840,8 @@ if (drafts.length) {
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
     // A verdict for an older head holds at this one when only clean merges of the base came since.
-    const { carry, baseMerge, behind } = baseMoves(t, v.headRefOid);
-    const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), behind, evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, ticketShots(t, STATE)) });
+    const { carry, scope, baseMerge, behind } = baseMoves(t, v.headRefOid);
+    const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), behind, evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, ticketShots(t, STATE)) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
@@ -2857,7 +2865,7 @@ if (drafts.length) {
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold ? null : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, builds: [], ...baseReads(v.headRefOid) })
-        : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge })
+        : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge, targeted: c.targeted })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch) })
             // A check build that failed behind the base goes to a worker that merges it.
             : c.call === 'sync' ? syncFix(t, { pr: n, head: v.headRefOid, base: c.base, why: c.why })
@@ -2870,7 +2878,9 @@ if (drafts.length) {
     const stale = hold ? (c.call !== 'conflict' && /^still in conflict/.test(t.stuck?.why ?? '')) || (c.call !== 'capture' && /still not taken after a capture try/.test(t.stuck?.why ?? ''))
       : !rf && !(c.call === 'checks' && fixRowErrors.length);
     if (t.stuck && stale && !DRY) q('set', t.key, 'stuck=null');
-    const carried = c.carried ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since` : '';
+    const carried = !c.carried ? ''
+      : c.range ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as its own diff is unchanged and ${DEFAULT_BRANCH}'s range ${c.range} changed none of the files the review rests on`
+        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since`;
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) applyFix(t, n, v.headRefOid, rf);
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
@@ -2887,8 +2897,10 @@ if (drafts.length) {
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
       if (r.ok) {
         out.push(`undrafted: PR #${n} (${t.key}) at ${String(v.headRefOid).slice(0, 12)}${carried}; the merge driver merges it once it is green`);
-        const said = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', undraftComment(c.verdict, v.headRefOid, cfg.clean, c.carried)]);
+        const said = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', undraftComment(c.verdict, v.headRefOid, cfg.clean, c.carried, c.range)]);
         if (!said.ok) out.push(`undraft: PR #${n} (${t.key}) left draft, but its comment was not posted (${said.out.split('\n').pop()})`);
+        // Said here, the merge driver need not say the carry again at this head.
+        else if (c.range) { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${n}-${v.headRefOid}`), ''); } catch { /* the driver says it once more */ } }
         if (c.note) {
           if (!existsSync(notesFile)) writeFileSync(notesFile, '# Batch notes\n\n');
           appendFileSync(notesFile, `${c.note}\n`);
@@ -3252,9 +3264,9 @@ function feedbackCall(t, s, waived) {
   if (ff) return ff;
   // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
-  const { carry, baseMerge } = baseMoves(t, s.head);
+  const { carry, scope, baseMerge } = baseMoves(t, s.head);
   const atHead = () => (localReviewSet(E.configValue('local-review')) && E.mergeGrant(queue()).by
-    ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry }) : null);
+    ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry, scope }) : null);
   return verdictTry(t, s, { ...gateLists(), stateChecks: stateRow.checks, settled: !!fb.review, atHead, waived, base: DEFAULT_BRANCH, baseMerge });
 }
 function readFeedback(n) {
@@ -3632,7 +3644,7 @@ async function epicStep(qx) {
     const fb = readFeedback(n);
     if (!fb) { out.push(`epic PR #${n}: its review could not be read; the next pass tries again`); return true; }
     const git = (args) => shOut('git', ['-C', MAIN, ...args]);
-    const carry = (sha) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && verdictCarries({ from: sha, head: fb.head, base: `origin/${SOURCE}`, git });
+    const carry = (sha, body) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && reviewCarries({ reuse: reviewReuse, from: sha, head: fb.head, base: `origin/${SOURCE}`, body, git });
     const v = readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry });
     if (v?.clean) {
       const readyPerm = E.permission('pr-ready');
@@ -3640,7 +3652,8 @@ async function epicStep(qx) {
       if (DRY) { out.push(`epic PR #${n} (dry run): would mark it ready, its review clean at its head`); return true; }
       const r = shOut('gh', ['pr', 'ready', String(n), '--repo', GH_REPO]);
       if (!r.ok) { report.waiting.push(`EPIC PR: #${n} has a clean review at its head, but gh pr ready failed (${r.out.split('\n').pop()}): mark it ready. The next pass tries again. ${link}`); return true; }
-      out.push(`epic PR #${n}: its review is clean at its head, so it is out of draft; the merge driver merges it once it is green`);
+      const why = v.range ? `its clean review at ${String(v.carried).slice(0, 12)} is carried to its head, not reviewed there: ${SOURCE}'s range ${v.range} changed none of the files it rests on` : 'its review is clean at its head';
+      out.push(`epic PR #${n}: ${why}, so it is out of draft; the merge driver merges it once it is green`);
       return true;
     }
     const c = epicReviewCall(bf, { pr: n, head: fb.head }, { alive: baseFixLive });

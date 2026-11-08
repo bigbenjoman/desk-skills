@@ -127,6 +127,25 @@ to the person once no try is left. A review at the head that is not clean goes t
 it lists a P0, a P1, a P2 or, under §3 `autopilot-judgement`, a gap (`reviewFix`; P2s once nothing worse
 is left, and a later round may carry one), and otherwise to the person.
 
+With the `review-reuse` lever on (config §3b Phase 0 levers), the carry rests on what the review read
+instead: after a rebase or any merge of the base, a verdict holds at the new head only while the PR's
+own diff is unchanged and the base changed none of the files its `rests-on` line names, no dependency
+manifest or lockfile and no repo configuration (`undraft.mjs` `restsOnCarries`). The undraft comment
+and the driver's log name the base range checked, and say the head itself was not reviewed. Otherwise
+the head is reviewed again, as with no verdict. A repo running desk-gate's `desk-review verdict` check
+gets no saving from a carry, as with the carry above: that check reads only a verdict posted on the
+head, so a head it holds red is reviewed again. That limit is kept on purpose: the gate is what a
+writer's review attests at the exact head, and a carry the orchestrator decides is not an attestation
+it can check, so `review-gate.mjs` still never reads one.
+
+When such a carry fails over a clean review, the review try is narrowed where it can be
+(`undraft.mjs` `targetedReview`). That applies when the PR's own diff is unchanged and the base changed
+some files the review rests on but no lockfile, manifest or configuration file (`restsOnAlways`). The
+try's brief then names those files and the PR's changed files that name one, and desk-review's
+targeted round (its `targeted.md` reference) reads only them. Its review records what it re-reviewed and
+what it carried from the earlier one, at which heads, and is read like any review at the head: a P0 or
+P1 goes to a fix worker. Any other failed carry, or the lever off, gets the whole review.
+
 The driver does not wait on GitHub's review decision: desk opens PRs from the person's own account,
 and GitHub never lets an author approve their own PR. A person's approval holds a PR in two cases only.
 One is a PR whose GitHub review decision is `REVIEW_REQUIRED`, because branch protection wants an

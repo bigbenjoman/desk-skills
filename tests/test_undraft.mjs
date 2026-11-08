@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
@@ -538,6 +538,158 @@ t('DS-316 a head whose first parents pass the reviewed commit by is not a carry'
 g('checkout', '-q', '-b', 'pr5', BASE); g('merge', '-q', '--no-ff', '--no-edit', 'main');
 t('DS-316 a clean base merge onto a commit before the reviewed one is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
 rmSync(dir, { recursive: true, force: true });
+
+// With the review-reuse lever on, a verdict carries past a rebase or any base merge only while
+// the PR's own diff is unchanged and the base moved none of the files the review rests on.
+{
+  const rd = mkdtempSync(join(tmpdir(), 'undraft-rests-'));
+  const rg = (...args) => execFileSync('git', ['-C', rd, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const rgit = (args) => { try { return { ok: true, out: rg(...args) }; } catch (e) { return { ok: false, out: String(e.stderr ?? '') }; } };
+  const rput = (file, text) => { mkdirSync(join(rd, file, '..'), { recursive: true }); writeFileSync(join(rd, file), text); };
+  const rcommit = (msg) => { rg('add', '-A'); rg('commit', '-q', '-m', msg); return rg('rev-parse', 'HEAD'); };
+  const files = ['src/a.js', 'src/caller.js'];
+  const holds = (from, head, f = files) => restsOnCarries({ from, head, base: 'main', files: f, git: rgit });
+  rg('init', '-q', '-b', 'main');
+  rput('src/a.js', 'a\n'); rput('src/caller.js', 'calls a\n'); rput('src/other.js', 'other\n'); rput('package-lock.json', '{}\n'); rput('tsconfig.json', '{}\n');
+  const M0 = rcommit('base');
+  rg('checkout', '-q', '-b', 'pr'); rput('src/a.js', 'a, changed by the PR\n'); const P = rcommit('pr work');
+  // Rebase onto a base that moved an unrelated file.
+  const onto = (name, file, text) => {
+    rg('checkout', '-q', '-b', name, M0); rput(file, text); const m = rcommit(`${name} moves ${file}`);
+    rg('checkout', '-q', '-b', `${name}-pr`, m); rput('src/a.js', 'a, changed by the PR\n'); return { m, head: rcommit('pr work, rebased') };
+  };
+  rg('branch', '-q', '-f', 'main', M0);
+  const un = onto('b1', 'src/other.js', 'other, moved\n');
+  rg('branch', '-q', '-f', 'main', un.m);
+  const got = holds(P, un.head);
+  t('DS-448 AC2 a rebase over unrelated files carries the review', got?.range, `${M0.slice(0, 12)}..${un.m.slice(0, 12)}`);
+  t('DS-448 AC2 from an abbreviated sha too', !!holds(P.slice(0, 9), un.head), true);
+  t('DS-448 a review that records no files is not carried', holds(P, un.head, null), null);
+  const read = onto('b2', 'src/caller.js', 'calls a differently\n');
+  rg('branch', '-q', '-f', 'main', read.m);
+  t('DS-448 AC3 a rebase over a file a finder read is not carried', holds(P, read.head), null);
+  const lock = onto('b3', 'package-lock.json', '{"lockfileVersion":3}\n');
+  rg('branch', '-q', '-f', 'main', lock.m);
+  t('DS-448 AC5 a rebase over a changed lockfile is not carried', holds(P, lock.head), null);
+  const conf = onto('b4', 'tsconfig.json', '{"strict":true}\n');
+  rg('branch', '-q', '-f', 'main', conf.m);
+  t('DS-448 AC5 a rebase over a changed configuration file is not carried', holds(P, conf.head), null);
+  const wf = onto('b5', '.github/workflows/ci.yml', 'on: push\n');
+  rg('branch', '-q', '-f', 'main', wf.m);
+  t('DS-448 AC5 nor over a new workflow file', holds(P, wf.head), null);
+  rg('branch', '-q', '-f', 'main', un.m);
+  rg('checkout', '-q', '-b', 'b6-pr', un.m); rput('src/a.js', 'a, changed by the PR, and changed again\n'); const own = rcommit('pr work, rebased and edited');
+  t('DS-448 AC4 a rebase that changed the PR\'s own diff is not carried', holds(P, own), null);
+  // Merges of the base: one over an unrelated file, one clean merge over a recorded file.
+  rg('checkout', '-q', '-b', 'm1', P); rg('merge', '-q', '--no-edit', un.m); const merged = rg('rev-parse', 'HEAD');
+  t('DS-448 AC2 a clean base merge over unrelated files carries it', !!holds(P, merged), true);
+  rg('branch', '-q', '-f', 'main', read.m);
+  rg('checkout', '-q', '-b', 'm2', P); rg('merge', '-q', '--no-edit', read.m); const overRead = rg('rev-parse', 'HEAD');
+  t('DS-448 AC8 a clean base merge over a recorded file is not carried', holds(P, overRead), null);
+  t('DS-448 AC8 though verdictCarries, the lever-off carry, does carry it', verdictCarries({ from: P, head: overRead, base: 'main', git: rgit }), true);
+  // reviewCarries is every carry's choice (the pass's, the epic PR's and the merge driver's), read from the review's body.
+  const recordedBody = (list) => `${marker(ALL_ZERO, P)}\n<!-- desk-review:rests-on v=1 files=${JSON.stringify(list)} -->`;
+  const either = (reuse, head, body) => reviewCarries({ reuse, from: P, head, base: 'main', body, git: rgit });
+  t('DS-448 AC8 reviewCarries, lever on: a clean merge over a recorded file is not carried', either(true, overRead, recordedBody(files)), null);
+  t('DS-448 AC2 reviewCarries, lever on: over files the review does not record it carries', !!either(true, overRead, recordedBody(['src/a.js'])), true);
+  t('DS-448 reviewCarries, lever on: a review that records no files is not carried', either(true, overRead, marker(ALL_ZERO, P)), null);
+  t('DS-448 AC7 reviewCarries, lever off: the clean-merge carry, whatever the body', either(false, overRead, marker(ALL_ZERO, P)), true);
+  const accent = onto('b7', 'src/café.js', 'moved\n');
+  rg('branch', '-q', '-f', 'main', accent.m);
+  t('DS-448 AC3 a recorded file with a non-ASCII name is matched', holds(P, accent.head, [...files, 'src/café.js']), null);
+  t('DS-448 and with that file not recorded the review carries', !!holds(P, accent.head), true);
+  const next = onto('b8', 'next.config.ts', 'export default {}\n');
+  rg('branch', '-q', '-f', 'main', next.m);
+  t('DS-448 AC5 a rebase over a changed next.config.ts is not carried', holds(P, next.head), null);
+  rmSync(rd, { recursive: true, force: true });
+
+  // AC1: the record verdict.mjs prints is the one the pass reads back.
+  const seats = [{ role: 'correctness', vendor: 'claude', status: 'ran' }];
+  const recorded = render({ sha: OLD, round: 1, gaps: 0, skipped_files: 0, seats, findings: [], rests_on: ['src/b.js', 'src/a>b.js', 'src/b.js'] });
+  t('DS-448 AC1 the files a review rests on read back from its body', JSON.stringify(restsOn(recorded)), JSON.stringify(['src/a>b.js', 'src/b.js']));
+  t('DS-448 AC1 a review that records none reads as null', restsOn(marker(ALL_ZERO)), null);
+  t('DS-448 config, manifests and lockfiles count wherever they sit', ['apps/web/package.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', 'requirements-dev.txt', 'go.sum', 'Cargo.toml', 'apps/web/tsconfig.build.json', '.nvmrc', '.github/workflows/ci.yml', 'scripts/desk/review-gate.mjs', 'npm-shrinkwrap.json', 'apps/web/next.config.ts', 'apps/web/vite.config.mjs', 'pnpm-workspace.yaml', 'turbo.json', 'apps/web/Dockerfile', 'apps/api/docker-compose.yml', 'apps/web/.eslintrc.json', 'apps/api/Gemfile', 'apps/api/flake.lock'].every(restsOnAlways), true);
+  t('DS-448 other code does not, a name holding "lock" included', ['src/clock.ts', 'src/blocks/a.ts', 'apps/web/src/b.js'].some(restsOnAlways), false);
+
+  // AC2, AC6: the carry names the range, and the comment says the head itself was not reviewed.
+  const body = recorded;
+  let given = null;
+  const rc2 = withCarry([review(body, OLD)], (sha, b) => { given = b; return { range: 'aaaa..bbbb' }; }, DESK_REVIEW_CLEAN);
+  t('DS-448 AC2 the carry is asked with the review\'s body', given === body, true);
+  t('DS-448 AC2 a carried call names the range checked', `${rc2?.call} ${rc2?.carried === OLD} ${rc2?.range}`, 'ready true aaaa..bbbb');
+  const said = undraftComment(rc2.verdict, HEAD, DESK_REVIEW_CLEAN, rc2.carried, rc2.range);
+  t('DS-448 AC6 its comment says carried, not reviewed, at the head, and names the range', said.includes('is carried to this head') && said.includes('which no review has read') && said.includes('`aaaa..bbbb`'), true);
+  const plainCarry = withCarry(older, () => true);
+  t('DS-448 a carry that names no range is read as one, with no range', `${plainCarry?.call} ${plainCarry?.carried === OLD} ${'range' in plainCarry}`, 'ready true false');
+  t('DS-448 and its comment keeps the clean-merge wording', undraftComment(plainCarry.verdict, HEAD, 'p0=0 p1=0 gaps=0', plainCarry.carried, plainCarry.range).includes('every commit since is a clean merge of the base'), true);
+}
+
+// DS-449: with the review-reuse lever on, a rebase or base merge over files a clean review rests on
+// narrows the head's review to those files and the PR's code that uses them; a lockfile or
+// configuration file the base changed needs the whole review.
+{
+  const rd = mkdtempSync(join(tmpdir(), 'undraft-targeted-'));
+  const rg = (...args) => execFileSync('git', ['-C', rd, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const rgit = (args) => { try { return { ok: true, out: rg(...args) }; } catch (e) { return { ok: false, out: String(e.stderr ?? '') }; } };
+  const rput = (file, text) => { mkdirSync(join(rd, file, '..'), { recursive: true }); writeFileSync(join(rd, file), text); };
+  const rcommit = (msg) => { rg('add', '-A'); rg('commit', '-q', '-m', msg); return rg('rev-parse', 'HEAD'); };
+  // The PR changes src/a.js, which imports src/helper.js, and adds src/[id].js, which uses nothing.
+  const files = ['src/a.js', 'src/helper.js', 'src/lone.js', 'src/[id].js'];
+  rg('init', '-q', '-b', 'main');
+  rput('src/a.js', "import { h } from './helper.js'\n"); rput('src/helper.js', 'export const h = 1\n'); rput('src/lone.js', 'lone\n');
+  rput('src/other.js', 'other\n'); rput('package-lock.json', '{}\n');
+  const M0 = rcommit('base');
+  rg('checkout', '-q', '-b', 'pr'); rput('src/a.js', "import { h } from './helper.js'\nexport const a = h + 1\n"); rput('src/[id].js', 'page\n'); const P = rcommit('pr work');
+  const onto = (name, moves) => {
+    rg('checkout', '-q', '-b', name, M0); for (const [f, x] of moves) rput(f, x); const m = rcommit(`${name} moves`);
+    rg('checkout', '-q', '-b', `${name}-pr`, m); rput('src/a.js', "import { h } from './helper.js'\nexport const a = h + 1\n"); rput('src/[id].js', 'page\n');
+    rg('branch', '-q', '-f', 'main', m);
+    return { m, head: rcommit('pr work, rebased') };
+  };
+  const narrow = (head, f = files, from = P) => targetedReview({ from, head, base: 'main', files: f, git: rgit });
+  const one = onto('t1', [['src/helper.js', 'export const h = 2\n']]);
+  const got = narrow(one.head);
+  t('DS-449 AC1 a rebase over one recorded file names only it, and the PR code that uses it', JSON.stringify(got), JSON.stringify({ from: P, range: `${M0.slice(0, 12)}..${one.m.slice(0, 12)}`, files: ['src/helper.js'], users: ['src/a.js'] }));
+  t('DS-449 AC1 the carry does not hold there', restsOnCarries({ from: P, head: one.head, base: 'main', files, git: rgit }), null);
+  const lone = onto('t2', [['src/lone.js', 'lone, moved\n'], ['src/other.js', 'other, moved\n']]);
+  t('DS-449 AC1 a recorded file no PR file uses is named with no users, and an unrecorded one not at all', JSON.stringify(narrow(lone.head)?.files) + JSON.stringify(narrow(lone.head)?.users), '["src/lone.js"][]');
+  const lock = onto('t3', [['src/helper.js', 'export const h = 3\n'], ['package-lock.json', '{"lockfileVersion":3}\n']]);
+  t('DS-449 AC4 the base changed a lockfile too: the whole review', narrow(lock.head), null);
+  const conf = onto('t4', [['src/helper.js', 'export const h = 4\n'], ['tsconfig.json', '{"strict":true}\n']]);
+  t('DS-449 AC4 the base changed a configuration file too: the whole review', narrow(conf.head), null);
+  const yconf = onto('t5', [['src/helper.js', 'export const h = 5\n'], ['apps/web/app.config.yaml', 'a: 1\n']]);
+  t('DS-449 AC4 so does any *.config.* file', narrow(yconf.head), null);
+  const wf = onto('t6', [['src/helper.js', 'export const h = 6\n'], ['.github/workflows/ci.yml', 'on: push\n']]);
+  t('DS-449 AC4 or a workflow', narrow(wf.head), null);
+  const un = onto('t7', [['src/other.js', 'other, moved again\n']]);
+  t('DS-449 a base move over no recorded file carries, so nothing is narrowed', `${!!restsOnCarries({ from: P, head: un.head, base: 'main', files, git: rgit })} ${narrow(un.head)}`, 'true null');
+  t('DS-449 a review that records no files is reviewed whole', narrow(one.head, null), null);
+  rg('branch', '-q', '-f', 'main', one.m);
+  rg('checkout', '-q', '-b', 't8-pr', one.m); rput('src/a.js', 'changed again by the PR\n'); const own = rcommit('pr work, rebased and edited');
+  t('DS-449 the PR\'s own diff changed: the whole review', narrow(own), null);
+  rg('checkout', '-q', '-b', 'm1', P); rg('merge', '-q', '--no-edit', one.m); const merged = rg('rev-parse', 'HEAD');
+  t('DS-449 AC1 a clean base merge over a recorded file is narrowed the same way', JSON.stringify(narrow(merged)?.users), '["src/a.js"]');
+  const body = `${marker(ALL_ZERO, P)}\n<!-- desk-review:rests-on v=1 files=${JSON.stringify(files)} -->`;
+  t('DS-449 AC1 reviewScope, lever on, reads the files from the review body', reviewScope({ reuse: true, from: P, head: one.head, base: 'main', body, git: rgit })?.files?.[0], 'src/helper.js');
+  t('DS-449 AC5 reviewScope, lever off, narrows nothing', reviewScope({ reuse: false, from: P, head: one.head, base: 'main', body, git: () => { throw new Error('asked'); } }), null);
+  rmSync(rd, { recursive: true, force: true });
+
+  // The undraft call: a clean review that does not carry hands its narrowing to the review try.
+  const scoped = { from: OLD, range: 'aaaa..bbbb', files: ['src/helper.js'], users: ['src/a.js'] };
+  let asked = null;
+  const rc = undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(body, OLD)], checks: green, carry: () => null, scope: (sha, b) => { asked = [sha, b === body]; return scoped; } },
+    { perm: 'yes', localReview: '/desk-review', clean: DESK_REVIEW_CLEAN, handle: 'ben', required: ['tests'] });
+  t('DS-449 AC1 a clean review the base moved under is a narrowed review call', `${rc?.call} ${rc?.targeted === scoped} ${JSON.stringify(asked)}`, `review true ${JSON.stringify([P, true])}`);
+  const plainOff = withCarry(older, () => null);
+  t('DS-449 AC5 with no scope (the lever off) it is the review call as today', `${plainOff?.call} ${'targeted' in plainOff}`, 'review false');
+  const scopedCall = (reviews) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks: green, carry: () => null, scope: () => scoped },
+    { perm: 'yes', localReview: '/desk-review', clean: DESK_REVIEW_CLEAN, handle: 'ben', required: ['tests'] });
+  const dirty = scopedCall([review(marker('p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0', OLD), OLD)]);
+  t('DS-449 an unclean review for an older head is reviewed whole', `${dirty?.call} ${'targeted' in (dirty ?? {})}`, 'review false');
+  // AC3: the targeted review, once posted at the head with a P1, is a findings call like any other.
+  const atHeadP1 = scopedCall([review(body, OLD), review(marker('p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'), HEAD)]);
+  t('DS-449 AC3 a targeted review at the head that finds a P1 goes to a fix worker as any review does', `${atHeadP1?.call} ${'targeted' in (atHeadP1 ?? {})}`, 'findings false');
+}
 
 // DS-317 AC3: a verdict whose only gap the person accepted, as verdict.mjs prints it, re-posted at the
 // head after the one that counted the gap, is clean, and the pass undrafts the PR.
