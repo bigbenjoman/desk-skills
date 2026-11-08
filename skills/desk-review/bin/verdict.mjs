@@ -48,6 +48,12 @@
 // marker, for the autopilot pass to carry the verdict past a rebase or a base merge only while none of
 // them changed (desk/bin/undraft.mjs restsOnCarries). It never decides clean.
 //
+// "targeted", on a round the autopilot pass narrowed after a base move (references/targeted.md),
+// records what it re-read and what it carried: { "from": "<full SHA of the clean review it carries>",
+// "range": "<base range>", "files": [the base's changed files], "users": [the PR's files using them] }.
+// Its `since` is `from`. It goes on a marker line and a visible line after the rests-on line, and
+// never decides clean: the counts are this round's, at this head.
+//
 // The rules, each a false clean otherwise:
 //   - every count is computed here; a count the caller leaves out is refused, never read as zero;
 //   - a CONFIRMED or UNREFUTED finding is outstanding, and counts in its p field;
@@ -68,7 +74,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
 const FIX_RANGE_ROUND = 2
-const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seats', 'findings', 'rests_on', 'codex']
+const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seats', 'findings', 'rests_on', 'targeted', 'codex']
+const TARGETED = ['from', 'range', 'files', 'users']
+const REPO_PATH = (p) => typeof p === 'string' && !!p && !/[\r\n]/.test(p) && !p.startsWith('/')
 // With the codex lever on, the model and effort each codex role ran at, as `desk-codex settings` prints them.
 const CODEX_ROLES = ['finder', 'refuter']
 const CODEX_RUN = /^[A-Za-z0-9][A-Za-z0-9._-]*:[a-z]+$/
@@ -206,16 +214,28 @@ export function tally(r) {
   if (r.rests_on != null) {
     if (!Array.isArray(r.rests_on)) no('rests_on must list the repo-relative paths the seats read')
     r.rests_on.forEach((p, i) => {
-      if (typeof p !== 'string' || !p || /[\r\n]/.test(p) || p.startsWith('/')) no(`rests_on[${i}] must be a repo-relative path on one line`)
+      if (!REPO_PATH(p)) no(`rests_on[${i}] must be a repo-relative path on one line`)
     })
     restsOn = [...new Set(r.rests_on)].sort()
+  }
+  let targeted = null
+  if (r.targeted != null) {
+    const x = r.targeted
+    keysOf(x, TARGETED, 'targeted')
+    if (!fixRange) no(`a targeted round follows a review of the PR, so it is round ${FIX_RANGE_ROUND} or later`)
+    if (!/^[0-9a-f]{40}$/.test(String(x.from ?? ''))) no('targeted.from must be the full SHA of the clean review it carries')
+    if (x.from !== r.since) no('a targeted round reads on from the review it carries: since must be targeted.from')
+    if (!/^[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}$/.test(String(x.range ?? ''))) no('targeted.range must be the base range, <sha>..<sha>')
+    if (!Array.isArray(x.files) || !x.files.length || !x.files.every(REPO_PATH)) no("targeted.files must list the base's changed files, repo-relative")
+    if (!Array.isArray(x.users ?? []) || !(x.users ?? []).every(REPO_PATH)) no("targeted.users must list the PR's files that use them, repo-relative ([] when none)")
+    targeted = { from: x.from, range: x.range, files: [...new Set(x.files)].sort(), users: [...new Set(x.users ?? [])].sort() }
   }
   const died = [...seats.values()].filter((s) => s.status === 'died').map((s) => (s.reason ? `${s.role} (${s.reason.trim()})` : s.role))
   n.partial += died.length
   const fallback = [...seats.values()]
     .filter((s) => s.fallback === true || (NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose'))
     .map((s) => s.role)
-  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted, restsOn,
+  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted, restsOn, targeted,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback, codex: r.codex ?? null,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
@@ -244,7 +264,7 @@ export function render(r) {
   const verdict = isClean(n)
     ? `${carried ? 'No P0 or P1 findings' : 'No P0, P1 or P2 findings'}${kept.map((k) => `; ${k}`).join('')}`
     : `not clean: ${[...parts, ...kept].join(', ')}`
-  const range = t.since ? `, fix range ${t.since.slice(0, 7)}..${t.sha.slice(0, 7)}` : ''
+  const range = t.targeted ? `, targeted after base range ${t.targeted.range}` : t.since ? `, fix range ${t.since.slice(0, 7)}..${t.sha.slice(0, 7)}` : ''
   const fell = t.fallback.length ? ` · ${plural(t.fallback.length, 'fallback seat')} (${t.fallback.join(', ')})` : ''
   const heading = `**desk-review, round ${t.round}${range}: ${verdict} at \`${t.sha.slice(0, 7)}\`** · ${how(t)}${fell}`
   const lines = ['<!-- desk-review:local -->', marker, heading]
@@ -253,7 +273,20 @@ export function render(r) {
   lines.push(`<!-- desk-review:method v=1 fallback=${t.fallback.length} -->`)
   // JSON with every ">" escaped, so no path can close the comment.
   if (t.restsOn) lines.push(`<!-- desk-review:rests-on v=1 files=${JSON.stringify(t.restsOn).replace(/>/g, '\\u003e')} -->`)
+  if (t.targeted) lines.push(...targetedLines(t))
   return lines.join('\n')
+}
+
+// What a targeted round re-read at this head and what it carried from the clean review it follows.
+const code = (p) => `\`${p.replace(/`/g, "'")}\``
+function targetedLines(t) {
+  const x = t.targeted
+  const users = x.users.length ? `the PR's code that uses them, ${x.users.map(code).join(', ')}` : "the PR's code that uses them (none of its changed files names one)"
+  return [
+    `<!-- desk-review:targeted v=1 from=${x.from} range=${x.range} -->`,
+    `Targeted re-review at \`${t.sha.slice(0, 7)}\`: re-reviewed ${x.files.map(code).join(', ')}, which the base range \`${x.range}\` changed, and ${users}. ` +
+      `Carried, not re-read: the rest of the review posted on \`${x.from.slice(0, 7)}\`, whose own diff is unchanged.`,
+  ]
 }
 
 const how = (t) => `${t.vendor === 'codex-cross'

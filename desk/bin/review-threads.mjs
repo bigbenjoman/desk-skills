@@ -79,17 +79,18 @@ export const localReviewSet = rowSet;
 // (carry(sha, body), as verdictCarries or restsOnCarries says; `range` is the base range the latter
 // checked, and `said` the comment that tells the PR). Not clean, `settle` is a review at the head that says so, and
 // `person` a row only the person can set; with neither, a review worker has what it needs: there is
-// no verdict, a stale one, or one the gate cannot read.
-export function readVerdict(payload, { handle, clean, carry }) {
+// no verdict, a stale one, or one the gate cannot read, and `targeted` what that review need read only
+// (scope(sha, body), as reviewScope says), when a clean review for an older head narrows it.
+export function readVerdict(payload, { handle, clean, carry, scope }) {
   const pr = payload?.data?.repository?.pullRequest;
   if (!pr) return null;
   const head = pr.headRefOid ?? '';
   const row = String(clean ?? '').trim();
   if (!rowSet(row)) return { head, clean: false, carried: null, why: '§4 Clean review verdict is not set, so no review can be read as clean', settle: false, person: true };
-  const { v, carried, range } = verdictAtHead(pr.reviews?.nodes ?? [], handle, head, row, carry);
+  const { v, carried, range, targeted } = verdictAtHead(pr.reviews?.nodes ?? [], handle, head, row, carry, scope);
   if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false };
   // An unclean verdict carried from an older head is not at this one: reviewing the head posts it there.
-  return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false };
+  return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, ...(targeted ? { targeted } : {}) };
 }
 
 // A thread as one line names it: `path:line "first line"`, cut to a readable length.
