@@ -25,7 +25,8 @@ approved once, your branch was rebased before that park: bring a moved base in w
 A park asking for a force-push names the SHA it would overwrite: its question gives the exact
 `git push --force-with-lease=<branch>:<sha> origin <branch>`, and `AUTOPILOT_PARK_INPUTS` holds
 `"lease": "<sha>"`, origin's branch as `git rev-parse origin/<branch>` reads it. A yes to that park is
-then a yes to that one overwrite, which a pass may make for you if GitHub refuses it with a 5xx.
+then a yes to that one overwrite, which a pass may make for you if GitHub refuses it with a 5xx. A
+park that asks for one and names no SHA is refused back to a worker, and no yes can grant it.
 
 **A conflict is yours to resolve, not a park.** Resolve each conflicted file keeping both sides'
 intent: their change lands, and so does yours. Where their side renamed, moved or reshaped

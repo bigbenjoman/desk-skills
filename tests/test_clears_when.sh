@@ -146,6 +146,15 @@ say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_
 q add C-5 Story A; q set C-5 state=running branch=feat/C-5 session_id=gone
 say "AUTOPILOT_PARK: GitHub refused the force-push of feat/C-5 with a 5xx" 'AUTOPILOT_PARK_INPUTS: {"step": "push"}' \
   "AUTOPILOT_PARK_CLEARS_WHEN: git push --force-with-lease=feat/C-5:$PIN origin feat/C-5 succeeds" > "$T/state/logs/C-5.log"
+# DS-514: F-1 asks for a force-push naming no SHA; F-2 has already been refused once; F-3 names the SHA;
+# F-4 only mentions one; F-5 is lane C.
+for k in F-1 F-2 F-3 F-4 F-5; do l=A; [ "$k" = F-5 ] && l=C; q add "$k" Story "$l"; q set "$k" state=running "branch=feat/$k" session_id=gone; done
+q set F-2 'lease_refused="an earlier park"'
+say "AUTOPILOT_PARK: needs a force-push of feat/F-1, which my settings deny. Approve?" > "$T/state/logs/F-1.log"
+say "AUTOPILOT_PARK: needs a force-push of feat/F-2, which my settings deny. Approve?" > "$T/state/logs/F-2.log"
+say "AUTOPILOT_PARK: needs a force-push of feat/F-3. Approve?" "AUTOPILOT_PARK_INPUTS: {\"lease\": \"$PIN\"}" > "$T/state/logs/F-3.log"
+say "AUTOPILOT_PARK: should I merge rather than force-push?" > "$T/state/logs/F-4.log"
+say "AUTOPILOT_PARK: needs a force-push of feat/F-5, which my settings deny. Approve?" > "$T/state/logs/F-5.log"
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
 check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, or none" <<< "$out"'
 check "DS-496 queue.mjs clears-when stores a push" '[ "$(field P-1 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-1\"}" ]'
@@ -201,6 +210,16 @@ check "DS-496 a worker's park line records a push, -u dropped, and with no workt
   '[ "$(field C-4 state)" = "\"parked\"" ] && [ "$(field C-4 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "C-4: could not check \"git push origin feat/C-4 succeeds\" (it has no worktree to push from): left parked" <<< "$out"'
 check "DS-496 AC2 a lease park's clears-when SHA goes on its inputs, so a yes to it is a pinned grant after the condition is cleared" \
   '[ "$(field C-5 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-5 park.inputs)" = "{\"step\":\"push\",\"lease\":\"$PIN\"}" ]'
+check "DS-514 AC1 a force-push park naming no SHA is refused back to a worker, with the reason on the ticket" \
+  '[ "$(field F-1 state)" = "\"triaged\"" ] && [ "$(field F-1 park)" = null ] && [[ "$(field F-1 lease_refused)" == *"force-push of feat/F-1"* ]] && [ "$(field F-1 grant)" = null ] && grep -q "F-1: its park asked for a force-push naming no lease SHA: refused back" <<< "$out"'
+check "DS-514 AC1 a second one stays parked, saying no answer can grant it" \
+  '[ "$(field F-2 state)" = "\"parked\"" ] && [[ "$(field F-2 park.recovery)" == *"no answer can grant it"* ]]'
+check "DS-514 AC2 a force-push park naming the SHA is recorded, with its lease" \
+  '[ "$(field F-3 state)" = "\"parked\"" ] && [ "$(field F-3 park.inputs)" = "{\"lease\":\"$PIN\"}" ] && [ "$(field F-3 park.recovery)" = null ]'
+check "DS-514 AC3 a park that only mentions a force-push is recorded and not refused" \
+  '[ "$(field F-4 state)" = "\"parked\"" ] && [ "$(field F-4 lease_refused)" = null ]'
+check "DS-514 a lane C park is left for a person, not sent to a worker" \
+  '[ "$(field F-5 state)" = "\"parked\"" ] && [ "$(field F-5 lease_refused)" = null ]'
 
 # ---- AC3: a lane A ticket waiting on something else is requeued ------------------------------------
 pr 41 MERGED false
