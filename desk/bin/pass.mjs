@@ -1441,11 +1441,13 @@ const baseLines = [];
 const epicOn = !!BASE && !!SOURCE && BASE !== SOURCE && epicBatch(fresh);
 const epicPr = epicOn ? readEpicPr(fresh) : null;
 const baseWorkerHeld = held === PACE_HELD ? null : held;
+// The holds on a base worker that come before the slot count; baseFixRoom adds the budgets.
+const baseWorkerMay = !baseWorkerHeld && !lowMemory && running.length < concurrency;
 // A draft epic PR's review try is a worker with no ticket to spawn, so it claims its one slot as a due
 // gate conflict fix does, but only when this pass could start it: a claim it cannot use would keep the
 // slot from a sibling batch every pass. Only a clean review not yet acted on is counted wrongly, for
 // the one pass that takes the PR out of draft.
-const epicReviewDue = !baseWorkerHeld && !lowMemory && running.length < concurrency && epicPr?.state === 'OPEN' && epicPr.isDraft
+const epicReviewDue = baseWorkerMay && epicPr?.state === 'OPEN' && epicPr.isDraft
   && epicPr.head != null && epicDue(fresh) && !fresh.base_fix?.running
   && epicReviewCall(fresh.base_fix, { pr: epicPr.pr, head: epicPr.head }, { alive: false }).call === 'spawn';
 const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue;
@@ -1529,7 +1531,7 @@ let baseFixResume = null;
 let gateConflict = null;
 // Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
 // machine budget and the repo's shared §3b cap bind it as they bind every worker.
-const baseFixRoom = !baseWorkerHeld && !lowMemory && running.length < concurrency && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
+const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
 const noBaseFixRoom = () => baseWorkerHeld ?? (lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
