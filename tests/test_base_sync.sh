@@ -166,6 +166,44 @@ check "DS-320 AC2 the next pass finds the base current and clears the tries" \
   '[[ "$out" == *"try 1 of 2 on feat/x finished: pr=none jira=none"* ]] && [[ "$out" == *"feat/x is current with main again, after 1 fix try"* ]] && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
 check "DS-320 AC2 and spawns resume" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && origin_has_main'
 
+# A live base conflict fix holds one worker, counted once. holding <case> <concurrency row> <batch's
+# number> [machine cap] [another running ticket's session]: not feature mode, one ready ticket, the
+# fix's session live, borrowing on.
+holding(){
+  : > "$T/spawns"; fresh "$1"
+  printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `%s` |\n| Borrow idle workers | `off` | `on` |\n' "$2" >> "$C/config.md"
+  node "$B/queue.mjs" set-batch "concurrency=$3" 'base_fix={"tries":[{"try":1,"head":"abc"}],"running":"sid-fix","port":3510}' >/dev/null
+  mkdir -p "$C/state/logs"; : > "$C/state/logs/base-feat-x.log"
+  [ -z "${5:-}" ] || { node "$B/queue.mjs" add T-0 >/dev/null; node "$B/queue.mjs" set T-0 state=running branch=feat/T-0 "session_id=$5" >/dev/null; }
+  jq -n --arg s "${5:-}" '[{sessionId: "sid-fix", pid: 1}] + (if $s == "" then [] else [{sessionId: $s, pid: 1}] end)' > "$T/agents.json"
+  printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / %s` | x |\n' "${4:-10}" > "$C/machine.md"
+  DESK_MACHINE="$C/machine.md" pass
+  rm -f "$T/agents.json"
+}
+holding bslot '3 / 3' 2
+check "DS-519 AC1 a live base fix and one free repo slot: the ready ticket starts" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && [[ "$out" == *"spawned: T-1"* ]]'
+holding bborrow '2 / 3' 2 10 sid-t0
+check "DS-519 AC1 a slot borrowed above the batch's own number starts it too" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ]'
+check "DS-519 AC1 and the report counts it as borrowed, the base fix among the running" '[[ "$out" == *"borrowing: 1 worker borrowed this pass, 1 above the batch'"'"'s own number of 2 (machine 10: 2 running"* ]]'
+holding bone '1 / 1' 1
+check "DS-519 AC2 a batch of 1: the base fix holds its one worker, and no ticket starts" '[ ! -s "$T/spawns" ] && [[ "$out" == *"conflict fix try 1 of 2 is merging main into feat/x"* ]]'
+holding bonecap '1 / 2' 1
+check "DS-519 AC2 a batch of 1 with room to borrow: still no ticket, and no borrowing reported" '[ ! -s "$T/spawns" ] && [[ "$out" != *"may be borrowed"* ]] && [[ "$out" != *"borrowed this pass"* ]]'
+: > "$T/spawns"; fresh bstartone; fixrow yes; conflict
+printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `1 / 2` |\n| Borrow idle workers | `off` | `on` |\n' >> "$C/config.md"
+node "$B/queue.mjs" add T-2 >/dev/null; node "$B/queue.mjs" set T-2 state=triaged branch=feat/T-2 >/dev/null
+node "$B/queue.mjs" set-batch concurrency=1 >/dev/null
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n' > "$C/machine.md"
+DESK_MACHINE="$C/machine.md" pass
+check "DS-519 AC2 the pass that starts the fix in a batch of 1: the fix starts, and no ticket borrows beside it" 'grep -q "^base-feat-x " "$T/spawns" && ! grep -q "^T-" "$T/spawns"'
+holding bmachine '3 / 3' 2 1
+check "DS-519 AC3 a machine cap with no room: no ticket starts" '[ ! -s "$T/spawns" ]'
+: > "$T/spawns"; fresh bnofix
+node "$B/queue.mjs" add T-2 >/dev/null; node "$B/queue.mjs" set T-2 state=triaged branch=feat/T-2 >/dev/null
+node "$B/queue.mjs" add T-3 >/dev/null; node "$B/queue.mjs" set T-3 state=triaged branch=feat/T-3 >/dev/null
+node "$B/queue.mjs" set-batch concurrency=2 >/dev/null; pass
+check "DS-519 AC4 with no base fix a batch of 2 starts 2 of 3 ready" '[ "$(grep -c "^T-" "$T/spawns")" = 2 ]'
+
 # AC4: a try whose worker left the base where it was is the last at that head: the person, with the
 # files and what the try did.
 : > "$T/spawns"; fresh bstuck; feature; fixrow yes; conflict; pass
