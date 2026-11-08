@@ -300,6 +300,7 @@ export const CONFIG_ROWS = Object.freeze({
   'integration-cmd': { section: '4', row: 'Integration tests' },
   'acceptance-specs': { section: '4', row: 'Acceptance specs' },
   'pre-push-checks': { section: '4', row: 'Pre-push checks' },
+  'merged-tree-check-cmd': { section: '4', row: 'Merged-tree check' },
   'pr-description-checks': { section: '4', row: 'PR-description checks' },
   'seed-cmd': { section: '4', row: 'Seed' },
   'db-url-var': { section: '4', row: 'Database URL variable' },
@@ -672,7 +673,7 @@ export function parseCommandItem(item) {
 // The §4 command rows a worker may run (migrate and seed only against a per-ticket database). Its
 // settings allow each item as the exact configured command, so an item must be one plain command.
 export const WORKER_COMMAND_IDS = ['install-cmd', 'dev-cmd', 'typecheck-cmd', 'lint-cmd', 'test-cmd', 'related-test-cmd', 'integration-cmd', 'e2e-cmd', 'storybook-cmd', 'build-cmd', 'codegen-cmd', 'agents-sync',
-  'pr-description-checks', 'db-migrate-cmd', 'seed-cmd'];
+  'merged-tree-check-cmd', 'pr-description-checks', 'db-migrate-cmd', 'seed-cmd'];
 // Never allowed even as the exact configured command: a prefix rule for `rm -rf build` also matches
 // `rm -rf build /`, and a shell, fetcher or privilege tool is an allow-everything. git, gh and docker
 // have their own rules.

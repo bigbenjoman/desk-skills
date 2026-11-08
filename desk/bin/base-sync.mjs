@@ -13,7 +13,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { baseFixKey } from './desk-env.mjs';
+import { baseFixKey, binDir, configValue, configValues, isNone, parseCommandItem } from './desk-env.mjs';
+import { runItem } from './baseline.mjs';
 
 const git = (cwd, args) => {
   try { return { ok: true, out: execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; }
@@ -73,7 +74,38 @@ function catchUp(path, base, branch) {
   return ff.ok ? null : `could not fast-forward ${path} to origin/${base}: ${firstLine(ff.out)}`;
 }
 
-export function syncBase({ path, base, branch, push = true, dry = false }) {
+const CHECK_TIMEOUT_MS = 300_000;
+// The end of a check's output, short enough to quote in a report line or keep on the queue.
+export const checkQuote = (out) => String(out ?? '').split('\n').map((l) => l.trim()).filter(Boolean).slice(-10).join('\n').slice(-800);
+
+// §4 Merged-tree check as a function of a worktree: null while it passes, else { command, output }.
+// null with the row unset or `none`.
+export function mergedTreeCheck() {
+  const row = configValues('merged-tree-check-cmd');
+  if (!row || isNone(row)) return null;
+  const items = row.map(parseCommandItem);
+  const pre = configValue('command-prefix');
+  const prefix = pre && !isNone(pre) ? pre.trim() : '';
+  return (root) => {
+    for (const { dir, cmd } of items) {
+      const r = runItem({ bin: binDir(), root, dir, cmd, lock: 'nolock', prefix, timeout: CHECK_TIMEOUT_MS });
+      if (r.code !== 0 || r.stopped) {
+        return { command: dir === '.' ? cmd : `${dir}: ${cmd}`, output: r.stopped ? `it did not finish in ${CHECK_TIMEOUT_MS / 1000}s` : checkQuote(r.out) || `it exited ${r.code} and printed nothing` };
+      }
+    }
+    return null;
+  };
+}
+
+// Puts the base worktree back at origin's base, for a fix try that ended without pushing what it merged.
+export function dropUnpushed({ path, base }) {
+  git(path, ['reset', '-q', '--hard', `origin/${base}`]);
+  git(path, ['clean', '-fdq']);
+}
+
+// `check` is a mergedTreeCheck function, run on each clean merge before its push; one it fails is
+// undone and comes back as { ok: false, reason: 'check', files: [], check: { command, output }, merged }.
+export function syncBase({ path, base, branch, push = true, dry = false, check = null }) {
   const fail = (why) => ({ ok: false, reason: 'error', why });
   const behind = () => Number(git(path, ['rev-list', '--count', `HEAD..origin/${branch}`]).out) || 0;
 
@@ -101,6 +133,13 @@ export function syncBase({ path, base, branch, push = true, dry = false }) {
       git(path, ['merge', '--abort']);
       git(path, ['reset', '-q', '--hard', before]);
       return files.length ? { ok: false, reason: 'conflict', files, merged } : fail(`merging ${branch} into ${base} failed: ${firstLine(m.out)}`);
+    }
+    if (check) {
+      const failed = check(path);
+      // Whatever it wrote goes, or the next sync refuses a dirty worktree.
+      git(path, ['reset', '-q', '--hard', failed ? before : 'HEAD']);
+      git(path, ['clean', '-fdq']);
+      if (failed) return { ok: false, reason: 'check', files: [], check: failed, merged };
     }
     const p = git(path, ['push', '-q', 'origin', `HEAD:refs/heads/${base}`]);
     if (p.ok) return { ok: true, merged, pushed: true, retried: attempt > 0 };

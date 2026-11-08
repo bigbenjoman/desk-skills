@@ -26,7 +26,7 @@ import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
-import { ensureBaseWorktree, syncBase, openingCommit } from './base-sync.mjs';
+import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText, limitName } from './usage-limit.mjs';
@@ -1499,8 +1499,9 @@ let baseHold = false;
 let epicOn = false;
 let epicPr = null;
 let baseWt = null;
-// What a base_fix try is for: a conflict, or the epic PR's review (kind `review`).
-const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : 'conflict fix');
+// What a base_fix try is for: a conflict, a merge §4 Merged-tree check failed, or the epic PR's review
+// (kind `review`).
+const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.check ? 'merged-tree fix' : 'conflict fix');
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
 // A base that conflicts with the default branch goes to a conflict fix worker in the base worktree
@@ -1588,6 +1589,9 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
       bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
       if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+      // A merged-tree try that parks can leave its merge committed here, and the next sync must reach
+      // the check again to quote it to the person.
+      if (!DRY && wt.ok && bf.tries[bf.tries.length - 1].check) dropUnpushed({ path: wt.path, base: BASE });
       baseLines.push(`base ${tryWhat(bf.tries[bf.tries.length - 1])}: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}`);
     } else {
       baseFixLive = true;
@@ -1608,15 +1612,18 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   const originSha = (b) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${b}`], { tolerant: true }) || null;
   // A conflict, met by the sync or by the base gate. A fix worker takes it where §3 lets one; what no
   // worker may take, or what its tries left, is the person's, through `toPerson`.
-  const conflicted = (files, toPerson) => {
+  const conflicted = (files, toPerson, check = null) => {
     const c = baseFixCall(bf, { head: originSha(BASE), source: originSha(SOURCE), files, perm: E.permission('pr-conflict-unreviewed'), alive: baseFixLive,
-      push: { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase } });
-    const said = `merging ${SOURCE} into ${BASE} conflicts, nothing pushed. Conflicting files: ${files?.length ? files.join(', ') : 'not listed'}`;
+      push: { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase }, check });
+    const said = check
+      ? `merging ${SOURCE} into ${BASE} fails §4 Merged-tree check (${check.command}), nothing pushed. Its output: ${check.output.replace(/\n/g, ' / ')}`
+      : `merging ${SOURCE} into ${BASE} conflicts, nothing pushed. Conflicting files: ${files?.length ? files.join(', ') : 'not listed'}`;
+    const Try = check ? 'Merged-tree fix' : 'Conflict fix';
     if (c.call === 'person' || c.call === 'stuck') { toPerson(`${said}. ${c.why[0].toUpperCase()}${c.why.slice(1)}: resolve it by hand in ${wt.path} and push`); return null; }
-    if (c.call === 'wait') return `${said}. Conflict fix try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running}); the base is synced once it pushes`;
-    if (!baseFixRoom) return `${said}. Conflict fix try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass)`;
+    if (c.call === 'wait') return `${said}. ${Try} try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running}); the base is synced once it pushes`;
+    if (!baseFixRoom) return `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass)`;
     baseFix = { wt: wt.path, fix: c.fix };
-    return `${said}. Conflict fix try ${c.fix.try} of ${c.fix.of} starts this pass in ${wt.path}`;
+    return `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts this pass in ${wt.path}`;
   };
   // A slice gate runs in the base worktree while children still spawn: nothing else touches it until
   // the gate is done, and spawns carry on from origin's base as it stands.
@@ -1632,11 +1639,11 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     metConflict = true;
     const last = bf.tries[bf.tries.length - 1];
     const line = last?.kind === 'review' ? `epic PR review try ${last.try} is working in ${wt.path} (session ${bf.running}); the base is synced once it ends`
-      : `conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
+      : `${tryWhat(last)} try ${bf.tries.length} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
     heldForFix(line);
     gateConflict = { worker: true, line };
   } else if (wantSync) {
-    const s = syncBase({ path: wt.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY });
+    const s = syncBase({ path: wt.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() });
     const ciNote = staleCI.length ? `, and syncing it starts CI on ${staleCI.join(', ')}, whose required checks only ${SOURCE}'s workflow runs on ${BASE}` : '';
     // A base that syncs is no longer in conflict, so a later conflict starts its tries afresh. The epic
     // PR's review tries are kept: they count per head, and a sync is no new review.
@@ -1650,10 +1657,10 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     if (s.ok && s.dry) baseLines.push(`base sync (dry run): would merge ${s.merged} commit(s) from ${SOURCE} into ${BASE}; nothing pushed`);
     else if (s.ok && s.merged) baseLines.push(`base sync: merged ${s.merged} commit(s) from ${SOURCE} into ${BASE} and pushed${s.retried ? ' (the first push was refused as non-fast-forward: fetched, merged again, retried once)' : ''}${staleCI.length ? `; ${staleCI.join(', ')} ${staleCI.length === 1 ? 'is' : 'are'} reopened so CI runs` : ''}`);
     else if (s.ok) baseLines.push(`base sync: ${BASE} already has everything on ${SOURCE}`);
-    else if (s.reason === 'conflict') {
+    else if (s.reason === 'conflict' || s.reason === 'check') {
       metConflict = true;
       let person = null;
-      const line = conflicted(s.files, (why) => { person = why; blocked(why); });
+      const line = conflicted(s.files, (why) => { person = why; blocked(why); }, s.check ?? null);
       if (line) heldForFix(line);
       gateConflict = { worker: !!line, line: line ?? person, said: !line };
     } else if (s.reason === 'permission') {
@@ -1680,7 +1687,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       gateConflict = { worker: true, line: `conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
     } else if (g.sha && g.sha === originSha(BASE)) {
       let person = null;
-      const line = conflicted(g.conflict, (why) => { person = why; });
+      const line = conflicted(g.conflict, (why) => { person = why; }, g.tree_check ?? null);
       gateConflict = line ? { worker: true, line } : { worker: false, line: person };
     }
   }
@@ -2172,7 +2179,7 @@ async function spawnBaseFix({ wt, fix }) {
   mkdirSync(join(STATE, 'tickets'), { recursive: true });
   writeFileSync(join(STATE, 'tickets', `${key}.md`), (review ? epicReviewTicket : baseFixTicket)({ key, ...ctx }));
   const made = [...(bf?.tries ?? []), review ? { kind: 'review', try: fix.try, head: fix.head, pr: fix.pr, at: PASS_AT }
-    : { try: fix.try, head: fix.head, source: fix.source, files: fix.files, at: PASS_AT }];
+    : { try: fix.try, head: fix.head, source: fix.source, files: fix.files, check: fix.check, at: PASS_AT }];
   const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries: made, running: null, port: null, ...rest })}`);
   const failed = (outcome, line) => {
     made[made.length - 1].outcome = outcome;
@@ -3708,7 +3715,7 @@ function baseGate(qx) {
     // sync where it met it too.
     (gateConflict.said ? out : report.waiting).push(`BASE GATE: failed on ${at}${g.pr != null && !undoFailed ? `, so promotion PR #${g.pr} stays draft` : ''}: ${gateConflict.line}`);
   } else if (Array.isArray(g.conflict) && gateConflict) {
-    out.push(`BASE GATE: failed on ${at}, since ${SOURCE} conflicts with ${BASE}: ${gateConflict.line}. The gate runs again once ${BASE} moves`);
+    out.push(`BASE GATE: failed on ${at}, since ${g.tree_check ? `merging ${SOURCE} fails the merged-tree check on` : `${SOURCE} conflicts with`} ${BASE}: ${gateConflict.line}. The gate runs again once ${BASE} moves`);
     return true;
   } else {
     for (const f of g.failures ?? []) report.waiting.push(`BASE GATE: ${f}`);
