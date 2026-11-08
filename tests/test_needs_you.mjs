@@ -618,6 +618,14 @@ put('sigma', { port: 4600, beat: 1, supervised: true, merge: 'yes', tickets: {
 } });
 const sg = Object.fromEntries(N.collect({ word: 'sigma' }).items.map((i) => [i.t.key, i]));
 const recommends = (i) => i?.actions[0]?.[1] != null;
+put('ds494', { port: 4610, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'E-1': stuckPr(201, [lintRed, ...passed], why375([{ name: LINT, error: 'ReferenceError: React is not defined' }])),
+  'E-2': stuckPr(202, [lintRed, ...passed], why375([{ name: LINT }])),
+} });
+const e494 = Object.fromEntries(N.collect({ word: 'ds494' }).items.map((i) => [i.t.key, i]));
+t('DS-494 AC2 the item quotes the error line', e494['E-1']?.need, `PR #201: "${LINT}" is failing, and desk's own repairs did not fix it. "${LINT}" says: "ReferenceError: React is not defined". Fix it on its branch; desk then merges it once its checks are green.`);
+t('DS-494 AC2 and is not worded as a step only the person can do', /only you can/.test(e494['E-1']?.actions[0][1] ?? 'only you can'), false);
+t('DS-494 AC3 with no error line it is as today', `${e494['E-2']?.need} | ${e494['E-2']?.actions[0][1]}`, `PR #202: "${LINT}" is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | only you can do this step; say done once you have, and the PR is checked on GitHub there and then`);
 t('DS-375 AC1 a check gone green on the same head is no longer named', sg['S-1']?.need, `PR #101: "${LINT}" (failed at "Run eslint") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green.`);
 t('DS-375 AC2 the item names the step the run failed at', sg['S-1']?.need.includes('(failed at "Run eslint")'), true);
 t('DS-375 AC1 a step on GitHub left: done is still recommended', `${sg['S-1']?.actions[0][0]} ${recommends(sg['S-1'])}`, 'done true');
@@ -1240,6 +1248,26 @@ const BSg = BS.grantFor({ t: { state: 'parked', branch: 'fix/GR-9', park: { ques
 t('DS-390 a lease the park names wins over the worktree read', BSg.grant?.lease, 'a'.repeat(40));
 t('DS-390 --approve grants with an answer that does not open with a yes', BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'Push it over abc', approve: true, remoteSha: () => 'b'.repeat(40) }).grant?.lease, 'b'.repeat(40));
 t('DS-390 no lease to read: no grant, saying why', /no lease SHA/.test(BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes' }).why), true);
+// DS-496 AC2: only a grant whose park named the SHA lets a pass make the lease push unattended.
+const a40 = 'a'.repeat(40), b40 = 'b'.repeat(40);
+t('DS-496 a park naming the lease in its inputs gives a pinned grant', BSg.grant?.pinned, true);
+t('DS-496 and one naming the exact push in its question',
+  BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: `GitHub refused git push --force-with-lease=b:${b40} origin b, force-push refused` } }, text: 'yes', remoteSha: () => b40 }).grant?.pinned, true);
+const unpinned = BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636 } }, text: 'yes', remoteSha: () => b40 }).grant;
+t('DS-496 a park that merely mentions a force-push gives an unpinned grant', `${unpinned?.lease === b40} ${unpinned?.pinned ?? null}`, 'true null');
+// DS-496 AC2: a lease park's clears-when names its SHA, which the pass keeps on its inputs, so its grant is pinned.
+const leased = BS.withLeaseInput({ step: 'push' }, { kind: 'push-ok', branch: 'b', lease: a40 });
+t('DS-496 withLeaseInput: a lease push condition adds its SHA to inputs naming none', JSON.stringify(leased), JSON.stringify({ step: 'push', lease: a40 }));
+t('DS-496 withLeaseInput: the inputs\' own lease, a plain push, a short SHA and none are left as they are',
+  [BS.withLeaseInput({ lease: b40 }, { kind: 'push-ok', branch: 'b', lease: a40 }).lease, JSON.stringify(BS.withLeaseInput({}, { kind: 'push-ok', branch: 'b' })),
+    JSON.stringify(BS.withLeaseInput({}, { kind: 'push-ok', branch: 'b', lease: 'abc' })), JSON.stringify(BS.withLeaseInput(undefined, { kind: 'none' }))].join(' '), `${b40} {} {} {}`);
+const leasedGrant = BS.grantFor({ t: { state: 'parked', branch: 'b', park: { question: KAN636, inputs: leased, clears_when: { kind: 'none' } } }, text: 'yes', remoteSha: () => b40 }).grant;
+t('DS-496 AC2 a yes to that park, its condition since cleared, is a pinned grant the pass may push',
+  `${leasedGrant?.lease === a40} ${leasedGrant?.pinned} ${BS.passLeaseGrant(leasedGrant, { kind: 'push-ok', branch: 'b', lease: a40 })}`, 'true true true');
+t('DS-496 passLeaseGrant: a pinned grant for that branch and SHA', BS.passLeaseGrant({ step: 'force-push', branch: 'b', lease: a40, pinned: true }, { kind: 'push-ok', branch: 'b', lease: a40 }), true);
+t('DS-496 passLeaseGrant: not unpinned, another SHA or another branch',
+  [BS.passLeaseGrant(unpinned, { branch: 'b', lease: b40 }), BS.passLeaseGrant({ step: 'force-push', branch: 'b', lease: a40, pinned: true }, { branch: 'b', lease: b40 }),
+    BS.passLeaseGrant({ step: 'force-push', branch: 'b', lease: a40, pinned: true }, { branch: 'c', lease: a40 }), BS.passLeaseGrant(null, { branch: 'b', lease: a40 })].join(' '), 'false false false false');
 
 // ---- DS-389 AC3: tickets parked on one §3 row the config lacks are one repo item; done requeues them once it is set
 put('nu', { port: 5300, beat: 1, supervised: true, tickets: {

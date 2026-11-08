@@ -163,7 +163,8 @@ function stuckPlain(r, n, s, t) {
     const parts = [...(mine.length ? [`${andList(mine.map(label))} ${mine.length === 1 ? 'is' : 'are'} failing, and ${REPAIRED} ${mine.length === 1 ? 'it' : 'them'}`] : []),
       ...theirs.map((c) => `${label(c)} needs a step outside GitHub: ${c.command}`)];
     const todo = mine.length ? `Fix ${mine.length === 1 ? 'it' : 'them'} on its branch${theirs.length ? ', and do that step' : ''}` : `Do ${theirs.length === 1 ? 'that step' : 'those steps'}`;
-    return `${n}: ${parts.join('; ')}. ${todo}; ${thenMerge(r)}.`;
+    const said = mine.filter((c) => c.error).map((c) => ` "${c.name}" says: "${one(c.error)}".`).join('');
+    return `${n}: ${parts.join('; ')}.${said} ${todo}; ${thenMerge(r)}.`;
   }
   const why = String(s?.why ?? '');
   const shots = CAPTURE.exec(why);
@@ -483,6 +484,8 @@ function itemOf(r, x) {
     if (stuck && personReviewFix(t, { why: stuck.why })) {
       return openPr(['fix', "its findings are in the code, which a worker can fix: fix sends it to a worker on the PR for one more try, and the review of its new head says whether they are gone"], ['done']);
     }
+    // A failing log that names its cause is code a person or a worker can fix, so no step only they can do.
+    if (stuck?.checks.some((c) => c.error)) return openPr(['done', 'desk\'s workers could not clear what its log names; say done once it is fixed, and the PR is checked on GitHub there and then']);
     return openPr(['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then']);
   }
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in

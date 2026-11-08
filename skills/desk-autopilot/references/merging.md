@@ -92,7 +92,10 @@ task (`AUTOPILOT_TASK`). The try is kept on the ticket as `fix` (`try`, `of`, `w
 appended to `fix_tries`, and a head gets one try at most. A conflict counts only conflict tries, so
 tries spent on a check or a review still leave it two. After two tries, or a try whose worker
 left the head where it was, the PR is not requeued again: the ticket records `stuck`
-(`still red after 2 fix tries: <check>`, or the conflict) and it goes under `WAITING ON YOU`. A check
+(`still red after 2 fix tries: <check>`, or the conflict) and it goes under `WAITING ON YOU`. A red
+check whose job annotates an error line, or whose failed log names one, first gets one more worker
+with those lines in its brief, once per PR and outside the two tries (`extra` in `fix_tries`), and
+the stuck reason quotes the line. A check
 §4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
 `<check> · <what fixes it>`. A PR red on one beside a fixable check is requeued for the fixable one,
 and its briefing says the other is not the worker's to fix. desk-q shows each ticket's try and
