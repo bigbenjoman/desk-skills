@@ -2385,7 +2385,7 @@ check "DS-498 AC1 and the pass logs why" \
 check "DS-498 AC3 killed again after its rerun: the person, with the infrastructure fix, and nothing re-run or requeued" \
   '! grep -q "^run rerun" "$T/gh-calls" && [ "$(field V-1 state)" = "\"done\"" ] && echo "$out" | grep -qF "V-1: DRAFT — PR #761 stays draft: its \"tests\" check was ended by the runner after desk re-ran it at this head: \"tests\" (exit code 137: the runner ran out of memory and killed it). Give that job a bigger runner, or cap the memory it uses"'
 
-# ---- DS-488: with the failure-class lever on, a draft's red check whose errors class it runner or
+# ---- with the failure-class lever on, a draft's red check whose errors class it runner or
 # resource is re-run once before a fix try. CR-1 goes green on its rerun; CR-2 fails again.
 { cat "$T/config-b.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `failure-class` |\n'; } > "$T/config-bl.md"
 export DESK_CONFIG="$T/config-bl.md" DESK_QUEUE="$T/queue-cl.json" DESK_AUTOPILOT_STATE="$T/state-cl"; mkdir -p "$T/state-cl/logs"
@@ -2398,12 +2398,12 @@ for j in 1 93011 93021; do printf '%s' '[{"path":"x","annotation_level":"failure
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-488 AC1 a draft's only red check classed runner or resource is re-run, and no fix worker is sent" \
   'grep -q "^run rerun 9301 --repo acme/widgets --failed$" "$T/gh-calls" && [ "$(field CR-1 state)" = "\"done\"" ] && [ "$(field CR-1 fix)" = null ] && [ "$(field CR-1 undraft.call)" = "\"rerun\"" ]'
-check "DS-488 AC1 and the pass logs why" 'echo "$out" | grep -qF "undraft: PR #771 (CR-1) stays draft: its \"tests\" check is classed runner or resource, so it is re-run once before any fix worker"'
+check "DS-488 AC1 and the pass logs why" 'echo "$out" | grep -qF "undraft: PR #771 (CR-1) stays draft: its \"tests\" check is classed runner or resource, ended by the runner or a resource and not the code, so it is re-run once before any fix worker"'
 fbx 771 "$HCL1" tests:SUCCESS; rm -f "$T/state-cl/merge-driver/cooldown-772"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-488 AC2 green on its rerun: no fix try is recorded" '[ "$(field CR-1 fix)" = null ] && [ "$(field CR-1 fix_tries)" = null ]'
-check "DS-488 AC3 red again: a fix try proceeds, its item says one rerun was tried, and it is classed runner or resource" \
-  '[ "$(field CR-2 fix.class)" = "\"runner or resource\"" ] && field CR-2 fix.what | grep -qF "classed runner or resource; one rerun was already tried at this head and it failed again" && [ "$(field CR-2 fix_tries | jq -r ".[0].class")" = "runner or resource" ]'
+check "DS-488 AC3 red again: a fix try proceeds as today, and its item says one rerun was tried" \
+  '[ "$(field CR-2 fix.class)" = "\"application defect\"" ] && field CR-2 fix.what | grep -qF "classed runner or resource; one rerun was already tried at this head and it failed again"'
 export DESK_CONFIG="$T/config-b.md" DESK_QUEUE="$T/queue-b.json" DESK_AUTOPILOT_STATE="$T/state-b"
 fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
 

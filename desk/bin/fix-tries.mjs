@@ -37,6 +37,14 @@ export const RERUNS_MAX = 2;
 export const RERUN_COOLDOWN_S = 720;
 // Reruns GitHub accepts for a red check the runner or a resource failed, per check per head.
 export const RUNNER_RERUNS = 1;
+// Whether a runner or resource red check's reruns at this head are gone: 'ran' (RUNNER_RERUNS accepted),
+// 'refused' (RERUNS_MAX tried), else null. ran and tried read one check.
+export const runnerRerunsSpent = (checks, ran, tried) => (checks.some((f) => ran(f) >= RUNNER_RERUNS) ? 'ran' : checks.some((f) => tried(f) >= RERUNS_MAX) ? 'refused' : null);
+// The red checks' runs and the gate rerun.sh reads to re-run them, or null where none has a run.
+export function rerunGate(failing, reasons = []) {
+  const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
+  return runs.length ? { runs, gate: { pending: [], failedRuns: runs, reasons, failing: failing.map((f) => ({ name: f.name, runId: f.runId ? String(f.runId) : null })) } } : null;
+}
 
 // §4 Checks workers can't fix items: `<check>: <what fixes it>`, split on the first `: `, so the
 // command may hold one. An item with no check or no command is an error, never a guess.
@@ -596,19 +604,22 @@ export function gateTry(t, s, ctx) {
 // premerge (parsed), steps }, as fixCall's, and classRerun { perm (§3 ci-rerun), reruns(name),
 // rerunsOk(name) } with the lever on. checks: its pr_status checks, which hold each one's error lines.
 const CLASSED = 'classed runner or resource';
-// A `rerun` call while a rerun is left at this head, as undraft.mjs's and rerun.sh read it; { note } saying
-// why none is, for the fix try that goes ahead; null where the checks are not so classed or have no run.
+// A `rerun` call while a rerun is left at this head, a `wait` while another job of a run to re-run is still
+// going (GitHub refuses a run in progress, and a refusal counts as a rerun tried); { note } saying why no
+// rerun is left, for the fix try that goes ahead; null where the checks are not so classed or have no run.
 function classedRerun(mine, checks, ctx) {
   const r = ctx.classRerun, latest = latestPerCheck(checks ?? []);
   if (!r || !mine.length || !mine.every((f) => runnerOrResource(errorLines(latest.find((c) => c.name === f.name))))) return null;
-  const runs = [...new Set(mine.map((f) => f.runId).filter(Boolean).map(String))];
-  if (!runs.length) return null;
+  const rerun = rerunGate(mine);
+  if (!rerun) return null;
   if (r.perm !== 'yes') return { note: `${CLASSED}; config §3 ci-rerun is "${r.perm ?? 'no'}", so reruns are not granted` };
-  if (mine.some((f) => r.rerunsOk(f.name) >= RUNNER_RERUNS)) return { note: `${CLASSED}; one rerun was already tried at this head and it failed again` };
-  if (mine.some((f) => r.reruns(f.name) >= RERUNS_MAX)) return { note: `${CLASSED}; GitHub refused desk's ${RERUNS_MAX} reruns at this head` };
+  const used = runnerRerunsSpent(mine, (f) => r.rerunsOk(f.name), (f) => r.reruns(f.name));
+  if (used === 'ran') return { note: `${CLASSED}; one rerun was already tried at this head and it failed again` };
+  if (used === 'refused') return { note: `${CLASSED}; GitHub refused desk's ${RERUNS_MAX} reruns at this head` };
+  const going = latest.filter((c) => c.status !== 'completed' && rerun.runs.includes(String(c.runId))).map((c) => c.name);
+  if (going.length) return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ones ${CLASSED}, re-run once they finish` };
   const names = mine.map((f) => `"${f.name}"`).join(', ');
-  return { call: 'rerun', why: `its ${names} ${mine.length === 1 ? 'check is' : 'checks are'} ${CLASSED}, so ${mine.length === 1 ? 'it is' : 'they are'} re-run once before any fix worker`,
-    gate: { pending: [], failedRuns: runs, reasons: [], failing: mine.map((f) => ({ name: f.name, runId: f.runId ? String(f.runId) : null })) } };
+  return { call: 'rerun', why: `its ${names} ${mine.length === 1 ? 'check is' : 'checks are'} ${CLASSED}, ended by the runner or a resource and not the code, so ${mine.length === 1 ? 'it is' : 'they are'} re-run once before any fix worker`, gate: rerun.gate };
 }
 // A fix try or stuck reason for checks classedRerun left to go ahead, saying so.
 function withRerunNote(c, note) {

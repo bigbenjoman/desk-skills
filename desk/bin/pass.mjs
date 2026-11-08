@@ -2945,7 +2945,7 @@ if (drafts.length) {
       : c.range ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as its own diff is unchanged and ${DEFAULT_BRANCH}'s range ${c.range} changed none of the files the review rests on`
         : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since`;
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
-    else if (rf) { applyFix(t, n, v.headRefOid, rf); if (rf.call === 'rerun') rec = { ...rec, call: 'rerun', why: rf.why, action: null }; }
+    else if (rf) { applyFix(t, n, v.headRefOid, rf); if (rf.call === 'rerun' || rf.call === 'wait') rec = { ...rec, call: rf.call, why: rf.why, action: null }; }
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
     else if (c.call === 'rerun' && DRY) out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
@@ -3377,13 +3377,14 @@ function settleWorked(t, n, head, worked) {
 // failure-class lever on, `held` (base red) waits with no try, a requeue records its try's class
 // (failure-class.mjs fixClass) before the worker spawns, one classed missing decision or dependency
 // wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed
-// runner or resource instead of spawning a fix worker.
+// runner or resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
 function applyFix(t, n, head, c) {
   if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(c.base_red ?? null)) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(c.base_red ?? null)}`);
     t.base_red = c.base_red ?? null;
   }
   if (c.call === 'held') { report.waiting.push(`${t.key}: BASE RED — PR #${n}: ${c.why}`); return; }
+  if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
     if (DRY) out.push(`undraft (dry run): would re-run run(s) ${c.gate.failedRuns.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else rerunDraft(t, n, head, c);
