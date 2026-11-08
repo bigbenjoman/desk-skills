@@ -63,6 +63,8 @@ const REWRITTEN = [
     'except P2s carried from round 3',
   ].map((s) => ['DS-368', s, 1]),
   ['DS-369', 'first three lines are computed', 1], // the method line follows the heading
+  ['DS-513', 'code_claim: yes | no', 1], // a gap says whether code or only the person can settle it
+  ['DS-513', 'REQUIREMENT GAPS (2, 1 unverified)', 1], // and the report shows one the person settles
   // each §3b and §4 row a worker reads is named with its desk-env call
   ...[
     'Read the `CONFIG` file. `EXISTS=no` means stop', '§4 Tracker, Ticket key pattern, Other work id patterns',

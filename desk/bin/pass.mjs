@@ -43,7 +43,7 @@ import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, mov
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -3315,18 +3315,22 @@ function feedbackCall(t, s, waived) {
   const worked = resolvable(t, s.head).filter((x) => open.has(x.id));
   const settled = worked.length ? settleWorked(t, n, s.head, worked) : [];
   if (settled.length < worked.length && !DRY) return null;
+  const judgement = E.permission('autopilot-judgement');
   if (fb.review) {
     const comments = () => {
       const r = reviewComments(fb.review.id);
       if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     };
-    const rf = reviewFix(t, { pr: n, head: s.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: E.permission('autopilot-judgement') });
+    const rf = reviewFix(t, { pr: n, head: s.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement });
     if (rf) return rf.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
   }
   const ff = E.permissionOrUnset('merge-feedback-first') === 'no' ? null
     : feedbackFix(t, { pr: n, head: s.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
   if (ff) return ff;
+  // Gaps only the person can settle wait on their call, whatever the checks or the merge grant say.
+  const gaps = fb.review ? personGapsCall(fb.review, { judgement }) : null;
+  if (gaps) return gaps;
   // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
   const { carry, scope, baseMerge } = baseMoves(t, s.head);
