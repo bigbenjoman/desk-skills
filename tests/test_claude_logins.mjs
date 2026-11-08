@@ -97,6 +97,12 @@ t('the caller\'s own CLAUDE_CONFIG_DIR is read too', (() => {
   agents(join(T, 'elsewhere'), [{ sessionId: 'S-E', pid: 44 }]);
   return L.readRegistry({ env: { ...process.env, CLAUDE_CONFIG_DIR: join(T, 'elsewhere') } }).live.some((a) => a.sessionId === 'S-E');
 })(), true);
+// A login removed from the rules while a worker runs on it: its folder is still read for that worker.
+writeFileSync(process.env.DESK_SUBSCRIPTIONS, `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| \`claude\` | \`default\` | \`~/.claude\` | \`in rotation\` |\n\n## Removed\n\n| Tool | Name | Folder |\n|---|---|---|\n| \`claude\` | \`b\` | \`~/.claude-logins/b\` |\n`);
+t('a removed login\'s worker is still live, tagged with its login', L.readRegistry().live.map((a) => `${a.sessionId}:${a.login}`).join(), 'S-A:default,S-B:b');
+t('a removed login\'s transcripts are still read', L.projectsDirs().includes(join(B, 'projects')), true);
+t('a removed login is not one desk starts work on', L.probeLogins().some((l) => l.dir === B), false);
+subscriptions([['default', '~/.claude', 'in rotation'], ['b', '~/.claude-logins/b', 'standby']]);
 
 // ---- AC2: one login's registry cannot be read
 writeFileSync(join(B, 'broken'), '');
