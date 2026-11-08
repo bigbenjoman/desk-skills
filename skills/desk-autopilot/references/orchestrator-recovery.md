@@ -195,7 +195,7 @@ re-running a ticket from scratch.
   whose session ended at a login's limit moves to another login that can take new work (the queue's
   `login_move`), as a fresh session: its transcript stays under its own login. It starts at the stage
   it reached, from Stage 3 on, when its worktree holds its resume file, and otherwise at Stage 0,
-  its briefing saying why. Either way the briefing names the uncommitted changes the worktree kept,
+  its briefing saying why; a fix try starts its task again. Either way the briefing names the uncommitted changes the worktree kept,
   and the move spends no resume try. With no other login open it stays paused and resumes its own
   session once its login is back, as with one login. The batch holds as above only once every login
   is benched, and its hold names each login's reset, earliest first.
