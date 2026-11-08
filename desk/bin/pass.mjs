@@ -39,7 +39,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
-import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -174,7 +174,7 @@ const sh = (cmd, args, opts = {}) => {
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 const shOut = (cmd, args, opts = {}) => {
   try { return { ok: true, out: execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
-  catch (e) { return { ok: false, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
+  catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
 };
 // A queue write that is refused (the queue locked past its wait, a bad value) goes in the report as
 // a failure naming the ticket and the change: the pass carries on as if it had been made, so silence
@@ -450,6 +450,51 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
   return undefined;
 }
 
+// Puts a ticket's screenshots in PR #prNo's body, once a pass. Only `0 placeholder(s) left` counts as
+// uploaded. An upload with no result line crashed: its whole output is kept, and it is tried again by
+// a later pass (the "crashed uploads" step) until UPLOAD_TRIES is spent, when the undraft step names it.
+// A round whose log names its screenshots is always uploaded: the cap holds back only the retries.
+// The shared profile in use (the uploader's exit 2) is a wait, so it spends no try.
+const uploadedThisPass = new Set();
+function uploadShots(t, prNo, imgDir) {
+  const was = crashOf(t, prNo);
+  if (uploadedThisPass.has(t.key)) return;
+  uploadedThisPass.add(t.key);
+  const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(prNo), imgDir]);
+  const up = run.out;
+  const doneLine = /done: (\d+) image\(s\) in the body, (\d+) placeholder\(s\) left/.exec(up);
+  const tail = up.split('\n').slice(-2).join(' ');
+  const saved = join(STATE, 'images', `${t.key}.upload.log`);
+  const save = () => { try { mkdirSync(join(STATE, 'images'), { recursive: true }); writeFileSync(saved, `${up}\n`); } catch { /* best effort */ } };
+  const ended = t.upload_crash ? ['upload_crash=null'] : [];
+  if (run.ok && doneLine && Number(doneLine[1]) > 0 && Number(doneLine[2]) === 0) {
+    q('set', t.key, 'images_uploaded=true', ...ended);
+    report.advanced.push(`${t.key} images → #${prNo}`);
+    // The worker leaves the PR in draft; the undraft step below takes it out once the review
+    // checks in SKILL.md hold. Report evidence completeness so that decision has what it needs.
+    report.advanced.push(`${t.key} #${prNo} evidence complete — still draft`);
+  } else if (doneLine || /uploaded, but found no/.test(up)) {
+    // The assets now exist on GitHub but the body is not finished (placeholders left, or none
+    // matched). Re-uploading would duplicate them, so mark it partial — never uploaded=true —
+    // keep the full output, and put it in front of the user.
+    save();
+    q('set', t.key, 'images_uploaded=partial', ...ended);
+    // The cells left go to whatever fills them at the undraft step, which says if nothing can.
+    if (Number(doneLine?.[2]) > 0) report.advanced.push(`${t.key} images → #${prNo}, ${doneLine[2]} cell(s) left for the undraft step (tags saved in ${saved})`);
+    else report.waiting.push(`${t.key}: image upload to PR #${prNo} is INCOMPLETE — ${tail}. Its tags are saved in ${saved}; do not re-upload.`);
+  } else if (run.code === 2) {
+    save();
+    q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries: was?.tries ?? 0, log: saved, busy: true })}`);
+    report.advanced.push(`${t.key} images → #${prNo} wait: the shared browser profile is in use, so the next pass tries again without counting a try`);
+  } else {
+    save();
+    const tries = (was?.tries ?? 0) + 1;
+    q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries, log: saved })}`);
+    const next = tries < UPLOAD_TRIES ? 'the next pass tries it again' : 'its cells go to the undraft step, which puts them to the person';
+    report.failed.push(`${t.key}: image upload to PR #${prNo} crashed (try ${tries} of ${UPLOAD_TRIES}), and ${next}; its whole output is saved in ${saved}`);
+  }
+}
+
 // A worker killed before it finished (no result event, no marker, no open PR) is resumed in its own
 // session, worktree and branch by the spawn below, up to config §3b "Resume a killed worker (times)"
 // per ticket. Unset is 2; anything but a whole number is said and read as 0, which marks a killed
@@ -665,29 +710,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     if (!shots.length) {
       if (done || built) q('set', t.key, 'images_uploaded=none');
     } else if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
-      const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(prNo), imgDir]);
-      const up = run.out;
-      const doneLine = /done: (\d+) image\(s\) in the body, (\d+) placeholder\(s\) left/.exec(up);
-      const tail = up.split('\n').slice(-2).join(' ');
-      if (run.ok && doneLine && Number(doneLine[1]) > 0 && Number(doneLine[2]) === 0) {
-        q('set', t.key, 'images_uploaded=true');
-        report.advanced.push(`${t.key} images → #${prNo}`);
-        // The worker leaves the PR in draft; the undraft step below takes it out once the review
-        // checks in SKILL.md hold. Report evidence completeness so that decision has what it needs.
-        report.advanced.push(`${t.key} #${prNo} evidence complete — still draft`);
-      } else if (doneLine || /uploaded, but found no/.test(up)) {
-        // The assets now exist on GitHub but the body is not finished (placeholders left, or none
-        // matched). Re-uploading would duplicate them, so mark it partial — never uploaded=true —
-        // keep the full output, and put it in front of the user.
-        const saved = join(STATE, 'images', `${t.key}.upload.log`);
-        try { mkdirSync(join(STATE, 'images'), { recursive: true }); writeFileSync(saved, `${up}\n`); } catch { /* best effort */ }
-        q('set', t.key, 'images_uploaded=partial');
-        // The cells left go to whatever fills them at the undraft step, which says if nothing can.
-        if (Number(doneLine?.[2]) > 0) report.advanced.push(`${t.key} images → #${prNo}, ${doneLine[2]} cell(s) left for the undraft step (tags saved in ${saved})`);
-        else report.waiting.push(`${t.key}: image upload to PR #${prNo} is INCOMPLETE — ${tail}. Its tags are saved in ${saved}; do not re-upload.`);
-      } else {
-        report.failed.push(`${t.key}: image upload did not complete — ${tail}`);
-      }
+      uploadShots(t, prNo, imgDir);
     } else if (!t.images_reported) {
       q('set', t.key, 'images_reported=true');
       report.waiting.push(`${t.key}: screenshots for PR #${prNo} are in ${imgDir} — config §3 ${E.permissionKey('pr-images')} is "${uploadPerm}". ` +
@@ -811,6 +834,31 @@ for (const t of rows.filter((r) => r.state === 'running')) {
         report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} — check ${log}`);
       }
     }
+  }
+}
+
+// ---- crashed uploads -----------------------------------------------------
+// An upload that crashed is tried again from the directory it was given, not from a round's log line:
+// a ticket requeued for a fix starts a round whose log names no screenshots. A running worker is left
+// to finish, since it may still edit the body, and a PR the ticket has moved off drops the record.
+if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
+  for (const t of Object.values(queue().tickets)) {
+    const c = t.upload_crash;
+    if (!c || t.state === 'running' || uploadedThisPass.has(t.key) || (!c.busy && c.tries >= UPLOAD_TRIES)) continue;
+    const cur = t.result?.pr ?? t.draft_pr;
+    if (cur != null && Number(cur) !== Number(c.pr)) { q('set', t.key, 'upload_crash=null'); continue; }
+    // A body with no cell left was filled after all (the crash came after the uploader's edit, or the
+    // evidence workflow filled it): uploading again would duplicate its assets and read as incomplete.
+    const view = shOut('gh', ['pr', 'view', String(c.pr), '--repo', GH_REPO, '--json', 'body']);
+    let body = null;
+    try { if (view.ok) body = String(JSON.parse(view.out).body ?? ''); } catch { /* unread */ }
+    if (body == null) { report.failed.push(`${t.key}: the crashed upload to PR #${c.pr} waits for the next pass, since its body could not be read (${view.out.split('\n').pop()})`); continue; }
+    if (!dragCells(body)) {
+      q('set', t.key, 'upload_crash=null', 'images_uploaded=true');
+      report.advanced.push(`${t.key} #${c.pr} has no screenshot cell left, so its crashed upload is not tried again`);
+      continue;
+    }
+    uploadShots(t, String(c.pr), c.dir);
   }
 }
 
