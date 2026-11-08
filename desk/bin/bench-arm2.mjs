@@ -22,7 +22,8 @@
 // repo's config §3b Codex review gives the finder and at this command's --timeout. Its verdict is its
 // captured last message. Neither seat is told about the seeds. Claude's settings refuse by name the task
 // set, the seeds, the results and the primary checkout. Codex's read-only sandbox cannot refuse a read, so
-// a Codex run whose tool calls name one of those paths is failed instead.
+// a Codex run whose tool calls name one of those paths, or that leaves no session log to check, is failed
+// instead. A repo whose config §3 codex-review is `no` refuses the run before anything is spent.
 //
 // A seat that times out, errors, or answers with neither FINDING blocks nor NO FINDINGS is failed: none of
 // its findings are scored, and its task's seeds are not in its count. A finding inside a seeded hunk is
@@ -41,6 +42,7 @@ import { runCodex } from './bench-arm3.mjs';
 import { haveCommit } from './bench-build.mjs';
 import { loadRun } from './bench-report.mjs';
 import { parseCodexReview, skillsDir } from './desk-env.mjs';
+import { parseAgent } from './worker-agents.mjs';
 import * as Q from './bench-quota.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
@@ -133,6 +135,10 @@ export function splitHunks(diff) {
 
 export const hunkAt = (hunks, line) => hunks.find((h) => line >= h.oldStart && line < h.oldStart + Math.max(h.oldLen, 1));
 
+// The new-side lines a hunk touches. A pure deletion sits between its line and the next.
+const newSpan = (h) => [h.newStart, h.newLen ? h.newStart + h.newLen - 1 : h.newStart + 1];
+const overlap = (a, b) => newSpan(a)[0] <= newSpan(b)[1] && newSpan(b)[0] <= newSpan(a)[1];
+
 // Reverts each row's hunk onto the task's merged tree, in a scratch index so no checkout is touched.
 // `task.base` and `task.merge` must be in `root`. -> { seeds, skipped, patch }
 export function seedTask(root, task, rows, { env = armEnv() } = {}) {
@@ -162,7 +168,13 @@ export function seedTask(root, task, rows, { env = armEnv() } = {}) {
         const applied = run(['apply', '--cached', '-R', '--whitespace=nowarn', '-'], `${header}\n${hunk.text}\n`);
         if (applied.status !== 0) throw new Error(`its acting commit does not revert cleanly onto the merged diff: ${(applied.stderr || '').trim().split('\n')[0]}`);
         const next = ok(['write-tree']);
-        const changed = splitHunks(ok(['diff', '--no-color', '--no-ext-diff', '-U3', tree, next, '--', row.file])).hunks;
+        const hunksOf = (from, context) => splitHunks(ok(['diff', '--no-color', '--no-ext-diff', `-U${context}`, from, next, '--', row.file])).hunks;
+        const reviewed = hunksOf(task.base, 0);
+        if (!hunksOf(tree, 0).some((h) => reviewed.some((b) => overlap(h, b)))) {
+          ok(['read-tree', tree]);
+          throw new Error('its revert restores the base, so it is not in the diff under review');
+        }
+        const changed = hunksOf(tree, 3);
         const first = changed[0], last = changed.at(-1);
         const delta = changed.reduce((n, h) => n + h.newLen - h.oldLen, 0);
         for (const s of seeds) if (s.file === row.file && s.line >= last.oldStart + last.oldLen) { s.line += delta; s.end += delta; }
@@ -224,7 +236,9 @@ export function reviewParts(dir = join(skillsDir(), 'desk-review')) {
 export function lenaPrompt() {
   const file = [join(homedir(), '.claude', 'agents', 'lena-code-reviewer.md'), join(HERE, '..', '..', 'agents', 'lena-code-reviewer.md')].find(existsSync);
   if (!file) throw new Error('the Lena finder\'s prompt is not installed');
-  return readFileSync(file, 'utf8').replace(/^---\n[\s\S]*?\n---\n/, '').trim();
+  const prompt = parseAgent(readFileSync(file, 'utf8'))?.prompt;
+  if (!prompt) throw new Error(`${file} holds no finder prompt`);
+  return prompt;
 }
 
 const optional = (repo, ...args) => { try { return deskEnv(repo, ...args); } catch { return ''; } };
@@ -321,7 +335,7 @@ function readSeeds(task, dir) {
   if (!existsSync(file)) return null;
   const rec = JSON.parse(readFileSync(file, 'utf8'));
   if (rec.merge !== task.merge) throw new Error(`task ${task.id}: ${file} was seeded from another merge commit`);
-  return { ...rec, dir: dirname(file), patch: readFileSync(join(dirname(file), 'seeded.patch'), 'utf8') };
+  return { ...rec, patch: readFileSync(join(dirname(file), 'seeded.patch'), 'utf8') };
 }
 
 // The checkout at the base, with the seeded change as its one new commit.
@@ -358,6 +372,7 @@ function runSeat(repo, task, seat, rec, parts, opts, dir, secrets, env) {
       const log = join(dir, 'codex-session.jsonl');
       const named = existsSync(log) ? namedPath(readFileSync(log, 'utf8'), secrets) : null;
       if (named) run = { ...run, ok: false, why: `its tool calls name ${named}, which no seat may read` };
+      else if (run.ok && !existsSync(log)) run = { ...run, ok: false, why: 'it left no session log, so its tool calls could not be checked' };
     } else {
       const settings = join(parent, 'settings.json');
       writeSettings(repo, task, wt, settings, secrets);
@@ -383,6 +398,7 @@ function runSeat(repo, task, seat, rec, parts, opts, dir, secrets, env) {
 
 // The two seats on one repo: the Codex seat at that repo's finder model and effort.
 export function seatsFor(repo) {
+  if (deskEnv(repo, 'perm', 'codex-review') === 'no') throw new Error(`${repo.name}: config §3 codex-review is no, so nothing may be sent to Codex`);
   let items = [];
   try { items = deskEnv(repo, 'list', 'codex-models').split('\n').filter(Boolean); } catch (e) { if (e.exitCode !== 3) throw e; }
   const { finder } = parseCodexReview(items);
@@ -454,7 +470,7 @@ export function seatFigures(run, seat, marks) {
   const unmatched = unmatchedFindings(run).filter((u) => u.seat === seat);
   const efforts = [...new Set(reviewed.map((r) => r.result.ran_at?.effort ?? r.result.effort ?? 'CLI default'))];
   return {
-    seat, reviewed: reviewed.length, failed: runs.filter((r) => r.status === 'failed').length, notRun: runs.filter((r) => r.status === 'not run').length,
+    seat, tasks: reviewed.map((r) => r.task), reviewed: reviewed.length, failed: runs.filter((r) => r.status === 'failed').length, notRun: runs.filter((r) => r.status === 'not run').length,
     planted: reviewed.reduce((n, r) => n + r.result.seeds.length, 0),
     found: reviewed.reduce((n, r) => n + scoreFindings(r.result.seeds, r.result.findings).found.length, 0),
     unmatched: unmatched.length, real: unmatched.filter((u) => marks[u.id] === 'real').length, falseAlarms: unmatched.filter((u) => marks[u.id] === 'false-alarm').length,
@@ -462,7 +478,7 @@ export function seatFigures(run, seat, marks) {
   };
 }
 
-// The markdown report. -> { text, figures }
+// The markdown report.
 export function renderReport({ out, run, marks }) {
   const figures = [CURRENT, CODEX].map((s) => seatFigures(run, s, marks));
   const rows = [
@@ -478,7 +494,7 @@ export function renderReport({ out, run, marks }) {
   ];
   const text = [`# Arm 2 report: ${out}`, '', `${run.tasks.length} task(s) · seats ${CURRENT}, ${CODEX}${run.seed ? ` · seed ${run.seed}` : ''}`, ''];
   if (run.leftOut.length) text.push('## Left out', '', ...run.leftOut.map((l) => `- ${l.task}: ${l.why}`), '');
-  if (figures[0].planted !== figures[1].planted) text.push('The seats did not review the same seeds, so read each column on its own.', '');
+  if (figures[0].tasks.join('\0') !== figures[1].tasks.join('\0')) text.push('The seats did not review the same seeds, so read each column on its own.', '');
   text.push(`| Figure | ${figures.map((f) => f.seat).join(' | ')} |`, `|---|${figures.map(() => '---|').join('')}`);
   for (const [label, cell] of rows) text.push(`| ${label} | ${figures.map((f) => cell(f)).join(' | ')} |`);
   const failed = run.tasks.flatMap((t) => t.runs.filter((r) => r.status === 'failed').map((r) => `- ${t.task} (${r.arm}): ${r.why ?? 'no reason recorded'}`));
@@ -490,11 +506,11 @@ export function renderReport({ out, run, marks }) {
     const cell = (v) => String(v ?? '').replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|');
     for (const u of list) text.push(`| ${u.id} | ${u.task} | ${u.seat} | ${cell(u.finding.severity)} | ${cell(u.finding.file)}${u.finding.line == null ? '' : `:${u.finding.line}`} | ${cell(u.finding.title)} | ${marks[u.id] ?? 'unmarked'} |`);
   }
-  return { text: `${text.join('\n')}\n`, figures };
+  return `${text.join('\n')}\n`;
 }
 
 export function writeReport(out) {
-  const { text } = renderReport({ out, run: loadRun(out), marks: readMarks(out) });
+  const text = renderReport({ out, run: loadRun(out), marks: readMarks(out) });
   const path = join(out, 'report.md');
   writeFileSync(path, text);
   return { path, text };

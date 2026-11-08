@@ -8,7 +8,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { findingPlace, hunkAt, namedPath, parseArgs, parseCsv, parseFindings, rowsFor, scoreFindings, splitHunks } from '../desk/bin/bench-arm2.mjs';
+import { findingPlace, hunkAt, namedPath, parseArgs, parseCsv, parseFindings, renderReport, rowsFor, scoreFindings, splitHunks } from '../desk/bin/bench-arm2.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -43,6 +43,9 @@ commit('add the call');
 const good = [...bad]; good[4] = 'guarded call';
 write('src.txt', `${good.join('\n')}\n`);
 const fixSrc = commit('guard the call');
+const untouched = [...good]; untouched[19] = 'guarded twenty';
+write('src.txt', `${untouched.join('\n')}\n`);
+const fixUntouched = commit('guard a line the PR left alone');
 const oth = lines(10, (i) => `other ${i}`); oth[2] = 'fixed three';
 write('other.txt', `${oth.join('\n')}\n`);
 const fixOther = commit('fix other');
@@ -52,6 +55,7 @@ const merge = commit('rewrite other');
 git('remote', 'add', 'origin', 'git@github.com:acme/widgets.git');
 
 const configRoot = join(dir, 'config');
+const CODEX_YES = '| `codex-review` | Send diffs to codex | `yes` | `yes` |', CODEX_NO = '| `codex-review` | Send diffs to codex | `yes` | `no` |';
 mkdirSync(join(configRoot, 'repos', 'acme__widgets'), { recursive: true });
 writeFileSync(join(configRoot, 'repos', 'acme__widgets', 'config.md'), `## 0. Repo
 | Field | Value |
@@ -64,6 +68,11 @@ writeFileSync(join(configRoot, 'repos', 'acme__widgets', 'config.md'), `## 0. Re
 |---|---|
 | Primary repo root | \`${repo}\` |
 | Worktrees directory | \`${join(dir, 'wt')}\` |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+${CODEX_YES}
 
 ## 3b. Caps
 | Field | Value |
@@ -101,6 +110,7 @@ writeFileSync(csv, [
   'repo,key,pr,vendor,file,line,acted_commit,note',
   `acme/widgets,AB-1,7,claude,src.txt,5,${fixSrc},"the call, unguarded"`,
   `widgets,AB-1,7,codex,other.txt,3,${fixOther},overwritten later`,
+  `acme/widgets,AB-1,7,codex,src.txt,20,${fixUntouched},restores the base`,
   'acme/widgets,AB-1,7,codex,src.txt,9,,not acted on',
   `acme/widgets,AB-2,8,claude,src.txt,5,${fixSrc},same fix on the second task`,
   `acme/widgets,AB-9,99,claude,src.txt,5,${fixSrc},another PR`,
@@ -138,7 +148,7 @@ const configs = a.filter((x, i) => a[i - 1] === '-c');
 const cd = val('--cd'), prompt = a[a.indexOf('--') + 1];
 const seen = look(cd);
 fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ tool: 'codex', prompt, args: a, configs, ...seen }) + '\\n');
-if (seen.brief.includes('HANG')) { setInterval(() => {}, 1000); return; }
+if (seen.brief.includes('HANG')) { fs.writeFileSync(val('--output-last-message'), finding('src.txt:5', 'written before the hang')); setInterval(() => {}, 1000); return; }
 const u = JSON.parse(fs.readFileSync(process.env.STUB_CODEX_USAGE, 'utf8'));
 u.used += 2; fs.writeFileSync(process.env.STUB_CODEX_USAGE, JSON.stringify(u));
 const effort = /^model_reasoning_effort="(\\w+)"$/.exec(configs.find((c) => c.startsWith('model_reasoning_effort')))[1];
@@ -149,7 +159,7 @@ const logLines = [ev('session_meta', { id: 's', cwd: cd }), ev('turn_context', {
     rate_limits: { primary: { used_percent: 1, window_minutes: 300, resets_at: u.reset }, secondary: { used_percent: u.used, window_minutes: 10080, resets_at: u.reset }, plan_type: 'pro' } })];
 const day = path.join(process.env.CODEX_HOME, 'sessions', '2026', '11', '08');
 fs.mkdirSync(day, { recursive: true });
-fs.writeFileSync(path.join(day, 'rollout-2026-11-08T00-00-00-' + Math.random().toString(36).slice(2) + '.jsonl'), logLines.join('\\n') + '\\n');
+if (!process.env.STUB_CODEX_NO_LOG) fs.writeFileSync(path.join(day, 'rollout-2026-11-08T00-00-00-' + Math.random().toString(36).slice(2) + '.jsonl'), logLines.join('\\n') + '\\n');
 fs.writeFileSync(val('--output-last-message'), process.env.STUB_CODEX_ANSWER || 'NO FINDINGS\\nFILES READ: src.txt\\n');
 console.log('progress line that holds FINDING and NO FINDINGS');
 `);
@@ -214,7 +224,9 @@ t('AC1 its file and line in the seeded tree', `${rec.seeds[0].file} ${rec.seeds[
 t('AC1 with the original finding', `${rec.seeds[0].finding.note} ${rec.seeds[0].finding.vendor}`, 'the call, unguarded claude');
 t('AC1 the patch reverts the fix onto the merged diff', /^\+unguarded call$/m.test(readFileSync(join(setDir, 'seeds', 'one', 'seeded.patch'), 'utf8')) && !/guarded call$/m.test(readFileSync(join(setDir, 'seeds', 'one', 'seeded.patch'), 'utf8').replace(/unguarded call/g, '')), true);
 t('AC1 and keeps the rest of the merged diff', /^\+rewritten three$/m.test(readFileSync(join(setDir, 'seeds', 'one', 'seeded.patch'), 'utf8')), true);
-t('AC6 the unrevertible finding is skipped', `${rec.skipped.length} ${rec.skipped[0].finding.file}`, '1 other.txt');
+t('AC6 the unrevertible finding is skipped', `${rec.skipped.length} ${rec.skipped[0].finding.file}`, '2 other.txt');
+t('a revert that restores the base is skipped, not planted', /restores the base/.test(rec.skipped[1].why), true);
+t('and leaves the merged change in the patch', /^\+guarded twenty$/m.test(readFileSync(join(setDir, 'seeds', 'one', 'seeded.patch'), 'utf8')), true);
 t('AC6 with the reason', /does not revert cleanly onto the merged diff/.test(rec.skipped[0].why), true);
 t('AC6 and printed', /skipped other\.txt:3: its acting commit does not revert cleanly/.test(r.stdout), true);
 t('a row that was not acted on is ignored', rec.skipped.concat(rec.seeds).some((x) => (x.finding ?? {}).line === '9'), false);
@@ -285,6 +297,22 @@ t('AC2 a Codex seat reading the seeds is failed', `${leaked.status} ${/which no 
 const garbled = join(dir, 'out-garbled');
 r = run(['--tasks', set1, '--max-budget-usd', '1', '--out', garbled, '--seed', '1', '--timeout', '5'], { STUB_CODEX_ANSWER: 'It looks fine to me.\n' });
 t('an answer in neither form is a failed seat', results(garbled)['one.codex'].why, 'the seat answered with neither FINDING blocks nor NO FINDINGS');
+
+const noLog = join(dir, 'out-no-log');
+r = run(['--tasks', set1, '--max-budget-usd', '1', '--out', noLog, '--seed', '1', '--timeout', '5'], { STUB_CODEX_NO_LOG: '1', DESK_USAGE_DIR: join(dir, 'usage-no-log') });
+if (!results(noLog)['one.codex']) console.log(r.stderr);
+t('AC2 a Codex seat that left no session log is failed', `${results(noLog)['one.codex'].status} ${/no session log/.test(results(noLog)['one.codex'].why)}`, 'failed true');
+
+const seatRun = (arm, status) => ({ arm, status, result: status === 'reviewed' ? { seeds: [{ id: 's', file: 'a', line: 1, end: 2 }], findings: [], effort: 'high' } : null });
+const crossed = renderReport({ out: 'x', marks: {}, run: { leftOut: [], tasks: [{ task: 'a', runs: [seatRun('current', 'failed'), seatRun('codex', 'reviewed')] }, { task: 'b', runs: [seatRun('current', 'reviewed'), seatRun('codex', 'failed')] }] } });
+t('equal seed counts over different tasks still say so', crossed.includes('did not review the same seeds'), true);
+
+// With config §3 codex-review no, nothing goes to Codex.
+const refusedRoot = join(dir, 'config-refused');
+mkdirSync(join(refusedRoot, 'repos', 'acme__widgets'), { recursive: true });
+writeFileSync(join(refusedRoot, 'repos', 'acme__widgets', 'config.md'), readFileSync(join(configRoot, 'repos', 'acme__widgets', 'config.md'), 'utf8').replace(CODEX_YES, CODEX_NO));
+r = run(['--tasks', set1, '--max-budget-usd', '1', '--out', join(dir, 'out-refused'), '--seed', '1', '--timeout', '5'], { DESK_CONFIG_ROOT: refusedRoot });
+t('codex-review no refuses the run before any seat', `${r.status} ${calls('claude').length} ${calls('codex').length} ${/codex-review is no/.test(r.stderr)}`, '2 0 0 true');
 
 // A task with no seeds is left out and named; with none at all nothing is spent.
 writeFileSync(join(setDir, 'no-seeds.json'), JSON.stringify({ tasks: [task('unseeded', 7, 'x')] }));
