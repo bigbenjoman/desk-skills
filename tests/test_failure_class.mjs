@@ -107,6 +107,28 @@ t('AC8 a later pass at that head does not hold it again', after?.call, 'requeue'
 const moved = fixCall({ key: 'T-1', base_red: cleared.base_red }, { ...pr([ok('tests'), red('Lint')]), head: 'c'.repeat(40) }, ctx({ baseRead: read({ Lint: 'fail' }) }));
 t('AC8 a new head reads its own merge base again', moved?.call, 'held');
 
+// Tries spent: the extra error-line try, and the stuck call after it, read the base as a numbered try does.
+const LINE = 'ReferenceError: React is not defined';
+const quoted = (name) => ({ ...red(name), errors: [LINE] });
+const spentTries = [{ try: 1, head: 'd'.repeat(40), kind: 'checks' }, { try: 2, head: 'e'.repeat(40), kind: 'checks' }];
+const allTried = [...spentTries, { try: 2, head: 'f'.repeat(40), kind: 'checks', extra: true }];
+const heldRec = { class: 'base red', head: HEAD, merge_base: MB, checks: ['Lint'], cleared: [] };
+const extra = fixCall({ key: 'T-1', fix_tries: spentTries, base_red: heldRec }, pr([ok('tests'), quoted('Lint')]), ctx({ baseRead: read({}, { Lint: 'pass' }) }));
+t('AC8 a hold cleared on the extra try is kept', `${extra?.fix.extra} ${JSON.stringify(extra?.base_red?.cleared)}`, 'true ["Lint"]');
+const extraAfter = fixCall({ key: 'T-1', fix_tries: spentTries, base_red: extra.base_red }, pr([ok('tests'), quoted('Lint')]), ctx({ baseRead: read({ Lint: 'fail' }, { Lint: 'fail' }) }));
+t('AC8 so it stays cleared at that head when the base flips red', extraAfter?.fix?.extra, true);
+const stuckCleared = fixCall({ key: 'T-1', fix_tries: allTried, base_red: heldRec }, pr([ok('tests'), quoted('Lint')]), ctx({ baseRead: read({}, { Lint: 'pass' }) }));
+t('AC8 and on the stuck call after it', `${stuckCleared?.call} ${JSON.stringify(stuckCleared?.base_red?.cleared)}`, 'stuck ["Lint"]');
+const draftExtra = draftChecksFix({ key: 'T-1', fix_tries: spentTries, base_red: heldRec }, { pr: 701, head: HEAD, failing: [red('Lint')], checks: [ok('tests'), quoted('Lint')] }, ctx({ baseRead: read({}, { Lint: 'pass' }) }));
+t('AC8 and on a draft\'s extra try', `${draftExtra?.fix.extra} ${draftExtra?.fix.draft} ${JSON.stringify(draftExtra?.base_red?.cleared)}`, 'true true ["Lint"]');
+const extraUnknown = fixCall({ key: 'T-1', fix_tries: spentTries }, pr([ok('tests'), quoted('Lint')]), ctx({ baseRead: read({}) }));
+t('AC6 the extra try says the base state is unknown', extraUnknown?.fix.what, 'red: Lint; base state unknown for Lint (no run of it on main at the merge base)');
+t('AC6 with nothing held, it clears no record', 'base_red' in extraUnknown && extraUnknown.base_red, null);
+const extraMixed = fixCall({ key: 'T-1', fix_tries: spentTries }, pr([ok('tests'), quoted('Lint'), quoted('Unit')]), ctx({ baseRead: read({ Lint: 'fail', Unit: 'pass' }) }));
+t('AC3 the extra try names a base red check once, as the numbered try does', `${JSON.stringify(extraMixed?.fix.base_red)} ${JSON.stringify(extraMixed?.fix.not_mine)}`, '["Lint"] []');
+const offExtra = fixCall({ key: 'T-1', fix_tries: spentTries }, pr([ok('tests'), quoted('Lint')]), ctx());
+t('AC7 lever off: the extra try carries no base fields', ['base_red', 'base'].some((k) => k in offExtra.fix) || 'base_red' in offExtra, false);
+
 // AC7: with the lever off (no baseRead), routing is exactly as today.
 const off = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Lint')]), ctx());
 t('AC7 lever off: requeued as today', `${off?.call} ${off?.fix.what}`, 'requeue red: Lint');

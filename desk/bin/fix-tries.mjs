@@ -139,12 +139,15 @@ const withLines = (mine, checks) => {
 const isLinesTry = (x) => x.extra && x.kind === 'checks';
 // Tries spent on red checks whose logs name a cause: once per PR, one more worker with those lines in
 // its brief, outside FIX_TRIES_MAX (`extra`). After it, or with no line to quote, the person's, the
-// reason quoting each check's first line.
-function spentOnRed(done, { pr, head, draft }, mine, notMine, ctx, checks) {
+// reason quoting each check's first line. `base` is againstBase's read, whose record both answers carry
+// and whose unknown and base red checks the try names as a numbered try does; it lists the base red
+// ones itself, so they leave `not_mine`.
+function spentOnRed(done, { pr, head, draft }, mine, notMine, ctx, checks, base = null) {
   const quoting = withLines(mine, checks);
   const lines = quoting.flatMap((f) => f.lines.map((line) => ({ name: f.name, line })));
-  if (!lines.length || done.some(isLinesTry)) return stillRed(done, quoting, notMine, ctx);
-  return { call: 'requeue', fix: { try: triesMade(done), of: FIX_TRIES_MAX, extra: true, pr, head, ...checksFix(mine, notMine, ctx.repo), lines, ...(draft ? { draft: true } : {}) } };
+  if (!lines.length || done.some(isLinesTry)) return withRecord(stillRed(done, quoting, notMine, ctx), base?.record);
+  const others = base ? notMine.filter((n) => !base.red.some((r) => r.name === n.name)) : notMine;
+  return withRecord({ call: 'requeue', fix: { try: triesMade(done), of: FIX_TRIES_MAX, extra: true, pr, head, ...checksFix(mine, others, ctx.repo, base), lines, ...(draft ? { draft: true } : {}) } }, base?.record);
 }
 // The tries that count against FIX_TRIES_MAX: all but the review tries a merge from the base earned,
 // the capture try (captureTry), which is the PR's own one, and the protected-files tries (gateTry), which
@@ -226,7 +229,7 @@ export function fixCall(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const done = t.fix_tries ?? [];
   const conflict = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
-  let fix, split;
+  let fix, split, base;
   if (conflict) {
     fix = conflictTry(ctx.base, ctx.conflictFiles?.(), false);
   } else {
@@ -248,13 +251,13 @@ export function fixCall(t, s, ctx) {
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
-    const base = againstBase(t, s.head, mine, notMine, ctx);
+    base = againstBase(t, s.head, mine, notMine, ctx);
     if (base?.held) return base.held;
     fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);
     if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
   if (conflict) return conflictSpent(done, s.head) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base) } : nextConflictTry(done, s.pr, s.head, fix);
-  if (spent(done, fixedAt(done, s.head))) return spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks);
+  if (spent(done, fixedAt(done, s.head))) return spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base);
   return withRecord(nextTry(done, s.pr, s.head, fix), split.record);
 }
 // A requeue that read the base carries the base red record to keep, null once none is held.
@@ -558,7 +561,7 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
   if (base?.held) return base.held;
   const done = t.fix_tries ?? [];
   const fix = { ...checksFix(base?.mine ?? mine, notMine, ctx.repo, base), draft: true };
-  return spent(done, fixedAt(done, head)) ? spentOnRed(done, { pr, head, draft: true }, base?.mine ?? mine, base?.notMine ?? notMine, ctx, checks) : withRecord(nextTry(done, pr, head, fix), base?.record);
+  return spent(done, fixedAt(done, head)) ? spentOnRed(done, { pr, head, draft: true }, base?.mine ?? mine, base?.notMine ?? notMine, ctx, checks, base) : withRecord(nextTry(done, pr, head, fix), base?.record);
 }
 
 // A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3
