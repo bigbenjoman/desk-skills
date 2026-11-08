@@ -1653,9 +1653,14 @@ for k in 1 2 3; do q add "FB-$k"; q set "FB-$k" state=done lane=A "branch=fix/FB
 q set FB-1 result.pr=810; fx 810 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:911; fbran 810 "$H1" Lint
 q set FB-2 result.pr=811; fx 811 "$H2" MERGEABLE tests:SUCCESS Lint:FAILURE:912; fbran 811 "$H2" Lint
 q set FB-3 result.pr=812 held_by=X-9; fx 812 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:913; fbran 812 "$H3" Lint
-# The base has gained eleven commits since FB-1's merge base, newest first; only the oldest, MT, runs Lint.
-api "repos/acme/widgets/compare/$MB...main" "$(for i in 0 1 2 3 4 5 6 7 8 9; do printf 'f%039d\n' "$i"; done)
-$MT"
+# The base has gained twelve commits since FB-1's merge base, listed oldest first as the compare pages
+# them. Lint ran red on the oldest, MO, then on MT, and on none of the newest ten: MT's run is read only
+# by reading past the newest ten, and before MO's.
+MO=3333333333333333333333333333333333333333
+api "repos/acme/widgets/compare/$MB...main?per_page=100" "$MO
+$MT
+$(for i in 0 1 2 3 4 5 6 7 8 9; do printf 'f%039d\n' "$i"; done)"
+runs "$MO" Lint '[{"status":"completed","conclusion":"failure"}]'
 runs "$MT" Lint '[{"status":"in_progress","conclusion":null}]'
 export DESK_CONFIG="$T/config-fl.md"
 out=$(node "$B/pass.mjs" 2>&1)

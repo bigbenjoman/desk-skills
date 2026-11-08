@@ -2783,10 +2783,11 @@ const mergeBaseOf = (head) => cached(`merge-base:${head}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${encodeURIComponent(DEFAULT_BRANCH)}...${head}`, '--jq', '.merge_base_commit.sha']);
   return r.ok && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null;
 });
-// The default branch's commits since a merge base, newest first.
+// The default branch's commits since a merge base, newest first. The compare lists them oldest first and
+// holds 250 a page unpaged, so every page is read before the list is turned round.
 const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}`, '--jq', '.commits | reverse | .[].sha']);
-  return r.ok ? r.out.split('\n').filter(Boolean) : [];
+  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[].sha']);
+  return r.ok ? r.out.split('\n').filter(Boolean).reverse() : [];
 });
 const baseReads = (head) => (FAILURE_CLASS && head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
