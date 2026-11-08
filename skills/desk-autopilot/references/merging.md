@@ -142,7 +142,7 @@ When such a carry fails over a clean review, the review try is narrowed where it
 (`undraft.mjs` `targetedReview`). That applies when the PR's own diff is unchanged and the base changed
 some files the review rests on but no lockfile, manifest or configuration file (`restsOnAlways`). The
 try's brief then names those files and the PR's changed files that name one, and desk-review's
-targeted round (`references/targeted.md`) reads only them. Its review records what it re-reviewed and
+targeted round (its `targeted.md` reference) reads only them. Its review records what it re-reviewed and
 what it carried from the earlier one, at which heads, and is read like any review at the head: a P0 or
 P1 goes to a fix worker. Any other failed carry, or the lever off, gets the whole review.
 
