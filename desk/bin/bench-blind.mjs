@@ -43,7 +43,7 @@ export function parseArgs(argv) {
   if (!o.tasks) throw new Error(`--tasks is required\n${USAGE}`);
   o.out = resolve(o.out || join(dirname(resolve(o.tasks)), 'bench-out'));
   o.dest = resolve(o.dest || join(o.out, 'blind'));
-  o.rubric = resolve(o.rubric || join(HERE, 'bench-rubric.md'));
+  if (o.rubric) o.rubric = resolve(o.rubric);
   return o;
 }
 
@@ -79,26 +79,32 @@ const readJson = (file, what) => {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new Error(`cannot read ${what} ${file}: ${e.message}`); }
 };
 
+// What a sheet shows of each run: the run's diff, unless run.json's `blind` names another file, the
+// word for it, its code fence's language and a rubric beside this script.
+const DIFFS = { file: 'diff.patch', noun: 'change', lang: 'diff', rubric: 'bench-rubric.md' };
+
 // Each run run.json lists, with its arm's settings from result.json and its diff, if it made one. A
 // failed run (out of budget, timed out, never scored) keeps the diff it got to, but made no change.
 function loadRuns(out) {
   const run = readJson(join(out, 'run.json'), 'the bench run');
-  return (run.tasks ?? []).map((t) => ({
+  const kind = { ...DIFFS, ...run.blind };
+  return { kind, tasks: (run.tasks ?? []).map((t) => ({
     task: t.task,
     runs: t.runs.map((r) => {
       const result = r.dir && existsSync(join(r.dir, 'result.json')) ? readJson(join(r.dir, 'result.json'), 'a run result') : {};
       const failed = (result.status ?? r.status) === 'failed';
-      const patch = !failed && r.dir && existsSync(join(r.dir, 'diff.patch')) ? readFileSync(join(r.dir, 'diff.patch'), 'utf8') : '';
+      const patch = !failed && r.dir && existsSync(join(r.dir, kind.file)) ? readFileSync(join(r.dir, kind.file), 'utf8') : '';
       return { arm: r.arm, model: result.model ?? null, effort: result.effort ?? null, diff: patch.trim() ? patch : null };
     }),
-  }));
+  })) };
 }
 
-function sheet(id, prompt, rubric, entries) {
+function sheet(id, prompt, rubric, entries, { noun, lang }) {
+  const Noun = `${noun[0].toUpperCase()}${noun.slice(1)}`;
   const parts = [`# ${id}`, '',
-    'Score each change from 1 to 5 against the rubric, in its row of scores.csv. A change marked "no change produced" takes no score.', '',
+    `Score each ${noun} from 1 to 5 against the rubric, in its row of scores.csv. A ${noun} marked "no ${noun} produced" takes no score.`, '',
     '## Ticket', '', block(prompt, 'text'), '', '## Rubric', '', rubric.trim(), ''];
-  for (const e of entries) parts.push(`## Change ${e.letter}`, '', e.diff ? block(e.diff, 'diff') : 'No change produced.', '');
+  for (const e of entries) parts.push(`## ${Noun} ${e.letter}`, '', e.diff ? block(e.diff, lang) : `No ${noun} produced.`, '');
   return parts.join('\n');
 }
 
@@ -106,10 +112,11 @@ function sheet(id, prompt, rubric, entries) {
 export function exportBlind(o) {
   const tasks = new Map(readTasks(o.tasks, () => {}).map((t) => [t.id, t]));
   if (existsSync(join(o.dest, 'key.json'))) throw new Error(`an export is already at ${o.dest}: its scores would no longer match. Use another --dest`);
+  const { kind, tasks: runs } = loadRuns(o.out);
+  const rubricFile = o.rubric ?? join(HERE, kind.rubric);
   let rubric;
-  try { rubric = readFileSync(o.rubric, 'utf8'); } catch (e) { throw new Error(`cannot read the rubric ${o.rubric}: ${e.message}`); }
-  if (!rubric.trim()) throw new Error(`the rubric ${o.rubric} is empty`);
-  const runs = loadRuns(o.out);
+  try { rubric = readFileSync(rubricFile, 'utf8'); } catch (e) { throw new Error(`cannot read the rubric ${rubricFile}: ${e.message}`); }
+  if (!rubric.trim()) throw new Error(`the rubric ${rubricFile} is empty`);
   const arms = runs.flatMap((t) => t.runs.map((r) => ({ name: r.arm, model: r.model, effort: r.effort })));
   mkdirSync(join(o.dest, 'sheets'), { recursive: true });
   const key = { tasks: {} };
@@ -119,7 +126,7 @@ export function exportBlind(o) {
     if (!task) throw new Error(`run.json has task ${t.task}, which ${o.tasks} does not`);
     if (t.runs.length > LETTERS.length) throw new Error(`task ${t.task} has more than ${LETTERS.length} arms`);
     const entries = shuffle(t.runs).map((r, i) => ({ ...r, letter: LETTERS[i], diff: r.diff && scrub(r.diff, arms) }));
-    writeFileSync(join(o.dest, 'sheets', `${t.task}.md`), sheet(t.task, task.prompt, rubric, entries));
+    writeFileSync(join(o.dest, 'sheets', `${t.task}.md`), sheet(t.task, task.prompt, rubric, entries, kind));
     key.tasks[t.task] = Object.fromEntries(entries.map((e) => [e.letter, { arm: e.arm, model: e.model, effort: e.effort, change: !!e.diff }]));
     for (const e of entries) if (e.diff) rows.push(`${t.task},${e.letter},`);
   }

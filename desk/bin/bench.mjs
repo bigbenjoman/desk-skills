@@ -200,7 +200,7 @@ export const armEnv = () => Object.fromEntries(Object.entries(otherRepoEnv())
   .filter(([k]) => !/^(DISABLE_PROMPT_CACHING|GH_TOKEN$|GITHUB_TOKEN$|DESK_AUTOPILOT_WORKER$|DESK_BATCH$)/.test(k)));
 
 const both = (p) => [...new Set([p, realpathSync(p)])];
-const shq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+export const shq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
 
 export function deskEnv(repo, ...args) {
   const r = spawnSync(process.execPath, [join(HERE, 'desk-env.mjs'), ...args], { cwd: repo.root ?? tmpdir(), env: repo.env, encoding: 'utf8' });

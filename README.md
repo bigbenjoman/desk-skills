@@ -441,6 +441,24 @@ node ~/.claude/desk/bin/bench-arm3.mjs --tasks <tasks.json> --max-budget-usd <us
   [--out <dir>] [--timeout 1800] [--seed <n>] [--fable]
 ```
 
+**`bench-pr-text.mjs`** runs arm 4: each task's PR description written three ways from the same
+inputs (the ticket, the commit subjects, the changed files and the repo's PR template at the base).
+`opus` (medium effort) and `haiku` also get the merged diff, and run with no tools in an empty folder
+under the bench's quota guard and USD budget. `no-model` fills the template with no model call. A repo
+with no PR template gets desk-pr's Summary, Changes and Testing sections. Each description goes through
+the repo's §4 PR-description checks in a checkout at the base; a repo with none reads "no checks
+configured", not a pass. A task with no merge commit is left out and named. Results go to
+`bench-pr-text-out` beside the task set, apart from the code arms'. `bench-blind.mjs --out <that
+folder>` makes the sheets, showing descriptions under random letters against
+`desk/bin/bench-pr-text-rubric.md`. After `join`, `report` writes `<out>/report.md`, with each side's
+check pass rate, mean blind score, tokens per description and quota points:
+
+```
+node ~/.claude/desk/bin/bench-pr-text.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
+  [--out <dir>] [--timeout 1800] [--seed <n>]
+node ~/.claude/desk/bin/bench-pr-text.mjs report --tasks <tasks.json> [--out <dir>] [--blind <dir>]
+```
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
