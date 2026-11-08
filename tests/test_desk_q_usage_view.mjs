@@ -199,15 +199,23 @@ f = await O.until(checked);
 t('AC9 x removes the login from the rules for this computer, and the footer says its folder and sign-in stay', footer(f, 'spare@example.test is removed'),
   'spare@example.test is removed from the rules for this computer. Its folder and sign-in are left as they are. · u undo');
 t('AC9 its folder and sign-in are left as they are', `${existsSync(SPARE)} ${existsSync(join(SPARE, '.claude.json'))}`, 'true true');
-t('AC9 the file names it as removed', /\| `claude` \| `~\/.claude-logins\/spare` \|/.test(subsText()), true);
+t('AC9 the file names it as removed', /^\| `claude` \| `spare` \| `~\/.claude-logins\/spare` \|$/m.test(subsText()), true);
 t('AC9 the view no longer lists it', rowOf(f, 'spare@example.test'), null);
 const check17 = JSON.parse(deskEnv('check', '--json').stdout);
 t('AC17 the next account check does not list it on standby again', check17.logins.some((l) => l.name === 'spare'), false);
 await O.press('u');
 await O.until(checked);
-t('u after x lists it again, on its rule', /`spare` \| `~\/.claude-logins\/spare` \| `standby` \|/.test(subsText()) && !/\| `claude` \| `~\/.claude-logins\/spare` \|$/m.test(subsText()), true);
+t('u after x lists it again, on its rule', /`spare` \| `~\/.claude-logins\/spare` \| `standby` \|/.test(subsText()) && !/^\| `claude` \| `spare` \| `~\/.claude-logins\/spare` \|$/m.test(subsText()), true);
 O.done();
 t('desk-env logins remove refuses the default login', deskEnv('remove', 'claude', 'personal').stderr.trim().startsWith('logins: claude personal is ~/.claude'), true);
+// The set u runs puts a removed login back in its own folder, though its name is not its folder's; and
+// space on a default login the file does not list (no rule) gives it the rule.
+subscriptions([['claude', 'office', '~/.claude-logins/work', 'in rotation'], ['claude', 'spare', '~/.claude-logins/spare', 'standby'], ROWS[2]]);
+deskEnv('remove', 'claude', 'office');
+const back = deskEnv('set', 'claude', 'office', 'in rotation');
+t('AC8 u after x on a login named apart from its folder puts back that folder', `${back.status} ${/^\| `claude` \| `office` \| `~\/.claude-logins\/work` \| `in rotation` \|$/m.test(subsText())} ${/^## Removed/m.test(subsText())}`, '0 true false');
+const def = deskEnv('set', 'claude', 'default', 'standby');
+t('AC7 space on a default login the file does not list gives it the next rule', `${def.status} ${/^\| `claude` \| `default` \| `~\/.claude` \| `standby` \|$/m.test(subsText())}`, '0 true');
 
 // ---- AC13: a login benched at its limit
 subscriptions(ROWS);
@@ -243,6 +251,19 @@ t('AC12 a login with no reading yet says so in its 5H and 7D cells', rowOf(f, 'w
   row(0, 'work@example.test', 'Max 5x', '● in rotation', 'no reading yet', 'no reading yet', '0'));
 t('AC12 and a note says when it will be read', f.some((l) => /^note {2}no reading {5}Logins with no reading yet are read in the next 5 minutes\./.test(l)), true);
 N.done();
+
+// ---- AC13: every Codex login at its limit
+codexReading(join(H, '.codex'), [100, at(24, 16, 40)], [27, at(26, 9, 0)]);
+codexReading(ALT, [100, at(24, 12, 0)], [9, at(30, 18, 0)], 'plus');
+const X = open();
+await sleep(20);
+await X.press('6');
+f = X.frame();
+t('AC13 every Codex login at its limit: the line under the tabs names the first back and its reset time', f[3],
+  'Every Codex login is at its limit, so no new Codex calls start. The first back is alt at 12:00.');
+t('AC13 and its RULE cell shows it at its limit', rowOf(f, 'alt').slice(0, 50), row(0, 'alt', 'plus', '■ at limit', '', '', '').slice(0, 50));
+X.done();
+codexReading(join(H, '.codex'), null, [27, at(26, 9, 0)], 'prolite');
 
 // ---- AC15: one Claude login and one Codex login
 rmSync(join(H, '.claude-logins'), { recursive: true, force: true });

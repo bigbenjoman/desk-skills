@@ -34,12 +34,15 @@ export const tilde = (p) => (p === home() ? '~' : p.startsWith(`${home()}/`) ? `
 // at another folder, and how a person signs a folder in.
 const TOOL = {
   claude: { dir: () => join(home(), '.claude'), logins: () => join(home(), '.claude-logins'), env: 'CLAUDE_CONFIG_DIR',
-    signIn: (l) => `${l.configDir ? `CLAUDE_CONFIG_DIR=${l.folder} ` : ''}claude, then /login` },
+    signIn: (l) => ({ shell: `${l.configDir ? `CLAUDE_CONFIG_DIR=${l.folder} ` : ''}claude`, then: '/login' }) },
   codex: { dir: () => join(home(), '.codex'), logins: () => join(home(), '.codex-logins'), env: 'CODEX_HOME',
-    signIn: (l) => `${l.configDir ? `CODEX_HOME=${l.folder} ` : ''}codex login` },
+    signIn: (l) => ({ shell: `${l.configDir ? `CODEX_HOME=${l.folder} ` : ''}codex login`, then: null }) },
 };
 export const loginsFolder = (tool) => TOOL[tool].logins();
-export const signInCommand = (login) => TOOL[login.tool].signIn(login);
+// How a person signs a login in: the shell command to paste into a terminal, then what to type in the
+// tool it opens, or null.   -> { shell, then }
+export const signInParts = (login) => TOOL[login.tool].signIn(login);
+export const signInCommand = (login) => { const p = signInParts(login); return p.then ? `${p.shell}, then ${p.then}` : p.shell; };
 
 // `in rotation`, `In-Rotation` and `in  rotation` are one rule; anything else is null.
 export function normRule(v) {
@@ -67,9 +70,9 @@ export function loginEnv(l, env = process.env) {
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 
-// -> { exists, logins, removed: [{ tool, folder, dir }], errors: ["line <n>: <why>"] }. A malformed row
-// is named and left out; a tool with no good row keeps its default login. `removed` are the folders the
-// Removed table (Tool, Folder) names.
+// -> { exists, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A malformed
+// row is named and left out; a tool with no good row keeps its default login. `removed` are the logins
+// the Removed table (Tool, Name, Folder) names, so setting a rule on one puts back its own folder.
 export function parseSubscriptions(text, { exists = true } = {}) {
   const logins = [];
   const removed = [];
@@ -82,10 +85,10 @@ export function parseSubscriptions(text, { exists = true } = {}) {
     if (c.every((x) => /^:?-{2,}:?$/.test(x) || x === '')) return;
     if (!header) { header = c.map((x) => x.toLowerCase()); return; }
     const at = `line ${i + 1}`;
-    if (header.join('|') === 'tool|folder') {
-      const [tool, folder] = c;
-      if (c.length !== 2 || !TOOLS.includes(tool) || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex) and a folder`);
-      else removed.push(removedFolder(tool, folder));
+    if (header.join('|') === 'tool|name|folder') {
+      const [tool, name, folder] = c;
+      if (c.length !== 3 || !TOOLS.includes(tool) || !NAME.test(name ?? '') || !folder) errors.push(`${at}: a removed login wants a tool (claude or codex), a name and a folder`);
+      else removed.push(removedLogin(tool, name, folder));
       return;
     }
     if (header.join('|') !== 'tool|name|folder|rule') return;
@@ -107,7 +110,7 @@ export function parseSubscriptions(text, { exists = true } = {}) {
   return { exists, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
 }
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
-const removedFolder = (tool, folder) => { const dir = resolve(expand(folder)); return { tool, folder: tilde(dir), dir }; };
+const removedLogin = (tool, name, folder) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir }; };
 
 export const readSubscriptions = (path) => (path && existsSync(path)
   ? parseSubscriptions(readFileSync(path, 'utf8'))
@@ -132,12 +135,12 @@ export function renderSubscriptions(logins, removed = []) {
     ...(removed.length ? [
       '## Removed',
       '',
-      'Folders under ~/.claude-logins or ~/.codex-logins that desk leaves alone: removed from the rules,',
-      'with their folder and sign-in kept. Setting a rule on one lists it again.',
+      'Logins desk leaves alone: removed from the rules, with their folder and sign-in kept, so a folder',
+      'under ~/.claude-logins or ~/.codex-logins is not found again. Setting a rule on one lists it again.',
       '',
-      '| Tool | Folder |',
-      '|---|---|',
-      ...sortLogins(removed).map((r) => `| ${cell(r.tool)} | ${cell(r.folder)} |`),
+      '| Tool | Name | Folder |',
+      '|---|---|---|',
+      ...sortLogins(removed).map((r) => `| ${cell(r.tool)} | ${cell(r.name)} | ${cell(r.folder)} |`),
       '',
     ] : []),
   ].join('\n');
@@ -180,8 +183,9 @@ export function checkLogin(l, { claude = 'claude', codex = 'codex', env = proces
 // A Claude login's account as its folder's .claude.json records it (~/.claude.json for the default),
 // with no call: oauthAccount's emailAddress and planDisplayName, each null when not recorded.
 //   -> { email, plan }
+export const claudeJsonPath = (l) => (l.configDir ? join(l.configDir, '.claude.json') : join(home(), '.claude.json'));
 export function claudeAccount(l) {
-  const a = readJson(l.configDir ? join(l.configDir, '.claude.json') : join(home(), '.claude.json'))?.oauthAccount;
+  const a = readJson(claudeJsonPath(l))?.oauthAccount;
   const text = (v) => (typeof v === 'string' && v ? v : null);
   return { email: text(a?.emailAddress), plan: text(a?.planDisplayName) };
 }
@@ -241,8 +245,9 @@ export const isUsable = (l) => l.state === 'signed in' && (l.rule === 'in rotati
 
 // ---- changing a rule -------------------------------------------------------------------------
 // The file's text with one login's rule changed. A login the file does not list is added: a tool's
-// default, or a folder of that name under the tool's logins folder. Turning off the last usable
-// Claude login is refused; `check` is called only then, -> checkLogins' result.
+// default (named `default`), a login the Removed table names, with its own folder, or a folder of that
+// name under the tool's logins folder. Turning off the last usable Claude login is refused; `check` is
+// called only then, -> checkLogins' result.
 //   -> { text, login }, or throws with the reason
 export function setRule(subs, { tool, name, rule: ruleText, check }) {
   if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
@@ -250,6 +255,10 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
   if (!rule) throw new Error(`logins: ${ruleError(ruleText)}`);
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
   let target = subs.logins.find((l) => l.tool === tool && l.name === name);
+  const def = defaultLogin(tool);
+  const gone = subs.removed.find((r) => r.tool === tool && r.name === name);
+  if (!target && name === def.name && !subs.logins.some((l) => l.tool === tool && l.dir === def.dir)) target = { ...def, rule };
+  else if (!target && gone) target = login({ tool, name, folder: gone.dir, rule, source: 'file' });
   if (!target) {
     const dir = join(loginsFolder(tool), name);
     if (!NAME.test(name) || !isDir(dir)) {
@@ -296,7 +305,7 @@ export function removeLogin(subs, { tool, name, check }) {
   if (!target.configDir) throw new Error(`logins: ${tool} ${name} is ${tilde(TOOL[tool].dir())}, ${tool === 'claude' ? 'Claude' : 'Codex'}'s own folder, which desk always knows: turn it off instead (desk-env logins set ${tool} ${name} off)`);
   lastUsable(tool, name, target, check, 'removing this one');
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
-  return { text: renderSubscriptions(logins, [...subs.removed, { tool, folder: target.folder, dir: target.dir }]), login: target };
+  return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };
 }
 
 // ---- what the person is shown ----------------------------------------------------------------

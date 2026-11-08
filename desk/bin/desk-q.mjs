@@ -28,7 +28,6 @@
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
@@ -51,7 +50,7 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } f
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { RULES as LOGIN_RULES, claudeAccount, defaultLogin, readSubscriptions, signInCommand } from './logins.mjs';
+import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, readSubscriptions, signInParts } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1796,13 +1795,16 @@ export const PACE_NOTE = '▲ ahead of pace: no new workers until it slows';
 const paceNote = (heldBy) => (heldBy?.length ? PACE_NOTE.replace('▲ ', `▲ ${heldBy.join(', ')} `) : PACE_NOTE);
 const usageSgr = (pct, held) => (pct >= 85 ? FAIL : pct >= 60 || held ? WARN : GOOD);
 const resetText = (t, now) => (calendarDays(t, now) === 0 ? clock(t) : `${new Date(t).toLocaleDateString('en-GB', { weekday: 'short' })} ${clock(t)}`);
+// A window's bar and its use: the used part in `sgr`, the rest as the track, then the percentage.
+function barRun(pct, sgr, solid) {
+  const used = Math.min(USAGE_BAR, Math.round((pct * USAGE_BAR) / 100));
+  return [['█'.repeat(used), sgr], [(solid ? '█' : '·').repeat(USAGE_BAR - used), solid ? TRACK : GREY], [` ${pct}%`, sgr]];
+}
 function windowSegs(k, w, now, held, solid) {
   const label = WINDOW_LABELS[k];
   if (!w) return [[`${label} no reading`, GREY]];
   const t = w.resetsAt * 1000, { reset, pct } = windowUse(w, now);
-  const used = Math.min(USAGE_BAR, Math.round((pct * USAGE_BAR) / 100));
-  const sgr = usageSgr(pct, held && !reset);
-  return [[`${label} `, GREY], ['█'.repeat(used), sgr], [(solid ? '█' : '·').repeat(USAGE_BAR - used), solid ? TRACK : GREY], [` ${pct}%`, sgr],
+  return [[`${label} `, GREY], ...barRun(pct, usageSgr(pct, held && !reset), solid),
     [reset ? ` · reset ${clock(t)}` : ` ${resetText(t, now)}`, null]];
 }
 // A reading's bars, the 5-hour then the 7-day, leaving out a window its plan lacks; the 7-day one amber
@@ -1872,7 +1874,7 @@ const LIMIT_WORDS = { five_hour: '5-hour', seven_day: 'weekly' };
 const accounts = new Map();
 function accountOf(l) {
   if (l.tool !== 'claude') return { email: null, plan: null };
-  const path = l.configDir ? join(l.configDir, '.claude.json') : join(process.env.HOME || homedir(), '.claude.json');
+  const path = claudeJsonPath(l);
   let m = null;
   try { m = statSync(path).mtimeMs; } catch { /* no file: nothing recorded */ }
   const had = accounts.get(path);
@@ -1882,14 +1884,14 @@ function accountOf(l) {
   return a;
 }
 // What the view calls a login: a Claude login's email where its folder records one, else its name.
-export const loginLabel = (l) => accountOf(l).email ?? l.name;
-export const checkKey = (tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
+const loginLabel = (l) => accountOf(l).email ?? l.name;
+const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
 
 // Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check }. `out` is
 // { at, type } while the login is at its limit (a batch here benched it, or its Codex reading is at
 // one); `workers` is null for Codex, whose calls desk does not count per login; `check` is the account
 // check's entry, null with none.
-export function usageTable(repos, now, checked = null) {
+function usageTable(repos, now, checked = null) {
   const benched = liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now);
   const dirs = stateDirs({ self: usageDir() });
   const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? (l.source === 'found' ? { state: 'signed out' } : null));
@@ -1914,10 +1916,7 @@ function fitCell(segs, w, right = false) {
 // A window as the view draws it: the bar, its use and its reset, all grey when `grey`.
 function barCell(w, now, solid, grey) {
   const { reset, pct } = windowUse(w, now);
-  const used = Math.min(USAGE_BAR, Math.round((pct * USAGE_BAR) / 100));
-  const sgr = grey ? GREY : usageSgr(pct, false);
-  return [['█'.repeat(used), sgr], [(solid ? '█' : '·').repeat(USAGE_BAR - used), solid ? TRACK : GREY], [` ${pct}%`, sgr],
-    [reset ? '' : ` ${resetText(w.resetsAt * 1000, now)}`, grey ? GREY : null]];
+  return [...barRun(pct, grey ? GREY : usageSgr(pct, false), solid), [reset ? '' : ` ${resetText(w.resetsAt * 1000, now)}`, grey ? GREY : null]];
 }
 // A window's cell: none for a plan without it, no reading yet, 0% once a reading's window has reset.
 function windowCell(x, k, now, solid) {
@@ -1953,13 +1952,16 @@ function usageHeadline(repos, now, t) {
   if (!s || (t.claude.length <= 1 && t.codex.length <= 1)) return oneEach;
   const { claude: c, codex: x } = s;
   const when = (o) => (o.at != null ? resetText(o.at * 1000, now) : null);
-  if (c && !c.login) {
-    const f = c.out[0];
-    return segLine([['Every Claude login is at its limit, so no new Claude workers start. The first back is ', GREY], [loginLabel(f.login), null],
-      [when(f) ? ` at ${when(f)}.` : ', once a probe call on it succeeds.', GREY]]);
-  }
+  // Every login of a tool at its limit: the first back, and when.
+  const byReset = (a, b) => (a.at ?? Infinity) - (b.at ?? Infinity);
+  const allOut = (tool, side, held, unknown) => {
+    const first = [...side.out].sort(byReset)[0];
+    return [[`Every ${tool} login is at its limit, so ${held}. The first back is `, GREY], [loginLabel(first.login), null], [when(first) ? ` at ${when(first)}.` : unknown, GREY]];
+  };
+  if (c && !c.login) return segLine(allOut('Claude', c, 'no new Claude workers start', ', once a probe call on it succeeds.'));
+  if (x && !x.login && x.out.length) return segLine(allOut('Codex', x, 'no new Codex calls start', '.'));
   // With a login out, the line names only its tool's: the one whose new work goes elsewhere.
-  const out = [...(c?.out ?? []), ...(x?.out ?? [])].sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
+  const out = [...(c?.out ?? []), ...(x?.out ?? [])].sort(byReset);
   const f = out[0];
   const segs = [];
   if (c?.login && (!f || f.login.tool === 'claude')) segs.push(['New Claude workers start on ', GREY], [loginLabel(c.login), BOLD]);
@@ -1971,12 +1973,9 @@ function usageHeadline(repos, now, t) {
     [` is at its ${LIMIT_WORDS[type] ? `${LIMIT_WORDS[type]} ` : ''}limit${when(f) ? ` until ${when(f)}` : ''}${out.length > 1 ? `, and ${out.length - 1} more` : ''}.`, GREY]]);
 }
 
-// The shell half of a login's sign-in command, the part to paste into a terminal.
-export const signInShell = (l) => signInCommand(l).split(', then ')[0];
-
 // -> { head, rows, foot }: the line under the tabs; each tool's table, a heading row and a row per login;
 // then the rules' key, a note per signed-out login and for logins with no reading, and when they were read.
-export function usageParts(repos, { now = Date.now(), width = null, checked = null } = {}) {
+function usageParts(repos, { now = Date.now(), width = null, checked = null } = {}) {
   const t = usageTable(repos, now, checked);
   const solid = solidBars(width);
   const w = width ?? 104;
@@ -1985,9 +1984,11 @@ export function usageParts(repos, { now = Date.now(), width = null, checked = nu
   const all = [...t.claude, ...t.codex];
   const key = wrapSegs([['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
     [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], Math.max(20, w - 2)).map((l) => segLine([['  ', null], ...l]));
-  const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => ({ tag: '◆ sign in', sgr: YOU, text: [
-    [`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [signInShell(x.login), HUE.cyan],
-    ...(x.tool === 'claude' ? [[', then ', null], ['/login', HUE.cyan]] : [])] }));
+  const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => {
+    const p = signInParts(x.login);
+    return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
+      ...(p.then ? [[', then ', null], [p.then, HUE.cyan]] : [])] };
+  });
   if (t.claude.some((x) => inUse(x.login) && !unusable(x) && x.reading?.at == null)) {
     notes.push({ tag: 'no reading', sgr: GREY, text: [['Logins with no reading yet are read in the next 5 minutes. A login with no reading still takes workers, after the logins whose room is known.', null]] });
   }
@@ -3055,7 +3056,7 @@ function deskEnvLogins(args, done) {
   p.on('close', (code) => done({ code, out, err }));
 }
 // The account check is rerun this often while Usage is shown.
-export const CHECK_EVERY_MS = 60_000;
+const CHECK_EVERY_MS = 60_000;
 // What each rule means, as the footer says once one is saved.
 const RULE_SAVED = { 'in rotation': 'is in rotation: new workers start on it when it has the most room', standby: 'is on standby: desk uses it only when every login in rotation is at its limit',
   off: "is off: desk won't start workers on it" };
@@ -3423,8 +3424,8 @@ export function interactive({
     const l = x.login, label = loginLabel(l);
     if (k === 'y') {
       if (x.check?.state !== 'signed out') { msg = `${label} is signed in, so there is no sign-in command to copy.`; return; }
-      const shell = signInShell(l);
-      try { copier(shell); msg = `Copied the sign-in command: ${shell}. Run it in another terminal${l.tool === 'claude' ? ', then /login' : ''}.`; }
+      const { shell, then } = signInParts(l);
+      try { copier(shell); msg = `Copied the sign-in command: ${shell}. Run it in another terminal${then ? `, then ${then}` : ''}.`; }
       catch (e) { msg = `Could not copy the sign-in command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
       return;
     }
