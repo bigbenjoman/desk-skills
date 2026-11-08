@@ -20,15 +20,16 @@
 //
 // Blind scoring is bench-blind.mjs with --out <out>; run.json tells it to show descriptions and which
 // rubric to use. `report` writes <out>/report.md; bench-report.mjs is for the code arms.
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, realpathSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { armEnv, armOrder, deskEnv, loadBenchTasks, makeCheckout, parseArgs as benchArgs, printBench, readRepo, runClaude, shq } from './bench.mjs';
+import { armEnv, armOrder, cmdItems, loadBenchTasks, makeCheckout, parseArgs as benchArgs, printBench, readRepo, runClaude, shq, spendGuard } from './bench.mjs';
 import { mergedDiff } from './bench-arm1.mjs';
-import { loadRun, parseArgs as reportArgs, NOT_SCORED } from './bench-report.mjs';
+import { testFiles } from './bench-build.mjs';
+import { allInput, loadRun, meanScore, num, parseArgs as reportArgs, readJoined, NOT_SCORED } from './bench-report.mjs';
 import { runItem } from './baseline.mjs';
 import { quantile } from './desk-ci.mjs';
 import * as Q from './bench-quota.mjs';
@@ -92,7 +93,6 @@ export function promptFrom({ ticket, commits, files, diff, template }) {
   return { prompt: parts(`${bytes.subarray(0, room).toString().replace(/�+$/, '')}\n[diff cut here to fit]`), truncated: true };
 }
 
-const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_|[._-](test|spec)\.[a-z]+$/i;
 const bullets = (list) => list.map((x) => `- ${x}`).join('\n');
 const paths = (files) => files.map((f) => f.split('\t').pop());
 
@@ -102,7 +102,7 @@ function fillFor(heading, { ticket, commits, files }) {
   if (/\bfiles?\b/.test(h)) return bullets(paths(files)) || 'No files changed.';
   if (/\b(commits?|changes?|changelog)\b/.test(h)) return bullets(commits) || 'No commits recorded.';
   if (/\b(tests?|testing|verif\w*|evidence|qa)\b/.test(h)) {
-    const tests = paths(files).filter((p) => TEST_PATH.test(p));
+    const tests = testFiles(paths(files)).files;
     return tests.length ? `Test files changed:\n${bullets(tests)}` : 'No test files changed.';
   }
   if (/\b(tickets?|issues?|jira|links?|refs?|references?|related)\b/.test(h)) return ticket.split('\n').find((l) => l.trim()) ?? 'Not recorded.';
@@ -167,26 +167,26 @@ function stored(file) {
 
 const noMerge = (t) => typeof t.merge !== 'string' || !/^[0-9a-f]{40}$/.test(t.merge);
 
+// A row absent or unset (desk-env's exit 3) reads as `none` does: no checks configured.
+function prChecks(repo) {
+  try { return cmdItems(repo, 'pr-description-checks'); } catch (e) { if (e.exitCode === 3) return []; throw e; }
+}
+
 // Writes every side of every task and run.json. -> printBench's shape
 export function runPrText(opts, log = () => {}) {
   const settings = Q.quotaSettings();
-  const ledger = Q.ledgerPath();
   log(Q.settingsLine(settings));
   const all = loadBenchTasks(opts.tasks);
   const leftOut = all.filter(noMerge).map((t) => ({ task: t.id, why: 'the task records no merge commit' }));
+  const tasks = all.filter((t) => !noMerge(t));
+  // Every repo is read first, so a bad one refuses the run before anything is spent.
   const repos = new Map();
+  for (const t of tasks) if (!repos.has(t.repo)) { const repo = readRepo(t.repo); repo.checks = prChecks(repo); repos.set(t.repo, repo); }
   const out = outDir(opts);
   mkdirSync(join(out, 'runs'), { recursive: true });
-  const budget = Number(opts.budget), total = Number(opts.total);
-  let spent = 0, stopped = null;
-  const points = new Map();
+  const guard = spendGuard({ settings, ledger: Q.ledgerPath(), budget: Number(opts.budget), total: Number(opts.total), log });
   const report = [];
-  for (const task of all.filter((t) => !noMerge(t))) {
-    if (!repos.has(task.repo)) {
-      const repo = readRepo(task.repo);
-      repo.checks = deskEnv(repo, 'cmds', 'pr-description-checks').split('\n').filter(Boolean).map((l) => { const [dir, cmd] = l.split('\t'); return { dir, cmd }; });
-      repos.set(task.repo, repo);
-    }
+  for (const task of tasks) {
     const repo = repos.get(task.repo);
     let inputs;
     try { inputs = taskInputs(repo.root, task); } catch (e) {
@@ -215,29 +215,27 @@ export function runPrText(opts, log = () => {}) {
       const runs = order.map((side) => {
         const dir = join(out, 'runs', `${task.id}.${side.name}.${key(task, side, prompt, repo.checks)}`);
         const prior = stored(join(dir, 'result.json'));
+        if (prior?.check?.status === 'did not finish') {
+          log(`check again ${task.id} (${side.name})`);
+          try {
+            prior.check = check(join(dir, BLIND.file), dir);
+            writeFileSync(join(dir, 'result.json'), `${JSON.stringify(prior, null, 2)}\n`);
+          } catch (e) { log(`  the check could not run: ${e.message}`); }
+        }
         if (prior) { log(`reuse ${task.id} (${side.name})`); return { arm: side.name, status: prior.status, reused: true, quota_points: prior.quota?.points ?? null, dir }; }
         const result = { task: task.id, arm: side.name, repo: task.repo, base: task.base, merge: task.merge, model: side.model, effort: side.effort, status: 'failed', why: null,
           cost: null, tokens: null, ran_at: null, template: inputs.template.source, diff_truncated: side.model ? truncated : false, check: null, at: new Date().toISOString() };
-        let body = null, account = null, start = null;
-        const env = armEnv();
+        let body = null, paid = null, cost;
         if (side.model) {
-          if (stopped) return { arm: side.name, status: 'not run', why: stopped, dir: null };
-          if (spent + budget > total + 1e-9) { log(`skip ${task.id} (${side.name}): $${spent.toFixed(2)} of $${total} spent`); return { arm: side.name, status: 'not run', dir: null }; }
-          account = Q.accountFor('claude', env);
-          start = Q.startRun({ account, settings, ledger, env, id: `${dir}@${result.at}`, fields: { task: task.id, arm: side.name } });
-          points.set(account.key, start.line);
-          if (start.why) {
-            stopped = `stopped: ${start.why}`;
-            log(`stopped before ${task.id} (${side.name}): ${start.why}`);
-            return { arm: side.name, status: 'not run', why: stopped, dir: null };
-          }
+          paid = guard.begin({ vendor: 'claude', env: armEnv(), id: `${dir}@${result.at}`, label: `${task.id} (${side.name})`, fields: { task: task.id, arm: side.name } });
+          if (paid.notRun) return { arm: side.name, ...paid.notRun };
         }
         mkdirSync(dir, { recursive: true });
         log(`write ${task.id} (${side.name})`);
         try {
           if (side.model) {
-            const run = runModel(task, side, prompt, opts, dir, env);
-            spent += run.cost ?? budget;
+            const run = runModel(task, side, prompt, opts, dir, paid.env);
+            cost = run.cost;
             Object.assign(result, { cost: run.cost, tokens: run.tokens, ran_at: run.ranAt, why: run.why ?? null });
             if (run.ok && !String(run.reply ?? '').trim()) result.why = 'the model wrote no description';
             else if (run.ok) body = `${run.reply.trim()}\n`;
@@ -249,13 +247,10 @@ export function runPrText(opts, log = () => {}) {
             result.check = check(file, dir);
           }
         } catch (e) { result.why = e.message; result.status = 'failed'; }
-        if (side.model) {
-          const end = Q.endRun({ account, settings, ledger, env, before: start.before, entry: start.entry, label: `${task.id} (${side.name})` });
-          result.quota = end.quota;
-          if (end.stop) stopped = `stopped: ${end.stop}`; else points.set(account.key, end.line);
-        }
+        if (paid) result.quota = guard.end(paid, cost);
         writeFileSync(join(dir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
         log(`  ${result.status}${result.why ? `: ${result.why}` : ''}${result.check ? `, checks ${result.check.status}` : ''}`);
+        if (paid) guard.logStop(paid);
         return { arm: side.name, status: result.status, why: result.why, quota_points: result.quota?.points ?? null, dir };
       });
       report.push({ task: task.id, order: order.map((a) => a.name), runs });
@@ -263,9 +258,9 @@ export function runPrText(opts, log = () => {}) {
       if (parent) rmSync(parent, { recursive: true, force: true });
     }
   }
-  const quota = { cap: settings.cap, reserve: settings.reserve, defaults: settings.defaults, stopped, accounts: [...points.values()] };
+  const quota = guard.quota();
   const path = join(out, 'run.json');
-  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent, quota, tasks: report, blind: BLIND, ...(leftOut.length ? { left_out: leftOut } : {}) }, null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent: guard.spent, quota, tasks: report, blind: BLIND, ...(leftOut.length ? { left_out: leftOut } : {}) }, null, 2)}\n`);
   return { path, report, quota, leftOut, armStops: [] };
 }
 
@@ -282,14 +277,12 @@ export function sideFigures(tasks, side, scores) {
     failed: runs.filter((r) => r.status === 'failed').length, notRun: runs.filter((r) => r.status === 'not run').length,
     passed: checks.filter((c) => c === 'passed').length, checked: checks.filter((c) => c === 'passed' || c === 'failed').length,
     noChecks: checks.filter((c) => c === NO_CHECKS).length, unfinished: checks.filter((c) => c === 'did not finish').length,
-    score: list.length ? { mean: list.reduce((s, x) => s + x.score, 0) / list.length, n: list.length } : null,
-    input: median(tokens.map((t) => ['uncached', 'cacheWrite', 'cacheRead'].reduce((s, k) => s + (Number(t[k]) || 0), 0))),
+    score: meanScore(list),
+    input: median(tokens.map(allInput)),
     output: median(tokens.map((t) => Number(t.output) || 0)),
     points: median(written.map((r) => r.result?.quota?.points).filter((p) => typeof p === 'number')),
   };
 }
-
-const num = (n) => Math.round(n).toLocaleString('en-US');
 
 // The check cell. "no checks configured" is never a pass or a fail.
 export function checkCell(f) {
@@ -327,10 +320,7 @@ export function renderPrTextReport({ out, run, joined }) {
 // Reads the run and the scores, and writes <out>/report.md. -> { path, text }
 export function writePrTextReport(o) {
   const run = loadRun(o.out);
-  const file = join(o.blind, 'joined.json');
-  let joined = null;
-  if (existsSync(file)) { try { joined = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new Error(`cannot read the joined scores ${file}: ${e.message}`); } }
-  const { text } = renderPrTextReport({ out: o.out, run, joined });
+  const { text } = renderPrTextReport({ out: o.out, run, joined: readJoined(o.blind) });
   const path = join(o.out, 'report.md');
   writeFileSync(path, text);
   return { path, text };

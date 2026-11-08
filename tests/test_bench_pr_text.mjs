@@ -69,13 +69,14 @@ function makeRepo(name, files, checks) {
 | Database URL variable | \`none\` |
 | Database migrate | \`none\` |
 | Unit tests | \`sh run-tests.sh\` |
-| PR-description checks | ${checks} |
-`);
+${checks == null ? '' : `| PR-description checks | ${checks} |\n`}`);
   return { base, merge };
 }
 
 const checked = makeRepo('checked', { '.github/pull_request_template.md': TEMPLATE, 'check.sh': 'grep -q "^## Summary" "$1"\n' }, '`sh check.sh`');
 const plain = makeRepo('plain', {}, '`none`');
+const noRow = makeRepo('norow', {}, null);
+const unsetRow = makeRepo('unsetrow', {}, '`TODO`');
 
 const setDir = join(dir, 'set');
 mkdirSync(join(setDir, 'hidden', 'tests'), { recursive: true });
@@ -85,6 +86,10 @@ const setFile = join(setDir, 'tasks.json');
 writeFileSync(setFile, JSON.stringify({ tasks: [task('one', 'checked', checked), { ...task('nomerge', 'checked', checked), merge: undefined }] }));
 const plainFile = join(setDir, 'plain.json');
 writeFileSync(plainFile, JSON.stringify({ tasks: [task('bare', 'plain', plain)] }));
+const unconfiguredFile = join(setDir, 'unconfigured.json');
+writeFileSync(unconfiguredFile, JSON.stringify({ tasks: [task('absent', 'norow', noRow), task('todo', 'unsetrow', unsetRow)] }));
+const badRepoFile = join(setDir, 'bad-repo.json');
+writeFileSync(badRepoFile, JSON.stringify({ tasks: [task('fine', 'plain', plain), task('bad', 'missing', plain)] }));
 
 const bin = join(dir, 'bin');
 mkdirSync(bin);
@@ -153,7 +158,7 @@ const cl = calls();
 t('AC1 one call each for Opus and Haiku', cl.map((c) => c.args[c.args.indexOf('--model') + 1]).sort().join(' '), 'haiku opus');
 t('AC1 both model sides get the same prompt', cl[0].args[cl[0].args.indexOf('-p') + 1] === cl[1].args[cl[1].args.indexOf('-p') + 1], true);
 const prompt = cl[0].args[cl[0].args.indexOf('-p') + 1];
-t('AC1 the prompt holds ticket, commit, file, diff and template', ['start the counter', 'feat: start the counter', 'M\tsrc.txt', '+new', '## Rollback plan'].every((x) => prompt.includes(x)), true);
+t('AC1 the prompt holds ticket, commit, file, diff and template', ['one: start the counter', 'feat: start the counter', 'M\tsrc.txt', '+new', '## Rollback plan'].every((x) => prompt.includes(x)), true);
 t('a model side runs in an empty folder', cl.every((c) => c.entries.length === 0), true);
 t('a model side has no tools', cl.every((c) => ['Bash', 'Read', 'Edit', 'Write'].every((x) => c.settings.permissions.deny.includes(x))), true);
 t('AC1 the no-model side makes no call and records no model or tokens', `${res['no-model'].model} ${res['no-model'].tokens} ${res['no-model'].quota}`, 'null null undefined');
@@ -195,6 +200,13 @@ t('the report names what it left out', rep.includes('nomerge: the task records n
 r = run(['--tasks', setFile, '--max-budget-usd', '1', '--out', out, '--seed', '3']);
 t('a written side is reused', `${r.status} ${calls().length}`, '0 0');
 
+// A check that did not finish runs again, on the description already paid for.
+const opusDir = readdirSync(join(out, 'runs')).find((d) => d.startsWith('one.opus.'));
+const opusResult = join(out, 'runs', opusDir, 'result.json');
+writeFileSync(opusResult, JSON.stringify({ ...JSON.parse(readFileSync(opusResult, 'utf8')), check: { status: 'did not finish', runs: [] } }));
+r = run(['--tasks', setFile, '--max-budget-usd', '1', '--out', out, '--seed', '3']);
+t('a check that did not finish runs again with no model call', `${r.status} ${calls().length} ${JSON.parse(readFileSync(opusResult, 'utf8')).check.status}`, '0 0 passed');
+
 // AC3: no checks, no template.
 const bare = join(dir, 'bare-out');
 r = run(['--tasks', plainFile, '--max-budget-usd', '1', '--out', bare, '--seed', '3']);
@@ -204,6 +216,16 @@ t('AC3 no checks configured, on every side', Object.values(br).map((x) => x.chec
 t('no template: the desk sections, named', br['no-model'].template === 'desk-pr sections' && br['no-model'].body.includes('### Summary\n\nbare: start'), true);
 node('bench-pr-text.mjs', ['report', '--tasks', plainFile, '--out', bare]);
 t('AC3 the report reads it as no checks, not a pass', readFileSync(join(bare, 'report.md'), 'utf8').split('\n').find((l) => l.startsWith('| PR-description')), `| PR-description checks | ${NO_CHECKS} | ${NO_CHECKS} | ${NO_CHECKS} |`);
+
+const unconfigured = join(dir, 'unconfigured-out');
+r = run(['--tasks', unconfiguredFile, '--max-budget-usd', '1', '--out', unconfigured, '--seed', '3']);
+if (r.status !== 0) console.log(r.stderr);
+const noRowChecks = readdirSync(join(unconfigured, 'runs')).map((d) => JSON.parse(readFileSync(join(unconfigured, 'runs', d, 'result.json'), 'utf8')).check.status);
+t('AC3 a row absent or unset reads as no checks configured', `${r.status} ${noRowChecks.length} ${noRowChecks.every((s) => s === NO_CHECKS)}`, '0 6 true');
+
+// A repo that cannot be read refuses the run before any task spends.
+r = run(['--tasks', badRepoFile, '--max-budget-usd', '1', '--out', join(dir, 'bad-out'), '--seed', '3']);
+t('a bad repo refuses before anything is spent', `${r.status} ${calls().length} ${/no desk config for acme\/missing/.test(r.stderr)}`, '2 0 true');
 
 // The quota guard: a model side stops, the no-model side still runs.
 writeFileSync(usageFile, JSON.stringify({ used: 0.9, reset }));
