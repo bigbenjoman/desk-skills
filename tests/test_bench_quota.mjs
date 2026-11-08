@@ -73,6 +73,32 @@ t('a Codex weekly reading is its 10,080-minute window', Q.codexWeekly(readCodexU
 writeFileSync(join(day, 'rollout-a.jsonl'), `${rl(null)}\n`);
 t('a Codex plan with no weekly window is unreadable', Q.codexWeekly(readCodexUsage({ login: codexLogin, now }), now).why, 'its plan logs no weekly window');
 t('no Codex logs is no reading', Q.codexWeekly(readCodexUsage({ login: { dir: join(T, 'none') }, now }), now).why, 'no weekly reading');
+// readWeekly on a Codex login with no fresh log: one small Codex call writes one, then it is read.
+const staleHome = join(T, 'codex-stale');
+const staleDay = join(staleHome, 'sessions', '2026', '11', '07');
+mkdirSync(staleDay, { recursive: true });
+const rlAt = (at, used) => JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'event_msg', payload: { type: 'token_count', rate_limits: {
+  primary: { used_percent: 5, window_minutes: 300, resets_at: reset }, secondary: { used_percent: used, window_minutes: 10080, resets_at: reset }, plan_type: 'pro', rate_limit_reached_type: null } } });
+writeFileSync(join(staleDay, 'rollout-old.jsonl'), `${rlAt(now - 45 * 60000, 40)}\n`);
+const staleAccount = { vendor: 'codex', label: 'Codex', login: { dir: staleHome }, key: `codex:${staleHome}`, name: 'Codex login stale' };
+let probes = 0;
+const probeWrites = ({ login }) => { probes += 1; writeFileSync(join(login.dir, 'sessions', '2026', '11', '07', 'rollout-new.jsonl'), `${rlAt(Date.now(), 44)}\n`); return ''; };
+t('a stale Codex reading is refreshed by a Codex call, then read', Q.readWeekly(staleAccount, { codexProbe: probeWrites }).used, 44);
+t('and the call ran once', probes, 1);
+t('a fresh Codex reading runs no call', `${Q.readWeekly(staleAccount, { codexProbe: probeWrites }).used} ${probes}`, '44 1');
+rmSync(join(staleDay, 'rollout-new.jsonl'));
+t('a Codex call that writes nothing leaves the reading stale, saying why', Q.readWeekly(staleAccount, { codexProbe: () => ': the Codex usage probe exited 1' }).why, 'its newest weekly reading is 45 minutes old, past the 30-minute freshness window: the Codex usage probe exited 1');
+// The real call, against a stub codex on PATH that writes a session log in the CODEX_HOME it is given.
+writeFileSync(join(stubBin, 'codex'), `#!/usr/bin/env node
+const fs = require('fs'), path = require('path');
+const a = process.argv.slice(2);
+const d = path.join(process.env.CODEX_HOME, 'sessions', '2026', '11', '07');
+fs.mkdirSync(d, { recursive: true });
+fs.writeFileSync(path.join(d, 'rollout-stub.jsonl'), ${JSON.stringify(rlAt(0, 51)).replace('1970-01-01T00:00:00.000Z', '__AT__')}.replace('__AT__', new Date().toISOString()) + '\\n');
+fs.writeFileSync(a[a.indexOf('--output-last-message') + 1], 'ok');
+`);
+chmodSync(join(stubBin, 'codex'), 0o755);
+t('codexProbeNow runs codex on the login it is given', Q.readWeekly(staleAccount, { env: probeEnv }).used, 51);
 t('an arm on a GPT model spends Codex', Q.armVendor({ model: 'gpt-5-codex' }), 'codex');
 t('an arm on an Opus model spends Claude', Q.armVendor({ model: 'opus' }), 'claude');
 t('an arm with no model spends Claude', Q.armVendor({ model: null }), 'claude');

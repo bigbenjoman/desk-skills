@@ -74,7 +74,6 @@ export function readRegistry({ env = process.env } = {}) {
 // The login a worker runs on, from the file spawn-worker.sh writes beside its settings at each start
 // (kept out of its log, whose growth is the worker's own output): its config folder, or null for the
 // default. A worker with no such file reads as `none`.
-export { loginFile };
 const readLoginFile = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
 export function workerLoginDir(stateDir, key, none = null) {
   const r = readLoginFile(loginFile(stateDir, key));

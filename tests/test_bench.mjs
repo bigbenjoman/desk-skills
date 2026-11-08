@@ -17,7 +17,7 @@ process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const home = join(dir, 'home');
 mkdirSync(home);
 const gitEnv = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
-for (const k of Object.keys(gitEnv)) if (/^(DESK_|JIRA_|GIT_DIR$|GIT_WORK_TREE$)/.test(k)) delete gitEnv[k];
+for (const k of Object.keys(gitEnv)) if (/^(DESK_|JIRA_|GIT_DIR$|GIT_WORK_TREE$|CLAUDE_CONFIG_DIR$)/.test(k)) delete gitEnv[k];
 writeFileSync(gitEnv.GIT_CONFIG_GLOBAL, '[user]\n\tname = t\n\temail = t@example.com\n');
 const git = (...a) => execFileSync('git', ['-C', repo, ...a], { env: gitEnv, encoding: 'utf8' }).trim();
 
@@ -300,7 +300,7 @@ t('a file no item covers is named', testRuns([{ dir: 'apps', cmd: 'x' }], ['b.te
 t('logTokens falls back to usage', JSON.stringify(logTokens(`${JSON.stringify({ type: 'result', usage: { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 } })}\n`)), '{"uncached":1,"cacheWrite":2,"cacheRead":3,"output":4}');
 t('logTokens with no result is null', logTokens('nope\n'), null);
 
-// DS-477: the quota guard, each case on its own ledger.
+// The quota guard, each case on its own ledger.
 const qrun = (name, tasks, extra = {}, arms = ['--arm', 'a']) => run(['--tasks', taskSet(name, tasks), ...arms, ...flags(name)], { DESK_USAGE_DIR: join(dir, `usage-${name}`), ...extra });
 const profile = (name, rows) => {
   const f = join(dir, `machine-${name}.md`);

@@ -1537,6 +1537,10 @@ const PATHS = {
 };
 const IDENTITY = { DESK_GITHUB_HANDLE: githubHandle, DESK_JIRA_NAME: jiraName };
 const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+// The subcommands that write the machine profile, the cost sources or the login rules: the user's to
+// confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
+// command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
+export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins remove'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
@@ -1547,6 +1551,10 @@ const isMain = (() => {
 })();
 if (isMain) {
   const [cmd, ...args] = process.argv.slice(2);
+  if (process.env.DESK_AUTOPILOT_WORKER === '1' && WORKER_DENIED_WRITES.includes(`${cmd} ${args[0]}`)) {
+    console.error(`desk-env ${cmd} ${args[0]}: refused in an autopilot worker; this change is the user's to confirm.`);
+    process.exit(4);
+  }
   try {
     switch (cmd) {
       case 'where': {
@@ -1870,7 +1878,6 @@ if (isMain) {
         break;
       }
       case 'machine': {
-        // The subcommand is always the first word, so a worker's `machine write` deny rule holds.
         const [sub, ...rest] = args;
         const [key] = rest;
         const path = machineProfilePath();
@@ -1932,7 +1939,6 @@ if (isMain) {
         break;
       }
       case 'costs': {
-        // The subcommand is always the first word, so a worker's `costs write` deny rule holds.
         const [sub, ...rest] = args;
         const C = await import('./costs.mjs');
         const path = costsPath();
@@ -1970,8 +1976,6 @@ if (isMain) {
         break;
       }
       case 'logins': {
-        // The subcommand is always the first word, so a worker's `logins set` and `logins remove` deny
-        // rules hold.
         const [sub, ...rest] = args;
         const L = await import('./logins.mjs');
         const path = subscriptionsPath();

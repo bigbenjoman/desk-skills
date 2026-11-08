@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { USD } from './skill-eval.mjs';
 import { logTokens } from './worker-cost.mjs';
 import { readLogFile } from './harvest.mjs';
-import { armOrder, armEnv } from './bench.mjs';
+import { armOrder, armEnv, spendGuard } from './bench.mjs';
 import { quantile } from './desk-ci.mjs';
 import { repoSlug } from './desk-env.mjs';
 import { allBatches } from './phase0-report.mjs';
@@ -39,6 +39,7 @@ import { presort, readResult } from './decider.mjs';
 import { preflightDir, recordFiles } from './preflight-record.mjs';
 import { TOOL_LISTS } from './worker-tools.mjs';
 import * as Q from './bench-quota.mjs';
+import { allInput, num } from './bench-report.mjs';
 
 const USAGE = 'usage: bench-replay.mjs --out <dir> [--state <dir>]… [--days <n>] [--sample <n>] [--model <m>] [--max-budget-usd <usd>] [--total-budget-usd <usd>] [--seed <s>] [--no-haiku]';
 export const NEEDS = 'needs a model';
@@ -332,10 +333,8 @@ export function runReplays(o, log = () => {}) {
   const since = Date.now() - o.days * DAY_MS;
   const { calls, left } = collect({ states, since });
   mkdirSync(join(o.out, 'replays'), { recursive: true });
-  const total = Number(o.total), budget = Number(o.budget);
-  let spent = 0;
-  let stopped = null;
-  const points = new Map();
+  const total = Number(o.total);
+  const guard = spendGuard({ settings, ledger, budget: Number(o.budget), total, log });
   const results = {};
   for (const type of TYPES) {
     results[type] = sampleOf(calls[type], o.sample, o.seed, type).map((call) => {
@@ -346,30 +345,23 @@ export function runReplays(o, log = () => {}) {
       const file = join(o.out, 'replays', `${type}.${call.id}.${o.model}.json`.replace(/[^A-Za-z0-9._-]/g, '-'));
       const prior = readJson(file);
       if (prior?.ok) { log(`reuse ${type} ${call.id}`); entry.model = prior; return entry; }
-      if (stopped) { entry.model = { ok: false, notRun: true, why: stopped }; return entry; }
-      if (spent + budget > total + 1e-9) { entry.model = { ok: false, notRun: true, why: `$${spent.toFixed(2)} of the $${total} budget spent` }; return entry; }
-      const account = Q.accountFor('claude', armEnv());
-      const start = Q.startRun({ account, settings, ledger, env: armEnv(), id: `${file}@${new Date().toISOString()}`, fields: { task: call.id, arm: `replay-${type}` } });
-      points.set(account.key, start.line);
-      if (start.why) {
-        stopped = `stopped: ${start.why}`;
-        log(`stopped before ${type} ${call.id}: ${start.why}`);
-        entry.model = { ok: false, notRun: true, why: stopped };
+      const paid = guard.begin({ vendor: 'claude', env: armEnv(), id: `${file}@${new Date().toISOString()}`, label: `${type} ${call.id}`, fields: { task: call.id, arm: `replay-${type}` } });
+      if (paid.notRun) {
+        entry.model = { ok: false, notRun: true, why: paid.notRun.why ?? `$${guard.spent.toFixed(2)} of the $${total} budget spent` };
         return entry;
       }
       log(`replay ${type} ${call.id} on ${o.model}`);
       const r = type === 'preflight' ? replayPreflight(call, o) : replayDecider(call, o);
-      spent += r.cost ?? budget;
-      const end = Q.endRun({ account, settings, ledger, env: armEnv(), before: start.before, entry: start.entry, label: `${type} ${call.id}` });
-      if (end.stop) { stopped = `stopped: ${end.stop}`; log(stopped); } else points.set(account.key, end.line);
-      const kept = { ...r, quota: end.quota, compared: r.ok ? compare(call.opus, r.answers) : [] };
+      const quota = guard.end(paid, r.cost);
+      if (guard.stopped) log(guard.stopped);
+      const kept = { ...r, quota, compared: r.ok ? compare(call.opus, r.answers) : [] };
       writeFileSync(file, `${JSON.stringify(kept, null, 2)}\n`);
       entry.model = kept;
       return entry;
     });
   }
   const run = { model: o.haiku ? o.model : null, seed: o.seed, days: o.days, sample: o.sample, states, left, found: { preflight: calls.preflight.length, decider: calls.decider.length },
-    spent, quota: { cap: settings.cap, reserve: settings.reserve, stopped, accounts: [...points.values()] }, results };
+    spent: guard.spent, quota: guard.quota(), results };
   writeFileSync(join(o.out, 'replay.json'), `${JSON.stringify(run, null, 2)}\n`);
   const text = renderReplayReport(run);
   const path = join(o.out, 'replay-report.md');
@@ -379,9 +371,6 @@ export function runReplays(o, log = () => {}) {
 
 // ---- the report --------------------------------------------------------------------------------
 const median = (xs) => quantile(xs, 0.5);
-const num = (n) => Math.round(n).toLocaleString('en-US');
-const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
-const inputOf = (t) => (Number(t.uncached) || 0) + (Number(t.cacheWrite) || 0) + (Number(t.cacheRead) || 0);
 const share = (rows) => {
   const asked = rows.filter((r) => !r.needs);
   const hit = asked.filter((r) => r.match).length;
@@ -410,7 +399,7 @@ export function renderReplayReport(run) {
     out.push(`| Figure | Opus (recorded) | ${model ?? 'model'} | no model |`, '|---|---|---|---|');
     out.push(`| Calls | ${rows.length} | ${model ? `${ran.length} replayed${notRun.length ? `, ${notRun.length} not replayed` : ''}` : 'not run'} | ${rows.length} |`);
     out.push(`| ${what}s matching Opus | — | ${model ? share(modelRows) : 'not run'} | ${share(scriptRows)}; ${scriptRows.filter((r) => r.needs).length} of ${scriptRows.length} ${NEEDS} |`);
-    out.push(`| Median input tokens per call, all kinds | ${tokenCell(rows.map((r) => r.tokens), inputOf)} | ${model ? tokenCell(ran.map((r) => r.model.tokens), inputOf) : 'not run'} | 0 |`);
+    out.push(`| Median input tokens per call, all kinds | ${tokenCell(rows.map((r) => r.tokens), allInput)} | ${model ? tokenCell(ran.map((r) => r.model.tokens), allInput) : 'not run'} | 0 |`);
     out.push(`| Median output tokens per call | ${tokenCell(rows.map((r) => r.tokens), (t) => Number(t.output) || 0)} | ${model ? tokenCell(ran.map((r) => r.model.tokens), (t) => Number(t.output) || 0) : 'not run'} | 0 |`);
     out.push(`| Quota points per call (median) | not recorded | ${!model ? 'not run' : qp.length ? `${median(qp)}${qp.length < ran.length ? ` (over ${qp.length} of ${ran.length})` : ''}` : 'unreadable'} | 0 |`);
     out.push(`| Quota points, every replay | not recorded | ${model ? (Math.round(qp.reduce((s, p) => s + p, 0) * 100) / 100) : 'not run'} | 0 |`, '');

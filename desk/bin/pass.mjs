@@ -33,7 +33,7 @@ import { usageLimit, resetText, limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey, probeLogins } from './claude-logins.mjs';
 import { checkLogin, checkLogins, readSubscriptions, signInCommand } from './logins.mjs';
-import { chooseLogin } from './login-choice.mjs';
+import { claudeChoice, laterLift, nothingToChoose } from './call-login.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
@@ -51,7 +51,7 @@ import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT } from './suite-wait.mjs';
-import { usagePace, newestReading, WEEK_MS } from './usage-pace.mjs';
+import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
@@ -229,7 +229,7 @@ const loginDirOf = (t) => (t.login ? t.login.config_dir : workerLoginDir(STATE, 
 // the pass's login and nothing is checked.
 const SUBS = readSubscriptions(E.subscriptionsPath());
 const IN_USE = probeLogins();
-const rotating = SUBS.exists && !(IN_USE.length === 1 && IN_USE[0].dir === OWN_LOGIN.dir);
+const rotating = !nothingToChoose(SUBS, OWN_LOGIN, IN_USE);
 let CHECKED = null;
 const PROBES = new Map();
 // At most one probe a login a pass, made only when something on that login is held on the limit.
@@ -253,8 +253,7 @@ const waitsOnBench = (key, b) => report.paused.push(`${key} resumes on its own l
 function bench(login, limit, by) {
   const k = loginKey(login);
   const was = BENCHED[k];
-  // The limit that lifts last: one with no reset time outlasts any with one.
-  const later = !was || limit.resetsAt == null || (was.resets_at != null && limit.resetsAt > was.resets_at);
+  const later = laterLift(was, limit.resetsAt);
   BENCHED[k] = { login: login.name, config_dir: login.configDir ?? null, ...(later ? { type: limit.type, resets_at: limit.resetsAt } : { type: was.type, resets_at: was.resets_at }),
     since: was?.since ?? PASS_AT, by: was?.by ?? by };
 }
@@ -2036,9 +2035,8 @@ function pickLogin() {
   CHECKED ??= checkLogins(SUBS, { tools: ['claude'] });
   const workers = Object.values(queue().tickets).filter((r) => r.state === 'running');
   // A benched login takes no new work. With every one benched, the batch holds.
-  const open = CHECKED.usable.filter((l) => !benchOf(l));
-  if (!open.length && CHECKED.usable.length && benchHold()) { usageStop = true; return null; }
-  const login = chooseLogin(open.map((l) => ({ login: l, reading: loginReading(l, WEEK_MS), running: workers.filter((r) => loginDirOf(r) === l.configDir).length })));
+  const { login, out } = claudeChoice(CHECKED.usable, { benched: BENCHED, running: (l) => workers.filter((r) => loginDirOf(r) === l.configDir).length });
+  if (out.length === CHECKED.usable.length && CHECKED.usable.length && benchHold()) { usageStop = true; return null; }
   if (!login) return null;
   return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir })}`,
     line: ` login=${login.name}${login.rule === 'standby' ? ' (standby: no login in rotation can take it)' : ''}` };

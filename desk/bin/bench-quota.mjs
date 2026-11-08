@@ -10,11 +10,15 @@
 //
 // A Claude account's reading is taken by a usage probe on its login just before it is read
 // (usage-probe.mjs), so it is seconds old; a Codex account's comes from its own session logs
-// (codex-usage.mjs). Either is refused when older than FRESH_MS. The points each run used are kept per
+// (codex-usage.mjs), and when those hold none fresh, one small Codex call on that login writes one.
+// Either is refused when older than FRESH_MS. The points each run used are kept per
 // computer in <usage dir>/bench-quota.jsonl, one line per run, written before the run starts (its
 // `after` and `points` null) and again once it ends; the last line for a run's id stands.
-import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { machineValue } from './desk-env.mjs';
 import { BENCH_CAP_KEY, BENCH_RESERVE_KEY, benchSettingError as settingError } from './machine.mjs';
 import { loginProbeLog, probeNow, readLoginUsage, usageDir } from './usage-probe.mjs';
@@ -105,8 +109,35 @@ export function freshProbe({ dir = usageDir(), env = process.env, login }) {
   const after = snapshot(file);
   return { after, fresh: Boolean(after) && !(prior && prior.at === after.at && prior.text === after.text), failed: p.ok ? '' : `: the usage probe failed (${p.why})` };
 }
-export function readWeekly(account, { dir = usageDir(), env = process.env, now = () => Date.now() } = {}) {
-  if (account.vendor === 'codex') return codexWeekly(readCodexUsage({ login: account.login, now: now() }), now());
+// One small Codex call on the login, read-only and at low effort, for the session log it writes: the
+// only place Codex records its allowance. Through codex-exec.mjs, so it is ended at its timeout.
+//   -> '' when codex answered, else ': why'
+const CODEX_PROBE_PROMPT = 'Reply with: ok';
+export function codexProbeNow({ env = process.env, login, timeoutS = 120 }) {
+  const tmp = mkdtempSync(join(tmpdir(), 'desk-bench-codex-probe-'));
+  const last = join(tmp, 'last-message.txt');
+  const call = { args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-c', 'model_reasoning_effort="low"',
+    '--output-last-message', last, '--', CODEX_PROBE_PROMPT], last, cwd: tmp, timeout: timeoutS };
+  const bridge = join(dirname(fileURLToPath(import.meta.url)), 'codex-exec.mjs');
+  const r = spawnSync(process.execPath, [bridge], { input: JSON.stringify(call), env: { ...env, CODEX_HOME: login.dir }, encoding: 'utf8', timeout: (timeoutS + 30) * 1000 });
+  rmSync(tmp, { recursive: true, force: true });
+  let res = null;
+  try { res = JSON.parse(r.stdout.trim().split('\n').pop()); } catch { /* below */ }
+  if (!res) return `: the Codex usage probe printed no result${r.error ? ` (${r.error.message})` : ''}`;
+  if (res.error) return `: the Codex usage probe did not start (${res.error})`;
+  if (res.timedOut) return `: the Codex usage probe timed out after ${timeoutS}s`;
+  return res.code === 0 ? '' : `: the Codex usage probe exited ${res.code}`;
+}
+export function readWeekly(account, { dir = usageDir(), env = process.env, now = () => Date.now(), codexProbe = codexProbeNow } = {}) {
+  if (account.vendor === 'codex') {
+    const read = () => readCodexUsage({ login: account.login, now: now() });
+    const r = read();
+    // Missing or stale: nothing else in the bench writes a new Codex log before its next run would.
+    if (r?.at != null && now() - r.at <= FRESH_MS) return codexWeekly(r, now());
+    const failed = codexProbe({ env, login: account.login });
+    const w = codexWeekly(read(), now());
+    return w.why ? { why: `${w.why}${failed}` } : w;
+  }
   const l = account.login.configDir ? account.login : null;
   const { after, fresh, failed } = freshProbe({ dir, env, login: l });
   if (!after) return { why: `no weekly reading${failed}` };

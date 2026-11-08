@@ -45,6 +45,7 @@ const subscriptions = (rows) => writeFileSync(process.env.DESK_SUBSCRIPTIONS,
   `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n${rows.map(([n, f, r]) => `| \`claude\` | \`${n}\` | \`${f}\` | \`${r}\` |`).join('\n')}\n`);
 
 const L = await import(join(BIN, 'claude-logins.mjs'));
+const E0 = await import(join(BIN, 'desk-env.mjs'));
 const P = await import(join(BIN, 'usage-probe.mjs'));
 const Q = await import(join(BIN, 'desk-q.mjs'));
 const M = await import(join(BIN, 'maintenance.mjs'));
@@ -124,10 +125,10 @@ const S = join(T, 'state');
 mkdirSync(join(S, 'workers'), { recursive: true });
 t('a worker with no login file is on the default login', L.workerLoginDir(S, 'W-1'), null);
 const event = execFileSync('node', [join(BIN, 'claude-logins.mjs'), 'login-event'], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: B } });
-writeFileSync(L.loginFile(S, 'W-1'), event);
+writeFileSync(E0.loginFile(S, 'W-1'), event);
 t('spawn-worker\'s login file names login B', L.workerLoginDir(S, 'W-1'), B);
 t('and reads back as login B', L.loginOf(L.workerLoginDir(S, 'W-1')).name, 'b');
-writeFileSync(L.loginFile(S, 'W-1'), execFileSync('node', [join(BIN, 'claude-logins.mjs'), 'login-event'], { encoding: 'utf8' }));
+writeFileSync(E0.loginFile(S, 'W-1'), execFileSync('node', [join(BIN, 'claude-logins.mjs'), 'login-event'], { encoding: 'utf8' }));
 t('the default folder\'s login file reads as the default', L.workerLoginDir(S, 'W-1'), null);
 // ---- AC13: the lift probe for a hold on login B runs in B's folder and is kept as B's
 resetCalls();
@@ -150,7 +151,7 @@ t('AC11 no worker running: the default and login B are each due', due(repos([]))
 process.env.CLAUDE_CONFIG_DIR = B;
 t('a desk-q started on login B probes B as its own, and the default as another login', due(repos([])), 'b,default');
 delete process.env.CLAUDE_CONFIG_DIR;
-writeFileSync(L.loginFile(S, 'W-1'), event);
+writeFileSync(E0.loginFile(S, 'W-1'), event);
 t('AC11 AC12 a worker on login B only: no probe on B, and desk-q\'s own login is due', due(repos(['W-1'])), 'default');
 mkdirSync(dirname(workerLog), { recursive: true });
 writeFileSync(workerLog, usageEvent());
@@ -162,7 +163,7 @@ delete process.env.CLAUDE_CONFIG_DIR;
 writeFileSync(P.probeLog(process.env.DESK_USAGE_DIR), usageEvent());
 t('AC11 desk-q\'s own login with a fresh probe reading is not due', due(repos(['W-1'])), 'none');
 rmSync(P.probeLog(process.env.DESK_USAGE_DIR));
-rmSync(L.loginFile(S, 'W-1'));
+rmSync(E0.loginFile(S, 'W-1'));
 t('AC11 a worker on the default only: login B is still probed', due(repos(['W-1'])), 'b');
 process.env.CLAUDE_CONFIG_DIR = B;
 t('AC11 a desk-q on login B with a worker on the default only: its own login is due', due(repos(['W-1'])), 'b');
@@ -205,7 +206,7 @@ const reading = (five, seven) => `${JSON.stringify({ type: 'rate_limit_event', r
   ...(five == null ? {} : { five_hour: { utilization: five, resetsAt: inHours(2) } }), seven_day: { utilization: seven, resetsAt: inHours(48) } } } })}\n`;
 const written = (path, text, ago) => { writeFileSync(path, text); const at = (Date.now() - ago) / 1000; utimesSync(path, at, at); };
 const uLog = (name) => join(U, 'logs', name);
-const onB = (key) => writeFileSync(L.loginFile(U, key), event);
+const onB = (key) => writeFileSync(E0.loginFile(U, key), event);
 const nowU = Date.now();
 const lDefault = L.loginOf(null);
 const lBoth = () => [lDefault, lb].map((login) => P.readUsage({ login, now: nowU }).seven_day?.utilization ?? 'none').join();
@@ -238,7 +239,7 @@ onB('R-1');
 E.rotateRound('R-1');
 delete process.env.DESK_AUTOPILOT_STATE;
 t('the round\'s log is moved aside and the login file stays for the pass', `${existsSync(uLog('R-1.log.round1.gz'))} ${L.workerLoginDir(U, 'R-1') === B}`, 'true true');
-writeFileSync(L.loginFile(U, 'R-1'), '{"login":"default","config_dir":null}\n');
+writeFileSync(E0.loginFile(U, 'R-1'), '{"login":"default","config_dir":null}\n');
 t('AC1 a round on login B is B\'s after the next round starts on the default', lBoth(), '0.2,0.55');
 t('a round with no login file of its own is its worker\'s latest login', L.logLoginDir(U, 'B-1.log.round7.gz'), B);
 rmSync(uLog('R-1.log.round1.gz'));
@@ -278,10 +279,16 @@ rmSync(process.env.DESK_SUBSCRIPTIONS);
 t('AC5 no file, with a folder for login B: a desk-q on B shows the default login\'s', lineOn(B), 0.2);
 t('AC5 and a desk-q on a folder outside the logins folder shows it too', lineOn(join(T, 'elsewhere')), 0.2);
 t('AC5 and the default its line shows is probed', startedOn(B, () => Q.probesDue([], { now: nowU }).map((x) => x.login.name).join()), 'b,default');
+subscriptions([['default', '~/.claude', 'off'], ['b', '~/.claude-logins/b', 'in rotation']]);
+t('a desk-q on a default set off never probes it, beside a login in rotation', Q.probesDue([], { now: nowU }).map((x) => x.login.name).join(), 'b');
+subscriptions([['default', '~/.claude', 'off'], ['b', '~/.claude-logins/b', 'off']]);
+t('a desk-q on a default set off never probes it, with no other login in use', Q.probesDue([], { now: nowU + 86400000 }).length, 0);
+subscriptions([['default', '~/.claude', 'in rotation'], ['b', '~/.claude-logins/b', 'off']]);
+t('and with the default in rotation, its one probe is due a day on', Q.probesDue([], { now: nowU + 86400000 }).map((x) => x.login.name).join(), 'default');
 
 // AC6: one login. Every worker log is its, with no login file, and the line is the one it always was.
 rmSync(join(H, '.claude-logins'), { recursive: true });
-rmSync(L.loginFile(U, 'B-1'));
+rmSync(E0.loginFile(U, 'B-1'));
 t('AC6 one login: every worker log reads as its own', lines(P.usageByLogin({ now: nowU })).length, 1);
 t('AC6 one login: the newest log wins, as it always did', Q.usageOf([], nowU).reading.seven_day.utilization, 0.4);
 

@@ -20,15 +20,23 @@ import { chooseLogin } from './login-choice.mjs';
 import { newestReading, WEEK_MS } from './usage-pace.mjs';
 import { loginProbeLog, usageDir } from './usage-probe.mjs';
 
+// Whether a limit lifting at `resetsAt` (epoch seconds, or null) replaces the bench `was` on a login:
+// the limit that lifts last stands, one with no reset time outlasting any with one. pass.mjs's bench and
+// liveBenches both keep it.
+export const laterLift = (was, resetsAt) => !was || resetsAt == null || (was.resets_at != null && resetsAt > was.resets_at);
+
+// With no subscriptions file, or the caller's own login the only one in use, there is no login to
+// choose: work runs on the caller's own. `subs` is readSubscriptions', `inUse` probeLogins'.
+export const nothingToChoose = (subs, own, inUse) => !subs.exists || (inUse.length === 1 && inUse[0].dir === own.dir);
+
 // Every bench in `maps` (queues' `benched`) whose limit has not lifted at `now`, by login key: where two
-// bench one login, the later lift, one with no reset time outlasting any with one (pass.mjs bench).
+// bench one login, the later lift (laterLift).
 export function liveBenches(maps, now) {
   const out = {};
   for (const m of maps) {
     for (const [k, v] of Object.entries(m ?? {})) {
       if (!v || (v.resets_at != null && now >= v.resets_at * 1000)) continue;
-      const was = out[k];
-      if (!was || v.resets_at == null || (was.resets_at != null && v.resets_at > was.resets_at)) out[k] = v;
+      if (laterLift(out[k], v.resets_at)) out[k] = v;
     }
   }
   return out;
@@ -72,7 +80,7 @@ export function callLogin({ env = process.env, now = Date.now() } = {}) {
   const subs = readSubscriptions(subscriptionsPath());
   const own = loginOf(env.CLAUDE_CONFIG_DIR);
   const inUse = probeLogins();
-  if (!subs.exists || (inUse.length === 1 && inUse[0].dir === own.dir)) return keep;
+  if (nothingToChoose(subs, own, inUse)) return keep;
   const { benched, running } = batchesNow(now);
   const { usable } = checkLogins(subs, { tools: ['claude'], env });
   const { login, out } = claudeChoice(usable, { benched, running: (l) => running.filter((d) => d === l.configDir).length, now });

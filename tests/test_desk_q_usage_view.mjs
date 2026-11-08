@@ -207,6 +207,12 @@ await O.press('u');
 await O.until(checked);
 t('u after x lists it again, on its rule', /`spare` \| `~\/.claude-logins\/spare` \| `standby` \|/.test(subsText()) && !/^\| `claude` \| `spare` \| `~\/.claude-logins\/spare` \|$/m.test(subsText()), true);
 O.done();
+// A worker's deny rules match on the command's start, and --batch may come first; desk-env refuses it too.
+for (const argv of [['logins', 'set', 'claude', 'spare', 'off'], ['--batch', 'x', 'logins', 'set', 'claude', 'spare', 'off'], ['--batch', 'x', 'logins', 'remove', 'claude', 'spare'], ['--batch=x', 'machine', 'set', 'k', 'v'], ['costs', '--batch', 'x', 'write']]) {
+  const before = existsSync(env.DESK_SUBSCRIPTIONS) ? readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8') : null;
+  const r = spawnSync(process.execPath, [join(BIN, 'desk-env.mjs'), ...argv], { encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_WORKER: '1' } });
+  t(`a worker's desk-env ${argv.join(' ')} is refused`, r.status === 4 && /refused in an autopilot worker/.test(r.stderr) && (existsSync(env.DESK_SUBSCRIPTIONS) ? readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8') : null) === before, true);
+}
 t('desk-env logins remove refuses the default login', deskEnv('remove', 'claude', 'personal').stderr.trim().startsWith('logins: claude personal is ~/.claude'), true);
 // The set u runs puts a removed login back in its own folder, though its name is not its folder's; and
 // space on a default login the file does not list (no rule) gives it the rule.

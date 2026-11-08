@@ -686,13 +686,15 @@ const otherLogins = (own) => {
 const lineLogin = () => { const own = ownLogin(); return own?.configDir && otherLogins(own).length ? null : own; };
 // The probes an open desk-q makes now. With one login, its probe while no worker anywhere keeps the
 // reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
-// worker runs on it, judged on that login's own probe reading.
+// worker runs on it, judged on that login's own probe reading. desk-q's own login is never probed when
+// its rule is one desk may not start work on (off); with no rule, as one login no file names, it is.
 //   -> [{ login }]
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
-  if (!own || !others.length) return probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
-  return [own, ...others].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
+  const ownProbed = own?.rule == null || inUse(own);
+  if (!own || !others.length) return ownProbed && probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
+  return [...(ownProbed ? [own] : []), ...others].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
 }
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');

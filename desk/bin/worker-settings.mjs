@@ -404,8 +404,8 @@ if (mode === 'triage') {
     ...(DISPATCH_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
     // The desk-env subcommands that write: the machine profile, the cost sources and the login rules
-    // are the user's to confirm.
-    ...['machine write', 'machine set', 'costs write', 'logins set', 'logins remove'].flatMap((w) => [
+    // are the user's to confirm. desk-env itself refuses them in a worker too, for the forms these miss.
+    ...E.WORKER_DENIED_WRITES.flatMap((w) => [
       `Bash(desk-env ${w}:*)`, `Bash(${E.HOME}/.local/bin/desk-env ${w}:*)`, `Bash(~/.local/bin/desk-env ${w}:*)`,
       ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs ${w}:*)`, `Bash(node ${b}/desk-env.mjs ${w}:*)`]),
     ]),
