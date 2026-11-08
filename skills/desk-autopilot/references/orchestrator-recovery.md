@@ -191,9 +191,14 @@ re-running a ticket from scratch.
 - **With more than one login, a limit benches its own login, not the batch.** A worker or preflight
   at a limit on one login benches that login (the queue's `benched`, one record per login) until its
   reset passes or a probe call on it succeeds; one with no reset time waits for the probe. New work
-  starts on the other logins, on standby only once every login in rotation is benched, and a worker
-  paused on a benched login stays paused there and resumes there. The batch holds as above only
-  once every login is benched, and its hold names each login's reset, earliest first.
+  starts on the other logins, on standby only once every login in rotation is benched. A worker
+  whose session ended at a login's limit moves to another login that can take new work (the queue's
+  `login_move`), as a fresh session: its transcript stays under its own login. It starts at the stage
+  it reached, from Stage 3 on, when its worktree holds its resume file, and otherwise at Stage 0,
+  its briefing saying why. Either way the briefing names the uncommitted changes the worktree kept,
+  and the move spends no resume try. With no other login open it stays paused and resumes its own
+  session once its login is back, as with one login. The batch holds as above only once every login
+  is benched, and its hold names each login's reset, earliest first.
 - **The pass's own model calls skip a benched login too.** The decider, triage and its lane
   challenge, and epic planning's headless calls each start on a usable login no batch of the repo has
   benched, chosen as a new worker's is (`call-login.mjs`). With every login benched, no decider

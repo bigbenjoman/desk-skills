@@ -14,7 +14,7 @@ import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPar
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
-  roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
+  roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, renderMoved } from './handoff.mjs';
 import { workerMarkers, endedNormally, readLog, prBodyIn } from './harvest.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -272,9 +272,17 @@ function benchHold() {
   USAGE_HOLD = { type: out[0].type, resetsAt: out[0].resets_at, preflight: null, logins: out };
   return true;
 }
+// A login other than `from` that new work may start on: usable, and not benched.
+function otherOpen(from) {
+  CHECKED ??= checkLogins(SUBS, { tools: ['claude'] });
+  return CHECKED.usable.some((l) => !benchOf(l) && loginKey(l) !== loginKey(from));
+}
 // The limits that hold this pass's spawns: each paused worker's, and the batch's own from a preflight
 // the limit refused (the queue's usage_hold).
 const usageHolds = [];
+// The paused workers whose session has ended at the limit, not lifted yet: with another login to take
+// it, each moves there as a fresh session (the usage limit section below).
+const exitedAtLimit = new Set();
 // A worker waiting at a usage limit until it lifts (or the grace after its reset) is paused, not quiet.
 // The limit passed in is one the worker has not answered since (usageLimit's `resumed` is false).
 const pausedOn = (limit) => !!limit && !limit.resumed && (limit.resetsAt == null || Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS);
@@ -783,7 +791,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
     // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
     // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,
-    // then is resumed in its own session, never failed or taken as done. Once per limit: a resume that
+    // then is resumed in its own session, never failed or taken as done; with another login open, it
+    // moves there first (exitedAtLimit, the usage limit section). Once per limit: a resume that
     // ends before the model answers, with no new rejection, leaves the same count of limits in the log,
     // and is then handled as any other exit below rather than resumed on every pass.
     if (lifted(limit, loginOf(loginDirOf(t)))) {
@@ -791,7 +800,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`,
         `resume_limits=${usage.limits.length}`);
       report.advanced.push(`${t.key} ${why}: queued to resume in its own session`);
-    }
+    } else exitedAtLimit.add(t.key);
   } else {
     // Killed mid-run, PR open or not: resumed in its own session by the spawn below, ahead of new
     // tickets, unless config §3b refuses another resume.
@@ -853,11 +862,6 @@ let USAGE_HOLD = null;
       continue;
     }
     usageHolds.push(h);
-    report.paused.push(`${h.key} on ${limitName(h.limit.type)}${untilText(h.limit)}, then it resumes, or sooner once a probe call succeeds`);
-    // desk-q reads this to show the ticket paused rather than at its stage.
-    if (h.was?.type !== h.limit.type || h.was?.resets_at !== h.limit.resetsAt) {
-      q('set', h.key, `usage_paused=${JSON.stringify({ type: h.limit.type, resets_at: h.limit.resetsAt })}`);
-    }
   }
   // One usable login holds the batch as it always has, whatever else the subscriptions file lists, so
   // long as every limit in play is on it. Logins are checked only once a limit is in play: checking
@@ -880,6 +884,34 @@ let USAGE_HOLD = null;
       delete BENCHED[k];
       if (b.since !== PASS_AT) report.advanced.push(`login ${b.login} is back: ${limitName(b.type)} lifted (${liftedHow(benchLimit(b))}), so it takes new work again`);
     }
+    // A paused worker whose session has ended, while another login can take new work, carries on there
+    // as a fresh session from the round it was in (the spawn below, moveRound): its transcript lives
+    // under its own login's folder, so it cannot be resumed on another. Its login stays benched.
+    for (const h of [...usageHolds]) {
+      if (!exitedAtLimit.has(h.key) || !otherOpen(h.login)) continue;
+      usageHolds.splice(usageHolds.indexOf(h), 1);
+      q('set', h.key, 'state=triaged', 'usage_paused=null', `login_move=${JSON.stringify({ from: h.login.name, from_dir: h.login.configDir ?? null,
+        stage: tickets[h.key].stage ?? null, type: h.limit.type, resets_at: h.limit.resetsAt, at: PASS_AT })}`);
+      report.advanced.push(`${h.key} stopped at ${limitName(h.limit.type)} on login ${h.login.name}${untilText(h.limit)}: queued to carry on in a fresh session on another login`);
+    }
+  }
+  // A move still waiting for a slot stands only while its login is benched and another can take it.
+  // Otherwise it goes back to paused, and its next harvest resumes its own session once its limit lifts.
+  for (const t of Object.values(tickets)) {
+    if (t.state !== 'triaged' || !t.login_move) continue;
+    const from = loginOf(t.login_move.from_dir);
+    if (rotating && !one && benchOf(from) && otherOpen(from)) continue;
+    q('set', t.key, 'state=running', 'login_move=null');
+    report.advanced.push(`${t.key}: not moved off login ${t.login_move.from}, ${rotating && !one && benchOf(from) ? 'since no other login can take it now' : 'which is back'}: it resumes its own session there`);
+  }
+  for (const h of usageHolds) {
+    report.paused.push(`${h.key} on ${limitName(h.limit.type)}${untilText(h.limit)}, then it resumes, or sooner once a probe call succeeds`);
+    // desk-q reads this to show the ticket paused rather than at its stage.
+    if (h.was?.type !== h.limit.type || h.was?.resets_at !== h.limit.resetsAt) {
+      q('set', h.key, `usage_paused=${JSON.stringify({ type: h.limit.type, resets_at: h.limit.resetsAt })}`);
+    }
+  }
+  if (rotating && !one) {
     if (!benchHold()) {
       for (const b of Object.values(BENCHED)) {
         report.paused.push(`login ${b.login} benched on ${limitName(b.type)}${untilText(benchLimit(b))}, or until a probe call on it succeeds: new work goes to the other logins`);
@@ -1416,10 +1448,10 @@ const eligibleBase = all.filter((r) =>
   !collidesWithRunning(r));
 const blockedByDone = eligibleBase.filter(alreadyFinished);
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every
-// new ticket.
+// new ticket. So does a worker moving off a login at its usage limit.
 const toResume = (r) => ['pending', 'usage', 'maintenance'].includes(r.resume);
 const toHandoff = (r) => r.handoff === 'pending';
-const goesFirst = (r) => toResume(r) || toHandoff(r);
+const goesFirst = (r) => toResume(r) || toHandoff(r) || !!r.login_move;
 const eligible = eligibleBase.filter((r) => !alreadyFinished(r)).sort((a, b) => goesFirst(b) - goesFirst(a));
 if (!maySpawn && eligible.length) {
   personStall(`not spawning ${eligible.length} ticket(s): config §3 ${HEADLESS_KEY} is "${headlessPerm}"` +
@@ -2144,6 +2176,45 @@ function resumeRound(t, { wt, kept, branch }) {
   return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
 }
 
+// A worker moving off a login at its usage limit (login_move) starts a fresh session on login `to` at
+// the stage its stopped session reached, from Stage 3 on, when its worktree is on the queue's branch and
+// holds the resume file that stage left; otherwise at Stage 0, saying why. Either way its briefing names
+// the uncommitted changes the stopped session left, which the worktree keeps. Returns as resumeRound.
+function moveRound(t, { wt, kept, branch, to }) {
+  const m = t.login_move;
+  const said = /^\s*(4b|\d)/i.exec(String(m.stage ?? ''))?.[1];
+  const stage = roundStage(m.stage);
+  let why = null;
+  let resumePath = null;
+  if (!kept) why = `its worktree ${wt} was not kept`;
+  else if (!said) why = 'it stopped before it recorded a stage';
+  else if (!stage) why = `it stopped at Stage ${said}, before Stage 3, the first a session resumes at`;
+  else {
+    const r = resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE });
+    resumePath = r.path;
+    if (!r.ok) why = r.why;
+    else if (!existsSync(r.path)) why = `it left no resume file (${r.path})`;
+  }
+  // Read whole, not through shOut, whose trim would cut the first line's leading status column.
+  let changes = [];
+  if (kept) {
+    try { changes = execFileSync('git', ['-C', wt, 'status', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean); } catch { /* not a git worktree */ }
+  }
+  const base = `origin/${DEFAULT_BRANCH}`;
+  const brief = renderMoved({ key: t.key, from: m.from, to: to.name, limit: limitName(m.type), stage: why ? null : stage, why, branch, worktree: wt, base,
+    commits: kept ? branchCommits(wt, base) : [], resumePath, changes });
+  const keptNote = changes.length ? `, keeping ${changes.length} uncommitted change(s)` : '';
+  return why
+    ? { stage: null, brief, line: ` from Stage 0 (not resumed after moving logins: ${why})${keptNote}` }
+    : { stage, brief, line: ` resumed at Stage ${stage}, where its stopped session was${keptNote}` };
+}
+
+// A move that cannot go ahead this pass: the worker goes back to paused on its own login, as before.
+function unmove(t, why) {
+  q('set', t.key, 'state=running', 'login_move=null');
+  report.waiting.push(`${t.key}: not moved off login ${t.login_move.from}, as ${why}: it waits there, and resumes its own session once its limit lifts`);
+}
+
 // A session that handed off is followed by a fresh one, with a new session id, in the same worktree and
 // on the same branch, starting at the stage it named with the handoff briefing in its first message.
 // Its log starts as a round of its own, so the batch report adds every session's tokens and cost.
@@ -2412,6 +2483,7 @@ for (const t of spawnable) {
   }
   const pick = needsLogin ? pickLogin() : null;
   if (needsLogin && !pick) {
+    if (t.login_move) unmove(t, 'no other login can take it now');
     if (usageStop) break;
     noLogin();
     continue;
@@ -2471,13 +2543,14 @@ for (const t of spawnable) {
   const model = models.off ? '' : models[tier];
   const workerEnv = { AUTOPILOT_BRANCH: branch, AUTOPILOT_DATABASE: database, AUTOPILOT_MODEL: model, ...pick.vars };
 
-  const resumed = resumeRound(t, { wt, kept, branch });
+  const resumed = t.login_move ? moveRound(t, { wt, kept, branch, to: pick.login }) : resumeRound(t, { wt, kept, branch });
   const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
   const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
   const pre = preflight(t.key, wt, workerEnv);
   if (pre.limit) {
     preflightHitLimit(t, pre.cost, pick.login);
+    if (t.login_move) unmove(t, `login ${pick.login.name} was refused at the limit too`);
     if (usageStop) break;
     continue;
   }
@@ -2511,8 +2584,9 @@ for (const t of spawnable) {
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
-    // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
-    'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null',
+    // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff. One that
+    // moved logins keeps its resume tries as they were: the move is not one.
+    'resume=null', 'resume_why=null', ...(t.login_move ? [] : ['resumes=null']), 'resume_limits=null', 'usage_paused=null', 'login_move=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
@@ -2534,7 +2608,7 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.login_move ? `, moved logins from ${t.login_move.from}, at ${limitName(t.login_move.type)}` : ''}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has

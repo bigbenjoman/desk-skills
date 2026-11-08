@@ -166,6 +166,37 @@ export function renderNoResume({ round, why, path }) {
   ].join('\n');
 }
 
+// A worker stopped at one login's usage limit and moved to another (pass.mjs moveRound): its session's
+// transcript lives under the first login's folder, so the new one is a fresh session. It starts at the
+// stage the stopped one reached where that can be resumed (`stage`), else at Stage 0 saying `why`. Any
+// uncommitted changes the stopped session left in the worktree (`changes`, as git status --porcelain
+// prints them) are named, so the new session builds on them.
+export function renderMoved({ key, from, to, limit, stage, why, branch, worktree, base, commits, resumePath, changes = [] }) {
+  const items = (xs, none) => (xs.length ? xs.map((x) => `- ${x}`) : [`- ${none}`]);
+  const stopped = `The last session of ${key} stopped at ${limit} on login ${from}. Its transcript stays under that login, so this is a fresh session on login ${to}.`;
+  return [
+    ...(stage
+      ? [`## Moved logins: this session resumes at Stage ${stage}`, '',
+        `${stopped} It had reached Stage ${stage}, so this session starts there rather than at Stage 0: do not redo the stages before it. ` +
+          `Check git status and git log in your worktree, and read your resume file ${resumePath}.`]
+      : ['## Moved logins: not resumed, this session starts at Stage 0', '',
+        `${stopped} It is not resumed from a later stage: ${why}. Start at Stage 0${resumePath ? `, and do not resume from its resume file ${resumePath}` : ''}. Your first stage line says why, as:`, '',
+        `AUTOPILOT_STAGE: 0/9 triage (not resumed after moving logins: ${why})`]),
+    '',
+    ...(changes.length
+      ? ['### Uncommitted changes in your worktree', '',
+        'The stopped session left these uncommitted. They are its work on this ticket: keep them, read them, and build on them rather than starting over.', '',
+        ...changes.map((c) => `- \`${c}\``), '']
+      : []),
+    '### Branch and its commits',
+    '',
+    `\`${branch}\` in ${worktree}. Its commits since \`${base}\`:`,
+    '',
+    ...items(commits, 'none'),
+    '',
+  ].join('\n');
+}
+
 // The briefing: the ticket key, its acceptance criteria, the branch and its commits, the lane, the
 // verification results, the self-review findings so far and the evidence paths, and nothing else.
 export function renderHandoff({ key, stage, data, branch, worktree, base, commits }) {
