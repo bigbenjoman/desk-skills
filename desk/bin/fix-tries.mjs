@@ -420,7 +420,8 @@ export function personGapsIn(why) {
 }
 export function personGapsCall(review, opts = {}) {
   const v = review.verdict, open = Number(v?.gaps) || 0;
-  if (opts.judgement !== 'yes' || !open || reviewCounts(v) || Number(v?.p2) > 0) return null;
+  // A deferred P2 earns no try either (reviewFix), so it does not keep the gaps from the person.
+  if (opts.judgement !== 'yes' || !open || reviewCounts(v) || (Number(v?.p2) > 0 && !(Number(v?.deferred) > 0))) return null;
   const person = reviewGaps(review.body).filter(personsCall);
   return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.join('; ')}` } : null;
 }

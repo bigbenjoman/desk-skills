@@ -291,6 +291,7 @@ t('DS-513 AC3 a review stuck reason gives up the person\'s gap it carries', JSON
 t('DS-513 a ready PR with a code gap beside the person\'s is not stuck on them', gapsCall(personBody(2, PERSON_GAP, CODE_GAP), { gaps: '2' }), null);
 t('DS-513 nor with a finding beside the person\'s gap', gapsCall(onlyPerson, { gaps: '1', p1: '1' }), null);
 t('DS-513 nor a P2', gapsCall(onlyPerson, { gaps: '1', p2: '1' }), null);
+t('DS-513 a deferred P2 earns no try, so the person\'s gap still reaches them', gapsCall(onlyPerson, { gaps: '1', p2: '1', deferred: '1' })?.call, 'stuck');
 t('DS-513 nor with no gap counted', gapsCall(onlyPerson, { gaps: '0' }), null);
 t('DS-513 nor without autopilot-judgement yes', gapsCall(onlyPerson, { gaps: '1' }, {}), null);
 t('DS-513 another stuck reason is not a person\'s-gaps reason', personGapsIn('review not clean after 2 fix tries: 1 P1 — P1: src/a.ts:1 quotes PERSON\'S CALL').length, 0);
