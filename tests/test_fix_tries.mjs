@@ -554,6 +554,19 @@ t('DS-433 red only on a waived flake, the driver reaches its hold, so it goes fo
 t('DS-433 a review at the head that no fix worker took is the person\'s', JSON.stringify(verdictTry(tk(), green433, ctx433({ ...stale, why: 'its review verdict at aaaaaaaaa is not clean (p2=1)', settle: true }))), JSON.stringify({ call: 'stuck', why: 'its review verdict at aaaaaaaaa is not clean (p2=1)' }));
 t('DS-433 so is an unset row, which no worker can set', verdictTry(tk(), green433, ctx433({ ...stale, why: 'row', person: true }))?.call, 'stuck');
 
+// DS-449 AC1: a review try the pass narrowed names only the base's changed files and the PR's code using them.
+const narrowed = { from: OLD, range: '111111111111..222222222222', files: ['src/helper.js'], users: ['src/a.js'] };
+const rvT = reviewTry(tk(), { pr: 702, head: HEAD, why: 'no clean review at its head', targeted: narrowed });
+t('DS-449 AC1 a narrowed review try keeps what to read', JSON.stringify(rvT?.fix.targeted), JSON.stringify(narrowed));
+const briefT = fixBrief(tk({ fix: rvT.fix }));
+t('DS-449 AC1 its brief names the base\'s changed files and the PR\'s code that uses them', briefT.includes('### Targeted: review only what the base changed under the review') && briefT.includes('- Changed by the base: src/helper.js') && briefT.includes("- The PR's code that uses them: src/a.js") && briefT.includes('`111111111111..222222222222`') && briefT.includes(`posted on ${OLD.slice(0, 12)} was clean`), true);
+t('DS-449 AC1 and its task asks for the targeted round on only that', fixTask(tk({ fix: rvT.fix })).includes('in its targeted round on only what the briefing\'s "Targeted" section names'), true);
+t('DS-449 AC1 with no PR file using them, the brief says so', fixBrief(tk({ fix: { ...rvT.fix, targeted: { ...narrowed, users: [] } } })).includes("- The PR's code that uses them: none of its changed files names one"), true);
+t('DS-449 AC4 an unnarrowed try is the whole review, as before', !briefRv.includes('Targeted') && !('targeted' in rv1.fix) && !fixTask(tk({ fix: rv1.fix })).includes('targeted'), true);
+const xT = reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, base: 'main', baseMerge: () => true, targeted: narrowed });
+t('DS-449 AC1 an extra try after a base merge is narrowed too', `${xT?.fix.extra} ${xT?.fix.targeted?.files}`, 'true src/helper.js');
+t('DS-449 AC1 a held PR the driver will not merge gets the narrowed try', verdictTry(tk(), green433, ctx433({ ...stale, targeted: narrowed }))?.fix.targeted?.users?.[0], 'src/a.js');
+
 // What the driver holds on (review-threads.mjs readVerdict).
 {
 const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
@@ -574,6 +587,13 @@ t('DS-433 a clean verdict carried to the head reads clean, naming its commit', `
 const carriedDirty = read433(pl(HEAD, marked(OLD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { carry: () => true });
 t('DS-433 an unclean verdict carried to the head is not clean, and is a review worker\'s to post at it', `${carriedDirty.clean} ${carriedDirty.settle} ${carriedDirty.carried}`, 'false false null');
 t('DS-433 an unset row is the person\'s', read433(pl(HEAD), { clean: 'TODO' }).person, true);
+// DS-449: a clean verdict that does not carry is narrowed for the held PR's review worker; an unclean one never is.
+const scoped = { from: OLD, range: 'a..b', files: ['src/h.js'], users: [] };
+let scopeAsked = null;
+const narrowRead = read433(pl(HEAD, marked(OLD)), { carry: () => null, scope: (sha, body) => { scopeAsked = [sha, body.includes(OLD)]; return scoped; } });
+t('DS-449 AC1 a clean verdict that does not carry is narrowed, asked with its commit and body', `${narrowRead.clean} ${narrowRead.targeted === scoped} ${JSON.stringify(scopeAsked)}`, `false true ${JSON.stringify([OLD, true])}`);
+t('DS-449 AC3 an unclean verdict for an older head is not narrowed: the head is reviewed whole', 'targeted' in read433(pl(HEAD, marked(OLD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { carry: () => null, scope: () => scoped }), false);
+t('DS-449 a carried verdict is never narrowed', 'targeted' in read433(pl(HEAD, marked(OLD)), { carry: () => true, scope: () => { throw new Error('asked'); } }), false);
 t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');
 }
 

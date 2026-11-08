@@ -1956,6 +1956,8 @@ check "DS-448 AC6 its comment says no review has read the head, and the driver w
   'grep -qF "is carried to this head (\`${CB:0:12}\`), which no review has read" "$T/gh-calls" && [ -e "$T/state-cr/merge-driver/carried-761-$CB" ]'
 check "DS-448 AC8 lever on, a clean merge over a recorded file sends the head to a review worker" \
   '! grep -q "^pr ready 762" "$T/gh-calls" && [ "$(field R-2 fix.kind)" = "\"rereview\"" ] && [ "$(field R-2 undraft.carried_from)" = null ]'
+check "DS-449 AC1 that review try reads only the recorded file the base changed, and the PR code that names it" \
+  '[ "$(field R-2 fix.targeted | jq -c "[.from, .files, .users]")" = "[\"$CA\",[\"c.txt\"],[]]" ]'
 export DESK_CONFIG="$T/config-c.md"
 
 # ---- a review whose P0s and P1s are posted inline goes to a fix worker too
