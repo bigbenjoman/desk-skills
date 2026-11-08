@@ -133,6 +133,12 @@ say({ type: 'result', subtype: 'success', is_error: false, result: 'done', total
   modelUsage: { m: { inputTokens: 10, outputTokens: 20, cacheCreationInputTokens: 30, cacheReadInputTokens: 40 } } });
 `);
 chmodSync(join(bin, 'claude'), 0o755);
+// A stub codex: the Codex usage probe's call is logged and fails, so no case reaches the real binary.
+writeFileSync(join(bin, 'codex'), `#!/usr/bin/env node
+require('fs').appendFileSync(process.env.STUB_LOG, JSON.stringify({ tool: 'codex', args: process.argv.slice(2) }) + '\\n');
+process.exit(1);
+`);
+chmodSync(join(bin, 'codex'), 0o755);
 
 const log = join(dir, 'calls.jsonl');
 const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -358,7 +364,8 @@ t('DS-477 AC4 a failed after-run probe stops the bench', calls().length === 1 &&
 
 // AC5: a Codex arm with no Codex reading stops before the run.
 r = qrun('q-codex', [task('one', 'FIX')], { CODEX_HOME: join(dir, 'codex-empty') }, ['--arm', 'c=gpt-5:high']);
-t('DS-477 AC5 no Codex reading stops', calls().length === 0 && /the Codex quota is unreadable for Codex login codex-empty: no weekly reading/.test(r.stderr), true);
+t('DS-477 AC5 no Codex reading stops', calls().filter((c) => c.tool !== 'codex').length === 0 && /the Codex quota is unreadable for Codex login codex-empty: no weekly reading: the Codex usage probe exited 1/.test(r.stderr), true);
+t('DS-477 AC5 the Codex usage probe ran once', calls().filter((c) => c.tool === 'codex').length, 1);
 
 // AC8: a setting that is not a number refuses to start.
 r = qrun('q-badcap', [task('one', 'FIX')], { DESK_MACHINE: profile('badcap', { 'bench-cap-points': 'ten' }) });

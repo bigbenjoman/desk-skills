@@ -122,7 +122,7 @@ t('AC13 printed as found, no rule', checkLines(noFile, join(T, 'no-such.md')).so
 // ---- setting a rule (AC8, AC9, AC10) through the CLI, with the fakes on PATH
 const SUBS = join(T, 'config', 'subscriptions.md');
 const env = { ...process.env, PATH: `${FB}:${process.env.PATH}`, HOME: H, DESK_CONFIG_ROOT: join(T, 'config') };
-for (const k of ['DESK_CONFIG', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_MACHINE', 'DESK_SUBSCRIPTIONS', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME']) delete env[k];
+for (const k of ['DESK_CONFIG', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_MACHINE', 'DESK_SUBSCRIPTIONS', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'DESK_AUTOPILOT_WORKER']) delete env[k];
 const cli = (...a) => new Promise((res) => execFile('node', [join(BIN, 'desk-env.mjs'), 'logins', ...a], { env, cwd: T, encoding: 'utf8' },
   (err, stdout, stderr) => res({ rc: err ? err.code ?? 1 : 0, out: stdout + stderr })));
 mkdirSync(join(T, 'config'), { recursive: true });

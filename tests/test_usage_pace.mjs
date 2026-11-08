@@ -17,7 +17,8 @@ const T = mkdtempSync(join(tmpdir(), 'desk-usage-pace-'));
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'), DESK_LOCK_DIR: join(T, 'locks') };
 for (const k of ['DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH',
   'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN', 'AUTOPILOT_RERUN', 'AUTOPILOT_PORT_FLOOR',
-  'AUTOPILOT_MIN_AVAIL_GB', 'AUTOPILOT_BATCH_BUDGET_USD', 'DESK_UPLOAD_APPROVED', 'DESK_USAGE_DIR']) delete process.env[k];
+  'AUTOPILOT_MIN_AVAIL_GB', 'AUTOPILOT_BATCH_BUDGET_USD', 'DESK_UPLOAD_APPROVED', 'DESK_USAGE_DIR', 'DESK_AUTOPILOT_WORKER',
+  'CLAUDE_CONFIG_DIR', 'CODEX_HOME']) delete process.env[k];
 Object.assign(process.env, env);
 mkdirSync(env.DESK_LOCK_DIR, { recursive: true });
 // Imported after the environment is set: desk-env reads HOME once.

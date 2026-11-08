@@ -146,6 +146,8 @@ t('memory change reported', hardwareChanges(back, more).map((c) => `${c.key}:${c
 t('memory change re-proposes', sizingChanges(back, propose(more)).some((c) => c.key === 'memory-ceiling-gb' && c.now === '120'), true);
 
 // ---- desk-env: get/why, and the §3b fallback (a set repo row wins; no profile behaves as before)
+// desk-env refuses its config writes inside an autopilot worker; these tests are not one.
+delete process.env.DESK_AUTOPILOT_WORKER;
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
 const T = mkdtempSync(join(tmpdir(), 'desk-machine-'));
 const profile = join(T, 'machine.md');
