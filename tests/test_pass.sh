@@ -2278,6 +2278,35 @@ check "DS-490 AC2 pending past the limit with its run in progress: the run is ca
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-490 AC2 on a second expiry the person, naming the job, and nothing cancelled again" \
   '! grep -q "^run cancel" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Slow job\" has been in_progress for .* with its run 9102 still in progress, past the 6h 0m limit, after it was re-run once at this head. Re-run job \"Slow job\" of run 9102 on #761"'
+
+# ---- DS-498: a draft's required check the runner killed (exit 137) is re-run once, with no fix worker,
+# then put to the person as the runner's. The fake gh also answers a job's annotations from $T/fb/notes-<job>.json.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations$/.exec(a[1] ?? '');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/run-' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && a[1] === 'rerun') { /* accepted */ }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (job) { try { process.stdout.write(fs.readFileSync('$T/fb/notes-' + job[1] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { /* no PR was put back to draft */ }
+else process.exit(1);
+EOF
+fbx 761 "$HB1" tests:FAILURE:9201
+printf '%s' '{"status":"completed","startedAt":"2026-11-04T07:00:00Z","jobs":[{"databaseId":92011,"name":"tests","status":"completed","conclusion":"failure","steps":[{"name":"Set up job","status":"completed","conclusion":"success"},{"name":"Type-check","status":"completed","conclusion":"failure"}]}]}' > "$T/fb/run-9201.json"
+printf '%s' '[{"path":".github","annotation_level":"failure","message":"Process completed with exit code 137."}]' > "$T/fb/notes-92011.json"
+rm -f "$T/state-b/merge-driver/cooldown-761"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-498 AC1 a required check killed with exit 137 is re-run, and no fix worker is sent" \
+  'grep -q "^run rerun 9201 --repo acme/widgets --failed$" "$T/gh-calls" && [ "$(field V-1 undraft.call)" = "\"rerun\"" ] && [ "$(field V-1 state)" = "\"done\"" ] && ! echo "$out" | grep -q "V-1 requeued"'
+check "DS-498 AC1 and the pass logs why" \
+  'echo "$out" | grep -qF "undraft: PR #761 (V-1) stays draft: its checks were ended by the runner, not their code, so they are re-run once: \"tests\" exit code 137: the runner ran out of memory and killed it"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-498 AC3 killed again after its rerun: the person, with the infrastructure fix, and nothing re-run or requeued" \
+  '! grep -q "^run rerun" "$T/gh-calls" && [ "$(field V-1 state)" = "\"done\"" ] && echo "$out" | grep -qF "V-1: DRAFT — PR #761 stays draft: its \"tests\" check was ended by the runner again after desk re-ran it at this head: \"tests\" (exit code 137: the runner ran out of memory and killed it). Give that job a bigger runner, or cap the memory it uses"'
 fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
 
 # ---- DS-402: a worker that parks only on a red check §4 Check builds names is recorded done, and built

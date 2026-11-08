@@ -37,7 +37,7 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, FAILED } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
 import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
@@ -2776,6 +2776,17 @@ const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run
 const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
 // A run's status, start and jobs, for a draft's check stuck pending (undraft.mjs stuckCall); null when unread.
 const runOf = (id) => cached(`run:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,startedAt,jobs']); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } });
+// A failed check the runner killed or lost rather than its code (gate.mjs runnerFault), from its job's
+// annotations and steps; null when either cannot be read.
+const faultOf = (f) => {
+  if (!f.runId) return null;
+  try {
+    return cached(`fault:${f.runId}:${f.name}`, () => {
+      const job = (runJobs(f.runId)?.jobs ?? []).find((j) => j?.name === f.name);
+      return job?.databaseId ? runnerFault(jobAnnotations(GH_REPO, job.databaseId), job) : null;
+    });
+  } catch { return null; }
+};
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
@@ -2792,6 +2803,7 @@ if (drafts.length) {
   };
   cfg.untriggered = untriggeredOf;
   cfg.runOf = runOf;
+  cfg.fault = faultOf;
   // A reopen already made at this base head is not waited on again: the check is the person's then.
   cfg.stale = (base, head, branch, baseHead) => {
     let x;

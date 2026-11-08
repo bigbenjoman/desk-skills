@@ -58,7 +58,7 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
-import { cellPlan } from './undraft.mjs';
+import { cellPlan, RUNNER_FIX } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles } from './gate.mjs';
 import { repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
@@ -198,6 +198,13 @@ function draftPlain(r, n, u) {
     const it = found.length === 1 && found[0].startsWith('1 ') ? 'it' : 'them';
     const unsent = kv.some(([k]) => k === 'deferred') ? `which it marks deferred, so desk sends no worker to ${it}` : `which it does not list with a file:line a worker can fix, so desk sends no worker to ${it}`;
     if (what) return `${n} is a draft, and its code review found ${what}, ${unsent}. Fix ${it} on its branch and post a fresh review; the next pass then takes it out of draft.`;
+  }
+  // A check the runner ended (undraft.mjs rerunCall): no change on its branch clears it.
+  const ended = u?.call === 'person' && /^its (.+?) check was ended by the runner[^:]*: (.+?)(?:; config §3 ci-rerun is "([^"]*)", so desk is not granted a rerun)?$/.exec(why);
+  if (ended) {
+    const lead = `${n} is a draft, and its ${ended[1]} check was ended by the runner, not by its code: ${one(ended[2])}`;
+    if (ended[3] != null) return `${lead}. Desk is not granted reruns (config §3 ci-rerun is "${ended[3]}"), so re-run it yourself, and if it fails the same way, ${RUNNER_FIX}; the next pass then picks it up.`;
+    return `${lead}, again after desk re-ran it once. Nothing on its branch fixes that: ${RUNNER_FIX}, then re-run it; the next pass then picks it up.`;
   }
   if (/Clean review verdict is not set/.test(why)) return `${n} is a draft, and desk can not read its code review because §4 Clean review verdict is not set. Set it with /desk-setup; the next pass then reads the review.`;
   if (/clean and green/.test(why)) return `${n} is a draft with a clean review and green checks. Undraft it; ${thenMerge(r)}.`;
