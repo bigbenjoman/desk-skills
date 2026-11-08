@@ -673,6 +673,12 @@ put('omega499', { port: 4650, beat: 1, supervised: true, merge: 'yes', people: {
 t('DS-499 AC1 no reviewer falls back to the product owner', N.collect({ word: 'chi' }).items[0]?.need.startsWith('PR #131 needs Sam\'s approval:'), true);
 t('DS-499 AC1 neither row: a person with approval rights', N.collect({ word: 'psi' }).items[0]?.need.startsWith('PR #132 needs approval from a person with approval rights:'), true);
 t('DS-499 AC1 a row that is the user', N.collect({ word: 'omega499' }).items[0]?.need.startsWith('PR #133 needs your approval:'), true);
+// A PR the pass sent to a protected-files try, as applyFix leaves it: requeued, its stuck reason cleared.
+const pkgLine = 'Approval required — 1 protected file(s): `apps/portal/apps/web/package.json`.';
+const onTry = (state) => ({ ...gateStuck(134, pkgLine), state, stuck: null, merge_blocked: `approval: "${GATE}" needs approval from a human reviewer at h134: a person approves it before desk merges it`,
+  fix: { try: 1, of: 2, pr: 134, head: 'h134', kind: 'protected', ready: true, paths: ['apps/portal/apps/web/package.json'], what: 'protected files', at: minsAgo(1) } });
+put('psi500', { port: 4660, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)' }, tickets: { 'X-1': onTry('queued'), 'X-2': onTry('running') } });
+t('DS-500 AC1 a PR on its protected-files try is no item while it is queued or runs', N.collect({ word: 'psi500' }).items.map((i) => i.t.key).join(), '');
 
 // ---- DS-410: a ready PR into a feature base held on a required check its workflow never runs there.
 const why410 = 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/ci.yml runs on pull requests into main, production)';

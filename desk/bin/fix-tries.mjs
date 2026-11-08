@@ -13,7 +13,8 @@
 // worker, both within the same tries, and so does a draft in conflict with
 // its base that §3 lets a worker resolve (conflictFix), or whose §4 Check builds build failed at a
 // head behind its base (syncFix). A draft whose screenshots were never taken goes
-// to a capture worker, once (captureTry).
+// to a capture worker, once (captureTry). A ready PR whose red check asks an approval for protected files,
+// or reads no verdict it accepts at the head, goes to a worker that may clear it first (gateTry).
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
 //   requeue  send the ticket back for a fix worker; `fix` is the try (its number, the head it is for,
@@ -24,7 +25,7 @@
 // A check §4 Checks workers can't fix or §4 Check builds names, or one failing at a step §4 Pre-merge
 // steps names, is never sent to a worker: on its own it is stuck with what clears it, and beside a
 // check a worker can fix it is named in the brief as not theirs.
-import { evaluateGate, stateFailing } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict } from './gate.mjs';
 
 export const FIX_TRIES_MAX = 2;
 // merge-driver.sh's own cap and gap: reruns per check per head, and the seconds between them.
@@ -50,8 +51,10 @@ export function parseOperatorChecks(items) {
 export const runUrl = (repo, id) => (id ? `https://github.com/${repo}/actions/runs/${id}` : null);
 export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // A fix try already made for this head: one whose worker finished without moving it. A review try
-// (kind `rereview`) and a capture try (`capture`) move no head by design, so they do not count here.
-const fixedAt = (done, head) => done.some((x) => x.head === head && x.kind !== 'rereview' && x.kind !== 'capture');
+// (kind `rereview`), a capture try (`capture`) and a protected-files try (`protected`, which moves it only
+// when a change is not needed) move no head by design, so they do not count here.
+const OWN_HEAD = new Set(['rereview', 'capture', 'protected']);
+const fixedAt = (done, head) => done.some((x) => x.head === head && !OWN_HEAD.has(x.kind));
 
 // The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
 // jobs`. A payload of any other shape names none.
@@ -101,9 +104,11 @@ const operatorStuck = (notMine, ctx) => checksStuck(null, [], notMine, ctx);
 // A red-checks fix: each check a worker fixes with its run, and those it leaves to a person.
 const checksFix = (mine, notMine, repo) => ({ kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}`, checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId) })), not_mine: notMine.map(({ name, command }) => ({ name, command })) });
 const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.length)}`, mine, notMine, ctx);
-// The tries that count against FIX_TRIES_MAX: all but the review tries a merge from the base earned
-// and the capture try (captureTry), which is the PR's own one.
-export const triesMade = (done) => (done ?? []).filter((x) => !x.extra && x.kind !== 'capture').length;
+// The tries that count against FIX_TRIES_MAX: all but the review tries a merge from the base earned,
+// the capture try (captureTry), which is the PR's own one, and the protected-files tries (gateTry), which
+// have their own.
+const ownCount = (x) => x.extra || x.kind === 'capture' || x.kind === 'protected';
+export const triesMade = (done) => (done ?? []).filter((x) => !ownCount(x)).length;
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => triesMade(done) >= FIX_TRIES_MAX || triedHere;
 const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: triesMade(done) + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
@@ -149,7 +154,7 @@ function survivors(done, findings, gaps) {
 // The tries that count, by kind in the order first made, as `1 conflict, 1 rereview, 1 review`.
 function triesByKind(done) {
   const n = new Map();
-  for (const x of done ?? []) if (!x.extra && x.kind !== 'capture') n.set(x.kind ?? 'fix', (n.get(x.kind ?? 'fix') ?? 0) + 1);
+  for (const x of done ?? []) if (!ownCount(x)) n.set(x.kind ?? 'fix', (n.get(x.kind ?? 'fix') ?? 0) + 1);
   return [...n].map(([k, c]) => `${c} ${k}`).join(', ');
 }
 
@@ -451,6 +456,41 @@ export function verdictTry(t, s, ctx) {
   return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, held: true } } : c;
 }
 
+// A ready PR held by a red check whose error lines (pr_status checks[].errors, which the pass reads)
+// name what a change on its branch can clear goes to a worker before it goes to the person. Protected
+// files the check asks an approval for go to a protected-files try: its worker drops each change the
+// ticket's criteria do not need, or reports it needed, which leaves the approval to the person. One goes
+// per head, only for a file no earlier one judged, and at most FIX_TRIES_MAX per PR, outside the fix
+// tries' count. A review verdict the check cannot read at the head (none, a stale one, an old format)
+// goes to a review try under reviewTry's tries, unless a §4 State check of kind verdict is the one red
+// (verdictTry takes that). null where neither applies, so fixCall decides as before.
+// s: its pr_status; ctx: { required, advisory, stateChecks, base, baseMerge }.
+export function gateTry(t, s, ctx) {
+  if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
+  if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') return null;
+  const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
+  if (gate.state !== 'fail' || gate.pending.length) return null;
+  const failing = new Set(gate.failing.map((f) => f.name));
+  const lines = (s.checks ?? []).filter((c) => failing.has(c.name))
+    .flatMap((c) => (c.errors ?? (c.error ? [c.error] : [])).map((line) => ({ name: c.name, line })));
+  const done = t.fix_tries ?? [];
+  const before = done.filter((x) => x.kind === 'protected');
+  const judged = new Set(before.flatMap((x) => x.paths ?? []));
+  const asks = lines.map((x) => ({ ...x, prot: approvalFiles(x.line) })).filter((x) => x.prot?.files.length);
+  const paths = [...new Set(asks.flatMap((x) => x.prot.files))];
+  if (paths.some((p) => !judged.has(p)) && before.length < FIX_TRIES_MAX && !before.some((x) => x.head === s.head)) {
+    const more = Math.max(0, ...asks.map((x) => x.prot.more));
+    const checks = [...new Set(asks.map((x) => x.name))];
+    return { call: 'requeue', fix: { try: before.length + 1, of: FIX_TRIES_MAX, pr: s.pr, head: s.head, kind: 'protected', ready: true,
+      what: `${checks.map((c) => `"${c}"`).join(', ')} asks an approval for protected files: ${paths.join(', ')}${more ? ` and ${more} more` : ''}`, checks, paths, more } };
+  }
+  const verdictChecks = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'verdict').map((x) => x.name));
+  const stale = lines.filter((x) => !verdictChecks.has(x.name) && staleVerdict(x.line));
+  if (!stale.length) return null;
+  const c = reviewTry(t, { pr: s.pr, head: s.head, why: `its "${stale[0].name}" check says: ${stale[0].line}`, base: ctx.base, baseMerge: ctx.baseMerge });
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : null;
+}
+
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
 // check's name and run, under the same tries as fixCall. There are no driver reruns to wait for: the
 // merge driver reruns only a PR out of draft. ctx: { repo, operator, premerge (parsed), steps }, as
@@ -526,6 +566,14 @@ export function fixBrief(t) {
     return [`## The person's instruction on PR #${f.pr}`, '',
       `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, and the person sent it back to you with this instruction:`, '',
       ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that instruction, and nothing else.', ''].join('\n');
+  }
+  if (f.kind === 'protected') {
+    return [`## Protected files try ${f.try} of ${f.of}: PR #${f.pr}`, '',
+      `Your PR #${f.pr} is open and out of draft on this branch, and its ${f.checks.map((c) => `"${c}"`).join(', ')} check asks a person's approval at its head ${String(f.head).slice(0, 12)} because the PR changes protected files:`, '',
+      ...f.paths.map((p) => `- ${p}`), ...(f.more ? [`- and ${f.more} more the check counts but does not name: its run log (gh run view --log-failed) or the gate's protected-path rule names them`] : []), '',
+      "Read the ticket's acceptance criteria (desk-jira get, or its ticket file) against your diff to each one. A change to it the criteria do not need (a convenience script, a stray edit, a tidy-up) comes out: restore the file, or the lines, to the base's version. " +
+      'A change the criteria need stays as it is: never move it to another path, rename it or reword it to get past the rule.', '',
+      'If you dropped nothing, change nothing and push nothing: the approval goes to the person, with your reasons. Each file is judged once: one still in the diff after this try is the person\'s to approve.', ''].join('\n');
   }
   if (f.kind === 'rereview') {
     return [f.extra ? `## Review try for a merge from the base: PR #${f.pr}` : `## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
@@ -617,6 +665,12 @@ export function fixTask(t) {
       `Your task is ${f.extra ? 'a review try after a merge from the base' : `review try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
       `Review its head with desk-review${f.targeted ? ', in its targeted round on only what the briefing\'s "Targeted" section names,' : ''} and post that review on the PR (desk-review Phase 7), and change no code. ` +
       `Open no new PR, leave the PR ${f.ready ? 'out of' : 'in'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
+  }
+  if (f.kind === 'protected') {
+    return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
+      `Your task is protected files try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Protected files try" section of your briefing lists the protected files its check wants an approval for. ` +
+      "Drop each change to them that the ticket's acceptance criteria do not need, and nothing else. If you dropped any, verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), push to the same branch with git push origin <your branch>, then review the new head with desk-review and post that review on the PR (desk-review Phase 7). If every change is needed, change nothing and push nothing. " +
+      `Open no new PR, leave the PR out of draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status> said=<for each file, dropped, or needed and the criterion that needs it>.`;
   }
   if (f.kind === 'capture') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +

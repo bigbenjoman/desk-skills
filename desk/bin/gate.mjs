@@ -35,8 +35,12 @@
 //   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
 //   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
 //   stateFailing(failing, stateChecks) -> the failing checks that are state checks, each with its kind
-//   failureLine(notes)       a job's annotations -> the first error its run gave, or null
+//   failureLines(notes)      a job's annotations -> every error its run gave, in order
+//   failureLine(notes)       the first of them, or null
+//   failureMessages(repo, jobId) -> failureLines read from GitHub; undefined when they cannot be read
 //   failureMessage(repo, jobId) -> failureLine read from GitHub; undefined when they cannot be read
+//   approvalFiles(line)      an error line asking for an approval for protected files -> { files, more }, or null
+//   staleVerdict(line)       an error line saying the review verdict is missing, stale or in a form it cannot read
 //   skippedOnly(checks)      every check finished, at least one was skipped, and the rest passed
 //   isBot(author)            a PR author, reviewer or commenter ({ login, __typename? }) that is a bot
 //   isHuman(author, self)    one that is neither a bot nor `self`
@@ -590,16 +594,42 @@ function loadStateChecks(E) {
 // GitHub adds for the step's exit code says nothing of why, and can come first. Kept long: a review
 // gate's line names its files first and asks for the approval after them, and needs-you reads all of it.
 const EXIT_LINE = /^Process completed with exit code \d+\.?$/;
-export function failureLine(notes) {
-  const m = (Array.isArray(notes) ? notes : []).find((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()))?.message;
-  return m ? String(m).split('\n')[0].trim().slice(0, 2000) : null;
+export function failureLines(notes) {
+  return (Array.isArray(notes) ? notes : []).filter((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()))
+    .map((x) => String(x.message).split('\n')[0].trim().slice(0, 2000));
 }
-// failureLine for a job, or undefined when its annotations could not be read.
-export function failureMessage(repo, jobId) {
-  if (!jobId) return null;
-  try { return failureLine(JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations`]))); }
+export const failureLine = (notes) => failureLines(notes)[0] ?? null;
+// failureLines for a job, or undefined when its annotations could not be read.
+export function failureMessages(repo, jobId) {
+  if (!jobId) return [];
+  try { return failureLines(JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations`]))); }
   catch { return undefined; }
 }
+export function failureMessage(repo, jobId) {
+  if (!jobId) return null;
+  const lines = failureMessages(repo, jobId);
+  return lines === undefined ? undefined : lines[0] ?? null;
+}
+// The protected files an error line asks an approval for, in the wording of desk's review-gate.mjs
+// (`It touches `a`, `b` and 3 more with …`) or a repo's own gate (`2 protected file(s): `a`, `b``):
+// { files, more }, more being those it counts and does not name. null where it asks for none.
+export function approvalFiles(line) {
+  const s = String(line ?? '');
+  if (!/approv/i.test(s)) return null;
+  const listed = /(\d+) protected file\(s\):(.*)$/.exec(s), touches = /^It touches (.+?) with /.exec(s);
+  if (!listed && !touches) return null;
+  const files = [...String(listed?.[2] ?? touches[1]).matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  const more = listed ? Number(listed[1]) - files.length : Number(/ and (\d+) more$/.exec(touches[1])?.[1] ?? 0);
+  return { files, more: Math.max(0, more) };
+}
+// An error line saying the gate reads no review verdict it accepts at the head: none posted, one for an
+// older commit, or one in a form it does not parse (an old marker format). A verdict that is there and
+// not clean is not one: that is a fix worker's.
+export const staleVerdict = (line) => {
+  const s = String(line ?? '');
+  return /\bverdict\b/i.test(s) && !/\bnot clean\b/i.test(s)
+    && /\bno\b[^.]*\bverdict\b|\bnot (?:at )?the head\b|\bstale\b|\bold(?:-|\s+)format\b|\bolder (?:head|commit)\b|\boutdated\b|\blegacy\b|\b(?:cannot|could not|can't|does not|doesn't) (?:be )?(?:parse|read)|\bunparse|\bunrecogni[sz]/i.test(s);
+};
 export const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 // The workflow runs on a commit, in the shape evaluateGate reads. Throws when gh cannot list them.
 export const readRuns = (repo, sha) =>
