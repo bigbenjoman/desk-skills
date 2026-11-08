@@ -46,9 +46,11 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
 
 Which Claude and Codex logins new workers rotate between is a rule for the computer, not the repo:
 `~/.config/desk/subscriptions.md` is shared by every repo here and asked once. Run `desk-env logins
-check`. It signs nothing in and reads no credential, and it lists every login it finds with its
-folder, state and rule, plus each Claude login's account and plan. Its first line says whether the
-file exists.
+check`. It signs nothing in and reads no credential. It lists each tool's default login, every login
+the file names and every signed-in folder it finds under `~/.claude-logins` and `~/.codex-logins`,
+with its folder, state and rule, plus each Claude login's account and plan. Its first line says
+whether the file exists. A folder under either of those that the check leaves out is not signed in:
+`ls` both, and list each such folder as signed out.
 
 - **Rules already saved** (the file exists): open with "Subscriptions on this computer: already set,
   so nothing to ask". Show each login with its rule (`● in rotation`, `○ standby` or `off`), as an
@@ -61,7 +63,9 @@ file exists.
   them, so a batch keeps running when one reaches its limit, that these rules are for this computer
   and every repo here shares them, and that desk-q view 6 changes them at any time.
 - **A login that is not signed in is listed but left out of every question.** For a signed-out
-  login, mark it `signed out` and give the sign-in command from the check's note. For a refused
+  login, mark it `signed out` and give the sign-in command from the check's note, or, for a folder
+  the check left out, `CLAUDE_CONFIG_DIR=<folder> claude, then /login` (Codex:
+  `CODEX_HOME=<folder> codex login`). For a refused
   login (the same account as another), mark it refused and name that other login. For a login the
   check could not run, mark it `not checked` with the reason. Desk writes no rule for any of these
   logins.
@@ -73,9 +77,10 @@ file exists.
      The most work before any limit."
   2. `Choose which rotate, the rest on standby`: "For logins you want kept back, for example a work
      account. Standby logins are used only when every login in rotation is at its limit."
-  3. `Only <the default login's email>, as today`: "No rotation. The batch waits when this login
-     reaches its limit." The default login is the one named `default` (`~/.claude`). Leave this
-     option out when that login is not signed in.
+  3. `Only <the default login's email>, as today`: "No rotation. Workers start on this login, and
+     the others are used only when it reaches its limit." It saves the default login in rotation and
+     every other signed-in login on standby. The default login is the one named `default`
+     (`~/.claude`). Leave this option out when that login is not signed in.
 
   Choosing which rotate asks a second question, with multiple answers allowed: one option per
   login, its email as the label and its plan and folder as the description. Every login left
