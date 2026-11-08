@@ -46,7 +46,8 @@ workers deny it, and it is the pattern that posts to the wrong PR when a placeho
   role runs at (config §3b Codex review, `desk-env get codex-models`): record them in the results file's `codex` (the core's
   *The verdict*). With more than one Codex login, each call runs on the one with the most room and
   names it on stderr (`desk-codex: on Codex login <name>`), and the probe runs on the login the next
-  call would use. Exit 75 means every Codex login is at its limit (it names the earliest reset) or
+  call would use. Where its calls printed that line, add `"login": "<name>"` to the results file's
+  `codex`, or every name the run's calls printed, comma-separated (`"default, login-2"`). Exit 75 means every Codex login is at its limit (it names the earliest reset) or
   none is usable: codex is unusable for this run (below).
   Off, everything here and in Phases 3 and 4 runs exactly as written.
 
