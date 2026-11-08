@@ -677,4 +677,27 @@ check "DS-441 AC4 with no row at all, likewise" 'origin_has_main'
 fresh treepass; treerow "sh $T/check.sh"; pass
 check "DS-441 negative: a merge the check passes is pushed" 'origin_has_main && [[ "$out" == *"and pushed"* ]] && [ -z "$(git -C "$C/wt/base-feat-x" status --porcelain)" ]'
 
+# A batch whose every child has merged, its draft epic PR's review due, beside a live sibling batch in
+# the repo with one worker running and ready tickets. epicbeside <case> <concurrency row>.
+SIB="$DESK_HOME/repos/acme__widgets/queue.json"
+epicbeside(){
+  fresh "$1"; epicrows; rm -f "$T/ep"/*; : > "$T/spawns"; rm -f "$T/agents.json"
+  printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `%s` |\n' "$2" >> "$C/config.md"
+  node "$B/queue.mjs" set-batch epic=E-8 feature=false 'promotion={"pr":300}' >/dev/null
+  node "$B/queue.mjs" set T-1 state=done result.pr=801 merged_at=2026-11-06T10:00:00Z >/dev/null
+  echo '{"state":"MERGED","mergedAt":"2026-11-06T10:00:00Z"}' > "$T/ep/801.json"
+  echo "{\"state\":\"OPEN\",\"isDraft\":true,\"headRefOid\":\"$EH\"}" > "$T/ep/300.json"; review -
+  mkdir -p "$(dirname "$SIB")" "$HOME/.desk-autopilot/acme__widgets/orchestrators"
+  echo '{"concurrency":3,"tickets":{"S-1":{"key":"S-1","state":"running"},"S-2":{"key":"S-2","state":"triaged"},"S-3":{"key":"S-3","state":"triaged"},"S-4":{"key":"S-4","state":"triaged"}}}' > "$SIB"
+  jq -n --arg q "$SIB" --arg at "$(node -p 'new Date().toISOString()')" '{queue: $q, at: $at}' > "$HOME/.desk-autopilot/acme__widgets/orchestrators/sibling.json"
+  out=$(DESK_REPO_OVERRIDE=acme/widgets node "$B/pass.mjs" 2>&1); rc=$?
+}
+epicbeside eslot '2 / 3'
+check "DS-520 AC2 with a free slot beside a sibling batch's ready work, the epic review starts" 'grep -q "^base-feat-x .*It is epic PR #300" "$T/spawns" && [ "$(jq -r ".base_fix.tries[0].kind" "$DESK_QUEUE")" = review ]'
+check "DS-520 AC1 the review counts as wanting one slot, and the sibling keeps the rest" '[[ "$out" == *"repo workers: 1 of the §3b cap of 3 running"*"1 kept for the standing batch, which has 3 ready and 1 running"* ]]'
+epicbeside efull '1 / 1'
+check "DS-520 AC3 with the §3b cap full, the review waits" '! grep -q "^base-feat-x " "$T/spawns" && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
+check "DS-520 AC3 and the pass says why" '[[ "$out" == *"epic PR #300: review try 1 of 2 starts once a worker may (none may this pass: repo workers: 1 of the §3b cap of 1 running"* ]]'
+rm -f "$SIB"
+
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]
