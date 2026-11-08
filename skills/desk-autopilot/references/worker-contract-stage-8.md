@@ -16,6 +16,10 @@ and do not park for it. **Check idempotency first**: read existing comments and 
 under `jira-edit`. `desk-jira link` and `unlink` are never yours, whatever `jira-edit` says: issue links are set
 interactively when an epic is written.
 
+**A ticket with follow-ons** (the `follow_on=` steps on your DONE line, Stage 5 file) lists each in
+that comment, one line each under "Once this merges:", with the §3 row it needs. The PR still goes to
+the merge path: a follow-on never holds the merge, and never makes this comment a park.
+
 **Not granted:** print `desk-jira`'s full block (`JIRA COMMENT — awaiting approval`,
 target, fields, the exact body), then `AUTOPILOT_PARK`. **The safeguard is not calling the command,
 not the block**: a worker can print a flawless block and then post anyway, which is why the

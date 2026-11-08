@@ -15,7 +15,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, endedNormally, readLog, prBodyIn } from './harvest.mjs';
+import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_MAX } from './harvest.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
@@ -39,7 +39,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
-import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
+import { undraftCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -522,6 +522,40 @@ function buildParkOf(t, question) {
   return b ? { ...b, pr: pr.number, head: pr.headRefOid } : null;
 }
 
+// A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when, read
+// quietly here (clearsWhenOf reports an unreadable one once the park is recorded), is its own open PR
+// merging, and that PR is green with a clean review at its head. Null when it is not, or unread.
+function mergeParkOf(t, log) {
+  if (!t.branch || isSpine(t) || needsSession(t)) return null;
+  let raw = null;
+  try {
+    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
+      if (k === 'AUTOPILOT_PARK') raw = null;
+      else if (k === 'AUTOPILOT_PARK_CLEARS_WHEN') raw = v;
+    }
+  } catch { /* no log, no condition */ }
+  const cond = parseClearsWhen(raw);
+  if (!cond.ok || cond.cond.kind !== 'pr-merged') return null;
+  const readPr = () => {
+    let pr = null;
+    try { pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'open', '--json', 'number,headRefOid,statusCheckRollup', '-q', '.[0]'], { tolerant: true }) || 'null'); } catch { pr = null; }
+    return pr ? { state: 'OPEN', number: pr.number, head: pr.headRefOid, checks: latestPerCheck(normaliseRollup(pr.statusCheckRollup)) } : null;
+  };
+  // Only a verdict posted at the head counts here; the undraft step reads it again, with its carries.
+  const verdict = (pr) => {
+    if (!localReviewSet(E.configValue('local-review'))) return null;
+    const [owner, name] = GH_REPO.split('/');
+    const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${pr.number}`, '-f', `query=${THREADS_QUERY}`]);
+    if (!r.ok) return null;
+    let handle = null;
+    try { handle = E.githubHandle(); } catch { return null; }
+    try { return readVerdict(JSON.parse(r.out), { handle, clean: E.configValue('clean-verdict') }); } catch { return null; }
+  };
+  const perm = E.permission('pr-ready');
+  const ready = perm === 'ask' && queue().approved?.undraft === true ? 'yes' : perm;
+  return mergePark(cond.cond, readPr, { ...gateLists(), verdict, ready, merge: E.mergeGrant(queue()) });
+}
+
 // §4 Live reads (live-read.mjs): run on this computer for a park that asks for nothing but entries the
 // row names, once per ticket head and entry, from the pass's own clean checkout of origin's default
 // branch (READ_CHECKOUT), never the ticket's worktree or the person's checkout. The "live reads"
@@ -655,15 +689,19 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // A park that waits only on a check §4 Check builds names, once its worker has exited (buildParkOf):
   // recorded done below, so its screenshots go to its PR here as a DONE worker's do.
   const built = park && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id)) ? buildParkOf(t, park.trim()) : null;
+  // A park asking only who merges its green, clean PR (mergeParkOf): done where desk may merge it, else
+  // the merge question naming the row that keeps desk from it.
+  const merging = park && !built && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id)) ? mergeParkOf(t, log) : null;
+  const mergeOnly = merging?.call === 'done' ? merging : null;
   // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
-  const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? (built ? String(built.pr) : null) ?? t.result?.pr;
+  const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? (built ? String(built.pr) : null) ?? (mergeOnly ? String(mergeOnly.pr) : null) ?? t.result?.pr;
   if (imgDir && prNo && !t.images_uploaded) {
     // A directory that is missing or holds no screenshot means no images, not a failed upload. A
     // running worker may still capture into it, so only a finished one is recorded as having none.
     let shots = [];
     try { shots = readdirSync(imgDir).filter((f) => E.SCREENSHOT_FILE.test(f)); } catch { /* missing */ }
     if (!shots.length) {
-      if (done || built) q('set', t.key, 'images_uploaded=none');
+      if (done || built || mergeOnly) q('set', t.key, 'images_uploaded=none');
     } else if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
       const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(prNo), imgDir]);
       const up = run.out;
@@ -721,8 +759,19 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       // The screenshot directory the worker printed, for the undraft step's missing-shot check (shotsOf).
       sets: logImgDir ? [`images_dir=${logImgDir}`] : [],
     });
+  } else if (mergeOnly) {
+    // The park's own words are kept as its follow-on: the steps it named for after the merge are listed
+    // for the person once the PR merges (needs-you), never a reason to hold it.
+    const n = mergeOnly.pr;
+    recordDone(t, {
+      log, h, pr: String(n), summary: `parked only on who merges PR #${n}, which desk merges: recorded done`,
+      line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${E.mergeGrant(queue()).why}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
+      sets: [`follow_on=${JSON.stringify([{ step: park.trim().slice(0, FOLLOW_ON_MAX), row: null }])}`, ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
+    });
   } else if (park) {
-    q('park', t.key, park.trim());
+    // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
+    const asked = merging?.call === 'ask' ? `${merging.question}. The park: ${park.trim()}` : park.trim();
+    q('park', t.key, asked);
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.
@@ -740,7 +789,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     if (!wedged && !read && !needsSession({ ...t, park: { question: park.trim() } }) && unnamedForcePush({ question: park.trim(), inputs: reg.inputs }, t.branch) && refuseUnnamedLease(t, park.trim())) continue;
     if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${READ_BRANCH} (${READ_CHECKOUT}), never the ticket's worktree; requeued once they finish. The park: ${park.trim()}`);
     else if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
-    else report.parked.push(`${t.key}: ${park.trim()}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
+    else report.parked.push(`${t.key}: ${asked}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
   }
   else if (handoff) handedOff(t, handoff, { log, h, imgs: logImgDir, stopped });
   else if (done) {
@@ -751,7 +800,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // the summary's 200 characters cut all but the first few (fix-tries.mjs captureTry). Written as JSON,
     // so a said= opening with a bracket is never parsed by queue.mjs as JSON and refused.
     const said = /\bsaid=(.*)$/.exec(done.trim())?.[1]?.trim();
-    recordDone(t, { log, h, pr, summary: done.trim(), line: `${done.trim()}${stopped}`, sets: said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : [] });
+    // Steps that wait on the merge (follow_on=), kept for needs-you once the PR merges.
+    const follow = followOnIn(done);
+    if (follow.error) report.inputs.push(`${t.key}: unreadable follow_on on its DONE marker (${follow.error}), nothing kept: ${done.trim()}`);
+    recordDone(t, { log, h, pr, summary: done.trim(), line: `${done.trim()}${stopped}`, sets: [
+      ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
+      ...(follow.steps.length ? [`follow_on=${JSON.stringify(follow.steps)}`] : []),
+    ] });
   } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
     // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
     // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,

@@ -1481,6 +1481,26 @@ put('tau', { port: 4300, beat: 1, supervised: true, tickets: {
 t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative control: one the pass left to the person is listed',
   N.collect({ word: 'tau' }).items.map((i) => i.t.key).join(), 'V-2');
 
+// DS-509 AC5: a merged ticket's follow-on steps are the person's, listed once its PR has merged.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, ...more });
+  const STEP509 = { step: 'run provision-telnyx-assistant.ts --env staging', row: 'staging-write' };
+  put('upsilon509', { port: 4400, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'F-1': merged(81, { follow_on: [STEP509] }),
+    'F-2': merged(82, { follow_on: [STEP509], follow_on_done: minsAgo(1) }),
+    'F-3': { state: 'done', lane: 'A', result: { pr: 83 }, follow_on: [STEP509] },
+    'F-4': merged(84),
+  } });
+  const fi = () => N.collect({ word: 'upsilon509' }).items.filter((i) => i.kind === 'follow');
+  const f1 = fi();
+  t('DS-509 AC5 only the merged ticket with steps not yet run is listed', f1.map((i) => i.t.key).join(), 'follow:F-1');
+  t('DS-509 AC5 it names that one step and the §3 row it needs, and says the PR is merged',
+    /^PR #81 \(F-1\) is merged, and a step waits on it that no worker runs after a merge: \(1\) run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)/.test(f1[0]?.need ?? ''), true);
+  t('DS-509 AC5 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509')).shown, 1);
+  const done509 = N.record({ word: 'upsilon509', ticket: 'follow:F-1', action: 'done' });
+  t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
