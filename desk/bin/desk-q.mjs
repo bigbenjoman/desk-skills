@@ -952,7 +952,9 @@ const segRow = (id, segs, open) => {
 // then the forecast line; a paused batch's reason and fix are one amber note each in `stopped`, the
 // other reasons plain lines in `notes`. With `width`, each line is wrapped to it.
 function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsage = false }) {
-  const list = slug ? repos.filter((r) => r.id === slug) : repos.filter(hasBatch);
+  // A repo's views read every batch of it, as its Queue does; an epic's keeps to the batch it opened in.
+  const place = !slug ? null : epic ? repos.find((r) => r.id === slug) : repoPlace(repos, slug);
+  const list = !slug ? repos.filter(hasBatch) : place?.batches ? repos.filter((r) => r.slug === place.slug && hasBatch(r)) : place ? [place] : [];
   // `note` is the one-line form `desk-q ships` prints; `text` the same under a note's repo tag.
   const per = list.map((r) => {
     const say = (note, text) => ({ r, note: `${r.name} · ${note}`, text });
@@ -977,23 +979,22 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
   // One repo's view adds its hit rate; every repo's leaves it to each repo's own. An epic's names it.
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
-  const head = [...tabHead(repos, slug, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list[0] : null)] : [])].flatMap(wrapped);
+  const head = [...tabHead(repos, place, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list : null)] : [])].flatMap(wrapped);
   const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${tagOf(r)}`, sgr: WARN, text: [[`${lead(r)}${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
   return { list, per, notes, items, head, stopped };
 }
 
 // A ships view's header: the Queue's, one repo's state counts and who runs it, or every repo's
 // needs-you and machine lines.
-function tabHead(repos, slug, now, solid, pinUsage) {
-  if (!slug) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
-  const r = repos.find((x) => x.id === slug);
-  return r?.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : [usageLine(usageOf(repos, now, [r]), { now, solid })])] : [];
+function tabHead(repos, r, now, solid, pinUsage) {
+  if (!r) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
+  return r.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : [usageLine(usageOf(repos, now, [r]), { now, solid })])] : [];
 }
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
-// merged tickets, then with one repo, its hit rate.
-function forecastSegs(now, count, checkin, ep, r) {
-  const h = r ? hitRate(readEstimates(r.stateDir)) : null;
+// merged tickets, then with one repo's batches, their hit rate.
+function forecastSegs(now, count, checkin, ep, batches) {
+  const h = batches ? hitRate(new Map(batches.flatMap((b) => [...readEstimates(b.stateDir)]))) : null;
   return segLine([['forecast  ', GREY], ['from ', GREY], [clock(now), null], [' · ', GREY], [RUNS.toLocaleString('en-GB'), BOLD], [' runs over ', GREY], [String(count), BOLD], [MERGED, GREY],
     ...(ep ? [[` · ${ep.key}: `, GREY], [`${ep.done} of ${ep.total}`, BOLD], [' children done', GREY]] : []),
     ...(checkin ? [[CHECKIN_DATED, GREY]] : []),
@@ -1058,8 +1059,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   const s = etaScope(repos, slug, { now, checkin, epic, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: [...s.head, ...(s.head.length ? [''] : []), ...s.notes], rows: [], foot: [] };
-  const F0 = slug && !epic ? s.per[0]?.F : null;
-  const epics = openEpics(F0).map((e) => ({ e, d: F0.E[e.key] })).sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
+  const epics = slug && !epic && s.per.some((p) => p.F) ? epicRows(s, now, checkin) : [];
   const byEpic = epics.length > 0;
   const items = byEpic ? s.items.filter((i) => !i.F.of[i.x.t.key]) : s.items;
   const lead = byEpic ? EP_LEAD : TL_LEAD;
@@ -1102,35 +1102,35 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   };
   const rows = [];
   if (byEpic) {
-    const r = s.per[0].r;
-    for (const { e, d } of epics) {
+    for (const { r, F, e, d } of epics) {
       const name = [[`  ${pad(cut(epicShort(e), EP_NAME - 1), EP_NAME)}`, null], [rpad(`${e.done}/${e.total}`, 5), DIM], [' ', null]];
       const open = { kind: 'epic', slug: r.id, epic: e.key };
-      if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F0, e, checkin), whyColour(F0)]], open)); continue; }
+      if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F, e, checkin), whyColour(F)]], open)); continue; }
       const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
       rows.push(segRow(`${r.id}${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
-        [` ${pad(epicStarts(r, F0, e, d, now), 13)}${pad(when(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
+        [` ${pad(epicStarts(r, F, e, d, now), 13)}${pad(when(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
     }
-    if (items.length) rows.push(segRow(`${r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
+    if (items.length) rows.push(segRow(`${s.per[0].r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
   // By epic, a ticket is led by its title and has no TITLE column.
   const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 16), 17)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]] : ticketLead(i, '  '));
   const tail = (i) => (byEpic ? [] : [title(i)]);
-  for (const r of slug ? s.list : [...new Set(s.items.map((i) => i.r))]) {
-    const mine = (list) => list.filter((i) => i.r === r);
+  // One repo's batches are one list in ship order; every repo's view groups by batch.
+  for (const r of slug ? [null] : [...new Set(s.items.map((i) => i.r))]) {
+    const mine = (list) => list.filter((i) => !r || i.r === r);
     if (!slug) {
       const n = mine(s.items).length;
       rows.push(segRow(`repo ${r.id}`, [[`  ${r.name}`, BOLD], [` · ${n} ticket${n === 1 ? '' : 's'}`, DIM]], { kind: 'timeline', slug: r.id }));
     }
     for (const i of mine(dated)) {
       const sgr = STATE_SGR[i.x.k];
-      rows.push(segRow(`${r.id}${i.x.t.key}`, [...tlead(i), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], ...tail(i)], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...tlead(i), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], ...tail(i)], openTicket(i, epic)));
     }
     // An undated row's reason takes the bar's and the dates' place, so its title lines up when it fits.
     for (const i of mine(undated)) {
       const [cell, left] = byEpic ? [width == null ? why(i) : cut(why(i), width - 22 - STATE_W), 0] : whyCell(why(i), cw + TL_TAIL + TL_GAP, tw);
       const title = byEpic ? [] : [[cut(tt(summaryOf(i)), left), null]];
-      rows.push(segRow(`${r.id}${i.x.t.key}`, [...tlead(i), [' ', null], [cell, STATE_SGR[i.x.k]], ...title], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...tlead(i), [' ', null], [cell, STATE_SGR[i.x.k]], ...title], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -1209,38 +1209,56 @@ function epicReadAt(r, F, key) {
   }
   return at;
 }
-// One row per repo and epic. Where several of a repo's batches hold its children, the counts are the
-// latest read of its children list, with the other batches' queued children counted as queued (with
-// no list read, every batch's children summed); the date is the latest, since an epic ships when its
-// last child merges, or none, with the reason of a batch that has none. `undated` are the epics of
-// batches that cannot date anything: each joins a row another batch lists, and adds none of its own.
-function epicPerRepo(list, undated = []) {
+// One row per repo and epic. Where several of a repo's batches hold its children, the children are
+// the latest read of its list plus every batch's own (with no list read, every batch's own), each
+// counted by the furthest any batch has it: done, then queued, then not queued. The date is the
+// latest, since an epic ships when its last child merges, or none, with the reason of a batch that
+// has none. `undated` are the epics of batches that cannot date anything, and `counted` those a batch
+// has nothing left to run on: each joins a row another batch lists, and adds none of its own.
+// An epic those joins leave with nothing to run has no row.
+const KID_RANK = { missing: 0, queued: 1, done: 2 };
+function epicPerRepo(list, undated = [], counted = []) {
   const groups = new Map();
   const idOf = (x) => `${x.r.slug}\0${x.e.key}`;
   for (const x of list) groups.set(idOf(x), [...(groups.get(idOf(x)) ?? []), x]);
   for (const x of undated) groups.get(idOf(x))?.push(x);
-  return [...groups.values()].map((g) => {
-    if (g.length === 1) return g[0];
-    const read = g.filter((x) => x.e.missing != null);
-    const fresh = (read.length ? read : g).map((x) => ({ x, at: epicReadAt(x.r, x.F, x.e.key) })).reduce((a, b) => (b.at > a.at ? b : a)).x;
-    const sum = (f) => g.reduce((n, x) => n + x.e[f], 0);
-    const elsewhere = sum('queued') - fresh.e.queued;
-    const e = fresh.e.missing == null ? { ...fresh.e, total: sum('total'), done: sum('done'), queued: sum('queued') }
-      : { ...fresh.e, queued: Math.min(fresh.e.total - fresh.e.done, fresh.e.queued + elsewhere), missing: Math.max(0, fresh.e.missing - elsewhere) };
+  return [...groups.entries()].map(([id, g]) => {
+    const all = [...g, ...counted.filter((x) => idOf(x) === id)];
+    if (all.length === 1) return g[0];
+    const read = all.filter((x) => x.e.missing != null);
+    const fresh = (read.length ? read : all).map((x) => ({ x, at: epicReadAt(x.r, x.F, x.e.key) })).reduce((a, b) => (b.at > a.at ? b : a)).x;
+    const kids = new Map(Object.entries(fresh.e.kids));
+    for (const x of all) {
+      for (const [k, s] of Object.entries(x.e.kids)) {
+        if (s === 'missing' || (!kids.has(k) && !x.r.q.tickets[k])) continue;
+        if (KID_RANK[s] > KID_RANK[kids.get(k) ?? 'missing']) kids.set(k, s);
+      }
+    }
+    const n = (s) => [...kids.values()].filter((v) => v === s).length;
+    const shipped = all.reduce((m, x) => (x.e.shipped != null && x.e.shipped > (m ?? -Infinity) ? x.e.shipped : m), null);
+    const e = { ...fresh.e, total: kids.size, done: n('done'), queued: n('queued'), missing: fresh.e.missing == null ? null : n('missing'), shipped };
     const by = g.find((x) => !x.d) ?? g.reduce((a, b) => (b.d.likely > a.d.likely ? b : a));
-    return { r: by.r, F: by.F, e, d: by.d, name: by.r.repo };
-  });
+    // The merged bar runs from the first batch's start to the last batch's could-run-to.
+    const d = by.d && { ...by.d, start: Math.min(...g.map((x) => x.d.start ?? Infinity)), late: Math.max(...g.map((x) => x.d.late)) };
+    return { r: by.r, F: by.F, e, d: d && !Number.isFinite(d.start) ? { ...d, start: null } : d, name: by.r.repo };
+  }).filter(({ e }) => e.queued || e.missing > 0);
+}
+// A ships scope's open epics, one row each, soonest first. A paused batch's are listed undated, under
+// its note. A batch with too little history, or nothing left for autopilot, lists none, but leaves
+// undated an epic whose children it still holds. Every other epic a batch knows lends its children.
+function epicRows(s, now, checkin) {
+  const undated = s.per.filter((p) => p.note && !p.stopped && p.r.q && !p.r.error).map(({ r }) => ({ r, F: forecastOf(r, { now, checkin }) }))
+    .filter(({ F }) => F?.none || F?.idle).flatMap(({ r, F }) => Object.values(F.epics).filter((e) => e.queued).map((e) => ({ r, F, e, d: null })));
+  const open = s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null })));
+  const seen = new Set([...open, ...undated].map((x) => x.e));
+  const counted = s.per.filter((p) => p.r.q && !p.r.error).flatMap(({ r }) => { const F = forecastOf(r, { now, checkin }); return Object.values(F.epics).filter((e) => !seen.has(e)).map((e) => ({ r, F, e, d: null })); });
+  return epicPerRepo(open, undated, counted).sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
 }
 function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = null, pinUsage = false } = {}) {
   const s = etaScope(repos, slug, { now, checkin, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   const all = !slug;
-  // A paused batch's epics are listed undated, under its note. A batch with too little history, or
-  // nothing left for autopilot, lists none, but leaves undated an epic whose children it still holds.
-  const undated = s.per.filter((p) => p.note && !p.stopped && p.r.q && !p.r.error).map(({ r }) => ({ r, F: forecastOf(r, { now, checkin }) }))
-    .filter(({ F }) => F?.none || F?.idle).flatMap(({ r, F }) => Object.values(F.epics).filter((e) => e.queued).map((e) => ({ r, F, e, d: null })));
-  const list = epicPerRepo(s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null }))), undated)
-    .sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
+  const list = epicRows(s, now, checkin);
   const head = [...s.head, ''];
   if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
   // The children bar is solid on screen, not-yet-queued children grey; with no colour, □ tells them apart.
@@ -2918,7 +2936,8 @@ export function interactive({
       const tl = tab === 'timeline';
       const opts = { now, width: w, checkin, zoom, epic: view.epic ?? null, pinUsage: true };
       const parts = tl ? timelineParts : tab === 'days' ? daysParts : epicsParts;
-      return { badge: badge(r ? [r] : repos), ...parts(repos, view.slug ?? null, opts), ...claude(r ? own : shownRepos(repos, false)),
+      const rp = view.kind === 'repo' ? repoPlace(repos, view.slug) : r;
+      return { badge: badge(rp ? [rp] : repos), ...parts(repos, view.slug ?? null, opts), ...claude(rp ? (rp.q && !rp.error ? [rp] : null) : shownRepos(repos, false)),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${tl ? 'z scale · ' : ''}c parked dates · ${cmdKeys}` };
     }
     if (view.kind === 'overview') {

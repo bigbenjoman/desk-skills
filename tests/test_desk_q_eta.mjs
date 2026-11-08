@@ -664,6 +664,51 @@ const otherF = Q.forecastOf(byId('acme__other'), { now: FIXED });
 t('DS-504 AC6: a repo with one batch reads as it did: its own counts, date and note', epicRows(home, 'EP-7').find((l) => l.startsWith('other')),
   `other | EP-7 | Other epic | ■■■■■■■■■■■■■■■■ | 1/2 | ${when(otherF.E['EP-7'].likely, FIXED)} | set by O-1`);
 
+// ---- DS-516: a repo's Epics, Timeline and By day read every batch of it
+async function placeView(start, key) {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
+  const output = { buf: '', columns: 200, rows: 200, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+  Q.interactive({ input, output, start, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
+  input.write(key);
+  await new Promise((res) => setTimeout(res, 20));
+  const frame = output.buf.split('\x1b[H').at(-1);
+  input.write('q');
+  return frame.replace(ANSI_ETA, '').split('\r\n');
+}
+const repoView = (name, key) => placeView({ kind: 'repo', slug: `acme__${name}` }, key);
+// The standing batch read the epic's list before the named batch merged its children.
+const SP = ep('EP-20', 'Split epic', [['S-1', true], ['S-2'], ['S-3'], ['S-4']]);
+repo('split', 4850, { tickets: { 'S-1': { state: 'done', merged_at: iso(FIXED - 3 * HOUR) }, 'S-5': { state: 'triaged' } }, sizes: { 'S-1': 'M', 'S-5': 'M' },
+  epics: { 'S-1': SP, 'S-5': ep('EP-21', 'Standing epic', [['S-5'], ['S-6', true]]) }, history: hist12 });
+repo('split', 4850, { batch: 'rotation', tickets: { 'S-2': { state: 'done', merged_at: iso(FIXED - 2 * HOUR) }, 'S-3': { state: 'done', merged_at: iso(FIXED - HOUR) }, 'S-4': { state: 'triaged' }, 'S-7': { state: 'triaged' } },
+  sizes: { 'S-2': 'M', 'S-3': 'M', 'S-4': 'M', 'S-7': 'M' }, epics: { 'S-2': SP, 'S-3': SP, 'S-4': SP, 'S-7': ep('EP-22', 'Named batch epic', [['S-7'], ['S-8', true]]) }, history: hist12 });
+readAt('split', null, ['S-1', 'S-5'], Date.now() - HOUR);
+readAt('split', 'rotation', ['S-2', 'S-3', 'S-4', 'S-7'], Date.now() - 2 * HOUR);
+const splitEpics = await repoView('split', '4');
+const rowOf = (lines, key) => lines.filter((l) => new RegExp(`^[ ›] ${key}\\s`).test(l));
+t('DS-516 AC1: every open epic with a child in either batch has exactly one row, the named batch\'s too',
+  ['EP-20', 'EP-21', 'EP-22'].map((k) => rowOf(splitEpics, k).length), [1, 1, 1]);
+const row20 = rowOf(splitEpics, 'EP-20')[0] ?? '';
+t('DS-516 AC2: a child merged in the named batch counts as done, not as not queued, with the standing batch\'s list the latest read',
+  [/\s3\/4\s/.test(row20), /not queued/.test(row20)], [true, false]);
+const queueOf = await repoView('split', '1');
+const countsOf = (lines) => lines.find((l) => /✓ \d+ done/.test(l));
+for (const [label, key] of [['Epics', '4'], ['Timeline', '2'], ['By day', '3']]) {
+  const v = key === '4' ? splitEpics : await repoView('split', key);
+  t(`DS-516 AC3: ${label}'s header counts are its Queue view's, the sums of both batches`, [countsOf(v), /✓ 3 done/.test(countsOf(v) ?? ''), v.some((l) => /batch rotation|batch split/.test(l))], [countsOf(queueOf), true, false]);
+}
+const splitDays = await repoView('split', '3');
+t('DS-516 AC3: By day lists the tickets of both batches', ['S-5', 'S-4', 'S-7'].map((k) => splitDays.some((l) => l.includes(`${k} `))), [true, true, true]);
+const splitTime = await repoView('split', '2');
+t('DS-516 AC3: the Timeline has one bar per epic across both batches', ['Split epic', 'Standing epic', 'Named batch epic'].map((n) => splitTime.filter((l) => l.includes(n)).length), [1, 1, 1]);
+const onlyFor = (id) => Q.loadRepos(FIXED).filter((r) => r.id === id);
+for (const [label, screen] of [['Timeline', Q.timelineScreen], ['By day', Q.daysScreen]]) {
+  t(`DS-516 AC4: with only a standing batch, ${label} reads as that batch alone`, screen(Q.loadRepos(FIXED), 'acme__other', { now: FIXED }), screen(onlyFor('acme__other'), 'acme__other', { now: FIXED }));
+}
+t('DS-516 AC5: an epic\'s own place says it has no Epics view', (await placeView({ kind: 'epic', slug: 'acme__split', epic: 'EP-21' }, '4')).some((l) => l.includes(Q.NO_EPICS_HERE)), true);
+const namedEpics = await placeView({ kind: 'repo', slug: 'acme__split:rotation' }, '4');
+t('DS-516 AC5 (decision): a named batch\'s place lists that one batch\'s epics', [rowOf(namedEpics, 'EP-22').length, rowOf(namedEpics, 'EP-21').length], [1, 0]);
+
 function recentHistoryOf(name) { return readFileSync(join(stateOf(name), 'eta-history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); }
 
 console.log(fails ? `${fails} FAILED` : 'all eta history checks passed');
