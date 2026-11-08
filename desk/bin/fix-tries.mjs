@@ -277,16 +277,25 @@ export function reviewCounts(v) {
 // line each with its file:line, as { sev, text }. A finding sits under a `P0 (n)` or `P1 (n)` heading, or
 // opens with its own severity; a heading of anything else (REQUIREMENT GAPS, a `###` section) ends that run. A line
 // opening with an em dash, or a bullet indented deeper than the finding's own line, continues the
-// finding above it, and a line saying `None` (`None.`, `P1: None`) is no finding.
+// finding above it, and a line saying `None` (`None.`, `P1: None`) is no finding. A heading citing a
+// file:line, deeper than its severity's own heading, is itself a finding, and the lines under it are its
+// explanation, whatever they cite.
 export function reviewFindings(body, sevs = ['P0', 'P1']) {
   const found = [];
   // open: the indent of the finding a deeper bullet continues, null when none is open.
-  let sev = null, open = null;
+  // depth: the `#` count of the severity heading the run sits under, null when no such heading opened it.
+  // explaining: the lines are the explanation under a finding that is a heading.
+  let sev = null, open = null, depth = null, explaining = false;
   for (const line of String(body ?? '').split(/\r?\n/)) {
     const text = line.trim();
     const own = /^[#>*_\s-]*(?:F\d+\s*·\s*)?(P[0-3])\b/.exec(line);
-    if (own) { sev = own[1]; open = null; } else if (isHeading(text)) { sev = null; open = null; }
-    if (!sevs.includes(sev)) continue;
+    const hashes = /^(#{1,6})\s/.exec(text)?.[1].length ?? 0;
+    const headed = !own && depth != null && hashes > depth && /[\w./-]+:\d+/.test(text);
+    if (own) { sev = own[1]; open = null; explaining = false; depth = /^#*\s*[*_]*P[0-3]\s*(?:\(\d+\))?[*_:\s]*$/.test(text) ? hashes : null; }
+    else if (headed) { open = null; explaining = false; }
+    else if (isHeading(text)) { sev = null; open = null; depth = null; explaining = false; }
+    if (!sevs.includes(sev) || explaining) continue;
+    if (headed) { found.push({ sev, text: text.replace(/^#+\s+/, '') }); explaining = true; continue; }
     if (text.startsWith('—') && found.length) { found[found.length - 1].text += ` ${text}`; continue; }
     const indent = /^\s*/.exec(line)[0].length;
     if (open != null && indent > open && /^[-*]\s/.test(text)) { found[found.length - 1].text += ` ${text}`; continue; }
