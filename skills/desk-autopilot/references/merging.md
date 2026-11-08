@@ -94,7 +94,8 @@ tries spent on a check or a review still leave it two, and not one that left the
 a later merge to the base (each try records the base tip and merge base it was made at), up to five
 repairs of any outcome per PR, after which the item names the files. After a repair the merge driver
 holds a ready PR changing the same file behind the repaired one until it merges, goes red or parks,
-or 60 minutes after the repair. After two tries, or a try whose worker
+or 60 minutes after the repair. A push that takes a PR the driver read as `DIRTY` out of conflict is
+a repair too, a person's included, timed from when the driver saw it. After two tries, or a try whose worker
 left the head where it was, the PR is not requeued again: the ticket records `stuck`
 (`still red after 2 fix tries: <check>`, or the conflict) and it goes under `WAITING ON YOU`. A red
 check whose job annotates an error line, or whose failed log names one, first gets one more worker

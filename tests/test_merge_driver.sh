@@ -80,7 +80,7 @@ const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
   out(Object.entries(prs).filter(([, p]) => p.state === at('--state') && (!a.includes('--base') || p.base === at('--base'))
       && (!a.includes('--author') || (p.author ?? 'tester') === at('--author')))
-    .map(([n, p]) => ({ number: Number(n), title: 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft })));
+    .map(([n, p]) => ({ number: Number(n), title: 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft, headRefOid: p.sha, mergeStateStatus: p.mergeState ?? 'CLEAN' })));
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state') {
   out(String(prs[a[2]]?.state ?? '').toUpperCase());
 } else if (a[0] === 'pr' && a[1] === 'view') {
@@ -930,7 +930,7 @@ rploop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge
 rp_setup(){
   local at; at=$("$NODE" -p "new Date(Date.now()-$3).toISOString()")
   : > "$T/merges.log"
-  find "$T/state" -name 'green-41*' -delete
+  find "$T/state" \( -name 'green-41*' -o -name 'dirty-41*' -o -name 'repaired-41*' \) -delete
   q init repaired
   cat > "$T/prs.json" <<EOF
 {
@@ -959,5 +959,23 @@ rp_setup true SUCCESS 0 "$SHARED" "$SHAR"; rploop; rploop
 check "a repair that never moved the head holds nothing" '[ "$(merged)" = 411 ]'
 rp_setup true SUCCESS 0 "$SHARED"; jq '."412".mergeState = "DIRTY"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"; rploop; rploop
 check "AC2 a repaired PR back in conflict is not ready, so the ready PR still waits for it" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+AT0=$("$NODE" -p "new Date().toISOString()")
+rp_setup true SUCCESS 0 "$SHARED"; q set T-402 "fix_tries=[{\"try\":1,\"head\":\"$HEADR\",\"kind\":\"conflict\",\"at\":\"$AT0\",\"finished\":\"$AT0\"},{\"try\":2,\"head\":\"$SHAR\",\"kind\":\"conflict\",\"at\":\"$AT0\"}]"; rploop; rploop
+check "AC2 while a second repair runs, the first finished one still holds the ready PR" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+# The driver reads #412 DIRTY at the old head, then a person pushes the repair.
+pr412(){ jq --arg s "$1" --arg m "${2:-}" '."412".sha = $s | if $m == "DIRTY" then ."412".mergeState = "DIRTY" else del(."412".mergeState) end' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"; }
+hand_repair(){ pr412 "$HEADR" DIRTY; rploop; pr412 "$SHAR"; }
+rp_setup false SUCCESS 7200000 "$SHARED"; hand_repair; rploop; rploop
+check "AC1 a hand repair long after desk's last try: the repaired PR merges first" '[ "$(merged)" = 412 ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+rp_setup true SUCCESS 0 "$SHARED"; q set T-402 'fix_tries=[]'; hand_repair; rploop; rploop
+check "AC2 a hand repair with no desk try holds the ready PR" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+rp_setup true SUCCESS 7200000 "$SHARED"; q set T-402 "stuck={\"why\":\"still in conflict\",\"head\":\"$HEADR\"}"; hand_repair; rploop; rploop
+check "AC2 a stuck record of the head that was in conflict does not end a hand repair's hold" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD"'
+rp_setup true SUCCESS 7200000 "$SHARED"; q set T-402 "stuck={\"why\":\"red\",\"head\":\"$SHAR\"}"; hand_repair; rploop
+check "AC4 stuck again at the repaired head, the hold ends" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: it is parked or stuck"'
+rp_setup true SUCCESS 7200000 "$SHARED"; hand_repair; rploop; printf '%s\t%s\n' "$(( $(date +%s) - 7200 ))" "$HEADR" > "$(find "$T/state" -name repaired-412)"; rploop
+check "AC3 a hand repair's hold ends 60 minutes after it was seen" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: 60 minutes since its repair"'
+rp_setup true SUCCESS 0 "$SHARED" "$SHAR"; q set T-402 'fix_tries=[]'; pr412 "$SHAR" DIRTY; rploop; pr412 "$SHAR"; rploop; rploop
+check "out of DIRTY with no new push (the base moved): no repair, no hold" '[ "$(merged)" = 411 ]'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

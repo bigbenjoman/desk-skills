@@ -81,7 +81,8 @@
 #                                            resume) and pass.mjs has not closed it: held before any
 #                                            other step, with nothing rerun or updated, and read again
 #                                            just before the merge
-#   - shares a file with a repaired PR       a PR whose conflict repair finished (fix-tries.mjs) goes first:
+#   - shares a file with a repaired PR       a PR whose conflict repair finished (fix-tries.mjs), or that a
+#                                            push took out of DIRTY (a hand repair), goes first:
 #                                            a ready PR changing a file it changes is held, naming it, until
 #                                            it merges, goes red or parks, or 60 minutes after its repair.
 #                                            Repaired PRs are not held behind each other
@@ -678,24 +679,56 @@ EOF_EPIC
   esac
 }
 
-# Open PRs whose conflict repair has finished, as lines `<n>\t<key>\t<finished epoch>\t<repaired head>\t<parked>`,
-# set each loop. Only a PR whose head moved past the repaired one was repaired. A queue unread lists none.
+# A repair nothing recorded, a person's push above all, is seen here: a head that moved on a PR the
+# driver last read DIRTY, and now reads free of it. `repaired-<n>` holds when it was seen and the
+# conflicted head. A PR GitHub has not worked out yet (UNKNOWN) keeps its mark for the next loop.
+note_repairs(){
+  local raw n sha ms was
+  raw=$(gh pr list --repo "$REPO" --state open ${AUTHOR:+--author "$AUTHOR"} ${BASE_BRANCH:+--base "$BASE_BRANCH"} --limit 100 \
+      --json number,headRefOid,mergeStateStatus 2>/dev/null) || return 0
+  while IFS="$TAB" read -r n sha ms; do
+    [ -n "$n" ] || continue
+    case "$ms" in
+      DIRTY) printf '%s\n' "$sha" > "$SD/dirty-$n" ;;
+      UNKNOWN|null|"") ;;
+      *)
+        [ -f "$SD/dirty-$n" ] || continue
+        was=$(cat "$SD/dirty-$n"); rm -f "$SD/dirty-$n"
+        [ "$was" = "$sha" ] || printf '%s\t%s\n' "$(date +%s)" "$was" > "$SD/repaired-$n"
+        ;;
+    esac
+  done <<EOF_NOTE
+$(printf '%s' "$raw" | jq -r '.[] | "\(.number)\t\(.headRefOid)\t\(.mergeStateStatus)"' 2>/dev/null)
+EOF_NOTE
+}
+
+# Open PRs with a finished conflict repair, as lines `<n>\t<key>\t<repair epoch>\t<repaired head>\t<parked>`,
+# set each loop: the later of the last finished try, ignoring one still running, and a repair note_repairs
+# saw. Only a PR whose head moved past the repaired one was repaired. A queue unread lists none.
 REPAIR_HOLD_SECS=3600
 REPAIRS=""
 repaired_prs(){ # repaired_prs <open PR numbers, space-separated>
-  node - "$DESK_QUEUE" "$1" <<'NODE'
+  node - "$DESK_QUEUE" "$1" "$SD" <<'NODE'
 const fs = require('fs');
-const [qf, open] = process.argv.slice(2);
+const [qf, open, sd] = process.argv.slice(2);
 const isOpen = new Set(open.split(' ').filter(Boolean));
 let q = {};
 try { q = JSON.parse(fs.readFileSync(qf, 'utf8')).tickets || {}; } catch { process.exit(0); }
 for (const [k, t] of Object.entries(q)) {
   const pr = t.result?.pr;
   if (pr == null || t.merged_at || !isOpen.has(String(pr))) continue;
-  const last = (t.fix_tries ?? []).filter((x) => x.kind === 'conflict' && !x.extra).at(-1);
-  const at = last?.finished ? Date.parse(last.finished) : NaN;
-  if (Number.isNaN(at)) continue;
-  console.log([pr, k, Math.floor(at / 1000), last.head, t.state === 'parked' || t.state === 'failed' || t.stuck ? 'parked' : '-'].join('\t'));
+  const last = (t.fix_tries ?? []).filter((x) => x.kind === 'conflict' && !x.extra && x.finished).at(-1);
+  const at = last ? Math.floor(Date.parse(last.finished) / 1000) : NaN;
+  let seen = null;
+  try {
+    const [when, head] = fs.readFileSync(`${sd}/repaired-${pr}`, 'utf8').trim().split('\t');
+    if (Number(when) && head) seen = { at: Number(when), head };
+  } catch { /* no repair seen */ }
+  if (Number.isNaN(at) && !seen) continue;
+  const repair = seen && !(at >= seen.at) ? seen : { at, head: last.head };
+  // A stuck record of the head that was in conflict is the conflict this repair settled, until the pass clears it.
+  const stuck = t.stuck && !(seen && t.stuck.head === seen.head);
+  console.log([pr, k, repair.at, repair.head, t.state === 'parked' || t.state === 'failed' || stuck ? 'parked' : '-'].join('\t'));
 }
 NODE
 }
@@ -951,6 +984,7 @@ while true; do
   # reads this line as the reason, rather than a driver that runs and never merges.
   if [ "$rc" -eq 4 ]; then log "FAIL: gh is signed out ($(tail -1 "$GH_ERR" 2>/dev/null)) — nothing can merge until \`gh auth login\`; stopping"; exit 1; fi
   [ "$rc" -eq 0 ] || { log "could not list PRs"; pause 120 1; continue; }
+  note_repairs </dev/null
   drafts=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "true" { printf "#%s ", $1 }'); [ -n "$drafts" ] && log "draft (still reviewing): $drafts"
   ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 "\t-" }')
   epic=$(epic_pr </dev/null)
