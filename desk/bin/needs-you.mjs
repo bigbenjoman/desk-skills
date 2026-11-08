@@ -61,7 +61,8 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, RUNNER_FIX } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsText, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles } from './gate.mjs';
-import { repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
+import { repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
+import { fixClass } from './failure-class.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
@@ -740,8 +741,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
   // reads it, and taken back if the requeue is refused. null once both are made, else what refused.
+  // With the failure-class lever on in its repo, the fix records its class first (failure-class.mjs);
+  // the person sent it, so a class that waits does not hold it.
   const sendFix = (fix) => {
-    const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify({ ...fix, at: new Date(now).toISOString() })}`]);
+    const lever = (() => { try { return parseLevers(repoConfigValues(r.slug, 'levers')).on.includes('failure-class'); } catch { return false; } })();
+    const classed = lever ? (({ class: c, class_rule }) => ({ class: c, class_rule }))(fixClass(fix, x.t)) : {};
+    const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify({ ...fix, ...classed, at: new Date(now).toISOString() })}`]);
     if (!f.ok) return `its fix was refused: ${f.out}`;
     const q = queueCmd(r, ['requeue', ticket]);
     if (!q.ok) { queueCmd(r, ['set', ticket, 'fix=null']); return `the requeue was refused: ${q.out}`; }

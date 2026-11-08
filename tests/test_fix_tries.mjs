@@ -504,6 +504,21 @@ const body348 = ['<!-- desk-review:local -->',
   '## P1 / P2', '',
   `None. Round 7 raises no new P2s. Simplicity noted two narrative comments, at ${BT}evidence.mjs:35-36${BT} ("(DS-381)") and ${BT}test_undraft.mjs:200${BT}, but the round-7 rule left them out.`, '',
   '## Requirements', '', 'DS-379 AC1–AC4 are unchanged since round 6.'].join('\n');
+const heading511 = readFileSync(new URL('./fixtures/review-finding-as-heading.md', import.meta.url), 'utf8');
+const f511 = reviewFix(tk(), { pr: 511, head: HEAD, verdict: { p0: '1', p1: '0', p2: '0' }, body: heading511 });
+t('DS-518 AC1 a finding written as a heading is sent to a fix try', `${f511?.call} ${f511?.fix.kind}`, 'requeue review');
+t('DS-518 AC1 it quotes that finding alone, not the lines citing evidence under it', JSON.stringify(f511?.fix.findings), JSON.stringify([{ sev: 'P0', text: '`desk/bin/bench.mjs:358`: with `CLAUDE_CODE_OAUTH_TOKEN` set, the quota guard reads a different account from the one a Fable run spends' }]));
+const headed = (rest) => reviewFindings(`## P0 (1)\n### src/a.ts:4: off by one\n${rest}`).map((x) => `${x.sev} ${x.text}`).join('|');
+const only518 = 'P0 src/a.ts:4: off by one';
+t('DS-518 AC2 a heading citing no file:line ends the section, whatever its prose cites', headed('### Notes\nSee src/b.ts:9 for the pattern.'), only518);
+t('DS-518 AC3 no line of the gaps section after it is a P0', headed('## Requirement gaps\n- AC1: src/c.ts:7 not done'), only518);
+t('DS-518 a heading of the severity heading\'s own level is not a finding, whatever it cites', headed('## Files read, src/d.ts:2'), only518);
+t('DS-518 two headings are two findings', reviewFindings('## P1 (2)\n### src/a.ts:1: one\nsee src/x.ts:1\n### src/b.ts:2: two').map((x) => `${x.sev} ${x.text}`).join('|'), 'P1 src/a.ts:1: one|P1 src/b.ts:2: two');
+t('DS-518 a heading under a severity left out is not read, and leaves the run where it was', reviewFindings('## P2 (1)\n### src/a.ts:1: naming\n## P0 (1)\n### src/b.ts:2: crash').map((x) => `${x.sev} ${x.text}`).join('|'), 'P0 src/b.ts:2: crash');
+t('DS-518 a heading citing a file:line outside any severity is not a finding', reviewFindings('### src/a.ts:1: context\n- src/b.ts:2 note').length, 0);
+t('DS-518 AC4 bullets under the severity heading are quoted as they were', JSON.stringify(reviewFindings('## P0 (2)\n- src/a.ts:1 one\n  - detail src/x.ts:1\n- src/b.ts:2 two').map((x) => x.text)), JSON.stringify(['- src/a.ts:1 one - detail src/x.ts:1', '- src/b.ts:2 two']));
+t('DS-518 AC5 a review citing no file:line still sends no worker', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { p0: '1' }, body: '## P0 (1)\n### The guard reads the wrong account\nIt spends another login.' }), null);
+
 const f348 = reviewFindings(body348);
 t('DS-406 AC1 round 7 of PR #348 is one finding, a P0', f348.map((x) => x.sev).join(','), 'P0');
 t('DS-406 AC1 its text holds its three sub-bullets', subs348.every((s) => f348[0]?.text.includes(s.trim())), true);

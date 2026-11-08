@@ -1663,6 +1663,80 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-280 AC7 a check result that changed moves the last change, and the group's start stays" \
   '[ "$(field F-5 pr_status.changed_at)" != "$F5_CHANGED" ] && [ "$(field F-5 pr_status.changed_at)" = "$(field F-5 pr_status.at)" ] && [ "$(field F-5 group)" = "$F5_GROUP" ]'
 check "DS-421 the PR's head commit time is recorded, the head's and not an earlier commit's" '[ "$(field F-5 pr_status.head_at)" = "\"2025-10-20T09:00:00Z\"" ]'
+
+# ---- DS-446: with the failure-class lever on, a red check is read against the base before a fix try
+# is spent on it, each fix try records its class first, and one waiting on a blocker is not spawned.
+# api <endpoint> <output>: what the fake gh prints for `gh api <endpoint>`, its --jq already applied.
+api(){ node -e 'const [f, k, v] = process.argv.slice(1); let m = {}; try { m = JSON.parse(require("fs").readFileSync(f, "utf8")); } catch {} m[k] = v; require("fs").writeFileSync(f, JSON.stringify(m))' "$T/fx/api.json" "$@"; }
+runs(){ api "repos/acme/widgets/commits/$1/check-runs?check_name=$2&filter=latest&per_page=100" "$3"; }
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+let api = {};
+try { api = JSON.parse(fs.readFileSync('$T/fx/api.json', 'utf8')); } catch {}
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'api' && a[1] in api) console.log(api[a[1]]);
+else process.exit(1);
+EOF
+{ cat "$T/config-f.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `failure-class` |\n'; } > "$T/config-fl.md"
+export DESK_QUEUE="$T/queue-fb.json" DESK_AUTOPILOT_STATE="$T/state-fb"; mkdir -p "$T/state-fb/logs" "$T/state-fb/merge-driver"
+fbran(){ printf '%s\n%s\n' "$3" "$3" > "$T/state-fb/merge-driver/reruns-$1-$2"; }
+MB=4444444444444444444444444444444444444444; MB2=6666666666666666666666666666666666666666; MT=5555555555555555555555555555555555555555
+H4=7777777777777777777777777777777777777777
+api "repos/acme/widgets/compare/main...$H1" "$MB"; api "repos/acme/widgets/compare/main...$H4" "$MB"
+api "repos/acme/widgets/compare/main...$H2" "$MB2"; api "repos/acme/widgets/compare/main...$H3" "$MB2"
+runs "$MB" Lint '[{"status":"completed","conclusion":"failure"}]'; runs "$MB2" Lint '[]'
+q init fb; q set-batch concurrency=5
+# FB-4, with the lever off: red on Lint, red on the base too, held behind a blocker. Routed as today.
+q add FB-4; q set FB-4 state=done lane=A branch=fix/FB-4 result.pr=813 held_by=X-9; fx 813 "$H4" MERGEABLE tests:SUCCESS Lint:FAILURE:914; fbran 813 "$H4" Lint
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-446 AC7 with the lever off, a red check red on the base too and held behind a blocker is requeued as today" \
+  '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = null ] && [ "$(field FB-4 fix_tries | jq -c ".[0] | has(\"class\")")" = false ] && [ "$(field FB-4 base_red)" = null ]'
+check "DS-446 AC7 and the base's check runs are not read" '! grep -qF "check-runs?check_name=Lint" "$T/gh-calls" &&! grep -qF "compare/main...$H4" "$T/gh-calls"'
+q park FB-4 "which reviewer handle goes in the PR body?"
+check "DS-446 AC7 with the lever off, a park records no class" '[ "$(field FB-4 park.class)" = null ] && [ "$(field FB-4 park.question)" = "\"which reviewer handle goes in the PR body?\"" ]'
+# FB-1 is red on Lint, and Lint is red at its merge base. FB-2 is red on Lint, with no run of Lint at its
+# merge base. FB-3 is FB-2's case, held behind a blocker.
+for k in 1 2 3; do q add "FB-$k"; q set "FB-$k" state=done lane=A "branch=fix/FB-$k"; done
+q set FB-1 result.pr=810; fx 810 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:911; fbran 810 "$H1" Lint
+q set FB-2 result.pr=811; fx 811 "$H2" MERGEABLE tests:SUCCESS Lint:FAILURE:912; fbran 811 "$H2" Lint
+q set FB-3 result.pr=812 held_by=X-9; fx 812 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:913; fbran 812 "$H3" Lint
+# The base has gained twelve commits since FB-1's merge base, listed oldest first as the compare pages
+# them. Lint ran red on the oldest, MO, then on MT, and on none of the newest ten: MT's run is read only
+# by reading past the newest ten, and before MO's.
+MO=3333333333333333333333333333333333333333
+api "repos/acme/widgets/compare/$MB...main?per_page=100" "$MO
+$MT
+$(for i in 0 1 2 3 4 5 6 7 8 9; do printf 'f%039d\n' "$i"; done)"
+runs "$MO" Lint '[{"status":"completed","conclusion":"failure"}]'
+runs "$MT" Lint '[{"status":"in_progress","conclusion":null}]'
+export DESK_CONFIG="$T/config-fl.md"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-446 AC3 red on the base at its merge base too: base red, and no fix worker" \
+  '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && [ "$(field FB-1 base_red | jq -c "[.class, .head, .merge_base, .checks]")" = "[\"base red\",\"$H1\",\"$MB\",[\"Lint\"]]" ]'
+check "DS-446 AC3 and the item says so" 'echo "$out" | grep -qF "FB-1: BASE RED — PR #810: base red: Lint is red on main at the merge base 444444444444 too, so no fix try is spent on it"'
+check "DS-446 AC6 no run at the merge base: not base red, the fix try proceeds, and it says the base state is unknown" \
+  '[ "$(field FB-2 state)" = "\"triaged\"" ] && [ "$(field FB-2 base_red)" = null ] && [ "$(field FB-2 fix.what)" = "\"red: Lint; base state unknown for Lint (no run of it on main at the merge base)\"" ]'
+check "DS-446 AC2 the try records its class before its worker spawns" \
+  '[ "$(field FB-2 fix.class)" = "\"application defect\"" ] && [ "$(field FB-2 fix_tries | jq -r ".[0].class")" = "application defect" ] && ! grep -q "^FB-2" "$T/spawns"'
+check "DS-446 AC4 a try classed dependency wait does not spawn, and the item says what it waits for" \
+  '[ "$(field FB-3 state)" = "\"done\"" ] && [ "$(field FB-3 fix)" = null ] && [ "$(field FB-3 fix_tries)" = null ] && echo "$out" | grep -qF "FB-3: WAITING — PR #812: no fix try for red: Lint; base state unknown for Lint (no run of it on main at the merge base), classed dependency wait: waiting for X-9 to merge"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-446 AC8 while the job has no newer completed run on the base, the hold stays" '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && echo "$out" | grep -q "FB-1: BASE RED"'
+runs "$MT" Lint '[{"status":"completed","conclusion":"success"}]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-446 AC8 once the job passes on the base, even ten commits back, the hold clears and a fix try proceeds as today" \
+  '[ "$(field FB-1 state)" = "\"triaged\"" ] && [ "$(field FB-1 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-1 fix.class)" = "\"application defect\"" ] && [ "$(field FB-1 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
+q add FB-5; q add FB-6; q add FB-7; q set FB-7 state=triaged
+q park FB-5 "which reviewer handle goes in the PR body?"; q park FB-6 "waiting on the weather"; q hold FB-7 FB-1
+check "DS-446 AC1 with the lever on, a park records its class and the rule that gave it" \
+  '[ "$(field FB-5 park | jq -c "[.class, (.class_rule | length > 0)]")" = "[\"missing decision\",true]" ] && [ "$(field FB-7 park.class)" = "\"dependency wait\"" ]'
+check "DS-446 AC5 a park no rule matches is unclassified, with its evidence kept" \
+  '[ "$(field FB-6 park | jq -c "[.class, .evidence]")" = "[\"unclassified\",\"waiting on the weather\"]" ]'
+export DESK_CONFIG="$T/config-f.md" DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
 # Ahead of pace: new tickets hold, and a fix try still starts within the worker count.
 export DESK_QUEUE="$T/queue-p.json" DESK_AUTOPILOT_STATE="$T/state-p"
 mkdir -p "$T/state-p/logs"
