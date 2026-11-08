@@ -531,10 +531,11 @@ function evidenceCall(pr, cfg) {
 const noCellsLeft = (n) => `edit the body of #${n} so no \`_drag <file>_\` cell is left`;
 
 // The uploads a PR's screenshots get that exit with no result line before they are the person's: the
-// pass's own and one retry. The ticket's upload_crash is { pr, dir, tries, log }, log its whole output.
+// pass's own and one retry. The ticket's upload_crash is { pr, dir, tries, log, busy }, log its whole
+// output, busy when the last try found the shared browser profile in use.
 export const UPLOAD_TRIES = 2;
 export const UPLOAD_CRASHED = /, and desk's upload of them crashed on \d+ tr(?:y|ies); its output is saved in /;
-const crashOf = (t, n) => (t.upload_crash && Number(t.upload_crash.pr) === Number(n) ? t.upload_crash : null);
+export const crashOf = (t, n) => (t.upload_crash && Number(t.upload_crash.pr) === Number(n) ? t.upload_crash : null);
 
 // The call for a draft's `_drag <file>_` cells, or null with none left: only the cells hold it here,
 // however its upload ended. Each goes to what can fill it: §4 Evidence workflow, then for any it left
@@ -553,6 +554,9 @@ export function cellCall(t, pr, cfg) {
   }
   const left = `${cells} screenshot cell(s) left: ${dragFiles(pr.body).join(', ')}`;
   const crash = crashOf(t, n);
+  if (crash?.busy) {
+    return { call: 'wait', why: `${left}: desk's upload of them found the shared browser profile in use, and the next pass tries it again`, crashed: crash };
+  }
   if (crash && crash.tries < UPLOAD_TRIES) {
     return { call: 'wait', why: `${left}: desk's upload of them crashed (try ${crash.tries} of ${UPLOAD_TRIES}), and the next pass tries it again; its output is saved in ${crash.log}`, crashed: crash };
   }
@@ -575,7 +579,7 @@ export function cellPlan(t, pr, cfg) {
   const wf = `\`${cfg.evidence?.workflow}\``;
   const spent = c.call === 'capture' && captureTry(t, { pr: pr.number, head: pr.head, files: c.files })?.call === 'stuck';
   const doing = (file) => {
-    if (c.crashed) return c.call === 'wait' ? "desk's upload of it crashed, and the next pass tries it again" : `desk's upload of it crashed on every try (its output is in ${c.crashed.log})`;
+    if (c.crashed) return c.call === 'wait' ? `desk's upload of it ${c.crashed.busy ? 'found the shared browser profile in use' : 'crashed'}, and the next pass tries it again` : `desk's upload of it crashed on every try (its output is in ${c.crashed.log})`;
     if (c.call === 'evidence') return `${wf} takes it at the next pass`;
     if (c.call === 'wait') return `${wf} is taking it now`;
     if (c.call === 'evidence-failed') return `${wf} ${c.conclusion === 'failure' ? 'failed' : 'filled none of its cells'}, so desk fixes the workflow for the repo and runs it again`;
