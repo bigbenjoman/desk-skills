@@ -67,7 +67,7 @@ export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // A fix try already made for this head: one whose worker finished without moving it. A review try
 // (kind `rereview`), a capture try (`capture`) and a protected-files try (`protected`, which moves it only
 // when a change is not needed) move no head by design, so they do not count here.
-const OWN_HEAD = new Set(['rereview', 'capture', 'protected']);
+const OWN_HEAD = new Set(['rereview', 'capture', 'protected', 'renames']);
 const fixedAt = (done, head) => done.some((x) => x.head === head && !OWN_HEAD.has(x.kind));
 
 // The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
@@ -686,6 +686,21 @@ export function syncFix(t, { pr, head, base, why }) {
 export const syncSaid = (t) => (t.fix?.kind === 'sync' && t.fix.finished
   ? `, after sync try ${t.fix.try} of ${t.fix.of} merged ${t.fix.base}${t.result?.summary ? `, which said: ${t.result.summary}` : ''}` : '');
 
+// A child whose own files name a migration its base has renumbered (migration-renames.mjs) goes to a
+// worker with the old and new names before any other fix try, outside FIX_TRIES_MAX (`extra`), once per
+// rename. A rename an earlier try was sent for is not sent again: what is still red goes the usual way.
+// child: { pr, head, base, renames, draft }.
+export function renamesFix(t, { pr, head, base, renames, draft }) {
+  if (!head) return null;
+  const done = t.fix_tries ?? [];
+  const pair = (r) => `${r.from}\0${r.to}`;
+  const sent = new Set(done.filter((x) => x.kind === 'renames').flatMap((x) => (x.renames ?? []).map(pair)));
+  const fresh = (renames ?? []).filter((r) => !sent.has(pair(r)));
+  if (!fresh.length) return null;
+  return { call: 'requeue', fix: { try: triesMade(done), of: FIX_TRIES_MAX, extra: true, pr, head, kind: 'renames', base, renames: fresh, ...(draft ? { draft: true } : {}),
+    what: `its files name ${fresh.length === 1 ? 'a migration' : `${fresh.length} migrations`} ${base} renamed: ${fresh.map((r) => `${r.old} is now ${r.new}`).join(', ')}` } };
+}
+
 // A draft whose body has `_drag <file>_` cells for screenshots nobody took (undraft.mjs `capture`) goes
 // to a capture worker, which takes them on the PR's branch for the pass to upload. One capture try per
 // PR, outside FIX_TRIES_MAX: cells still missing after it are the person's, with the screens and what
@@ -709,6 +724,14 @@ const mergedTreeLine = (f) => `Where §4 Merged-tree check is set, run each item
 export function fixBrief(t) {
   const f = t.fix;
   if (!f || f.finished) return '';
+  if (f.kind === 'renames') {
+    return [`## Migration rename try: PR #${f.pr}`, '',
+      `Your PR #${f.pr} is ${f.draft ? 'a draft' : 'open and out of draft'} on this branch${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, and ${f.base} has renamed migrations your own files still name by the old filename, so their tests fail with ENOENT once ${f.base} is merged in:`, '',
+      ...f.renames.map((r) => `- ${r.old} is now ${r.new} (${r.to}), named in: ${r.files.join(', ')}`), '',
+      `Merge origin/${f.base} into your branch (git merge, never a rebase or a force push). Then replace each old name with its new one in the files listed, and change nothing else. Run the tests that open those files, and none may fail with ENOENT on a renamed migration.`,
+      'If the merge conflicts, run git merge --abort, change nothing, and say so in your AUTOPILOT_DONE line: the conflict goes to its own fix try.', '',
+      `This try runs before any other fix try and is not one of the ${f.of} fix tries.`, ''].join('\n');
+  }
   if (f.kind === 'capture') {
     return [`## Capture try: PR #${f.pr}`, '',
       `Your PR #${f.pr} is a draft on this branch, and its body still has \`_drag <file>_\` cells for screenshots nobody took${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, so it cannot leave draft:`, '',
@@ -835,6 +858,13 @@ const findingKinds = (findings) => (findings?.some((x) => x.sev === 'P2') ? 'P2'
 // The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK).
 export function fixTask(t) {
   const f = t.fix;
+  if (f.kind === 'renames') {
+    return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
+      `Your task is the migration rename try on PR #${f.pr}, already open on your branch: the "Migration rename try" section of your briefing names each old and new filename and the files naming it. ` +
+      `Fix only that: merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and update those references: this task is your authority to merge it. ` +
+      `Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${f.draft ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : ''}. ` +
+      `Open no new PR, leave the PR ${f.draft ? 'in' : 'out of'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
+  }
   if (f.kind === 'rereview') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
       `Your task is ${f.extra ? 'a review try after a merge from the base' : `review try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
