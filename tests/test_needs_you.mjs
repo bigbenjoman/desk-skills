@@ -411,10 +411,14 @@ const PG_WHY = "review gaps only you can settle: PERSON'S CALL · AC2: only the 
 put('pg', { port: 4205, beat: 1, supervised: true, tickets: {
   'PG-1': readyPr(85, { stuck: { why: PG_WHY, pr: 85, head: 'h85' } }),
   'PG-2': readyPr(86, { stuck: { why: PG_WHY, pr: 86, head: 'older' } }),
+  'PG-3': readyPr(87, { stuck: { why: "review not clean after 2 fix tries: 1 P1, 1 gap — P1: src/a.ts:1 drops a row; PERSON'S CALL · AC2: only the person can accept it", pr: 87, head: 'h87' } }),
+  'PG-4': readyPr(88, { stuck: { why: "review not clean after 2 fix tries: 2 gaps — still open after the fix try that quoted it: AC3: no column; PERSON'S CALL · AC2: only the person can accept it", pr: 88, head: 'h88' } }),
 } });
 const pg = Object.fromEntries(N.collect({ word: 'pg' }).items.map((i) => [i.t.key, i]));
 t('DS-513 AC1 a ready PR on the person\'s gaps offers answer first', `${pg['PG-1']?.need} | ${pg['PG-1']?.actions.map((a) => a[0]).join()}`, "PR #85's code review left requirement gaps only you can settle: PERSON'S CALL · AC2: only the person can accept it. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now");
 t('DS-513 AC1 negative: a reason from an older head offers no answer', pg['PG-2']?.actions.some((a) => a[0] === 'answer') ?? false, false);
+t('DS-513 AC3 a finding that outlasted its tries beside the person\'s gap offers answer and fix, and names the gap', `${pg['PG-3']?.actions.map((a) => a[0]).join()} ${pg['PG-3']?.need.includes("only you can settle: PERSON'S CALL · AC2")}`, 'answer,fix,done,resume,not-now true');
+t('DS-513 AC3 a code gap that outlasted its try beside the person\'s gap offers answer', `${pg['PG-4']?.actions.map((a) => a[0]).join()} ${pg['PG-4']?.need.includes("only you can settle: PERSON'S CALL · AC2")}`, 'answer,done,resume,not-now true');
 const pgCall = 'Accept AC2 as built';
 const pgr = cli('record', 'pg', 'PG-1', 'answer', pgCall);
 const pgq = queueOf('pg').tickets['PG-1'];

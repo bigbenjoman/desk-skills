@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsText, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 import { readVerdict, localReviewSet } from '../desk/bin/review-threads.mjs';
 import { errorLinesIn } from '../desk/bin/evidence.mjs';
@@ -286,13 +286,14 @@ const sentBack = personReviewFix(tk(), { pr: 702, head: HEAD, why: stuckBeside?.
 t('DS-513 AC3 a try the person sends for the finding is not aimed at the person\'s gap', `${stuckBeside?.why.includes(PERSON_GAP.slice(2))} ${sentBack?.findings.length} ${sentBack?.findings.some((x) => x.text.includes('PERSON'))}`, 'true 1 false');
 t('DS-513 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: onlyPerson }), null);
 const gapsCall = (body, verdict, opts = { judgement: 'yes' }) => personGapsCall({ verdict, body }, opts);
-t('DS-513 a ready PR with only the person\'s gaps is stuck on them, its reason readable', personGapsText(gapsCall(onlyPerson, { gaps: '1' })?.why), PERSON_GAP.slice(2));
+t('DS-513 a ready PR with only the person\'s gaps is stuck on them, its reason readable', JSON.stringify(personGapsIn(gapsCall(onlyPerson, { gaps: '1' })?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
+t('DS-513 AC3 a review stuck reason gives up the person\'s gap it carries', JSON.stringify(personGapsIn(stuckBeside?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
 t('DS-513 a ready PR with a code gap beside the person\'s is not stuck on them', gapsCall(personBody(2, PERSON_GAP, CODE_GAP), { gaps: '2' }), null);
 t('DS-513 nor with a finding beside the person\'s gap', gapsCall(onlyPerson, { gaps: '1', p1: '1' }), null);
 t('DS-513 nor a P2', gapsCall(onlyPerson, { gaps: '1', p2: '1' }), null);
 t('DS-513 nor with no gap counted', gapsCall(onlyPerson, { gaps: '0' }), null);
 t('DS-513 nor without autopilot-judgement yes', gapsCall(onlyPerson, { gaps: '1' }, {}), null);
-t('DS-513 another stuck reason is not a person\'s-gaps reason', personGapsText('review not clean after 2 fix tries: 1 P1'), null);
+t('DS-513 another stuck reason is not a person\'s-gaps reason', personGapsIn('review not clean after 2 fix tries: 1 P1 — P1: src/a.ts:1 quotes PERSON\'S CALL').length, 0);
 const readyCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: true, answer: 'accept it' }) });
 t('DS-513 the person\'s call on a ready PR keeps it out of draft', `${fixBrief(readyCall).includes('open and out of draft')} ${/leave the PR out of draft/.test(fixTask(readyCall))}`, 'true true');
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));

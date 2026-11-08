@@ -59,7 +59,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, RUNNER_FIX } from './undraft.mjs';
-import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsText, personReviewFix, stuckFindings } from './fix-tries.mjs';
+import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles } from './gate.mjs';
 import { repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
@@ -95,7 +95,7 @@ const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stat
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
 // A PR out of draft has no such record: the pass marks it stuck on the gaps only its person can settle.
 const reviewGaps = (t, stuck) => (t.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? '')))
-  || (t.pr_status?.isDraft === false && personGapsText(stuck?.why) != null);
+  || (t.pr_status?.isDraft === false && personGapsIn(stuck?.why).length > 0);
 const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
 // Every open PR takes an instruction for a worker on it, whatever else the item offers.
 const SEND_BACK = ['resume', null, 'resume "<instruction>" keeps it for the next worker and sends the ticket back to a worker on the PR'];
@@ -174,13 +174,14 @@ function stuckPlain(r, n, s, t) {
     const k = Number(shots[1]);
     return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}, so nothing desk has can fill ${k === 1 ? 'its cell' : 'their cells'}. Edit the PR body so no cell is left; the next pass then takes it out of draft.`;
   }
-  const personGaps = personGapsText(why);
-  if (personGaps != null) return `${n}'s code review left requirement gaps only you can settle: ${one(personGaps)}. Say how to settle them; a worker on the PR carries out your call.`;
+  const personGaps = personGapsIn(why).map(one).join('; ');
+  const yours = `requirement gaps only you can settle: ${personGaps}. Say how to settle them; a worker on the PR carries out your call.`;
+  if (personGaps && !/^review not clean/.test(why)) return `${n}'s code review left ${yours}`;
   // Before the conflict test: a review reason names the conflict tries it was made after.
   if (/^review not clean/.test(why)) {
     const left = stuckFindings(why);
     const named = left.length ? `: ${left.map((f) => `${f.sev} ${one(f.text)}`).join('; ')}` : '';
-    return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}${named}. ${left.length ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.`;
+    return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}${named}. ${left.length ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.${personGaps ? ` It also left ${yours}` : ''}`;
   }
   const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
   if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
@@ -473,7 +474,8 @@ function itemOf(r, x) {
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
     if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
     const openPr = (...actions) => ({ kind: 'pr', need, note, actions: [...actions, SEND_BACK, ['not-now']] });
-    if (reviewGaps(t, stuck)) return openPr(['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ['done']);
+    // Findings left beside the gaps are still a worker's to fix, so fix stays on offer.
+    if (reviewGaps(t, stuck)) return openPr(['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ...(stuck && personReviewFix(t, { why: stuck.why }) ? [['fix', 'its findings are in the code: fix sends it to a worker on the PR for one more try, and leaves the gaps for your answer']] : []), ['done']);
     // Held by nothing but a person's approval: once asked for, there is nothing to do but wait for it.
     const ask = approvalAsk(t, prWhy(r, t) ?? {});
     if (ask && !ask.left.length) return { ...openPr(['waiting', 'once the approval is asked for, waiting keeps it off this list until it gets one or its head moves'], ['done']), approval: true };

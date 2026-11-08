@@ -410,7 +410,14 @@ export function reviewFix(t, review, opts = {}) {
 // that puts them to the person: a draft needs none, its undraft record says so (undraft.mjs). null for
 // any other review. Asked once reviewFix has returned null.
 const PERSON_GAPS = 'review gaps only you can settle: ';
-export const personGapsText = (why) => (String(why ?? '').startsWith(PERSON_GAPS) ? String(why).slice(PERSON_GAPS.length) : null);
+// The tagged gaps a stuck reason names: all of a personGapsCall reason, or those a review stuck reason
+// (reviewFix) carries beside what outlasted its tries. [] for any other reason.
+export function personGapsIn(why) {
+  const s = String(why ?? '');
+  if (s.startsWith(PERSON_GAPS)) return [s.slice(PERSON_GAPS.length)];
+  const i = /^review not clean\b/.test(s) ? s.indexOf(' — ') : -1;
+  return i < 0 ? [] : s.slice(i + 3).split(/; (?=P[0-2]: |PERSON['’]S CALL)/).filter((x) => /^PERSON['’]S CALL/.test(x));
+}
 export function personGapsCall(review, opts = {}) {
   const v = review.verdict, open = Number(v?.gaps) || 0;
   if (opts.judgement !== 'yes' || !open || reviewCounts(v) || Number(v?.p2) > 0) return null;
