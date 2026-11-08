@@ -2184,9 +2184,12 @@ function moveRound(t, { wt, kept, branch, to }) {
   const m = t.login_move;
   const said = /^\s*(4b|\d)/i.exec(String(m.stage ?? ''))?.[1];
   const stage = roundStage(m.stage);
+  // A fix try is spawned with its task, never at a stage: it starts that task again.
+  const task = !!(t.fix && !t.fix.finished);
   let why = null;
   let resumePath = null;
-  if (!kept) why = `its worktree ${wt} was not kept`;
+  if (task) { /* no stage to resume */ }
+  else if (!kept) why = `its worktree ${wt} was not kept`;
   else if (!said) why = 'it stopped before it recorded a stage';
   else if (!stage) why = `it stopped at Stage ${said}, before Stage 3, the first a session resumes at`;
   else {
@@ -2195,15 +2198,17 @@ function moveRound(t, { wt, kept, branch, to }) {
     if (!r.ok) why = r.why;
     else if (!existsSync(r.path)) why = `it left no resume file (${r.path})`;
   }
-  // Read whole, not through shOut, whose trim would cut the first line's leading status column.
+  // Read whole, not through shOut, whose trim would cut the first line's leading status column. Paths
+  // under .claude/ are setup-worktree.sh's (agent links, a disabled settings file): a worker cannot write there.
   let changes = [];
   if (kept) {
-    try { changes = execFileSync('git', ['-C', wt, 'status', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean); } catch { /* not a git worktree */ }
+    try { changes = execFileSync('git', ['-C', wt, 'status', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter((l) => l && !/^.. "?\.claude\//.test(l)); } catch { /* not a git worktree */ }
   }
   const base = `origin/${DEFAULT_BRANCH}`;
-  const brief = renderMoved({ key: t.key, from: m.from, to: to.name, limit: limitName(m.type), stage: why ? null : stage, why, branch, worktree: wt, base,
+  const brief = renderMoved({ key: t.key, from: m.from, to: to.name, limit: limitName(m.type), task, stage: why || task ? null : stage, why, branch, worktree: wt, base,
     commits: kept ? branchCommits(wt, base) : [], resumePath, changes });
   const keptNote = changes.length ? `, keeping ${changes.length} uncommitted change(s)` : '';
+  if (task) return { stage: null, brief, line: ` starting its task again after moving logins${keptNote}` };
   return why
     ? { stage: null, brief, line: ` from Stage 0 (not resumed after moving logins: ${why})${keptNote}` }
     : { stage, brief, line: ` resumed at Stage ${stage}, where its stopped session was${keptNote}` };
@@ -2408,7 +2413,8 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // file) in repos that do not ignore them. The ticket keeps its state, and the next pass looks again.
 function busyWorktree(t) {
   if (t.location === 'cloud') return null;
-  const resumed = toResume(t) || toHandoff(t);
+  // A worker moving logins carries on its own stopped session's work, uncommitted changes included.
+  const resumed = toResume(t) || toHandoff(t) || !!t.login_move;
   const wt = resumed ? t.worktree : join(WORKTREES, t.key);
   if (!wt || !existsSync(wt)) return null;
   let real = wt;
@@ -2463,7 +2469,7 @@ for (const t of spawnable) {
     if (readRepoFailures.length) {
       const failure = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${readRepoFailures.map((f) => `${f.repo}: ${f.why}`).join('; ')}`;
       // A requeue starts a parked ticket's session afresh, so a killed worker's waits for the next pass.
-      if (toResume(t)) { report.waiting.push(`${t.key}: ${failure}. Its session is kept, and the next pass tries again`); continue; }
+      if (toResume(t) || t.login_move) { report.waiting.push(`${t.key}: ${failure}. Its ${t.login_move ? 'move' : 'session'} is kept, and the next pass tries again`); continue; }
       // Takes the slot its worker would have: a bad refresh parks no more tickets than the pass would have started.
       attempts += 1;
       const line = `${failure}. Once it is reachable: queue.mjs requeue ${t.key}`;

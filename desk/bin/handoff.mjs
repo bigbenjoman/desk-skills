@@ -170,12 +170,16 @@ export function renderNoResume({ round, why, path }) {
 // transcript lives under the first login's folder, so the new one is a fresh session. It starts at the
 // stage the stopped one reached where that can be resumed (`stage`), else at Stage 0 saying `why`. Any
 // uncommitted changes the stopped session left in the worktree (`changes`, as git status --porcelain
-// prints them) are named, so the new session builds on them.
-export function renderMoved({ key, from, to, limit, stage, why, branch, worktree, base, commits, resumePath, changes = [] }) {
+// prints them) are named, so the new session builds on them. A fix try (`task`) has no stage: it
+// starts its task again.
+export function renderMoved({ key, from, to, limit, task = false, stage, why, branch, worktree, base, commits, resumePath, changes = [] }) {
   const items = (xs, none) => (xs.length ? xs.map((x) => `- ${x}`) : [`- ${none}`]);
   const stopped = `The last session of ${key} stopped at ${limit} on login ${from}. Its transcript stays under that login, so this is a fresh session on login ${to}.`;
   return [
-    ...(stage
+    ...(task
+      ? ['## Moved logins: this session starts its task again', '',
+        `${stopped} Carry out your task from its start, checking git status and git log in your worktree first for what the stopped session did.`]
+      : stage
       ? [`## Moved logins: this session resumes at Stage ${stage}`, '',
         `${stopped} It had reached Stage ${stage}, so this session starts there rather than at Stage 0: do not redo the stages before it. ` +
           `Check git status and git log in your worktree, and read your resume file ${resumePath}.`]

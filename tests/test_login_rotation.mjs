@@ -15,7 +15,7 @@ const T = mkdtempSync(join(tmpdir(), 'desk-login-rotation-'));
 const H = join(T, 'home');
 const dirOf = (name) => join(H, '.claude-logins', name);
 for (const k of ['CLAUDE_CONFIG_DIR', 'DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH',
-  'DESK_BATCH', 'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN', 'AUTOPILOT_RERUN', 'AUTOPILOT_BATCH_BUDGET_USD']) delete process.env[k];
+  'DESK_BATCH', 'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN', 'AUTOPILOT_RERUN', 'AUTOPILOT_BATCH_BUDGET_USD', 'AUTOPILOT_START_STAGE', 'AUTOPILOT_TASK']) delete process.env[k];
 Object.assign(process.env, { HOME: H, DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'), DESK_LOCK_DIR: join(T, 'locks'),
   DESK_SUBSCRIPTIONS: join(T, 'subscriptions.md'), DESK_USAGE_DIR: join(T, 'usage') });
 mkdirSync(process.env.DESK_LOCK_DIR);
@@ -61,8 +61,11 @@ writeFileSync(join(bin, 'setup-worktree.sh'), 'mkdir -p "$WT_DIR/$2"; echo "[set
 // A folder listed in LIMITED, as `<folder> <reset epoch seconds | none>`, is at its usage limit: its
 // preflight is refused and its probe rejected.
 const LIMITED = join(T, 'limited');
+// One line per spawn (not preflight): ticket, whether it was given a task, and its start stage.
+const STARTS = join(T, 'starts');
 // One line per call: ticket, session or `preflight`, the login it was given, and whether it resumes.
 writeFileSync(join(bin, 'spawn-worker.sh'), `printf '%s|%s|%s|%s\\n' "$1" "$3" "\${AUTOPILOT_LOGIN_DIR-unset}" "\${AUTOPILOT_RESUME:+resume}" >> "${CALLS}"
+[ "$3" = preflight ] || printf '%s|%s|%s\\n' "$1" "\${AUTOPILOT_TASK:+task}" "\${AUTOPILOT_START_STAGE-}" >> "${STARTS}"
 ld="\${AUTOPILOT_LOGIN_DIR:-${H}/.claude}"
 if [ "$3" = preflight ]; then
   if grep -qF "$ld " "${LIMITED}" 2>/dev/null; then echo "[preflight] usage-limit: the account is at its usage limit"; else echo "[preflight] pass"; fi
@@ -110,7 +113,7 @@ const event = (five, week) => JSON.stringify({ type: 'rate_limit_event', rate_li
 
 // `logins` is [name, rule, five, week]: `default` is ~/.claude, any other a folder under ~/.claude-logins.
 function world(logins, tickets) {
-  for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins')]) rmSync(p, { recursive: true, force: true });
+  for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, STARTS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins')]) rmSync(p, { recursive: true, force: true });
   mkdirSync(join(state, 'logs'), { recursive: true });
   mkdirSync(join(state, 'workers'), { recursive: true });
   mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
@@ -296,7 +299,7 @@ t('AC2 and the refused ticket spawns on the other login', `${row('Y-1').state} $
 t('AC2 with no preflight on the benched login', calls('Y-1').filter((l) => l.includes('|preflight|') && l.endsWith('|unset|')).length, 1);
 
 // AC1 for a worker: one that ended at the limit on login B benches B. With the other login open, it
-// carries on there as a fresh session (DS-467, below), where DS-466's AC8 kept it paused on B.
+// carries on there as a fresh session (the section below).
 const PAUSED = { key: 'K-2', state: 'running', open_questions: 0, session_id: 'sess-2', branch: 'fix/K-2', worktree: join(W, 'wt', 'K-2'), login: { name: 'b', config_dir: dirOf('b') } };
 mkdirSync(join(W, 'wt', 'K-2'), { recursive: true });
 const rejected = `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":${RESET}}}\n`;
@@ -406,7 +409,7 @@ out = pass(env);
 t('a worker paused on a login signed out since holds nothing', `${row('Y-1').state} ${on('Y-1')} ${batchOf().usage_hold ?? null}`, 'running default null');
 t('and it carries on on the usable login (DS-467)', `${row('K-2').state} ${row('K-2').login.name}`, 'running default');
 // The one usable login refused next: the batch holds, and a pass later it still does, with no second
-// preflight. The stopped worker moves first (DS-467), so its preflight is the one refused.
+// preflight. The stopped worker moves first, so its preflight is the one refused.
 env = world([['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10]], { 'K-2': PAUSED, 'Y-1': NEW('Y-1') });
 writeFileSync(join(state, 'logs', 'K-2.log'), rejected);
 signOut(dirOf('b'));
@@ -416,7 +419,7 @@ t('with the one usable login refused too, the batch holds', `${row('Y-1').state}
 pass(env);
 t('a pass later it still holds, with no second preflight', `${batchOf().usage_hold != null} ${calls('K-2').length} ${calls('Y-1').length}`, 'true 1 0');
 
-// ---- a worker stopped at one login's limit carries on on another (DS-467) ------------------------
+// ---- a worker stopped at one login's limit carries on on another ---------------------------------
 // K-3 ended its session at login B's limit, at a stage, in a git worktree on its branch.
 const WT3 = join(W, 'wt', 'K-3');
 const STOPPED = (extra = {}) => ({ 'K-3': { key: 'K-3', state: 'running', open_questions: 0, session_id: 'sess-3', branch: 'fix/K-3', worktree: WT3, stage: '4/9',
@@ -472,6 +475,22 @@ out = pass(env);
 t('DS-467 AC4 the worktree keeps the changes', `${readFileSync(join(WT3, 'a.txt'), 'utf8')}${readFileSync(join(WT3, 'new.txt'), 'utf8')}`, 'one\ntwo\nnew\n');
 t('DS-467 AC4 the briefing says they are there', brief3().includes('### Uncommitted changes in your worktree') && brief3().includes('- ` M a.txt`') && brief3().includes('- `?? new.txt`'), true);
 t('DS-467 AC4 the report says it kept them', out.includes('keeping 2 uncommitted change(s)'), true);
+// Untracked files under .claude/ are setup-worktree.sh's, not the stopped session's work.
+env = stopped(ROOM);
+mkdirSync(join(WT3, '.claude', 'agents'), { recursive: true });
+writeFileSync(join(WT3, '.claude', 'settings.local.json.desk-disabled'), '{}\n');
+writeFileSync(join(WT3, 'new.txt'), 'new\n');
+out = pass(env);
+t('DS-467 AC4 setup\'s .claude files are not named as kept work', `${brief3().includes('.claude')} ${brief3().includes('- `?? new.txt`')} ${out.includes('keeping 1 uncommitted change(s)')}`, 'false true true');
+
+// A fix try with uncommitted edits moves too, and starts its task again rather than at its stage.
+env = stopped(ROOM, { fix: { kind: 'review', try: 1, of: 2, pr: 7, finished: false } });
+writeFileSync(join(WT3, 'a.txt'), 'one\ntwo\n');
+out = pass(env);
+const starts3 = () => (existsSync(STARTS) ? readFileSync(STARTS, 'utf8').trim().split('\n').filter((l) => l.startsWith('K-3|')) : []);
+t('DS-467 a fix try with uncommitted edits is not held as a busy worktree', `${row('K-3').state} ${on('K-3')} ${out.includes('WORKTREE IN USE')}`, 'running default false');
+t('DS-467 a moved fix try is given its task, at no stage', starts3().join(), 'K-3|task|');
+t('DS-467 and its briefing says it starts its task again, naming its changes', brief3().includes('## Moved logins: this session starts its task again') && brief3().includes('- ` M a.txt`'), true);
 
 // AC5: every other usable login benched. It waits, then resumes its own session once B is back.
 env = stopped(ROOM);
