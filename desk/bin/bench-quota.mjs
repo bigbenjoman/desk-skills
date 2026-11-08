@@ -169,8 +169,8 @@ export const pointsLine = (account, used, settings, reading) =>
 
 // Before one run: reads the account, and either says why the run may not start or records its ledger
 // line. `fields` sit in that line after the account's name.  -> { line, why } | { line, before, entry }
-export function startRun({ account, settings, ledger = ledgerPath(), env = process.env, id, fields = {}, read = readWeekly }) {
-  const before = read(account, { env });
+export function startRun({ account, settings, ledger = ledgerPath(), env = process.env, id, fields = {} }) {
+  const before = readWeekly(account, { env });
   const used = benchUsed(readLedger(ledger), account, before);
   const line = pointsLine(account, used, settings, before);
   const why = gate({ account, reading: before, used, settings });
@@ -182,8 +182,8 @@ export function startRun({ account, settings, ledger = ledgerPath(), env = proce
 
 // After one run: reads the account again and records the run's points. `label` names the run in the
 // stop an unreadable reading makes.  -> { quota, line } | { quota, stop }
-export function endRun({ account, settings, ledger = ledgerPath(), env = process.env, before, entry, label, read = readWeekly }) {
-  let after = read(account, { env });
+export function endRun({ account, settings, ledger = ledgerPath(), env = process.env, before, entry, label }) {
+  let after = readWeekly(account, { env });
   // The reading the run started on, read again, says nothing of what the run spent.
   if (!after.why && !(after.at > before.at)) after = { why: 'no weekly reading newer than the one the run started on' };
   if (after.why) return { quota: { account: account.name, before: before.used, after: null, points: null, why: after.why }, stop: unreadable(account, after.why, ` after ${label}`) };

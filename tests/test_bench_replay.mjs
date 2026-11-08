@@ -94,15 +94,21 @@ t('AC4 the decider\'s recorded answers: settled, handed, and left out is handed'
 const pcall = found.calls.preflight[0];
 const ps = preflightScript(pcall);
 t('AC3 the script answers AGENTS from the agents file and CODEX from the missing binary', [ps.AGENTS, ps.CODEX], ['OK', 'BLOCKED']);
-t('AC3 a check run under the sandbox needs a model', [ps.W_IN, ps.DENY, ps.JIRA], [NEEDS, NEEDS, NEEDS]);
+t('AC3 the script answers W_IN and W_OUT from the files the call left', [ps.W_IN, ps.W_OUT], ['OK', 'BLOCKED']);
+const esc = preflightScript({ ...pcall, checks: ['W_IN', 'W_OUT', 'ESCAPE'], inputs: { ...pcall.inputs, files: { w_in: false, w_out: true, escape: true } } });
+t('AC3 a file check reads each file, whichever way it went', esc, { W_IN: 'BLOCKED', W_OUT: 'OK', ESCAPE: 'OK' });
+t('AC3 a file check with no recorded files needs a model', preflightScript({ ...pcall, inputs: { ...pcall.inputs, files: undefined } }).W_IN, NEEDS);
+t('AC3 a check run under the sandbox needs a model', [ps.TOOL1, ps.DENY, ps.JIRA], [NEEDS, NEEDS, NEEDS]);
 t('AC3 an agent the file lacks is BLOCKED', preflightScript({ ...pcall, inputs: { ...pcall.inputs, agent_names: ['nobody'] } }).AGENTS, 'BLOCKED');
 const sc = compare(pcall.opus, ps);
-t('AC3 matches are recorded, and a needs-a-model answer is neither', [sc.filter((x) => x.match).length, sc.filter((x) => x.needs).length], [2, 5]);
+t('AC3 matches are recorded, and a needs-a-model answer is neither', [sc.filter((x) => x.match).length, sc.filter((x) => x.needs).length], [4, 3]);
 const ds = deciderScript(found.calls.decider[0]);
 t('AC7 the script hands on the waiting line and the lane C park, and the rest needs a model', ds, { 'park-aaa': NEEDS, 'wait-bbb': 'handed', 'park-ccc': 'handed' });
 t('AC7 a park naming a §3 row that is not yes is handed', deciderScript({ items: [{ id: 'x', kind: 'parked', lane: 'A', text: 'needs config §3 `pr-merge-green` is "no"' }] }), { x: 'handed' });
 const moved = movePreflight(pcall, '/scratch');
 t('the replay moves the worktree and canary into its own checkout', [moved.prompt.includes(WT), moved.prompt.includes('/scratch/checkout/.preflight.tmp'), moved.prompt.includes('/scratch/outside/.preflight-should-not-exist.tmp'), moved.settings.includes('Edit(//scratch/checkout/**)')], [false, true, true, true]);
+const movedState = movePreflight({ ...pcall, inputs: { ...pcall.inputs, add_dirs: ['/skills', state] }, settings: `{"allow":["Edit(/${state}/parks/x.json)"]}` }, '/scratch');
+t('the replay is granted a throwaway state folder, never the live one', [movedState.addDirs, movedState.settings.includes(state)], [['/skills', '/scratch/state'], false]);
 const many = Array.from({ length: 9 }, (_, i) => ({ id: `c${i}` }));
 t('a sample is seeded: the same seed gives the same calls', sampleOf(many, 4, 's1', 'preflight').map((c) => c.id), sampleOf([...many].reverse(), 4, 's1', 'preflight').map((c) => c.id));
 
@@ -164,7 +170,7 @@ t('AC2 it runs in a throwaway checkout the prompt and settings point at', [pc.ar
 t('AC2 the throwaway checkout is gone afterwards', existsSync(pc.cwd), false);
 t('AC4 the decider is sent the same items and rules, with no tools', [dc.args[1].startsWith(dprompt.trimEnd()), dc.args[dc.args.indexOf('--tools') + 1], dc.args[dc.args.indexOf('--effort') + 1]], [true, '', 'low']);
 t('AC2 only the two sampled calls were replayed', calls().length, 2);
-t('AC5 the preflight shares: haiku 6 of 7, the script 2 of 2 with 5 needing a model', [report.includes('| check lines matching Opus | — | 6 of 7 (86%) | 2 of 2 (100%); 5 of 7 needs a model |')], [true]);
+t('AC5 the preflight shares: haiku 6 of 7, the script 4 of 4 with 3 needing a model', [report.includes('| check lines matching Opus | — | 6 of 7 (86%) | 4 of 4 (100%); 3 of 7 needs a model |')], [true]);
 t('AC5 the decider shares: haiku 2 of 3, the script 2 of 2 with 1 needing a model', [report.includes('| items matching Opus | — | 2 of 3 (67%) | 2 of 2 (100%); 1 of 3 needs a model |')], [true]);
 t('AC5 tokens per call for Opus and haiku', [report.includes('| Median input tokens per call, all kinds | 1,010 | 25 | 0 |'), report.includes('| Median output tokens per call | 40 | 7 | 0 |')], [true, true]);
 t('AC5 quota points per replay', report.includes('| Quota points per call (median) | not recorded | 0.1 | 0 |'), true);
@@ -184,8 +190,11 @@ t('DS-477 under the reserve no replay starts', [r.status, calls().length], [0, 0
 t('DS-477 the report says why', [/stopped: Claude login \S+ has 10% of its weekly allowance left, under the 25% interactive reserve/.test(low), low.includes('### Not replayed, or the replay failed')], [true, true]);
 t('the script side still answers when the model side cannot run', low.includes('| check lines matching Opus | — | 0 of 0') || low.includes('none answered | 2 of 2 (100%)'), true);
 
+// Back under the reserve, so only the flag can stop the model side.
+setUsage(0.1);
 r = run(['--no-haiku'], 'script-only');
-t('--no-haiku makes no model call', [r.status, calls().length], [0, 0]);
+const scriptOnly = readFileSync(join(dir, 'script-only', 'replay-report.md'), 'utf8');
+t('--no-haiku makes no model call', [r.status, calls().length, scriptOnly.includes('Model side: not run (--no-haiku).')], [0, 0, true]);
 
 t('--sample must be a whole number', run(['--sample', 'x'], 'bad').status, 2);
 

@@ -35,7 +35,7 @@ import { armOrder, armEnv } from './bench.mjs';
 import { quantile } from './desk-ci.mjs';
 import { repoSlug } from './desk-env.mjs';
 import { allBatches } from './phase0-report.mjs';
-import { markedResult, readResult, RESULT_MARK } from './decider.mjs';
+import { presort, readResult } from './decider.mjs';
 import { preflightDir, recordFiles } from './preflight-record.mjs';
 import { TOOL_LISTS } from './worker-tools.mjs';
 import * as Q from './bench-quota.mjs';
@@ -116,7 +116,9 @@ export function loadPreflight(dir, base) {
 
 // The no-model side: what the recorded inputs settle on their own. A check that runs a command under
 // the sandbox needs a session to try it, so only those whose answer the inputs fix are answered:
-// AGENTS from the agents file and the tool list, JIRA and CODEX where the binary was not installed.
+// W_IN, W_OUT and ESCAPE from whether the file each writes was there after the call, AGENTS from the
+// agents file and the tool list, JIRA and CODEX where the binary was not installed.
+const FILE_CHECKS = { W_IN: 'w_in', W_OUT: 'w_out', ESCAPE: 'escape' };
 export function preflightScript(call) {
   const i = call.inputs;
   let agents = null;
@@ -124,7 +126,9 @@ export function preflightScript(call) {
   const tools = i.tools == null ? null : String(i.tools).split(',').filter(Boolean);
   const out = {};
   for (const c of call.checks) {
-    if (c === 'AGENTS' && agents && typeof agents === 'object') {
+    const file = i.files?.[FILE_CHECKS[c]];
+    if (typeof file === 'boolean') out[c] = file ? 'OK' : 'BLOCKED';
+    else if (c === 'AGENTS' && agents && typeof agents === 'object') {
       out[c] = (tools && !tools.includes('Agent')) || !(i.agent_names ?? []).every((n) => Object.hasOwn(agents, n)) ? 'BLOCKED' : 'OK';
     } else if (c === 'JIRA' && i.gates?.jira === '') out[c] = 'BLOCKED';
     else if (c === 'CODEX' && i.gates?.codex === '') out[c] = 'BLOCKED';
@@ -133,13 +137,18 @@ export function preflightScript(call) {
   return out;
 }
 
-// The preflight's call, moved into a throwaway checkout: the recorded worktree and canary paths in
-// the prompt, settings and agents become ones under `parent`.  -> { prompt, settings, agents, wt }
+// The preflight's call, moved into a throwaway checkout: the recorded worktree, canary and batch state
+// paths in the prompt, settings, agents and added directories become ones under `parent`, so the
+// replay is never granted the live batch's state.  -> { prompt, settings, agents, addDirs, wt, canary, state }
 export function movePreflight(call, parent) {
   const wt = join(parent, 'checkout');
   const canary = join(parent, 'outside', basename(call.inputs.canary));
-  const move = (s) => String(s).replaceAll(call.inputs.canary, canary).replaceAll(call.inputs.worktree, wt);
-  return { prompt: move(call.prompt), settings: move(call.settings), agents: move(call.agents), wt, canary };
+  const state = join(parent, 'state');
+  const move = (s) => {
+    const out = String(s).replaceAll(call.inputs.canary, canary).replaceAll(call.inputs.worktree, wt);
+    return call.state ? out.replaceAll(call.state, state) : out;
+  };
+  return { prompt: move(call.prompt), settings: move(call.settings), agents: move(call.agents), addDirs: (call.inputs.add_dirs ?? []).map(move), wt, canary, state };
 }
 
 function replayPreflight(call, o) {
@@ -148,6 +157,7 @@ function replayPreflight(call, o) {
     const m = movePreflight(call, parent);
     mkdirSync(m.wt, { recursive: true });
     mkdirSync(dirname(m.canary), { recursive: true });
+    mkdirSync(m.state, { recursive: true });
     spawnSync('git', ['init', '-q', m.wt], { env: armEnv() });
     const settings = join(parent, 'settings.json');
     const agents = join(parent, 'agents.json');
@@ -155,7 +165,7 @@ function replayPreflight(call, o) {
     writeFileSync(agents, m.agents);
     const i = call.inputs;
     const args = ['-p', m.prompt, '--setting-sources', '', '--strict-mcp-config', ...(i.tools == null ? [] : ['--tools', i.tools]),
-      '--settings', settings, '--agents', agents, '--permission-mode', 'dontAsk', ...(i.add_dirs ?? []).flatMap((d) => ['--add-dir', d]),
+      '--settings', settings, '--agents', agents, '--permission-mode', 'dontAsk', ...m.addDirs.flatMap((d) => ['--add-dir', d]),
       '--model', o.model, '--effort', 'low', '--max-budget-usd', String(o.budget), '--output-format', 'json'];
     return runReplay(args, m.wt, (reply) => ({ answers: Object.fromEntries(call.checks.map((c) => [c, verdicts(reply)[c] ?? 'no verdict'])) }));
   } finally {
@@ -203,15 +213,12 @@ export function loadDecider(dir, id) {
   return { call: { type: 'decider', id, prompt, items, opus: answerOf(got, items), reasons: Object.fromEntries(items.map((i) => [i.id, reasonOf(got, i.id)])), tokens: logTokens(raw) } };
 }
 
-// The no-model side: the rules the prompt states that need no reading of the item's words. No
-// decider tool acts on a waiting or batch line, and a lane C park, a park starting `lane C` or
-// `lane D`, or one naming a config §3 row that is not `yes` is always handed on.
+// The no-model side: the rules that need no reading of the item's words. No decider tool acts on a
+// waiting or batch line, and whatever the decider's own rules hand on without a session (presort) is
+// handed on.
 export function deciderScript(call) {
-  return Object.fromEntries(call.items.map((i) => {
-    const row = /config §3 `?([\w-]+)`? is "([^"]*)"/.exec(i.text);
-    const handed = i.kind !== 'parked' || i.lane === 'C' || /^lane [CD]\b/i.test(i.text) || (row && row[2] !== 'yes');
-    return [i.id, handed ? 'handed' : NEEDS];
-  }));
+  const hand = new Set(presort(call.items).hand.map((h) => h.item.id));
+  return Object.fromEntries(call.items.map((i) => [i.id, i.kind !== 'parked' || hand.has(i.id) ? 'handed' : NEEDS]));
 }
 
 function replayDecider(call, o) {
@@ -220,10 +227,11 @@ function replayDecider(call, o) {
     const args = ['-p', `${call.prompt.trimEnd()}\n\n${REPLAY_NOTE}`, '--setting-sources', '', '--strict-mcp-config', '--tools', TOOL_LISTS.none.join(','),
       '--permission-mode', 'dontAsk', '--model', o.model, '--effort', 'low', '--max-budget-usd', String(o.budget), '--output-format', 'json'];
     return runReplay(args, cwd, (_, text) => {
-      const m = markedResult(text, RESULT_MARK);
-      if (m.error) return { why: `its reply had ${m.error}` };
-      const pairs = (xs, k) => Object.fromEntries((Array.isArray(xs) ? xs : []).filter((x) => x?.id).map((x) => [x.id, String(x[k] ?? '')]));
-      const r = { settled: pairs(m.payload.settled, 'did'), handed: pairs(m.payload.handed, 'why') };
+      // Read as the live decider reads its reply (readResult), and as loadDecider reads Opus's.
+      const out = join(cwd, 'reply.json');
+      writeFileSync(out, text);
+      const r = readResult(out);
+      if (r.error) return { why: `its reply had ${r.error}` };
       return { answers: answerOf(r, call.items), reasons: Object.fromEntries(call.items.map((i) => [i.id, reasonOf(r, i.id)])) };
     });
   } finally {

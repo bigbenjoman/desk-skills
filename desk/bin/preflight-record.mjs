@@ -2,16 +2,15 @@
 // it right after the call, before any check tidies up. Under <state>/preflight/, one call is
 // <TICKET>-<time>.prompt.md (the prompt), .json (the raw reply), .inputs.json (what the checks ran
 // against, and which of the files they write were there after the call), and copies of the settings
-// and agents files the call was given. Records older than KEEP_DAYS go when a new one is written.
+// and agents files the call was given.
 //
 //   node preflight-record.mjs --state <dir> --ticket <KEY> --prompt <text> --worktree <dir> --canary <path>
 //     --settings <file> --agents <file> [--model <m>] [--effort <e>] [--tools <list>] [--agent-names <names>]
 //     [--probe <cmd>]… [--add-dir <dir>]… [--gate <k>=<v>]…  < raw reply
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const KEEP_DAYS = 14;
 export const preflightDir = (state) => join(state, 'preflight');
 
 // The file names one call's record uses, from its base name.
@@ -20,7 +19,7 @@ export const recordFiles = (dir, base) => ({
   settings: join(dir, `${base}.settings.json`), agents: join(dir, `${base}.agents.json`),
 });
 
-// Writes one call's record and prunes old ones. -> the record's base name
+// Writes one call's record. -> the record's base name
 export function recordPreflight({ state, ticket, prompt, raw, inputs, settingsFile, agentsFile, now = new Date() }) {
   const dir = preflightDir(state);
   mkdirSync(dir, { recursive: true });
@@ -31,11 +30,6 @@ export function recordPreflight({ state, ticket, prompt, raw, inputs, settingsFi
   writeFileSync(f.inputs, `${JSON.stringify({ ticket, at: now.toISOString(), ...inputs }, null, 2)}\n`);
   if (settingsFile && existsSync(settingsFile)) copyFileSync(settingsFile, f.settings);
   if (agentsFile && existsSync(agentsFile)) copyFileSync(agentsFile, f.agents);
-  const cutoff = now.getTime() - KEEP_DAYS * 24 * 60 * 60 * 1000;
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    try { if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true }); } catch { /* gone already */ }
-  }
   return base;
 }
 
