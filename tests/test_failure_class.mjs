@@ -144,8 +144,10 @@ const draftOf = (failing, checks, classRerun, more = {}, tk2 = {}) => draftCheck
 const once = draftOf([red('Lint', '9')], [ok('tests'), spaced('Lint', '9')], crun());
 t('DS-488 AC1 a draft\'s only red check classed runner or resource is re-run, with no fix try', `${once?.call} ${once?.fix} ${once?.gate?.failedRuns}`, 'rerun undefined 9');
 t('DS-488 AC1 and says why, in words the board reads as a runner rerun', once?.why, 'its "Lint" check is classed runner or resource, ended by the runner or a resource and not the code, so it is re-run once before any fix worker');
-const running = (name, runId) => ({ name, status: 'in_progress', conclusion: null, runId });
-const waits = draftOf([red('Lint', '9')], [spaced('Lint', '9'), running('Unit', '9')], crun());
+const NOW = Date.parse('2026-11-08T12:00:00Z');
+const running = (name, runId, hoursAgo = 1) => ({ name, status: 'in_progress', conclusion: null, runId, startedAt: new Date(NOW - hoursAgo * 3600e3).toISOString() });
+const waits = draftOf([red('Lint', '9')], [spaced('Lint', '9'), running('Unit', '9')], crun(), { now: NOW });
+t('DS-488 AC1 a run past the pending limit is not waited for: a job that never finishes cannot hold it', draftOf([red('Lint', '9')], [spaced('Lint', '9'), running('Unit', '9', 7)], crun(), { now: NOW })?.call, 'rerun');
 t('DS-488 AC1 another job of its run still going: it waits, with no rerun and no fix try', `${waits?.call} ${waits?.gate} ${waits?.fix} | ${waits?.why}`, 'wait undefined undefined | checks still running (Unit) in the run of ones classed runner or resource, re-run once they finish');
 t('DS-488 AC1 a check still going in another run does not hold the rerun', draftOf([red('Lint', '9')], [spaced('Lint', '9'), running('Unit', '8')], crun())?.call, 'rerun');
 t('DS-488 AC1 the rerun\'s gate is as rerun.sh reads it', JSON.stringify(once?.gate), JSON.stringify({ pending: [], failedRuns: ['9'], reasons: [], failing: [{ name: 'Lint', runId: '9' }] }));

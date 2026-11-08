@@ -28,7 +28,7 @@
 // A check §4 Checks workers can't fix or §4 Check builds names, or one failing at a step §4 Pre-merge
 // steps names, is never sent to a worker: on its own it is stuck with what clears it, and beside a
 // check a worker can fix it is named in the brief as not theirs.
-import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, PENDING_LIMIT_MS } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 
 export const FIX_TRIES_MAX = 2;
@@ -605,8 +605,9 @@ export function gateTry(t, s, ctx) {
 // rerunsOk(name) } with the lever on. checks: its pr_status checks, which hold each one's error lines.
 const CLASSED = 'classed runner or resource';
 // A `rerun` call while a rerun is left at this head, a `wait` while another job of a run to re-run is still
-// going (GitHub refuses a run in progress, and a refusal counts as a rerun tried); { note } saying why no
-// rerun is left, for the fix try that goes ahead; null where the checks are not so classed or have no run.
+// going (GitHub refuses a run in progress, and a refusal counts as a rerun tried) and the run is inside
+// PENDING_LIMIT_MS, so a job that never finishes cannot hold it for ever; { note } saying why no rerun is
+// left, for the fix try that goes ahead; null where the checks are not so classed or have no run.
 function classedRerun(mine, checks, ctx) {
   const r = ctx.classRerun, latest = latestPerCheck(checks ?? []);
   if (!r || !mine.length || !mine.every((f) => runnerOrResource(errorLines(latest.find((c) => c.name === f.name))))) return null;
@@ -616,8 +617,10 @@ function classedRerun(mine, checks, ctx) {
   const used = runnerRerunsSpent(mine, (f) => r.rerunsOk(f.name), (f) => r.reruns(f.name));
   if (used === 'ran') return { note: `${CLASSED}; one rerun was already tried at this head and it failed again` };
   if (used === 'refused') return { note: `${CLASSED}; GitHub refused desk's ${RERUNS_MAX} reruns at this head` };
-  const going = latest.filter((c) => c.status !== 'completed' && rerun.runs.includes(String(c.runId))).map((c) => c.name);
-  if (going.length) return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ones ${CLASSED}, re-run once they finish` };
+  const inRuns = latest.filter((c) => rerun.runs.includes(String(c.runId)));
+  const going = inRuns.filter((c) => c.status !== 'completed').map((c) => c.name);
+  const starts = inRuns.map((c) => Date.parse(c.startedAt ?? '')).filter((x) => x > 0);
+  if (going.length && starts.length && (ctx.now ?? Date.now()) - Math.min(...starts) < PENDING_LIMIT_MS) return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ones ${CLASSED}, re-run once they finish` };
   const names = mine.map((f) => `"${f.name}"`).join(', ');
   return { call: 'rerun', why: `its ${names} ${mine.length === 1 ? 'check is' : 'checks are'} ${CLASSED}, ended by the runner or a resource and not the code, so ${mine.length === 1 ? 'it is' : 'they are'} re-run once before any fix worker`, gate: rerun.gate };
 }
