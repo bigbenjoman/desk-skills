@@ -24,7 +24,9 @@
 // Timeline, By day and Epics, Costs on home and on a repo, and Usage, every Claude and Codex login on this
 // computer, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
-// of the repo named. Usage changes a login's rule or removes it with desk-env's logins set and remove. The supervisor command runs that repo's supervisor.mjs install, uninstall or
+// of the repo named. Usage changes a login's rule or removes it with desk-env's logins set and remove,
+// and adds one by showing its sign-in command and waiting until it is signed in; a Codex login's folder
+// is made then, with the label it is listed under. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
@@ -50,7 +52,8 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } f
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, readSubscriptions, signInParts } from './logins.mjs';
+import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, nextLoginFolder, readSubscriptions,
+  signInParts } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1884,8 +1887,9 @@ function accountOf(l) {
   accounts.set(path, { m, a });
   return a;
 }
-// What the view calls a login: a Claude login's email where its folder records one, else its name.
-const loginLabel = (l) => accountOf(l).email ?? l.name;
+// What the view calls a login: a Claude login's email where its folder records one, a Codex login's
+// label where it was given one, else its name.
+const loginLabel = (l) => (l.tool === 'codex' ? loginLabelOf(l) : accountOf(l).email) ?? l.name;
 const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
 
 // Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check }. `out` is
@@ -1974,17 +1978,55 @@ function usageHeadline(repos, now, t) {
     [` is at its ${LIMIT_WORDS[type] ? `${LIMIT_WORDS[type]} ` : ''}limit${when(f) ? ` until ${when(f)}` : ''}${out.length > 1 ? `, and ${out.length - 1} more` : ''}.`, GREY]]);
 }
 
+// A login being added: { tool, login, label }, its folder not signed in yet. It is one row on standby,
+// waiting, until the account check finds its folder signed in.
+const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir;
+function addingRow(a) {
+  const segs = [['  ', null], ...fitCell([[cut(a.label ?? a.login.name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
+    ...fitCell([['waiting for you to sign it in …', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
+  return { id: 'adding', segs: segs.filter(([s]) => s), line: segText(segs) };
+}
+// Lines of coloured runs wrapped to `w`, the first after `lead` and the rest under it.
+const leadLines = (lead, segs, w) => wrapSegs(segs, Math.max(20, w - lead.length)).map((l, i) => segLine([[i ? ' '.repeat(lead.length) : lead, null], ...l]));
+// How to sign the login being added in, in place of the key and notes while desk-q waits.
+function addPanel(a, t, w) {
+  const { shell, then } = signInParts(a.login);
+  const claude = a.tool === 'claude';
+  return [
+    bold(`  Add a ${claude ? 'Claude' : 'Codex'} login`),
+    ...leadLines('  ', [[`desk never sees your password or token. You sign in with ${claude ? "Claude Code's" : "Codex's"} own login, and the login keeps its own folder, so its sessions and settings stay apart from your others.`, GREY]], w),
+    '',
+    segLine([['  ', null], ['1', BOLD], ['  In another terminal, run:', null]]),
+    { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
+    claude ? segLine([['     then type ', null], [then, HUE.cyan], [' and sign in with the account you want to add.', null]]) : '     and sign in with the account you want to add.',
+    ...leadLines('     ', [[claude ? "Come back here. desk-q finds it within a minute, checks it isn't an account already listed, and shows its email and plan."
+      : `Come back here. desk-q finds it within a minute and lists it as ${a.label}.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w)
+      .map((l, i) => (i ? l : segLine([['  ', null], ['2', BOLD], ['  ', null], ...l.segs.slice(1)]))),
+    ...(claude && t.codex.length ? ['', ...leadLines('  ', [['A Codex login is added the same way, with ', GREY], ['a', BOLD], [' on the CODEX table, which asks for its label first.', GREY]], w)] : []),
+  ];
+}
+
 // -> { head, rows, foot }: the line under the tabs; each tool's table, a heading row and a row per login;
-// then the rules' key, a note per signed-out login and for logins with no reading, and when they were read.
-function usageParts(repos, { now = Date.now(), width = null, checked = null } = {}) {
-  const t = usageTable(repos, now, checked);
+// then the rules' key, or with one login per tool an offer to add one, a note per signed-out login and
+// for logins with no reading, and when they were read. While a login is being added (`adding`), its row
+// waits on standby and the foot says how to sign it in.
+function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null } = {}) {
+  const u = usageTable(repos, now, checked);
+  const t = { claude: u.claude.filter((x) => !isAdding(adding, x)), codex: u.codex.filter((x) => !isAdding(adding, x)) };
   const solid = solidBars(width);
   const w = width ?? 104;
-  const table = (name, list) => (list.length ? [tableHead(name), ...list.map((x) => loginRow(x, list.length, now, solid))] : []);
-  const rows = [...table('CLAUDE', t.claude), ...(t.claude.length && t.codex.length ? [{ line: '' }] : []), ...table('CODEX', t.codex)];
+  const table = (name, tool, list) => {
+    const waiting = adding?.tool === tool ? [addingRow(adding)] : [];
+    return list.length || waiting.length ? [tableHead(name), ...list.map((x) => loginRow(x, list.length, now, solid)), ...waiting] : [];
+  };
+  const claudeRows = table('CLAUDE', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
+  const rows = [...claudeRows, ...(claudeRows.length && codexRows.length ? [{ line: '' }] : []), ...codexRows];
+  if (adding) return { head: [usageHeadline(repos, now, t), ''], rows, foot: ['', ...addPanel(adding, t, w)] };
   const all = [...t.claude, ...t.codex];
-  const key = wrapSegs([['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
-    [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], Math.max(20, w - 2)).map((l) => segLine([['  ', null], ...l]));
+  const key = leadLines('  ', t.claude.length <= 1 && t.codex.length <= 1
+    ? [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]]
+    : [['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
+      [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], w);
   const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => {
     const p = signInParts(x.login);
     return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
@@ -3004,6 +3046,7 @@ const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 // The question before the supervisor goes off, in the terminal's own text colour with its keys bold.
 export const askLine = (name) => segLine([[`Turn off the supervisor for ${name}? Running workers finish.  `, null], ['y', BOLD], [' / ', null], ['n', BOLD]]);
+const labelLine = (text) => segLine([['Label for the new Codex login: ', BOLD], [text, null], ['  enter add · esc cancel', DIM]]);
 const ESC = '\x1b[';
 // Mouse reporting in SGR form (1000 + 1006), so a click on the breadcrumb, a tab or a row arrives
 // as ESC [ < button ; column ; row M.
@@ -3038,10 +3081,12 @@ function systemOpener(url) {
   p.unref();
 }
 
-// Text onto the clipboard: pbcopy on macOS, else wl-copy or xclip. Throws when none can.
-function systemCopier(text) {
+// Text onto the clipboard: pbcopy on macOS, else wl-copy or xclip, else the terminal's own clipboard
+// through an OSC 52 sequence written to `out` when it is a terminal. Throws when none can.
+function systemCopier(text, out = null) {
   const tries = process.platform === 'darwin' ? [['pbcopy', []]] : [['wl-copy', []], ['xclip', ['-selection', 'clipboard']]];
   for (const [bin, args] of tries) { try { execFileSync(bin, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'] }); return; } catch { /* the next */ } }
+  if (out?.isTTY) { out.write(`\x1b]52;c;${Buffer.from(text).toString('base64')}\x07`); return; }
   throw new Error(`no clipboard command (${tries.map(([b]) => b).join(', ')}) worked`);
 }
 
@@ -3056,8 +3101,12 @@ function deskEnvLogins(args, done) {
   p.on('error', (e) => done({ code: 1, out, err: e.message }));
   p.on('close', (code) => done({ code, out, err }));
 }
-// The account check is rerun this often while Usage is shown.
+// The account check is rerun this often while Usage is shown, and while a login is being added, this
+// often whatever is shown, so a sign-in shows well within a minute.
 const CHECK_EVERY_MS = 60_000;
+const ADD_CHECK_MS = 10_000;
+// The longest label a Codex login can be given: the name column's width.
+const LABEL_MAX = U_NAME - 1;
 // What each rule means, as the footer says once one is saved.
 const RULE_SAVED = { 'in rotation': 'is in rotation: new workers start on it when it has the most room', standby: 'is on standby: desk uses it only when every login in rotation is at its limit',
   off: "is off: desk won't start workers on it" };
@@ -3153,7 +3202,8 @@ const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
-  probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = systemCopier,
+  probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
+  addCheckMs = ADD_CHECK_MS,
 } = {}) {
   let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
@@ -3171,6 +3221,9 @@ export function interactive({
   // Usage's account check: `checked` the last one's logins by checkKey, at `checkedAt`; `checking` while
   // one runs. `saving` while a rule change or removal runs; `undo`, what u puts back.
   let checked = null, checkedAt = null, checking = false, saving = false, undo = null;
+  // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` ({ tool, login, label })
+  // until the check finds it signed in or esc stops it, the check rerun by `addTimer`.
+  let typed = null, adding = null, addTimer = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -3220,10 +3273,11 @@ export function interactive({
     keepTab();
     if (tab === 'usage' && hasTabs()) {
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
-      const s = usageParts(repos, { now, width: w, checked });
+      const s = usageParts(repos, { now, width: w, checked, adding });
+      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc stop waiting · : command · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
       const copy = x?.check?.state === 'signed out' ? 'y copy the sign-in command · ' : '';
-      return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? `space change rule · x remove · ${copy}` : ''}${cmdKeys}` };
+      return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? `space change rule · x remove · ${copy}` : ''}a add a login · ${cmdKeys}` };
     }
     // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
     // one repo's own, or none for a repo with no batch.
@@ -3316,7 +3370,7 @@ export function interactive({
     const body = ['', ...head, ...rows.map((x, i) => paint(x, w, i === sel && pickable(x))), ...screen.foot.flatMap(lay)];
     // A message can be longer than the line (a refused raise says what raising the cap takes). The
     // usage lines stay put above it and the keys, a blank line above them.
-    const status = [...(screen.usage ? ['', ...screen.usage.map(fit)] : []), ...[...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
+    const status = [...(screen.usage ? ['', ...screen.usage.map(fit)] : []), ...[...wrap(msg, w), ...(typed != null ? [labelLine(typed)] : ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
     const room = Math.max(1, h - status.length - pinned.length);
     const first = 1 + head.length;
     let top = 0;
@@ -3399,8 +3453,78 @@ export function interactive({
       checking = false;
       checkedAt = clock();
       try { checked = new Map(JSON.parse(r.out).logins.map((l) => [checkKey(l.tool, l.configDir), l])); } catch { checked = null; }
+      if (!done && adding) addChecked();
       if (!done && usageTab()) draw();
     });
+  }
+
+  // ---- adding a login ----
+  // The next folder for a login of `tool`, its row waiting on standby and the check rerun until it is
+  // signed in. A Codex login's folder is made now, holding its label; a Claude one is made by its sign-in.
+  function startAdding(tool, name = null) {
+    const subs = readSubscriptions(subscriptionsPath());
+    const f = nextLoginFolder(tool, subs, (tool === 'claude' ? claudeLogins() : codexLogins()).length);
+    if (tool === 'codex') {
+      try { makeLabelledFolder(f.dir, name); } catch (e) { msg = `Could not make the new login's folder ${f.dir}: ${describeCrash(e)}`; return; }
+    }
+    adding = { tool, login: makeLogin({ tool, name: f.name, folder: f.dir, rule: 'standby', source: 'found' }), label: name };
+    selId = 'adding';
+    msg = `esc stops waiting and removes ${name ?? f.name}.`;
+    clearInterval(addTimer);
+    addTimer = setInterval(() => { if (!done && adding && !checking) checkLogins(); }, addCheckMs);
+    if (!checking) checkLogins();
+  }
+  const stopAdding = () => { clearInterval(addTimer); addTimer = null; adding = null; };
+  // The check found the folder being added: signed in, it stays on standby (a computer with no
+  // subscriptions file gets the rule written, so it has one); signed in to an account already listed,
+  // it is refused. Anything else waits for the next check, as does a save while another is running.
+  function addChecked() {
+    const a = adding;
+    const c = checked?.get(checkKey(a.tool, a.login.configDir));
+    if (c?.state === 'duplicate') {
+      stopAdding();
+      selId = `login ${checkKey(a.tool, a.login.configDir)}`;
+      msg = `${a.login.name} is signed in to the same account as ${c.duplicateOf}, so desk won't use it. x removes it.`;
+    } else if (c?.state === 'signed in') {
+      if (c.rule !== 'standby' && saving) return;
+      stopAdding();
+      selId = `login ${checkKey(a.tool, a.login.configDir)}`;
+      const said = `${c.email ?? a.label ?? a.login.name} is signed in and on standby. space puts it in rotation.`;
+      if (c.rule === 'standby') msg = said;
+      else saveLogin(['set', a.tool, a.login.name, 'standby'], said, null);
+    }
+  }
+  // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
+  // label. A folder the sign-in began is removed from the rules instead, so it is not found again.
+  function stopWaiting() {
+    if (saving) { msg = 'Still saving the last change.'; return; }
+    const a = adding;
+    stopAdding();
+    selId = null;
+    const name = a.label ?? a.login.name;
+    if (!existsSync(a.login.dir) || dropNewFolder(a.login.dir)) { msg = `Stopped waiting: ${name} is not added.`; return; }
+    saveLogin(['remove', a.tool, a.login.name], `Stopped waiting: ${name} is not added. Its folder ${a.login.folder} is left as it is.`, null);
+  }
+  // a: a Codex login when the CODEX table's row is selected, which asks for its label first; else a Claude one.
+  function addKey(x) {
+    if (adding) { msg = `Still waiting for ${adding.label ?? adding.login.name} to be signed in: esc stops waiting.`; return; }
+    if (saving) { msg = 'Still saving the last change.'; return; }
+    if (x?.login?.tool !== 'codex') return startAdding('claude');
+    typed = '';
+    msg = "Type the name desk-q lists the new Codex login under, such as its account's email.";
+  }
+  function labelKey(str, key) {
+    if (key.name === 'return' || key.name === 'enter') {
+      const name = typed.trim();
+      if (!name) { msg = 'Type a label first, or esc to cancel.'; return frame(); }
+      typed = null;
+      startAdding('codex', name);
+      return draw();
+    }
+    if (key.name === 'escape') { typed = null; msg = ''; return draw(); }
+    if (key.name === 'backspace') typed = typed.slice(0, -1);
+    else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ' && typed.length < LABEL_MAX) typed += str;
+    return frame();
   }
   // A login's rule set, or the login removed, then the footer says what changed and u puts back `then`.
   function saveLogin(args, said, then) {
@@ -3420,6 +3544,13 @@ export function interactive({
       if (!undo) { msg = 'Nothing to undo.'; return; }
       const u = undo;
       return saveLogin(['set', u.login.tool, u.login.name, u.rule], savedText(loginLabel(u.login), u.rule), null);
+    }
+    if (k === 'y' && adding) {
+      const { shell } = signInParts(adding.login);
+      const name = adding.label ?? adding.login.name;
+      try { copier(shell); msg = `The command is copied. esc stops waiting and removes ${name}.`; }
+      catch (e) { msg = `Could not copy the command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
+      return;
     }
     if (!x?.login) return;
     const l = x.login, label = loginLabel(l);
@@ -3441,7 +3572,7 @@ export function interactive({
   // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
   // selects and opens it. The wheel moves the selection as the arrows do.
   function onMouse(b, x, y) {
-    if (done || !layout || cmd != null || ask) return;
+    if (done || !layout || cmd != null || typed != null || ask) return;
     if (b === 64 || b === 65) return onKey(undefined, { name: b === 64 ? 'up' : 'down' });
     if ((b & ~(4 | 8 | 16)) !== 0) return;
     const col = x - 1, line = y - 1;
@@ -3495,6 +3626,7 @@ export function interactive({
     done = true;
     clearInterval(timer);
     clearInterval(probeTimer);
+    clearInterval(addTimer);
     clearTimeout(flush);
     input.removeListener('data', onData);
     keys.removeListener('keypress', onKey);
@@ -3537,6 +3669,7 @@ export function interactive({
       else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ') cmd += str;
       return frame();
     }
+    if (typed != null) return labelKey(str, key);
     if (ask) {
       if (str === 'y') { const v = ask.v; ask = null; act(v); }
       else if (str === 'n' || key.name === 'escape') { ask = null; msg = ''; }
@@ -3579,7 +3712,9 @@ export function interactive({
       // sign-in command to copy, so a new selection there is a new screen.
       return (view.kind === 'ticket' || usageTab()) && selId !== was ? draw() : frame();
     } else if (usageTab() && [' ', 'x', 'u', 'y'].includes(str)) usageKey(str, rows[sel]);
+    else if (usageTab() && str === 'a') addKey(rows[sel]);
     else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
+    else if (key.name === 'escape' && adding && usageTab()) stopWaiting();
     else if (key.name === 'escape') back();
     else if (str === 'q') return finish(0);
     else if (str === ':') { cmd = ''; msg = ''; return frame(); }

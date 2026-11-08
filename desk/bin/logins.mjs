@@ -18,7 +18,7 @@
 // This module imports nothing from desk-env.mjs: desk-env's CLI imports it at run time, and a cycle
 // through a module still running its top-level await never settles.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { splitRow } from './machine.mjs';
@@ -198,6 +198,34 @@ export function unlistedFolders(tool, listed, removed = []) {
   const taken = new Set([...listed, ...removed].filter((l) => l.tool === tool).map((l) => l.dir));
   return names.map((n) => join(root, n)).filter((d) => isDir(d) && !taken.has(d));
 }
+// The folder a new login of `tool` gets: login-<n> under its logins folder, n one past the `count` of
+// logins it has, moved on past a name or folder that is listed, removed or already on disk.
+//   -> { name, dir }
+export function nextLoginFolder(tool, subs, count) {
+  const known = [...subs.logins, ...subs.removed].filter((l) => l.tool === tool);
+  for (let n = Math.max(1, count + 1); ; n++) {
+    const name = `login-${n}`, dir = join(loginsFolder(tool), name);
+    if (!existsSync(dir) && !known.some((l) => l.name === name || l.dir === dir)) return { name, dir };
+  }
+}
+
+// The label a person gave a login when adding it, kept in its folder's desk-label file beside the tool's
+// own files, which desk never reads for it; null with none.
+export const LABEL_FILE = 'desk-label';
+export function loginLabelOf(l) {
+  try { return readFileSync(join(l.dir, LABEL_FILE), 'utf8').split('\n')[0].trim() || null; } catch { return null; }
+}
+// A new login's folder made with its label in it.
+export function makeLabelledFolder(dir, label) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, LABEL_FILE), `${label}\n`);
+}
+// A new login's folder taken away again, only while it holds nothing but its label: true when it is gone.
+export function dropNewFolder(dir) {
+  try { if (readdirSync(dir).every((n) => n === LABEL_FILE)) rmSync(dir, { recursive: true }); } catch { /* left as it is */ }
+  return !existsSync(dir);
+}
+
 // A folder the file does not list, as a login: on standby when there is a file, with no rule without one.
 export const foundLogin = (tool, dir, subs) => login({ tool, name: basename(dir), folder: dir, rule: subs.exists ? 'standby' : null, source: 'found' });
 
