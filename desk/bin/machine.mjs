@@ -323,6 +323,19 @@ export function setSizingRows(text, rows) {
   return `${lines.join('\n')}\n`;
 }
 
+// The text `desk-env machine set` starts a profile from when there is none: no Hardware rows and no
+// proposed sizes, so sizesProposed reads false and /desk-setup still offers the whole proposal.
+export const BENCH_ONLY_PROFILE = [
+  '# Machine profile',
+  '',
+  'Started by `desk-env machine set` to keep the bench settings below. No sizes are proposed yet:',
+  '`desk-env machine propose` shows them, and `desk-env machine write` adds them once you confirm.',
+  '',
+].join('\n');
+
+// Whether the profile holds the confirmed proposal (`machine write` always records the hardware).
+export const sizesProposed = (profile) => Object.keys(profile?.hardware ?? {}).length > 0;
+
 // The Sizing rows a re-written profile holds: the proposal, then every row the profile has that the
 // proposal does not make (set by `desk-env machine set`), so a re-write keeps them.
 export function rewrittenSizing(profile, proposal) {

@@ -2,11 +2,11 @@
 // The machine profile: hardware parsing from fixture output, the sizing rules, the profile file, and
 // the §3b fallback through desk-env. Scratch directories only; nothing reads this computer.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing } from '../desk/bin/machine.mjs';
+import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed } from '../desk/bin/machine.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const sized = (hw) => Object.fromEntries(propose(hw).map((r) => [r.key, r]));
@@ -200,8 +200,18 @@ const reread = parseProfile(readFileSync(profile, 'utf8'));
 t('a changed value replaces its row', `${reread.sizing['bench-cap-points'].value} ${reread.sizing['bench-reserve-percent'].value} ${Object.keys(reread.sizing).filter((k) => k.startsWith('bench-')).length}`, '10 30 2');
 const rewritten = parseProfile(renderProfile(small, rewrittenSizing(reread, propose(small)), '2026-11-07'));
 t('a re-proposed profile keeps the bench rows', `${rewritten.sizing['bench-cap-points']?.value} ${rewritten.sizing['bench-reserve-percent']?.value}`, '10 30');
-t('with no profile, machine set writes nothing', setErr(['bench-cap-points=10'], missing).startsWith('exit 1: nothing written: no machine profile'), true);
-t('so the bench keeps its defaults', quotaLine(missing), 'quota: cap 10 points of each weekly allowance, reserve 25% (the defaults: neither is set on this computer)');
+t('with no profile, the bench keeps its defaults', quotaLine(missing), 'quota: cap 10 points of each weekly allowance, reserve 25% (the defaults: neither is set on this computer)');
+const fresh = join(T, 'fresh.md');
+t('a refused set with no profile writes no file', `${setErr(['bench-cap-points=ten'], fresh).startsWith('exit 1: nothing written')} ${existsSync(fresh)}`, 'true false');
+t('with no profile, machine set stores both', setErr(['bench-cap-points=12', 'bench-reserve-percent=20'], fresh), 'exit 0');
+const started = parseProfile(readFileSync(fresh, 'utf8'));
+t('the started profile holds only the bench rows', `${Object.keys(started.hardware).length} ${Object.keys(started.sizing).join()}`, '0 bench-cap-points,bench-reserve-percent');
+t('the bench reads them from it on its next start', quotaLine(fresh), 'quota: cap 12 points of each weekly allowance, reserve 20%');
+t('no sizes are proposed from it', sizesProposed(started), false);
+t('a §3b TODO row still has nothing to fall back to', env(['get', 'test-cap'], todo, fresh), 'exit 3');
+t('detect still offers the proposal', env(['machine', 'detect'], absent, fresh).includes('no sizes proposed'), true);
+const proposedOver = parseProfile(renderProfile(small, rewrittenSizing(started, propose(small)), '2026-11-08'));
+t('a later write keeps the bench rows and proposes the sizes', `${sizesProposed(proposedOver)} ${proposedOver.sizing['bench-cap-points']?.value} ${proposedOver.sizing['memory-ceiling-gb']?.value}`, 'true 12 8');
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'machine: all checks passed');

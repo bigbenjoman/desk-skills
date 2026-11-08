@@ -1894,9 +1894,10 @@ if (isMain) {
             rows.push({ key: k, value: v, why: M.benchWhy(k) });
           }
           if (!rows.length) { console.error('usage: desk-env.mjs machine set <key>=<value>...'); process.exit(2); }
-          // Without a profile, the next detect must still offer the whole proposal, so none is started here.
-          if (!existsSync(path)) { console.error(`nothing written: no machine profile at ${path}; desk-env machine write makes one`); process.exit(1); }
-          console.log(writeWithBackup(path, M.setSizingRows(readFileSync(path, 'utf8'), rows)));
+          // Without a profile, one is started holding only these rows: no hardware, so the next detect
+          // still offers the whole proposal.
+          const text = existsSync(path) ? readFileSync(path, 'utf8') : M.BENCH_ONLY_PROFILE;
+          console.log(writeWithBackup(path, M.setSizingRows(text, rows)));
           break;
         }
         const hw = M.gather();
@@ -1904,6 +1905,7 @@ if (isMain) {
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }
+          if (!M.sizesProposed(profile)) { console.log(`\nno sizes proposed in ${path} yet: desk-env machine propose shows the sizes it would write`); break; }
           const hwc = M.hardwareChanges(profile, hw);
           const szc = M.sizingChanges(profile, proposal);
           if (!hwc.length && !szc.length) { console.log(`\nunchanged since ${path}`); break; }

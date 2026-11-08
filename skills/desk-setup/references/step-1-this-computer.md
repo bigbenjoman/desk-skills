@@ -8,7 +8,7 @@ reserve, and how the §3b rows fall back to it. The step table in `../SKILL.md` 
 Desk runs on one computer, and what local work it can carry depends on that computer, not the repo.
 The machine profile, `~/.config/desk/machine.md`, records both and is shared by every repo.
 
-- **No profile yet**: show the `desk-env machine detect` table, then `desk-env machine propose`,
+- **No profile yet**, or one `machine detect` says has no sizes proposed: show the `desk-env machine detect` table, then `desk-env machine propose`,
   whose third column is the arithmetic behind each size. Say in one line what the rules are (memory
   less 8 GB for the OS is the ceiling; autopilot workers at ~3 GB each from it; test workers capped
   at the performance cores). **Write nothing until the user confirms**; then `desk-env machine
@@ -30,12 +30,11 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
     both before writing either. An answer that is not a number exits 1 naming the bad value and
     writes nothing: say which value was refused and ask again. The bench prints the stored values
     in its `quota:` line at its next start.
-  - **No profile** (the user declined it): still ask both in the same carousel, with the same
-    Recommended answers, and say the answers are kept in the profile, so storing them means writing
-    it. Offer the profile again with the `desk-env machine propose` table already shown: on a yes,
-    `desk-env machine write`, then `desk-env machine set` with their answers. On a second no, write
-    nothing, since `machine set` refuses without a profile, and say the bench will use 10 points and
-    a 25% reserve until a profile exists.
+  - **No profile** (the user declined the proposed sizes): ask and store both just as above. With no
+    profile, `machine set` starts one holding only these two rows, with no hardware and no sizes, so
+    the declined proposal is not written; say so in one line. `machine detect` then reports no sizes
+    proposed, so the next run offers the proposal as for no profile, and a `machine write` keeps the
+    two rows.
 - **Then §3b.** The repo rows for worker concurrency, memory ceiling and test worker cap fall back to
   the profile when they are `TODO` or absent, and a set repo row wins. With a profile, the
   Recommended answer for each is the profile's value; say that writing `TODO` instead makes the row
