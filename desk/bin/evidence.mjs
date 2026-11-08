@@ -15,6 +15,7 @@
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { SCREENSHOT_FILE, expandHome } from './desk-env.mjs';
+import { failureLines } from './gate.mjs';
 
 export const DISPATCH_GRACE_MS = 30 * 60 * 1000;
 
@@ -97,10 +98,21 @@ export const runFailed = (rec, left) => !!rec?.runId && rec.state === 'done'
 const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
 const STAMP = /^\d{4}-\d\d-\d\dT[\d:.]+Z\s*/;
 const ERROR = /\b(?:error|errors|fatal|failed|failure|exception)\b/i;
+const logLines = (log) => String(log ?? '').split(/\r?\n/).map((l) => l.replace(ANSI, '').split('\t').pop().replace(STAMP, '').trim());
 export function firstErrorLine(log) {
-  const lines = String(log ?? '').split(/\r?\n/).map((l) => l.replace(ANSI, '').split('\t').pop().replace(STAMP, '').trim());
-  const line = lines.find((l) => ERROR.test(l));
+  const line = logLines(log).find((l) => ERROR.test(l));
   return line ? line.replace(/^##\[error\]\s*/, '').trim() || null : null;
+}
+
+// The lines of a failed job's log that name a cause (a typed error such as `ReferenceError: x`, an
+// errno such as ENOENT, `error TS2304`, a failed test), at most LOG_ERRORS_MAX of them, each once. A
+// job's closing exit-code line and a summary counting no failures name none.
+const LOG_ERRORS_MAX = 5;
+const NAMES_CAUSE = /\b[A-Za-z]*(?:Error|Exception)\b|\b(?:ENOENT|EACCES|EPERM|EEXIST|ECONNREFUSED|ETIMEDOUT|EADDRINUSE)\b|\bFAIL\b/;
+const NO_CAUSE = /\bcontinue-on-error\b|\b0 (?:errors?|failed|failures?)\b/i;
+export function errorLinesIn(log) {
+  const lines = failureLines(logLines(log).map((l) => ({ annotation_level: 'failure', message: l.replace(/^##\[error\]\s*/, '').trim() })));
+  return [...new Set(lines.filter((l) => (NAMES_CAUSE.test(l) || ERROR.test(l)) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
 }
 
 // The line with what differs between two runs of one failure taken out: timestamps, SHAs, run ids and

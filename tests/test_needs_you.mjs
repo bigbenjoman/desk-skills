@@ -618,6 +618,14 @@ put('sigma', { port: 4600, beat: 1, supervised: true, merge: 'yes', tickets: {
 } });
 const sg = Object.fromEntries(N.collect({ word: 'sigma' }).items.map((i) => [i.t.key, i]));
 const recommends = (i) => i?.actions[0]?.[1] != null;
+put('ds494', { port: 4610, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'E-1': stuckPr(201, [lintRed, ...passed], why375([{ name: LINT, error: 'ReferenceError: React is not defined' }])),
+  'E-2': stuckPr(202, [lintRed, ...passed], why375([{ name: LINT }])),
+} });
+const e494 = Object.fromEntries(N.collect({ word: 'ds494' }).items.map((i) => [i.t.key, i]));
+t('DS-494 AC2 the item quotes the error line', e494['E-1']?.need, `PR #201: "${LINT}" is failing, and desk's own repairs did not fix it. "${LINT}" says: "ReferenceError: React is not defined". Fix it on its branch; desk then merges it once its checks are green.`);
+t('DS-494 AC2 and is not worded as a step only the person can do', /only you can/.test(e494['E-1']?.actions[0][1] ?? 'only you can'), false);
+t('DS-494 AC3 with no error line it is as today', `${e494['E-2']?.need} | ${e494['E-2']?.actions[0][1]}`, `PR #202: "${LINT}" is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | only you can do this step; say done once you have, and the PR is checked on GitHub there and then`);
 t('DS-375 AC1 a check gone green on the same head is no longer named', sg['S-1']?.need, `PR #101: "${LINT}" (failed at "Run eslint") is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green.`);
 t('DS-375 AC2 the item names the step the run failed at', sg['S-1']?.need.includes('(failed at "Run eslint")'), true);
 t('DS-375 AC1 a step on GitHub left: done is still recommended', `${sg['S-1']?.actions[0][0]} ${recommends(sg['S-1'])}`, 'done true');
