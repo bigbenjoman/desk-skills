@@ -51,6 +51,10 @@ t('AC2 a capture try is an agent mistake', fixClass({ kind: 'capture', files: ['
 t('AC2 every fix rule names a class from the list', FIX_RULES.every((r) => CLASSES.includes(r.class)), true);
 const dep = fixClass({ kind: 'checks' }, { held_by: 'DS-1|DS-2' });
 t('AC4 a try whose ticket is held behind a blocker is a dependency wait', `${dep.class} · ${dep.waiting}`, 'dependency wait · waiting for DS-1, DS-2 to merge');
+const released = fixClass({ kind: 'checks' }, { held_by: null, held_outside: 'X-7' });
+t('AC4 a ticket released by hand, its held_outside left behind, does not wait', released.class, 'application defect');
+const outside = fixClass({ kind: 'checks' }, { held_by: 'X-7|DS-1', held_outside: 'X-7' });
+t('AC4 a blocker outside the batch is named once', outside.waiting, 'waiting for X-7, DS-1 to merge');
 const dec = fixClass({ kind: 'review', gaps: ['AC3: the empty state needs a product decision on its wording'] }, {});
 t('AC4 a try whose every gap asks for a product call is a missing decision', `${dec.class} · ${dec.waiting}`, "missing decision · waiting for a person's call on what it quotes");
 t('AC4 one gap a worker can close beside it makes it an application defect', fixClass({ kind: 'review', gaps: ['AC3: needs a product decision', 'AC4: the retry is not capped'] }, {}).class, 'application defect');
@@ -106,7 +110,7 @@ t('AC8 a new head reads its own merge base again', moved?.call, 'held');
 // AC7: with the lever off (no baseRead), routing is exactly as today.
 const off = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Lint')]), ctx());
 t('AC7 lever off: requeued as today', `${off?.call} ${off?.fix.what}`, 'requeue red: Lint');
-t('AC7 lever off: no base fields on the try or the call', ['base_red', 'base_unknown', 'base'].some((k) => k in off.fix) || 'base_red' in off, false);
+t('AC7 lever off: no base fields on the try or the call', ['base_red', 'base'].some((k) => k in off.fix) || 'base_red' in off, false);
 const { checks: operator } = parseOperatorChecks(['Flows image missing: build it: ensure-flows-image.sh']);
 t('AC7 lever off: a draft as today', JSON.stringify(draftChecksFix({ key: 'T-1' }, { pr: 701, head: HEAD, failing: [red('Lint')] }, { repo: 'acme/widgets', operator })), JSON.stringify({ call: 'requeue', fix: { try: 1, of: 2, pr: 701, head: HEAD, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint', url: 'https://github.com/acme/widgets/actions/runs/9' }], not_mine: [], draft: true } }));
 

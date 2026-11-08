@@ -2772,8 +2772,8 @@ const runOf = (id) => cached(`run:${id}`, () => { const r = shOut('gh', ['run', 
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
 // With the failure-class lever on, a red check is read against the default branch before a fix try is
 // spent on it (fix-tries.mjs againstBase): the job's check runs at the PR's exact merge base, and,
-// for a base red hold, its newest completed run among the default branch's last ten commits. Each read
-// once per pass; one gh cannot read is unknown.
+// for a base red hold, its newest completed run among the commits the default branch has gained since
+// that merge base, however few of them ran it. Each read once per pass; one gh cannot read is unknown.
 const FAILURE_CLASS = E.leverOn('failure-class');
 const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
@@ -2783,15 +2783,17 @@ const mergeBaseOf = (head) => cached(`merge-base:${head}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${encodeURIComponent(DEFAULT_BRANCH)}...${head}`, '--jq', '.merge_base_commit.sha']);
   return r.ok && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null;
 });
-const baseCommits = () => cached('base-commits', () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/commits?sha=${encodeURIComponent(DEFAULT_BRANCH)}&per_page=10`, '--jq', '.[].sha']);
+// The default branch's commits since a merge base, newest first.
+const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
+  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}`, '--jq', '.commits | reverse | .[].sha']);
   return r.ok ? r.out.split('\n').filter(Boolean) : [];
 });
 const baseReads = (head) => (FAILURE_CLASS && head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
   atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
   latestOnBase: (name) => {
-    for (const sha of baseCommits()) { const state = runsState(checkRunsAt(sha, name)); if (state) return state; }
+    const since = mergeBaseOf(head);
+    for (const sha of since ? baseCommitsSince(since) : []) { const state = runsState(checkRunsAt(sha, name)); if (state) return state; }
     return null;
   },
 } } : {});

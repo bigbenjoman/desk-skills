@@ -108,15 +108,17 @@ const checksFix = (mine, notMine, repo, base = null) => ({
   kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}${base?.unknown.length ? `; base state unknown for ${base.unknown.map((f) => f.name).join(', ')} (no run of it on ${base.branch} at the merge base)` : ''}`,
   checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId) })),
   not_mine: notMine.map(({ name, command }) => ({ name, command })),
-  ...(base ? { base: base.branch, base_red: base.red.map((f) => f.name), base_unknown: base.unknown.map((f) => f.name) } : {}),
+  ...(base ? { base: base.branch, base_red: base.red.map((f) => f.name) } : {}),
 });
 // With the failure-class lever on (ctx.baseRead, failure-class.mjs baseSplit), the red checks a worker
 // would fix, read against the base: -> null with the lever off, a `held` call when every one is red on
 // the base at the PR's merge base too (no try is spent: the hold clears once the job passes on the
-// base), else the split, whose `record` the ticket keeps as `base_red`.
-function againstBase(t, head, mine, ctx) {
+// base), else the split, whose `record` the ticket keeps as `base_red`, with the checks left to a
+// person (`notMine`) joined by those red on the base too.
+function againstBase(t, head, mine, notMine, ctx) {
   if (!ctx.baseRead) return null;
-  const b = { ...baseSplit(mine, head, t.base_red, ctx.baseRead), branch: ctx.base ?? 'the base' };
+  const s = baseSplit(mine, head, t.base_red, ctx.baseRead), branch = ctx.base ?? 'the base';
+  const b = { ...s, branch, notMine: [...notMine, ...s.red.map((f) => ({ ...f, command: `red on ${branch} too` }))] };
   if (b.mine.length) return b;
   const sha = b.record?.merge_base ? ` ${String(b.record.merge_base).slice(0, 12)}` : '';
   return { held: { call: 'held', class: 'base red', base_red: b.record,
@@ -223,10 +225,10 @@ export function fixCall(t, s, ctx) {
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
-    const base = againstBase(t, s.head, mine, ctx);
+    const base = againstBase(t, s.head, mine, notMine, ctx);
     if (base?.held) return base.held;
     fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);
-    if (base) split = { mine: base.mine, notMine: [...notMine, ...base.red.map((f) => ({ ...f, command: `red on ${base.branch} too` }))], record: base.record };
+    if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
   if (conflict) return conflictSpent(done, s.head) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base) } : nextConflictTry(done, s.pr, s.head, fix);
   if (spent(done, fixedAt(done, s.head))) return stillRed(done, split.mine, split.notMine, ctx);
@@ -484,12 +486,11 @@ export function draftChecksFix(t, { pr, head, failing }, ctx) {
   if (!head) return null;
   const { mine, notMine } = splitFailing(failing ?? [], ctx);
   if (!mine.length) return notMine.length ? operatorStuck(notMine, ctx) : null;
-  const base = againstBase(t, head, mine, ctx);
+  const base = againstBase(t, head, mine, notMine, ctx);
   if (base?.held) return base.held;
   const done = t.fix_tries ?? [];
   const fix = { ...checksFix(base?.mine ?? mine, notMine, ctx.repo, base), draft: true };
-  const left = base ? [...notMine, ...base.red.map((f) => ({ ...f, command: `red on ${base.branch} too` }))] : notMine;
-  return spent(done, fixedAt(done, head)) ? stillRed(done, base?.mine ?? mine, left, ctx) : withRecord(nextTry(done, pr, head, fix), base?.record);
+  return spent(done, fixedAt(done, head)) ? stillRed(done, base?.mine ?? mine, base?.notMine ?? notMine, ctx) : withRecord(nextTry(done, pr, head, fix), base?.record);
 }
 
 // A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3

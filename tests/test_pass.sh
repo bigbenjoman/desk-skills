@@ -1644,7 +1644,7 @@ q add FB-4; q set FB-4 state=done lane=A branch=fix/FB-4 result.pr=813 held_by=X
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-446 AC7 with the lever off, a red check red on the base too and held behind a blocker is requeued as today" \
   '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = null ] && [ "$(field FB-4 fix_tries | jq -c ".[0] | has(\"class\")")" = false ] && [ "$(field FB-4 base_red)" = null ]'
-check "DS-446 AC7 and the base's check runs are not read" '! grep -qF "check-runs?check_name=Lint" "$T/gh-calls" &&! grep -qF "commits?sha=main" "$T/gh-calls"'
+check "DS-446 AC7 and the base's check runs are not read" '! grep -qF "check-runs?check_name=Lint" "$T/gh-calls" &&! grep -qF "compare/main...$H4" "$T/gh-calls"'
 q park FB-4 "which reviewer handle goes in the PR body?"
 check "DS-446 AC7 with the lever off, a park records no class" '[ "$(field FB-4 park.class)" = null ] && [ "$(field FB-4 park.question)" = "\"which reviewer handle goes in the PR body?\"" ]'
 # FB-1 is red on Lint, and Lint is red at its merge base. FB-2 is red on Lint, with no run of Lint at its
@@ -1653,8 +1653,9 @@ for k in 1 2 3; do q add "FB-$k"; q set "FB-$k" state=done lane=A "branch=fix/FB
 q set FB-1 result.pr=810; fx 810 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:911; fbran 810 "$H1" Lint
 q set FB-2 result.pr=811; fx 811 "$H2" MERGEABLE tests:SUCCESS Lint:FAILURE:912; fbran 811 "$H2" Lint
 q set FB-3 result.pr=812 held_by=X-9; fx 812 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:913; fbran 812 "$H3" Lint
-api "repos/acme/widgets/commits?sha=main&per_page=10" "$MT
-$MB"
+# The base has gained eleven commits since FB-1's merge base, newest first; only the oldest, MT, runs Lint.
+api "repos/acme/widgets/compare/$MB...main" "$(for i in 0 1 2 3 4 5 6 7 8 9; do printf 'f%039d\n' "$i"; done)
+$MT"
 runs "$MT" Lint '[{"status":"in_progress","conclusion":null}]'
 export DESK_CONFIG="$T/config-fl.md"
 out=$(node "$B/pass.mjs" 2>&1)
@@ -1671,7 +1672,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC8 while the job has no newer completed run on the base, the hold stays" '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && echo "$out" | grep -q "FB-1: BASE RED"'
 runs "$MT" Lint '[{"status":"completed","conclusion":"success"}]'
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-446 AC8 once the job passes on the base, the hold clears and a fix try proceeds as today" \
+check "DS-446 AC8 once the job passes on the base, even ten commits back, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-1 state)" = "\"triaged\"" ] && [ "$(field FB-1 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-1 fix.class)" = "\"application defect\"" ] && [ "$(field FB-1 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
 q add FB-5; q add FB-6; q add FB-7; q set FB-7 state=triaged
 q park FB-5 "which reviewer handle goes in the PR body?"; q park FB-6 "waiting on the weather"; q hold FB-7 FB-1

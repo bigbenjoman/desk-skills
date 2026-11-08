@@ -42,9 +42,12 @@ export function parkClass(question) {
 const ASKS_PERSON = /\b(?:product|design|copy|legal|pricing) (?:call|decision|question|ruling)\b|\bneeds? (?:a |the )?(?:person|user|owner|product owner|PO)(?:'s)? (?:call|decision|ruling|answer)\b|\bask (?:the )?(?:person|user|product owner)\b/i;
 const quotedItems = (f) => [...(f.gaps ?? []), ...(f.findings ?? []).map((x) => x.text), ...(f.threads ?? []).map((x) => x.text)].map(String);
 
+// A ticket's blockers while it is held: `held_by`, which every release clears and which also lists the
+// blockers outside the batch. Never `held_outside` alone: a person's release leaves it behind.
+const blockers = (t) => [...new Set(String(t?.held_by ?? '').split('|').filter(Boolean))];
 // A fix try's rules, in the order they are tried, each reading the try (fix-tries.mjs) and its ticket.
 export const FIX_RULES = Object.freeze([
-  { class: 'dependency wait', rule: 'its ticket is still held behind a blocker whose PR has not merged', test: (f, t) => Boolean(t?.held_by || t?.held_outside), waiting: (f, t) => `waiting for ${[t.held_by, t.held_outside].filter(Boolean).join('|').split('|').join(', ')} to merge` },
+  { class: 'dependency wait', rule: 'its ticket is still held behind a blocker whose PR has not merged', test: (f, t) => blockers(t).length > 0, waiting: (f, t) => `waiting for ${blockers(t).join(', ')} to merge` },
   { class: 'missing decision', rule: 'every item it quotes asks for a product, design or copy call or a person\'s ruling', test: (f) => { const items = quotedItems(f); return items.length > 0 && items.every((x) => ASKS_PERSON.test(x)); }, waiting: () => 'waiting for a person\'s call on what it quotes' },
   { class: 'agent mistake', rule: 'a worker left no review verdict, or no screenshots, at its head', test: (f) => f.kind === 'rereview' || f.kind === 'capture' },
   { class: 'application defect', rule: 'the code on its branch needs changing: a red check, a review finding or gap, review feedback, a conflict or a sync with its base, or a call the person sent back', test: () => true },
