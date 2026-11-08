@@ -416,6 +416,23 @@ node ~/.claude/desk/bin/bench-arm1.mjs --tasks <tasks.json> --max-budget-usd <us
   [--out <dir>] [--timeout 1800] [--seed <n>]
 ```
 
+**`bench-arm3.mjs`** runs arm 3: each task on four implementers, `codex-medium` and `codex-high`
+(Codex Sol, `gpt-6.1-sol`, at medium and at high effort), `opus-medium` and `sonnet` (at the CLI's
+default effort), each in its own checkout at the task's base. A Codex side runs through
+`codex-exec.mjs`, the same call `desk-codex` makes: stdin closed, its final message saved as
+`last-message.txt`, ended at `--timeout`, and the model and effort passed on the command line. Its
+sandbox is `workspace-write` on the checkout, with no network and no writable `/tmp`, so it can write
+only there. It runs on the Codex login whose weekly reading the quota guard takes before and after,
+and spends none of the USD budget. Its tokens come from its own session log, kept as
+`codex-session.jsonl`. Every tool call the sandbox refused is listed under `refusals` in its
+`result.json`, and the run is still scored on its hidden tests. The report gives the Claude and Codex
+allowances separate rows:
+
+```
+node ~/.claude/desk/bin/bench-arm3.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
+  [--out <dir>] [--timeout 1800] [--seed <n>]
+```
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
