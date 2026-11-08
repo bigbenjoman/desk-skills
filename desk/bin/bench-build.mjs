@@ -133,7 +133,7 @@ function ticketAt(repo, key, cutoff) {
 
 const git = (root, args, opts = {}) => run('git', ['-C', root, ...args], opts);
 
-function haveCommit(root, sha) {
+export function haveCommit(root, sha) {
   if (git(root, ['cat-file', '-e', `${sha}^{commit}`]).status === 0) return;
   const f = git(root, ['fetch', '-q', 'origin', sha]);
   if (f.status !== 0) throw new Error(`commit ${sha} is not in ${root} and could not be fetched: ${(f.stderr || '').trim()}`);

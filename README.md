@@ -416,6 +416,25 @@ node ~/.claude/desk/bin/bench-arm1.mjs --tasks <tasks.json> --max-budget-usd <us
   [--out <dir>] [--timeout 1800] [--seed <n>]
 ```
 
+**`bench-arm2.mjs`** runs arm 2, a shadow Codex review seat against the current Opus finder seat, on
+the frozen tasks with real defects put back. `seed` takes a CSV of review findings (`repo`, `pr`, `file`,
+`line`, `acted_commit`, any other columns kept) and reverts, onto each task's merged tree, the hunk of
+the acting commit at the finding's file and line. It records each seed in `<set dir>/seeds/<task id>/`
+and lists each finding it could not revert cleanly with the reason. A run gives `current` and `codex`
+each their own checkout holding the seeded change and the same brief, written from desk-review's
+files. Neither is told about the seeds. The Codex seat runs through `codex-exec.mjs`, read-only, at the
+finder effort in the repo's §3b Codex review and at this command's `--timeout`. A run that times out or
+fails is marked failed and none of its findings are scored. A finding inside a seeded hunk is a hit. Any
+other is listed in the report with an id, and counts only once you mark it `real` or `false-alarm`:
+
+```
+node ~/.claude/desk/bin/bench-arm2.mjs seed --tasks <tasks.json> --findings <findings.csv> [--seeds-dir <dir>] [--rewrite]
+node ~/.claude/desk/bin/bench-arm2.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
+  [--seeds-dir <dir>] [--out <dir>] [--timeout 1800] [--seed <n>]
+node ~/.claude/desk/bin/bench-arm2.mjs report --tasks <tasks.json> [--out <dir>]
+node ~/.claude/desk/bin/bench-arm2.mjs mark --tasks <tasks.json> [--out <dir>] <id> real|false-alarm
+```
+
 **`bench-arm3.mjs`** runs arm 3: each task on four implementers, `codex-medium` and `codex-high`
 (Codex Sol, `gpt-6.1-sol`, at medium and at high effort), `opus-medium` and `sonnet` (at the CLI's
 default effort), each in its own checkout at the task's base. A Codex side runs through

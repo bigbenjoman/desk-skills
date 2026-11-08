@@ -199,7 +199,7 @@ export function reachAttempts(transcript) {
 export const armEnv = () => Object.fromEntries(Object.entries(otherRepoEnv())
   .filter(([k]) => !/^(DISABLE_PROMPT_CACHING|GH_TOKEN$|GITHUB_TOKEN$|DESK_AUTOPILOT_WORKER$|DESK_BATCH$)/.test(k)));
 
-const both = (p) => [...new Set([p, realpathSync(p)])];
+export const both = (p) => [...new Set([p, realpathSync(p)])];
 export const shq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
 
 export function deskEnv(repo, ...args) {
@@ -244,7 +244,7 @@ export function makeCheckout(repo, task, wt) {
   if (r.status !== 0) throw new Error(`could not set up the checkout: ${(r.stderr || r.stdout || '').trim().split('\n').pop()}`);
 }
 
-function writeSettings(repo, task, wt, file, secrets) {
+export function writeSettings(repo, task, wt, file, secrets) {
   const r = spawnSync(process.execPath, [join(HERE, 'worker-settings.mjs'), 'worker', '--ticket', `bench-${task.id}`, '--wt', wt, '--out', file],
     { cwd: repo.root, env: repo.env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`could not generate the arm's settings: ${(r.stderr || '').trim()}`);
@@ -253,12 +253,13 @@ function writeSettings(repo, task, wt, file, secrets) {
 }
 
 // One claude run, its stream going straight to the transcript. -> readRun's verdict plus usage.
-// `command` runs claude through a wrapper, which `killSignal` then ends at the timeout.
-export function runClaude(task, arm, wt, settings, opts, dir, { command = ['claude'], killSignal = 'SIGKILL', env = armEnv() } = {}) {
+// `command` runs claude through a wrapper, which `killSignal` then ends at the timeout. `extraArgs` go on
+// claude's command line after the bench's own.
+export function runClaude(task, arm, wt, settings, opts, dir, { command = ['claude'], killSignal = 'SIGKILL', env = armEnv(), extraArgs = [] } = {}) {
   const file = join(dir, 'transcript.jsonl');
   const fd = openSync(file, 'w');
   const err = openSync(join(dir, 'stderr.log'), 'w');
-  const args = claudeArgs({ prompt: promptFor(task, arm), arm: 'base', budget: opts.budget, model: arm.model, effort: arm.effort, format: 'stream-json', extra: ['--verbose', '--settings', settings] });
+  const args = claudeArgs({ prompt: promptFor(task, arm), arm: 'base', budget: opts.budget, model: arm.model, effort: arm.effort, format: 'stream-json', extra: ['--verbose', '--settings', settings, ...extraArgs] });
   const proc = spawnSync(command[0], [...command.slice(1), ...args], { cwd: wt, env, stdio: ['ignore', fd, err], timeout: opts.timeout * 1000, killSignal });
   closeSync(fd);
   closeSync(err);
