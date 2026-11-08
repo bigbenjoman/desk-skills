@@ -371,6 +371,24 @@ t('DS-327 AC1 a draft whose check build runs, or whose check was re-run after it
 t('DS-327 AC2 one whose build failed is, with the command, its exit code and its output', N.collect({ word: 'flows' }).items.find((i) => i.t.key === 'FL-4')?.need,
   'PR #84 is a draft: check build `./scripts/ensure-flows-image.sh` exited 1: no Docker context. Fix the build, run it at the head of #84, then re-run "Flows image"; the next pass then picks it up.');
 
+// ---- DS-498: a draft whose check the runner ended (undraft.mjs rerunCall's person calls, as test_undraft.mjs pins them).
+const oomRed = [{ name: 'Type-check', status: 'completed', conclusion: 'failure' }, ...passed];
+put('runner', { port: 4778, beat: 1, supervised: true, tickets: {
+  'RN-1': draftPr(91, oomRed, { call: 'person', why: 'its "Type-check" check was ended by the runner after desk re-ran it at this head: "Type-check" (exit code 137: the runner ran out of memory and killed it)', action: 'give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit), then re-run it on #91' }),
+  'RN-4': draftPr(94, oomRed, { call: 'person', why: 'its "Type-check" check was ended by the runner, and GitHub refused desk\'s 2 reruns of it at this head: "Type-check" (exit code 137: the runner ran out of memory and killed it)', action: 're-run it on #94, and if it fails the same way, give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit)' }),
+  'RN-2': draftPr(92, oomRed, { call: 'person', why: 'its "Type-check" check was ended by the runner, not its code: "Type-check" (the runner was lost: steps were left unfinished with no error line); config §3 ci-rerun is "no", so desk is not granted a rerun', action: 're-run it on #92, and if it fails the same way, give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit)' }),
+  'RN-3': draftPr(93, oomRed, { call: 'rerun', why: 'its checks were ended by the runner, not their code, so they are re-run once: "Type-check" exit code 137: the runner ran out of memory and killed it' }),
+} });
+const runner = Object.fromEntries(N.collect({ word: 'runner' }).items.map((i) => [i.t.key, i]));
+t('DS-498 AC3 killed again after its rerun: says the runner ran out of memory and names the infrastructure fix', runner['RN-1']?.need,
+  'PR #91 is a draft, and its "Type-check" check was ended by the runner, not by its code: "Type-check" (exit code 137: the runner ran out of memory and killed it), after desk re-ran it once. Nothing on its branch fixes that: give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit), then re-run it; the next pass then picks it up.');
+t('DS-498 AC3 every rerun refused: says so, and names the infrastructure fix', runner['RN-4']?.need,
+  'PR #94 is a draft, and its "Type-check" check was ended by the runner, not by its code: "Type-check" (exit code 137: the runner ran out of memory and killed it). GitHub refused desk\'s reruns of it, so re-run it yourself, and if it fails the same way, give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit); the next pass then picks it up.');
+t('DS-498 AC3 and never says to fix it on its branch', /fix (?:it|them) on its branch/i.test(`${runner['RN-1']?.need} ${runner['RN-2']?.need} ${runner['RN-4']?.need}`), false);
+t('DS-498 AC4 ci-rerun not yes: says reruns are not granted', runner['RN-2']?.need,
+  'PR #92 is a draft, and its "Type-check" check was ended by the runner, not by its code: "Type-check" (the runner was lost: steps were left unfinished with no error line). Desk is not granted reruns (config §3 ci-rerun is "no"), so re-run it yourself, and if it fails the same way, give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit); the next pass then picks it up.');
+t('DS-498 AC1 a draft whose check is being re-run is not the person\'s', 'RN-3' in runner, false);
+
 // ---- DS-345: a draft whose gaps outlast its fix tries keeps undraft.call `findings` (DS-342's record),
 // and still takes the person's call on them; one with findings and no gaps does not.
 put('mu', { port: 4200, beat: 1, supervised: true, tickets: {

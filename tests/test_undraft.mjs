@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
-import { untriggeredChecks } from '../desk/bin/gate.mjs';
+import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
 let fails = 0;
@@ -110,6 +110,72 @@ for (const rerun of ['ask', 'no', undefined]) {
   t(`DS-330 AC4 ci-rerun ${rerun}: nothing is re-run, and no fix worker spends a try on it`, `${c?.call} | ${c?.why}`, 'person | its checks are not green: required check "tests" is cancelled; "lint" timed_out');
 }
 t('DS-330 a cancelled check with no run id has nothing to re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled' }])?.call, 'person');
+
+// DS-498: a red check the runner killed or lost is re-run once, then the person's, never a fix worker's.
+const note = (message) => ({ path: '.github', annotation_level: 'failure', message });
+const step = (name, status, conclusion) => ({ name, status, conclusion });
+const setUp = step('Set up job', 'completed', 'success');
+const LOGS = {
+  oom: { notes: [note('Process completed with exit code 137.')], job: { name: 'tests', steps: [setUp, step('Type-check', 'completed', 'failure'), step('Post', 'completed', 'skipped')] } },
+  term: { notes: [note('Process completed with exit code 143.')], job: { name: 'tests', steps: [setUp, step('Tests', 'completed', 'failure')] } },
+  shutdown: { notes: [note('The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.'), note('The operation was canceled.')], job: { name: 'tests', steps: [setUp, step('Tests', 'completed', 'cancelled')] } },
+  hosted: { notes: [note('The hosted runner: GitHub Actions 7 lost communication with the server. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.')], job: { name: 'tests', steps: [] } },
+  lost: { notes: [], job: { name: 'tests', steps: [setUp, step('Tests', 'in_progress', null), step('Post', 'pending', null)] } },
+  code: { notes: [note('src/app.ts(3,7): error TS2322: Type \'string\' is not assignable to type \'number\'.'), note('Process completed with exit code 2.')], job: { name: 'tests', steps: [setUp, step('Type-check', 'completed', 'failure'), step('Post', 'completed', 'skipped')] } },
+  exit1: { notes: [note('Process completed with exit code 1.')], job: { name: 'tests', steps: [setUp, step('Tests', 'completed', 'failure')] } },
+};
+const whyOf = (k) => runnerFault(LOGS[k].notes, LOGS[k].job);
+t('DS-498 AC1 exit 137 is the runner out of memory', whyOf('oom'), 'exit code 137: the runner ran out of memory and killed it');
+t('DS-498 AC1 exit 143 is the runner stopping it', whyOf('term'), 'exit code 143: the runner was stopped mid-job');
+t('DS-498 AC1 a runner shutdown signal is the runner stopping it', whyOf('shutdown'), 'the runner received a shutdown signal mid-job');
+t('DS-498 AC2 a hosted runner that lost communication is a lost runner', whyOf('hosted'), 'the runner lost communication with GitHub mid-job');
+t('DS-498 AC2 steps left unfinished with none failed and no error line is a lost runner', whyOf('lost'), 'the runner was lost: steps were left unfinished with no error line');
+t('DS-498 a type error is the code\'s, not the runner\'s', whyOf('code'), null);
+t('DS-498 a bare exit 1 is the code\'s, not the runner\'s', whyOf('exit1'), null);
+// Recorded from GitHub (gh run view --attempt 1 --json jobs, and the job's check-run annotations), trimmed
+// to the fields read: bigbenjoman/pr-ninja run 41470904289 job 125364562971 (exit 137) and run 41789422277
+// job 126439706836 (a self-hosted runner lost mid-job, its steps left in_progress and pending).
+const pending = (name) => step(name, 'pending', '');
+const RECORDED = {
+  oom959: { notes: [{ annotation_level: 'warning', message: 'Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache/restore@v4, actions/checkout@v4, actions/setup-node@v4, pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1.' }, note('Process completed with exit code 137.'), note('@repo/api#type-check: command (/home/runner/_work/pr-ninja/pr-ninja/packages/api) /home/runner/setup-pnpm/node_modules/.bin/pnpm run type-check exited (137)')],
+    job: { name: 'Run unit tests', conclusion: 'failure', steps: [setUp, step('Type-check every workspace except web (web is gated by the build)', 'completed', 'failure'), step('Post Run actions/setup-node@v4', 'completed', 'skipped')] } },
+  lost956: { notes: [note('The self-hosted runner lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.')],
+    job: { name: 'Run unit tests', conclusion: 'failure', steps: [setUp, step('Generate Prisma client', 'completed', 'success'), step('Run apps/web vitest suite', 'in_progress', ''), pending('Run apps/portal vitest suite'), pending('Complete runner')] } },
+};
+t('DS-498 AC1 a recorded exit 137 is the runner out of memory', runnerFault(RECORDED.oom959.notes, RECORDED.oom959.job), 'exit code 137: the runner ran out of memory and killed it');
+t('DS-498 AC2 a recorded lost self-hosted runner is a lost runner', runnerFault(RECORDED.lost956.notes, RECORDED.lost956.job), 'the runner lost communication with GitHub mid-job');
+t('DS-498 AC2 and its unfinished steps alone, with no error line, are too', runnerFault([], RECORDED.lost956.job), 'the runner was lost: steps were left unfinished with no error line');
+t('DS-498 unfinished steps beside an error line are not a lost runner', runnerFault([note('boom: assertion failed')], LOGS.lost.job), null);
+t('DS-498 annotations that could not be read classify nothing', runnerFault(undefined, LOGS.lost.job), null);
+const killedPr = (k, more = {}) => rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 21 }], { fault: () => runnerFault(LOGS[k].notes, LOGS[k].job), ...more });
+for (const k of ['oom', 'term', 'shutdown', 'hosted', 'lost']) {
+  const c = killedPr(k);
+  t(`DS-498 AC1/AC2 ${k}: the failed run is re-run, and no fix worker is sent`, `${c?.call} ${c?.runs?.join(',')} ${/^its checks were ended by the runner, not their code, so they are re-run once/.test(c?.why ?? '')}`, 'rerun 21 true');
+}
+t('DS-498 AC1 the rerun names why', killedPr('oom')?.why, 'its checks were ended by the runner, not their code, so they are re-run once: "tests" exit code 137: the runner ran out of memory and killed it');
+t('DS-498 AC1 with the gate as rerun.sh reads it', JSON.stringify(killedPr('oom')?.gate?.failing), '[{"name":"tests","runId":"21"}]');
+t('DS-498 AC1 within the last rerun\'s cooldown it waits', killedPr('oom', { cooledDown: false })?.why, 'checks re-run after they were ended by the runner ("tests" exit code 137: the runner ran out of memory and killed it), waiting out the rerun\'s cooldown');
+t('DS-498 a code error still goes to a fix worker', killedPr('code')?.call, 'checks');
+t('DS-498 so does a runner fault beside a code error', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 21 }, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }], { fault: (f) => (f.name === 'tests' ? runnerFault(LOGS.oom.notes, LOGS.oom.job) : null) })?.call, 'checks');
+const killedAgain = killedPr('oom', { reruns: () => 1 });
+t('DS-498 AC3 killed again after its one rerun: the person\'s, never a fix worker\'s', `${killedAgain?.call} | ${killedAgain?.why}`, 'person | its "tests" check was ended by the runner after desk re-ran it at this head: "tests" (exit code 137: the runner ran out of memory and killed it)');
+t('DS-498 AC3 with the infrastructure fix, not a branch fix', killedAgain?.action, 'give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit), then re-run it on #701');
+t('DS-498 AC3 a rerun that then fails on its code goes to a fix worker', killedPr('code', { reruns: () => 1 })?.call, 'checks');
+// Only a rerun GitHub accepted spends the one rerun: a refused one is tried again, up to RERUNS_MAX.
+t('DS-498 AC1 a rerun GitHub refused is tried again', killedPr('oom', { reruns: () => 1, rerunsOk: () => 0 })?.call, 'rerun');
+t('DS-498 AC1 one GitHub accepted is spent', killedPr('oom', { reruns: () => 1, rerunsOk: () => 1 })?.call, 'person');
+const allRefused = killedPr('oom', { reruns: () => 2, rerunsOk: () => 0 });
+t('DS-498 AC3 every rerun refused: the person\'s, never a fix worker\'s', `${allRefused?.call} | ${allRefused?.why}`, 'person | its "tests" check was ended by the runner, and GitHub refused desk\'s 2 reruns of it at this head: "tests" (exit code 137: the runner ran out of memory and killed it)');
+// A runner shutdown GitHub reports as cancelled is the runner's too, not a cancelled check's two reruns.
+const shutdownPr = (more = {}) => rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled', runId: 21 }], { fault: () => runnerFault(LOGS.shutdown.notes, LOGS.shutdown.job), ...more });
+t('DS-498 AC1 a cancelled check with a shutdown signal is re-run once', `${shutdownPr()?.call} ${/ended by the runner/.test(shutdownPr()?.why ?? '')}`, 'rerun true');
+t('DS-498 AC3 and once that rerun ran, the person\'s, not a fix worker\'s', shutdownPr({ reruns: () => 1 })?.call, 'person');
+t('DS-498 AC4 with ci-rerun not yes it says reruns are not granted', /desk is not granted a rerun$/.test(shutdownPr({ rerun: 'no' })?.why ?? ''), true);
+t('DS-498 a plain cancelled check is still re-run twice', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled', runId: 21 }], { fault: () => null, reruns: () => 1 })?.call, 'rerun');
+for (const rerun of ['ask', 'no', undefined]) {
+  const c = killedPr('lost', { rerun });
+  t(`DS-498 AC4 ci-rerun ${rerun}: no rerun, and it says reruns are not granted`, `${c?.call} | ${c?.why}`, `person | its "tests" check was ended by the runner, not its code: "tests" (the runner was lost: steps were left unfinished with no error line); config §3 ci-rerun is "${rerun ?? 'no'}", so desk is not granted a rerun`);
+}
 
 // A required check its workflow never runs on the PR's base is put to the person as the trigger to
 // change, not a re-run.

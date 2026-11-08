@@ -36,7 +36,9 @@
 //   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
 //   stateFailing(failing, stateChecks) -> the failing checks that are state checks, each with its kind
 //   failureLines(notes)      a job's annotations -> every error its run gave, in order
+//   jobAnnotations(repo, jobId) -> a job's annotations read from GitHub; undefined when they cannot be read
 //   failureMessages(repo, jobId) -> failureLines read from GitHub; undefined when they cannot be read
+//   runnerFault(notes, job)  a red job the runner killed or lost rather than its code -> why, or null
 //   failureMessage(repo, jobId) -> the first of them; undefined when they cannot be read
 //   approvalFiles(line)      an error line asking for an approval for protected files -> { files, more }, or null
 //   staleVerdict(line)       an error line saying the review verdict is missing, stale or in a form it cannot read
@@ -597,11 +599,38 @@ export function failureLines(notes) {
   return (Array.isArray(notes) ? notes : []).filter((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()))
     .map((x) => String(x.message).split('\n')[0].trim().slice(0, 2000));
 }
+// A job's annotations as GitHub gives them, or undefined when they could not be read.
+export function jobAnnotations(repo, jobId) {
+  if (!jobId) return [];
+  try { return JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations`])); }
+  catch { return undefined; }
+}
 // failureLines for a job, or undefined when its annotations could not be read.
 export function failureMessages(repo, jobId) {
-  if (!jobId) return [];
-  try { return failureLines(JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations`]))); }
-  catch { return undefined; }
+  const notes = jobAnnotations(repo, jobId);
+  return notes === undefined ? undefined : failureLines(notes);
+}
+// A step of `gh run view --json jobs` that failed, as fix-tries.mjs failedSteps and runnerFault read it.
+const STEP_FAILED = new Set(['failure', 'timed_out']);
+export const stepFailed = (s) => STEP_FAILED.has(String(s?.conclusion ?? '').toLowerCase());
+// Why the runner ended a failed job rather than its code: exit 137 (the kill an out-of-memory runner
+// sends), exit 143 or a runner shutdown signal, or a runner lost (it lost contact, or the job left steps
+// unfinished with none failed and no error line). Null otherwise, and null when the annotations could not
+// be read. notes: the job's annotations; job: its entry in `gh run view --json jobs`, or null.
+const RUNNER_LINES = [
+  [/^Process completed with exit code 137\.?$/, 'exit code 137: the runner ran out of memory and killed it'],
+  [/^Process completed with exit code 143\.?$/, 'exit code 143: the runner was stopped mid-job'],
+  [/The runner has received a shutdown signal/i, 'the runner received a shutdown signal mid-job'],
+  [/lost communication with the server/i, 'the runner lost communication with GitHub mid-job'],
+];
+export function runnerFault(notes, job) {
+  if (!Array.isArray(notes)) return null;
+  const lines = notes.filter((x) => x?.annotation_level === 'failure' && x.message).map((x) => String(x.message).trim());
+  for (const [re, why] of RUNNER_LINES) if (lines.some((l) => re.test(l))) return why;
+  const steps = Array.isArray(job?.steps) ? job.steps : [];
+  const open = steps.some((s) => String(s?.status ?? '').toLowerCase() !== 'completed' || !s?.conclusion);
+  if (steps.length && open && !steps.some(stepFailed) && !failureLines(notes).length) return 'the runner was lost: steps were left unfinished with no error line';
+  return null;
 }
 export function failureMessage(repo, jobId) {
   if (!jobId) return null;
