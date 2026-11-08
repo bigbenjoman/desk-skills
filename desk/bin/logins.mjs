@@ -254,18 +254,17 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
   const rule = normRule(ruleText);
   if (!rule) throw new Error(`logins: ${ruleError(ruleText)}`);
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
+  // Listed, then removed (its own folder), then a folder of that name, then the tool's own default.
   let target = subs.logins.find((l) => l.tool === tool && l.name === name);
-  const def = defaultLogin(tool);
   const gone = subs.removed.find((r) => r.tool === tool && r.name === name);
-  if (!target && name === def.name && !subs.logins.some((l) => l.tool === tool && l.dir === def.dir)) target = { ...def, rule };
-  else if (!target && gone) target = login({ tool, name, folder: gone.dir, rule, source: 'file' });
+  const dir = join(loginsFolder(tool), name);
+  const def = defaultLogin(tool);
+  if (!target && gone) target = login({ tool, name, folder: gone.dir, rule, source: 'file' });
+  else if (!target && NAME.test(name) && isDir(dir)) target = login({ tool, name, folder: dir, rule, source: 'file' });
+  else if (!target && name === def.name && !subs.logins.some((l) => l.tool === tool && l.dir === def.dir)) target = { ...def, rule };
   if (!target) {
-    const dir = join(loginsFolder(tool), name);
-    if (!NAME.test(name) || !isDir(dir)) {
-      const names = subs.logins.filter((l) => l.tool === tool).map((l) => l.name);
-      throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
-    }
-    target = login({ tool, name, folder: dir, rule, source: 'file' });
+    const names = subs.logins.filter((l) => l.tool === tool).map((l) => l.name);
+    throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
   }
   if (rule === 'off') lastUsable(tool, name, target, check, 'turning this one off');
   // In place, so the order (which name keeps a shared account) stays; an added login goes last, and

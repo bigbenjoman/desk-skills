@@ -216,6 +216,11 @@ const back = deskEnv('set', 'claude', 'office', 'in rotation');
 t('AC8 u after x on a login named apart from its folder puts back that folder', `${back.status} ${/^\| `claude` \| `office` \| `~\/.claude-logins\/work` \| `in rotation` \|$/m.test(subsText())} ${/^## Removed/m.test(subsText())}`, '0 true false');
 const def = deskEnv('set', 'claude', 'default', 'standby');
 t('AC7 space on a default login the file does not list gives it the next rule', `${def.status} ${/^\| `claude` \| `default` \| `~\/.claude` \| `standby` \|$/m.test(subsText())}`, '0 true');
+subscriptions([['claude', 'default', '~/.claude-logins/spare', 'standby'], ['claude', 'office', '~/.claude-logins/work', 'in rotation'], ROWS[2]]);
+deskEnv('remove', 'claude', 'default');
+deskEnv('set', 'claude', 'default', 'standby');
+t('AC8 u after x on a login named default in another folder puts back that folder, not ~/.claude',
+  `${/^\| `claude` \| `default` \| `~\/.claude-logins\/spare` \| `standby` \|$/m.test(subsText())} ${/`~\/.claude` \|/.test(subsText())}`, 'true false');
 
 // ---- AC13: a login benched at its limit
 subscriptions(ROWS);
