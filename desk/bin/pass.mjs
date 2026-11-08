@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -395,12 +395,12 @@ function recommendsOf(t, question, log) {
 // it (writeBrief), and is true when it went. Once a ticket: a second one stays parked, saying why no yes
 // can grant it, so a worker that never names the SHA cannot loop.
 function refuseUnnamedLease(t, question) {
-  const left = (why) => { q('set', t.key, `park.recovery=${JSON.stringify(why)}`); return false; };
+  const left = (why) => { q('set', t.key, `park.recovery=${why}`); return false; };
   if (DRY) return false;
   if (t.lease_refused) return left('it asks for a force-push naming no lease SHA, for the second time, so no answer can grant it');
   const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
   if (!rq.ok) return left(`it asks for a force-push naming no lease SHA, and the requeue to name one was refused (${rq.out.split('\n').pop()})`);
-  q('set', t.key, `lease_refused=${JSON.stringify(question)}`);
+  q('set', t.key, `lease_refused=${JSON.stringify({ question })}`);
   report.advanced.push(`${t.key}: its park asked for a force-push naming no lease SHA: refused back to a worker, no grant recorded. The park: ${question}`);
   return true;
 }
@@ -2035,8 +2035,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
       'Read it and run §4 Database migrate yourself before trusting anything that needs data; if it still fails, say so rather than reporting a data-dependent check as passed.\n',
     t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
-    t.lease_refused && t.lease_refused === t.prev_park?.question && `## Your last park was refused\n\nIt asked for a force-push and named no lease SHA, so no grant can come from it: ${t.lease_refused}\n` +
-      `If you still need that push, park again with the exact \`git push --force-with-lease=${t.branch}:<sha> origin ${t.branch}\` in the question and \`"lease": "<sha>"\` in AUTOPILOT_PARK_INPUTS, <sha> being what \`git rev-parse origin/${t.branch}\` prints. If you do not, carry on without asking.\n`,
+    leaseRefusedBrief(t),
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
     notes && existsSync(notesFile) ? `${notesHead}${capNotes(readFileSync(notesFile, 'utf8'), notesFile, MAX_NOTES - notesHead.length)}` : '',
   ].filter(Boolean).join('\n');

@@ -146,10 +146,10 @@ say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_
 q add C-5 Story A; q set C-5 state=running branch=feat/C-5 session_id=gone
 say "AUTOPILOT_PARK: GitHub refused the force-push of feat/C-5 with a 5xx" 'AUTOPILOT_PARK_INPUTS: {"step": "push"}' \
   "AUTOPILOT_PARK_CLEARS_WHEN: git push --force-with-lease=feat/C-5:$PIN origin feat/C-5 succeeds" > "$T/state/logs/C-5.log"
-# DS-514: F-1 asks for a force-push naming no SHA; F-2 has already been refused once; F-3 names the SHA;
+# F-1 asks for a force-push naming no SHA; F-2 has already been refused once; F-3 names the SHA;
 # F-4 only mentions one; F-5 is lane C.
 for k in F-1 F-2 F-3 F-4 F-5; do l=A; [ "$k" = F-5 ] && l=C; q add "$k" Story "$l"; q set "$k" state=running "branch=feat/$k" session_id=gone; done
-q set F-2 'lease_refused="an earlier park"'
+q set F-2 'lease_refused={"question":"an earlier park"}'
 say "AUTOPILOT_PARK: needs a force-push of feat/F-1, which my settings deny. Approve?" > "$T/state/logs/F-1.log"
 say "AUTOPILOT_PARK: needs a force-push of feat/F-2, which my settings deny. Approve?" > "$T/state/logs/F-2.log"
 say "AUTOPILOT_PARK: needs a force-push of feat/F-3. Approve?" "AUTOPILOT_PARK_INPUTS: {\"lease\": \"$PIN\"}" > "$T/state/logs/F-3.log"
@@ -211,7 +211,7 @@ check "DS-496 a worker's park line records a push, -u dropped, and with no workt
 check "DS-496 AC2 a lease park's clears-when SHA goes on its inputs, so a yes to it is a pinned grant after the condition is cleared" \
   '[ "$(field C-5 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-5 park.inputs)" = "{\"step\":\"push\",\"lease\":\"$PIN\"}" ]'
 check "DS-514 AC1 a force-push park naming no SHA is refused back to a worker, with the reason on the ticket" \
-  '[ "$(field F-1 state)" = "\"triaged\"" ] && [ "$(field F-1 park)" = null ] && [[ "$(field F-1 lease_refused)" == *"force-push of feat/F-1"* ]] && [ "$(field F-1 grant)" = null ] && grep -q "F-1: its park asked for a force-push naming no lease SHA: refused back" <<< "$out"'
+  '[ "$(field F-1 state)" = "\"triaged\"" ] && [ "$(field F-1 park)" = null ] && [ "$(field F-1 lease_refused.question)" = "$(field F-1 prev_park.question)" ] && [[ "$(field F-1 lease_refused.question)" == *"force-push of feat/F-1"* ]] && [ "$(field F-1 grant)" = null ] && grep -q "F-1: its park asked for a force-push naming no lease SHA: refused back" <<< "$out"'
 check "DS-514 AC1 a second one stays parked, saying no answer can grant it" \
   '[ "$(field F-2 state)" = "\"parked\"" ] && [[ "$(field F-2 park.recovery)" == *"no answer can grant it"* ]]'
 check "DS-514 AC2 a force-push park naming the SHA is recorded, with its lease" \
