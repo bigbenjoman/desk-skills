@@ -60,6 +60,7 @@ import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personReviewFix, stuckFindings } from './fix-tries.mjs';
+import { approvalFiles } from './gate.mjs';
 import { repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
@@ -229,11 +230,10 @@ const fileWords = (f) => FILE_WORDS.find(([re]) => re.test(f))?.[1] ?? `\`${f}\`
 function approvalCause(line) {
   const s = String(line ?? '');
   if (!/approv/i.test(s)) return null;
-  const listed = /(\d+) protected file\(s\):(.*)$/.exec(s), touches = /^It touches (.+?) with /.exec(s);
+  const prot = approvalFiles(s);
   const over = /\*{0,2}(\d+)\*{0,2} changed files, over the (\d+)-file limit/.exec(s);
-  if (!listed && !touches && !over) return null;
-  const files = [...String(listed?.[2] ?? touches?.[1] ?? '').matchAll(/`([^`]+)`/g)].map((m) => m[1]);
-  const more = listed ? Number(listed[1]) - files.length : Number(/ and (\d+) more$/.exec(touches?.[1] ?? '')?.[1] ?? 0);
+  if (!prot && !over) return null;
+  const { files, more } = prot ?? { files: [], more: 0 };
   const named = [...new Set(files.map(fileWords)), ...(more > 0 ? [`${more} more protected file${more === 1 ? '' : 's'}`] : [])];
   const why = [...(named.length ? [`it changes ${andList(named)}`] : []), ...(over ? [`it has ${over[1]} changed files, over the ${over[2]}-file limit`] : [])].join(', and ');
   const stale = /— and (.+?)'s approval predates/.exec(s)?.[1] ?? /\. ([^.]+?) approved an earlier commit/.exec(s)?.[1];

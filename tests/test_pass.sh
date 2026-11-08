@@ -1597,6 +1597,54 @@ check "DS-278 AC5 after 2 fix tries it is not requeued again" '[ "$(field F-1 st
 check "DS-278 AC5 the ticket records it stuck, and it is put to the person" \
   '[ "$(field F-1 stuck.why)" = "\"still red after 2 fix tries: Lint\"" ] && echo "$out" | grep -q "F-1: STUCK — PR #697: still red after 2 fix tries: Lint"'
 
+# ---- A Review gate failure a change on the branch may clear goes to a worker before the person. The
+# fake gh also answers a job's annotations from $T/fx/notes-<job>.json; the lines are the recorded
+# studia-web gate's, and desk's own review-gate.mjs's for the verdict.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations$/.exec(a[1] ?? '');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (job) { try { process.stdout.write(fs.readFileSync('$T/fx/notes-' + job[1] + '.json', 'utf8')); } catch { process.exit(1); } }
+else process.exit(1);
+EOF
+sed -e 's/^| Checks workers can.t fix .*$/| State checks | `Review gate` |/' "$T/config-f.md" > "$T/config-g500.md"
+was500="$DESK_CONFIG|$DESK_QUEUE|$DESK_AUTOPILOT_STATE"
+export DESK_CONFIG="$T/config-g500.md" DESK_QUEUE="$T/queue-g500.json" DESK_AUTOPILOT_STATE="$T/state-g500"
+mkdir -p "$T/state-g500/logs" "$T/state-g500/merge-driver"
+# gate500 <n> <head> <job> <error line>...: PR #n open, out of draft, red only on Review gate, whose job gave those lines.
+gate500(){
+  node -e 'const [dir, n, head, job, ...lines] = process.argv.slice(1); const fs = require("fs");
+    const checks = [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "" },
+      { __typename: "CheckRun", name: "Review gate", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/widgets/actions/runs/${job}/job/${job}` }];
+    fs.writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, statusCheckRollup: checks, commits: [{ oid: head, committedDate: "2025-10-20T09:00:00Z" }] }));
+    fs.writeFileSync(`${dir}/notes-${job}.json`, JSON.stringify([{ annotation_level: "failure", message: "Process completed with exit code 1." }, ...lines.map((message) => ({ annotation_level: "failure", message }))]));' "$T/fx" "$@"
+}
+PKG500='Approval required — 1 protected file(s): `apps/portal/apps/web/package.json`.'
+LIMIT500=$(jq -r '.["file-limit"][1].message' "$S/fixtures/review-gate-annotations.json")
+STALE500="The latest desk-review verdict is at ${H1:0:9}, not the head ${H2:0:9}. Review this head."
+q init g500; q set-batch concurrency=5
+for k in 1 2 3; do q add "G5-$k"; q set "G5-$k" state=done lane=A "branch=fix/G5-$k"; done
+q set G5-1 result.pr=950; gate500 950 "$H1" 95001 "$PKG500"
+q set G5-2 result.pr=951; gate500 951 "$H2" 95002 "$LIMIT500" "$STALE500"
+q set G5-3 result.pr=952; gate500 952 "$H1" 95003 "$PKG500"
+q set G5-3 "fix_tries=[{\"try\":1,\"head\":\"$H1\",\"kind\":\"protected\",\"paths\":[\"apps/portal/apps/web/package.json\"]}]"
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-500 AC1 a protected file in the gate's error goes to a protected-files try, not the person" \
+  '[ "$(field G5-1 state)" = "\"triaged\"" ] && [ "$(field G5-1 fix | jq -c "[.kind, .ready, .paths]")" = "[\"protected\",true,[\"apps/portal/apps/web/package.json\"]]" ] && [ "$(field G5-1 stuck)" = null ] && echo "$out" | grep -q "protected files try 1 of 2: G5-1 requeued for PR #950" && ! echo "$out" | grep -q "G5-1: STUCK"'
+check "DS-500 AC1 the try keeps the files it judged" '[ "$(field G5-1 fix_tries | jq -c ".[0].paths")" = "[\"apps/portal/apps/web/package.json\"]" ]'
+check "DS-500 AC2 a stale verdict beside an approval is reviewed again at the head before any item" \
+  '[ "$(field G5-2 state)" = "\"triaged\"" ] && [ "$(field G5-2 fix | jq -c "[.kind, .head, .ready]")" = "[\"rereview\",\"$H2\",true]" ] && ! echo "$out" | grep -q "G5-2: STUCK"'
+check "DS-500 AC3 a file a try judged needed sends no worker: the approval goes to the person" \
+  '[ "$(field G5-3 state)" = "\"done\"" ] && [ "$(field G5-3 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "G5-3: STUCK — PR #952: red on \"Review gate\", a §4 State check"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-500 AC1 its worker's task and briefing name the file and the criteria test" \
+  'grep -q "^G5-1 .*Your task is protected files try 1 of 2 on PR #950" "$T/spawns" && grep -q "^- apps/portal/apps/web/package.json$" "$T/state-g500/briefings/G5-1.md" && grep -q "acceptance criteria" "$T/state-g500/briefings/G5-1.md"'
+IFS='|' read -r DESK_CONFIG DESK_QUEUE DESK_AUTOPILOT_STATE <<< "$was500"; export DESK_CONFIG DESK_QUEUE DESK_AUTOPILOT_STATE
+
 # ---- DS-280: the pass records the driver's reruns and its last, when the PR last changed, and when each
 # row entered its group. F-5's PR is red on Lint after one rerun; nothing merges here, so it needs you.
 printf '1761650000\n' > "$T/state-f/merge-driver/cooldown-699"

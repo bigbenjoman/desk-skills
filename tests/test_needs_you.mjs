@@ -616,7 +616,8 @@ t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is
 t('DS-375 a reason recorded before the pass kept its checks still names them', sg['S-5']?.need, 'PR #105 has failing checks desk\'s own repairs did not fix: Lint. Fix them on its branch; desk then merges it once its checks are green.');
 // ---- A review gate that wants a person's approval, from error lines recorded on studia-web PRs
 // #2555 and #2546, and the lines desk's own review-gate.mjs writes.
-const { failureLine } = await import('../desk/bin/gate.mjs');
+const { failureLines } = await import('../desk/bin/gate.mjs');
+const failureLine = (notes) => failureLines(notes)[0] ?? null;
 const { checkApproval } = await import('../desk/templates/scripts/desk/review-gate.mjs');
 const GATE_NOTES = JSON.parse(readFileSync(join(ROOT, 'tests', 'fixtures', 'review-gate-annotations.json'), 'utf8'));
 const GATE = '🔐 Review gate', GATE_STEP = 'Require an approval unless a small fix, docs or chore change';
@@ -673,6 +674,16 @@ put('omega499', { port: 4650, beat: 1, supervised: true, merge: 'yes', people: {
 t('DS-499 AC1 no reviewer falls back to the product owner', N.collect({ word: 'chi' }).items[0]?.need.startsWith('PR #131 needs Sam\'s approval:'), true);
 t('DS-499 AC1 neither row: a person with approval rights', N.collect({ word: 'psi' }).items[0]?.need.startsWith('PR #132 needs approval from a person with approval rights:'), true);
 t('DS-499 AC1 a row that is the user', N.collect({ word: 'omega499' }).items[0]?.need.startsWith('PR #133 needs your approval:'), true);
+// A PR the pass sent to a protected-files try, as applyFix and queue.mjs requeue leave it (triaged, its
+// stuck reason cleared), then running; and one back at done once its worker kept the file.
+const pkgLine = 'Approval required — 1 protected file(s): `apps/portal/apps/web/package.json`.';
+const protectedFix = (pr, more = {}) => ({ try: 1, of: 2, pr, head: `h${pr}`, kind: 'protected', ready: true, paths: ['apps/portal/apps/web/package.json'], what: 'protected files', at: minsAgo(1), ...more });
+const onTry = (state) => ({ ...gateStuck(134, pkgLine), state, stuck: null, fix: protectedFix(134) });
+put('psi500', { port: 4660, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)' },
+  tickets: { 'X-1': onTry('triaged'), 'X-2': onTry('running'), 'X-3': { ...gateStuck(135, pkgLine), fix: protectedFix(135, { finished: true }) } } });
+const psi500 = Object.fromEntries(N.collect({ word: 'psi500' }).items.map((i) => [i.t.key, i]));
+t('DS-500 AC1 a PR on its protected-files try is no item while it waits to spawn or runs', 'X-1' in psi500 || 'X-2' in psi500, false);
+t('DS-500 AC3 once its worker kept the file, the approval is the person\'s', psi500['X-3']?.need, `PR #135 needs Chris Anthony's approval: it changes \`apps/portal/apps/web/package.json\`. ${TAIL}`);
 
 // ---- DS-410: a ready PR into a feature base held on a required check its workflow never runs there.
 const why410 = 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/ci.yml runs on pull requests into main, production)';
