@@ -264,7 +264,8 @@ function screen(start, columns = 80, clock = Date.now, M = Q) {
   // `resize` holds the screen's resize listener, so a test can change `columns` and call it.
   const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on(e, f) { if (e === 'resize') this.resize = f; }, removeListener() {} };
   const codes = [], opened = [];
-  const ui = M.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock, probeWith: async () => ({ ran: false }) });
+  const ui = M.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock, probeWith: async () => ({ ran: false }),
+    loginsWith: (args, done) => setImmediate(() => done({ code: 0, out: '{"logins":[]}', err: '' })) });
   const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
   return {
     input, output, modes, codes, opened, ui, frame,
@@ -642,7 +643,8 @@ const shows = (s) => {
   const f = s.frame();
   return f.some((l) => /^ +# {2}TICKET/.test(l) || /^ {2}REPO {2,}LAST PASS/.test(l)) ? 'queue' : f.some((l) => l.startsWith('Scale: ')) ? 'timeline'
     : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : f.some((l) => /^ {2}(REPO {8})?EPIC +TITLE +CHILDREN +SHIPS$/.test(l) || l === 'No queued ticket here belongs to an epic.') ? 'epics'
-      : f.some((l) => l.startsWith('No cost sources for ') || /^ {2}SUPPLIER +FOR +CHARGED$/.test(l)) ? 'costs' : 'none';
+      : f.some((l) => l.startsWith('No cost sources for ') || /^ {2}SUPPLIER +FOR +CHARGED$/.test(l)) ? 'costs'
+        : f.some((l) => /^ {2}CLAUDE +PLAN +RULE +5H +7D +WORKERS$/.test(l)) ? 'usage' : 'none';
 };
 // Wide enough that every keys line is one line.
 const keysLine = (s) => s.frame().at(-1);
@@ -653,10 +655,12 @@ await sleep(20);
 t('DS-164 the Queue shows first, its tab line under the breadcrumb', `${where(N1)} | ${N1.frame()[1].startsWith(TABS)}`, 'desk-q › tidy | 1 Queue | queue | true');
 await N1.press('\t');
 t('DS-164 AC1 Tab on a repo\'s Queue shows its Timeline, Timeline highlighted', `${where(N1)} | ${N1.frame()[1].startsWith(TABS)}`, 'desk-q › tidy | 2 Timeline | timeline | true');
-await N1.press('\t'); await N1.press('\t'); await N1.press('\t'); await N1.press('\t');
-t('DS-164 Tab from Costs wraps round to the Queue', where(N1), 'desk-q › tidy | 1 Queue | queue');
+await N1.press('\t'); await N1.press('\t'); await N1.press('\t'); await N1.press('\t'); await N1.press('\t');
+t('DS-164 Tab from Usage wraps round to the Queue', where(N1), 'desk-q › tidy | 1 Queue | queue');
 await N1.press('\x1b[Z');
-t('DS-164 shift+Tab steps back', where(N1), 'desk-q › costs › tidy | 5 Costs | costs');
+t('DS-164 shift+Tab steps back', where(N1), 'desk-q › tidy | 6 Usage | usage');
+await N1.press('\x1b[Z');
+t('DS-164 shift+Tab again steps back to Costs', where(N1), 'desk-q › costs › tidy | 5 Costs | costs');
 N1.ui.finish(0);
 
 // DS-182: ← and → step along the tab bar and stop at its ends, in both arrow encodings.
@@ -670,8 +674,8 @@ await Ar.press(RIGHT);
 t('DS-182 AC1 → (CSI) on the Queue shows the Timeline', where(Ar), 'desk-q › tidy | 2 Timeline | timeline');
 await Ar.press(SS3_RIGHT);
 t('DS-182 AC1 → (SS3) on the Timeline shows By day', where(Ar), 'desk-q › tidy | 3 By day | days');
-await Ar.press(RIGHT); await Ar.press(RIGHT); await Ar.press(RIGHT);
-t('DS-182 → on the rightmost tab stays there', where(Ar), 'desk-q › costs › tidy | 5 Costs | costs');
+await Ar.press(RIGHT); await Ar.press(RIGHT); await Ar.press(RIGHT); await Ar.press(RIGHT);
+t('DS-182 → on the rightmost tab stays there', where(Ar), 'desk-q › tidy | 6 Usage | usage');
 await Ar.press('\t');
 t('DS-182 AC5 Tab on the rightmost tab still wraps to the Queue', where(Ar), 'desk-q › tidy | 1 Queue | queue');
 await Ar.press('4');
@@ -783,17 +787,19 @@ views10.ticket = keysLine(N10r);
 N10r.ui.finish(0);
 const has = (line, k) => line.includes(k);
 const want10 = {
-  'every queue': { yes: ['←→ or 1–5 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
-  'every timeline': { yes: ['←→ or 1–5 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
-  'every days': { yes: ['←→ or 1–5 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
-  'every epics': { yes: ['←→ or 1–5 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
-  'every costs': { yes: ['←→ or 1–5 view', '↑↓ select', 'enter open'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
-  'repo costs': { yes: ['←→ or 1–5 view', '↑↓ select', 'o open the bill', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
-  'repo queue': { yes: ['←→ or 1–5 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
-  'repo timeline': { yes: ['←→ or 1–5 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
-  'repo days': { yes: ['←→ or 1–5 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  'repo epics': { yes: ['←→ or 1–5 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['←→ or 1–5 view', 'z scale', 'a all repos'] },
+  'every queue': { yes: ['←→ or 1–6 view', 'a all repos', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', '+ −'] },
+  'every timeline': { yes: ['←→ or 1–6 view', 'z scale', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'a all repos', '+ −'] },
+  'every days': { yes: ['←→ or 1–6 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'every epics': { yes: ['←→ or 1–6 view', 'c parked dates'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos'] },
+  'every costs': { yes: ['←→ or 1–6 view', '↑↓ select', 'enter open'], no: ['esc back', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'repo costs': { yes: ['←→ or 1–6 view', '↑↓ select', 'o open the bill', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'repo queue': { yes: ['←→ or 1–6 view', 'shift+↑↓ move', 't top', '+ − workers', 'esc back'], no: ['z scale', 'a all repos'] },
+  'repo timeline': { yes: ['←→ or 1–6 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
+  'repo days': { yes: ['←→ or 1–6 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  'repo epics': { yes: ['←→ or 1–6 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
+  'every usage': { yes: ['←→ or 1–6 view', '↑↓ select', 'space change rule', 'x remove'], no: ['esc back', 'enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'repo usage': { yes: ['←→ or 1–6 view', 'space change rule', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['←→ or 1–6 view', 'z scale', 'a all repos'] },
 };
 t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10).flatMap(([v, { yes, no }]) => [
   ...yes.filter((k) => !has(views10[v] ?? '', k)).map((k) => `${v} lacks ${k}`), ...no.filter((k) => has(views10[v] ?? '', k)).map((k) => `${v} lists ${k}`)]).join(' | '), '');
@@ -804,9 +810,9 @@ await sleep(20);
 // The act line is itself wider than 80, so it carries on, indented, under its label.
 const k80 = N80.frame().slice(N80.frame().findIndex((l) => l.startsWith('move  ')));
 t('DS-164 AC10 (DS-186 AC10) at 80 columns the Queue\'s keys go on a move line and an act line, none lost',
-  `${k80[0] === 'move  ↑↓ select · enter open · ←→ or 1–5 view · esc back'} ${k80[1].startsWith('act   shift+↑↓ move · ')} ${k80.slice(2).every((l) => l.startsWith('      '))} ${k80.at(-1).endsWith('q quit')} ${k80.every((l) => l.length <= 80)}`,
+  `${k80[0] === 'move  ↑↓ select · enter open · ←→ or 1–6 view · esc back'} ${k80[1].startsWith('act   shift+↑↓ move · ')} ${k80.slice(2).every((l) => l.startsWith('      '))} ${k80.at(-1).endsWith('q quit')} ${k80.every((l) => l.length <= 80)}`,
   'true true true true true');
-t('DS-186 AC10 each key is bold, its words plain', ['↑↓', 'enter', '←→ or 1–5', 'esc', 'shift+↑↓', 'q'].every((k) => lastFrame(N80).join('').includes(`\x1b[1m${k}\x1b[22m `)), true);
+t('DS-186 AC10 each key is bold, its words plain', ['↑↓', 'enter', '←→ or 1–6', 'esc', 'shift+↑↓', 'q'].every((k) => lastFrame(N80).join('').includes(`\x1b[1m${k}\x1b[22m `)), true);
 N80.ui.finish(0);
 
 // A row clicked is selected and opened; a click report cut across two reads is still one click.
@@ -1415,7 +1421,7 @@ S104.output.rows = 120; S104.output.resize();
 await sleep(20);
 const f104s = S104.frame();
 t('DS-215 AC18 home\'s tab line carries no parked note; the note is in home\'s notes',
-  `${f104s[1] === '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs'} ${f104s.some((l) => /^(note| {4}) {4}dates +Tickets that need your answer have no date/.test(l))}`, 'true true');
+  `${f104s[1] === '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs  6 Usage'} ${f104s.some((l) => /^(note| {4}) {4}dates +Tickets that need your answer have no date/.test(l))}`, 'true true');
 const more215 = lines(Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 }));
 const moreAt = more215.findIndex((l) => /^ {2}\d+ more set up with no batch: /.test(l));
 const more104 = lines(Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30, width: 60 }));

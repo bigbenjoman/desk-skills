@@ -97,6 +97,9 @@
 //                                             and the usable ones (logins.mjs)
 //   node desk-env.mjs logins set <claude|codex> <name> <in rotation|standby|off>
 //                                             change one login's rule, keeping the previous file as .bak
+//   node desk-env.mjs logins remove <claude|codex> <name>
+//                                             remove one login from the rules, leaving its folder and sign-in;
+//                                             a folder under the logins folder is not found again
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
@@ -1967,7 +1970,8 @@ if (isMain) {
         break;
       }
       case 'logins': {
-        // The subcommand is always the first word, so a worker's `logins set` deny rule holds.
+        // The subcommand is always the first word, so a worker's `logins set` and `logins remove` deny
+        // rules hold.
         const [sub, ...rest] = args;
         const L = await import('./logins.mjs');
         const path = subscriptionsPath();
@@ -1991,7 +1995,14 @@ if (isMain) {
           console.log(`${tool} ${name}: ${r.login.rule}`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | set <claude|codex> <name> <${L.RULES.join('|')}>`);
+        if (sub === 'remove' && rest.length === 2) {
+          const [tool, name] = rest;
+          const r = L.removeLogin(subs, { tool, name, check: () => L.checkLogins(subs) });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`${tool} ${name}: removed; ${r.login.folder} and its sign-in are left as they are`);
+          break;
+        }
+        console.error(`usage: desk-env.mjs logins list|check [--json] | set <claude|codex> <name> <${L.RULES.join('|')}> | remove <claude|codex> <name>`);
         process.exit(2);
         break;
       }

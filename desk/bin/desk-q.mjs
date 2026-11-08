@@ -20,13 +20,15 @@
 //
 // A repo is named by its short name or any unique prefix of it, which is its standing batch; a named
 // batch (an epic's) has a row of its own and is named `<repo>:<name>`. In a terminal, without --plain,
-// the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–5 for a place's Queue,
-// Timeline, By day and Epics, and Costs on home and on a repo, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
+// the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–6 for a place's Queue,
+// Timeline, By day and Epics, Costs on home and on a repo, and Usage, every Claude and Codex login on this
+// computer, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
-// of the repo named. The supervisor command runs that repo's supervisor.mjs install, uninstall or
+// of the repo named. Usage changes a login's rule or removes it with desk-env's logins set and remove. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
@@ -45,11 +47,11 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { claudeLogins, inUse, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
+import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { readSubscriptions } from './logins.mjs';
+import { RULES as LOGIN_RULES, claudeAccount, defaultLogin, readSubscriptions, signInCommand } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1856,6 +1858,147 @@ function allOutNote(s, now) {
     + `The first back is ${f.login.name}${f.at != null ? ` at ${resetText(f.at * 1000, now)}` : ', once a probe call on it succeeds'}. `, null], ['Add a login on view 6 to start sooner.', BOLD]] };
 }
 
+// ---- Usage -------------------------------------------------------------------------------------
+// View 6: every Claude and Codex login on this computer, a table per tool, each login with its plan, its
+// rule, both windows and the workers on it. A Claude login's plan and email are what its .claude.json
+// records; a Codex login's plan is what its newest reading logs, and its name is its label. Sign-in is
+// the account check's (`desk-env logins check`), which the screen runs in the background: `checked` maps
+// `<tool> <folder>` to each login it lists, and a found folder it leaves out is signed out. Until a check
+// has run, every login reads as signed in.
+const U_NAME = 25, U_PLAN = 9, U_RULE = 14, U_5H = 21, U_7D = 25, U_WORKERS = 7;
+const RULE_CELL = { 'in rotation': ['● in rotation', GOOD], standby: ['○ standby', HUE.blue], off: ['◌ off', GREY] };
+const LIMIT_WORDS = { five_hour: '5-hour', seven_day: 'weekly' };
+// A Claude login's .claude.json, read again only when it changes: the default's ~/.claude.json is large.
+const accounts = new Map();
+function accountOf(l) {
+  if (l.tool !== 'claude') return { email: null, plan: null };
+  const path = l.configDir ? join(l.configDir, '.claude.json') : join(process.env.HOME || homedir(), '.claude.json');
+  let m = null;
+  try { m = statSync(path).mtimeMs; } catch { /* no file: nothing recorded */ }
+  const had = accounts.get(path);
+  if (had && had.m === m) return had.a;
+  const a = m == null ? { email: null, plan: null } : claudeAccount(l);
+  accounts.set(path, { m, a });
+  return a;
+}
+// What the view calls a login: a Claude login's email where its folder records one, else its name.
+export const loginLabel = (l) => accountOf(l).email ?? l.name;
+export const checkKey = (tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
+
+// Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check }. `out` is
+// { at, type } while the login is at its limit (a batch here benched it, or its Codex reading is at
+// one); `workers` is null for Codex, whose calls desk does not count per login; `check` is the account
+// check's entry, null with none.
+export function usageTable(repos, now, checked = null) {
+  const benched = liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now);
+  const dirs = stateDirs({ self: usageDir() });
+  const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? (l.source === 'found' ? { state: 'signed out' } : null));
+  const claude = claudeLogins().map((l) => {
+    const b = benched[loginKey(l)];
+    return { tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: b ? { at: b.resets_at ?? null, type: b.type } : null,
+      workers: runningOn(repos, l), check: checkOf(l) };
+  });
+  const codex = codexChoice(codexLogins(), now).read.map((x) => ({ tool: 'codex', login: x.login, plan: x.reading.plan, reading: x.claude,
+    out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login) }));
+  return { claude, codex };
+}
+
+// Coloured runs cut and padded to `w` columns, on the right when `right`.
+function fitCell(segs, w, right = false) {
+  const out = [];
+  let room = w;
+  for (const [s, k] of segs) { if (room <= 0) break; const t = String(s).slice(0, room); out.push([t, k]); room -= t.length; }
+  const gap = [' '.repeat(Math.max(0, room)), null];
+  return right ? [gap, ...out] : [...out, gap];
+}
+// A window as the view draws it: the bar, its use and its reset, all grey when `grey`.
+function barCell(w, now, solid, grey) {
+  const { reset, pct } = windowUse(w, now);
+  const used = Math.min(USAGE_BAR, Math.round((pct * USAGE_BAR) / 100));
+  const sgr = grey ? GREY : usageSgr(pct, false);
+  return [['█'.repeat(used), sgr], [(solid ? '█' : '·').repeat(USAGE_BAR - used), solid ? TRACK : GREY], [` ${pct}%`, sgr],
+    [reset ? '' : ` ${resetText(w.resetsAt * 1000, now)}`, grey ? GREY : null]];
+}
+// A window's cell: none for a plan without it, no reading yet, 0% once a reading's window has reset.
+function windowCell(x, k, now, solid) {
+  const r = x.reading;
+  if (r?.none?.includes(k)) return [[`no ${WINDOW_LABELS[k]} limit`, GREY]];
+  if (r?.at == null) return [['no reading yet', GREY]];
+  return barCell(r[k] ?? { utilization: 0, resetsAt: 0 }, now, solid, x.login.rule === 'off');
+}
+function ruleCell(x, n) {
+  if (x.out && inUse(x.login)) return ['■ at limit', FAIL];
+  if (n === 1 && inUse(x.login)) return ['● only login', GOOD];
+  return RULE_CELL[x.login.rule] ?? ['· no rule', GREY];
+}
+// A signed-out or refused login has one cell across both windows, saying desk won't use it.
+const unusable = (x) => (x.check?.state === 'signed out' ? '◆ signed out: desk won\'t use it'
+  : x.check?.state === 'duplicate' ? `◆ the same account as ${x.check.duplicateOf}: desk won't use it` : null);
+function loginRow(x, n, now, solid) {
+  const no = unusable(x);
+  const windows = no ? fitCell([[no, YOU]], U_5H + U_7D)
+    : [...fitCell(x.login.rule === 'off' ? [['not used', GREY]] : windowCell(x, 'five_hour', now, solid), U_5H), ...fitCell(windowCell(x, 'seven_day', now, solid), U_7D)];
+  const workers = x.workers == null ? ['—', GREY] : [String(x.workers), x.workers ? null : GREY];
+  const segs = [['  ', null], ...fitCell([[cut(loginLabel(x.login), U_NAME - 1), null]], U_NAME), ...fitCell([[x.plan ?? '—', no || !x.plan ? GREY : null]], U_PLAN),
+    ...fitCell([ruleCell(x, n)], U_RULE), ...windows, ...fitCell([workers], U_WORKERS, true)];
+  return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check };
+}
+const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${pad('RULE', U_RULE)}${pad('5H', U_5H)}${pad('7D', U_7D)}${rpad('WORKERS', U_WORKERS)}`);
+
+// The line under the tabs: the logins new work starts on and any at its limit until when, or with one
+// login per tool, that every worker runs on it.
+function usageHeadline(repos, now, t) {
+  const s = loginsNow(repos, now);
+  const oneEach = segLine([['Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.', GREY]]);
+  if (!s || (t.claude.length <= 1 && t.codex.length <= 1)) return oneEach;
+  const { claude: c, codex: x } = s;
+  const when = (o) => (o.at != null ? resetText(o.at * 1000, now) : null);
+  if (c && !c.login) {
+    const f = c.out[0];
+    return segLine([['Every Claude login is at its limit, so no new Claude workers start. The first back is ', GREY], [loginLabel(f.login), null],
+      [when(f) ? ` at ${when(f)}.` : ', once a probe call on it succeeds.', GREY]]);
+  }
+  // With a login out, the line names only its tool's: the one whose new work goes elsewhere.
+  const out = [...(c?.out ?? []), ...(x?.out ?? [])].sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
+  const f = out[0];
+  const segs = [];
+  if (c?.login && (!f || f.login.tool === 'claude')) segs.push(['New Claude workers start on ', GREY], [loginLabel(c.login), BOLD]);
+  if (x?.login && (!f || f.login.tool === 'codex')) segs.push([segs.length ? ', Codex workers on ' : 'New Codex workers start on ', GREY], [loginLabel(x.login), BOLD]);
+  if (!segs.length) return oneEach;
+  if (!f) return segLine([...segs, [': the most room.', GREY]]);
+  const type = [...t.claude, ...t.codex].find((r) => r.login.dir === f.login.dir && r.login.tool === f.login.tool)?.out?.type;
+  return segLine([...segs, [': ', GREY], [loginLabel(f.login), null],
+    [` is at its ${LIMIT_WORDS[type] ? `${LIMIT_WORDS[type]} ` : ''}limit${when(f) ? ` until ${when(f)}` : ''}${out.length > 1 ? `, and ${out.length - 1} more` : ''}.`, GREY]]);
+}
+
+// The shell half of a login's sign-in command, the part to paste into a terminal.
+export const signInShell = (l) => signInCommand(l).split(', then ')[0];
+
+// -> { head, rows, foot }: the line under the tabs; each tool's table, a heading row and a row per login;
+// then the rules' key, a note per signed-out login and for logins with no reading, and when they were read.
+export function usageParts(repos, { now = Date.now(), width = null, checked = null } = {}) {
+  const t = usageTable(repos, now, checked);
+  const solid = solidBars(width);
+  const w = width ?? 104;
+  const table = (name, list) => (list.length ? [tableHead(name), ...list.map((x) => loginRow(x, list.length, now, solid))] : []);
+  const rows = [...table('CLAUDE', t.claude), ...(t.claude.length && t.codex.length ? [{ line: '' }] : []), ...table('CODEX', t.codex)];
+  const all = [...t.claude, ...t.codex];
+  const key = wrapSegs([['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
+    [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], Math.max(20, w - 2)).map((l) => segLine([['  ', null], ...l]));
+  const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => ({ tag: '◆ sign in', sgr: YOU, text: [
+    [`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [signInShell(x.login), HUE.cyan],
+    ...(x.tool === 'claude' ? [[', then ', null], ['/login', HUE.cyan]] : [])] }));
+  if (t.claude.some((x) => inUse(x.login) && !unusable(x) && x.reading?.at == null)) {
+    notes.push({ tag: 'no reading', sgr: GREY, text: [['Logins with no reading yet are read in the next 5 minutes. A login with no reading still takes workers, after the logins whose room is known.', null]] });
+  }
+  const ats = (rule) => all.filter((x) => !rule || x.login.rule === rule).map((x) => x.reading?.at).filter((a) => a != null);
+  const read = ats();
+  const rot = ats('in rotation'), standby = ats('standby');
+  const stale = rot.length && standby.length && Math.min(...standby) < Math.max(...rot) ? ` Standby logins were last read at ${resetText(Math.min(...standby), now)}.` : '';
+  const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.${stale}` : '  No login has a reading yet.');
+  return { head: [usageHeadline(repos, now, t), ''], rows, foot: ['', ...key, ...(notes.length ? ['', ...noteLines(notes, 14, w)] : []), '', readLine] };
+}
+
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
 // loaded, a loaded one that cannot start, or passes that keep failing.
 const band = (text) => segLine([[` ✕ ${text}`, BAND]]);
@@ -2868,9 +3011,10 @@ const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 const PARTIAL_MS = 30;
 const REVERSE = '7';
 // The views every place but a ticket has, in the order Tab and the number keys take them. An epic
-// has every one but Epics and Costs, and a name whose repo isn't set up here has only Costs.
-export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics'], ['costs', 'Costs']];
-const VIEW_KEYS = '←→ or 1–5 view';
+// has every one but Epics and Costs, and a name whose repo isn't set up here has only Costs. Usage is
+// this computer's, the same on every place that has it.
+export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics'], ['costs', 'Costs'], ['usage', 'Usage']];
+const VIEW_KEYS = '←→ or 1–6 view';
 export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
 // An epic's Queue hides the tickets a move steps past, so the order is set on the repo's.
 export const REORDER_IN_REPO = "Reorder on the repo's Queue (esc, then 1). The dates follow.";
@@ -2890,6 +3034,30 @@ function systemOpener(url) {
   p.on('error', () => {});
   p.unref();
 }
+
+// Text onto the clipboard: pbcopy on macOS, else wl-copy or xclip. Throws when none can.
+function systemCopier(text) {
+  const tries = process.platform === 'darwin' ? [['pbcopy', []]] : [['wl-copy', []], ['xclip', ['-selection', 'clipboard']]];
+  for (const [bin, args] of tries) { try { execFileSync(bin, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'] }); return; } catch { /* the next */ } }
+  throw new Error(`no clipboard command (${tries.map(([b]) => b).join(', ')}) worked`);
+}
+
+// `desk-env logins <args>` in the background, so a check that calls each login's CLI, or a rule change
+// that checks first, never holds the screen. done({ code, out, err }).
+const DESK_ENV_MJS = join(dirname(fileURLToPath(import.meta.url)), 'desk-env.mjs');
+function deskEnvLogins(args, done) {
+  const p = spawn(process.execPath, [DESK_ENV_MJS, 'logins', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '', err = '';
+  p.stdout.on('data', (d) => { out += d; });
+  p.stderr.on('data', (d) => { err += d; });
+  p.on('error', (e) => done({ code: 1, out, err: e.message }));
+  p.on('close', (code) => done({ code, out, err }));
+}
+// The account check is rerun this often while Usage is shown.
+export const CHECK_EVERY_MS = 60_000;
+// What each rule means, as the footer says once one is saved.
+const RULE_SAVED = { 'in rotation': 'is in rotation: new workers start on it when it has the most room', standby: 'is on standby: desk uses it only when every login in rotation is at its limit',
+  off: "is off: desk won't start workers on it" };
 
 // Log text can carry a worker's own escape codes; only printable text reaches the screen.
 const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, '');
@@ -2941,7 +3109,7 @@ function step(rows, i, d) {
 // A keys line, each key bold: "↑↓ select · enter open · q quit". One wider than the terminal goes on
 // two, "move" (select, open, view, back, scroll) then "act" (the rest), each breaking between keys
 // rather than losing the last ones.
-const KEY = /^(←→ or 1–5|\+ −|\S+) (.+)$/;
+const KEY = /^(←→ or 1–6|\+ −|\S+) (.+)$/;
 const MOVES_ON = new RegExp(`^(select|open(?! the bill|${Object.values(SUPPLIER_BILL).map((t) => ` ${t}`).join('|')})|view|back|scroll)\\b`);
 function keyLines(s, w) {
   const items = s.split(' · ').map((k) => { const m = KEY.exec(k); return m ? [m[1], m[2]] : [k, '']; });
@@ -2982,7 +3150,7 @@ const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
-  probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh,
+  probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = systemCopier,
 } = {}) {
   let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
@@ -2997,6 +3165,9 @@ export function interactive({
   // `reading`, `held`: an input read is being handled, and the frame it will write when it ends.
   let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, ask = null, screen = null, crumbs = [], done = false, timer = null, probeTimer = null, checkin = false, zoom = 'auto', layout = null;
   let unfold = new Set(), reading = false, held = null;
+  // Usage's account check: `checked` the last one's logins by checkKey, at `checkedAt`; `checking` while
+  // one runs. `saving` while a rule change or removal runs; `undo`, what u puts back.
+  let checked = null, checkedAt = null, checking = false, saving = false, undo = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -3044,6 +3215,13 @@ export function interactive({
     const cmdKeys = `: command · ${esc}q quit`;
     if (view.slug && !r) return { head: ['That repo is no longer set up here.'], rows: [], foot: [], keys: cmdKeys };
     keepTab();
+    if (tab === 'usage' && hasTabs()) {
+      if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
+      const s = usageParts(repos, { now, width: w, checked });
+      const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
+      const copy = x?.check?.state === 'signed out' ? 'y copy the sign-in command · ' : '';
+      return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? `space change rule · x remove · ${copy}` : ''}${cmdKeys}` };
+    }
     // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
     // one repo's own, or none for a repo with no batch.
     const claude = (shown) => (shown ? { usage: usageLines(usageOf(repos, now, shown), { now, solid: !process.env.NO_COLOR }) } : {});
@@ -3207,7 +3385,54 @@ export function interactive({
   function setTab(id) {
     if (!tabOk(id)) { msg = ['cost', 'supplier'].includes(view.kind) ? onlyCosts(view.name) : id === 'costs' ? NO_COSTS_HERE : NO_EPICS_HERE; return; }
     if (view.kind === 'supplier') { if (id !== 'costs') { back(); setTab(id); } return; }
-    tab = id; sel = 0; selId = null; scroll = null; msg = '';
+    tab = id; sel = 0; selId = null; scroll = null; msg = ''; undo = null;
+  }
+
+  // ---- Usage's keys ----
+  const usageTab = () => hasTabs() && tab === 'usage';
+  function checkLogins() {
+    checking = true;
+    loginsWith(['check', '--json'], (r) => {
+      checking = false;
+      checkedAt = clock();
+      try { checked = new Map(JSON.parse(r.out).logins.map((l) => [checkKey(l.tool, l.configDir), l])); } catch { checked = null; }
+      if (!done && usageTab()) draw();
+    });
+  }
+  // A login's rule set, or the login removed, then the footer says what changed and u puts back `then`.
+  function saveLogin(args, said, then) {
+    saving = true;
+    msg = 'Saving…';
+    loginsWith(args, (r) => {
+      saving = false;
+      if (r.code === 0) { undo = then; msg = `${said}${then ? ' · u undo' : ''}`; }
+      else msg = `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^logins: /, '') ?? `desk-env exited ${r.code}`}`;
+      if (!done) draw();
+    });
+  }
+  const savedText = (label, rule) => `${label} ${RULE_SAVED[rule]}. Saved for this computer.`;
+  function usageKey(k, x) {
+    if (saving) { msg = 'Still saving the last change.'; return; }
+    if (k === 'u') {
+      if (!undo) { msg = 'Nothing to undo.'; return; }
+      const u = undo;
+      return saveLogin(['set', u.login.tool, u.login.name, u.rule], savedText(loginLabel(u.login), u.rule), null);
+    }
+    if (!x?.login) return;
+    const l = x.login, label = loginLabel(l);
+    if (k === 'y') {
+      if (x.check?.state !== 'signed out') { msg = `${label} is signed in, so there is no sign-in command to copy.`; return; }
+      const shell = signInShell(l);
+      try { copier(shell); msg = `Copied the sign-in command: ${shell}. Run it in another terminal${l.tool === 'claude' ? ', then /login' : ''}.`; }
+      catch (e) { msg = `Could not copy the sign-in command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
+      return;
+    }
+    const was = l.rule ? { login: l, rule: l.rule } : null;
+    if (k === ' ') {
+      const rule = LOGIN_RULES[(LOGIN_RULES.indexOf(l.rule) + 1) % LOGIN_RULES.length];
+      return saveLogin(['set', l.tool, l.name, rule], savedText(label, rule), was);
+    }
+    if (k === 'x') saveLogin(['remove', l.tool, l.name], `${label} is removed from the rules for this computer. Its folder and sign-in are left as they are.`, was);
   }
 
   // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
@@ -3347,9 +3572,11 @@ export function interactive({
       else if (key.name === 'up' && scroll > 0) scroll -= 1;
       else if (key.name === 'down' && step(rows, sel, 1) == null) scroll = (scroll ?? 0) + 1;
       else { sel = step(rows, sel, key.name === 'up' ? -1 : 1) ?? sel; selId = rows[sel]?.id ?? null; }
-      // A ticket's keys name the PR of its selected blocker, so a new selection there is a new screen.
-      return view.kind === 'ticket' && selId !== was ? draw() : frame();
-    } else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
+      // A ticket's keys name the PR of its selected blocker, and Usage's whether the selected login has a
+      // sign-in command to copy, so a new selection there is a new screen.
+      return (view.kind === 'ticket' || usageTab()) && selId !== was ? draw() : frame();
+    } else if (usageTab() && [' ', 'x', 'u', 'y'].includes(str)) usageKey(str, rows[sel]);
+    else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
     else if (key.name === 'escape') back();
     else if (str === 'q') return finish(0);
     else if (str === ':') { cmd = ''; msg = ''; return frame(); }
