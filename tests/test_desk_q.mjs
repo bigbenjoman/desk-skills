@@ -890,11 +890,13 @@ t('Tab in an epic skips the Epics view', where(Fa), 'desk-q › feat › Smart s
 await Fa.press('3'); await Fa.press(RIGHT); await Fa.press(SS3_RIGHT);
 t('DS-182 AC3 → on By day in an epic stays on By day', `${where(Fa)} | ${Fa.frame().includes(Q.NO_EPICS_HERE)}`, 'desk-q › feat › Smart scheduling, your day | 3 By day | days | false');
 // DS-290 AC4-AC6: Costs are home's only.
-const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs';
+const ALL_TABS = '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs  6 Usage';
 const tabLine = (s) => s.output.buf.split('\x1b[H').at(-1).split('\r\n')[1] ?? '';
 t('DS-290 AC4 an epic\'s tab line dims 5 Costs', `${Fa.frame()[1].startsWith(ALL_TABS)} | ${tabLine(Fa).includes(`${G}5 Costs\x1b[39m`)}`, 'true | true');
 await Fa.press('5');
 t('DS-290 AC5 5 in an epic leaves the view as it is, and says why', `${where(Fa)} | ${Fa.frame().includes(Q.NO_COSTS_HERE)}`, 'desk-q › feat › Smart scheduling, your day | 3 By day | days | true');
+await Fa.press('6');
+t('6 in an epic leaves the view as it is, and says where Usage is', `${where(Fa)} | ${Fa.frame().includes(Q.NO_USAGE_HERE)} | ${tabLine(Fa).includes(`${G}6 Usage\x1b[39m`)}`, 'desk-q › feat › Smart scheduling, your day | 3 By day | days | true | true');
 await Fa.press('\t');
 const tabbed = where(Fa);
 await Fa.press('\x1b[Z');

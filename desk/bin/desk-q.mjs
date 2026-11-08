@@ -3011,8 +3011,8 @@ const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 const PARTIAL_MS = 30;
 const REVERSE = '7';
 // The views every place but a ticket has, in the order Tab and the number keys take them. An epic
-// has every one but Epics and Costs, and a name whose repo isn't set up here has only Costs. Usage is
-// this computer's, the same on every place that has it.
+// has every one but Epics, Costs and Usage, and a name whose repo isn't set up here has only Costs.
+// Usage is this computer's, the same on every place that has it.
 export const VIEWS = [['queue', 'Queue'], ['timeline', 'Timeline'], ['days', 'By day'], ['epics', 'Epics'], ['costs', 'Costs'], ['usage', 'Usage']];
 const VIEW_KEYS = '←→ or 1–6 view';
 export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates follow.';
@@ -3020,6 +3020,7 @@ export const REORDER_HERE = 'Reorder on the Queue view (press 1). The dates foll
 export const REORDER_IN_REPO = "Reorder on the repo's Queue (esc, then 1). The dates follow.";
 export const NO_EPICS_HERE = "An epic has no Epics view: you're already in one.";
 export const NO_COSTS_HERE = "An epic has no Costs view: its repo's is esc, then 5.";
+export const NO_USAGE_HERE = 'An epic has no Usage view: every login is on esc, then 6.';
 export const onlyCosts = (name) => `${name} isn't set up in desk here, so it has only Costs.`;
 
 function jiraUrlFor(slug, key) {
@@ -3174,12 +3175,12 @@ export function interactive({
   // A place's `slug` is its batch row's id: the repo's slug for its standing batch.
   const repoOf = (slug) => repos.find((r) => r.id === slug);
   const hasTabs = () => ['overview', 'repo', 'epic', 'cost', 'supplier'].includes(view.kind);
-  const tabOk = (id) => (view.kind === 'cost' || (view.kind === 'supplier' && !view.slug) ? id === 'costs' : view.kind !== 'epic' || !['epics', 'costs'].includes(id));
+  const tabOk = (id) => (view.kind === 'cost' || (view.kind === 'supplier' && !view.slug) ? id === 'costs' : view.kind !== 'epic' || !['epics', 'costs', 'usage'].includes(id));
   // The supplier screen: Costs on a repo's place or a name's own.
   const bySupplier = () => tab === 'costs' && ['repo', 'cost'].includes(view.kind);
   const costName = () => (view.kind === 'cost' ? view.name : costNameOf(readCosts(costsPath()), repoOf(view.slug)?.slug));
-  // A view the new place lacks gives way to its nearest: Costs to the Queue, Epics to the Timeline.
-  const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' ? 'queue' : 'timeline'; };
+  // A view the new place lacks gives way to its nearest: Costs and Usage to the Queue, Epics to the Timeline.
+  const keepTab = () => { if (!tabOk(tab)) tab = tab === 'costs' || tab === 'usage' ? 'queue' : 'timeline'; };
   const epicFacts = () => { const r = repoOf(view.slug); return r?.q ? forecastOf(r, { now: clock(), checkin }) : null; };
   // The parked note is shown while any ticket in view waits on the user, or c is on.
   const badge = (rs) => (checkin || rs.some((r) => attention(r) > 0) ? parkedBadge(checkin) : '');
@@ -3383,7 +3384,7 @@ export function interactive({
   // A view this place lacks leaves the view as it is and says why. A supplier's screen is Costs: another
   // view is its name's place's.
   function setTab(id) {
-    if (!tabOk(id)) { msg = ['cost', 'supplier'].includes(view.kind) ? onlyCosts(view.name) : id === 'costs' ? NO_COSTS_HERE : NO_EPICS_HERE; return; }
+    if (!tabOk(id)) { msg = ['cost', 'supplier'].includes(view.kind) ? onlyCosts(view.name) : id === 'costs' ? NO_COSTS_HERE : id === 'usage' ? NO_USAGE_HERE : NO_EPICS_HERE; return; }
     if (view.kind === 'supplier') { if (id !== 'costs') { back(); setTab(id); } return; }
     tab = id; sel = 0; selId = null; scroll = null; msg = ''; undo = null;
   }
