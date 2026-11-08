@@ -21,8 +21,8 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
   computer, so the bench's limits live in the profile: `bench-cap-points`, the points of each weekly
   allowance the bench may spend, and `bench-reserve-percent`, the share it leaves for interactive
   work. Read both with `desk-env machine get`.
-  - **Both set**: show them in one line and ask nothing, unless the user says they want to change
-    them; then ask as below.
+  - **Both set**: show them in one line, say they can be changed, and ask nothing unless the user
+    says they want to change them; then ask as below.
   - **Either unset**: ask both in one carousel, the bench cap in points of weekly allowance with
     `10` as the Recommended answer, and the interactive reserve as a percentage with `25`; say that
     unset, the bench runs on those same figures without anyone having chosen them. Store the answers
