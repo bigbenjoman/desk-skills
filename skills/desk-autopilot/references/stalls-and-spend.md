@@ -84,9 +84,9 @@ suite under the test lock, or waiting for it (a `with-lock.sh test|tsc` working 
 it as quiet, "running its suite" or "waiting on the test lock", until it has been held that way for
 30 minutes, and then stops and parks it as wedged, naming the ceiling. A worker at a usage limit (5-hour, weekly
 or any other) is not stalled: the pass reports it as paused, holds every spawn and resume (with
-more than one login, it benches only that login and new work goes to the others), and
-resumes it in its own session once the limit lifts, at its reset or sooner when a probe call
-succeeds (orchestrator-recovery.md). Log growth
+more than one login, it benches only that login, new work goes to the others, and the worker
+carries on on another login as a fresh session), and otherwise resumes it in its own session once
+the limit lifts, at its reset or sooner when a probe call succeeds (orchestrator-recovery.md). Log growth
 alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone
 quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
 in `references/orchestrator-recovery.md`.

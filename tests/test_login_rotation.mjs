@@ -15,7 +15,7 @@ const T = mkdtempSync(join(tmpdir(), 'desk-login-rotation-'));
 const H = join(T, 'home');
 const dirOf = (name) => join(H, '.claude-logins', name);
 for (const k of ['CLAUDE_CONFIG_DIR', 'DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH',
-  'DESK_BATCH', 'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN', 'AUTOPILOT_RERUN', 'AUTOPILOT_BATCH_BUDGET_USD']) delete process.env[k];
+  'DESK_BATCH', 'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN', 'AUTOPILOT_RERUN', 'AUTOPILOT_BATCH_BUDGET_USD', 'AUTOPILOT_START_STAGE', 'AUTOPILOT_TASK']) delete process.env[k];
 Object.assign(process.env, { HOME: H, DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'), DESK_LOCK_DIR: join(T, 'locks'),
   DESK_SUBSCRIPTIONS: join(T, 'subscriptions.md'), DESK_USAGE_DIR: join(T, 'usage') });
 mkdirSync(process.env.DESK_LOCK_DIR);
@@ -61,8 +61,11 @@ writeFileSync(join(bin, 'setup-worktree.sh'), 'mkdir -p "$WT_DIR/$2"; echo "[set
 // A folder listed in LIMITED, as `<folder> <reset epoch seconds | none>`, is at its usage limit: its
 // preflight is refused and its probe rejected.
 const LIMITED = join(T, 'limited');
+// One line per spawn (not preflight): ticket, whether it was given a task, and its start stage.
+const STARTS = join(T, 'starts');
 // One line per call: ticket, session or `preflight`, the login it was given, and whether it resumes.
 writeFileSync(join(bin, 'spawn-worker.sh'), `printf '%s|%s|%s|%s\\n' "$1" "$3" "\${AUTOPILOT_LOGIN_DIR-unset}" "\${AUTOPILOT_RESUME:+resume}" >> "${CALLS}"
+[ "$3" = preflight ] || printf '%s|%s|%s\\n' "$1" "\${AUTOPILOT_TASK:+task}" "\${AUTOPILOT_START_STAGE-}" >> "${STARTS}"
 ld="\${AUTOPILOT_LOGIN_DIR:-${H}/.claude}"
 if [ "$3" = preflight ]; then
   if grep -qF "$ld " "${LIMITED}" 2>/dev/null; then echo "[preflight] usage-limit: the account is at its usage limit"; else echo "[preflight] pass"; fi
@@ -110,7 +113,7 @@ const event = (five, week) => JSON.stringify({ type: 'rate_limit_event', rate_li
 
 // `logins` is [name, rule, five, week]: `default` is ~/.claude, any other a folder under ~/.claude-logins.
 function world(logins, tickets) {
-  for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins')]) rmSync(p, { recursive: true, force: true });
+  for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, STARTS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins')]) rmSync(p, { recursive: true, force: true });
   mkdirSync(join(state, 'logs'), { recursive: true });
   mkdirSync(join(state, 'workers'), { recursive: true });
   mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
@@ -295,7 +298,8 @@ t('AC2 a pass later the benched login is still benched', Object.keys(batchOf().b
 t('AC2 and the refused ticket spawns on the other login', `${row('Y-1').state} ${on('Y-1')}`, 'running b');
 t('AC2 with no preflight on the benched login', calls('Y-1').filter((l) => l.includes('|preflight|') && l.endsWith('|unset|')).length, 1);
 
-// AC1 for a worker: one that ended at the limit on login B benches B, and stays paused there (AC8).
+// AC1 for a worker: one that ended at the limit on login B benches B. With the other login open, it
+// carries on there as a fresh session (the section below).
 const PAUSED = { key: 'K-2', state: 'running', open_questions: 0, session_id: 'sess-2', branch: 'fix/K-2', worktree: join(W, 'wt', 'K-2'), login: { name: 'b', config_dir: dirOf('b') } };
 mkdirSync(join(W, 'wt', 'K-2'), { recursive: true });
 const rejected = `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":${RESET}}}\n`;
@@ -306,7 +310,7 @@ out = pass(env);
 t('AC1 a worker at the limit benches its login', batchOf().benched?.b?.resets_at, RESET);
 t('AC1 the report names the login and the time', out.includes(`login b benched on the 5-hour usage limit until ${resetText(RESET)}`), true);
 t('AC2 new work spawns on the other login, though B has more room', `${row('Y-1').state} ${on('Y-1')}`, 'running default');
-t('AC8 the paused worker stays paused on its own login', `${row('K-2').state} ${row('K-2').login.name} ${calls('K-2').length}`, 'running b 0');
+t('AC8 the stopped worker moves to the other login, preflight and session', `${row('K-2').state} ${row('K-2').login.name} ${calls('K-2').length}`, 'running default 2');
 t('AC2 nothing holds the batch', batchOf().usage_hold ?? null, null);
 
 // AC8: a killed worker of a benched login waits to resume there, and is not moved.
@@ -403,16 +407,138 @@ signOut(dirOf('b'));
 atLimit(dirOf('b'));
 out = pass(env);
 t('a worker paused on a login signed out since holds nothing', `${row('Y-1').state} ${on('Y-1')} ${batchOf().usage_hold ?? null}`, 'running default null');
-t('and it stays paused on its own login', `${row('K-2').state} ${row('K-2').login.name}`, 'running b');
-// The one usable login refused next: the batch holds, and a pass later it still does, with no second preflight.
+t('and it carries on on the usable login (DS-467)', `${row('K-2').state} ${row('K-2').login.name}`, 'running default');
+// The one usable login refused next: the batch holds, and a pass later it still does, with no second
+// preflight. The stopped worker moves first, so its preflight is the one refused.
 env = world([['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10]], { 'K-2': PAUSED, 'Y-1': NEW('Y-1') });
 writeFileSync(join(state, 'logs', 'K-2.log'), rejected);
 signOut(dirOf('b'));
 atLimit(dirOf('b')); atLimit(DEF);
 pass(env);
-t('with the one usable login refused too, the batch holds', `${row('Y-1').state} ${batchOf().usage_hold?.preflight}`, 'triaged Y-1');
+t('with the one usable login refused too, the batch holds', `${row('Y-1').state} ${batchOf().usage_hold?.preflight} ${row('K-2').state} ${row('K-2').login.name}`, 'triaged K-2 running b');
 pass(env);
-t('a pass later it still holds, with no second preflight', `${batchOf().usage_hold != null} ${calls('Y-1').length}`, 'true 1');
+t('a pass later it still holds, with no second preflight', `${batchOf().usage_hold != null} ${calls('K-2').length} ${calls('Y-1').length}`, 'true 1 0');
+
+// ---- a worker stopped at one login's limit carries on on another ---------------------------------
+// K-3 ended its session at login B's limit, at a stage, in a git worktree on its branch.
+const WT3 = join(W, 'wt', 'K-3');
+const STOPPED = (extra = {}) => ({ 'K-3': { key: 'K-3', state: 'running', open_questions: 0, session_id: 'sess-3', branch: 'fix/K-3', worktree: WT3, stage: '4/9',
+  login: { name: 'b', config_dir: dirOf('b') }, ...extra } });
+const brief3 = () => readFileSync(join(state, 'briefings', 'K-3.md'), 'utf8');
+const resumeFile3 = () => join(state, 'resume', 'K-3.json');
+function stopped(logins, extra, { resume = true } = {}) {
+  rmSync(WT3, { recursive: true, force: true });
+  spawnSync('git', ['init', '-q', '-b', 'fix/K-3', WT3], { env: gitEnv });
+  writeFileSync(join(WT3, 'a.txt'), 'one\n');
+  spawnSync('git', ['-C', WT3, 'add', 'a.txt'], { env: gitEnv });
+  spawnSync('git', ['-C', WT3, 'commit', '-q', '-m', 'K-3 first step'], { env: gitEnv });
+  const e = world(logins, STOPPED(extra));
+  writeFileSync(join(state, 'logs', 'K-3.log'), rejected);
+  if (resume) { mkdirSync(join(state, 'resume'), { recursive: true }); writeFileSync(resumeFile3(), JSON.stringify({ ticket: 'K-3', branch: 'fix/K-3' })); }
+  atLimit(dirOf('b'));
+  return e;
+}
+const ROOM = [['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10]];
+const spawnOf3 = () => calls('K-3').filter((l) => !l.includes('|preflight|'));
+
+// AC1: from a round with a resume file, onto the login with room.
+env = stopped(ROOM, { resumes: 1 });
+out = pass(env);
+t('DS-467 AC1 a fresh session starts on the other login', `${row('K-3').state} ${on('K-3')} ${spawnOf3().length}`, 'running default 1');
+t('DS-467 AC1 it is a new session, not a resume of the old one', /^K-3\|(?!sess-3)[^|]+\|unset\|$/.test(spawnOf3()[0]), true);
+t('DS-467 AC1 it starts from the round it was in', String(row('K-3').stage), '4');
+t('DS-467 AC1 its briefing says it moved logins and resumes there', brief3().includes('## Moved logins: this session resumes at Stage 4') && brief3().includes('stopped at the 5-hour usage limit on login b'), true);
+t('DS-467 AC1 the pass report says it moved logins', /K-3 port=.* login=default resumed at Stage 4, where its stopped session was, moved logins from b, at the 5-hour usage limit/.test(out), true);
+t('DS-467 AC1 its login stays benched', Object.keys(batchOf().benched ?? {}).join(), 'b');
+t('DS-467 AC1 and the move is spent', row('K-3').login_move ?? null, null);
+// AC2: the move spends no resume try.
+t('DS-467 AC2 the move is not one of its resume tries', row('K-3').resumes, 1);
+
+// AC3: no resume file, a stage before Stage 3, or no stage at all: Stage 0, saying why.
+for (const [what, extra, opts, why] of [
+  ['with no resume file', {}, { resume: false }, `it left no resume file (${resumeFile3()})`],
+  ['stopped at Stage 2', { stage: '2/9' }, {}, 'it stopped at Stage 2, before Stage 3, the first a session resumes at'],
+  ['before its first recorded stage', { stage: undefined }, {}, 'it stopped before it recorded a stage'],
+]) {
+  env = stopped(ROOM, extra, opts);
+  out = pass(env);
+  t(`DS-467 AC3 ${what}: it moves and starts at Stage 0`, `${row('K-3').state} ${on('K-3')} ${row('K-3').stage}`, 'running default 0/9');
+  t(`DS-467 AC3 ${what}: its briefing says why`, brief3().includes(`AUTOPILOT_STAGE: 0/9 triage (not resumed after moving logins: ${why})`), true);
+  t(`DS-467 AC3 ${what}: so does the report`, out.includes(`from Stage 0 (not resumed after moving logins: ${why})`), true);
+}
+
+// AC4: uncommitted changes stay in the worktree, and the briefing names them.
+env = stopped(ROOM);
+writeFileSync(join(WT3, 'a.txt'), 'one\ntwo\n');
+writeFileSync(join(WT3, 'new.txt'), 'new\n');
+out = pass(env);
+t('DS-467 AC4 the worktree keeps the changes', `${readFileSync(join(WT3, 'a.txt'), 'utf8')}${readFileSync(join(WT3, 'new.txt'), 'utf8')}`, 'one\ntwo\nnew\n');
+t('DS-467 AC4 the briefing says they are there', brief3().includes('### Uncommitted changes in your worktree') && brief3().includes('- ` M a.txt`') && brief3().includes('- `?? new.txt`'), true);
+t('DS-467 AC4 the report says it kept them', out.includes('keeping 2 uncommitted change(s)'), true);
+// Untracked files under .claude/ are setup-worktree.sh's, not the stopped session's work.
+env = stopped(ROOM);
+mkdirSync(join(WT3, '.claude', 'agents'), { recursive: true });
+writeFileSync(join(WT3, '.claude', 'settings.local.json.desk-disabled'), '{}\n');
+writeFileSync(join(WT3, 'new.txt'), 'new\n');
+out = pass(env);
+t('DS-467 AC4 setup\'s .claude files are not named as kept work', `${brief3().includes('.claude')} ${brief3().includes('- `?? new.txt`')} ${out.includes('keeping 1 uncommitted change(s)')}`, 'false true true');
+
+// A fix try with uncommitted edits moves too, and starts its task again rather than at its stage.
+env = stopped(ROOM, { fix: { kind: 'review', try: 1, of: 2, pr: 7, finished: false } });
+writeFileSync(join(WT3, 'a.txt'), 'one\ntwo\n');
+out = pass(env);
+const starts3 = () => (existsSync(STARTS) ? readFileSync(STARTS, 'utf8').trim().split('\n').filter((l) => l.startsWith('K-3|')) : []);
+t('DS-467 a fix try with uncommitted edits is not held as a busy worktree', `${row('K-3').state} ${on('K-3')} ${out.includes('WORKTREE IN USE')}`, 'running default false');
+t('DS-467 a moved fix try is given its task, at no stage', starts3().join(), 'K-3|task|');
+t('DS-467 and its briefing says it starts its task again, naming its changes', brief3().includes('## Moved logins: this session starts its task again') && brief3().includes('- ` M a.txt`'), true);
+
+// AC5: every other usable login benched. It waits, then resumes its own session once B is back.
+env = stopped(ROOM);
+preset({ default: benchRow('default') });
+atLimit(DEF);
+out = pass(env);
+t('DS-467 AC5 with every other login benched it waits on its own', `${row('K-3').state} ${on('K-3')} ${calls('K-3').length} ${row('K-3').login_move ?? null}`, 'running b 0 null');
+t('DS-467 AC5 and is reported paused there', out.includes('K-3 on the 5-hour usage limit until'), true);
+rmSync(LIMITED);
+atLimit(DEF);
+preset({ ...batchOf().benched, b: benchRow('b', Math.round(Date.now() / 1000) - 60) });
+writeFileSync(join(state, 'logs', 'K-3.log'), rejected.replace(String(RESET), String(Math.round(Date.now() / 1000) - 60)));
+out = pass(env);
+t('DS-467 AC5 once B is back it resumes its own session there, as today', calls('K-3').at(-1), `K-3|sess-3|${dirOf('b')}|resume`);
+
+// AC6: the only login with room is on standby.
+env = stopped([['default', 'in rotation', 60, 60], ['b', 'in rotation', 10, 10], ['s', 'standby', 30, 30]]);
+preset({ default: benchRow('default') });
+atLimit(DEF);
+out = pass(env);
+t('DS-467 AC6 it moves to the standby login', `${row('K-3').state} ${on('K-3')} ${spawnOf3().length}`, 'running s 1');
+t('DS-467 AC6 the report says it used standby', /K-3 port=.* login=s \(standby: no login in rotation can take it\) resumed at Stage 4/.test(out), true);
+
+// The login it moves to is refused at the limit too: it goes back to paused on its own login.
+env = stopped(ROOM);
+atLimit(DEF);
+out = pass(env);
+t('DS-467 a move refused on the other login goes back to waiting on its own', `${row('K-3').state} ${on('K-3')} ${spawnOf3().length} ${row('K-3').login_move ?? null}`, 'running b 0 null');
+t('DS-467 and both logins are benched', Object.keys(batchOf().benched ?? {}).sort().join(), 'b,default');
+t('DS-467 and the report says why it did not move', out.includes('K-3: not moved off login b, as login default was refused at the limit too'), true);
+
+// A move left waiting a pass, whose own login is back since: it resumes its own session instead.
+env = stopped(ROOM, { state: 'triaged', login_move: { from: 'b', from_dir: dirOf('b'), stage: '4/9', type: 'five_hour', resets_at: RESET, at: '2026-11-08T00:00:00.000Z' } });
+rmSync(LIMITED);
+out = pass(env);
+t('DS-467 a waiting move whose login is back is dropped', `${row('K-3').login_move ?? null} ${spawnOf3().length}`, 'null 0');
+t('DS-467 and the report says it resumes there', out.includes('K-3: not moved off login b, which is back: it resumes its own session there'), true);
+
+// AC7: one login only. It is resumed exactly as today.
+env = stopped([['default', 'in rotation', 50, 50]], { login: undefined });
+rmSync(LIMITED);
+atLimit(DEF);
+out = pass(env);
+t('DS-467 AC7 one login: it stays paused, as today', `${row('K-3').state} ${calls('K-3').length} ${row('K-3').login_move ?? null}`, 'running 0 null');
+writeFileSync(join(state, 'logs', 'K-3.log'), rejected.replace(String(RESET), String(Math.round(Date.now() / 1000) - 60)));
+rmSync(LIMITED);
+out = pass(env);
+t('DS-467 AC7 one login: once the limit lifts it resumes its own session', calls('K-3').at(-1), 'K-3|sess-3|unset|resume');
 
 // ---- the pass's own model calls: the decider, triage and epic planning ----------------------------
 // Each runs on a login that is not benched, chosen as a worker's is; with every login benched the
