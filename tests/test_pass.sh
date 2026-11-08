@@ -2306,7 +2306,7 @@ check "DS-498 AC1 and the pass logs why" \
   'echo "$out" | grep -qF "undraft: PR #761 (V-1) stays draft: its checks were ended by the runner, not their code, so they are re-run once: \"tests\" exit code 137: the runner ran out of memory and killed it"'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-498 AC3 killed again after its rerun: the person, with the infrastructure fix, and nothing re-run or requeued" \
-  '! grep -q "^run rerun" "$T/gh-calls" && [ "$(field V-1 state)" = "\"done\"" ] && echo "$out" | grep -qF "V-1: DRAFT — PR #761 stays draft: its \"tests\" check was ended by the runner again after desk re-ran it at this head: \"tests\" (exit code 137: the runner ran out of memory and killed it). Give that job a bigger runner, or cap the memory it uses"'
+  '! grep -q "^run rerun" "$T/gh-calls" && [ "$(field V-1 state)" = "\"done\"" ] && echo "$out" | grep -qF "V-1: DRAFT — PR #761 stays draft: its \"tests\" check was ended by the runner after desk re-ran it at this head: \"tests\" (exit code 137: the runner ran out of memory and killed it). Give that job a bigger runner, or cap the memory it uses"'
 fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
 
 # ---- DS-402: a worker that parks only on a red check §4 Check builds names is recorded done, and built

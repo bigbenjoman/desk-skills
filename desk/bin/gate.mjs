@@ -610,25 +610,26 @@ export function failureMessages(repo, jobId) {
   const notes = jobAnnotations(repo, jobId);
   return notes === undefined ? undefined : failureLines(notes);
 }
-// A failed job the runner ended rather than its code: { kind, why }, kind `memory` (exit 137, the kill
-// an out-of-memory runner sends), `killed` (exit 143, or a runner shutdown signal) or `lost` (the runner
-// lost contact, or the job left steps unfinished with none failed and no error line). Null otherwise,
-// and null when the annotations could not be read. notes: the job's annotations; job: its entry in
-// `gh run view --json jobs`, or null.
+// A step of `gh run view --json jobs` that failed, as fix-tries.mjs failedSteps and runnerFault read it.
+const STEP_FAILED = new Set(['failure', 'timed_out']);
+export const stepFailed = (s) => STEP_FAILED.has(String(s?.conclusion ?? '').toLowerCase());
+// Why the runner ended a failed job rather than its code: exit 137 (the kill an out-of-memory runner
+// sends), exit 143 or a runner shutdown signal, or a runner lost (it lost contact, or the job left steps
+// unfinished with none failed and no error line). Null otherwise, and null when the annotations could not
+// be read. notes: the job's annotations; job: its entry in `gh run view --json jobs`, or null.
 const RUNNER_LINES = [
-  [/^Process completed with exit code 137\.?$/, 'memory', 'exit code 137: the runner ran out of memory and killed it'],
-  [/^Process completed with exit code 143\.?$/, 'killed', 'exit code 143: the runner was stopped mid-job'],
-  [/The runner has received a shutdown signal/i, 'killed', 'the runner received a shutdown signal mid-job'],
-  [/lost communication with the server/i, 'lost', 'the runner lost communication with GitHub mid-job'],
+  [/^Process completed with exit code 137\.?$/, 'exit code 137: the runner ran out of memory and killed it'],
+  [/^Process completed with exit code 143\.?$/, 'exit code 143: the runner was stopped mid-job'],
+  [/The runner has received a shutdown signal/i, 'the runner received a shutdown signal mid-job'],
+  [/lost communication with the server/i, 'the runner lost communication with GitHub mid-job'],
 ];
 export function runnerFault(notes, job) {
   if (!Array.isArray(notes)) return null;
   const lines = notes.filter((x) => x?.annotation_level === 'failure' && x.message).map((x) => String(x.message).trim());
-  for (const [re, kind, why] of RUNNER_LINES) if (lines.some((l) => re.test(l))) return { kind, why };
+  for (const [re, why] of RUNNER_LINES) if (lines.some((l) => re.test(l))) return why;
   const steps = Array.isArray(job?.steps) ? job.steps : [];
-  const failed = steps.some((s) => ['failure', 'timed_out'].includes(String(s?.conclusion ?? '').toLowerCase()));
   const open = steps.some((s) => String(s?.status ?? '').toLowerCase() !== 'completed' || !s?.conclusion);
-  if (steps.length && open && !failed && !failureLines(notes).length) return { kind: 'lost', why: 'the runner was lost: steps were left unfinished with no error line' };
+  if (steps.length && open && !steps.some(stepFailed) && !failureLines(notes).length) return 'the runner was lost: steps were left unfinished with no error line';
   return null;
 }
 export function failureMessage(repo, jobId) {

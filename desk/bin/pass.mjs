@@ -2621,9 +2621,11 @@ const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
 const viewRun = (id) => { try { return clearsRead.run(id); } catch { return null; } };
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
 // The driver's rerun record for PR n at head, as undraftCall and fixCall read it: the reruns tried per
-// check, the runs the pass cancelled for a check stuck pending, and whether the last rerun has had its cooldown.
+// check and those GitHub accepted, the runs the pass cancelled for a check stuck pending, and whether the
+// last rerun has had its cooldown.
 const driverReruns = (n, head) => ({
   reruns: (name) => driverLines(`reruns-${n}-${head}`).filter((l) => l === name).length,
+  rerunsOk: (name) => driverLines(`reruns-ok-${n}-${head}`).filter((l) => l === name).length,
   cancels: (name) => driverLines(`cancels-${n}-${head}`).filter((l) => l === name).length,
   cooledDown: Date.now() / 1000 - (Number(driverLines(`cooldown-${n}`)[0]) || 0) >= RERUN_COOLDOWN_S,
 });
@@ -2776,7 +2778,7 @@ const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run
 const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
 // A run's status, start and jobs, for a draft's check stuck pending (undraft.mjs stuckCall); null when unread.
 const runOf = (id) => cached(`run:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,startedAt,jobs']); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } });
-// A failed check the runner killed or lost rather than its code (gate.mjs runnerFault), from its job's
+// Why the runner killed or lost a red check rather than its code (gate.mjs runnerFault), from its job's
 // annotations and steps; null when either cannot be read.
 const faultOf = (f) => {
   if (!f.runId) return null;

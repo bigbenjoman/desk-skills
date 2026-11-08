@@ -124,14 +124,14 @@ const LOGS = {
   code: { notes: [note('src/app.ts(3,7): error TS2322: Type \'string\' is not assignable to type \'number\'.'), note('Process completed with exit code 2.')], job: { name: 'tests', steps: [setUp, step('Type-check', 'completed', 'failure'), step('Post', 'completed', 'skipped')] } },
   exit1: { notes: [note('Process completed with exit code 1.')], job: { name: 'tests', steps: [setUp, step('Tests', 'completed', 'failure')] } },
 };
-const kindOf = (k) => runnerFault(LOGS[k].notes, LOGS[k].job)?.kind ?? null;
-t('DS-498 AC1 exit 137 is the runner out of memory', kindOf('oom'), 'memory');
-t('DS-498 AC1 exit 143 is the runner stopping it', kindOf('term'), 'killed');
-t('DS-498 AC1 a runner shutdown signal is the runner stopping it', kindOf('shutdown'), 'killed');
-t('DS-498 AC2 a hosted runner that lost communication is a lost runner', kindOf('hosted'), 'lost');
-t('DS-498 AC2 steps left unfinished with none failed and no error line is a lost runner', kindOf('lost'), 'lost');
-t('DS-498 a type error is the code\'s, not the runner\'s', kindOf('code'), null);
-t('DS-498 a bare exit 1 is the code\'s, not the runner\'s', kindOf('exit1'), null);
+const whyOf = (k) => runnerFault(LOGS[k].notes, LOGS[k].job);
+t('DS-498 AC1 exit 137 is the runner out of memory', whyOf('oom'), 'exit code 137: the runner ran out of memory and killed it');
+t('DS-498 AC1 exit 143 is the runner stopping it', whyOf('term'), 'exit code 143: the runner was stopped mid-job');
+t('DS-498 AC1 a runner shutdown signal is the runner stopping it', whyOf('shutdown'), 'the runner received a shutdown signal mid-job');
+t('DS-498 AC2 a hosted runner that lost communication is a lost runner', whyOf('hosted'), 'the runner lost communication with GitHub mid-job');
+t('DS-498 AC2 steps left unfinished with none failed and no error line is a lost runner', whyOf('lost'), 'the runner was lost: steps were left unfinished with no error line');
+t('DS-498 a type error is the code\'s, not the runner\'s', whyOf('code'), null);
+t('DS-498 a bare exit 1 is the code\'s, not the runner\'s', whyOf('exit1'), null);
 t('DS-498 unfinished steps beside an error line are not a lost runner', runnerFault([note('boom: assertion failed')], LOGS.lost.job), null);
 t('DS-498 annotations that could not be read classify nothing', runnerFault(undefined, LOGS.lost.job), null);
 const killedPr = (k, more = {}) => rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 21 }], { fault: () => runnerFault(LOGS[k].notes, LOGS[k].job), ...more });
@@ -145,9 +145,20 @@ t('DS-498 AC1 within the last rerun\'s cooldown it waits', killedPr('oom', { coo
 t('DS-498 a code error still goes to a fix worker', killedPr('code')?.call, 'checks');
 t('DS-498 so does a runner fault beside a code error', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'failure', runId: 21 }, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }], { fault: (f) => (f.name === 'tests' ? runnerFault(LOGS.oom.notes, LOGS.oom.job) : null) })?.call, 'checks');
 const killedAgain = killedPr('oom', { reruns: () => 1 });
-t('DS-498 AC3 killed again after its one rerun: the person\'s, never a fix worker\'s', `${killedAgain?.call} | ${killedAgain?.why}`, 'person | its "tests" check was ended by the runner again after desk re-ran it at this head: "tests" (exit code 137: the runner ran out of memory and killed it)');
+t('DS-498 AC3 killed again after its one rerun: the person\'s, never a fix worker\'s', `${killedAgain?.call} | ${killedAgain?.why}`, 'person | its "tests" check was ended by the runner after desk re-ran it at this head: "tests" (exit code 137: the runner ran out of memory and killed it)');
 t('DS-498 AC3 with the infrastructure fix, not a branch fix', killedAgain?.action, 'give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit), then re-run it on #701');
 t('DS-498 AC3 a rerun that then fails on its code goes to a fix worker', killedPr('code', { reruns: () => 1 })?.call, 'checks');
+// Only a rerun GitHub accepted spends the one rerun: a refused one is tried again, up to RERUNS_MAX.
+t('DS-498 AC1 a rerun GitHub refused is tried again', killedPr('oom', { reruns: () => 1, rerunsOk: () => 0 })?.call, 'rerun');
+t('DS-498 AC1 one GitHub accepted is spent', killedPr('oom', { reruns: () => 1, rerunsOk: () => 1 })?.call, 'person');
+const allRefused = killedPr('oom', { reruns: () => 2, rerunsOk: () => 0 });
+t('DS-498 AC3 every rerun refused: the person\'s, never a fix worker\'s', `${allRefused?.call} | ${allRefused?.why}`, 'person | its "tests" check was ended by the runner, and GitHub refused desk\'s 2 reruns of it at this head: "tests" (exit code 137: the runner ran out of memory and killed it)');
+// A runner shutdown GitHub reports as cancelled is the runner's too, not a cancelled check's two reruns.
+const shutdownPr = (more = {}) => rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled', runId: 21 }], { fault: () => runnerFault(LOGS.shutdown.notes, LOGS.shutdown.job), ...more });
+t('DS-498 AC1 a cancelled check with a shutdown signal is re-run once', `${shutdownPr()?.call} ${/ended by the runner/.test(shutdownPr()?.why ?? '')}`, 'rerun true');
+t('DS-498 AC3 and once that rerun ran, the person\'s, not a fix worker\'s', shutdownPr({ reruns: () => 1 })?.call, 'person');
+t('DS-498 AC4 with ci-rerun not yes it says reruns are not granted', /desk is not granted a rerun$/.test(shutdownPr({ rerun: 'no' })?.why ?? ''), true);
+t('DS-498 a plain cancelled check is still re-run twice', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'cancelled', runId: 21 }], { fault: () => null, reruns: () => 1 })?.call, 'rerun');
 for (const rerun of ['ask', 'no', undefined]) {
   const c = killedPr('lost', { rerun });
   t(`DS-498 AC4 ci-rerun ${rerun}: no rerun, and it says reruns are not granted`, `${c?.call} | ${c?.why}`, `person | its "tests" check was ended by the runner, not its code: "tests" (the runner was lost: steps were left unfinished with no error line); config §3 ci-rerun is "${rerun ?? 'no'}", so desk is not granted a rerun`);

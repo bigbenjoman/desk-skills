@@ -342,13 +342,15 @@ export function undraftComment(verdict, head, clean, carried = null, range = nul
   return `Out of draft: the ${what} posted on this head (${short(head)}) is clean under §4 Clean review verdict (\`${clean}\`).\n\n> \`${line}\``;
 }
 
-// A red gate whose every failing check never tested the code: cancelled, timed out, or failed because
-// the runner killed or lost it (cfg.fault). A `rerun` call while §3 ci-rerun is yes and a rerun is left
-// at this head (RERUNS_MAX for a cancelled or timed-out check, RUNNER_RERUNS for one the runner ended),
-// `wait` while other checks still run or through the last rerun's cooldown, else null (a check that
-// failed, or no rerun left, is not green as ever, and its why says how many reruns were spent). A check
-// the runner ended is the person's once its rerun is spent or with ci-rerun not yes, since no change on
-// its branch clears it. A rerun call carries the gate as rerun.sh reads it.
+// A red gate whose every failing check never tested the code: failed or cancelled because the runner
+// killed or lost it (cfg.fault, read first, whatever the conclusion), or else cancelled or timed out. A
+// `rerun` call while §3 ci-rerun is yes and a rerun is left at this head (RERUNS_MAX tried for a cancelled
+// or timed-out check; RUNNER_RERUNS run for one the runner ended, counting only reruns GitHub accepted,
+// cfg.rerunsOk), `wait` while other checks still run or through the last rerun's cooldown, else null (a
+// check that failed, or no rerun left, is not green as ever, and its why says how many reruns were spent).
+// A check the runner ended is the person's once its rerun ran, once RERUNS_MAX were tried and refused, or
+// with ci-rerun not yes, since no change on its branch clears it. A rerun call carries the gate as
+// rerun.sh reads it.
 const INTERRUPTED = new Set(['cancelled', 'timed_out']);
 export const RUNNER_RERUNS = 1;
 export const RUNNER_FIX = 'give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit)';
@@ -357,27 +359,30 @@ function rerunCall(gate, cfg, n) {
   if (!failing.length) return null;
   const faults = new Map();
   for (const f of failing) {
-    if (INTERRUPTED.has(f.conclusion)) continue;
-    const x = cfg.fault?.(f) ?? null;
-    if (!x) return null;
-    faults.set(f.name, x);
+    const why = cfg.fault?.(f) ?? null;
+    if (why) faults.set(f.name, why);
+    else if (!INTERRUPTED.has(f.conclusion)) return null;
   }
   const ended = failing.filter((f) => faults.has(f.name));
-  const endedWhat = ended.map((f) => `"${f.name}" (${faults.get(f.name).why})`).join('; ');
+  const endedWhat = ended.map((f) => `"${f.name}" (${faults.get(f.name)})`).join('; ');
   const endedNames = ended.map((f) => `"${f.name}"`).join(', ');
   if (cfg.rerun !== 'yes') {
     return ended.length ? { call: 'person', why: `its ${endedNames} check was ended by the runner, not its code: ${endedWhat}; config §3 ci-rerun is "${cfg.rerun ?? 'no'}", so desk is not granted a rerun`, action: `re-run it on #${n}, and if it fails the same way, ${RUNNER_FIX}` } : null;
   }
   const tried = (f) => cfg.reruns?.(f.name) ?? 0;
-  if (ended.some((f) => tried(f) >= RUNNER_RERUNS)) {
-    return { call: 'person', why: `its ${endedNames} check was ended by the runner again after desk re-ran it at this head: ${endedWhat}`, action: `${RUNNER_FIX}, then re-run it on #${n}` };
+  const ran = (f) => (cfg.rerunsOk ?? cfg.reruns)?.(f.name) ?? 0;
+  if (ended.some((f) => ran(f) >= RUNNER_RERUNS)) {
+    return { call: 'person', why: `its ${endedNames} check was ended by the runner after desk re-ran it at this head: ${endedWhat}`, action: `${RUNNER_FIX}, then re-run it on #${n}` };
+  }
+  if (ended.some((f) => tried(f) >= RERUNS_MAX)) {
+    return { call: 'person', why: `its ${endedNames} check was ended by the runner, and GitHub refused desk's ${RERUNS_MAX} reruns of it at this head: ${endedWhat}`, action: `re-run it on #${n}, and if it fails the same way, ${RUNNER_FIX}` };
   }
   if (failing.some((f) => tried(f) >= RERUNS_MAX)) return null;
   const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
   if (!runs.length) return null;
   const how = ended.length ? 'ended by the runner' : 'cancelled or timed out';
   if (gate.pending.length) return { call: 'wait', why: `checks still running (${gate.pending.join(', ')}) beside ${ended.length ? 'ones ended by the runner' : 'cancelled or timed-out ones'}, re-run once they finish` };
-  const what = failing.map((f) => (faults.has(f.name) ? `"${f.name}" ${faults.get(f.name).why}` : `"${f.name}" ${f.conclusion}`)).join('; ');
+  const what = failing.map((f) => (faults.has(f.name) ? `"${f.name}" ${faults.get(f.name)}` : `"${f.name}" ${f.conclusion}`)).join('; ');
   if (cfg.cooledDown === false) return { call: 'wait', why: `checks re-run after they were ${how} (${what}), waiting out the rerun's cooldown` };
   return {
     call: 'rerun', why: ended.length ? `its checks were ended by the runner, not their code, so they are re-run once: ${what}` : `its checks were cancelled or timed out, so they are re-run: ${what}`, runs,
@@ -601,8 +606,8 @@ export function personHold(t, n, redrafts = []) {
 // pr-conflict-unreviewed and -reviewed), untriggered(base, head, branch) -> gate.mjs untriggeredChecks's map
 // for a required check that never reported, stale(base, head, branch, baseHead) -> staleTriggers's
 // { behind, reopen } for one the pass's base sync or reopen starts, runOf(runId), cancels(name) and now
-// for a check stuck pending (stuckCall), fault(check) -> gate.mjs runnerFault's { kind, why } for a
-// failed check the runner killed or lost, or null }.
+// for a check stuck pending (stuckCall), fault(check) -> gate.mjs runnerFault's why for a red check the
+// runner killed or lost, or null, and rerunsOk(name), the reruns GitHub accepted at this head }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;

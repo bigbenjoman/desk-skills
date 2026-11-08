@@ -200,11 +200,12 @@ function draftPlain(r, n, u) {
     if (what) return `${n} is a draft, and its code review found ${what}, ${unsent}. Fix ${it} on its branch and post a fresh review; the next pass then takes it out of draft.`;
   }
   // A check the runner ended (undraft.mjs rerunCall): no change on its branch clears it.
-  const ended = u?.call === 'person' && /^its (.+?) check was ended by the runner[^:]*: (.+?)(?:; config §3 ci-rerun is "([^"]*)", so desk is not granted a rerun)?$/.exec(why);
+  const ended = u?.call === 'person' && /^its (.+?) check was ended by the runner([^:]*): (.+?)(?:; config §3 ci-rerun is "([^"]*)", so desk is not granted a rerun)?$/.exec(why);
   if (ended) {
-    const lead = `${n} is a draft, and its ${ended[1]} check was ended by the runner, not by its code: ${one(ended[2])}`;
-    if (ended[3] != null) return `${lead}. Desk is not granted reruns (config §3 ci-rerun is "${ended[3]}"), so re-run it yourself, and if it fails the same way, ${RUNNER_FIX}; the next pass then picks it up.`;
-    return `${lead}, again after desk re-ran it once. Nothing on its branch fixes that: ${RUNNER_FIX}, then re-run it; the next pass then picks it up.`;
+    const lead = `${n} is a draft, and its ${ended[1]} check was ended by the runner, not by its code: ${one(ended[3])}`;
+    if (ended[4] != null) return `${lead}. Desk is not granted reruns (config §3 ci-rerun is "${ended[4]}"), so re-run it yourself, and if it fails the same way, ${RUNNER_FIX}; the next pass then picks it up.`;
+    if (/refused/.test(ended[2])) return `${lead}. GitHub refused desk's reruns of it, so re-run it yourself, and if it fails the same way, ${RUNNER_FIX}; the next pass then picks it up.`;
+    return `${lead}, after desk re-ran it once. Nothing on its branch fixes that: ${RUNNER_FIX}, then re-run it; the next pass then picks it up.`;
   }
   if (/Clean review verdict is not set/.test(why)) return `${n} is a draft, and desk can not read its code review because §4 Clean review verdict is not set. Set it with /desk-setup; the next pass then reads the review.`;
   if (/clean and green/.test(why)) return `${n} is a draft with a clean review and green checks. Undraft it; ${thenMerge(r)}.`;

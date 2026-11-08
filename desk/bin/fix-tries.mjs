@@ -25,7 +25,7 @@
 // A check §4 Checks workers can't fix or §4 Check builds names, or one failing at a step §4 Pre-merge
 // steps names, is never sent to a worker: on its own it is stuck with what clears it, and beside a
 // check a worker can fix it is named in the brief as not theirs.
-import { evaluateGate, stateFailing, approvalFiles, staleVerdict } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed } from './gate.mjs';
 
 export const FIX_TRIES_MAX = 2;
 // merge-driver.sh's own cap and gap: reruns per check per head, and the seconds between them.
@@ -58,11 +58,10 @@ const fixedAt = (done, head) => done.some((x) => x.head === head && !OWN_HEAD.ha
 
 // The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
 // jobs`. A payload of any other shape names none.
-const STEP_FAILED = new Set(['failure', 'timed_out']);
 export function failedSteps(view, check) {
   const job = (Array.isArray(view?.jobs) ? view.jobs : []).find((j) => j?.name === check);
   if (!Array.isArray(job?.steps)) return [];
-  return job.steps.filter((s) => typeof s?.name === 'string' && STEP_FAILED.has(String(s.conclusion ?? '').toLowerCase())).map((s) => s.name);
+  return job.steps.filter((s) => typeof s?.name === 'string' && stepFailed(s)).map((s) => s.name);
 }
 // A failing check's failed steps, by ctx.steps(check) where the pass reads them from its run.
 const stepsOf = (f, ctx) => (f.runId && ctx.steps ? ctx.steps(f) ?? [] : []);
