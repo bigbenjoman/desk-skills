@@ -146,6 +146,7 @@ t('a large diff is cut to fit', big.truncated && Buffer.byteLength(big.prompt) <
 t('the cut is marked', big.prompt.endsWith('[diff cut here to fit]'), true);
 t('a small diff is whole', promptFrom(inputs).truncated, false);
 t('no checks is not a pass', checkCell({ written: 2, checked: 0, passed: 0, noChecks: 2, unfinished: 0 }), NO_CHECKS);
+t('checks that never finished are not read as none configured', checkCell({ written: 2, checked: 0, passed: 0, noChecks: 1, unfinished: 1 }), `1 did not finish (1 ${NO_CHECKS})`);
 t('a mix shows both', checkCell({ written: 3, checked: 2, passed: 1, noChecks: 1, unfinished: 0 }), `1 of 2 passed (1 ${NO_CHECKS})`);
 
 // AC1, AC2: one task, three sides, checks per side.

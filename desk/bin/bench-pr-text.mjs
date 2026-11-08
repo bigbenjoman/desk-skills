@@ -27,7 +27,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { armEnv, armOrder, cmdItems, loadBenchTasks, makeCheckout, parseArgs as benchArgs, printBench, readRepo, runClaude, shq, spendGuard } from './bench.mjs';
-import { mergedDiff } from './bench-arm1.mjs';
+import { mergedDiff, noMerge } from './bench-arm1.mjs';
 import { testFiles } from './bench-build.mjs';
 import { allInput, loadRun, meanScore, num, parseArgs as reportArgs, readJoined, NOT_SCORED } from './bench-report.mjs';
 import { runItem } from './baseline.mjs';
@@ -131,11 +131,11 @@ export function fillTemplate(inputs) {
 
 // Runs each check item on one description in `wt`, writing check-output.log in `dir`.
 //   -> { status: 'passed' | 'failed' | 'did not finish', runs: [{ cmd, code }] }
-export function checkDescription(repo, items, wt, file, dir, timeout = CHECK_TIMEOUT_MS) {
+export function checkDescription(repo, items, wt, file, dir) {
   const runs = [], log = [];
   let status = 'passed';
   for (const { dir: d, cmd } of items) {
-    const r = runItem({ bin: HERE, root: wt, dir: d, cmd: `${cmd} ${shq(file)}`, lock: 'nolock', prefix: repo.prefix, env: armEnv(), timeout });
+    const r = runItem({ bin: HERE, root: wt, dir: d, cmd: `${cmd} ${shq(file)}`, lock: 'nolock', prefix: repo.prefix, env: armEnv(), timeout: CHECK_TIMEOUT_MS });
     log.push(`$ ${cmd} <description>\n${r.out}\nexit ${r.code}\n`);
     runs.push({ cmd, code: r.stopped ? null : r.code });
     if (r.stopped) { status = 'did not finish'; break; }
@@ -164,8 +164,6 @@ const key = (task, side, prompt, items) => createHash('sha256').update(JSON.stri
 function stored(file) {
   try { const r = JSON.parse(readFileSync(file, 'utf8')); return r.status === 'written' ? r : null; } catch { return null; }
 }
-
-const noMerge = (t) => typeof t.merge !== 'string' || !/^[0-9a-f]{40}$/.test(t.merge);
 
 // A row absent or unset (desk-env's exit 3) reads as `none` does: no checks configured.
 function prChecks(repo) {
@@ -287,7 +285,8 @@ export function sideFigures(tasks, side, scores) {
 // The check cell. "no checks configured" is never a pass or a fail.
 export function checkCell(f) {
   if (!f.written) return 'no description written';
-  if (!f.checked) return f.noChecks ? NO_CHECKS : `${f.unfinished} did not finish`;
+  if (!f.checked && !f.unfinished) return NO_CHECKS;
+  if (!f.checked) return `${f.unfinished} did not finish${f.noChecks ? ` (${f.noChecks} ${NO_CHECKS})` : ''}`;
   const more = [f.noChecks && `${f.noChecks} ${NO_CHECKS}`, f.unfinished && `${f.unfinished} did not finish`].filter(Boolean);
   return `${f.passed} of ${f.checked} passed${more.length ? ` (${more.join(', ')})` : ''}`;
 }
