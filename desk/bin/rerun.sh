@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CI reruns, one implementation for both callers: merge-driver.sh sources it for a ready PR, and
-# pass.mjs runs it for a draft whose red checks were all cancelled or timed out (undraft.mjs):
+# pass.mjs runs it for a draft whose red checks were all cancelled, timed out or ended by the runner (undraft.mjs):
 #   RERUN_PERM=<§3 ci-rerun> rerun.sh <driver state dir> <owner/repo> <n> <sha>   with the gate JSON on stdin,
 #   { "gate": { "pending": [...], "failedRuns": [...], "failedJobs": [{ runId, jobId, name, why? }],
 #               "failing": [{ name, runId }], "reasons": [...], "stateFailing": [{ name, kind, why, rerunWith? }] } }
