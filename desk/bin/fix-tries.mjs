@@ -383,7 +383,7 @@ export const personCall = (f) => f?.kind === 'gaps' || f?.kind === 'instruction'
 // { sev, text }; [] for a reason that is not a review's, or quotes none.
 export function stuckFindings(why) {
   const m = /^review not clean\b.*? — (?:still open after the fix try that quoted it: )?(.+)$/.exec(String(why ?? ''));
-  return (m?.[1].split(/; (?=P[0-2]: )/) ?? []).map((x) => /^(P[0-2]): (.+)$/.exec(x)).filter(Boolean).map(([, sev, text]) => ({ sev, text }));
+  return (m?.[1].split(/; (?=P[0-2]: |PERSON['’]S CALL)/) ?? []).map((x) => /^(P[0-2]): (.+)$/.exec(x)).filter(Boolean).map(([, sev, text]) => ({ sev, text }));
 }
 // A review stuck reason's findings as the review fix the person sends back for one more try
 // (desk-needs-you `fix`), marked `person`: not one of the pass's tries, so the review of its new head

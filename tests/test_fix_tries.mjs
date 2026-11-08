@@ -281,6 +281,9 @@ const findingAndPerson = gapFix(`${p1Body}\n\n### Requirement gaps\n${PERSON_GAP
 t('DS-513 AC3 a P1 beside the person\'s gap gets its try, the gap carried', `${findingAndPerson?.fix.what} | ${findingAndPerson?.fix.findings.length} | ${findingAndPerson?.fix.gaps} | ${findingAndPerson?.fix.person_gaps?.length}`, 'review not clean: 1 P1 | 1 | undefined | 1');
 t('DS-513 AC3 out of tries, the stuck reason names the person\'s gap too', gapFix(personBody(2, PERSON_GAP, CODE_GAP), 2, tried)?.why.includes(PERSON_GAP.slice(2)), true);
 t('DS-513 AC3 a code gap that survived its try goes to the person with the person\'s gap', gapFix(personBody(2, PERSON_GAP, CODE_GAP), 2, [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [CODE_GAP.slice(2)] }])?.why.includes(PERSON_GAP.slice(2)), true);
+const stuckBeside = gapFix(`${p1Body}\n\n### Requirement gaps\n${PERSON_GAP}`, 1, tried, { p0: '0', p1: '1' });
+const sentBack = personReviewFix(tk(), { pr: 702, head: HEAD, why: stuckBeside?.why });
+t('DS-513 AC3 a try the person sends for the finding is not aimed at the person\'s gap', `${stuckBeside?.why.includes(PERSON_GAP.slice(2))} ${sentBack?.findings.length} ${sentBack?.findings.some((x) => x.text.includes('PERSON'))}`, 'true 1 false');
 t('DS-513 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: onlyPerson }), null);
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));
 
