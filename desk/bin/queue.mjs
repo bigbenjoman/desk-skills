@@ -19,6 +19,7 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, HOME as E_HOME } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
+import { followOnPending } from './harvest.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches } from './batches.mjs';
 
@@ -485,6 +486,11 @@ switch (cmd) {
     const fresh = empty();
     fresh.batch = name ?? new Date().toISOString().slice(0, 16);
     if (standing) fresh.supervised = true;
+    // A merged ticket whose follow-on steps the person has not run yet (needs-you lists them from the
+    // queue) moves into the new batch as it is, so replacing the old one never drops them from the list.
+    let prev = null;
+    try { prev = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { prev = null; }
+    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t)));
     save(fresh);
     // Batch notes record what workers learnt about *this* configuration. Carrying them
     // across batches propagates claims that a config change has since made false.

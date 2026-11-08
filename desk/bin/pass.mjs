@@ -343,17 +343,24 @@ function logDecisions(t, log, pr) {
   if (entries.length) appendDecisions(entries, STATE);
 }
 
-// A worker's park against the "not now" register: the inputs the question depends on, from the
-// `AUTOPILOT_PARK_INPUTS: {json}` after its last park (none is {}), and lookup()'s verdict on them.
-// A lease push it clears on (`cond`) adds its SHA as `lease` where they name none (withLeaseInput).
-function againstRegister(t, question, log, cond) {
+// The value of marker `mark` printed after a worker's last park, read quietly, or null: none since that
+// park, or no log. Each caller reports one that does not read.
+function afterLastPark(log, mark) {
   let raw = null;
   try {
     for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
       if (k === 'AUTOPILOT_PARK') raw = null;
-      else if (k === 'AUTOPILOT_PARK_INPUTS') raw = v;
+      else if (k === mark) raw = v;
     }
-  } catch { /* no log, no inputs */ }
+  } catch { /* no log, no marker */ }
+  return raw;
+}
+
+// A worker's park against the "not now" register: the inputs the question depends on, from the
+// `AUTOPILOT_PARK_INPUTS: {json}` after its last park (none is {}), and lookup()'s verdict on them.
+// A lease push it clears on (`cond`) adds its SHA as `lease` where they name none (withLeaseInput).
+function againstRegister(t, question, log, cond) {
+  const raw = afterLastPark(log, 'AUTOPILOT_PARK_INPUTS');
   const p = parseInputs(raw);
   // Logged, never waiting on the person: nobody can clear it, and the park itself is asked as usual.
   if (!p.ok) report.inputs.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
@@ -364,13 +371,7 @@ function againstRegister(t, question, log, cond) {
 // What clears a worker's park, from the `AUTOPILOT_PARK_CLEARS_WHEN:` after its last park (clears-when.mjs).
 // None given, or one that does not read, is none: the park waits for a person.
 function clearsWhenOf(t, log) {
-  let raw = null;
-  try {
-    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
-      if (k === 'AUTOPILOT_PARK') raw = null;
-      else if (k === 'AUTOPILOT_PARK_CLEARS_WHEN') raw = v;
-    }
-  } catch { /* no log, no condition */ }
+  const raw = afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN');
   const p = parseClearsWhen(raw);
   if (!p.ok) report.clears.push(`${t.key}: unreadable clears-when (${p.why}), recorded as none`);
   return p.ok ? p.cond : { kind: 'none' };
@@ -379,13 +380,7 @@ function clearsWhenOf(t, log) {
 // The call a worker's park recommends, from the `AUTOPILOT_PARK_RECOMMENDS:` after its last park
 // (recoveries.mjs), or null. One that does not read is logged and taken as none: the park is asked.
 function recommendsOf(t, question, log) {
-  let raw = null;
-  try {
-    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
-      if (k === 'AUTOPILOT_PARK') raw = null;
-      else if (k === RECOMMENDS_MARK) raw = v;
-    }
-  } catch { /* no log, no recommendation */ }
+  const raw = afterLastPark(log, RECOMMENDS_MARK);
   if (raw == null) return null;
   const r = parkRecommends(raw, question);
   if (!r.ok) report.inputs.push(`${t.key}: unreadable park recommendation (${r.why}), read as none: ${raw}`);
@@ -522,20 +517,17 @@ function buildParkOf(t, question) {
   return b ? { ...b, pr: pr.number, head: pr.headRefOid } : null;
 }
 
-// A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when, read
-// quietly here (clearsWhenOf reports an unreadable one once the park is recorded), is its own open PR
-// merging, and that PR is green with a clean review at its head. Null when it is not, or unread.
-function mergeParkOf(t, log) {
-  if (!t.branch || isSpine(t) || needsSession(t)) return null;
-  let raw = null;
-  try {
-    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
-      if (k === 'AUTOPILOT_PARK') raw = null;
-      else if (k === 'AUTOPILOT_PARK_CLEARS_WHEN') raw = v;
-    }
-  } catch { /* no log, no condition */ }
-  const cond = parseClearsWhen(raw);
-  if (!cond.ok || cond.cond.kind !== 'pr-merged') return null;
+// §1 GitHub handle, whose desk-review verdicts and reviews count as the user's own, or null unread.
+const conflictHandle = (() => { try { return E.githubHandle(); } catch { return null; } })();
+// A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when `cond` is
+// its own open PR merging, and that PR is green with a clean review at its head. Null when it is not,
+// or unread. `grantedOnly` reads nothing from GitHub unless desk may undraft and merge it.
+function mergeParkOf(t, cond, { grantedOnly = false } = {}) {
+  if (!t.branch || isSpine(t) || needsSession(t) || cond?.kind !== 'pr-merged') return null;
+  const perm = E.permission('pr-ready');
+  const ready = perm === 'ask' && queue().approved?.undraft === true ? 'yes' : perm;
+  const merge = E.mergeGrant(queue());
+  if (grantedOnly && (ready !== 'yes' || !merge.by)) return null;
   const readPr = () => {
     let pr = null;
     try { pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'open', '--json', 'number,headRefOid,statusCheckRollup', '-q', '.[0]'], { tolerant: true }) || 'null'); } catch { pr = null; }
@@ -543,18 +535,14 @@ function mergeParkOf(t, log) {
   };
   // Only a verdict posted at the head counts here; the undraft step reads it again, with its carries.
   const verdict = (pr) => {
-    if (!localReviewSet(E.configValue('local-review'))) return null;
-    const [owner, name] = GH_REPO.split('/');
-    const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${pr.number}`, '-f', `query=${THREADS_QUERY}`]);
-    if (!r.ok) return null;
-    let handle = null;
-    try { handle = E.githubHandle(); } catch { return null; }
-    try { return readVerdict(JSON.parse(r.out), { handle, clean: E.configValue('clean-verdict') }); } catch { return null; }
+    if (!localReviewSet(E.configValue('local-review')) || !conflictHandle) return null;
+    const fb = readFeedback(pr.number);
+    return fb ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict') }) : null;
   };
-  const perm = E.permission('pr-ready');
-  const ready = perm === 'ask' && queue().approved?.undraft === true ? 'yes' : perm;
-  return mergePark(cond.cond, readPr, { ...gateLists(), verdict, ready, merge: E.mergeGrant(queue()) });
+  return mergePark(cond, readPr, { ...gateLists(), verdict, ready, merge });
 }
+// A park's own words, kept as the one follow-on step a merge-only park leaves for after its merge.
+const parkFollowOn = (park) => `follow_on=${JSON.stringify([{ step: park.trim().slice(0, FOLLOW_ON_MAX), row: null }])}`;
 
 // §4 Live reads (live-read.mjs): run on this computer for a park that asks for nothing but entries the
 // row names, once per ticket head and entry, from the pass's own clean checkout of origin's default
@@ -691,7 +679,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   const built = park && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id)) ? buildParkOf(t, park.trim()) : null;
   // A park asking only who merges its green, clean PR (mergeParkOf): done where desk may merge it, else
   // the merge question naming the row that keeps desk from it.
-  const merging = park && !built && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id)) ? mergeParkOf(t, log) : null;
+  const merging = park && !built && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id))
+    ? mergeParkOf(t, parseClearsWhen(afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN')).cond) : null;
   const mergeOnly = merging?.call === 'done' ? merging : null;
   // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
   const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? (built ? String(built.pr) : null) ?? (mergeOnly ? String(mergeOnly.pr) : null) ?? t.result?.pr;
@@ -766,7 +755,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     recordDone(t, {
       log, h, pr: String(n), summary: `parked only on who merges PR #${n}, which desk merges: recorded done`,
       line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${E.mergeGrant(queue()).why}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
-      sets: [`follow_on=${JSON.stringify([{ step: park.trim().slice(0, FOLLOW_ON_MAX), row: null }])}`, ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
+      sets: [parkFollowOn(park), ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
     });
   } else if (park) {
     // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
@@ -782,8 +771,9 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     const cleared = read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log);
     const reg = againstRegister(t, park.trim(), log, cleared);
     const recommends = recommendsOf(t, park.trim(), log);
+    // A merge question keeps the park's words as its follow-on too, so a merge by hand still lists them.
     q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
-      ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []));
+      ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(merging?.call === 'ask' ? [parkFollowOn(park)] : []));
     // Before the requeue, which moves this round's log aside.
     logDecisions(t, log, null);
     if (!wedged && !read && !needsSession({ ...t, park: { question: park.trim() } }) && unnamedForcePush({ question: park.trim(), inputs: reg.inputs }, t.branch) && refuseUnnamedLease(t, park.trim())) continue;
@@ -1090,6 +1080,15 @@ for (const t of Object.values(queue().tickets)) {
   const cond = describeCond(c);
   // A lane left for a person never has its push made for it.
   if (c.kind === 'push-ok' && needsSession(t)) { report.clears.push(`${t.key}: "${cond}" not tried, since it is lane ${t.lane}: left parked for a person`); continue; }
+  // A merge question whose rows now let desk merge its green, clean PR (mergeParkOf) is done on it, as
+  // the harvest records one: the undraft step and the merge driver take it from there.
+  const merges = mergeParkOf(t, c, { grantedOnly: true });
+  if (merges?.call === 'done') {
+    q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${merges.pr}`,
+      `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`);
+    report.done.push(`${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${E.mergeGrant(queue()).why})`);
+    continue;
+  }
   const r = checkCond(c, { ...clearsRead, push: (p) => pushParked(t, p) });
   if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); continue; }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
@@ -3401,7 +3400,6 @@ function conflictFiles(branch) {
 // Whether anyone but the user's own handle, and not a bot, has reviewed or commented on PR n: the line
 // between §3 pr-conflict-unreviewed and pr-conflict-reviewed, read as a draft's is (undraft.mjs). Unread,
 // it counts as reviewed.
-const conflictHandle = (() => { try { return E.githubHandle(); } catch { return null; } })();
 function humanSeen(n) {
   let v = null;
   try { v = JSON.parse(sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'reviews,comments'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return true; }

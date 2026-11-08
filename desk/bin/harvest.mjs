@@ -128,6 +128,8 @@ export function followOnIn(done) {
   if (bad !== undefined) return { steps: [], error: `an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}` };
   return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null })), error: null };
 }
+// A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
+export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Array.isArray(t.follow_on) && t.follow_on.length > 0;
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }

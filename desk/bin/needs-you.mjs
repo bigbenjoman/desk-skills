@@ -69,6 +69,7 @@ import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resume
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
+import { followOnPending } from './harvest.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -455,8 +456,7 @@ function stepItem(key, ws) {
 // that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
 // records them run (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
-const followsOf = (r) => Object.values(r.q?.tickets ?? {})
-  .filter((t) => t.merged_at && !t.follow_on_done && Array.isArray(t.follow_on) && t.follow_on.length);
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter(followOnPending);
 function followItems(r) {
   return followsOf(r).map((t) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t) }));
 }

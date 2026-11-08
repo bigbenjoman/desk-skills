@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { followOnIn } from '../desk/bin/harvest.mjs';
+import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
 import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
@@ -388,6 +388,10 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-509 AC2 no follow_on: none', fo('pr=871 jira=In Review'), JSON.stringify({ steps: [], error: null }));
   t('DS-509 AC2 one that does not read says so and keeps none', followOnIn('pr=1 follow_on=[{"step": 3}]').error?.startsWith('an entry is not'), true);
   t('DS-509 AC2 one that is not JSON says so', followOnIn('pr=1 follow_on=run it').error, 'not a JSON array');
+  const step = [{ step: 'run x', row: null }];
+  t('DS-509 AC5 a merged ticket with steps not yet run waits on the person', followOnPending({ merged_at: '2026-11-08T10:00:00Z', follow_on: step }), true);
+  t('DS-509 AC5 one not merged, one said run, and one with no steps do not',
+    [{ follow_on: step }, { merged_at: '2026-11-08T10:00:00Z', follow_on: step, follow_on_done: '2026-11-08T11:00:00Z' }, { merged_at: '2026-11-08T10:00:00Z', follow_on: [] }].some(followOnPending), false);
   // The worker brief forbids the park and names the follow-on form.
   const s5c = doc('../skills/desk-autopilot/references/worker-contract-stage-5.md');
   t('DS-509 the Stage 5 to 7 contract forbids a "who merges it" park', /\*\*Who merges your PR is never a park\.\*\*[^]*?print `AUTOPILOT_DONE`/.test(s5c), true);
