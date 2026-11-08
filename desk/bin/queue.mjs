@@ -17,7 +17,8 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
+import { parkClass } from './failure-class.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches } from './batches.mjs';
@@ -49,8 +50,10 @@ const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback'
   if (TICKET_CMDS.includes(c)) useTicketBatch(a.filter((_, i) => at < 0 || (i !== at && i !== at + 1))[0]);
 }
 const QUEUE = queueFile();
+// A new park, with its failure class (failure-class.mjs parkClass) while the failure-class lever is on.
+const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...(leverOn('failure-class') ? parkClass(question) : {}) });
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
-const heldPark = (blockers) => ({ question: `held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`, since: new Date().toISOString() });
+const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`);
 const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
 
 // The starting concurrency is config §3b "Autopilot worker concurrency" (`<default> / <cap>`); the
@@ -358,7 +361,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
     worktree: null, branch: r.branch ?? null, database: null, port: null,
     session_id: null, pid: null, base_sha: null, stage: null,
-    park: park ? { question: park, since: new Date().toISOString() } : holds.length ? heldPark(holds) : null, log: null, result: null,
+    park: park ? newPark(park) : holds.length ? heldPark(holds) : null, log: null, result: null,
     collides_with: collides.join('|') || null, open_questions: unknowns, held_by: holds.join('|') || null,
     ...(outside.length ? { held_outside: outside.join('|') } : {}),
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
@@ -656,7 +659,7 @@ switch (cmd) {
     const kept = session && t.state === 'parked' && t.park ? t.park : null;
     t.state = 'parked';
     t.park = kept ? { ...kept, claim: { session, at: now } }
-      : { question: rest.join(' ') || (session ? claimQuestion(session) : ''), since: now, ...(session ? { claim: { session, at: now } } : {}) };
+      : { ...newPark(rest.join(' ') || (session ? claimQuestion(session) : ''), now), ...(session ? { claim: { session, at: now } } : {}) };
     save(q);
     console.log(session ? `${key} parked, claimed by session ${session}` : `${key} parked`);
     break;
