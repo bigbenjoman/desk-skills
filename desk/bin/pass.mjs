@@ -43,7 +43,8 @@ import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, mov
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { childRenames } from './migration-renames.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -785,15 +786,18 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     const pr = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch ?? '',
       '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
     const prOpen = /^\d+$/.test(pr);
-    // The person's instruction is the exception: an open PR says nothing about whether it was carried
-    // out, and done would close the fix that holds the merge (merge-driver.sh instruction_held).
-    const instruction = t.fix?.kind === 'instruction' && !t.fix.finished;
-    if (prOpen && !instruction) {
+    // A fix that holds the merge is the exception: the person's instruction, or a migration rename try.
+    // An open PR says nothing about whether it was carried out, and done would close the fix that holds
+    // the merge (merge-driver.sh instruction_held) and, for a rename, spend its one try (renamesFix).
+    const held = !t.fix?.finished && ['instruction', 'renames'].includes(t.fix?.kind) ? t.fix.kind : null;
+    if (prOpen && !held) {
       recordDone(t, { log, h, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)` });
     } else {
       logDecisions(t, log, null);
       if (prOpen) {
-        const why = `its worker ended with no marker, so your instruction on PR #${pr} may not be carried out, and the PR stays held from merging. Requeue it for a new worker on the same instruction — check ${log}`;
+        const why = held === 'renames'
+          ? `its worker ended with no marker, so the migrations PR #${pr} names may not be updated to their base's new names (${(t.fix.renames ?? []).map((r) => `${r.old} → ${r.new}`).join(', ') || 'see its fix'}), and the PR stays held from merging. Requeue it for a new worker on the same renames — check ${log}`
+          : `its worker ended with no marker, so your instruction on PR #${pr} may not be carried out, and the PR stays held from merging. Requeue it for a new worker on the same instruction — check ${log}`;
         q('park', t.key, why);
         report.parked.push(`${t.key}: ${why}`);
       } else if (stop?.fail) {
@@ -2927,6 +2931,30 @@ const baseReads = (head) => (FAILURE_CLASS && head ? { baseRead: {
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
 const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'sync', 'rerun', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture'];
+// Whether a person put a draft back: { hold } as personHold gives it, or { unread } with why the PR's events could not say.
+const draftHold = (t, n) => {
+  const ev = shOut('gh', ['api', '--paginate', `repos/${GH_REPO}/issues/${n}/events?per_page=100`, '--jq', REDRAFT_JQ]);
+  if (!ev.ok) return { unread: ev.out.split('\n').pop() };
+  return { hold: personHold(t, n, ev.out.split('\n').filter(Boolean).map((l) => { const [at, by] = l.split('\t'); return { at, by }; })) };
+};
+// A child naming a migration its base renumbered goes to a worker before any other fix try is read, so
+// it comes out of this pass's lists. A conflict is left to the conflict tries, which merge the base.
+for (const list of [drafts, undrafted]) {
+  for (const entry of [...list]) {
+    const { t, s } = entry;
+    if (!t.branch || !s.head || s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') continue;
+    if (!shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok) continue;
+    const renames = childRenames({ head: s.head, base: `origin/${DEFAULT_BRANCH}`, git: (args) => shOut('git', ['-C', MAIN, ...args]) });
+    const c = renamesFix(t, { pr: s.pr, head: s.head, base: DEFAULT_BRANCH, renames, draft: list === drafts });
+    if (!c) continue;
+    if (list === drafts) {
+      const held = personHold(t, s.pr) ? { hold: true } : draftHold(t, s.pr);
+      if (held.unread != null || held.hold) continue;
+    }
+    applyFix(t, s.pr, s.head, c);
+    list.splice(list.indexOf(entry), 1);
+  }
+}
 if (drafts.length) {
   const permKey = E.permissionKey('pr-ready');
   const cfg = {
@@ -2967,9 +2995,9 @@ if (drafts.length) {
     // and the call would act.
     let hold = personHold(t, n);
     if (!hold && UNDRAFT_ACTS.includes(c.call)) {
-      const ev = shOut('gh', ['api', '--paginate', `repos/${GH_REPO}/issues/${n}/events?per_page=100`, '--jq', REDRAFT_JQ]);
-      if (!ev.ok) { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: its events, which say whether a person put it back to draft, could not be read (${ev.out.split('\n').pop()}); the next pass tries again`); continue; }
-      hold = personHold(t, n, ev.out.split('\n').filter(Boolean).map((l) => { const [at, by] = l.split('\t'); return { at, by }; }));
+      const ev = draftHold(t, n);
+      if (ev.unread != null) { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: its events, which say whether a person put it back to draft, could not be read (${ev.unread}); the next pass tries again`); continue; }
+      hold = ev.hold;
     }
     let rec = hold ? { call: 'held', why: hold.why, action: hold.action, sha: v.headRefOid ?? null, carried_from: null, pr: n }
       : { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: v.headRefOid ?? null, carried_from: c.carried ?? null, pr: n };
@@ -3472,7 +3500,7 @@ function applyFix(t, n, head, c) {
   // A review try keeps what it quoted, so a later review can tell a finding it cleared from one that survived it.
   // A protected-files try keeps the files it judged, so none is sent to a worker twice.
   const quoted = f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) }
-    : f.kind === 'protected' ? { paths: f.paths }
+    : f.kind === 'protected' ? { paths: f.paths } : f.kind === 'renames' ? { renames: f.renames }
     : f.kind === 'conflict' && f.base_sha ? { base_sha: f.base_sha, merge_base: f.merge_base } : {};
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), ...(f.class ? { class: f.class } : {}), at: PASS_AT }])}`, 'stuck=null');
   out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? `extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
