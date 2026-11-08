@@ -488,16 +488,23 @@ t('DS-165 fix: with workers set to 0, children not queued leave the epic undated
 
 // ---- a batch with nothing left for autopilot is not paused, and a paused batch keeps its tickets
 const hist12 = range(12, (i) => ['M', 2 + (i % 5)]);
+// The frame the interactive screen draws at `start` once each key is pressed, with its colours.
+async function frameAfter(start, keys, rows = 200) {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
+  const output = { buf: '', columns: 200, rows, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+  Q.interactive({ input, output, start, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
+  for (const key of keys) {
+    input.write(key);
+    await new Promise((res) => setTimeout(res, 20));
+  }
+  const frame = output.buf.split('\x1b[H').at(-1);
+  input.write('q');
+  return frame;
+}
 // The Epics view is on the interactive screen only: open the repo, press 4, read the frame, plain or
 // with its colours (`raw`).
 async function epicsView(slug, raw = false) {
-  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
-  const output = { buf: '', columns: 200, rows: 60, write(s) { this.buf += s; }, on() {}, removeListener() {} };
-  Q.interactive({ input, output, start: { kind: 'repo', slug }, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
-  input.write('4');
-  await new Promise((res) => setTimeout(res, 20));
-  const frame = output.buf.split('\x1b[H').at(-1);
-  input.write('q');
+  const frame = await frameAfter({ kind: 'repo', slug }, ['4'], 60);
   return raw ? frame : frame.replace(ANSI_ETA, '');
 }
 repo('idle', 4700, { tickets: { 'I-1': { state: 'parked', lane: 'C', park: { question: 'lane C: agree the plan first' } }, 'I-2': { state: 'parked', lane: 'C', park: { question: 'which copy?' } },
@@ -607,13 +614,7 @@ t('DS-191: once read with no epic, the view says none belongs to an epic again',
 const { utimesSync } = await import('node:fs');
 // Home's Epics view: every repo's open epics, one line each, plain or with its colours (`raw`).
 async function homeEpics(raw = false) {
-  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
-  const output = { buf: '', columns: 200, rows: 200, write(s) { this.buf += s; }, on() {}, removeListener() {} };
-  Q.interactive({ input, output, start: { kind: 'overview' }, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
-  input.write('4');
-  await new Promise((res) => setTimeout(res, 20));
-  const frame = output.buf.split('\x1b[H').at(-1);
-  input.write('q');
+  const frame = await frameAfter({ kind: 'overview' }, ['4']);
   return (raw ? frame : frame.replace(ANSI_ETA, '')).split('\r\n');
 }
 const epicRows = (lines, key) => lines.filter((l) => new RegExp(`^[ ›] {1,2}\\S.*?\\s${key}\\s`).test(l)).map((l) => l.slice(1).trim().replace(/\s{2,}/g, ' | '));
@@ -664,17 +665,8 @@ const otherF = Q.forecastOf(byId('acme__other'), { now: FIXED });
 t('DS-504 AC6: a repo with one batch reads as it did: its own counts, date and note', epicRows(home, 'EP-7').find((l) => l.startsWith('other')),
   `other | EP-7 | Other epic | ■■■■■■■■■■■■■■■■ | 1/2 | ${when(otherF.E['EP-7'].likely, FIXED)} | set by O-1`);
 
-// ---- DS-516: a repo's Epics, Timeline and By day read every batch of it
-async function placeView(start, key) {
-  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
-  const output = { buf: '', columns: 200, rows: 200, write(s) { this.buf += s; }, on() {}, removeListener() {} };
-  Q.interactive({ input, output, start, exit() {}, opener() {}, refreshMs: 600000, clock: () => FIXED, probeWith: async () => ({ ran: false }) });
-  input.write(key);
-  await new Promise((res) => setTimeout(res, 20));
-  const frame = output.buf.split('\x1b[H').at(-1);
-  input.write('q');
-  return frame.replace(ANSI_ETA, '').split('\r\n');
-}
+// ---- a repo's Epics, Timeline and By day read every batch of it
+const placeView = async (start, ...keys) => (await frameAfter(start, keys)).replace(ANSI_ETA, '').split('\r\n');
 const repoView = (name, key) => placeView({ kind: 'repo', slug: `acme__${name}` }, key);
 // The standing batch read the epic's list before the named batch merged its children.
 const SP = ep('EP-20', 'Split epic', [['S-1', true], ['S-2'], ['S-3'], ['S-4']]);
@@ -701,10 +693,21 @@ const splitDays = await repoView('split', '3');
 t('DS-516 AC3: By day lists the tickets of both batches', ['S-5', 'S-4', 'S-7'].map((k) => splitDays.some((l) => l.includes(`${k} `))), [true, true, true]);
 const splitTime = await repoView('split', '2');
 t('DS-516 AC3: the Timeline has one bar per epic across both batches', ['Split epic', 'Standing epic', 'Named batch epic'].map((n) => splitTime.filter((l) => l.includes(n)).length), [1, 1, 1]);
-const onlyFor = (id) => Q.loadRepos(FIXED).filter((r) => r.id === id);
-for (const [label, screen] of [['Timeline', Q.timelineScreen], ['By day', Q.daysScreen]]) {
-  t(`DS-516 AC4: with only a standing batch, ${label} reads as that batch alone`, screen(Q.loadRepos(FIXED), 'acme__other', { now: FIXED }), screen(onlyFor('acme__other'), 'acme__other', { now: FIXED }));
-}
+// Enter on a merged row goes to the batch still holding a child: the standing batch here has only a merged one.
+const epicKeys = splitEpics.filter((l) => /^[ ›] EP-\d+\s/.test(l)).map((l) => l.slice(2).split(/\s/)[0]);
+const openedEp20 = await placeView({ kind: 'repo', slug: 'acme__split' }, '4', ...Array(epicKeys.indexOf('EP-20')).fill('\x1b[B'), '\r');
+t('DS-516 AC2: enter on a split epic opens the batch that holds its unfinished child', [openedEp20.some((l) => l.includes('has no unfinished tickets')), openedEp20.some((l) => /\sS-4\s/.test(l))], [false, true]);
+repo('young', 4860, { tickets: { 'Y-1': { state: 'triaged' } }, sizes: { 'Y-1': 'M' }, epics: { 'Y-1': ep('EP-30', 'Dated epic', [['Y-1']]) }, history: hist12 });
+repo('young', 4860, { batch: 'new', tickets: { 'Y-2': { state: 'triaged' } }, sizes: { 'Y-2': 'M' }, epics: { 'Y-2': ep('EP-31', 'Young epic', [['Y-2']]) }, history: range(3, (i) => ['M', 2 + i]) });
+const youngEpics = await repoView('young', '4');
+t('DS-516 AC1: an epic held only by a batch too young to date has its row, with the reason', [rowOf(youngEpics, 'EP-30').length, rowOf(youngEpics, 'EP-31').length, /has 3 of the 10 merged tickets dates need/.test(rowOf(youngEpics, 'EP-31')[0] ?? '')], [1, 1, true]);
+const otherOpts = { now: FIXED };
+const otherLike = when(otherF.E['EP-7'].likely, FIXED);
+const otherTime = Q.timelineScreen(Q.loadRepos(FIXED), 'acme__other', otherOpts).split('\n').filter((l) => l.includes('Other epic'));
+t('DS-516 AC4: with only a standing batch, the Timeline has its one epic bar, its counts and its date', [otherTime.length, /\s1\/2\s/.test(otherTime[0] ?? ''), (otherTime[0] ?? '').includes(otherLike)], [1, true, true]);
+const otherDay = Q.daysScreen(Q.loadRepos(FIXED), 'acme__other', otherOpts).split('\n').filter((l) => /\sO-1\s/.test(l));
+t('DS-516 AC4: with only a standing batch, By day has its one ticket on its date', [otherDay.length, (otherDay[0] ?? '').includes(when(otherF.T['O-1'].likely, FIXED))], [1, true]);
+t('DS-516 AC4: with only a standing batch, Epics has its row as before', rowOf(await repoView('other', '4'), 'EP-7').map((l) => l.slice(2).trim().replace(/\s{2,}/g, ' | ')), [`EP-7 | Other epic | ■■■■■■■■■■■■■■■■ | 1/2 | ${otherLike} | set by O-1`]);
 t('DS-516 AC5: an epic\'s own place says it has no Epics view', (await placeView({ kind: 'epic', slug: 'acme__split', epic: 'EP-21' }, '4')).some((l) => l.includes(Q.NO_EPICS_HERE)), true);
 const namedEpics = await placeView({ kind: 'repo', slug: 'acme__split:rotation' }, '4');
 t('DS-516 AC5 (decision): a named batch\'s place lists that one batch\'s epics', [rowOf(namedEpics, 'EP-22').length, rowOf(namedEpics, 'EP-21').length], [1, 0]);

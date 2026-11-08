@@ -981,7 +981,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
   const head = [...tabHead(repos, place, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list : null)] : [])].flatMap(wrapped);
   const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${tagOf(r)}`, sgr: WARN, text: [[`${lead(r)}${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
-  return { list, per, notes, items, head, stopped };
+  return { list, per, notes, items, head, stopped, manyBatches: !!slug && list.length > 1 };
 }
 
 // A ships view's header: the Queue's, one repo's state counts and who runs it, or every repo's
@@ -1102,9 +1102,9 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   };
   const rows = [];
   if (byEpic) {
-    for (const { r, F, e, d } of epics) {
+    for (const { r, F, e, d, opens = r.id } of epics) {
       const name = [[`  ${pad(cut(epicShort(e), EP_NAME - 1), EP_NAME)}`, null], [rpad(`${e.done}/${e.total}`, 5), DIM], [' ', null]];
-      const open = { kind: 'epic', slug: r.id, epic: e.key };
+      const open = { kind: 'epic', slug: opens, epic: e.key };
       if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F, e, checkin), whyColour(F)]], open)); continue; }
       const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
       rows.push(segRow(`${r.id}${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
@@ -1240,19 +1240,24 @@ function epicPerRepo(list, undated = [], counted = []) {
     const by = g.find((x) => !x.d) ?? g.reduce((a, b) => (b.d.likely > a.d.likely ? b : a));
     // The merged bar runs from the first batch's start to the last batch's could-run-to.
     const d = by.d && { ...by.d, start: Math.min(...g.map((x) => x.d.start ?? Infinity)), late: Math.max(...g.map((x) => x.d.late)) };
-    return { r: by.r, F: by.F, e, d: d && !Number.isFinite(d.start) ? { ...d, start: null } : d, name: by.r.repo };
+    // The batch setting the date may hold only children not queued there: the row opens one with a child left.
+    const holder = by.e.queued ? by : g.find((x) => x.e.queued) ?? by;
+    const from = d ? holder : by;
+    return { r: from.r, F: from.F, e, d: d && !Number.isFinite(d.start) ? { ...d, start: null } : d, name: by.r.repo, opens: holder.r.id };
   }).filter(({ e }) => e.queued || e.missing > 0);
 }
 // A ships scope's open epics, one row each, soonest first. A paused batch's are listed undated, under
 // its note. A batch with too little history, or nothing left for autopilot, lists none, but leaves
-// undated an epic whose children it still holds. Every other epic a batch knows lends its children.
+// undated an epic whose children it still holds: on one repo's view of several batches that opens a
+// row of its own. Every other epic a batch knows lends its children.
 function epicRows(s, now, checkin) {
   const undated = s.per.filter((p) => p.note && !p.stopped && p.r.q && !p.r.error).map(({ r }) => ({ r, F: forecastOf(r, { now, checkin }) }))
     .filter(({ F }) => F?.none || F?.idle).flatMap(({ r, F }) => Object.values(F.epics).filter((e) => e.queued).map((e) => ({ r, F, e, d: null })));
   const open = s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null })));
   const seen = new Set([...open, ...undated].map((x) => x.e));
   const counted = s.per.filter((p) => p.r.q && !p.r.error).flatMap(({ r }) => { const F = forecastOf(r, { now, checkin }); return Object.values(F.epics).filter((e) => !seen.has(e)).map((e) => ({ r, F, e, d: null })); });
-  return epicPerRepo(open, undated, counted).sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
+  const [listed, joining] = s.manyBatches ? [[...open, ...undated], []] : [open, undated];
+  return epicPerRepo(listed, joining, counted).sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
 }
 function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = null, pinUsage = false } = {}) {
   const s = etaScope(repos, slug, { now, checkin, width, pinUsage });
@@ -1263,14 +1268,14 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
   // The children bar is solid on screen, not-yet-queued children grey; with no colour, □ tells them apart.
   const notYet = solidBars(width) ? '■' : '□';
-  const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name }) => {
+  const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name, opens = r.id }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
     const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
     return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
-      [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: r.id, epic: e.key });
+      [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: opens, epic: e.key });
   });
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
   // A record from before epics were recorded is not "no epic": until a pass reads it, say so instead.
