@@ -671,6 +671,11 @@ killed Y-62 sess-y62; q set Y-62 "$instruction_fix" resumes=2
 out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
 check "DS-501 so does a worker on the instruction killed past its resumes" '[ "$(field Y-62 state)" = "\"parked\"" ] && [ "$(field Y-62 fix.finished)" = null ] && field Y-62 park.question | grep -q "your instruction on PR #88"'
 q set Y-62 state=done
+# DS-493: a migration rename try holds the merge the same way, and done would spend its one try.
+killed Y-64 sess-y64; q set Y-64 'fix={"try":1,"of":2,"extra":true,"kind":"renames","pr":88,"head":null,"renames":[{"old":"0007_a.sql","new":"0008_a.sql","to":"main","files":["src/x.ts"]}]}'; result_event >> "$T/state-k/logs/Y-64.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-493 a worker on a rename try that ended with no marker parks, its fix left open" '[ "$(field Y-64 state)" = "\"parked\"" ] && [ "$(field Y-64 fix.finished)" = null ] && [ "$(field Y-64 result)" = null ] && field Y-64 park.question | grep -q "the migrations PR #88 names may not be updated to their base.s new names (0007_a.sql → 0008_a.sql)" && ! echo "$out" | grep -q "Y-64: PR #88 (no marker printed"'
+q set Y-64 state=done
 killed Y-63 sess-y63; q set Y-63 "$instruction_fix" fix.finished=2026-01-01T00:00:00Z; result_event >> "$T/state-k/logs/Y-63.log"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-501 a finished instruction fix does not park a later worker on the ticket" '[ "$(field Y-63 state)" = "\"done\"" ] && echo "$out" | grep -q "Y-63: PR #88 (no marker printed"'
