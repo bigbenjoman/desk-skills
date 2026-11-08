@@ -154,7 +154,8 @@ function conflictPlain(r, t, n, base, why = '') {
   const done = /; the last try said: (.+)$/.exec(why)?.[1] ?? lastTrySaid(t);
   const said = done ? one(/\bsaid=(.+)$/.exec(done)?.[1] ?? done) : '';
   const how = made ? `${REPAIRED} it${said ? `: its last repair said "${said}"` : ''}` : 'no repair by desk has tried it yet';
-  return `${n} is in conflict with ${base ?? 'its base'}, and ${how}. Resolve the conflict on its branch; ${thenMerge(r)}.`;
+  const files = /^still in conflict with .+? repairs, the most one PR gets: ([^;]+)/.exec(why)?.[1];
+  return `${n} is in conflict with ${base ?? 'its base'}${files ? ` in ${files}` : ''}, and ${how}. Resolve the conflict on its branch; ${thenMerge(r)}.`;
 }
 
 function stuckPlain(r, n, s, t) {

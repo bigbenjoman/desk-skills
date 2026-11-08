@@ -80,13 +80,13 @@ const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
   out(Object.entries(prs).filter(([, p]) => p.state === at('--state') && (!a.includes('--base') || p.base === at('--base'))
       && (!a.includes('--author') || (p.author ?? 'tester') === at('--author')))
-    .map(([n, p]) => ({ number: Number(n), title: 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft })));
+    .map(([n, p]) => ({ number: Number(n), title: 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft, headRefOid: p.sha, mergeStateStatus: p.mergeState ?? 'CLEAN' })));
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state') {
   out(String(prs[a[2]]?.state ?? '').toUpperCase());
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
-    state: p.state.toUpperCase(), mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
+    state: p.state.toUpperCase(), mergeable: p.mergeState === 'DIRTY' ? 'CONFLICTING' : 'MERGEABLE', mergeStateStatus: p.mergeState ?? 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
     statusCheckRollup: p.checks.map(([name, conclusion, run, job]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci',
       detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/' + (job ?? run) : undefined })) });
 } else if (a[0] === 'api' && /check-runs\/\d+\/annotations/.test(a[1] ?? '')) {
@@ -921,5 +921,61 @@ RV_CONFIG="$T/config-rv-hold.md"; rvloop; rvloop
 check "DS-508 AC3: a §4 Merge hold the epic PR touches holds it, noted on the queue's promotion" '[ -z "$(merged)" ] && jq -r .promotion.merge_blocked "$DESK_QUEUE" | grep -q "^merge hold: deploys the stack — infra/\*\*, 1 file(s)"'
 out=$(DESK_CONFIG="$T/config-rv-hold.md" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; RV_CONFIG=""
 check "DS-508 AC3: and the pass puts it to the person, naming the hold, exit 11" '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^EPIC PR: #301 is out of draft, but the merge driver holds it: merge hold: deploys the stack"'
+
+# ---- a repaired PR merges before a ready PR changing the same file; the hold ends itself ------------
+SHAR=abcabcabcabcabcabcabcabcabcabcabcabcabc1; SHAP=abcabcabcabcabcabcabcabcabcabcabcabcabc2
+HEADR=dddddddddddddddddddddddddddddddddddddddd
+rploop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-401 T-402" 2>&1); rc=$?; }
+# rp_setup <repaired draft> <repaired check> <finished ms ago> <ready PR files> [<repaired head recorded>]
+rp_setup(){
+  local at; at=$("$NODE" -p "new Date(Date.now()-$3).toISOString()")
+  : > "$T/merges.log"
+  find "$T/state" \( -name 'green-41*' -o -name 'dirty-41*' -o -name 'repaired-41*' \) -delete
+  q init repaired
+  cat > "$T/prs.json" <<EOF
+{
+  "411": { "head": "fix/T-401", "base": "main", "sha": "$SHAP", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "files": $4 },
+  "412": { "head": "fix/T-402", "base": "main", "sha": "$SHAR", "state": "open", "draft": $1, "checks": [["test", "$2"]], "files": ["src/shared.txt"] }
+}
+EOF
+  q add T-401 Task A; q set T-401 branch=fix/T-401 state=done result.pr=411
+  q add T-402 Task A; q set T-402 branch=fix/T-402 state=done result.pr=412
+  q set T-402 "fix_tries=[{\"try\":1,\"head\":\"${5:-$HEADR}\",\"kind\":\"conflict\",\"at\":\"$at\",\"finished\":\"$at\"}]"
+}
+SHARED='["src/shared.txt"]'
+rp_setup false SUCCESS 0 "$SHARED"; rploop; rploop
+check "AC1 two ready PRs sharing a file: the repaired one, with the higher number, merges first" '[ "$(merged)" = 412 ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412 (T-402) does"'
+rp_setup true SUCCESS 0 "$SHARED"; rploop; rploop
+check "AC2 a ready PR behind a repaired PR not yet ready is not merged and names it" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+rp_setup true SUCCESS 7200000 "$SHARED"; rploop; rploop
+check "AC3 past 60 minutes the hold ends, logged, and the ready PR merges" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "#411 hold behind repaired #412 (T-402) ended: 60 minutes since its repair"'
+rp_setup false FAILURE 0 "$SHARED"; rploop; rploop
+check "AC4 behind a red repaired PR the ready PR merges" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: it is red"'
+rp_setup true SUCCESS 0 "$SHARED"; q set T-402 state=parked; rploop; rploop
+check "AC4 behind a parked repaired PR the ready PR merges" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: it is parked or stuck"'
+rp_setup false SUCCESS 0 '["src/other.txt"]'; rploop; rploop
+check "AC5 sharing no file, the ready PR merges in its usual order" '[ "$(merged)" = 411 ] && ! echo "$out" | grep -q "HELD"'
+rp_setup true SUCCESS 0 "$SHARED" "$SHAR"; rploop; rploop
+check "a repair that never moved the head holds nothing" '[ "$(merged)" = 411 ]'
+rp_setup true SUCCESS 0 "$SHARED"; jq '."412".mergeState = "DIRTY"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"; rploop; rploop
+check "AC2 a repaired PR back in conflict is not ready, so the ready PR still waits for it" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+AT0=$("$NODE" -p "new Date().toISOString()")
+rp_setup true SUCCESS 0 "$SHARED"; q set T-402 "fix_tries=[{\"try\":1,\"head\":\"$HEADR\",\"kind\":\"conflict\",\"at\":\"$AT0\",\"finished\":\"$AT0\"},{\"try\":2,\"head\":\"$SHAR\",\"kind\":\"conflict\",\"at\":\"$AT0\"}]"; rploop; rploop
+check "AC2 while a second repair runs, the first finished one still holds the ready PR" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+# The driver reads #412 DIRTY at the old head, then a person pushes the repair.
+pr412(){ jq --arg s "$1" --arg m "${2:-}" '."412".sha = $s | if $m == "DIRTY" then ."412".mergeState = "DIRTY" else del(."412".mergeState) end' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"; }
+hand_repair(){ pr412 "$HEADR" DIRTY; rploop; pr412 "$SHAR"; }
+rp_setup false SUCCESS 7200000 "$SHARED"; hand_repair; rploop; rploop
+check "AC1 a hand repair long after desk's last try: the repaired PR merges first" '[ "$(merged)" = 412 ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+rp_setup true SUCCESS 0 "$SHARED"; q set T-402 'fix_tries=[]'; hand_repair; rploop; rploop
+check "AC2 a hand repair with no desk try holds the ready PR" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+rp_setup true SUCCESS 7200000 "$SHARED"; q set T-402 "stuck={\"why\":\"still in conflict\",\"head\":\"$HEADR\"}"; hand_repair; rploop; rploop
+check "AC2 a stuck record of the head that was in conflict does not end a hand repair's hold" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD"'
+rp_setup true SUCCESS 7200000 "$SHARED"; q set T-402 "stuck={\"why\":\"red\",\"head\":\"$SHAR\"}"; hand_repair; rploop
+check "AC4 stuck again at the repaired head, the hold ends" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: it is parked or stuck"'
+rp_setup true SUCCESS 7200000 "$SHARED"; hand_repair; rploop; printf '%s\t%s\n' "$(( $(date +%s) - 7200 ))" "$HEADR" > "$(find "$T/state" -name repaired-412)"; rploop
+check "AC3 a hand repair's hold ends 60 minutes after it was seen" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: 60 minutes since its repair"'
+rp_setup true SUCCESS 0 "$SHARED" "$SHAR"; q set T-402 'fix_tries=[]'; pr412 "$SHAR" DIRTY; rploop; pr412 "$SHAR"; rploop; rploop
+check "out of DIRTY with no new push (the base moved): no repair, no hold" '[ "$(merged)" = 411 ]'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
