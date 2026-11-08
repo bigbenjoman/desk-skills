@@ -15,6 +15,7 @@
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { SCREENSHOT_FILE, expandHome } from './desk-env.mjs';
+import { failureLines } from './gate.mjs';
 
 export const DISPATCH_GRACE_MS = 30 * 60 * 1000;
 
@@ -108,10 +109,10 @@ export function firstErrorLine(log) {
 // job's closing exit-code line and a summary counting no failures name none.
 const LOG_ERRORS_MAX = 5;
 const NAMES_CAUSE = /\b[A-Za-z]*(?:Error|Exception)\b|\b(?:ENOENT|EACCES|EPERM|EEXIST|ECONNREFUSED|ETIMEDOUT|EADDRINUSE)\b|\berror\b|\bfatal\b|\bFAIL(?:ED)?\b|\bfailed\b/;
-const NO_CAUSE = /^Process completed with exit code \d+\.?$|\bcontinue-on-error\b|\b0 (?:errors?|failed|failures?)\b/i;
+const NO_CAUSE = /\bcontinue-on-error\b|\b0 (?:errors?|failed|failures?)\b/i;
 export function errorLinesIn(log) {
-  const found = logLines(log).map((l) => l.replace(/^##\[error\]\s*/, '').trim()).filter((l) => NAMES_CAUSE.test(l) && !NO_CAUSE.test(l));
-  return [...new Set(found)].slice(0, LOG_ERRORS_MAX);
+  const lines = failureLines(logLines(log).map((l) => ({ annotation_level: 'failure', message: l.replace(/^##\[error\]\s*/, '').trim() })));
+  return [...new Set(lines.filter((l) => NAMES_CAUSE.test(l) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
 }
 
 // The line with what differs between two runs of one failure taken out: timestamps, SHAs, run ids and

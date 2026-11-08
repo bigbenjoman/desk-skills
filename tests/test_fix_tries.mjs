@@ -663,7 +663,7 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-500 AC2 beside a red check only a person runs, the review try still goes', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx({ operator: [{ name: 'tests', command: 'run the suite' }] }))?.fix.kind, 'rereview');
 }
 
-// DS-494: fix tries spent on a red check whose log names its cause earn one worker quoting it.
+// Fix tries spent on a red check whose log names its cause earn one worker quoting it.
 {
   const LINE = 'ReferenceError: React is not defined';
   const named = (o = {}) => ({ ...red('tests', '41'), jobId: '7', error: LINE, errors: [LINE], ...o });
