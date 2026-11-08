@@ -2748,7 +2748,9 @@ const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // reviewScope), so the head's review try reads only that.
 const reviewReuse = E.leverOn('review-reuse');
 const baseMoves = (t, head) => {
-  const fetched = () => !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok;
+  // Fetched once for this head, however many of these ask.
+  let got;
+  const fetched = () => (got ??= !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok);
   const git = (args) => shOut('git', ['-C', MAIN, ...args]);
   return {
     carry: (sha, body) => fetched() && reviewCarries({ reuse: reviewReuse, from: sha, head, base: `origin/${DEFAULT_BRANCH}`, body, git }),
