@@ -93,7 +93,7 @@ export function loadRun(out) {
       return { arm: r.arm, status: result?.status ?? r.status, why: r.why ?? result?.why ?? null, result };
     }),
   }));
-  return { seed: run.seed ?? null, arms: arms.sort(), tasks, leftOut: run.left_out ?? [] };
+  return { seed: run.seed ?? null, arms: arms.sort(), tasks, leftOut: run.left_out ?? [], armStops: run.arm_stops ?? [] };
 }
 
 const median = (values) => quantile(values, 0.5);
@@ -195,6 +195,11 @@ export function renderReport({ out, run, joined, baseline }) {
   if (run.leftOut?.length) {
     text.push('## Left out', '', 'These tasks ran on no arm:', '');
     for (const l of run.leftOut) text.push(`- ${l.task}: ${l.why}`);
+    text.push('');
+  }
+  if (run.armStops?.length) {
+    text.push('## Arms stopped', '', 'These arms started no further run:', '');
+    for (const s of run.armStops) text.push(`- ${s.arm}: ${s.why}`);
     text.push('');
   }
   const notRun = figures.flatMap((f) => f.notRun.map((n) => ({ ...n, arm: f.arm })));

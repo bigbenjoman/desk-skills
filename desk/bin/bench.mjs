@@ -27,7 +27,8 @@
 //
 // An arm runs on claude unless it carries a `runner` (a caller's arm, such as bench-arm3.mjs's Codex
 // sides): runner(task, arm, wt, settingsFile, opts, dir) -> { ok, why, cost, tokens, attempts, ranAt,
-// extra }, `extra` being more fields for result.json.
+// extra, stopArm }, `extra` being more fields for result.json and `stopArm`, when set, why this arm
+// starts no further run in this invocation.
 //
 // Each weekly allowance is guarded too (bench-quota.mjs): before a run, the account it spends is read,
 // and the bench stops, naming the account, at the per-computer cap of points it may use in one weekly
@@ -249,12 +250,13 @@ function writeSettings(repo, task, wt, file, secrets) {
 }
 
 // One claude run, its stream going straight to the transcript. -> readRun's verdict plus usage.
-function runClaude(task, arm, wt, settings, opts, dir) {
+// `command` runs claude through a wrapper, which `killSignal` then ends at the timeout.
+export function runClaude(task, arm, wt, settings, opts, dir, { command = ['claude'], killSignal = 'SIGKILL', env = armEnv() } = {}) {
   const file = join(dir, 'transcript.jsonl');
   const fd = openSync(file, 'w');
   const err = openSync(join(dir, 'stderr.log'), 'w');
   const args = claudeArgs({ prompt: promptFor(task, arm), arm: 'base', budget: opts.budget, model: arm.model, effort: arm.effort, format: 'stream-json', extra: ['--verbose', '--settings', settings] });
-  const proc = spawnSync('claude', args, { cwd: wt, env: armEnv(), stdio: ['ignore', fd, err], timeout: opts.timeout * 1000, killSignal: 'SIGKILL' });
+  const proc = spawnSync(command[0], [...command.slice(1), ...args], { cwd: wt, env, stdio: ['ignore', fd, err], timeout: opts.timeout * 1000, killSignal });
   closeSync(fd);
   closeSync(err);
   const stdout = readFileSync(file, 'utf8');
@@ -302,7 +304,7 @@ function runOne(repo, task, arm, order, opts, out, dir, secrets) {
     const settings = join(parent, 'settings.json');
     writeSettings(repo, task, wt, settings, secrets);
     const run = (arm.runner ?? runClaude)(task, arm, wt, settings, opts, dir);
-    Object.assign(result, { cost: run.cost, tokens: run.tokens, attempts: run.attempts, ran_at: run.ranAt, why: run.why ?? null, ...run.extra });
+    Object.assign(result, { cost: run.cost, tokens: run.tokens, attempts: run.attempts, ran_at: run.ranAt, why: run.why ?? null, ...run.extra, ...(run.stopArm ? { stop_arm: run.stopArm } : {}) });
     saveDiff(wt, task.base, join(dir, 'diff.patch'));
     if (run.ok) Object.assign(result, score(repo, task, wt, dir));
   } catch (e) {
@@ -338,6 +340,7 @@ export function runBench(opts, log = () => {}) {
   const budget = Number(opts.budget), total = Number(opts.total);
   let spent = 0;
   let stopped = null;
+  const armStops = new Map();
   const points = new Map();
   const report = tasks.map((task) => {
     const repo = repos.get(task.repo);
@@ -348,10 +351,13 @@ export function runBench(opts, log = () => {}) {
       const prior = stored(join(dir, 'result.json'));
       if (prior) { log(`reuse ${task.id} (${arm.name}): ${prior.status}`); return { arm: arm.name, status: prior.status, reused: true, dir }; }
       if (stopped) return { arm: arm.name, status: 'not run', why: stopped, dir: null };
+      if (armStops.has(arm.name)) return { arm: arm.name, status: 'not run', why: `stopped: ${armStops.get(arm.name)}`, dir: null };
       const vendor = Q.armVendor(arm);
       if (vendor === 'claude' && spent + budget > total + 1e-9) { log(`skip ${task.id} (${arm.name}): $${spent.toFixed(2)} of $${total} spent`); return { arm: arm.name, status: 'not run', dir: null }; }
-      const account = Q.accountFor(vendor, armEnv());
-      const start = Q.startRun({ account, settings, ledger, env: armEnv(), id: `${dir}@${new Date().toISOString()}`, fields: { task: task.id, arm: arm.name } });
+      // The guard reads the account the run spends, so an arm with its own environment gives it here too.
+      const env = arm.env ? arm.env(armEnv()) : armEnv();
+      const account = Q.accountFor(vendor, env);
+      const start = Q.startRun({ account, settings, ledger, env, id: `${dir}@${new Date().toISOString()}`, fields: { task: task.id, arm: arm.name } });
       points.set(account.key, start.line);
       if (start.why) {
         stopped = `stopped: ${start.why}`;
@@ -362,13 +368,14 @@ export function runBench(opts, log = () => {}) {
       log(`run ${task.id} (${arm.name})`);
       const r = runOne(repo, task, arm, order, opts, out, dir, secrets);
       if (vendor === 'claude') spent += r.cost ?? budget;
-      const end = Q.endRun({ account, settings, ledger, env: armEnv(), before: start.before, entry: start.entry, label: `${task.id} (${arm.name})` });
+      const end = Q.endRun({ account, settings, ledger, env, before: start.before, entry: start.entry, label: `${task.id} (${arm.name})` });
       r.quota = end.quota;
       if (end.stop) stopped = `stopped: ${end.stop}`;
       else points.set(account.key, end.line);
       writeFileSync(join(dir, 'result.json'), `${JSON.stringify(r, null, 2)}\n`);
       log(`  ${r.status}${r.why ? `: ${r.why}` : ''}${r.quota.points == null ? '' : ` (${r.quota.points} quota points)`}`);
       if (stopped) { log(stopped); log(points.get(account.key)); }
+      if (r.stop_arm) { armStops.set(arm.name, r.stop_arm); log(`stopped ${arm.name}: ${r.stop_arm}`); }
       return { arm: arm.name, status: r.status, why: r.why, quota_points: r.quota.points, dir };
     });
     return { task: task.id, order: order.map((a) => a.name), runs };
@@ -376,16 +383,18 @@ export function runBench(opts, log = () => {}) {
   const quotaReport = { cap: settings.cap, reserve: settings.reserve, defaults: settings.defaults, stopped, accounts: [...points.values()] };
   const path = join(out, 'run.json');
   const leftOut = opts.leftOut ?? [];
-  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent, quota: quotaReport, tasks: report, ...(leftOut.length ? { left_out: leftOut } : {}) }, null, 2)}\n`);
-  return { path, report, quota: quotaReport, leftOut };
+  const stops = [...armStops].map(([arm, why]) => ({ arm, why }));
+  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent, quota: quotaReport, tasks: report, ...(leftOut.length ? { left_out: leftOut } : {}), ...(stops.length ? { arm_stops: stops } : {}) }, null, 2)}\n`);
+  return { path, report, quota: quotaReport, leftOut, armStops: stops };
 }
 
 // runBench's result as the lines the command prints.
-export function printBench({ path, report, quota, leftOut = [] }) {
+export function printBench({ path, report, quota, leftOut = [], armStops = [] }) {
   for (const t of report) for (const r of t.runs) console.log(`${t.task} ${r.arm}: ${r.status}${r.reused ? ' (reused)' : ''}${r.quota_points == null ? '' : ` (${r.quota_points} quota points)`}`);
   for (const l of leftOut) console.log(`${l.task}: left out, ${l.why}`);
   for (const line of quota.accounts) console.log(line);
   if (quota.stopped) console.log(quota.stopped);
+  for (const s of armStops) console.log(`stopped ${s.arm}: ${s.why}`);
   console.log(`results: ${path}`);
 }
 

@@ -2,7 +2,11 @@
 // effort, Opus at medium, and Sonnet at the CLI's default effort.
 //
 //   node bench-arm3.mjs --tasks <file.json> --max-budget-usd <usd> [--total-budget-usd <usd>]
-//                       [--out <dir>] [--timeout <seconds>] [--seed <n>]
+//                       [--out <dir>] [--timeout <seconds>] [--seed <n>] [--fable]
+//
+// --fable adds a fifth side on Fable. It is refused before any run unless every Claude account desk
+// signs in with reads usage credits off (bench-credits.mjs), checked again before each Fable run. A
+// Fable run whose log records a request using overage is ended, and no further Fable run starts.
 //
 // The Claude sides run as every bench arm does (bench.mjs). A Codex side runs through codex-exec.mjs,
 // as desk-codex's calls do: stdin closed, its final message captured to last-message.txt in the run's
@@ -17,9 +21,10 @@ import { readFileSync, copyFileSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { armEnv, parseArgs as benchArgs, printBench, promptFor, runBench } from './bench.mjs';
+import { armEnv, parseArgs as benchArgs, printBench, promptFor, runBench, runClaude } from './bench.mjs';
 import { execArgs, KILL_GRACE_MS } from './codex-exec.mjs';
 import { accountFor } from './bench-quota.mjs';
+import { fableEnv, fableRefusal, usingOverage } from './bench-credits.mjs';
 import { rolloutLogs } from './codex-usage.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
@@ -127,13 +132,28 @@ export const ARMS = Object.freeze([
   { name: 'sonnet', model: 'sonnet', effort: null },
 ]);
 
+// The Fable side: a Claude run while usage credits read off, watched for a request that uses them.
+export function runFable(task, arm, wt, settings, opts, dir, { env = armEnv() } = {}) {
+  const refused = fableRefusal({ env });
+  if (refused) return { ok: false, why: refused, cost: 0, tokens: null, attempts: [], ranAt: null, stopArm: refused };
+  const run = runClaude(task, arm, wt, settings, opts, dir, { command: [process.execPath, join(HERE, 'overage-watch.mjs'), 'claude'], killSignal: 'SIGTERM', env: fableEnv(env) });
+  if (!usingOverage(readFileSync(join(dir, 'transcript.jsonl'), 'utf8'))) return run;
+  const why = `task ${task.id} on ${accountFor('claude', env).name} recorded a request using overage, so the run was ended`;
+  return { ...run, ok: false, why, stopArm: why };
+}
+
+export const FABLE_ARM = Object.freeze({ name: 'fable', model: 'claude-fable-5-1', effort: null, runner: runFable, env: fableEnv });
+
 const spec = (a) => `${a.name}=${a.model}${a.effort ? `:${a.effort}` : ''}`;
 
-// argv -> bench.mjs's options with arm 3's four sides. An --arm of its own is refused.
+// argv -> bench.mjs's options with arm 3's sides, Fable among them only with --fable. An --arm of its
+// own is refused.
 export function parseArgs(argv) {
   if (argv.includes('--arm')) throw new Error(`bench-arm3.mjs sets its own arms: ${ARMS.map(spec).join(', ')}`);
-  const o = benchArgs([...argv, ...ARMS.flatMap((a) => ['--arm', spec(a)])]);
-  return { ...o, arms: ARMS.map((a) => ({ ...a })) };
+  const fable = argv.includes('--fable');
+  const sides = fable ? [...ARMS, FABLE_ARM] : ARMS;
+  const o = benchArgs([...argv.filter((a) => a !== '--fable'), ...sides.flatMap((a) => ['--arm', spec(a)])]);
+  return { ...o, fable, arms: sides.map((a) => ({ ...a })) };
 }
 
 const isMain = (() => {
@@ -143,7 +163,10 @@ const isMain = (() => {
 
 if (isMain) {
   try {
-    printBench(runBench(parseArgs(process.argv.slice(2)), (m) => console.error(m)));
+    const opts = parseArgs(process.argv.slice(2));
+    const refused = opts.fable ? fableRefusal({ env: armEnv() }) : null;
+    if (refused) throw new Error(`${refused}. Nothing ran. Without --fable the other four sides run.`);
+    printBench(runBench(opts, (m) => console.error(m)));
   } catch (e) {
     console.error(e.message);
     process.exit(2);
