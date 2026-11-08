@@ -142,7 +142,7 @@ export function runFable(task, arm, wt, settings, opts, dir, { env = armEnv() } 
   return { ...run, ok: false, why, stopArm: why };
 }
 
-export const FABLE_ARM = Object.freeze({ name: 'fable', model: 'claude-fable-5-1', effort: null, runner: runFable });
+export const FABLE_ARM = Object.freeze({ name: 'fable', model: 'claude-fable-5-1', effort: null, runner: runFable, env: fableEnv });
 
 const spec = (a) => `${a.name}=${a.model}${a.effort ? `:${a.effort}` : ''}`;
 

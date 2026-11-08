@@ -88,6 +88,7 @@ const u = JSON.parse(fs.readFileSync(process.env.STUB_USAGE, 'utf8'));
 const say = (o) => console.log(JSON.stringify(o));
 const credits = process.env.STUB_CREDITS ? JSON.parse(fs.readFileSync(process.env.STUB_CREDITS, 'utf8'))[path.basename(process.env.CLAUDE_CONFIG_DIR || 'default')] : {};
 if (prompt === 'Reply with: ok') {
+  fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ tool: 'probe', credential: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN || null }) + '\\n');
   say({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', ...credits, unifiedWindows: { five_hour: { utilization: 0.01, resetsAt: u.reset }, seven_day: { utilization: u.used, resetsAt: u.reset } } } });
   say({ type: 'result', subtype: 'success', is_error: false, result: 'ok' });
   return;
@@ -284,6 +285,10 @@ const fableCalls = calls('claude').filter((c) => flag(c, '--model') === FABLE_AR
 t('AC1 with credits off everywhere it runs', r.status, 0);
 t('AC1 each task on the Fable model', fableCalls.length, 2);
 t('a Fable run drops credentials that would bill instead of the login it checked, which the other sides keep', `${fableCalls.filter((c) => c.credential).length} ${calls('claude').filter((c) => flag(c, '--model') !== FABLE_ARM.model && c.credential).length}`, '0 4');
+// Four Opus and Sonnet runs with a guard probe before and after each keep the token. The two Fable runs'
+// guard probes (four) and the credit checks (two before any run, two before each Fable run) drop it.
+const probes = calls('probe');
+t('the quota guard reads a Fable run on the login it spends, and the other sides as they run', `${probes.filter((c) => c.credential === 'token-test').length} ${probes.filter((c) => c.credential === null).length}`, '8 10');
 t('AC1 and is scored like any side', `${fableRes['fix.fable'].status} ${fableRes['nofix.fable'].status}`, 'accepted rejected');
 const fableReport = renderReport({ out: onSides, run: loadRun(onSides), joined: { arms: Object.fromEntries([...ARMS, FABLE_ARM].map((a) => [a.name, { scores: [{ task: 'fix', score: 3 }] }])) }, baseline: { ok: false, why: 'none', path: 'x' } }).text;
 const fableRow = fableReport.split('\n').find((l) => l.startsWith('| Tasks accepted, of tasks run |'));

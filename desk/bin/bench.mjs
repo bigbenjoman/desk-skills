@@ -354,8 +354,10 @@ export function runBench(opts, log = () => {}) {
       if (armStops.has(arm.name)) return { arm: arm.name, status: 'not run', why: `stopped: ${armStops.get(arm.name)}`, dir: null };
       const vendor = Q.armVendor(arm);
       if (vendor === 'claude' && spent + budget > total + 1e-9) { log(`skip ${task.id} (${arm.name}): $${spent.toFixed(2)} of $${total} spent`); return { arm: arm.name, status: 'not run', dir: null }; }
-      const account = Q.accountFor(vendor, armEnv());
-      const start = Q.startRun({ account, settings, ledger, env: armEnv(), id: `${dir}@${new Date().toISOString()}`, fields: { task: task.id, arm: arm.name } });
+      // The guard reads the account the run spends, so an arm with its own environment gives it here too.
+      const env = arm.env ? arm.env(armEnv()) : armEnv();
+      const account = Q.accountFor(vendor, env);
+      const start = Q.startRun({ account, settings, ledger, env, id: `${dir}@${new Date().toISOString()}`, fields: { task: task.id, arm: arm.name } });
       points.set(account.key, start.line);
       if (start.why) {
         stopped = `stopped: ${start.why}`;
@@ -366,7 +368,7 @@ export function runBench(opts, log = () => {}) {
       log(`run ${task.id} (${arm.name})`);
       const r = runOne(repo, task, arm, order, opts, out, dir, secrets);
       if (vendor === 'claude') spent += r.cost ?? budget;
-      const end = Q.endRun({ account, settings, ledger, env: armEnv(), before: start.before, entry: start.entry, label: `${task.id} (${arm.name})` });
+      const end = Q.endRun({ account, settings, ledger, env, before: start.before, entry: start.entry, label: `${task.id} (${arm.name})` });
       r.quota = end.quota;
       if (end.stop) stopped = `stopped: ${end.stop}`;
       else points.set(account.key, end.line);
