@@ -167,24 +167,28 @@ check "DS-320 AC2 the next pass finds the base current and clears the tries" \
 check "DS-320 AC2 and spawns resume" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && origin_has_main'
 
 # A live base conflict fix holds one worker, counted once. holding <case> <concurrency row> <batch's
-# number> [machine cap]: not feature mode, one ready ticket, the fix's session live, borrowing on.
+# number> [machine cap] [another running ticket's session]: not feature mode, one ready ticket, the
+# fix's session live, borrowing on.
 holding(){
   : > "$T/spawns"; fresh "$1"
   printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `%s` |\n| Borrow idle workers | `off` | `on` |\n' "$2" >> "$C/config.md"
   node "$B/queue.mjs" set-batch "concurrency=$3" 'base_fix={"tries":[{"try":1,"head":"abc"}],"running":"sid-fix","port":3510}' >/dev/null
   mkdir -p "$C/state/logs"; : > "$C/state/logs/base-feat-x.log"
-  jq -n '[{sessionId: "sid-fix", pid: 1}]' > "$T/agents.json"
+  [ -z "${5:-}" ] || { node "$B/queue.mjs" add T-0 >/dev/null; node "$B/queue.mjs" set T-0 state=running branch=feat/T-0 "session_id=$5" >/dev/null; }
+  jq -n --arg s "${5:-}" '[{sessionId: "sid-fix", pid: 1}] + (if $s == "" then [] else [{sessionId: $s, pid: 1}] end)' > "$T/agents.json"
   printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / %s` | x |\n' "${4:-10}" > "$C/machine.md"
   DESK_MACHINE="$C/machine.md" pass
   rm -f "$T/agents.json"
 }
 holding bslot '3 / 3' 2
 check "DS-519 AC1 a live base fix and one free repo slot: the ready ticket starts" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && [[ "$out" == *"spawned: T-1"* ]]'
-holding bborrow '1 / 2' 1
+holding bborrow '2 / 3' 2 10 sid-t0
 check "DS-519 AC1 a slot borrowed above the batch's own number starts it too" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ]'
-check "DS-519 AC1 and the report counts it as borrowed, the base fix among the running" '[[ "$out" == *"borrowing: 1 worker borrowed this pass, 1 above the batch'"'"'s own number of 1 (machine 10: 1 running"* ]]'
+check "DS-519 AC1 and the report counts it as borrowed, the base fix among the running" '[[ "$out" == *"borrowing: 1 worker borrowed this pass, 1 above the batch'"'"'s own number of 2 (machine 10: 2 running"* ]]'
 holding bone '1 / 1' 1
 check "DS-519 AC2 a batch of 1: the base fix holds its one worker, and no ticket starts" '[ ! -s "$T/spawns" ] && [[ "$out" == *"conflict fix try 1 of 2 is merging main into feat/x"* ]]'
+holding bonecap '1 / 2' 1
+check "DS-519 AC2 a batch of 1 with room to borrow: still no ticket, and no borrowing reported" '[ ! -s "$T/spawns" ] && [[ "$out" != *"may be borrowed"* ]] && [[ "$out" != *"borrowed this pass"* ]]'
 holding bmachine '3 / 3' 2 1
 check "DS-519 AC3 a machine cap with no room: no ticket starts" '[ ! -s "$T/spawns" ]'
 : > "$T/spawns"; fresh bnofix

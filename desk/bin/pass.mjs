@@ -1425,8 +1425,8 @@ if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWan
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
 const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
-const planFor = (workers) => borrowPlan({
-  on: BORROW.on, share: concurrency, cap: E.concurrencyLimits().cap, running: workers, wanted: spawnable.length,
+const planFor = (workers, on = BORROW.on) => borrowPlan({
+  on, share: concurrency, cap: E.concurrencyLimits().cap, running: workers, wanted: spawnable.length,
   others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
 });
 const plan = planFor(running.length);
@@ -1853,9 +1853,10 @@ const triageBrief = (t) => {
 
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing. A base conflict fix worker still at it
-// holds one of the batch's own number; the machine and repo budgets have counted it already.
+// holds one of the batch's own number; the machine and repo budgets have counted it already. In a batch
+// of 1 it holds the batch's one worker, and no ticket borrows a way round that.
 const ticketWorkers = running.length + (baseFixLive ? 1 : 0);
-const ticketPlan = planFor(ticketWorkers);
+const ticketPlan = planFor(ticketWorkers, BORROW.on && !(baseFixLive && concurrency === 1));
 const ticketSlots = Math.min(slots, ticketPlan.slots);
 let attempts = 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two
