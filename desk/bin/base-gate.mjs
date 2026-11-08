@@ -116,8 +116,7 @@ function gate() {
   }
   sha = git(path, ['rev-parse', 'HEAD']);
   ours = path;
-  const pre = E.configValue('command-prefix');
-  const prefix = pre && !E.isNone(pre) ? pre.trim() : '';
+  const prefix = E.commandPrefix();
   const run = (lock, { dir, cmd }) => runItem({ bin: BIN, root: path, dir, cmd, lock, prefix });
 
   for (const it of items('install-cmd')) {

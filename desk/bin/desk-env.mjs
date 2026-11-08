@@ -621,6 +621,11 @@ function configValuesIn(parsed, id) {
   return items;
 }
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
+// §4 Command prefix, '' with the row unset or `none`.
+export function commandPrefix() {
+  const pre = configValue('command-prefix');
+  return pre && !isNone(pre) ? pre.trim() : '';
+}
 
 // key=value pairs, as the §4 Clean review verdict row writes them.
 export function pairs(text) {
@@ -1741,8 +1746,7 @@ if (isMain) {
         if (!w.test) { console.error(`desk-env workspace-test: ${w.dir} has no package.json test script`); process.exit(2); }
         const pmItems = configValues('package-manager');
         const cmd = TS.workspaceTestCmd(TS.packageManager(top, pmItems && !isNone(pmItems) ? pmItems[0] : null), w.test, configValue('test-cap'));
-        const pre = configValue('command-prefix');
-        const prefix = pre && !isNone(pre) ? pre.trim() : '';
+        const prefix = commandPrefix();
         const [bin, ...argv] = prefix ? ['sh', '-c', `${prefix} ${cmd}`] : cmd.split(' ');
         const r = spawnSync(bin, argv, { cwd: join(top, w.dir), stdio: 'inherit' });
         const code = r.status ?? 1;
@@ -1769,8 +1773,7 @@ if (isMain) {
           const at = git(top, 'merge-base', 'HEAD', `origin/${a.b.base}`);
           if (at && at !== a.b.sha) console.log(`note: this branch is on ${at.slice(0, 12)}, not the recorded ${a.b.sha.slice(0, 12)}: an error the base fixed or added since reads differently until you rebase`);
         } else console.log(`baseline: off (${a.why}): the full check`);
-        const pre = configValue('command-prefix');
-        const prefix = pre && !isNone(pre) ? pre.trim() : '';
+        const prefix = commandPrefix();
         let pass = true;
         for (const { dir, cmd } of list) {
           const run = B.runItem({ bin: binDir(), root: top, dir, cmd, lock: lockFor(row), prefix });

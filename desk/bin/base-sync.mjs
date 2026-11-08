@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { baseFixKey, binDir, configValue, configValues, isNone, parseCommandItem } from './desk-env.mjs';
+import { baseFixKey, binDir, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
 import { runItem } from './baseline.mjs';
 
 const git = (cwd, args) => {
@@ -76,7 +76,7 @@ function catchUp(path, base, branch) {
 
 const CHECK_TIMEOUT_MS = 300_000;
 // The end of a check's output, short enough to quote in a report line or keep on the queue.
-export const checkQuote = (out) => String(out ?? '').split('\n').map((l) => l.trim()).filter(Boolean).slice(-10).join('\n').slice(-800);
+const checkQuote = (out) => String(out ?? '').split('\n').map((l) => l.trim()).filter(Boolean).slice(-10).join('\n').slice(-800);
 
 // §4 Merged-tree check as a function of a worktree: null while it passes, else { command, output }.
 // null with the row unset or `none`.
@@ -84,8 +84,7 @@ export function mergedTreeCheck() {
   const row = configValues('merged-tree-check-cmd');
   if (!row || isNone(row)) return null;
   const items = row.map(parseCommandItem);
-  const pre = configValue('command-prefix');
-  const prefix = pre && !isNone(pre) ? pre.trim() : '';
+  const prefix = commandPrefix();
   return (root) => {
     for (const { dir, cmd } of items) {
       const r = runItem({ bin: binDir(), root, dir, cmd, lock: 'nolock', prefix, timeout: CHECK_TIMEOUT_MS });

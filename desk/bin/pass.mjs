@@ -1502,6 +1502,9 @@ let baseWt = null;
 // What a base_fix try is for: a conflict, a merge §4 Merged-tree check failed, or the epic PR's review
 // (kind `review`).
 const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.check ? 'merged-tree fix' : 'conflict fix');
+// A merge try that parks or dies can leave its merge in the base worktree, and the next sync, which
+// refuses a worktree holding anything, must reach the merge again to report it.
+const dropTryMerge = (path, last) => { if (last.kind !== 'review') dropUnpushed({ path, base: BASE }); };
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
 // A base that conflicts with the default branch goes to a conflict fix worker in the base worktree
@@ -1589,9 +1592,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
       bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
       if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-      // A merged-tree try that parks can leave its merge committed here, and the next sync must reach
-      // the check again to quote it to the person.
-      if (!DRY && wt.ok && bf.tries[bf.tries.length - 1].check) dropUnpushed({ path: wt.path, base: BASE });
+      if (!DRY && wt.ok) dropTryMerge(wt.path, bf.tries[bf.tries.length - 1]);
       baseLines.push(`base ${tryWhat(bf.tries[bf.tries.length - 1])}: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}`);
     } else {
       baseFixLive = true;
@@ -1618,7 +1619,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     const said = check
       ? `merging ${SOURCE} into ${BASE} fails §4 Merged-tree check (${check.command}), nothing pushed. Its output: ${check.output.replace(/\n/g, ' / ')}`
       : `merging ${SOURCE} into ${BASE} conflicts, nothing pushed. Conflicting files: ${files?.length ? files.join(', ') : 'not listed'}`;
-    const Try = check ? 'Merged-tree fix' : 'Conflict fix';
+    const what = tryWhat({ check });
+    const Try = `${what[0].toUpperCase()}${what.slice(1)}`;
     if (c.call === 'person' || c.call === 'stuck') { toPerson(`${said}. ${c.why[0].toUpperCase()}${c.why.slice(1)}: resolve it by hand in ${wt.path} and push`); return null; }
     if (c.call === 'wait') return `${said}. ${Try} try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running}); the base is synced once it pushes`;
     if (!baseFixRoom) return `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass)`;
@@ -1814,8 +1816,7 @@ function recordBaseline(path) {
   if (head !== origin) return drop(`the base worktree ${path} is not at origin's ${BASE} (${origin.slice(0, 12) || 'unreadable'}), which workers start from`);
   if (sh('git', ['-C', path, 'status', '--porcelain'], { tolerant: true })) return drop(`the base worktree ${path} has uncommitted changes`);
   const items = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v.map(E.parseCommandItem) : []; };
-  const pre = E.configValue('command-prefix');
-  const prefix = pre && !E.isNone(pre) ? pre.trim() : '';
+  const prefix = E.commandPrefix();
   const run = (lock, { dir, cmd }) => BL.runItem({ bin: BIN, root: path, dir, cmd, lock, prefix });
   let list;
   try { list = { typecheck: items('typecheck-cmd'), lint: items('lint-cmd') }; } catch (e) { return drop(e.message); }
@@ -2225,6 +2226,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
     const outcome = `could not be resumed after it ${ended}: ${reason}`;
     bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
     q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+    if (wt) dropTryMerge(wt, bf.tries[bf.tries.length - 1]);
     report.failed.push(`${key}: ${ended}, and ${outcome}`);
   };
   if (!wt) return fail(why ?? 'the base worktree is gone');

@@ -69,6 +69,8 @@ Where §4 Merged-tree check is set, the sync runs it after a clean merge and bef
 is handled as a conflict is: nothing is pushed and a base fix worker gets the check's output, briefed
 to move the base's own changes (two migrations with one revision number, say) after the default
 branch's. When its tries are spent, `WAITING ON YOU` quotes that output and says nothing was pushed.
+A conflict fix worker runs the same check on its merged tree before it pushes, since the next sync
+finds nothing to merge and never reaches it.
 
 **Baseline checks (config §4 "Baseline checks" `on`).** Once the sync is done, and only when the
 base has moved since the last record, the pass runs §4 Install, Typecheck and Lint in the base

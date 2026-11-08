@@ -71,7 +71,9 @@ t('AC2 negative: a conflict briefing does not', baseFixBrief(ctx).includes('renu
 t('AC2 the ticket makes the check an acceptance criterion', baseFixTicket(treeCtx).includes('`desk-env cmds merged-tree-check-cmd` prints passes on the merged feat/x'), true);
 const treeTask = baseFixTask(treeCtx);
 t('AC2 the task runs the check before the push', treeTask.indexOf('Before you push, run those items again') > 0 && treeTask.indexOf('Before you push, run those items again') < treeTask.indexOf('Otherwise push with git push origin feat/x'), true);
-t('AC5 the task pushes nothing while it fails', treeTask.includes('If the check still fails, push nothing and park quoting its output'), true);
+t('AC1 a conflict task runs the check before its push', task.indexOf('merged-tree-check-cmd') > 0 && task.indexOf('merged-tree-check-cmd') < task.indexOf('Push with git push origin feat/x'), true);
+t('AC1 a conflict ticket makes the check a criterion', baseFixTicket(ctx).includes('merged-tree-check-cmd'), true);
+t('AC5 the task pushes nothing while it fails',treeTask.includes('If the check still fails, push nothing and park quoting its output'), true);
 
 // DS-508 AC2: the epic PR's review tries share base_fix, one per head and at most FIX_TRIES_MAX.
 const v1 = { pr: 300, head: H1 };
