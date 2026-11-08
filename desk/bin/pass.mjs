@@ -1434,7 +1434,21 @@ let lockWhy = null;
 // A base gate that failed on a conflict can start a base conflict fix worker with no ticket to spawn,
 // so it counts under the lock as a ticket's spawn does. Pacing holds no fix try (below).
 const gateFixDue = E.batchBase() != null && fresh.gate?.state === 'failed' && Array.isArray(fresh.gate.conflict) && !fresh.base_fix?.running;
-const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !(held === PACE_HELD ? null : held));
+const BASE = E.batchBase();
+const SOURCE = E.configValue('default-branch');
+const baseLines = [];
+// An epic batch not in feature mode (epicBatch), and its epic PR as readEpicPr read it.
+const epicOn = !!BASE && !!SOURCE && BASE !== SOURCE && epicBatch(fresh);
+const epicPr = epicOn ? readEpicPr(fresh) : null;
+const baseWorkerHeld = held === PACE_HELD ? null : held;
+// A draft epic PR's review try is a worker with no ticket to spawn, so it claims its one slot as a due
+// gate conflict fix does, but only when this pass could start it: a claim it cannot use would keep the
+// slot from a sibling batch every pass. Only a clean review not yet acted on is counted wrongly, for
+// the one pass that takes the PR out of draft.
+const epicReviewDue = !baseWorkerHeld && !lowMemory && running.length < concurrency && epicPr?.state === 'OPEN' && epicPr.isDraft
+  && epicPr.head != null && epicDue(fresh) && !fresh.base_fix?.running
+  && epicReviewCall(fresh.base_fix, { pr: epicPr.pr, head: epicPr.head }, { alive: false }).call === 'spawn';
+const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue;
 if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWanted && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
@@ -1452,11 +1466,12 @@ const planFor = (workers, on = BORROW.on) => borrowPlan({
 const plan = planFor(running.length);
 // This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
 const ownBaseFix = fresh.base_fix?.running ? 1 : 0;
-const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length), machine: MACHINE_CAP, queues: otherRepos });
+// A base conflict fix or epic review due with no ticket to spawn still wants its one slot.
+const wantedWorkers = Math.min(plan.slots, spawnable.length) || (gateFixDue || epicReviewDue ? 1 : 0);
+const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: wantedWorkers, machine: MACHINE_CAP, queues: otherRepos });
 const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
-// A base conflict fix due with no ticket to spawn still wants its one slot.
 const REPO = repoBudget({
-  batch: E.batchName(), running: running.length + ownBaseFix, wanted: Math.min(plan.slots, spawnable.length) || (gateFixDue ? 1 : 0),
+  batch: E.batchName(), running: running.length + ownBaseFix, wanted: wantedWorkers,
   last: fresh.last_start ?? null, cap: E.concurrencyLimits().cap, batches: repoBatches,
 });
 // A repo's batches share its cap only under the lock: without it two passes could each count the same
@@ -1473,8 +1488,6 @@ const CEILING = E.memoryCeiling();
 // branch is merged into the base only before a pass that will spawn, so new workers start on a current
 // tree. A sync that cannot run is reported; in feature mode it also holds this pass's spawns, since
 // the feature's children are built and tested against the base as one.
-const BASE = E.batchBase();
-const SOURCE = E.configValue('default-branch');
 // §0 Default branch, not DEFAULT_BRANCH, which a named batch sets to its base.
 const REPO_DEFAULT = String(SOURCE ?? '').trim() || 'main';
 // Config §3b "Promotion slice size (children)": how many children merge into the base between base
@@ -1492,12 +1505,8 @@ const gateAlive = (g) => {
   if (g?.state !== 'running' || !g.pid) return false;
   try { process.kill(g.pid, 0); return true; } catch { return false; }
 };
-const baseLines = [];
 let baseHold = false;
-// An epic batch not in feature mode (epicBatch), its epic PR as readEpicPr read it, and the base
-// worktree's path, set below.
-let epicOn = false;
-let epicPr = null;
+// The base worktree's path, set below.
 let baseWt = null;
 // What a base_fix try is for: a conflict, a merge §4 Merged-tree check failed, or the epic PR's review
 // (kind `review`).
@@ -1520,7 +1529,13 @@ let baseFixResume = null;
 let gateConflict = null;
 // Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
 // machine budget and the repo's shared §3b cap bind it as they bind every worker.
-const baseFixRoom = !(held === PACE_HELD ? null : held) && !lowMemory && running.length < concurrency && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
+const baseFixRoom = !baseWorkerHeld && !lowMemory && running.length < concurrency && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
+// Why no base worker may start this pass, the first of the holds baseFixRoom tests.
+const noBaseFixRoom = () => baseWorkerHeld ?? (lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
+  : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
+  : MACHINE.room <= 0 ? MACHINE.line
+  : repoUnlocked ? repoLine
+  : REPO.line);
 if (BASE && SOURCE && BASE !== SOURCE) {
   // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
   // for a batch that runs as an ordinary one.
@@ -1531,8 +1546,6 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   // base's does not (pr_status.behind, from the last pass), gets CI only once the base is synced, so the
   // base syncs even with nothing to spawn. So does an open epic PR, which merges into the default branch.
   const staleCI = behindPrs(fresh);
-  epicOn = !featureMode && epicBatch(fresh);
-  epicPr = epicOn ? readEpicPr(fresh) : null;
   const wantSync = willSpawn || staleCI.length > 0 || epicPr?.state === 'OPEN';
   const holdNote = featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands';
   const blocked = (why) => {
@@ -1623,7 +1636,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     const Try = `${what[0].toUpperCase()}${what.slice(1)}`;
     if (c.call === 'person' || c.call === 'stuck') { toPerson(`${said}. ${c.why[0].toUpperCase()}${c.why.slice(1)}: resolve it by hand in ${wt.path} and push`); return null; }
     if (c.call === 'wait') return `${said}. ${Try} try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running}); the base is synced once it pushes`;
-    if (!baseFixRoom) return `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass)`;
+    if (!baseFixRoom) return `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass: ${noBaseFixRoom()})`;
     baseFix = { wt: wt.path, fix: c.fix };
     return `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts this pass in ${wt.path}`;
   };
@@ -2455,7 +2468,8 @@ if (!DRY) {
 // Every worker started under the lock is recorded running in this queue, so other passes count it,
 // and so is when, so the repo's batches take the shared cap's free slots in turn (repoBudget).
 if (!DRY && report.spawned.length > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
-borrowLock?.release();
+// An epic review try starts in epicStep, which releases the lock once the slot it counted is taken.
+if (!(epicReviewDue && baseFixRoom && !baseFix)) borrowLock?.release();
 // The batch's hold on the usage limit, for desk-q, needs-you and the next pass: one record, kept from
 // the first pass that held until the one that finds it lifted.
 {
@@ -3781,7 +3795,7 @@ async function epicStep(qx) {
     else if (c.call === 'wait') out.push(`epic PR #${n}: review try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is at it (session ${bf.running})`);
     else if (c.call === 'stuck') report.waiting.push(`EPIC PR: #${n} stays draft: ${c.why}. Review it yourself, fix it on ${BASE}, or post a clean review at its head; it leaves draft once one stands there. ${link}`);
     else if (!baseWt) out.push(`epic PR #${n}: review try ${c.fix.try} of ${c.fix.of} waits on the base worktree`);
-    else if (baseFix || !baseFixRoom) out.push(`epic PR #${n}: review try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass)`);
+    else if (baseFix || !baseFixRoom) out.push(`epic PR #${n}: review try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass: ${baseFix ? `the conflict fix on ${BASE} starts first` : noBaseFixRoom()})`);
     else {
       // The spawn summary is already printed by now, so this try says its own.
       const [s0, f0] = [report.spawned.length, report.failed.length];
@@ -3804,6 +3818,7 @@ async function epicStep(qx) {
   return true;
 }
 const epicPending = await epicStep(queue());
+borrowLock?.release();
 
 // ---- promotion ledger ------------------------------------------------------
 // The promotion PR carries one comment with one row per child (ledger.mjs), rewritten whenever a row
