@@ -182,6 +182,7 @@ holding bslot '3 / 3' 2
 check "DS-519 AC1 a live base fix and one free repo slot: the ready ticket starts" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && [[ "$out" == *"spawned: T-1"* ]]'
 holding bborrow '1 / 2' 1
 check "DS-519 AC1 a slot borrowed above the batch's own number starts it too" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ]'
+check "DS-519 AC1 and the report counts it as borrowed, the base fix among the running" '[[ "$out" == *"borrowing: 1 worker borrowed this pass, 1 above the batch'"'"'s own number of 1 (machine 10: 1 running"* ]]'
 holding bone '1 / 1' 1
 check "DS-519 AC2 a batch of 1: the base fix holds its one worker, and no ticket starts" '[ ! -s "$T/spawns" ] && [[ "$out" == *"conflict fix try 1 of 2 is merging main into feat/x"* ]]'
 holding bmachine '3 / 3' 2 1

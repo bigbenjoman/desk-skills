@@ -1854,7 +1854,9 @@ const triageBrief = (t) => {
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing. A base conflict fix worker still at it
 // holds one of the batch's own number; the machine and repo budgets have counted it already.
-const ticketSlots = baseFixLive ? Math.min(slots, planFor(running.length + 1).slots) : slots;
+const ticketWorkers = running.length + (baseFixLive ? 1 : 0);
+const ticketPlan = planFor(ticketWorkers);
+const ticketSlots = Math.min(slots, ticketPlan.slots);
 let attempts = 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two
 // batches' worker blocks can meet, and a worker's port is unbound until it starts a server, so probing
@@ -2432,7 +2434,7 @@ borrowLock?.release();
     q('set-batch', `usage_hold=${JSON.stringify(rec)}`);
   } else if (was) q('set-batch', 'usage_hold=null');
 }
-const borrowLine = borrowedLine(plan, { share: concurrency, running: running.length, spawned: report.spawned.length });
+const borrowLine = borrowedLine(ticketPlan, { share: concurrency, running: ticketWorkers, spawned: report.spawned.length });
 
 // ---- epics ---------------------------------------------------------------
 // A triage record written before ticket-facts.mjs recorded `epic` has no such key, and a ticket
