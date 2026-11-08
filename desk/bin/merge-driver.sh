@@ -78,7 +78,8 @@
 #                                            steps only the person takes: held, green or not, until
 #                                            pass.mjs reads each Done in Jira and lifts it
 #   - waits on the person's instruction      its ticket's fix is the person's instruction (needs-you
-#                                            resume) and pass.mjs has not closed it: held before any
+#                                            resume) or a migration rename try, and
+#                                            pass.mjs has not closed it: held before any
 #                                            other step, with nothing rerun or updated, and read again
 #                                            just before the merge
 #   - shares a file with a repaired PR       a PR whose conflict repair finished (fix-tries.mjs), or that a
@@ -630,14 +631,17 @@ EOF_ROUTINES
 
 # The person's instruction on a ready PR (needs-you resume, fix-tries.mjs instructionFix) leaves it open
 # for a worker to change: until pass.mjs closes that fix, its head is not yet what the person asked for,
-# and a worker that parked or failed has not done it. A queue that cannot be read holds it too.
-instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge waits on the instruction
+# and a worker that parked or failed has not done it. A migration rename try (renamesFix) is the same: a
+# green child still names the old file until it is done. A queue that cannot be read holds it too.
+instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge waits on that worker
   local open
   [ -f "$DESK_QUEUE" ] || return 1
-  if ! open=$(jq -r --arg k "$2" '(.tickets[$k].fix // {}) | .kind == "instruction" and (.finished | not)' "$DESK_QUEUE" 2>/dev/null); then
+  if ! open=$(jq -r --arg k "$2" '(.tickets[$k].fix // {}) | if .finished then "" else (.kind // "") end' "$DESK_QUEUE" 2>/dev/null); then
     log "#$1 could not read the queue for the person's instruction — not merging it this loop"
-  elif [ "$open" = true ]; then
+  elif [ "$open" = instruction ]; then
     log "#$1 HELD: a worker has still to carry out the person's instruction on it — not merging until that fix is finished"
+  elif [ "$open" = renames ]; then
+    log "#$1 HELD: a worker has still to update the migrations it names — not merging until that fix is finished"
   else
     return 1
   fi

@@ -31,12 +31,16 @@ function forkPoint({ head, base, git }) {
 // The migrations the base has renumbered since the child left it that the child's own changes still
 // name by their old filename, each with the files naming it. Files the child did not change are the
 // base's, and the base's rename updated those. -> [{ from, to, old, new, files }]; none when git cannot say.
+// Read from the fork point and from the merge base: a child already on the base's first rename names
+// that file, and the fork point's diff sees only the migration's first and last names.
 export function childRenames({ head, base, git }) {
-  const fork = forkPoint({ head, base, git });
-  const moved = fork ? git(['diff', '-M', '--diff-filter=R', '--name-status', fork, base]) : null;
-  const renames = moved?.ok ? renumberings(moved.out) : [];
-  if (!renames.length) return [];
   const mergeBase = git(['merge-base', head, base]);
+  const since = [forkPoint({ head, base, git }), mergeBase.ok ? mergeBase.out : null].filter(Boolean);
+  const renames = [...new Map(since.flatMap((from) => {
+    const moved = git(['diff', '-M', '--diff-filter=R', '--name-status', from, base]);
+    return moved.ok ? renumberings(moved.out) : [];
+  }).map((r) => [`${r.from}\0${r.to}`, r])).values()];
+  if (!renames.length) return [];
   const changed = mergeBase.ok ? git(['diff', '--name-only', mergeBase.out, head]) : null;
   const own = changed?.ok ? changed.out.split('\n').filter(Boolean) : [];
   return renames.flatMap((r) => {

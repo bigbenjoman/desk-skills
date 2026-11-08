@@ -47,6 +47,14 @@ const merged = run('rev-parse', 'HEAD');
 t('AC1 still found once the base is merged in', childRenames({ head: merged, base: 'main', git }).map((r) => r.files), [['tests/test_child.py']]);
 const fixed = put('tests/test_child.py', 'open("backend/migrations/versions/129_add_model.py")\n', 'names the new file');
 t('AC3 nothing once the child names the new file', childRenames({ head: fixed, base: 'main', git }), []);
+
+// The base renames it again after the child followed the first rename: the child names the middle name.
+run('merge', '-q', '--no-edit', 'main');
+const onMiddle = run('rev-parse', 'HEAD');
+run('checkout', '-q', 'main');
+run('mv', NEW, `${V}/130_add_model.py`);
+run('commit', '-q', '-m', 'renumber again');
+t('AC1 a second rename of a name the child followed is found', childRenames({ head: onMiddle, base: 'main', git }).map((r) => [r.old, r.new, r.files]), [['129_add_model.py', '130_add_model.py', ['tests/test_child.py']]]);
 run('checkout', '-q', 'main');
 rmSync(dir, { recursive: true, force: true });
 
