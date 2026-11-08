@@ -170,7 +170,7 @@ export function reachAttempts(transcript) {
 }
 
 // An arm's environment: another repo's, with no way to turn caching off and no token for GitHub.
-const armEnv = () => Object.fromEntries(Object.entries(otherRepoEnv())
+export const armEnv = () => Object.fromEntries(Object.entries(otherRepoEnv())
   .filter(([k]) => !/^(DISABLE_PROMPT_CACHING|GH_TOKEN$|GITHUB_TOKEN$|DESK_AUTOPILOT_WORKER$|DESK_BATCH$)/.test(k)));
 
 const both = (p) => [...new Set([p, realpathSync(p)])];
@@ -323,34 +323,21 @@ export function runBench(opts, log = () => {}) {
       if (stopped) return { arm: arm.name, status: 'not run', why: stopped, dir: null };
       if (spent + budget > total + 1e-9) { log(`skip ${task.id} (${arm.name}): $${spent.toFixed(2)} of $${total} spent`); return { arm: arm.name, status: 'not run', dir: null }; }
       const account = Q.accountFor(Q.armVendor(arm), armEnv());
-      const before = Q.readWeekly(account, { env: armEnv() });
-      const used = Q.benchUsed(Q.readLedger(ledger), account, before);
-      points.set(account.key, Q.pointsLine(account, used, settings, before));
-      const why = Q.gate({ account, reading: before, used, settings });
-      if (why) {
-        stopped = `stopped: ${why}`;
-        log(`stopped before ${task.id} (${arm.name}): ${why}`);
+      const start = Q.startRun({ account, settings, ledger, env: armEnv(), id: `${dir}@${new Date().toISOString()}`, fields: { task: task.id, arm: arm.name } });
+      points.set(account.key, start.line);
+      if (start.why) {
+        stopped = `stopped: ${start.why}`;
+        log(`stopped before ${task.id} (${arm.name}): ${start.why}`);
         log(points.get(account.key));
         return { arm: arm.name, status: 'not run', why: stopped, dir: null };
       }
       log(`run ${task.id} (${arm.name})`);
-      const id = `${dir}@${new Date().toISOString()}`;
-      const entry = { id, account: account.key, name: account.name, task: task.id, arm: arm.name, resetsAt: before.resetsAt, before: before.used, after: null, points: null, at: new Date().toISOString() };
-      Q.record(entry, ledger);
       const r = runOne(repo, task, arm, order, opts, out, dir, secrets);
       spent += r.cost ?? budget;
-      let after = Q.readWeekly(account, { env: armEnv() });
-      // The reading the run started on, read again, says nothing of what the run spent.
-      if (!after.why && !(after.at > before.at)) after = { why: 'no weekly reading newer than the one the run started on' };
-      if (after.why) {
-        r.quota = { account: account.name, before: before.used, after: null, points: null, why: after.why };
-        stopped = `stopped: ${Q.unreadable(account, after.why, ` after ${task.id} (${arm.name})`)}`;
-      } else {
-        const p = Q.runPoints(before, after);
-        r.quota = { account: account.name, before: before.used, after: after.used, points: p.points };
-        Q.record({ ...entry, resetsAt: p.resetsAt, after: after.used, points: p.points }, ledger);
-        points.set(account.key, Q.pointsLine(account, Q.benchUsed(Q.readLedger(ledger), account, after), settings, after));
-      }
+      const end = Q.endRun({ account, settings, ledger, env: armEnv(), before: start.before, entry: start.entry, label: `${task.id} (${arm.name})` });
+      r.quota = end.quota;
+      if (end.stop) stopped = `stopped: ${end.stop}`;
+      else points.set(account.key, end.line);
       writeFileSync(join(dir, 'result.json'), `${JSON.stringify(r, null, 2)}\n`);
       log(`  ${r.status}${r.why ? `: ${r.why}` : ''}${r.quota.points == null ? '' : ` (${r.quota.points} quota points)`}`);
       if (stopped) { log(stopped); log(points.get(account.key)); }

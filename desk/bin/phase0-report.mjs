@@ -351,7 +351,7 @@ export function archivedBatches({ queueRoot, stateRoot }) {
   return names.filter((n) => existsSync(join(qdone, n, 'queue.json')))
     .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n) }));
 }
-const allBatches = (slug) => {
+export const allBatches = (slug) => {
   const standing = E.batchPaths(slug);
   return [...listBatches(slug), ...archivedBatches({ queueRoot: dirname(standing.queue), stateRoot: standing.state })];
 };

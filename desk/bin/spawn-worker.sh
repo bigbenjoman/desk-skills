@@ -206,8 +206,9 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
     fi
   fi
   rm -f "$PREFLIGHT_RECORD"
-  RAW=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
-$CHECKS" \
+  PRE_PROMPT="Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
+$CHECKS"
+  RAW=$(desk_timeout 300 claude -p "$PRE_PROMPT" \
     --setting-sources "" --strict-mcp-config \
     ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} \
     --settings "$SETTINGS" \
@@ -217,6 +218,16 @@ $CHECKS" \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
     ${PRE_EFFORT_ARGS[@]+"${PRE_EFFORT_ARGS[@]}"} \
     --max-budget-usd 2 --output-format json 2>&1 < /dev/null | tr -d '\r') || true
+  # The call as the bench replays it (preflight-record.mjs), taken before any check tidies its files.
+  # A record that cannot be written never stops the spawn.
+  REC_ARGS=()
+  for p in "${TOOL_PROBES[@]}"; do REC_ARGS+=(--probe "$p"); done
+  for d in "${ADD_DIRS[@]}"; do [ "$d" != --add-dir ] && REC_ARGS+=(--add-dir "$d"); done
+  printf '%s' "$RAW" | node "$BIN/preflight-record.mjs" --state "$STATE" --ticket "$TICKET" --prompt "$PRE_PROMPT" \
+    --worktree "$WT" --canary "$CANARY" --settings "$SETTINGS" --agents "$AGENTS" --model "$MODEL" \
+    --effort "${PRE_EFFORT_ARGS[1]:-}" --tools "${TOOL_ARGS[1]:-}" --agent-names "$AGENT_NAMES" \
+    --gate "tracker=$TRACKER" --gate "codex-review=$CODEX_PERM" --gate "jira=$HAVE_JIRA" --gate "codex=$HAVE_CODEX" \
+    ${REC_ARGS[@]+"${REC_ARGS[@]}"} >/dev/null 2>&1 || echo "  note: the preflight call could not be recorded for the bench" >&2
   # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
   # a timeout) the raw output stands in for the reply, so its message still shows, and the cost is
   # unknown, never zero. pass.mjs reads the [preflight] cost line.

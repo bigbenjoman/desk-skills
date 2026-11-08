@@ -166,3 +166,28 @@ export function gate({ account, reading, used, settings }) {
 // The points line printed at every stop and in the report.
 export const pointsLine = (account, used, settings, reading) =>
   `quota: ${account.name}: the bench has used ${used} of ${settings.cap} points this week${reading?.why ? '' : `, weekly use ${round1(reading.used)}%`}`;
+
+// Before one run: reads the account, and either says why the run may not start or records its ledger
+// line. `fields` sit in that line after the account's name.  -> { line, why } | { line, before, entry }
+export function startRun({ account, settings, ledger = ledgerPath(), env = process.env, id, fields = {} }) {
+  const before = readWeekly(account, { env });
+  const used = benchUsed(readLedger(ledger), account, before);
+  const line = pointsLine(account, used, settings, before);
+  const why = gate({ account, reading: before, used, settings });
+  if (why) return { line, why };
+  const entry = { id, account: account.key, name: account.name, ...fields, resetsAt: before.resetsAt, before: before.used, after: null, points: null, at: new Date().toISOString() };
+  record(entry, ledger);
+  return { line, before, entry };
+}
+
+// After one run: reads the account again and records the run's points. `label` names the run in the
+// stop an unreadable reading makes.  -> { quota, line } | { quota, stop }
+export function endRun({ account, settings, ledger = ledgerPath(), env = process.env, before, entry, label }) {
+  let after = readWeekly(account, { env });
+  // The reading the run started on, read again, says nothing of what the run spent.
+  if (!after.why && !(after.at > before.at)) after = { why: 'no weekly reading newer than the one the run started on' };
+  if (after.why) return { quota: { account: account.name, before: before.used, after: null, points: null, why: after.why }, stop: unreadable(account, after.why, ` after ${label}`) };
+  const p = runPoints(before, after);
+  record({ ...entry, resetsAt: p.resetsAt, after: after.used, points: p.points }, ledger);
+  return { quota: { account: account.name, before: before.used, after: after.used, points: p.points }, line: pointsLine(account, benchUsed(readLedger(ledger), account, after), settings, after) };
+}

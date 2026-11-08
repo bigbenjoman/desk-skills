@@ -381,6 +381,24 @@ node ~/.claude/desk/bin/phase0-report.mjs --days 7 > <out>/phase0-baseline.txt
 node ~/.claude/desk/bin/bench-report.mjs --tasks <tasks.json> [--out <dir>] [--blind <dir>] [--baseline <file>]
 ```
 
+**`bench-replay.mjs`** asks whether the spawn preflight and the decider need Opus. It samples
+calls Opus answered in the last `--days` from every batch of this repo (or each `--state`): a
+preflight's record under `<state>/preflight/`, which `spawn-worker.sh` writes on every spawn, and a
+decider session's prompt and reply under `<state>/decider/`. A call whose files cannot be read, a
+preflight from before they were recorded, and an answer that cannot be read line by line are left
+out and counted. Each call is answered twice more. The no-model side is a script that answers from
+the call's recorded inputs whatever needs no model and marks the rest "needs a model". The model
+side (`--model`, Haiku by default, at low effort) is sent the same prompt: a preflight in a
+throwaway checkout with the recorded settings and tools, a decider with no tools. Each model replay
+goes through the bench's quota guard first. `<out>/replay-report.md` gives, per call type, each
+side's share of answers that match Opus's, tokens per call and quota points, and lists every
+mismatch:
+
+```
+node ~/.claude/desk/bin/bench-replay.mjs --out <dir> [--state <dir>]… [--days 7] [--sample 20] [--model haiku] \
+  [--max-budget-usd 0.5] [--total-budget-usd 5] [--seed <s>] [--no-haiku]
+```
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
