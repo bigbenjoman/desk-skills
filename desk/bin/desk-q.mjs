@@ -24,7 +24,9 @@
 // Timeline, By day and Epics, Costs on home and on a repo, and Usage, every Claude and Codex login on this
 // computer, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
-// of the repo named. Usage changes a login's rule or removes it with desk-env's logins set and remove. The supervisor command runs that repo's supervisor.mjs install, uninstall or
+// of the repo named. Usage changes a login's rule or removes it with desk-env's logins set and remove,
+// and adds one by showing its sign-in command and waiting until it is signed in; a Codex login's folder
+// is made then, with the label it is listed under. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
@@ -50,7 +52,8 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } f
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, readSubscriptions, signInParts } from './logins.mjs';
+import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, nextLoginFolder, readSubscriptions,
+  signInParts } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1000,7 +1003,9 @@ const segRow = (id, segs, open) => {
 // then the forecast line; a paused batch's reason and fix are one amber note each in `stopped`, the
 // other reasons plain lines in `notes`. With `width`, each line is wrapped to it.
 function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsage = false }) {
-  const list = slug ? repos.filter((r) => r.id === slug) : repos.filter(hasBatch);
+  // A repo's views read every batch of it, as its Queue does; an epic's keeps to the batch it opened in.
+  const place = !slug ? null : epic ? repos.find((r) => r.id === slug) : repoPlace(repos, slug);
+  const list = !slug ? repos.filter(hasBatch) : place?.batches ? repos.filter((r) => r.slug === place.slug && hasBatch(r)) : place ? [place] : [];
   // `note` is the one-line form `desk-q ships` prints; `text` the same under a note's repo tag.
   const per = list.map((r) => {
     const say = (note, text) => ({ r, note: `${r.name} · ${note}`, text });
@@ -1025,23 +1030,22 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
   // One repo's view adds its hit rate; every repo's leaves it to each repo's own. An epic's names it.
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
-  const head = [...tabHead(repos, slug, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list[0] : null)] : [])].flatMap(wrapped);
+  const head = [...tabHead(repos, place, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list : null)] : [])].flatMap(wrapped);
   const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${tagOf(r)}`, sgr: WARN, text: [[`${lead(r)}${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
-  return { list, per, notes, items, head, stopped };
+  return { list, per, notes, items, head, stopped, manyBatches: !!slug && list.length > 1 };
 }
 
 // A ships view's header: the Queue's, one repo's state counts and who runs it, or every repo's
 // needs-you and machine lines.
-function tabHead(repos, slug, now, solid, pinUsage) {
-  if (!slug) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
-  const r = repos.find((x) => x.id === slug);
-  return r?.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : usageLines(usageOf(repos, now, [r]), { now, solid }))] : [];
+function tabHead(repos, r, now, solid, pinUsage) {
+  if (!r) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
+  return r.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : usageLines(usageOf(repos, now, [r]), { now, solid }))] : [];
 }
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
-// merged tickets, then with one repo, its hit rate.
-function forecastSegs(now, count, checkin, ep, r) {
-  const h = r ? hitRate(readEstimates(r.stateDir)) : null;
+// merged tickets, then with one repo's batches, their hit rate.
+function forecastSegs(now, count, checkin, ep, batches) {
+  const h = batches ? hitRate(new Map(batches.flatMap((b) => [...readEstimates(b.stateDir)]))) : null;
   return segLine([['forecast  ', GREY], ['from ', GREY], [clock(now), null], [' · ', GREY], [RUNS.toLocaleString('en-GB'), BOLD], [' runs over ', GREY], [String(count), BOLD], [MERGED, GREY],
     ...(ep ? [[` · ${ep.key}: `, GREY], [`${ep.done} of ${ep.total}`, BOLD], [' children done', GREY]] : []),
     ...(checkin ? [[CHECKIN_DATED, GREY]] : []),
@@ -1106,8 +1110,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   const s = etaScope(repos, slug, { now, checkin, epic, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   if (!s.items.length && s.notes.length) return { head: [...s.head, ...(s.head.length ? [''] : []), ...s.notes], rows: [], foot: [] };
-  const F0 = slug && !epic ? s.per[0]?.F : null;
-  const epics = openEpics(F0).map((e) => ({ e, d: F0.E[e.key] })).sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
+  const epics = slug && !epic && s.per.some((p) => p.F) ? epicRows(s, now, checkin) : [];
   const byEpic = epics.length > 0;
   const items = byEpic ? s.items.filter((i) => !i.F.of[i.x.t.key]) : s.items;
   const lead = byEpic ? EP_LEAD : TL_LEAD;
@@ -1150,35 +1153,35 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
   };
   const rows = [];
   if (byEpic) {
-    const r = s.per[0].r;
-    for (const { e, d } of epics) {
+    for (const { r, F, e, d, opens = r.id } of epics) {
       const name = [[`  ${pad(cut(epicShort(e), EP_NAME - 1), EP_NAME)}`, null], [rpad(`${e.done}/${e.total}`, 5), DIM], [' ', null]];
-      const open = { kind: 'epic', slug: r.id, epic: e.key };
-      if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F0, e, checkin), whyColour(F0)]], open)); continue; }
+      const open = { kind: 'epic', slug: opens, epic: e.key };
+      if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F, e, checkin), whyColour(F)]], open)); continue; }
       const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
       rows.push(segRow(`${r.id}${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
-        [` ${pad(epicStarts(r, F0, e, d, now), 13)}${pad(when(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
+        [` ${pad(epicStarts(r, F, e, d, now), 13)}${pad(when(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
     }
-    if (items.length) rows.push(segRow(`${r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
+    if (items.length) rows.push(segRow(`${s.per[0].r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
   // By epic, a ticket is led by its title and has no TITLE column.
   const tlead = (i) => (byEpic ? [[`    ${pad(cut(tt(summaryOf(i)) || i.x.t.key, 16), 17)}`, null], [pad(LABEL[i.x.k], STATE_W), STATE_SGR[i.x.k]]] : ticketLead(i, '  '));
   const tail = (i) => (byEpic ? [] : [title(i)]);
-  for (const r of slug ? s.list : [...new Set(s.items.map((i) => i.r))]) {
-    const mine = (list) => list.filter((i) => i.r === r);
+  // One repo's batches are one list in ship order; every repo's view groups by batch.
+  for (const r of slug ? [null] : [...new Set(s.items.map((i) => i.r))]) {
+    const mine = (list) => list.filter((i) => !r || i.r === r);
     if (!slug) {
       const n = mine(s.items).length;
       rows.push(segRow(`repo ${r.id}`, [[`  ${r.name}`, BOLD], [` · ${n} ticket${n === 1 ? '' : 's'}`, DIM]], { kind: 'timeline', slug: r.id }));
     }
     for (const i of mine(dated)) {
       const sgr = STATE_SGR[i.x.k];
-      rows.push(segRow(`${r.id}${i.x.t.key}`, [...tlead(i), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], ...tail(i)], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...tlead(i), [' ', null], ...bar(i.e, sgr), [` ${pad(startsCell(i.F, i.x, now), 13)}${pad(shipsCell(i.F, i.x, now), 12)}`, null], ...tail(i)], openTicket(i, epic)));
     }
     // An undated row's reason takes the bar's and the dates' place, so its title lines up when it fits.
     for (const i of mine(undated)) {
       const [cell, left] = byEpic ? [width == null ? why(i) : cut(why(i), width - 22 - STATE_W), 0] : whyCell(why(i), cw + TL_TAIL + TL_GAP, tw);
       const title = byEpic ? [] : [[cut(tt(summaryOf(i)), left), null]];
-      rows.push(segRow(`${r.id}${i.x.t.key}`, [...tlead(i), [' ', null], [cell, STATE_SGR[i.x.k]], ...title], openTicket(i, epic)));
+      rows.push(segRow(`${i.r.id}${i.x.t.key}`, [...tlead(i), [' ', null], [cell, STATE_SGR[i.x.k]], ...title], openTicket(i, epic)));
     }
   }
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
@@ -1257,50 +1260,73 @@ function epicReadAt(r, F, key) {
   }
   return at;
 }
-// One row per repo and epic. Where several of a repo's batches hold its children, the counts are the
-// latest read of its children list, with the other batches' queued children counted as queued (with
-// no list read, every batch's children summed); the date is the latest, since an epic ships when its
-// last child merges, or none, with the reason of a batch that has none. `undated` are the epics of
-// batches that cannot date anything: each joins a row another batch lists, and adds none of its own.
-function epicPerRepo(list, undated = []) {
+// One row per repo and epic. Where several of a repo's batches hold its children, the children are
+// the latest read of its list plus every batch's own (with no list read, every batch's own), each
+// counted by the furthest any batch has it: done, then queued, then not queued. The date is the
+// latest, since an epic ships when its last child merges, or none, with the reason of a batch that
+// has none. `undated` are the epics of batches that cannot date anything, and `counted` those a batch
+// has nothing left to run on: each joins a row another batch lists, and adds none of its own.
+// An epic those joins leave with nothing to run has no row.
+const KID_RANK = { missing: 0, queued: 1, done: 2 };
+function epicPerRepo(list, undated = [], counted = []) {
   const groups = new Map();
   const idOf = (x) => `${x.r.slug}\0${x.e.key}`;
   for (const x of list) groups.set(idOf(x), [...(groups.get(idOf(x)) ?? []), x]);
   for (const x of undated) groups.get(idOf(x))?.push(x);
-  return [...groups.values()].map((g) => {
-    if (g.length === 1) return g[0];
-    const read = g.filter((x) => x.e.missing != null);
-    const fresh = (read.length ? read : g).map((x) => ({ x, at: epicReadAt(x.r, x.F, x.e.key) })).reduce((a, b) => (b.at > a.at ? b : a)).x;
-    const sum = (f) => g.reduce((n, x) => n + x.e[f], 0);
-    const elsewhere = sum('queued') - fresh.e.queued;
-    const e = fresh.e.missing == null ? { ...fresh.e, total: sum('total'), done: sum('done'), queued: sum('queued') }
-      : { ...fresh.e, queued: Math.min(fresh.e.total - fresh.e.done, fresh.e.queued + elsewhere), missing: Math.max(0, fresh.e.missing - elsewhere) };
+  return [...groups.entries()].map(([id, g]) => {
+    const all = [...g, ...counted.filter((x) => idOf(x) === id)];
+    if (all.length === 1) return g[0];
+    const read = all.filter((x) => x.e.missing != null);
+    const fresh = (read.length ? read : all).map((x) => ({ x, at: epicReadAt(x.r, x.F, x.e.key) })).reduce((a, b) => (b.at > a.at ? b : a)).x;
+    const kids = new Map(Object.entries(fresh.e.kids));
+    for (const x of all) {
+      for (const [k, s] of Object.entries(x.e.kids)) {
+        if (s === 'missing' || (!kids.has(k) && !x.r.q.tickets[k])) continue;
+        if (KID_RANK[s] > KID_RANK[kids.get(k) ?? 'missing']) kids.set(k, s);
+      }
+    }
+    const n = (s) => [...kids.values()].filter((v) => v === s).length;
+    const shipped = all.reduce((m, x) => (x.e.shipped != null && x.e.shipped > (m ?? -Infinity) ? x.e.shipped : m), null);
+    const e = { ...fresh.e, total: kids.size, done: n('done'), queued: n('queued'), missing: fresh.e.missing == null ? null : n('missing'), shipped };
     const by = g.find((x) => !x.d) ?? g.reduce((a, b) => (b.d.likely > a.d.likely ? b : a));
-    return { r: by.r, F: by.F, e, d: by.d, name: by.r.repo };
-  });
+    // The merged bar runs from the first batch's start to the last batch's could-run-to.
+    const d = by.d && { ...by.d, start: Math.min(...g.map((x) => x.d.start ?? Infinity)), late: Math.max(...g.map((x) => x.d.late)) };
+    // The batch setting the date may hold only children not queued there: the row opens one with a child left.
+    const holder = by.e.queued ? by : g.find((x) => x.e.queued) ?? by;
+    const from = d ? holder : by;
+    return { r: from.r, F: from.F, e, d: d && !Number.isFinite(d.start) ? { ...d, start: null } : d, name: by.r.repo, opens: holder.r.id };
+  }).filter(({ e }) => e.queued || e.missing > 0);
+}
+// A ships scope's open epics, one row each, soonest first. A paused batch's are listed undated, under
+// its note. A batch with too little history, or nothing left for autopilot, lists none, but leaves
+// undated an epic whose children it still holds: on one repo's view of several batches that opens a
+// row of its own. Every other epic a batch knows lends its children.
+function epicRows(s, now, checkin) {
+  const undated = s.per.filter((p) => p.note && !p.stopped && p.r.q && !p.r.error).map(({ r }) => ({ r, F: forecastOf(r, { now, checkin }) }))
+    .filter(({ F }) => F?.none || F?.idle).flatMap(({ r, F }) => Object.values(F.epics).filter((e) => e.queued).map((e) => ({ r, F, e, d: null })));
+  const open = s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null })));
+  const seen = new Set([...open, ...undated].map((x) => x.e));
+  const counted = s.per.filter((p) => p.r.q && !p.r.error).flatMap(({ r }) => { const F = forecastOf(r, { now, checkin }); return Object.values(F.epics).filter((e) => !seen.has(e)).map((e) => ({ r, F, e, d: null })); });
+  const [listed, joining] = s.manyBatches ? [[...open, ...undated], []] : [open, undated];
+  return epicPerRepo(listed, joining, counted).sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
 }
 function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = null, pinUsage = false } = {}) {
   const s = etaScope(repos, slug, { now, checkin, width, pinUsage });
   if (!s.list.length) return { head: [nothingToDate], rows: [], foot: [] };
   const all = !slug;
-  // A paused batch's epics are listed undated, under its note. A batch with too little history, or
-  // nothing left for autopilot, lists none, but leaves undated an epic whose children it still holds.
-  const undated = s.per.filter((p) => p.note && !p.stopped && p.r.q && !p.r.error).map(({ r }) => ({ r, F: forecastOf(r, { now, checkin }) }))
-    .filter(({ F }) => F?.none || F?.idle).flatMap(({ r, F }) => Object.values(F.epics).filter((e) => e.queued).map((e) => ({ r, F, e, d: null })));
-  const list = epicPerRepo(s.per.filter((p) => p.F || p.stopped).flatMap(({ r, F, stopped }) => openEpics(F ?? stopped).map((e) => ({ r, F: F ?? stopped, e, d: F ? F.E[e.key] : null }))), undated)
-    .sort((a, b) => (a.d?.likely ?? Infinity) - (b.d?.likely ?? Infinity));
+  const list = epicRows(s, now, checkin);
   const head = [...s.head, ''];
   if (list.length) head.push(bold(`  ${all ? pad('REPO', 12) : ''}${pad('EPIC', 10)}${pad('TITLE', 36)}${pad('CHILDREN', EP_BAR + 7)}  SHIPS`));
   // The children bar is solid on screen, not-yet-queued children grey; with no colour, □ tells them apart.
   const notYet = solidBars(width) ? '■' : '□';
-  const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name }) => {
+  const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name, opens = r.id }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
     const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
     return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
-      [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: r.id, epic: e.key });
+      [` ${' '.repeat(Math.max(0, 6 - n.length))}`, null], [String(e.done), BOLD], [`/${e.total}`, DIM], ['  ', null], ...date], { kind: 'epic', slug: opens, epic: e.key });
   });
   const foot = [...(s.notes.length ? ['', ...s.notes] : []), ...(s.stopped.length ? ['', ...s.stopped] : [])];
   // A record from before epics were recorded is not "no epic": until a pass reads it, say so instead.
@@ -1884,8 +1910,9 @@ function accountOf(l) {
   accounts.set(path, { m, a });
   return a;
 }
-// What the view calls a login: a Claude login's email where its folder records one, else its name.
-const loginLabel = (l) => accountOf(l).email ?? l.name;
+// What the view calls a login: a Claude login's email where its folder records one, a Codex login's
+// label where it was given one, else its name.
+const loginLabel = (l) => (l.tool === 'codex' ? loginLabelOf(l) : accountOf(l).email) ?? l.name;
 const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
 
 // Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check }. `out` is
@@ -1974,17 +2001,55 @@ function usageHeadline(repos, now, t) {
     [` is at its ${LIMIT_WORDS[type] ? `${LIMIT_WORDS[type]} ` : ''}limit${when(f) ? ` until ${when(f)}` : ''}${out.length > 1 ? `, and ${out.length - 1} more` : ''}.`, GREY]]);
 }
 
+// A login being added: { tool, login, label }, its folder not signed in yet. It is one row on standby,
+// waiting, until the account check finds its folder signed in.
+const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir;
+function addingRow(a) {
+  const segs = [['  ', null], ...fitCell([[cut(a.label ?? a.login.name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
+    ...fitCell([['waiting for you to sign it in …', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
+  return { id: 'adding', segs: segs.filter(([s]) => s), line: segText(segs) };
+}
+// Lines of coloured runs wrapped to `w`, the first after `lead` and the rest under it.
+const leadLines = (lead, segs, w) => wrapSegs(segs, Math.max(20, w - lead.length)).map((l, i) => segLine([[i ? ' '.repeat(lead.length) : lead, null], ...l]));
+// How to sign the login being added in, in place of the key and notes while desk-q waits.
+function addPanel(a, t, w) {
+  const { shell, then } = signInParts(a.login);
+  const claude = a.tool === 'claude';
+  return [
+    bold(`  Add a ${claude ? 'Claude' : 'Codex'} login`),
+    ...leadLines('  ', [[`desk never sees your password or token. You sign in with ${claude ? "Claude Code's" : "Codex's"} own login, and the login keeps its own folder, so its sessions and settings stay apart from your others.`, GREY]], w),
+    '',
+    segLine([['  ', null], ['1', BOLD], ['  In another terminal, run:', null]]),
+    { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
+    claude ? segLine([['     then type ', null], [then, HUE.cyan], [' and sign in with the account you want to add.', null]]) : '     and sign in with the account you want to add.',
+    ...leadLines('     ', [[claude ? "Come back here. desk-q finds it within a minute, checks it isn't an account already listed, and shows its email and plan."
+      : `Come back here. desk-q finds it within a minute and lists it as ${a.label}.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w)
+      .map((l, i) => (i ? l : segLine([['  ', null], ['2', BOLD], ['  ', null], ...l.segs.slice(1)]))),
+    ...(claude && t.codex.length ? ['', ...leadLines('  ', [['A Codex login is added the same way, with ', GREY], ['a', BOLD], [' on the CODEX table, which asks for its label first.', GREY]], w)] : []),
+  ];
+}
+
 // -> { head, rows, foot }: the line under the tabs; each tool's table, a heading row and a row per login;
-// then the rules' key, a note per signed-out login and for logins with no reading, and when they were read.
-function usageParts(repos, { now = Date.now(), width = null, checked = null } = {}) {
-  const t = usageTable(repos, now, checked);
+// then the rules' key, or with one login per tool an offer to add one, a note per signed-out login and
+// for logins with no reading, and when they were read. While a login is being added (`adding`), its row
+// waits on standby and the foot says how to sign it in.
+function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null } = {}) {
+  const u = usageTable(repos, now, checked);
+  const t = { claude: u.claude.filter((x) => !isAdding(adding, x)), codex: u.codex.filter((x) => !isAdding(adding, x)) };
   const solid = solidBars(width);
   const w = width ?? 104;
-  const table = (name, list) => (list.length ? [tableHead(name), ...list.map((x) => loginRow(x, list.length, now, solid))] : []);
-  const rows = [...table('CLAUDE', t.claude), ...(t.claude.length && t.codex.length ? [{ line: '' }] : []), ...table('CODEX', t.codex)];
+  const table = (name, tool, list) => {
+    const waiting = adding?.tool === tool ? [addingRow(adding)] : [];
+    return list.length || waiting.length ? [tableHead(name), ...list.map((x) => loginRow(x, list.length, now, solid)), ...waiting] : [];
+  };
+  const claudeRows = table('CLAUDE', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
+  const rows = [...claudeRows, ...(claudeRows.length && codexRows.length ? [{ line: '' }] : []), ...codexRows];
+  if (adding) return { head: [usageHeadline(repos, now, t), ''], rows, foot: ['', ...addPanel(adding, t, w)] };
   const all = [...t.claude, ...t.codex];
-  const key = wrapSegs([['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
-    [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], Math.max(20, w - 2)).map((l) => segLine([['  ', null], ...l]));
+  const key = leadLines('  ', t.claude.length <= 1 && t.codex.length <= 1
+    ? [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]]
+    : [['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
+      [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], w);
   const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => {
     const p = signInParts(x.login);
     return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
@@ -3004,6 +3069,7 @@ const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 // The question before the supervisor goes off, in the terminal's own text colour with its keys bold.
 export const askLine = (name) => segLine([[`Turn off the supervisor for ${name}? Running workers finish.  `, null], ['y', BOLD], [' / ', null], ['n', BOLD]]);
+const labelLine = (text) => segLine([['Label for the new Codex login: ', BOLD], [text, null], ['  enter add · esc cancel', DIM]]);
 const ESC = '\x1b[';
 // Mouse reporting in SGR form (1000 + 1006), so a click on the breadcrumb, a tab or a row arrives
 // as ESC [ < button ; column ; row M.
@@ -3038,10 +3104,12 @@ function systemOpener(url) {
   p.unref();
 }
 
-// Text onto the clipboard: pbcopy on macOS, else wl-copy or xclip. Throws when none can.
-function systemCopier(text) {
+// Text onto the clipboard: pbcopy on macOS, else wl-copy or xclip, else the terminal's own clipboard
+// through an OSC 52 sequence written to `out` when it is a terminal. Throws when none can.
+function systemCopier(text, out = null) {
   const tries = process.platform === 'darwin' ? [['pbcopy', []]] : [['wl-copy', []], ['xclip', ['-selection', 'clipboard']]];
   for (const [bin, args] of tries) { try { execFileSync(bin, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'] }); return; } catch { /* the next */ } }
+  if (out?.isTTY) { out.write(`\x1b]52;c;${Buffer.from(text).toString('base64')}\x07`); return; }
   throw new Error(`no clipboard command (${tries.map(([b]) => b).join(', ')}) worked`);
 }
 
@@ -3056,8 +3124,12 @@ function deskEnvLogins(args, done) {
   p.on('error', (e) => done({ code: 1, out, err: e.message }));
   p.on('close', (code) => done({ code, out, err }));
 }
-// The account check is rerun this often while Usage is shown.
+// The account check is rerun this often while Usage is shown, and while a login is being added, this
+// often whatever is shown, so a sign-in shows well within a minute.
 const CHECK_EVERY_MS = 60_000;
+const ADD_CHECK_MS = 10_000;
+// The longest label a Codex login can be given: the name column's width.
+const LABEL_MAX = U_NAME - 1;
 // What each rule means, as the footer says once one is saved.
 const RULE_SAVED = { 'in rotation': 'is in rotation: new workers start on it when it has the most room', standby: 'is on standby: desk uses it only when every login in rotation is at its limit',
   off: "is off: desk won't start workers on it" };
@@ -3153,7 +3225,8 @@ const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
-  probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = systemCopier,
+  probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
+  addCheckMs = ADD_CHECK_MS,
 } = {}) {
   let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
@@ -3171,6 +3244,9 @@ export function interactive({
   // Usage's account check: `checked` the last one's logins by checkKey, at `checkedAt`; `checking` while
   // one runs. `saving` while a rule change or removal runs; `undo`, what u puts back.
   let checked = null, checkedAt = null, checking = false, saving = false, undo = null;
+  // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` ({ tool, login, label })
+  // until the check finds it signed in or esc stops it, the check rerun by `addTimer`.
+  let typed = null, adding = null, addTimer = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -3220,10 +3296,11 @@ export function interactive({
     keepTab();
     if (tab === 'usage' && hasTabs()) {
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
-      const s = usageParts(repos, { now, width: w, checked });
+      const s = usageParts(repos, { now, width: w, checked, adding });
+      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc stop waiting · : command · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
       const copy = x?.check?.state === 'signed out' ? 'y copy the sign-in command · ' : '';
-      return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? `space change rule · x remove · ${copy}` : ''}${cmdKeys}` };
+      return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? `space change rule · x remove · ${copy}` : ''}a add a login · ${cmdKeys}` };
     }
     // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
     // one repo's own, or none for a repo with no batch.
@@ -3241,7 +3318,8 @@ export function interactive({
       const tl = tab === 'timeline';
       const opts = { now, width: w, checkin, zoom, epic: view.epic ?? null, pinUsage: true };
       const parts = tl ? timelineParts : tab === 'days' ? daysParts : epicsParts;
-      return { badge: badge(r ? [r] : repos), ...parts(repos, view.slug ?? null, opts), ...claude(r ? own : shownRepos(repos, false)),
+      const rp = view.kind === 'repo' ? repoPlace(repos, view.slug) : r;
+      return { badge: badge(rp ? [rp] : repos), ...parts(repos, view.slug ?? null, opts), ...claude(rp ? (rp.q && !rp.error ? [rp] : null) : shownRepos(repos, false)),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · ${tl ? 'z scale · ' : ''}c parked dates · ${cmdKeys}` };
     }
     if (view.kind === 'overview') {
@@ -3316,7 +3394,7 @@ export function interactive({
     const body = ['', ...head, ...rows.map((x, i) => paint(x, w, i === sel && pickable(x))), ...screen.foot.flatMap(lay)];
     // A message can be longer than the line (a refused raise says what raising the cap takes). The
     // usage lines stay put above it and the keys, a blank line above them.
-    const status = [...(screen.usage ? ['', ...screen.usage.map(fit)] : []), ...[...wrap(msg, w), ...(ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
+    const status = [...(screen.usage ? ['', ...screen.usage.map(fit)] : []), ...[...wrap(msg, w), ...(typed != null ? [labelLine(typed)] : ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
     const room = Math.max(1, h - status.length - pinned.length);
     const first = 1 + head.length;
     let top = 0;
@@ -3399,8 +3477,78 @@ export function interactive({
       checking = false;
       checkedAt = clock();
       try { checked = new Map(JSON.parse(r.out).logins.map((l) => [checkKey(l.tool, l.configDir), l])); } catch { checked = null; }
+      if (!done && adding) addChecked();
       if (!done && usageTab()) draw();
     });
+  }
+
+  // ---- adding a login ----
+  // The next folder for a login of `tool`, its row waiting on standby and the check rerun until it is
+  // signed in. A Codex login's folder is made now, holding its label; a Claude one is made by its sign-in.
+  function startAdding(tool, name = null) {
+    const subs = readSubscriptions(subscriptionsPath());
+    const f = nextLoginFolder(tool, subs, (tool === 'claude' ? claudeLogins() : codexLogins()).length);
+    if (tool === 'codex') {
+      try { makeLabelledFolder(f.dir, name); } catch (e) { msg = `Could not make the new login's folder ${f.dir}: ${describeCrash(e)}`; return; }
+    }
+    adding = { tool, login: makeLogin({ tool, name: f.name, folder: f.dir, rule: 'standby', source: 'found' }), label: name };
+    selId = 'adding';
+    msg = `esc stops waiting and removes ${name ?? f.name}.`;
+    clearInterval(addTimer);
+    addTimer = setInterval(() => { if (!done && adding && !checking) checkLogins(); }, addCheckMs);
+    if (!checking) checkLogins();
+  }
+  const stopAdding = () => { clearInterval(addTimer); addTimer = null; adding = null; };
+  // The check found the folder being added: signed in, it stays on standby (a computer with no
+  // subscriptions file gets the rule written, so it has one); signed in to an account already listed,
+  // it is refused. Anything else waits for the next check, as does a save while another is running.
+  function addChecked() {
+    const a = adding;
+    const c = checked?.get(checkKey(a.tool, a.login.configDir));
+    if (c?.state === 'duplicate') {
+      stopAdding();
+      selId = `login ${checkKey(a.tool, a.login.configDir)}`;
+      msg = `${a.login.name} is signed in to the same account as ${c.duplicateOf}, so desk won't use it. x removes it.`;
+    } else if (c?.state === 'signed in') {
+      if (c.rule !== 'standby' && saving) return;
+      stopAdding();
+      selId = `login ${checkKey(a.tool, a.login.configDir)}`;
+      const said = `${c.email ?? a.label ?? a.login.name} is signed in and on standby. space puts it in rotation.`;
+      if (c.rule === 'standby') msg = said;
+      else saveLogin(['set', a.tool, a.login.name, 'standby'], said, null);
+    }
+  }
+  // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
+  // label. A folder the sign-in began is removed from the rules instead, so it is not found again.
+  function stopWaiting() {
+    if (saving) { msg = 'Still saving the last change.'; return; }
+    const a = adding;
+    stopAdding();
+    selId = null;
+    const name = a.label ?? a.login.name;
+    if (!existsSync(a.login.dir) || dropNewFolder(a.login.dir)) { msg = `Stopped waiting: ${name} is not added.`; return; }
+    saveLogin(['remove', a.tool, a.login.name], `Stopped waiting: ${name} is not added. Its folder ${a.login.folder} is left as it is.`, null);
+  }
+  // a: a Codex login when the CODEX table's row is selected, which asks for its label first; else a Claude one.
+  function addKey(x) {
+    if (adding) { msg = `Still waiting for ${adding.label ?? adding.login.name} to be signed in: esc stops waiting.`; return; }
+    if (saving) { msg = 'Still saving the last change.'; return; }
+    if (x?.login?.tool !== 'codex') return startAdding('claude');
+    typed = '';
+    msg = "Type the name desk-q lists the new Codex login under, such as its account's email.";
+  }
+  function labelKey(str, key) {
+    if (key.name === 'return' || key.name === 'enter') {
+      const name = typed.trim();
+      if (!name) { msg = 'Type a label first, or esc to cancel.'; return frame(); }
+      typed = null;
+      startAdding('codex', name);
+      return draw();
+    }
+    if (key.name === 'escape') { typed = null; msg = ''; return draw(); }
+    if (key.name === 'backspace') typed = typed.slice(0, -1);
+    else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ' && typed.length < LABEL_MAX) typed += str;
+    return frame();
   }
   // A login's rule set, or the login removed, then the footer says what changed and u puts back `then`.
   function saveLogin(args, said, then) {
@@ -3420,6 +3568,13 @@ export function interactive({
       if (!undo) { msg = 'Nothing to undo.'; return; }
       const u = undo;
       return saveLogin(['set', u.login.tool, u.login.name, u.rule], savedText(loginLabel(u.login), u.rule), null);
+    }
+    if (k === 'y' && adding) {
+      const { shell } = signInParts(adding.login);
+      const name = adding.label ?? adding.login.name;
+      try { copier(shell); msg = `The command is copied. esc stops waiting and removes ${name}.`; }
+      catch (e) { msg = `Could not copy the command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
+      return;
     }
     if (!x?.login) return;
     const l = x.login, label = loginLabel(l);
@@ -3441,7 +3596,7 @@ export function interactive({
   // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
   // selects and opens it. The wheel moves the selection as the arrows do.
   function onMouse(b, x, y) {
-    if (done || !layout || cmd != null || ask) return;
+    if (done || !layout || cmd != null || typed != null || ask) return;
     if (b === 64 || b === 65) return onKey(undefined, { name: b === 64 ? 'up' : 'down' });
     if ((b & ~(4 | 8 | 16)) !== 0) return;
     const col = x - 1, line = y - 1;
@@ -3495,6 +3650,7 @@ export function interactive({
     done = true;
     clearInterval(timer);
     clearInterval(probeTimer);
+    clearInterval(addTimer);
     clearTimeout(flush);
     input.removeListener('data', onData);
     keys.removeListener('keypress', onKey);
@@ -3537,6 +3693,7 @@ export function interactive({
       else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ') cmd += str;
       return frame();
     }
+    if (typed != null) return labelKey(str, key);
     if (ask) {
       if (str === 'y') { const v = ask.v; ask = null; act(v); }
       else if (str === 'n' || key.name === 'escape') { ask = null; msg = ''; }
@@ -3579,7 +3736,9 @@ export function interactive({
       // sign-in command to copy, so a new selection there is a new screen.
       return (view.kind === 'ticket' || usageTab()) && selId !== was ? draw() : frame();
     } else if (usageTab() && [' ', 'x', 'u', 'y'].includes(str)) usageKey(str, rows[sel]);
+    else if (usageTab() && str === 'a') addKey(rows[sel]);
     else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
+    else if (key.name === 'escape' && adding && usageTab()) stopWaiting();
     else if (key.name === 'escape') back();
     else if (str === 'q') return finish(0);
     else if (str === ':') { cmd = ''; msg = ''; return frame(); }

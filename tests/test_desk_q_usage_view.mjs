@@ -144,7 +144,7 @@ t('AC6 the line under the tabs names the logins new Claude and Codex work starts
 t('AC16 standby logins read before those in rotation: the footer says when', f.find((l) => l.startsWith('  Read at')),
   '  Read at 08:59 from worker logs. Standby logins were last read at 08:30.');
 t('the rules\' key is under the tables', f.some((l) => l.startsWith('  ● in rotation new workers start on the one with most room · ○ standby')), true);
-t('the keys name space, x and the views', f.at(-1), '↑↓ select · ←→ or 1–6 view · space change rule · x remove · : command · q quit');
+t('the keys name space, x, a and the views', f.at(-1), '↑↓ select · ←→ or 1–6 view · space change rule · x remove · a add a login · : command · q quit');
 
 // ---- AC7, AC8: space moves the rule on and saves it at once; u puts it back
 await S.press(' ');
