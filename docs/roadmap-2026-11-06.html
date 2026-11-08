@@ -72,7 +72,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <div class="wrap">
 
 <header style="display:flex;flex-direction:column;gap:12px">
-  <div class="eyebrow">desk-skills · as of Sun 8 Nov 2026, 07:10</div>
+  <div class="eyebrow">desk-skills · as of Sun 8 Nov 2026, 09:12</div>
   <h1>Desk roadmap</h1>
   <p class="lede">The goal from the 6 Nov throughput review: more tickets on the subscriptions you already pay for, at the same review quality and with less of your time. Your priorities, in order: <b>subscription rotation</b>, because batches keep stopping when one login runs out; <b>fewer tokens per ticket</b>; and <b>more autonomy</b>, meaning fewer stops that need you. Sentry intake waits.</p>
   <div class="legend">
@@ -83,20 +83,19 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <section aria-labelledby="where">
   <h2 id="where">Where we are</h2>
   <div class="now">
-    <div><span>Top priority</span><b>Rotation: 12 of 13 built, not live yet</b><span>Only <span class="k">DS-474</span> is left, and it's running. All 12 sit on the feature branch, so batches on <span class="k">main</span> don't rotate logins until the epic PR lands.</span></div>
+    <div><span>Top priority</span><b>Rotation: 13 of 13 built, not live yet</b><span>All 13 children are merged to the feature branch and Done in Jira. Batches on <span class="k">main</span> don't rotate logins until the epic PR lands, and that PR opens only when the batch's 3 bench tickets have merged.</span></div>
     <div><span>Fewer tokens</span><b>Preflight lever on, the rest off</b><span>You switched on <span class="k">preflight</span> on 8 Nov, on this Mac. The others stay off until it has been measured against the baseline.</span></div>
-    <div><span>Shipped since Sat 07:41</span><b>42 PRs merged</b><span>28 to <span class="k">main</span> and 14 to rotation's feature branch. The queue now has 4 running, 6 ready, 4 waiting and 122 done.</span></div>
-    <div><span>Waiting on you</span><b>3 items</b><span>The one holding other work is <span class="k">#496</span>, still in conflict with <span class="k">main</span>. Listed at the bottom.</span></div>
+    <div><span>Shipped since Sat 07:41</span><b>47 PRs merged</b><span>32 to <span class="k">main</span> and 15 to rotation's feature branch. The queue now has 2 running, 8 ready, 3 waiting and 126 done.</span></div>
+    <div><span>Waiting on you</span><b>2 items</b><span>Neither holds up other work. Listed at the bottom.</span></div>
   </div>
 </section>
 
 <section aria-labelledby="priorities">
   <h2 id="priorities">Your priorities</h2>
   <ol class="next">
-    <li><div><b>Right now: seeing every batch (<span class="k">DS-516</span>, P0).</b> A repo's Epics tab reads only its standing batch, which is why rotation has no row and DS-475 reads 3/12 instead of 9/12. It's at the front of the queue and running.</div></li>
-    <li><div><b>Subscription rotation (<span class="k">DS-461</span>, P1).</b> <span class="k">DS-474</span>, adding a login from desk-q's Usage view, is the last child. The feature batch also holds three bench tickets, and the work reaches <span class="k">main</span> through one epic PR from <span class="k">feat/DS-461-subscription-rotation-usage-limits</span>.</div></li>
-    <li><div><b>Fewer tokens per ticket (Phase 0, <span class="k">DS-443</span>).</b> 3 children are open: <span class="k">DS-446</span> (#496, in conflict), <span class="k">DS-488</span> behind it, and <span class="k">DS-513</span>, filed today. The preflight lever is on, so the next step is measuring it.</div></li>
-    <li><div><b>More autonomy: fewer stops that need you.</b> <span class="k">DS-214</span> and <span class="k">DS-127</span> are closed. <span class="k">DS-241</span> holds what's left, down from 19 open to 8, with <span class="k">DS-494</span> running.</div></li>
+    <li><div><b>Subscription rotation (<span class="k">DS-461</span>, P1).</b> All 13 children are built. Two things hold the epic PR: <span class="k">main</span> is being merged into the feature branch, and <span class="k">DS-484</span>, <span class="k">DS-486</span> and <span class="k">DS-482</span> have to merge first. It reaches <span class="k">main</span> through one epic PR from <span class="k">feat/DS-461-subscription-rotation-usage-limits</span>.</div></li>
+    <li><div><b>Fewer tokens per ticket (Phase 0, <span class="k">DS-443</span>).</b> 3 children are open: <span class="k">DS-446</span> (#496, out of conflict and with a worker on its last review findings), <span class="k">DS-488</span> behind it, and <span class="k">DS-513</span>, running. The preflight lever is on, so the next step is measuring it.</div></li>
+    <li><div><b>More autonomy: fewer stops that need you.</b> <span class="k">DS-214</span> and <span class="k">DS-127</span> are closed, and <span class="k">DS-494</span> and <span class="k">DS-496</span> have merged. <span class="k">DS-241</span> holds what's left, 8 open, including today's <span class="k">DS-517</span> and <span class="k">DS-518</span>.</div></li>
     <li><div><b>Not now: Sentry intake (<span class="k">DS-206</span>).</b> P3 in Jira, at the bottom of the backlog.</div></li>
   </ol>
 </section>
@@ -117,8 +116,8 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
           <li><span class="k">DS-448</span> → <span class="k">DS-449</span> Review carry-over after a rebase or base merge, then a targeted re-review <span class="chip c-done">merged, #455 and #499</span></li>
           <li><span class="k">DS-445</span> Codex harness: captures the verdict, times out, closes stdin, sets effort per role <span class="chip c-done">merged, #479</span></li>
           <li><span class="k">DS-447</span> Single-command wrappers for denied commands <span class="chip c-done">merged, #492</span></li>
-          <li><span class="k">DS-446</span> → <span class="k">DS-488</span> Failure class on every park, then one rerun for a runner or resource red <span class="chip c-you">DS-446 needs you, #496</span> <span class="chip c-wait">DS-488 waits behind it</span></li>
-          <li><span class="k">DS-513</span> A requirement gap only you can settle stops spending review fix tries <span class="chip c-filed">ready, filed today</span></li>
+          <li><span class="k">DS-446</span> → <span class="k">DS-488</span> Failure class on every park, then one rerun for a runner or resource red <span class="chip c-filed">DS-446 running, #496</span> <span class="chip c-wait">DS-488 waits behind it</span></li>
+          <li><span class="k">DS-513</span> A requirement gap only you can settle stops spending review fix tries <span class="chip c-filed">running</span></li>
         </ul>
         <p class="gate"><b>Gate:</b> one batch about the size of last week's, compared on tokens per ticket and fix tries per ticket. Preflight is the first lever being measured.</p>
       </div>
@@ -165,12 +164,13 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
   <div class="grid2">
 
     <div class="card">
-      <div class="phead"><h3>Subscription rotation</h3><span class="chip c-filed">Top priority · P1 · last child running</span></div>
+      <div class="phead"><h3>Subscription rotation</h3><span class="chip c-filed">Top priority · P1 · built, not live</span></div>
       <p>Workers spread across your Claude logins, and later your Codex logins. A login at its limit is benched until it resets, and the batch holds only when every login is out.</p>
       <ul>
-        <li><span class="chip c-done">on the feature branch</span> <span class="k">DS-462</span> (#446), <span class="k">DS-463</span> (#454), <span class="k">DS-464</span> (#459), <span class="k">DS-465</span> (#464), <span class="k">DS-466</span> (#475), <span class="k">DS-467</span> (#504), <span class="k">DS-468</span> (#481), <span class="k">DS-469</span> (#485), <span class="k">DS-470</span> (#491), <span class="k">DS-471</span> (#498), <span class="k">DS-472</span> (#503), <span class="k">DS-473</span> (#497).</li>
-        <li><span class="chip c-filed">running</span> <span class="k">DS-474</span>, adding a login from the Usage view.</li>
-        <li><span class="chip c-wait">not live</span> The branch is 106 commits ahead of <span class="k">main</span> and has nothing to catch up on. It goes live with the epic PR.</li>
+        <li><span class="chip c-done">on the feature branch</span> <span class="k">DS-462</span> (#446), <span class="k">DS-463</span> (#454), <span class="k">DS-464</span> (#459), <span class="k">DS-465</span> (#464), <span class="k">DS-466</span> (#475), <span class="k">DS-467</span> (#504), <span class="k">DS-468</span> (#481), <span class="k">DS-469</span> (#485), <span class="k">DS-470</span> (#491), <span class="k">DS-471</span> (#498), <span class="k">DS-472</span> (#503), <span class="k">DS-473</span> (#497), <span class="k">DS-474</span> (#510).</li>
+        <li><span class="chip c-filed">syncing</span> A worker has resolved the one conflict with <span class="k">main</span>, in <span class="k">desk/bin/desk-q.mjs</span>, and is running the test suites before it pushes.</li>
+        <li><span class="chip c-wait">not live</span> The batch opens the epic PR only when <span class="k">DS-484</span>, <span class="k">DS-486</span> and <span class="k">DS-482</span> have merged. desk-q estimates the last at about 17:33 today. The PR is then reviewed and merges on green.</li>
+        <li><span class="chip c-you">after it lands</span> This Mac has one Claude and one Codex login and no <span class="k">subscriptions.md</span>, so nothing rotates until you add a second login in desk-q's Usage view.</li>
         <li>Design: the <a href="https://claude.ai/artifact/G72NSJFg5MqFPiuVoehtkv">Usage view canvas</a>, saved at <span class="k">docs/design/DS-461/</span>.</li>
       </ul>
     </div>
@@ -181,7 +181,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
       <ul>
         <li><span class="chip c-done">on main</span> <span class="k">DS-476</span> (#473), <span class="k">DS-478</span> (#480), <span class="k">DS-479</span> (#474).</li>
         <li><span class="chip c-done">on the feature branch</span> <span class="k">DS-477</span> (#488), <span class="k">DS-480</span> (#495), <span class="k">DS-481</span> (#501), <span class="k">DS-483</span> (#505), <span class="k">DS-485</span> (#500), <span class="k">DS-487</span> (#494).</li>
-        <li><span class="chip c-filed">left</span> <span class="k">DS-484</span>, Fable's arm, is running. <span class="k">DS-486</span> and <span class="k">DS-482</span> wait behind it.</li>
+        <li><span class="chip c-filed">left</span> <span class="k">DS-484</span>, Fable's arm (#511), has one P0 to fix. <span class="k">DS-518</span> is the bug that sent it to you instead of a worker, and your 08:41 instruction is queued for the next free worker. <span class="k">DS-486</span> and <span class="k">DS-482</span> wait behind it.</li>
       </ul>
     </div>
 
@@ -215,11 +215,11 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
       <thead><tr><th>Epic</th><th>Outcome</th><th>Status</th><th class="n">Open</th><th>Notes</th></tr></thead>
       <tbody>
         <tr class="grp"><th colspan="5">Top priority: rotation, fewer tokens and more autonomy</th></tr>
-        <tr><td class="k">DS-515</td><td>A repo's desk-q views show the work of every batch it has</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">1</td><td>DS-516 (P0) running, front of the queue</td></tr>
-        <tr><td class="k">DS-461</td><td>A batch keeps running on another Claude or Codex subscription when one reaches its limit</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">1</td><td>DS-474 running; then the epic PR</td></tr>
-        <tr><td class="k">DS-443</td><td>Phase 0: fewer tokens and fewer interruptions per ticket</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">3</td><td>DS-446 (#496) needs you; DS-488 behind it; DS-513 ready</td></tr>
-        <tr><td class="k">DS-241</td><td>A ticket parks only for a step that needs you</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">8</td><td>DS-494 running; DS-496 (#458) requeued; DS-431 waits on your live check; DS-514 behind DS-496</td></tr>
-        <tr><td class="k">DS-475</td><td>A model, brief or review change is adopted only after it holds quality on frozen tasks</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">3</td><td>DS-484, DS-486 and DS-482, in rotation's feature batch</td></tr>
+        <tr><td class="k">DS-515</td><td>A repo's desk-q views show the work of every batch it has</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>DS-516 merged (#509). Ready to close</td></tr>
+        <tr><td class="k">DS-461</td><td>A batch keeps running on another Claude or Codex subscription when one reaches its limit</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">0</td><td>All built; waits on the base sync, 3 bench tickets, then the epic PR</td></tr>
+        <tr><td class="k">DS-443</td><td>Phase 0: fewer tokens and fewer interruptions per ticket</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">3</td><td>DS-446 (#496) and DS-513 running; DS-488 behind DS-446</td></tr>
+        <tr><td class="k">DS-241</td><td>A ticket parks only for a step that needs you</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">8</td><td>DS-518, DS-517 and DS-514 next, behind DS-513; DS-431 waits on your live check</td></tr>
+        <tr><td class="k">DS-475</td><td>A model, brief or review change is adopted only after it holds quality on frozen tasks</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">3</td><td>DS-484 (#511), DS-486 and DS-482, in rotation's feature batch</td></tr>
         <tr><td class="k">DS-237</td><td>A batch finishes without false stops or flaky reds</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">0</td><td>DS-109 merged (#482). Ready to close</td></tr>
         <tr class="grp"><th colspan="5">Next</th></tr>
         <tr><td class="k">DS-228</td><td>Every desk SKILL.md is 20 KB or less</td><td><span class="chip c-filed">In progress · P1</span></td><td class="n">1</td><td>DS-442 (desk-ci split), not in a batch yet</td></tr>
@@ -231,14 +231,13 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
       </tbody>
     </table>
   </div>
-  <p class="foot">Open counts are each epic's children not in Done, read from Jira at 06:47. DS-214 and DS-127 closed since the last refresh. DS-503 (To Do) has no epic yet. Batch states come from both queues at 07:10.</p>
+  <p class="foot">Open counts are each epic's children not in Done, read from Jira at 09:10. DS-503 (To Do) has no epic yet. Batch states come from both queues at 09:10.</p>
 </section>
 
 <section aria-labelledby="you">
   <h2 id="you">Waiting on you</h2>
   <div class="card">
     <ul>
-      <li><span class="chip c-you">Resolve</span> <b>#496 (DS-446).</b> It's still in conflict with <span class="k">main</span> after both automatic fix tries, and <span class="k">desk/bin/fix-tries.mjs</span> is the file named. It holds up DS-488.</li>
       <li><span class="chip c-you">Check</span> <b>DS-431's live worker run.</b> Run one worker on an ai-agents ticket with studia-web listed, and confirm it reads the clone without parking. Its scope is accepted, and this is all that's left.</li>
       <li><span class="chip c-you">Check</span> <b>VPL-794.</b> Confirm that nothing outside the repo pulls <span class="k">:staging</span>.</li>
     </ul>
@@ -248,16 +247,15 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <section aria-labelledby="next">
   <h2 id="next">Next, in order</h2>
   <ol class="next">
-    <li><div><b>DS-516 lands,</b> so a repo's Epics, Timeline and By day views cover every batch.</div></li>
-    <li><div><b>Rotation lands:</b> DS-474 and the three bench tickets finish in the feature batch, then the epic PR takes it all to <span class="k">main</span>. desk-q estimates the last of them ships at about 15:19 today.</div></li>
-    <li><div><b>Phase 0 finishes:</b> #496 is resolved and merges, then DS-488 and DS-513 run. Preflight is measured first, the other levers follow one at a time, and a measured batch decides Phase 1.</div></li>
-    <li><div><b>The autonomy queue drains:</b> DS-494 first, because most of the ready tickets collide with it, then DS-496, DS-493, DS-441, DS-429 and DS-509.</div></li>
-    <li><div><b>Claude tidies Jira:</b> closes DS-237 and DS-455, and puts DS-503 under an epic.</div></li>
+    <li><div><b>Rotation lands:</b> the base sync pushes, the three bench tickets finish, and the epic PR takes it all to <span class="k">main</span>. desk-q estimates the last ticket ships at about 17:33 today. Then you run <span class="k">/desk-update</span> on each Mac and add a second login.</div></li>
+    <li><div><b>Phase 0 finishes:</b> #496 merges, then DS-488 runs, and DS-513 finishes. Preflight is measured first, the other levers follow one at a time, and a measured batch decides Phase 1.</div></li>
+    <li><div><b>The autonomy queue drains:</b> DS-518, DS-517 and DS-514 follow DS-513, then DS-429, DS-509, DS-493 and DS-441.</div></li>
+    <li><div><b>Claude tidies Jira:</b> closes DS-237, DS-455 and DS-515, and puts DS-503 under an epic.</div></li>
     <li><div><b>When VPL-793 merges,</b> you restore VoicePA's §4 Check builds.</div></li>
   </ol>
 </section>
 
-<p class="foot">Sources: live Jira, queue and GitHub reads at 06:47–07:10 on 8 Nov, the DS-461 batch plan, and handoffs to 2026-11-07-7. This page is a snapshot; Jira is the record.</p>
+<p class="foot">Sources: live Jira, queue and GitHub reads at 09:09–09:12 on 8 Nov, the DS-461 batch plan, and handoffs to 2026-11-07-7. This page is a snapshot; Jira is the record.</p>
 </div>
 
 </html>
