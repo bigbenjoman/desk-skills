@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -38,6 +38,7 @@ import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs,
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
+import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
@@ -403,7 +404,8 @@ function logDecisions(t, log, pr) {
 
 // A worker's park against the "not now" register: the inputs the question depends on, from the
 // `AUTOPILOT_PARK_INPUTS: {json}` after its last park (none is {}), and lookup()'s verdict on them.
-function againstRegister(t, question, log) {
+// A lease push it clears on (`cond`) adds its SHA as `lease` where they name none (withLeaseInput).
+function againstRegister(t, question, log, cond) {
   let raw = null;
   try {
     for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
@@ -414,7 +416,7 @@ function againstRegister(t, question, log) {
   const p = parseInputs(raw);
   // Logged, never waiting on the person: nobody can clear it, and the park itself is asked as usual.
   if (!p.ok) report.inputs.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
-  const inputs = p.ok ? p.inputs : {};
+  const inputs = withLeaseInput(p.ok ? p.inputs : {}, cond);
   return { inputs, ...lookup(REGISTER, { question, inputs }) };
 }
 
@@ -766,12 +768,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.
     q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: statSync(log).mtime.toISOString() })}`);
-    const reg = againstRegister(t, park.trim(), log);
-    const recommends = recommendsOf(t, park.trim(), log);
     // A park asking only for §4 Live reads waits on the pass, which starts them in its "live reads"
     // section below and settles it there.
     const read = wedged ? null : liveReadOf(t, park.trim());
-    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log))}`,
+    const cleared = read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log);
+    const reg = againstRegister(t, park.trim(), log, cleared);
+    const recommends = recommendsOf(t, park.trim(), log);
+    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []));
     if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${READ_BRANCH} (${READ_CHECKOUT}), never the ticket's worktree; requeued once they finish. The park: ${park.trim()}`);
     else if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
@@ -1091,13 +1094,38 @@ function shippedElsewhere(t) {
   } catch { /* unread: spawn as before */ }
   return null;
 }
+// A park on a push GitHub refused with a 5xx: try the push. A server error waits for the next pass,
+// and a push that reached nothing is a check that could not run; any other refusal, or a push this
+// pass may not make, ends the tries and goes to a person.
+function pushParked(t, c) {
+  if (DRY) return { holds: false };
+  const stop = (why) => {
+    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`, `park.recovery=${JSON.stringify(why)}`);
+    throw new Error(why);
+  };
+  // §3 lets a pass force-push, and so does a ticket's pinned one-off grant for this branch and SHA: the
+  // person approved that exact overwrite. A grant from a park that merely mentions a force-push does
+  // not (passLeaseGrant), so that push stays for the next worker.
+  const leaseOk = (k) => k === 'git-force-with-lease' && passLeaseGrant(t.grant, c);
+  const rows = ['git-push', ...(c.lease ? ['git-force-with-lease'] : [])].filter((k) => E.permission(k) !== 'yes' && !leaseOk(k));
+  if (rows.length) stop(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
+  if (c.branch !== t.branch) stop(`it names ${c.branch}, and the ticket's branch is ${t.branch ?? 'not recorded'}`);
+  if (!t.worktree || !existsSync(t.worktree)) stop('it has no worktree to push from');
+  const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? [`--force-with-lease=${c.branch}:${c.lease}`] : []), 'origin', c.branch]);
+  if (push.ok) return { holds: true };
+  if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
+  if (unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
+  return stop(`git refused it: ${push.out.split('\n').pop()}`);
+}
 for (const t of Object.values(queue().tickets)) {
   const c = t.park?.clears_when;
   // A claimed ticket is released only by the claims loop below, once its session is idle and its
   // worktree clean, so a condition that holds never hands it to a worker under a live session.
   if (t.state !== 'parked' || isHeld(t) || spinePark(t) || t.park?.claim?.session || !c || c.kind === 'none' || c.kind === LIVE_READ) continue;
   const cond = describeCond(c);
-  const r = checkCond(c, clearsRead);
+  // A lane left for a person never has its push made for it.
+  if (c.kind === 'push-ok' && needsSession(t)) { report.clears.push(`${t.key}: "${cond}" not tried, since it is lane ${t.lane}: left parked for a person`); continue; }
+  const r = checkCond(c, { ...clearsRead, push: (p) => pushParked(t, p) });
   if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); continue; }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
   if (!r.holds) { if (r.note) report.clears.push(`${t.key}: waiting on "${cond}" (${r.note}): left parked`); continue; }
@@ -1129,7 +1157,8 @@ for (const t of Object.values(queue().tickets)) {
 // finished from the worker's payload; a take call parked with a recommended option is answered with it
 // and requeued. A park only a session may take (needsSession), a hold, a spine, an epic's plan, a claim
 // or one put off is never touched. The push and the take are tried once a park (park.recovery says
-// why one was not done); the merged-PR check once per base and branch head (park.dup_checked).
+// why one was not done), and a push answered with a 5xx becomes a park the clears-when check tries
+// each pass; the merged-PR check runs once per base and branch head (park.dup_checked).
 const lastLine = (s) => String(s ?? '').trim().split('\n').pop();
 const shortQ = (s) => (String(s).length > 160 ? `${String(s).slice(0, 159)}…` : String(s));
 let baseFetched = false;
@@ -1215,6 +1244,11 @@ function finishPush(t) {
   if (!open.ok) return false;
   if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
   const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
+  if (!push.ok && transientPush(push.out)) {
+    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and each pass tries the push until it can requeue it`);
+    return true;
+  }
   if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);
   const title = prTitleIn(texts.join('\n')) || sh('git', ['-C', wt, 'log', '-1', '--format=%s', t.branch], { tolerant: true });
   const bodyFile = join(STATE, 'pr-bodies', `${t.key}.md`);
