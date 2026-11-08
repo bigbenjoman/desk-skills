@@ -346,15 +346,17 @@ export function epicsOf(tickets, triage, { jira = true } = {}) {
   for (const [ep, e] of Object.entries(epics)) {
     const keys = new Set([...kidsOf[ep], ...(listed[ep]?.keys() ?? [])]);
     let done = 0, queued = 0, missing = 0, shipped = null;
+    const kids = {};
     for (const k of keys) {
       const t = tickets[k];
-      if (t && t.state !== 'done') queued++;
+      if (t && t.state !== 'done') { queued++; kids[k] = 'queued'; }
       else if (t?.state === 'done' || listed[ep]?.get(k)) {
         done++;
+        kids[k] = 'done';
         if (Number.isFinite(Date.parse(t?.merged_at))) shipped = Math.max(shipped ?? -Infinity, Date.parse(t.merged_at));
-      } else missing++;
+      } else { missing++; kids[k] = 'missing'; }
     }
-    Object.assign(e, { total: keys.size, done, queued, missing: listed[ep] ? missing : null, shipped });
+    Object.assign(e, { total: keys.size, done, queued, missing: listed[ep] ? missing : null, shipped, kids });
   }
   const unfinished = Object.entries(tickets).filter(([, t]) => t.state !== 'done').map(([k]) => k);
   const isUnread = (k) => jira && !of[k] && epicUnread(triage[k]);
