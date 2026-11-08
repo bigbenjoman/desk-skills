@@ -1594,6 +1594,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-278 AC2 a new head still red after its reruns gets try 2" '[ "$(field F-1 fix.try)" = 2 ] && [ "$(field F-1 fix_tries | jq length)" = 2 ] && [ "$(field F-1 fix_tries | jq -r ".[1].head")" = "$H2" ]'
 check "DS-278 AC4 a try already made for this head is not made again: stuck" \
   '[ "$(field F-2 state)" = "\"done\"" ] && [ "$(field F-2 fix_tries | jq length)" = 1 ] && [ "$(field F-2 stuck.why)" = "\"still in conflict with main after 1 fix try\"" ]'
+check "a finished conflict try records when its worker finished, for the merge driver's hold" '[ "$(field F-2 fix_tries | jq -r ".[0].finished")" != null ]'
 q set F-1 state=done session_id=null result.pr=697; fx 697 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:907; reran 697 "$H3" Lint
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-278 AC5 after 2 fix tries it is not requeued again" '[ "$(field F-1 state)" = "\"done\"" ] && [ "$(field F-1 fix_tries | jq length)" = 2 ]'
@@ -1696,6 +1697,12 @@ q add FB-4; q set FB-4 state=done lane=A branch=fix/FB-4 result.pr=813 held_by=X
 check "DS-446 AC7 with the lever off, a red check red on the base too and held behind a blocker is requeued as today" \
   '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = null ] && [ "$(field FB-4 fix_tries | jq -c ".[0] | has(\"class\")")" = false ] && [ "$(field FB-4 base_red)" = null ]'
 check "DS-446 AC7 and the base's check runs are not read" '! grep -qF "check-runs?check_name=Lint" "$T/gh-calls" &&! grep -qF "compare/main...$H4" "$T/gh-calls"'
+H9=8888888888888888888888888888888888888888; TIP9=9999999999999999999999999999999999999999
+api "repos/acme/widgets/compare/main...$H9" "$TIP9"$'\t'"$MB"
+q add FB-9; q set FB-9 state=done lane=A branch=fix/FB-9 result.pr=819; fx 819 "$H9" CONFLICTING tests:SUCCESS
+out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "a conflict try records the base tip and merge base its head stood at" '[ "$(field FB-9 fix_tries | jq -r ".[0].base_sha")" = "$TIP9" ] && [ "$(field FB-9 fix_tries | jq -r ".[0].merge_base")" = "$MB" ]'
+q set FB-9 state=done session_id=null fix=null stuck=null; fx 819 "$H9" MERGEABLE tests:SUCCESS
 q park FB-4 "which reviewer handle goes in the PR body?"
 check "DS-446 AC7 with the lever off, a park records no class" '[ "$(field FB-4 park.class)" = null ] && [ "$(field FB-4 park.question)" = "\"which reviewer handle goes in the PR body?\"" ]'
 # FB-1 is red on Lint, and Lint is red at its merge base. FB-2 is red on Lint, with no run of Lint at its

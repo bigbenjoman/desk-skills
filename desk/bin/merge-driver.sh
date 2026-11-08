@@ -81,6 +81,10 @@
 #                                            resume) and pass.mjs has not closed it: held before any
 #                                            other step, with nothing rerun or updated, and read again
 #                                            just before the merge
+#   - shares a file with a repaired PR       a PR whose conflict repair finished (fix-tries.mjs) goes first:
+#                                            a ready PR changing a file it changes is held, naming it, until
+#                                            it merges, goes red, conflicts again or parks, or 60 minutes
+#                                            after its repair. Repaired PRs are not held behind each other
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
@@ -674,6 +678,58 @@ EOF_EPIC
   esac
 }
 
+# Open PRs whose conflict repair has finished, as lines `<n>\t<key>\t<finished epoch>\t<repaired head>\t<parked>`,
+# set each loop. Only a PR whose head moved past the repaired one was repaired. A queue unread lists none.
+REPAIR_HOLD_SECS=3600
+REPAIRS=""
+repaired_prs(){ # repaired_prs <open PR numbers, space-separated>
+  node - "$DESK_QUEUE" "$1" <<'NODE'
+const fs = require('fs');
+const [qf, open] = process.argv.slice(2);
+const isOpen = new Set(open.split(' ').filter(Boolean));
+let q = {};
+try { q = JSON.parse(fs.readFileSync(qf, 'utf8')).tickets || {}; } catch { process.exit(0); }
+for (const [k, t] of Object.entries(q)) {
+  const pr = t.result?.pr;
+  if (pr == null || t.merged_at || !isOpen.has(String(pr))) continue;
+  const last = (t.fix_tries ?? []).filter((x) => x.kind === 'conflict' && !x.extra).at(-1);
+  const at = last?.finished ? Date.parse(last.finished) : NaN;
+  if (Number.isNaN(at)) continue;
+  console.log([pr, k, Math.floor(at / 1000), last.head, t.state === 'parked' || t.state === 'failed' || t.stuck ? 'parked' : '-'].join('\t'));
+}
+NODE
+}
+
+# repair_held <n> <key> <gate json> -> 0 when the merge waits for a repaired PR changing a file <n> changes.
+# A repaired PR waits for none, and an unread file list holds nothing.
+repair_held(){
+  local n="$1" key="$2" g="$3" mine r rkey fin rhead parked rg ours theirs why
+  [ -n "$REPAIRS" ] || return 1
+  printf '%s\n' "$REPAIRS" | awk -F'\t' -v n="$n" '$1 == n { f = 1 } END { exit !f }' && return 1
+  mine=$(printf '%s' "$g" | jq -c '.files // empty'); [ -n "$mine" ] || return 1
+  while IFS="$TAB" read -r r rkey fin rhead parked; do
+    [ -n "$r" ] || continue
+    rg=$(node "$GATE" pr "$r" --repo "$REPO" --merger "$AUTHOR" 2>/dev/null) || continue
+    [ "$(printf '%s' "$rg" | jq -r .sha)" != "$rhead" ] || continue
+    theirs=$(printf '%s' "$rg" | jq -c '.files // []')
+    ours=$(jq -rn --argjson a "$mine" --argjson b "$theirs" '[$a[] | select(. as $f | $b | index($f))] | .[:3] | join(", ")')
+    [ -n "$ours" ] || continue
+    why=""
+    if [ $(( $(date +%s) - fin )) -gt "$REPAIR_HOLD_SECS" ]; then why="60 minutes since its repair"
+    elif [ "$parked" = parked ]; then why="it is parked or stuck"
+    elif [ "$(printf '%s' "$rg" | jq -r .gate.state)" = fail ]; then why="it is red"
+    elif [ "$(printf '%s' "$rg" | jq -r .mergeState)" = DIRTY ]; then why="it is in conflict again"
+    fi
+    if [ -n "$why" ]; then log "#$n hold behind repaired #$r ($rkey) ended: $why — merging in its usual order"; continue; fi
+    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    log "#$n HELD: it changes $ours, as repaired #$r ($rkey) does, and that repair merges first — until it merges, goes red or parks, or 60 minutes after the repair"
+    return 0
+  done <<EOF_REPAIRS
+$REPAIRS
+EOF_REPAIRS
+  return 1
+}
+
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
@@ -834,6 +890,8 @@ EOF_RESOLVE
   if [ -z "$green_at" ]; then echo "$sha $(date +%s)" > "$SD/green-$n"; log "#$n $label at ${sha:0:9} — confirming on the next loop before merging"; return 1; fi
   if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
+  if [ -z "$EPIC_KEY" ] && repair_held "$n" "$key" "$g"; then return 1; fi
+
   if ! grant=$(node "$DESK_ENV_MJS" merge-grant 2>&1); then
     log "FAIL: ${grant#*"$TAB"} — not merging #$n; stopping"; exit 1
   fi
@@ -907,6 +965,7 @@ while true; do
     pause 60; continue
   fi
 
+  REPAIRS=$(repaired_prs "$(printf '%s\n' "$list" | cut -f1 | paste -sd ' ' -)" </dev/null)
   merged=""
   while IFS="$(printf '\t')" read -r n key kind; do
     [ -n "$n" ] || continue

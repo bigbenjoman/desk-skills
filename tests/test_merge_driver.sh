@@ -922,4 +922,40 @@ check "DS-508 AC3: a §4 Merge hold the epic PR touches holds it, noted on the q
 out=$(DESK_CONFIG="$T/config-rv-hold.md" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; RV_CONFIG=""
 check "DS-508 AC3: and the pass puts it to the person, naming the hold, exit 11" '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^EPIC PR: #301 is out of draft, but the merge driver holds it: merge hold: deploys the stack"'
 
+# ---- a repaired PR merges before a ready PR changing the same file; the hold ends itself ------------
+SHAR=abcabcabcabcabcabcabcabcabcabcabcabcabc1; SHAP=abcabcabcabcabcabcabcabcabcabcabcabcabc2
+HEADR=dddddddddddddddddddddddddddddddddddddddd
+rploop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-401 T-402" 2>&1); rc=$?; }
+# rp_setup <repaired draft> <repaired check> <finished ms ago> <ready PR files> [<repaired head recorded>]
+rp_setup(){
+  local at; at=$("$NODE" -p "new Date(Date.now()-$3).toISOString()")
+  : > "$T/merges.log"
+  find "$T/state" -name 'green-41*' -delete
+  q init repaired
+  cat > "$T/prs.json" <<EOF
+{
+  "411": { "head": "fix/T-401", "base": "main", "sha": "$SHAP", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "files": $4 },
+  "412": { "head": "fix/T-402", "base": "main", "sha": "$SHAR", "state": "open", "draft": $1, "checks": [["test", "$2"]], "files": ["src/shared.txt"] }
+}
+EOF
+  q add T-401 Task A; q set T-401 branch=fix/T-401 state=done result.pr=411
+  q add T-402 Task A; q set T-402 branch=fix/T-402 state=done result.pr=412
+  q set T-402 "fix_tries=[{\"try\":1,\"head\":\"${5:-$HEADR}\",\"kind\":\"conflict\",\"at\":\"$at\",\"finished\":\"$at\"}]"
+}
+SHARED='["src/shared.txt"]'
+rp_setup false SUCCESS 0 "$SHARED"; rploop; rploop
+check "AC1 two ready PRs sharing a file: the repaired one, with the higher number, merges first" '[ "$(merged)" = 412 ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412 (T-402) does"'
+rp_setup true SUCCESS 0 "$SHARED"; rploop; rploop
+check "AC2 a ready PR behind a repaired PR not yet ready is not merged and names it" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
+rp_setup true SUCCESS 7200000 "$SHARED"; rploop; rploop
+check "AC3 past 60 minutes the hold ends, logged, and the ready PR merges" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "#411 hold behind repaired #412 (T-402) ended: 60 minutes since its repair"'
+rp_setup false FAILURE 0 "$SHARED"; rploop; rploop
+check "AC4 behind a red repaired PR the ready PR merges" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: it is red"'
+rp_setup true SUCCESS 0 "$SHARED"; q set T-402 state=parked; rploop; rploop
+check "AC4 behind a parked repaired PR the ready PR merges" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: it is parked or stuck"'
+rp_setup false SUCCESS 0 '["src/other.txt"]'; rploop; rploop
+check "AC5 sharing no file, the ready PR merges in its usual order" '[ "$(merged)" = 411 ] && ! echo "$out" | grep -q "HELD"'
+rp_setup true SUCCESS 0 "$SHARED" "$SHAR"; rploop; rploop
+check "a repair that never moved the head holds nothing" '[ "$(merged)" = 411 ]'
+
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

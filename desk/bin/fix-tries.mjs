@@ -208,15 +208,30 @@ function triesByKind(done) {
 // tries of other kinds (a check no worker can clear, a review) never leave it none. The reason ends
 // with what the last try reported (its AUTOPILOT_DONE line, kept by pass.mjs as result.summary) when
 // that try was a conflict try whose worker has finished.
-const conflictTry = (base, files, draft) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null });
+// A try records where its head stood (`at`: { base_sha, merge_base }). It worked when the next read of
+// the PR, the next try's record or `now`, shows a new head holding a newer base, and a base that has
+// moved on since: the PR went back into conflict through a later merge, so the try is not counted. A
+// try with either read missing counts. CONFLICT_REPAIRS_MAX bounds every try, worked or not.
+const CONFLICT_REPAIRS_MAX = 5;
+const conflictTry = (base, files, draft, at) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null, ...(at ?? {}) });
 const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'conflict');
-export const conflictTriesMade = (done) => conflictTries(done).length;
-const conflictSpent = (done, head) => conflictTriesMade(done) >= FIX_TRIES_MAX || conflictTries(done).some((x) => x.head === head);
-const nextConflictTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: conflictTriesMade(done) + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
+const repairWorked = (x, next) => !!(x.base_sha && x.merge_base && next?.base_sha && next.merge_base
+  && next.head !== x.head && next.merge_base !== x.merge_base && next.base_sha !== x.base_sha);
+export const conflictTriesMade = (done, now) => {
+  const all = conflictTries(done);
+  return all.filter((x, i) => !repairWorked(x, all[i + 1] ?? now)).length;
+};
+const repairsCapped = (done) => conflictTries(done).length >= CONFLICT_REPAIRS_MAX;
+const conflictSpent = (done, head, now) => repairsCapped(done) || conflictTriesMade(done, now) >= FIX_TRIES_MAX || conflictTries(done).some((x) => x.head === head);
+const nextConflictTry = (done, pr, head, fix, now) => ({ call: 'requeue', fix: { try: conflictTriesMade(done, now) + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
 // What the ticket's last try of that kind reported, once its worker has finished; else null.
 export const lastTrySaid = (t, kind = 'conflict') => (t?.fix?.kind === kind && t.fix.finished && t.result?.summary) || null;
 const lastSaid = (t, kind = 'conflict') => (lastTrySaid(t, kind) ? `; the last try said: ${lastTrySaid(t, kind)}` : '');
-const stillInConflict = (t, done, base, files) => `still in conflict with ${base} after ${tries(conflictTriesMade(done))}${files?.length ? `: ${files.join(', ')}` : ''}${lastSaid(t)}`;
+// At the overall limit the reason always names the files (`capFiles`), which the person resolves by hand.
+const stillInConflict = (t, done, base, files, now, capFiles = files) => {
+  const capped = repairsCapped(done), named = capped ? capFiles : files;
+  return `still in conflict with ${base} after ${capped ? `${CONFLICT_REPAIRS_MAX} repairs, the most one PR gets` : tries(conflictTriesMade(done, now))}${named?.length ? `: ${named.join(', ')}` : ''}${lastSaid(t)}`;
+};
 
 // t: the queue ticket. s: its pr_status. ctx: { repo, base, required, advisory, stateChecks (§4 State
 // checks, parsed: never sent to a fix worker nor waited on for reruns), operator, builds and
@@ -229,9 +244,11 @@ export function fixCall(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const done = t.fix_tries ?? [];
   const conflict = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
-  let fix, split, base;
+  let fix, split, base, now;
   if (conflict) {
-    fix = conflictTry(ctx.base, ctx.conflictFiles?.(), false);
+    const at = ctx.baseAt?.() ?? null;
+    now = at ? { head: s.head, ...at } : undefined;
+    fix = conflictTry(ctx.base, ctx.conflictFiles?.(), false, at);
   } else {
     const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
     if (gate.state !== 'fail' || gate.pending.length) return null;
@@ -256,7 +273,7 @@ export function fixCall(t, s, ctx) {
     fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);
     if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
-  if (conflict) return conflictSpent(done, s.head) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base) } : nextConflictTry(done, s.pr, s.head, fix);
+  if (conflict) return conflictSpent(done, s.head, now) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base, undefined, now, fix.files) } : nextConflictTry(done, s.pr, s.head, fix, now);
   if (spent(done, fixedAt(done, s.head))) return spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base);
   return withRecord(nextTry(done, s.pr, s.head, fix), split.record);
 }
@@ -604,11 +621,13 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
 
 // A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3
 // pr-conflict-unreviewed or -reviewed, goes back to a fix worker under the same conflict tries as
-// fixCall's (one per head, FIX_TRIES_MAX per PR). draft: { pr, head, base, files } (files: [file] | null).
-export function conflictFix(t, { pr, head, base, files }) {
+// fixCall's (one per head, FIX_TRIES_MAX per PR). draft: { pr, head, base, files, baseAt } (files: [file] |
+// null; baseAt: { base_sha, merge_base } | null).
+export function conflictFix(t, { pr, head, base, files, baseAt }) {
   if (!head) return null;
   const done = t.fix_tries ?? [];
-  return conflictSpent(done, head) ? { call: 'stuck', why: stillInConflict(t, done, base, files) } : nextConflictTry(done, pr, head, conflictTry(base, files, true));
+  const now = baseAt ? { head, ...baseAt } : undefined;
+  return conflictSpent(done, head, now) ? { call: 'stuck', why: stillInConflict(t, done, base, files, now) } : nextConflictTry(done, pr, head, conflictTry(base, files, true, baseAt), now);
 }
 
 // A draft whose §4 Check builds build failed at a head behind its base (undraft.mjs `sync`) goes to a
