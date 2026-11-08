@@ -430,6 +430,10 @@ t('DS-435 a review fix after check tries and the conflict\'s own tries still has
 const brief435 = fixBrief(tk({ fix: d435.fix }));
 t('DS-435 AC2 the conflict brief takes the base\'s side of a generated file and runs §4 Codegen', brief435.includes("take main's version of it (`git checkout --theirs <file>` during the merge), run §4 Codegen (`desk-env cmds codegen-cmd`)"), true);
 t('DS-435 the conflict brief merges a branch far behind in steps', brief435.includes('merge main in steps'), true);
+const treeLine = 'run each item `desk-env cmds merged-tree-check-cmd` prints on the merged tree before you push';
+t('DS-441 AC3 a conflict try runs the merged-tree check before it pushes', brief435.includes(treeLine) && brief435.includes('Push nothing while it fails.'), true);
+t('DS-441 AC3 so does a sync try', fixBrief(tk({ fix: { kind: 'sync', try: 1, of: 2, pr: 2594, head: HEAD, base: 'main', build: 'x' } })).includes(treeLine), true);
+t('DS-441 AC3 negative: a review try, which merges nothing, is not told to', fixBrief(tk({ fix: { kind: 'review', try: 1, of: 2, pr: 2594, head: HEAD, base: 'main' } })).includes(treeLine), false);
 
 // ---- DS-440: a check build that failed behind the base goes to a sync try, one of the FIX_TRIES_MAX.
 const build440 = "its check build `./scripts/ensure-flows-image.sh` exited 1 at aaaaaaaaa: main's backend/ has changed; its head is behind main";

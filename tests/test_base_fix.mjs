@@ -57,6 +57,24 @@ t('the task merges, never rebases', task.includes('merge origin/main into feat/x
 t('the task pushes only the base', task.includes('Push with git push origin feat/x.'), true);
 t('the task opens no PR', task.includes('Open no PR'), true);
 
+// A merge the merged-tree check failed goes the conflict's way, with the check's output.
+const treeCheck = { command: 'apps/api: uv run python check.py', output: 'Revision 122 is present more than once' };
+const treeFix = baseFixCall(null, c({ files: [], check: treeCheck })).fix;
+t('AC1 a failed merged-tree check starts try 1 with its output', `${treeFix.try} ${treeFix.check.output}`, '1 Revision 122 is present more than once');
+t('AC1 negative: a conflict carries no check', 'check' in first.fix, false);
+t('AC5 tries spent: says the check still fails', baseFixCall(done1, c({ check: treeCheck })).why, 'still failing the check after 1 fix try; the last try parked: neither side can be kept');
+const treeCtx = { key: 'base-feat-x', base: 'feat/x', source: 'main', fix: treeFix };
+const treeBrief = baseFixBrief(treeCtx);
+t('AC2 the briefing quotes the output', treeBrief.includes('> Revision 122 is present more than once'), true);
+t('AC2 the briefing renumbers the base\'s own after the source\'s head', treeBrief.includes("renumber feat/x's own so they come after the head of origin/main, and leave main's as they are"), true);
+t('AC2 negative: a conflict briefing does not', baseFixBrief(ctx).includes('renumber'), false);
+t('AC2 the ticket makes the check an acceptance criterion', baseFixTicket(treeCtx).includes('`desk-env cmds merged-tree-check-cmd` prints passes on the merged feat/x'), true);
+const treeTask = baseFixTask(treeCtx);
+t('AC2 the task runs the check before the push', treeTask.indexOf('Before you push, run those items again') > 0 && treeTask.indexOf('Before you push, run those items again') < treeTask.indexOf('Otherwise push with git push origin feat/x'), true);
+t('AC1 a conflict task runs the check before its push', task.indexOf('merged-tree-check-cmd') > 0 && task.indexOf('merged-tree-check-cmd') < task.indexOf('Push with git push origin feat/x'), true);
+t('AC1 a conflict ticket makes the check a criterion', baseFixTicket(ctx).includes('merged-tree-check-cmd'), true);
+t('AC5 the task pushes nothing while it fails',treeTask.includes('If the check still fails, push nothing and park quoting its output'), true);
+
 // DS-508 AC2: the epic PR's review tries share base_fix, one per head and at most FIX_TRIES_MAX.
 const v1 = { pr: 300, head: H1 };
 const r1 = epicReviewCall(null, v1, { alive: false });

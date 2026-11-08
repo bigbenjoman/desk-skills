@@ -703,6 +703,8 @@ export function captureTry(t, { pr, head, files }) {
   return { call: 'requeue', fix: { try: 1, of: 1, pr, head: head ?? null, kind: 'capture', what: `take ${files.length} screenshot(s) never taken: ${files.join(', ')}`, files } };
 }
 
+const mergedTreeLine = (f) => `Where §4 Merged-tree check is set, run each item \`desk-env cmds merged-tree-check-cmd\` prints on the merged tree before you push. A failure is this try's to fix: where two files claim one place in a sequence (two migrations with one revision number), renumber your branch's own so they come after the head of ${f.base}. Push nothing while it fails.`;
+
 // The fix worker's briefing section, while its try is open.
 export function fixBrief(t) {
   const f = t.fix;
@@ -752,11 +754,13 @@ export function fixBrief(t) {
       : `Your PR #${f.pr} is open and out of draft on this branch, and it conflicts with ${f.base}, so the merge driver cannot merge it.`);
     lines.push(f.files?.length ? `Conflicting files: ${f.files.join(', ')}.` : `The conflicting files were not listed: \`git merge-tree --write-tree --name-only origin/${f.base} HEAD\` names them.`);
     lines.push(`A conflicting file a generator writes is not resolved by hand where §4 Codegen is set: take ${f.base}'s version of it (\`git checkout --theirs <file>\` during the merge), run §4 Codegen (\`desk-env cmds codegen-cmd\`) once the other conflicts are resolved, and commit what it regenerates with the merge.`,
-      `Where the branch is far behind ${f.base} and one merge leaves too much in conflict, merge ${f.base} in steps (an older commit of it first, then the next), pushing once the last merge is done.`);
+      `Where the branch is far behind ${f.base} and one merge leaves too much in conflict, merge ${f.base} in steps (an older commit of it first, then the next), pushing once the last merge is done.`,
+      mergedTreeLine(f));
   } else if (f.kind === 'sync') {
     lines.push(`Your PR #${f.pr} is a draft on this branch, and its head ${String(f.head).slice(0, 12)} is behind ${f.base}. Its check build failed there: ${f.build}`, '',
       `Merge origin/${f.base} into your branch (git merge, never a rebase or a force push). A merge git reports clean can still break the branch: two migrations with the same parent, a renamed symbol, a changed signature or fixture. ` +
       'Run the repo\'s checks on the merged head (desk-ticket Stage 4), and fix each break the merge brought in, in a commit of its own after the merge commit, before you push.',
+      mergedTreeLine(f),
       'Do not run the check build yourself: once you push, the pass runs it at your new head and re-runs the check.');
   } else if (f.kind === 'feedback') {
     lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);

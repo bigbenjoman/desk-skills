@@ -36,7 +36,8 @@ files, then `git rebase --continue` (or `git commit --no-edit` for a merge); if 
 open an editor, `git commit --no-edit` first and `--continue` after it. Then:
 
 - **Re-run typecheck and your specs**, under the lock (Stage 4 file), whether or not the rebase
-  stopped.
+  stopped, and each item `desk-env cmds merged-tree-check-cmd` prints: a failure there is yours to
+  fix before you push, as a clean merge can still leave two migrations with one revision number.
 - **A fresh `desk-review` at the new head, before you push**, whenever you resolved a conflict:
   the resolved hunks are in neither side's reviewed diff, even where you took both sides verbatim.
   Its findings are handled as Stage 4b's are.

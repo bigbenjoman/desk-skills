@@ -55,7 +55,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   a ticket that needs a regeneration parks naming the command. Each row's items come from
   `desk-env cmds test-cmd`, `desk-env cmds integration-cmd`, `desk-env cmds typecheck-cmd`,
   `desk-env cmds e2e-cmd`, `desk-env cmds lint-cmd`, `desk-env cmds build-cmd`,
-  `desk-env cmds codegen-cmd` and `desk-env cmds dev-cmd`. Each §4 Pre-push checks item
+  `desk-env cmds codegen-cmd`, `desk-env cmds merged-tree-check-cmd` and `desk-env cmds dev-cmd`. Each §4 Pre-push checks item
   (`desk-env cmds pre-push-checks`) runs the same way, one at a time, as well as through the pre-push script.
   An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass the port as an argument in
   whatever form the §4 Dev server row gives (e.g. `-- --port 3008`).

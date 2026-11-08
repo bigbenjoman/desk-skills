@@ -627,4 +627,77 @@ pass
 check "DS-508 AC5 a ticket held behind another batch's epic waits on that epic PR, saying why there is none" \
   '[[ "$out" == *"WAITING ON EPIC PR: T-4 (E-7: no epic PR: gh pr create failed: nope)"* ]] && [[ "$out" != *"WAITING ON MERGE"* ]]'
 
+# §4 Merged-tree check: a stubbed check that fails on a repeated revision number in migrations/, and
+# leaves a stray file behind as a real tool can.
+ln -sf "$B/with-lock.sh" "$T/desk/bin/with-lock.sh"
+cat > "$T/check.sh" <<'EOF'
+d=$(ls migrations 2>/dev/null | cut -d_ -f1 | sort | uniq -d)
+[ -z "$d" ] && exit 0
+touch stray.tmp; echo "Revision $d is present more than once"; exit 1
+EOF
+treerow(){ printf '\n## 4. Tools\n| Field | Value |\n|---|---|\n| Merged-tree check | `%s` |\n' "$1" >> "$C/config.md"; }
+# clash: main and feat/x each add a migration numbered 121, under different filenames.
+clash(){
+  git -C "$C/repo" fetch -q origin; git -C "$C/repo" switch -q -c side origin/feat/x
+  mkdir -p "$C/repo/migrations"; echo a > "$C/repo/migrations/121_a.py"; git -C "$C/repo" add migrations; git -C "$C/repo" commit -q -m base-side; git -C "$C/repo" push -q origin HEAD:feat/x
+  git -C "$C/repo" switch -q main; mkdir -p "$C/repo/migrations"; echo b > "$C/repo/migrations/121_b.py"; git -C "$C/repo" add migrations; git -C "$C/repo" commit -q -m main-side; git -C "$C/repo" push -q origin main
+  git -C "$C/repo" branch -q -D side
+}
+# renumber: what the fix worker does, from a clone: merge main, move the base's own migration after it.
+renumber(){
+  git clone -q "$C/origin.git" "$C/fixer"; git -C "$C/fixer" switch -q feat/x
+  git -C "$C/fixer" merge -q --no-edit origin/main; git -C "$C/fixer" mv migrations/121_a.py migrations/122_a.py
+  git -C "$C/fixer" commit -q -m renumber; git -C "$C/fixer" push -q origin feat/x
+}
+rm -f "$T/agents.json"; : > "$T/spawns"
+
+fresh tree1; feature; fixrow yes; treerow "sh $T/check.sh"; clash; tip=$(origin_tip); pass
+check "DS-441 AC1 a clean merge that fails the check pushes nothing" '[ "$(origin_tip)" = "$tip" ]'
+check "DS-441 AC1 a base fix worker is sent, with the check's output" \
+  'grep -q "^base-feat-x .*Your task is merged-tree fix try 1 of 2 on feat/x" "$T/spawns" && grep -q "Revision 121 is present more than once" "$C/state/briefings/base-feat-x.md" && [ "$(jq -r ".base_fix.tries[0].check.output" "$DESK_QUEUE")" = "Revision 121 is present more than once" ]'
+check "DS-441 AC1 the report says it is the check, and not the person's yet" '[[ "$out" == *"fails §4 Merged-tree check"* ]] && [[ "$out" == *"Merged-tree fix try 1 of 2 starts this pass"* ]] && [ $rc -ne 11 ]'
+check "DS-441 AC1 the worktree is left clean at the base's head" "[ -z \"\$(git -C $BWT status --porcelain)\" ] && [ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$tip\" ]"
+renumber; ended "AUTOPILOT_DONE: pr=none jira=none"; pass
+check "DS-441 AC2 once the worker has pushed, the next pass finds the base current and clears the tries" \
+  '[[ "$out" == *"merged-tree fix: try 1 of 2 on feat/x finished"* ]] && [[ "$out" == *"feat/x is current with main again"* ]] && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ] && origin_has_main'
+
+rm -f "$T/agents.json"; : > "$T/spawns"
+fresh tree5; feature; fixrow yes; treerow "sh $T/check.sh"; clash; tip=$(origin_tip); pass
+# The worker merged locally, could not make the check pass, and parked without pushing.
+git -C "$C/wt/base-feat-x" merge -q --no-edit origin/main; ended "AUTOPILOT_PARK: the check still fails"; pass
+check "DS-441 AC5 a fix that still fails is put to the person, quoting the check" \
+  '[[ "${out#*WAITING ON YOU}" == *"nothing pushed. Its output: Revision 121 is present more than once"* ]] && [[ "${out#*WAITING ON YOU}" == *"Still failing the check after 1 fix try; the last try parked: the check still fails"* ]]'
+check "DS-441 AC5 nothing was pushed and no second try starts" '[ "$(origin_tip)" = "$tip" ] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
+
+: > "$T/spawns"
+fresh tree4; treerow none; clash; pass
+check "DS-441 AC4 with the row none, a clean merge pushes as before" 'origin_has_main && [[ "$out" == *"and pushed"* ]]'
+fresh treeunset; clash; pass
+check "DS-441 AC4 with no row at all, likewise" 'origin_has_main'
+fresh treepass; treerow "sh $T/check.sh"; pass
+check "DS-441 negative: a merge the check passes is pushed" 'origin_has_main && [[ "$out" == *"and pushed"* ]] && [ -z "$(git -C "$C/wt/base-feat-x" status --porcelain)" ]'
+
+# A batch whose every child has merged, its draft epic PR's review due, beside a live sibling batch in
+# the repo with one worker running and ready tickets. epicbeside <case> <concurrency row>.
+SIB="$DESK_HOME/repos/acme__widgets/queue.json"
+epicbeside(){
+  fresh "$1"; epicrows; rm -f "$T/ep"/*; : > "$T/spawns"; rm -f "$T/agents.json"
+  printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `%s` |\n' "$2" >> "$C/config.md"
+  node "$B/queue.mjs" set-batch epic=E-8 feature=false 'promotion={"pr":300}' >/dev/null
+  node "$B/queue.mjs" set T-1 state=done result.pr=801 merged_at=2026-11-06T10:00:00Z >/dev/null
+  echo '{"state":"MERGED","mergedAt":"2026-11-06T10:00:00Z"}' > "$T/ep/801.json"
+  echo "{\"state\":\"OPEN\",\"isDraft\":true,\"headRefOid\":\"$EH\"}" > "$T/ep/300.json"; review -
+  mkdir -p "$(dirname "$SIB")" "$HOME/.desk-autopilot/acme__widgets/orchestrators"
+  echo '{"concurrency":3,"tickets":{"S-1":{"key":"S-1","state":"running"},"S-2":{"key":"S-2","state":"triaged"},"S-3":{"key":"S-3","state":"triaged"},"S-4":{"key":"S-4","state":"triaged"}}}' > "$SIB"
+  jq -n --arg q "$SIB" --arg at "$(node -p 'new Date().toISOString()')" '{queue: $q, at: $at}' > "$HOME/.desk-autopilot/acme__widgets/orchestrators/sibling.json"
+  out=$(DESK_REPO_OVERRIDE=acme/widgets node "$B/pass.mjs" 2>&1); rc=$?
+}
+epicbeside eslot '2 / 3'
+check "DS-520 AC2 with a free slot beside a sibling batch's ready work, the epic review starts" 'grep -q "^base-feat-x .*It is epic PR #300" "$T/spawns" && [ "$(jq -r ".base_fix.tries[0].kind" "$DESK_QUEUE")" = review ]'
+check "DS-520 AC1 the review counts as wanting one slot, and the sibling keeps the rest" '[[ "$out" == *"repo workers: 1 of the §3b cap of 3 running"*"1 kept for the standing batch, which has 3 ready and 1 running"* ]]'
+epicbeside efull '1 / 1'
+check "DS-520 AC3 with the §3b cap full, the review waits" '! grep -q "^base-feat-x " "$T/spawns" && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
+check "DS-520 AC3 and the pass says why" '[[ "$out" == *"epic PR #300: review try 1 of 2 starts once a worker may (none may this pass: repo workers: 1 of the §3b cap of 1 running"* ]]'
+rm -f "$SIB"
+
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]
