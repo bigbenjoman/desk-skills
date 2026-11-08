@@ -23,6 +23,25 @@ export const SIZING_KEYS = Object.freeze([
   'memory-ceiling-gb', 'test-cap', 'test-lock-slots', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
 ]);
 
+// The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
+// user's answers and read by bench-quota.mjs.
+export const BENCH_CAP_KEY = 'bench-cap-points';
+export const BENCH_RESERVE_KEY = 'bench-reserve-percent';
+const BENCH_RULES = Object.freeze({
+  [BENCH_CAP_KEY]: { ok: (n) => n > 0, want: 'a positive number of points of the weekly allowance',
+    why: 'points of each weekly allowance the bench may spend, set in /desk-setup' },
+  [BENCH_RESERVE_KEY]: { ok: (n) => n < 100, want: 'a percentage of the weekly allowance from 0 to under 100',
+    why: '% of each weekly allowance the bench leaves for interactive work, set in /desk-setup' },
+});
+export const benchWhy = (key) => BENCH_RULES[key]?.why;
+// Why a value cannot be stored or read as one of the bench settings, or null when it can.
+export function benchSettingError(key, raw) {
+  const rule = BENCH_RULES[key];
+  if (!rule) return `\`${key}\` is not a bench setting: want ${Object.keys(BENCH_RULES).join(' or ')}`;
+  const v = String(raw ?? '').trim();
+  return /^\d+(\.\d+)?$/.test(v) && rule.ok(Number(v)) ? null : `\`${key}\` is "${raw}": want ${rule.want}`;
+}
+
 // The thresholds and ratios the proposal uses. Changing one changes every new proposal, never a
 // profile already written.
 export const RULES = Object.freeze({
@@ -232,6 +251,9 @@ export function splitRow(line) {
 }
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 const esc = (s) => String(s).replace(/\|/g, '\\|');
+// The Sizing table's heading and header, and one of its rows; renderProfile and setSizingRows share them.
+const SIZING_HEAD = Object.freeze(['## Sizing', '', '| Key | Value | Why |', '|---|---|---|']);
+const sizingRow = (s) => `| \`${s.key}\` | \`${esc(s.value)}\` | ${esc(s.why)} |`;
 
 // -> { hardware: { key: { value, detected } }, sizing: { key: { value, why } } }
 export function parseProfile(text) {
@@ -271,14 +293,55 @@ export function renderProfile(hw, sizing, date) {
     '|---|---|---|',
     ...HARDWARE_KEYS.map((k) => `| \`${k}\` | \`${esc(hw[k] ?? 'unknown')}\` | \`${date}\` |`),
     '',
-    '## Sizing',
-    '',
-    '| Key | Value | Why |',
-    '|---|---|---|',
-    ...sizing.map((s) => `| \`${s.key}\` | \`${esc(s.value)}\` | ${esc(s.why)} |`),
+    ...SIZING_HEAD,
+    ...sizing.map(sizingRow),
     '',
   ];
   return lines.join('\n');
+}
+
+// The profile text with each of rows ([{ key, value, why }]) set in its Sizing table: an existing
+// row for the key is replaced in place, a new one goes at the table's end. Everything else is kept.
+export function setSizingRows(text, rows) {
+  const lines = String(text ?? '').replace(/\n+$/, '').split('\n');
+  let start = lines.findIndex((l) => /^##\s+.*sizing/i.test(l.trim()));
+  if (start < 0) {
+    lines.push('', ...SIZING_HEAD);
+    start = lines.length - SIZING_HEAD.length;
+  }
+  let end = start + 1;
+  while (end < lines.length && !/^##\s/.test(lines[end].trim())) end++;
+  for (const r of rows) {
+    const line = sizingRow(r);
+    const at = lines.slice(start, end).findIndex((l) => l.trim().startsWith('|') && unquote(splitRow(l.trim())[0]).toLowerCase() === r.key);
+    if (at >= 0) { lines[start + at] = line; continue; }
+    let last = end - 1;
+    while (last > start && !lines[last].trim().startsWith('|')) last--;
+    lines.splice(last + 1, 0, line);
+    end++;
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+// The text `desk-env machine set` starts a profile from when there is none: no Hardware rows and no
+// proposed sizes, so sizesProposed reads false and /desk-setup still offers the whole proposal.
+export const BENCH_ONLY_PROFILE = [
+  '# Machine profile',
+  '',
+  'Started by `desk-env machine set` to keep the bench settings below. No sizes are proposed yet:',
+  '`desk-env machine propose` shows them, and `desk-env machine write` adds them once you confirm.',
+  '',
+].join('\n');
+
+// Whether the profile holds the confirmed proposal (`machine write` always records the hardware).
+export const sizesProposed = (profile) => Object.keys(profile?.hardware ?? {}).length > 0;
+
+// The Sizing rows a re-written profile holds: the proposal, then every row the profile has that the
+// proposal does not make (set by `desk-env machine set`), so a re-write keeps them.
+export function rewrittenSizing(profile, proposal) {
+  const proposed = new Set(proposal.map((s) => s.key));
+  const kept = Object.entries(profile?.sizing ?? {}).filter(([k]) => !proposed.has(k)).map(([key, s]) => ({ key, value: s.value, why: s.why }));
+  return [...proposal, ...kept];
 }
 
 // Hardware rows that differ from the profile. Free disk moves every day, so it never counts.

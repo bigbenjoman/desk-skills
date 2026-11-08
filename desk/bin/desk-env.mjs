@@ -77,6 +77,10 @@
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
 //   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
+//   node desk-env.mjs machine set <key>=<value>...
+//                                             set the bench's bench-cap-points and bench-reserve-percent in
+//                                             the profile (only after the user answers); a bad value exits 1
+//                                             naming it, and nothing is written
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
 //   node desk-env.mjs costs detect            print the GitHub repos, Vercel teams and projects and AWS
 //                                             profiles this computer can see
@@ -1873,16 +1877,35 @@ if (isMain) {
           console.log(v);
           break;
         }
-        if (!['detect', 'propose', 'write'].includes(sub)) {
-          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>');
+        if (!['detect', 'propose', 'write', 'set'].includes(sub)) {
+          console.error('usage: desk-env.mjs machine detect|propose|write|set <key>=<value>...|get <key>|why <key>');
           process.exit(2);
         }
-        const hw = M.gather();
         const profile = machineProfile();
+        if (sub === 'set') {
+          // Every pair is checked before anything is written, so one bad value stores nothing.
+          const rows = [];
+          for (const pair of rest) {
+            const i = pair.indexOf('=');
+            const k = (i > 0 ? pair.slice(0, i) : pair).trim().toLowerCase();
+            const v = i > 0 ? pair.slice(i + 1).trim() : '';
+            const bad = i > 0 ? M.benchSettingError(k, v) : `"${pair}" is not <key>=<value>`;
+            if (bad) { console.error(`nothing written: ${bad}`); process.exit(1); }
+            rows.push({ key: k, value: v, why: M.benchWhy(k) });
+          }
+          if (!rows.length) { console.error('usage: desk-env.mjs machine set <key>=<value>...'); process.exit(2); }
+          // Without a profile, one is started holding only these rows: no hardware, so the next detect
+          // still offers the whole proposal.
+          const text = existsSync(path) ? readFileSync(path, 'utf8') : M.BENCH_ONLY_PROFILE;
+          console.log(writeWithBackup(path, M.setSizingRows(text, rows)));
+          break;
+        }
+        const hw = M.gather();
         const proposal = M.propose(hw);
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }
+          if (!M.sizesProposed(profile)) { console.log(`\nno sizes proposed in ${path} yet: desk-env machine propose shows the sizes it would write`); break; }
           const hwc = M.hardwareChanges(profile, hw);
           const szc = M.sizingChanges(profile, proposal);
           if (!hwc.length && !szc.length) { console.log(`\nunchanged since ${path}`); break; }
@@ -1900,8 +1923,9 @@ if (isMain) {
           }
           break;
         }
-        // write: overwrites; /desk-setup runs it only after the user confirms the proposal.
-        console.log(writeWithBackup(path, M.renderProfile(hw, proposal, new Date().toISOString().slice(0, 10))));
+        // write: overwrites; /desk-setup runs it only after the user confirms the proposal. Rows the
+        // proposal does not make (the bench settings) are kept.
+        console.log(writeWithBackup(path, M.renderProfile(hw, M.rewrittenSizing(profile, proposal), new Date().toISOString().slice(0, 10))));
         break;
       }
       case 'costs': {
