@@ -83,8 +83,8 @@
 #                                            just before the merge
 #   - shares a file with a repaired PR       a PR whose conflict repair finished (fix-tries.mjs) goes first:
 #                                            a ready PR changing a file it changes is held, naming it, until
-#                                            it merges, goes red, conflicts again or parks, or 60 minutes
-#                                            after its repair. Repaired PRs are not held behind each other
+#                                            it merges, goes red or parks, or 60 minutes after its repair.
+#                                            Repaired PRs are not held behind each other
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
@@ -700,10 +700,10 @@ for (const [k, t] of Object.entries(q)) {
 NODE
 }
 
-# repair_held <n> <key> <gate json> -> 0 when the merge waits for a repaired PR changing a file <n> changes.
+# repair_held <n> <gate json> -> 0 when the merge waits for a repaired PR changing a file <n> changes.
 # A repaired PR waits for none, and an unread file list holds nothing.
 repair_held(){
-  local n="$1" key="$2" g="$3" mine r rkey fin rhead parked rg ours theirs why
+  local n="$1" g="$2" mine r rkey fin rhead parked rg ours theirs why
   [ -n "$REPAIRS" ] || return 1
   printf '%s\n' "$REPAIRS" | awk -F'\t' -v n="$n" '$1 == n { f = 1 } END { exit !f }' && return 1
   mine=$(printf '%s' "$g" | jq -c '.files // empty'); [ -n "$mine" ] || return 1
@@ -718,7 +718,6 @@ repair_held(){
     if [ $(( $(date +%s) - fin )) -gt "$REPAIR_HOLD_SECS" ]; then why="60 minutes since its repair"
     elif [ "$parked" = parked ]; then why="it is parked or stuck"
     elif [ "$(printf '%s' "$rg" | jq -r .gate.state)" = fail ]; then why="it is red"
-    elif [ "$(printf '%s' "$rg" | jq -r .mergeState)" = DIRTY ]; then why="it is in conflict again"
     fi
     if [ -n "$why" ]; then log "#$n hold behind repaired #$r ($rkey) ended: $why — merging in its usual order"; continue; fi
     [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
@@ -890,7 +889,7 @@ EOF_RESOLVE
   if [ -z "$green_at" ]; then echo "$sha $(date +%s)" > "$SD/green-$n"; log "#$n $label at ${sha:0:9} — confirming on the next loop before merging"; return 1; fi
   if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
-  if [ -z "$EPIC_KEY" ] && repair_held "$n" "$key" "$g"; then return 1; fi
+  if [ -z "$EPIC_KEY" ] && repair_held "$n" "$g"; then return 1; fi
 
   if ! grant=$(node "$DESK_ENV_MJS" merge-grant 2>&1); then
     log "FAIL: ${grant#*"$TAB"} — not merging #$n; stopping"; exit 1

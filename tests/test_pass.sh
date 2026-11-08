@@ -1687,8 +1687,8 @@ export DESK_QUEUE="$T/queue-fb.json" DESK_AUTOPILOT_STATE="$T/state-fb"; mkdir -
 fbran(){ printf '%s\n%s\n' "$3" "$3" > "$T/state-fb/merge-driver/reruns-$1-$2"; }
 MB=4444444444444444444444444444444444444444; MB2=6666666666666666666666666666666666666666; MT=5555555555555555555555555555555555555555
 H4=7777777777777777777777777777777777777777
-api "repos/acme/widgets/compare/main...$H1" "$MB"; api "repos/acme/widgets/compare/main...$H4" "$MB"
-api "repos/acme/widgets/compare/main...$H2" "$MB2"; api "repos/acme/widgets/compare/main...$H3" "$MB2"
+api "repos/acme/widgets/compare/main...$H1" "$MT"$'\t'"$MB"; api "repos/acme/widgets/compare/main...$H4" "$MT"$'\t'"$MB"
+api "repos/acme/widgets/compare/main...$H2" "$MT"$'\t'"$MB2"; api "repos/acme/widgets/compare/main...$H3" "$MT"$'\t'"$MB2"
 runs "$MB" Lint '[{"status":"completed","conclusion":"failure"}]'; runs "$MB2" Lint '[]'
 q init fb; q set-batch concurrency=5
 # FB-4, with the lever off: red on Lint, red on the base too, held behind a blocker. Routed as today.

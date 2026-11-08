@@ -2877,16 +2877,13 @@ const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
   try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
 });
-const mergeBaseOf = (head) => cached(`merge-base:${head}`, () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${encodeURIComponent(DEFAULT_BRANCH)}...${head}`, '--jq', '.merge_base_commit.sha']);
-  return r.ok && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null;
-});
-// Where a conflicted head stands: the default branch's tip and its merge base with it, or null unread.
-const conflictBaseOf = (head) => cached(`conflict-base:${head}`, () => {
+// Where a head stands: the default branch's tip and its merge base with it, or null unread.
+const baseAtOf = (head) => cached(`base-at:${head}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${encodeURIComponent(DEFAULT_BRANCH)}...${head}`, '--jq', '[.base_commit.sha, .merge_base_commit.sha] | @tsv']);
   const [base_sha, merge_base] = r.ok ? r.out.split('\t') : [];
   return /^[0-9a-f]{40}$/.test(base_sha ?? '') && /^[0-9a-f]{40}$/.test(merge_base ?? '') ? { base_sha, merge_base } : null;
 });
+const mergeBaseOf = (head) => baseAtOf(head)?.merge_base ?? null;
 // The default branch's commits since a merge base, newest first. The compare lists them oldest first and
 // holds 250 a page unpaged, so every page is read before the list is turned round.
 const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
@@ -2963,7 +2960,7 @@ if (drafts.length) {
     const rf = hold ? null : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: c.failing, checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, builds: [], ...baseReads(v.headRefOid) })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge, targeted: c.targeted })
-          : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch), baseAt: conflictBaseOf(v.headRefOid) })
+          : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch), baseAt: baseAtOf(v.headRefOid) })
             // A check build that failed behind the base goes to a worker that merges it.
             : c.call === 'sync' ? syncFix(t, { pr: n, head: v.headRefOid, base: c.base, why: c.why })
             // Screenshots nobody took go to a capture worker, once per PR.
@@ -3325,7 +3322,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
       return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files: files.split('\n').filter(Boolean) })?.applies === true;
     },
     conflictFiles: () => conflictFiles(t.branch),
-    baseAt: () => conflictBaseOf(s.head),
+    baseAt: () => baseAtOf(s.head),
     ...baseReads(s.head),
   };
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a

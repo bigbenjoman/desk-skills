@@ -86,7 +86,7 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
-    state: p.state.toUpperCase(), mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
+    state: p.state.toUpperCase(), mergeable: p.mergeState === 'DIRTY' ? 'CONFLICTING' : 'MERGEABLE', mergeStateStatus: p.mergeState ?? 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
     statusCheckRollup: p.checks.map(([name, conclusion, run, job]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci',
       detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/' + (job ?? run) : undefined })) });
 } else if (a[0] === 'api' && /check-runs\/\d+\/annotations/.test(a[1] ?? '')) {
@@ -957,5 +957,7 @@ rp_setup false SUCCESS 0 '["src/other.txt"]'; rploop; rploop
 check "AC5 sharing no file, the ready PR merges in its usual order" '[ "$(merged)" = 411 ] && ! echo "$out" | grep -q "HELD"'
 rp_setup true SUCCESS 0 "$SHARED" "$SHAR"; rploop; rploop
 check "a repair that never moved the head holds nothing" '[ "$(merged)" = 411 ]'
+rp_setup true SUCCESS 0 "$SHARED"; jq '."412".mergeState = "DIRTY"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"; rploop; rploop
+check "AC2 a repaired PR back in conflict is not ready, so the ready PR still waits for it" '[ -z "$(merged)" ] && echo "$out" | grep -q "#411 HELD: it changes src/shared.txt, as repaired #412"'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
