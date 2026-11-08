@@ -619,7 +619,7 @@ function classedRerun(mine, checks, ctx) {
   if (used === 'refused') return { note: `${CLASSED}; GitHub refused desk's ${RERUNS_MAX} reruns at this head` };
   const inRuns = latest.filter((c) => rerun.runs.includes(String(c.runId)));
   const going = inRuns.filter((c) => c.status !== 'completed').map((c) => c.name);
-  const starts = inRuns.map((c) => Date.parse(c.startedAt ?? '')).filter((x) => x > 0);
+  const starts = inRuns.map((c) => Date.parse(c.started ?? '')).filter((x) => x > 0);
   if (going.length && starts.length && (ctx.now ?? Date.now()) - Math.min(...starts) < PENDING_LIMIT_MS) return { call: 'wait', why: `checks still running (${going.join(', ')}) in the run of ones ${CLASSED}, re-run once they finish` };
   const names = mine.map((f) => `"${f.name}"`).join(', ');
   return { call: 'rerun', why: `its ${names} ${mine.length === 1 ? 'check is' : 'checks are'} ${CLASSED}, ended by the runner or a resource and not the code, so ${mine.length === 1 ? 'it is' : 'they are'} re-run once before any fix worker`, gate: rerun.gate };
