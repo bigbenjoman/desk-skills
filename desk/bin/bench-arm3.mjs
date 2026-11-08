@@ -33,10 +33,11 @@ export const CODEX_MODEL = 'gpt-6.1-sol';
 export const SANDBOX_CONFIG = Object.freeze(['sandbox_workspace_write.network_access=false',
   'sandbox_workspace_write.exclude_tmpdir_env_var=true', 'sandbox_workspace_write.exclude_slash_tmp=true', 'approval_policy="never"']);
 
-// One Codex side: codex in its sandbox in the checkout. -> bench.mjs's runner result.
+// One Codex side: codex in its sandbox in the checkout, workspace-write unless the arm names its own
+// `sandbox` and `config`. -> bench.mjs's runner result.
 export function runCodex(task, arm, wt, _settings, opts, dir, { env = armEnv(), now = Date.now } = {}) {
   const last = join(dir, 'last-message.txt');
-  const call = { args: execArgs({ sandbox: 'workspace-write', cd: wt, model: arm.model, effort: arm.effort, last, prompt: promptFor(task, arm), config: SANDBOX_CONFIG }),
+  const call = { args: execArgs({ sandbox: arm.sandbox ?? 'workspace-write', cd: wt, model: arm.model, effort: arm.effort, last, prompt: promptFor(task, arm), config: arm.config ?? SANDBOX_CONFIG }),
     last, cwd: wt, timeout: opts.timeout };
   const started = now();
   // The bridge ends codex at the timeout itself; this ceiling only catches a bridge that never returns.
