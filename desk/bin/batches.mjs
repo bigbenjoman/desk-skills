@@ -112,9 +112,11 @@ export function supervisorHolder(state) {
 // tickets is a session's between `queue.mjs init` and its plan, and a batch on a base still has its gate
 // and promotion to come: none of those is finished. Only a batch on a base is archived (batch.mjs), so a
 // finished batch's queue stays listed, and must not keep its keys or its epic's children out of every
-// other batch.
+// other batch. A ticket carried in from an earlier batch for its follow-on (queue.mjs init) is not one of
+// this batch's.
+export const ownRows = (q) => Object.values(q?.tickets ?? {}).filter((t) => !('carried_from' in t));
 const finishedBy = (q, open) => {
-  const rows = Object.values(q.tickets ?? {});
+  const rows = ownRows(q);
   return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && open(t));
 };
 export const finished = (q) => finishedBy(q, (t) => prOpen(t.result.pr));

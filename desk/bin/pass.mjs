@@ -1085,7 +1085,8 @@ for (const t of Object.values(queue().tickets)) {
   const merges = mergeParkOf(t, c, { grantedOnly: true });
   if (merges?.call === 'done') {
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${merges.pr}`,
-      `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`);
+      `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`,
+      ...(t.follow_on?.length ? [] : [parkFollowOn(t.park.question ?? '')]));
     report.done.push(`${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${E.mergeGrant(queue()).why})`);
     continue;
   }

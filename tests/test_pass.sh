@@ -2521,16 +2521,25 @@ check "DS-509 AC4 with no merge grant, it is the merge question naming the rows,
   '[ "$(field M-3 state)" = "\"parked\"" ] && field M-3 park.question | grep -qF "PR #873 is green at ${HM3:0:9} with a clean review, and desk does not merge it because config §3 autopilot-merge is" && field M-3 park.question | grep -qF "pr-merge-green" && field M-3 park.clears_when | grep -qF "\"pr-merged\""'
 check "DS-509 AC4 the merge question keeps the park's post-merge steps as its follow-on, for a merge made by hand" \
   'field M-3 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
+# M-4 was parked on its own PR #874 merging while that PR was not yet green, so it keeps no follow-on.
+vwt M-4; HM4=$(git -C "$T/wt/M-4" rev-parse HEAD); fbx 874 "$HM4" tests:SUCCESS
+node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/874.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-4.json`, JSON.stringify({ number: 874, ...v }))' "$T/fb"
+q add M-4; q set M-4 state=running lane=A branch=fix/M-4 "worktree=$T/wt/M-4"; q park M-4 "${P722/87N/874}"; q clears-when M-4 'PR #874 merged'
 # The person sets the rows the question names: the next pass takes the parked M-3 back to the merge path.
 export DESK_CONFIG="$T/config-m.md"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-509 AC4 once its rows let desk merge it, the parked merge question is recorded done on its PR, with the reason" \
   '[ "$(field M-3 state)" = "\"done\"" ] && [ "$(field M-3 result.pr)" = 873 ] && [ "$(field M-3 park)" = null ] && echo "$out" | grep -qF "M-3: PR #873 recorded done, no longer parked: its park waited only on #873 merging"'
+check "DS-509 AC2 a park recorded done once its PR turns green keeps its words as the follow-on" \
+  '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 result.pr)" = 874 ] && field M-4 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
 # A new batch in the same queue keeps a merged ticket whose follow-on is not yet run, and nothing else.
 export DESK_QUEUE="$T/queue-m.json" DESK_AUTOPILOT_STATE="$T/state-m"
-q merged M-1 >/dev/null; q init m2
+q merged M-1; q init m2
 check "DS-509 AC5 a new batch keeps a merged ticket's unrun follow-on for needs-you, and drops the rest" \
-  '[ "$(field M-1 state)" = "\"done\"" ] && field M-1 follow_on | grep -qF "provision-telnyx-assistant.ts" && [ "$(field M-2 state)" = null ] && [ "$(jq -r .batch "$DESK_QUEUE")" = m2 ]'
+  '[ "$(field M-1 state)" = "\"done\"" ] && field M-1 follow_on | grep -qF "provision-telnyx-assistant.ts" && [ "$(field M-1 carried_from)" = "\"m\"" ] && [ "$(field M-2 state)" = null ] && [ "$(jq -r .batch "$DESK_QUEUE")" = m2 ]'
+q init m3 --standing --if-batch m2
+check "DS-509 AC5 a batch holding only carried tickets is not finished, so intake never replaces it" \
+  '[ "$(jq -r .batch "$DESK_QUEUE")" = m2 ]'
 
 # ---- DS-489: a check build runs the default branch's script, from the pass's checkout, never the worktree
 # The row names ./scripts/ensure.sh, relative as voicepa's is. C-1's branch changes that script and
