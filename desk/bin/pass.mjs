@@ -1854,9 +1854,10 @@ const triageBrief = (t) => {
 // Every attempt takes a slot, failed or not, so a fault every ticket shares costs at most `slots`
 // tickets a pass; a slots that is not a number spawns nothing. A base conflict fix worker still at it
 // holds one of the batch's own number; the machine and repo budgets have counted it already. In a batch
-// of 1 it holds the batch's one worker, and no ticket borrows a way round that.
+// of 1 it holds the batch's one worker, from the pass that starts it, and no ticket borrows a way round
+// that.
 const ticketWorkers = running.length + (baseFixLive ? 1 : 0);
-const ticketPlan = planFor(ticketWorkers, BORROW.on && !(baseFixLive && concurrency === 1));
+const ticketPlan = planFor(ticketWorkers, BORROW.on && !((baseFixLive || baseFix != null) && concurrency === 1));
 const ticketSlots = Math.min(slots, ticketPlan.slots);
 let attempts = 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two

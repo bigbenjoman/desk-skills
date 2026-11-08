@@ -189,6 +189,13 @@ holding bone '1 / 1' 1
 check "DS-519 AC2 a batch of 1: the base fix holds its one worker, and no ticket starts" '[ ! -s "$T/spawns" ] && [[ "$out" == *"conflict fix try 1 of 2 is merging main into feat/x"* ]]'
 holding bonecap '1 / 2' 1
 check "DS-519 AC2 a batch of 1 with room to borrow: still no ticket, and no borrowing reported" '[ ! -s "$T/spawns" ] && [[ "$out" != *"may be borrowed"* ]] && [[ "$out" != *"borrowed this pass"* ]]'
+: > "$T/spawns"; fresh bstartone; fixrow yes; conflict
+printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `1 / 2` |\n| Borrow idle workers | `off` | `on` |\n' >> "$C/config.md"
+node "$B/queue.mjs" add T-2 >/dev/null; node "$B/queue.mjs" set T-2 state=triaged branch=feat/T-2 >/dev/null
+node "$B/queue.mjs" set-batch concurrency=1 >/dev/null
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n' > "$C/machine.md"
+DESK_MACHINE="$C/machine.md" pass
+check "DS-519 AC2 the pass that starts the fix in a batch of 1: the fix starts, and no ticket borrows beside it" 'grep -q "^base-feat-x " "$T/spawns" && ! grep -q "^T-" "$T/spawns"'
 holding bmachine '3 / 3' 2 1
 check "DS-519 AC3 a machine cap with no room: no ticket starts" '[ ! -s "$T/spawns" ]'
 : > "$T/spawns"; fresh bnofix
