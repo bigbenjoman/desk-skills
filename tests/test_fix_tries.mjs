@@ -694,6 +694,7 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
 
   t('DS-494 a log names a typed error and an errno', errorLinesIn('job\tRun\t2026-11-04T10:00:00.000Z ReferenceError: React is not defined\njob\tRun\t2026-11-04T10:00:01.000Z Error: ENOENT: open a.sql').join('|'), 'ReferenceError: React is not defined|Error: ENOENT: open a.sql');
   t('DS-494 negative: an exit line, a clean summary and plain output name none', errorLinesIn('##[error]Process completed with exit code 1.\nTests: 0 failed, 3 passed\nbuilding…').length, 0);
+  t('DS-494 a build tool\'s capitalised error lines name a cause', errorLinesIn('ERROR: Could not find a version\n[ERROR] Failed to execute goal\nFailed to compile.\nBUILD FAILURE').length, 4);
   t('DS-494 each line once, at most five', errorLinesIn(['a error', 'a error', 'b error', 'c error', 'd error', 'e error', 'f error'].join('\n')).length, 5);
 }
 

@@ -108,11 +108,11 @@ export function firstErrorLine(log) {
 // errno such as ENOENT, `error TS2304`, a failed test), at most LOG_ERRORS_MAX of them, each once. A
 // job's closing exit-code line and a summary counting no failures name none.
 const LOG_ERRORS_MAX = 5;
-const NAMES_CAUSE = /\b[A-Za-z]*(?:Error|Exception)\b|\b(?:ENOENT|EACCES|EPERM|EEXIST|ECONNREFUSED|ETIMEDOUT|EADDRINUSE)\b|\berror\b|\bfatal\b|\bFAIL(?:ED)?\b|\bfailed\b/;
+const NAMES_CAUSE = /\b[A-Za-z]*(?:Error|Exception)\b|\b(?:ENOENT|EACCES|EPERM|EEXIST|ECONNREFUSED|ETIMEDOUT|EADDRINUSE)\b|\bFAIL\b/;
 const NO_CAUSE = /\bcontinue-on-error\b|\b0 (?:errors?|failed|failures?)\b/i;
 export function errorLinesIn(log) {
   const lines = failureLines(logLines(log).map((l) => ({ annotation_level: 'failure', message: l.replace(/^##\[error\]\s*/, '').trim() })));
-  return [...new Set(lines.filter((l) => NAMES_CAUSE.test(l) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
+  return [...new Set(lines.filter((l) => (NAMES_CAUSE.test(l) || ERROR.test(l)) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
 }
 
 // The line with what differs between two runs of one failure taken out: timestamps, SHAs, run ids and
