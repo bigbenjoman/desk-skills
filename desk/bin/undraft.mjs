@@ -55,7 +55,7 @@
 // commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
 // review-reuse lever on restsOnCarries, whose base range checked is `range`).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { RERUNS_MAX, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
+import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
@@ -352,7 +352,6 @@ export function undraftComment(verdict, head, clean, carried = null, range = nul
 // with ci-rerun not yes, since no change on its branch clears it. A rerun call carries the gate as
 // rerun.sh reads it.
 const INTERRUPTED = new Set(['cancelled', 'timed_out']);
-export const RUNNER_RERUNS = 1;
 export const RUNNER_FIX = 'give that job a bigger runner, or cap the memory it uses (fewer test workers, a lower heap limit)';
 function rerunCall(gate, cfg, n) {
   const failing = gate.failing;
@@ -371,22 +370,22 @@ function rerunCall(gate, cfg, n) {
   }
   const tried = (f) => cfg.reruns?.(f.name) ?? 0;
   const ran = (f) => (cfg.rerunsOk ?? cfg.reruns)?.(f.name) ?? 0;
-  if (ended.some((f) => ran(f) >= RUNNER_RERUNS)) {
+  const used = runnerRerunsSpent(ended, ran, tried);
+  if (used === 'ran') {
     return { call: 'person', why: `its ${endedNames} check was ended by the runner after desk re-ran it at this head: ${endedWhat}`, action: `${RUNNER_FIX}, then re-run it on #${n}` };
   }
-  if (ended.some((f) => tried(f) >= RERUNS_MAX)) {
+  if (used === 'refused') {
     return { call: 'person', why: `its ${endedNames} check was ended by the runner, and GitHub refused desk's ${RERUNS_MAX} reruns of it at this head: ${endedWhat}`, action: `re-run it on #${n}, and if it fails the same way, ${RUNNER_FIX}` };
   }
   if (failing.some((f) => tried(f) >= RERUNS_MAX)) return null;
-  const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
-  if (!runs.length) return null;
+  const rerun = rerunGate(failing, gate.reasons);
+  if (!rerun) return null;
   const how = ended.length ? 'ended by the runner' : 'cancelled or timed out';
   if (gate.pending.length) return { call: 'wait', why: `checks still running (${gate.pending.join(', ')}) beside ${ended.length ? 'ones ended by the runner' : 'cancelled or timed-out ones'}, re-run once they finish` };
   const what = failing.map((f) => (faults.has(f.name) ? `"${f.name}" ${faults.get(f.name)}` : `"${f.name}" ${f.conclusion}`)).join('; ');
   if (cfg.cooledDown === false) return { call: 'wait', why: `checks re-run after they were ${how} (${what}), waiting out the rerun's cooldown` };
   return {
-    call: 'rerun', why: ended.length ? `its checks were ended by the runner, not their code, so they are re-run once: ${what}` : `its checks were cancelled or timed out, so they are re-run: ${what}`, runs,
-    gate: { pending: [], failedRuns: runs, reasons: gate.reasons, failing: failing.map((f) => ({ name: f.name, runId: f.runId ? String(f.runId) : null })) },
+    call: 'rerun', why: ended.length ? `its checks were ended by the runner, not their code, so they are re-run once: ${what}` : `its checks were cancelled or timed out, so they are re-run: ${what}`, runs: rerun.runs, gate: rerun.gate,
   };
 }
 
