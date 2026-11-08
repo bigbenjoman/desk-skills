@@ -58,7 +58,7 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
-import { cellPlan, RUNNER_FIX } from './undraft.mjs';
+import { cellPlan, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles } from './gate.mjs';
 import { repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
@@ -493,6 +493,8 @@ function itemOf(r, x) {
     }
     // A failing log that names its cause is code a person or a worker can fix, so no step only they can do.
     if (stuck?.checks.some((c) => c.error)) return openPr(['done', 'desk\'s workers could not clear what its log names; say done once it is fixed, and the PR is checked on GitHub there and then']);
+    // Desk's own upload crashed on every try: the saved output says why, and the files are still there.
+    if (UPLOAD_CRASHED.test(String(t.undraft?.why ?? ''))) return openPr(['done', "desk's upload crashed on every try it gets, and its saved output says why; say done once no screenshot cell is left, and the PR is checked on GitHub there and then"]);
     return openPr(['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then']);
   }
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in
