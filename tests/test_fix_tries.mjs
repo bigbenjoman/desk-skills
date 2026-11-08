@@ -397,6 +397,23 @@ t('DS-318 AC5 the same for a conflict out of draft', fixCall(tk({ ...said318, fi
 t('DS-318 AC5 a last try that was not for the conflict gave no reason for it', conflictFix(tk({ ...said318, fix: { try: 2, kind: 'review', finished: '2026-10-29T12:00:00Z' } }), { pr: 702, head: HEAD, base: 'main' })?.why,
   'still in conflict with main after 2 fix tries');
 
+// ---- a repair that worked until a later base merge is not counted; five repairs is the overall limit.
+const sha = (c) => c.repeat(40);
+const repair = (h, tip, mb, o = {}) => ({ try: 1, head: sha(h), kind: 'conflict', base_sha: sha(tip), merge_base: sha(mb), ...o });
+const baseNow = (tip, mb) => () => ({ base_sha: sha(tip), merge_base: sha(mb) });
+const dirtyAt = (h) => pr([ok('tests')], { mergeable: 'CONFLICTING', mergeState: 'DIRTY', pr: 704, head: sha(h) });
+const worked2 = [repair('a', '1', '0'), repair('b', '2', '1')];
+const afterWorked = fixCall(tk({ fix_tries: worked2 }), dirtyAt('c'), ctx({ baseAt: baseNow('3', '2') }));
+t('AC6 two repairs that worked until a later base merge: a new try is sent, counting neither', `${afterWorked?.call} ${afterWorked?.fix.try} ${afterWorked?.fix.base_sha === sha('3')} ${afterWorked?.fix.merge_base === sha('2')}`, 'requeue 1 true true');
+t('AC6 the same for a draft', conflictFix(tk({ fix_tries: worked2 }), { pr: 702, head: sha('c'), base: 'main', files: null, baseAt: { base_sha: sha('3'), merge_base: sha('2') } })?.fix.try, 1);
+t('AC6 a try with no record of where it stood still counts', fixCall(tk({ fix_tries: [{ try: 1, head: sha('a'), kind: 'conflict' }, { try: 2, head: sha('b'), kind: 'conflict' }] }), dirtyAt('c'), ctx({ baseAt: baseNow('3', '2') }))?.call, 'stuck');
+const same = [repair('a', '1', '0'), repair('b', '1', '0')];
+t('AC7 still in conflict with the base its repairs were made against, after two: the person, as today', fixCall(tk({ fix_tries: same }), dirtyAt('c'), ctx({ baseAt: baseNow('1', '0') }))?.why, 'still in conflict with main after 2 fix tries');
+const five = ['a', 'b', 'c', 'd', 'e'].map((h, i) => repair(h, String(i + 1), String(i)));
+const c8 = fixCall(tk({ fix_tries: five }), dirtyAt('f'), ctx({ baseAt: baseNow('9', '8'), conflictFiles: () => ['src/a.ts', 'src/b.ts'] }));
+t('AC8 five repairs of any outcome: no worker, and the reason names the files', `${c8?.call} | ${c8?.why}`, 'stuck | still in conflict with main after 5 repairs, the most one PR gets: src/a.ts, src/b.ts');
+t('AC8 the same for a draft', conflictFix(tk({ fix_tries: five }), { pr: 702, head: sha('f'), base: 'main', files: ['src/a.ts'], baseAt: { base_sha: sha('9'), merge_base: sha('8') } })?.why, 'still in conflict with main after 5 repairs, the most one PR gets: src/a.ts');
+
 // ---- DS-435: a conflict has its own tries, whatever kind the PR's other tries were.
 const gate435 = [{ try: 1, head: HEAD, kind: 'checks', what: 'red: 🔐 Review gate' }, { try: 2, head: HEAD, kind: 'checks', what: 'red: 🔐 Review gate' }];
 const d435 = conflictFix(tk({ fix_tries: gate435 }), { pr: 2594, head: HEAD, base: 'main', files: ['src/generated/class.ts'] });

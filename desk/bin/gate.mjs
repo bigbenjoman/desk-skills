@@ -746,7 +746,7 @@ if (isMain) {
         holds: held.map((h) => ({ glob: h.glob, why: h.why, routine: h.routine ?? null, files: h.files.slice(0, 5), count: h.files.length })),
         holdsMet: owned.satisfied.map(({ glob, why }) => ({ glob, why })),
         defaultBranch, holdsApply: pr.baseRefName === defaultBranch,
-        waiver,
+        waiver, files: filesOk ? files : null,
       }));
     } else if (cmd === 'holds') {
       const { holds } = await loadConfigLists();

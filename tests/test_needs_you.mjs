@@ -893,12 +893,14 @@ put('conflict435', { port: 5435, beat: 1, supervised: true, merge: 'yes', ticket
   'C-2': withHead({ ...stuckPr(172, passed, { why: 'still in conflict with main after 2 fix tries: src/class.ts; the last try said: pr=172 jira=In Progress said=src/class.ts left unresolved: both sides add a field' }), fix_tries: [...gate435, ...tried435] }),
   'C-3': { ...greenPr(173), fix_tries: tried435, fix: { try: 2, of: 2, pr: 173, kind: 'conflict', finished: '2026-11-07T10:00:00Z' }, result: { pr: 173, summary: 'pr=173 jira=In Progress said=main renamed the export both sides use' },
     pr_status: { pr: 173, state: 'OPEN', url: null, isDraft: false, mergeable: 'CONFLICTING', mergeState: 'DIRTY', head: 'h173', checks: passed, at: minsAgo(1) } },
+  'C-4': withHead({ ...stuckPr(174, passed, { why: 'still in conflict with main after 5 repairs, the most one PR gets: src/a.ts, src/b.ts' }), fix_tries: tried435 }),
 } });
 const c435 = Object.fromEntries(N.collect({ word: 'conflict435' }).items.map((i) => [i.t.key, i]));
 t('DS-435 AC3 a conflict no conflict try ran on does not say repairs failed', c435['C-1']?.need,
   'PR #171 is in conflict with main, and no repair by desk has tried it yet. Resolve the conflict on its branch; desk then merges it once its checks are green.');
 t('DS-435 AC4 a failed conflict try names what it said', c435['C-2']?.need,
   'PR #172 is in conflict with main, and desk\'s own repairs did not fix it: its last repair said "src/class.ts left unresolved: both sides add a field". Resolve the conflict on its branch; desk then merges it once its checks are green.');
+t('AC8 past the overall limit, the item names the conflicting files', /^PR #174 is in conflict with main in src\/a\.ts, src\/b\.ts, and /.test(c435['C-4']?.need ?? ''), true);
 t('DS-435 AC4 so does one desk-q puts to the person with its tries spent', c435['C-3']?.need,
   'PR #173 is in conflict with main, and desk\'s own repairs did not fix it: its last repair said "main renamed the export both sides use". Resolve the conflict on its branch; desk then merges it once its checks are green.');
 
