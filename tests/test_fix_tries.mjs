@@ -272,10 +272,10 @@ t('DS-513 AC1 prose after a tagged gap earns no try: the verdict counts one gap'
 const codeOnly = gapFix(personBody(1, CODE_GAP), 1);
 t('DS-513 AC2 a gap code can close spawns a try as before', `${codeOnly?.call} ${codeOnly?.fix.what} ${JSON.stringify(codeOnly?.fix.gaps)} ${codeOnly?.fix.person_gaps}`, `requeue review not clean: 1 gap ${JSON.stringify([CODE_GAP.slice(2)])} undefined`);
 t('DS-513 AC2 a gap merely saying the person might care is a code gap', gapFix(personBody(1, '- AC3: the person\'s call on VAT was recorded, but no column'), 1)?.call, 'requeue');
-const both = gapFix(personBody(2, PERSON_GAP, CODE_GAP), 2);
-t('DS-513 AC3 with both kinds the try is aimed only at the gap code can close', `${both?.call} ${both?.fix.what} ${JSON.stringify(both?.fix.gaps)}`, `requeue review not clean: 1 gap ${JSON.stringify([CODE_GAP.slice(2)])}`);
-t('DS-513 AC3 the person\'s gap is kept on the try', JSON.stringify(both?.fix.person_gaps), JSON.stringify([PERSON_GAP.slice(2)]));
-const bothBrief = fixBrief(tk({ fix: both.fix }));
+const bothGaps = gapFix(personBody(2, PERSON_GAP, CODE_GAP), 2);
+t('DS-513 AC3 with both kinds the try is aimed only at the gap code can close', `${bothGaps?.call} ${bothGaps?.fix.what} ${JSON.stringify(bothGaps?.fix.gaps)}`, `requeue review not clean: 1 gap ${JSON.stringify([CODE_GAP.slice(2)])}`);
+t('DS-513 AC3 the person\'s gap is kept on the try', JSON.stringify(bothGaps?.fix.person_gaps), JSON.stringify([PERSON_GAP.slice(2)]));
+const bothBrief = fixBrief(tk({ fix: bothGaps.fix }));
 t('DS-513 AC3 the brief quotes the code gap to close and tells the worker to leave the person\'s', [`- Gap: ${CODE_GAP.slice(2)}`, 'not part of this try', `- ${PERSON_GAP.slice(2)}`].every((x) => bothBrief.includes(x)) && !bothBrief.includes(`- Gap: ${PERSON_GAP.slice(2)}`), true);
 const findingAndPerson = gapFix(`${p1Body}\n\n### Requirement gaps\n${PERSON_GAP}`, 1, [], { p0: '0', p1: '1' });
 t('DS-513 AC3 a P1 beside the person\'s gap gets its try, the gap carried', `${findingAndPerson?.fix.what} | ${findingAndPerson?.fix.findings.length} | ${findingAndPerson?.fix.gaps} | ${findingAndPerson?.fix.person_gaps?.length}`, 'review not clean: 1 P1 | 1 | undefined | 1');
