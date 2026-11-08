@@ -8,7 +8,7 @@ reserve, and how the §3b rows fall back to it. The step table in `../SKILL.md` 
 Desk runs on one computer, and what local work it can carry depends on that computer, not the repo.
 The machine profile, `~/.config/desk/machine.md`, records both and is shared by every repo.
 
-- **No profile yet**, or one `machine detect` says has no sizes proposed: show the `desk-env machine detect` table, then `desk-env machine propose`,
+- **No profile yet**: show the `desk-env machine detect` table, then `desk-env machine propose`,
   whose third column is the arithmetic behind each size. Say in one line what the rules are (memory
   less 8 GB for the OS is the ceiling; autopilot workers at ~3 GB each from it; test workers capped
   at the performance cores). **Write nothing until the user confirms**; then `desk-env machine
@@ -33,8 +33,8 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
   - **No profile** (the user declined the proposed sizes): ask and store both just as above. With no
     profile, `machine set` starts one holding only these two rows, with no hardware and no sizes, so
     the declined proposal is not written; say so in one line. `machine detect` then reports no sizes
-    proposed, so the next run offers the proposal as for no profile, and a `machine write` keeps the
-    two rows.
+    proposed: treat that profile as **No profile yet** above on the next run, and a `machine write`
+    keeps the two rows.
 - **Then §3b.** The repo rows for worker concurrency, memory ceiling and test worker cap fall back to
   the profile when they are `TODO` or absent, and a set repo row wins. With a profile, the
   Recommended answer for each is the profile's value; say that writing `TODO` instead makes the row
