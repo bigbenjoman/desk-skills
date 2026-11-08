@@ -96,7 +96,7 @@ export const codexWeekly = (r, now = Date.now()) => weeklyOf(r, (w) => w.used, n
 // which counts only if this probe wrote it. A probe that prints nothing leaves the last one's output in
 // place, and that is not a reading of now, however recent: the file is compared with what it held
 // before the probe, never judged by its age, since a quick run's two probes can land within a second.
-const snapshot = (file) => { try { return { at: statSync(file).mtimeMs, text: readFileSync(file, 'utf8') }; } catch { return null; } };
+export const snapshot = (file) => { try { return { at: statSync(file).mtimeMs, text: readFileSync(file, 'utf8') }; } catch { return null; } };
 export function readWeekly(account, { dir = usageDir(), env = process.env, now = () => Date.now() } = {}) {
   if (account.vendor === 'codex') return codexWeekly(readCodexUsage({ login: account.login, now: now() }), now());
   const l = account.login.configDir ? account.login : null;

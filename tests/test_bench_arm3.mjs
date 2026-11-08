@@ -1,5 +1,5 @@
 // suite: bench arm 3 (implementation on Codex Sol at medium and high, Opus at medium and Sonnet)
-// covers: desk/bin/bench-arm3.mjs desk/bin/codex-exec.mjs
+// covers: desk/bin/bench-arm3.mjs desk/bin/codex-exec.mjs desk/bin/bench-credits.mjs desk/bin/overage-watch.mjs
 // Stub claude and codex binaries on PATH, a scratch repo, config and Codex login. The stub codex logs
 // its arguments, whether it had any stdin and its working folder, writes a session log in the shape
 // Codex writes one (session_meta, turn_context, a tool call the sandbox refused, a token_count with
@@ -9,7 +9,8 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { ARMS, CODEX_MODEL, SANDBOX_CONFIG, codexRanAt, codexTokens, codexVerdict, parseArgs, sandboxRefusals } from '../desk/bin/bench-arm3.mjs';
+import { ARMS, CODEX_MODEL, FABLE_ARM, SANDBOX_CONFIG, codexRanAt, codexTokens, codexVerdict, parseArgs, sandboxRefusals } from '../desk/bin/bench-arm3.mjs';
+import { creditState, newestCredits, usingOverage } from '../desk/bin/bench-credits.mjs';
 import { renderReport, loadRun } from '../desk/bin/bench-report.mjs';
 
 let fails = 0;
@@ -79,20 +80,26 @@ const bin = join(dir, 'bin');
 mkdirSync(bin);
 // The stub claude, as in the arm 1 suite.
 writeFileSync(join(bin, 'claude'), `#!/usr/bin/env node
-const fs = require('fs');
+const fs = require('fs'), path = require('path');
 const a = process.argv.slice(2);
 const val = (f) => { const i = a.indexOf(f); return i < 0 ? null : a[i + 1]; };
 const prompt = val('-p');
 const u = JSON.parse(fs.readFileSync(process.env.STUB_USAGE, 'utf8'));
 const say = (o) => console.log(JSON.stringify(o));
+const credits = process.env.STUB_CREDITS ? JSON.parse(fs.readFileSync(process.env.STUB_CREDITS, 'utf8'))[path.basename(process.env.CLAUDE_CONFIG_DIR || 'default')] : {};
 if (prompt === 'Reply with: ok') {
-  say({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.01, resetsAt: u.reset }, seven_day: { utilization: u.used, resetsAt: u.reset } } } });
+  say({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', ...credits, unifiedWindows: { five_hour: { utilization: 0.01, resetsAt: u.reset }, seven_day: { utilization: u.used, resetsAt: u.reset } } } });
   say({ type: 'result', subtype: 'success', is_error: false, result: 'ok' });
   return;
 }
 u.used += 0.001; fs.writeFileSync(process.env.STUB_USAGE, JSON.stringify(u));
 fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ tool: 'claude', args: a }) + '\\n');
 say({ type: 'system', subtype: 'init', model: 'claude-' + val('--model') + '-stub', ...(val('--effort') ? { effort: val('--effort') } : {}) });
+if (prompt.includes('OVERAGE') && val('--model').includes('fable')) {
+  say({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', overageStatus: 'allowed', isUsingOverage: true } });
+  setInterval(() => {}, 1000);
+  return;
+}
 if (prompt.includes('FIX')) fs.writeFileSync('src.txt', ${JSON.stringify(`${NEW_LINE}\n`)});
 say({ type: 'result', subtype: 'success', is_error: false, result: 'done', total_cost_usd: 0.01,
   modelUsage: { m: { inputTokens: 10, outputTokens: 20, cacheCreationInputTokens: 30, cacheReadInputTokens: 40 } } });
@@ -142,11 +149,11 @@ const codexUsage = join(dir, 'codex-usage.json');
 writeFileSync(usageFile, JSON.stringify({ used: 0.1, reset }));
 writeFileSync(codexUsage, JSON.stringify({ used: 10, reset }));
 mkdirSync(join(dir, 'locks'));
-const run = (args) => {
+const run = (args, env = {}) => {
   rmSync(log, { force: true });
   return spawnSync(process.execPath, [SCRIPT, ...args], { cwd: dir, encoding: 'utf8', input: 'typed at a prompt\n', env: {
     ...gitEnv, PATH: `${bin}:${process.env.PATH}`, STUB_LOG: log, DESK_CONFIG_ROOT: configRoot, DESK_LOCK_DIR: join(dir, 'locks'),
-    STUB_USAGE: usageFile, STUB_CODEX_USAGE: codexUsage, CODEX_HOME: codexHome, DESK_USAGE_DIR: join(dir, 'usage'), DESK_SUBSCRIPTIONS: join(dir, 'subscriptions.md'),
+    STUB_USAGE: usageFile, STUB_CODEX_USAGE: codexUsage, CODEX_HOME: codexHome, DESK_USAGE_DIR: join(dir, 'usage'), DESK_SUBSCRIPTIONS: join(dir, 'subscriptions.md'), ...env,
   } });
 };
 const results = (out) => Object.fromEntries(readdirSync(join(out, 'runs')).filter((d) => existsSync(join(out, 'runs', d, 'result.json')))
@@ -226,6 +233,74 @@ const hres = results(hung);
 const hc = Object.values(hres).find((x) => x.arm.startsWith('codex'));
 t('AC2 a hung Codex side is ended at the bench timeout', `${hc?.status} ${hc?.why}`, 'failed timed out after 2s');
 t('AC2 well before the hidden-test ceiling', (Date.now() - start) < 60000, true);
+
+// DS-484: the Fable side and the usage-credit gate.
+const event = (info) => JSON.stringify({ type: 'rate_limit_event', rate_limit_info: info });
+const ORG_OFF = { overageStatus: 'rejected', overageDisabledReason: 'org_level_disabled', isUsingOverage: false };
+const EMPTY = { overageStatus: 'rejected', overageDisabledReason: 'out_of_credits', isUsingOverage: false };
+const ON = { overageStatus: 'allowed', isUsingOverage: false };
+const state = (info) => creditState(newestCredits(event(info))).state;
+t('AC1 rejected for an organisation reason is off', state(ORG_OFF), 'off');
+t('AC2 an empty balance is not off', state(EMPTY), 'on');
+t('AC2 the recorded out_of_credits event is not off', creditState(newestCredits(readFileSync(join(dirname(SCRIPT), '..', '..', 'tests', 'fixtures', 'usage-limit-allowed.json'), 'utf8'))).state, 'on');
+t('AC2 allowed is not off', state(ON), 'on');
+t('AC2 using overage is not off, whatever else it says', state({ ...ORG_OFF, isUsingOverage: true }), 'on');
+t('AC3 no overage fields is unknown', state({ status: 'allowed' }), 'unknown');
+t('AC3 rejected with no reason is unknown', state({ overageStatus: 'rejected' }), 'unknown');
+t('AC3 no event is unknown', creditState(newestCredits('{"type":"result"}')).state, 'unknown');
+t('the newest event decides', creditState(newestCredits([event(ON), event(ORG_OFF)].join('\n'))).state, 'off');
+t('a tool result quoting an event is not one', usingOverage(`{"type":"user","text":${JSON.stringify(event({ isUsingOverage: true }))}}`), false);
+t('AC4 a request using overage is seen', usingOverage(event({ ...ON, isUsingOverage: true })), true);
+t('AC4 an event not using it is not', usingOverage(event(ORG_OFF)), false);
+t('Fable is asked for by its flag alone', `${parseArgs(['--tasks', 'x', '--max-budget-usd', '1']).arms.length} ${parseArgs(['--tasks', 'x', '--max-budget-usd', '1', '--fable']).arms.at(-1).name}`, '4 fable');
+t('the Fable side has its own runner on a Claude model', `${typeof FABLE_ARM.runner} ${FABLE_ARM.model}`, 'function claude-fable-5-1');
+
+const creditsFile = join(dir, 'credits.json');
+const setCredits = (c) => writeFileSync(creditsFile, JSON.stringify(c));
+const work = join(home, '.claude-logins', 'work');
+mkdirSync(work, { recursive: true });
+const subs = join(dir, 'subs-two.md');
+writeFileSync(subs, `## Claude\n\n| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| claude | work | ~/.claude-logins/work | in rotation |\n`);
+writeFileSync(join(setDir, 'over.json'), JSON.stringify({ tasks: [task('over', 'over: OVERAGE'), task('after', 'after: leave it')] }));
+const fableEnv = (name) => ({ STUB_CREDITS: creditsFile, DESK_SUBSCRIPTIONS: subs, DESK_USAGE_DIR: join(dir, `usage-${name}`) });
+
+setCredits({ default: ORG_OFF, work: { ...ON } });
+r = run(['--tasks', setFile, '--max-budget-usd', '1', '--out', join(dir, 'out-on'), '--seed', '1', '--fable'], fableEnv('on'));
+t('AC2 credits on any account refuses before any run', `${r.status} ${calls('claude').length} ${calls('codex').length}`, '2 0 0');
+t('AC2 naming the account and the reading', /Claude login work does not read usage credits off \(overageStatus allowed\)/.test(r.stderr), true);
+setCredits({ default: EMPTY, work: ORG_OFF });
+r = run(['--tasks', setFile, '--max-budget-usd', '1', '--out', join(dir, 'out-empty'), '--seed', '1', '--fable'], fableEnv('empty'));
+t('AC2 an empty balance refuses too', `${r.status} ${/Claude login default does not read.*out_of_credits/.test(r.stderr)}`, '2 true');
+setCredits({ default: ORG_OFF, work: { status: 'allowed' } });
+r = run(['--tasks', setFile, '--max-budget-usd', '1', '--out', join(dir, 'out-unknown'), '--seed', '1', '--fable'], fableEnv('unknown'));
+t('AC3 an account with no reading is refused as unknown', `${r.status} ${/Claude login work has an unknown usage credit state/.test(r.stderr)}`, '2 true');
+
+setCredits({ default: ORG_OFF, work: ORG_OFF });
+const onSides = join(dir, 'out-fable');
+r = run(['--tasks', setFile, '--max-budget-usd', '1', '--total-budget-usd', '20', '--out', onSides, '--seed', '4', '--fable'], fableEnv('fable'));
+if (r.status !== 0) console.log(r.stderr);
+const fableRes = results(onSides);
+t('AC1 with credits off everywhere it runs', r.status, 0);
+t('AC1 each task on the Fable model', calls('claude').filter((c) => flag(c, '--model') === FABLE_ARM.model).length, 2);
+t('AC1 and is scored like any side', `${fableRes['fix.fable'].status} ${fableRes['nofix.fable'].status}`, 'accepted rejected');
+const fableReport = renderReport({ out: onSides, run: loadRun(onSides), joined: { arms: Object.fromEntries([...ARMS, FABLE_ARM].map((a) => [a.name, { scores: [{ task: 'fix', score: 3 }] }])) }, baseline: { ok: false, why: 'none', path: 'x' } }).text;
+const fableRow = fableReport.split('\n').find((l) => l.startsWith('| Tasks accepted, of tasks run |'));
+t('AC5 Fable beside the other sides', fableReport.includes('| Figure | Phase 0 baseline | codex-high | codex-medium | fable | opus-medium | sonnet |'), true);
+t('AC5 with the same columns', fableRow.split(' | ').length, 7);
+
+const overOut = join(dir, 'out-over');
+const overStart = Date.now();
+r = run(['--tasks', join(setDir, 'over.json'), '--max-budget-usd', '1', '--total-budget-usd', '20', '--out', overOut, '--seed', '4', '--timeout', '60', '--fable'], fableEnv('over'));
+const overElapsed = Date.now() - overStart;
+const overRes = results(overOut);
+t('AC4 the stub that never exits is ended by the watch, not the 60s timeout', overElapsed < 50000, true);
+const runJson = JSON.parse(readFileSync(join(overOut, 'run.json'), 'utf8'));
+const overStops = runJson.arm_stops?.[0]?.why ?? '';
+t('AC4 the run using overage is ended, well before its timeout', `${overRes['over.fable']?.status} ${/recorded a request using overage/.test(overRes['over.fable']?.why ?? '')}`, 'failed true');
+t('AC4 no further Fable run starts', runJson.tasks.find((x) => x.task === 'after').runs.find((x) => x.arm === 'fable').status, 'not run');
+t('AC4 the other sides carry on', runJson.tasks.find((x) => x.task === 'after').runs.find((x) => x.arm === 'sonnet').status, 'rejected');
+t('AC4 the task and the account are reported', /task over on Claude login \S+/.test(overStops) && r.stdout.includes('stopped fable: task over'), true);
+t('AC4 and in the report', renderReport({ out: overOut, run: loadRun(overOut), joined: null, baseline: { ok: false, why: 'none', path: 'x' } }).text.includes('## Arms stopped'), true);
 
 if (fails) { console.log(`FAIL ${fails} check(s) failed`); process.exit(1); }
 console.log('all bench arm 3 checks passed');

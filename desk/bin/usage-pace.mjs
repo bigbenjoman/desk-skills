@@ -20,7 +20,7 @@ export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 export const RECENT_MS = 6 * 60 * 60 * 1000;
 export const DEFAULT_HEADROOM = 5;
 const ROW = () => E.CONFIG_ROWS['usage-pacing'].row;
-const EVENT = '{"type":"rate_limit_event"';
+export const EVENT = '{"type":"rate_limit_event"';
 
 // The §3b row: a number of percentage points (unset is the default), or `off`. Anything else is
 // refused rather than read as off, so a typo never silently removes the guard.

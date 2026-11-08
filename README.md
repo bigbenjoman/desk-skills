@@ -426,11 +426,19 @@ only there. It runs on the Codex login whose weekly reading the quota guard take
 and spends none of the USD budget. Its tokens come from its own session log, kept as
 `codex-session.jsonl`. Every tool call the sandbox refused is listed under `refusals` in its
 `result.json`, and the run is still scored on its hidden tests. The report gives the Claude and Codex
-allowances separate rows:
+allowances separate rows.
+
+`--fable` adds a fifth side, `fable`, on Claude Fable. Before you use it, confirm usage credits are
+switched off in the settings of every Claude account desk signs in with. A headless request that
+would bill them goes through without asking, so the side also checks for itself: it probes each
+login, and refuses before anything runs unless every login's newest reading shows overage rejected
+for a reason other than `out_of_credits`, naming any login that does not and its reading. It checks
+again before each Fable run. A run whose log records `isUsingOverage` is ended, no further Fable run
+starts, and the task and account are printed and listed in the report:
 
 ```
 node ~/.claude/desk/bin/bench-arm3.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
-  [--out <dir>] [--timeout 1800] [--seed <n>]
+  [--out <dir>] [--timeout 1800] [--seed <n>] [--fable]
 ```
 
 ## Subagents
