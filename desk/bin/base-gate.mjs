@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash } from './batch-state.mjs';
-import { ensureBaseWorktree, syncBase } from './base-sync.mjs';
+import { ensureBaseWorktree, syncBase, mergedTreeCheck } from './base-sync.mjs';
 import { declarations, ownedSpecs, specFilesAt, specsCommand } from './spine-check.mjs';
 import { runItem } from './baseline.mjs';
 import { takesFiles } from './test-scope.mjs';
@@ -37,6 +37,8 @@ try { sha = readQueue(E.queueFile()).gate?.sha ?? null; } catch { /* read again 
 let ours = null;
 // The files a sync of the base met in conflict, for the pass's conflict fix worker; null otherwise.
 let conflict = null;
+// What §4 Merged-tree check said of the merge, when that is why the sync stopped; `conflict` is then [].
+let treeCheck = null;
 const git = (cwd, args) => { try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 
 // Whatever happens, the queue gets a result: a gate that dies silently would hold the batch for ever.
@@ -65,7 +67,7 @@ function finish(extra = {}) {
   }
   const gate = {
     state: failures.length ? 'failed' : 'passed', sha, started, finished: new Date().toISOString(), pid: process.pid,
-    failures, close_out: null, pr, ready, note, slice: Q.gate?.slice ?? null, conflict, ...extra,
+    failures, close_out: null, pr, ready, note, slice: Q.gate?.slice ?? null, conflict, tree_check: treeCheck, ...extra,
   };
   execFileSync('node', [join(BIN, 'queue.mjs'), 'set-batch', `gate=${JSON.stringify(gate)}`], { stdio: ['ignore', 'ignore', 'inherit'] });
   console.log(`base gate ${gate.state} at ${sha ?? '?'}${failures.length ? `:\n  ${failures.join('\n  ')}` : ''}${note ? `\n${note}` : ''}`);
@@ -102,18 +104,19 @@ function gate() {
 
   // The same grant every sync needs: one approval per batch where it is `ask`.
   const { perm, key, ok: push } = E.basePushGrant();
-  const s = syncBase({ path, base: BASE, branch: SOURCE, push });
+  const s = syncBase({ path, base: BASE, branch: SOURCE, push, check: mergedTreeCheck() });
   if (!s.ok) {
-    if (s.reason === 'conflict') conflict = s.files;
+    if (s.reason === 'conflict' || s.reason === 'check') conflict = s.files;
+    if (s.reason === 'check') treeCheck = s.check;
     failures.push(s.reason === 'conflict' ? `merging ${SOURCE} into ${BASE} conflicts (${s.files.join(', ')}): the pass hands it to a conflict fix worker where §3 lets one resolve it`
+      : s.reason === 'check' ? `merging ${SOURCE} into ${BASE} fails §4 Merged-tree check (${s.check.command}), nothing pushed: the pass hands it to a fix worker where §3 lets one`
       : s.reason === 'permission' ? `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${key} is "${perm}", so it was not synced${perm === 'ask' ? ': run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
         : `syncing ${BASE}: ${s.why}`);
     return;
   }
   sha = git(path, ['rev-parse', 'HEAD']);
   ours = path;
-  const pre = E.configValue('command-prefix');
-  const prefix = pre && !E.isNone(pre) ? pre.trim() : '';
+  const prefix = E.commandPrefix();
   const run = (lock, { dir, cmd }) => runItem({ bin: BIN, root: path, dir, cmd, lock, prefix });
 
   for (const it of items('install-cmd')) {

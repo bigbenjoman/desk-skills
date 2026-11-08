@@ -627,4 +627,54 @@ pass
 check "DS-508 AC5 a ticket held behind another batch's epic waits on that epic PR, saying why there is none" \
   '[[ "$out" == *"WAITING ON EPIC PR: T-4 (E-7: no epic PR: gh pr create failed: nope)"* ]] && [[ "$out" != *"WAITING ON MERGE"* ]]'
 
+# §4 Merged-tree check: a stubbed check that fails on a repeated revision number in migrations/, and
+# leaves a stray file behind as a real tool can.
+ln -sf "$B/with-lock.sh" "$T/desk/bin/with-lock.sh"
+cat > "$T/check.sh" <<'EOF'
+d=$(ls migrations 2>/dev/null | cut -d_ -f1 | sort | uniq -d)
+[ -z "$d" ] && exit 0
+touch stray.tmp; echo "Revision $d is present more than once"; exit 1
+EOF
+treerow(){ printf '\n## 4. Tools\n| Field | Value |\n|---|---|\n| Merged-tree check | `%s` |\n' "$1" >> "$C/config.md"; }
+# clash: main and feat/x each add a migration numbered 121, under different filenames.
+clash(){
+  git -C "$C/repo" fetch -q origin; git -C "$C/repo" switch -q -c side origin/feat/x
+  mkdir -p "$C/repo/migrations"; echo a > "$C/repo/migrations/121_a.py"; git -C "$C/repo" add migrations; git -C "$C/repo" commit -q -m base-side; git -C "$C/repo" push -q origin HEAD:feat/x
+  git -C "$C/repo" switch -q main; mkdir -p "$C/repo/migrations"; echo b > "$C/repo/migrations/121_b.py"; git -C "$C/repo" add migrations; git -C "$C/repo" commit -q -m main-side; git -C "$C/repo" push -q origin main
+  git -C "$C/repo" branch -q -D side
+}
+# renumber: what the fix worker does, from a clone: merge main, move the base's own migration after it.
+renumber(){
+  git clone -q "$C/origin.git" "$C/fixer"; git -C "$C/fixer" switch -q feat/x
+  git -C "$C/fixer" merge -q --no-edit origin/main; git -C "$C/fixer" mv migrations/121_a.py migrations/122_a.py
+  git -C "$C/fixer" commit -q -m renumber; git -C "$C/fixer" push -q origin feat/x
+}
+rm -f "$T/agents.json"; : > "$T/spawns"
+
+fresh tree1; feature; fixrow yes; treerow "sh $T/check.sh"; clash; tip=$(origin_tip); pass
+check "DS-441 AC1 a clean merge that fails the check pushes nothing" '[ "$(origin_tip)" = "$tip" ]'
+check "DS-441 AC1 a base fix worker is sent, with the check's output" \
+  'grep -q "^base-feat-x .*Your task is merged-tree fix try 1 of 2 on feat/x" "$T/spawns" && grep -q "Revision 121 is present more than once" "$C/state/briefings/base-feat-x.md" && [ "$(jq -r ".base_fix.tries[0].check.output" "$DESK_QUEUE")" = "Revision 121 is present more than once" ]'
+check "DS-441 AC1 the report says it is the check, and not the person's yet" '[[ "$out" == *"fails §4 Merged-tree check"* ]] && [[ "$out" == *"Merged-tree fix try 1 of 2 starts this pass"* ]] && [ $rc -ne 11 ]'
+check "DS-441 AC1 the worktree is left clean at the base's head" "[ -z \"\$(git -C $BWT status --porcelain)\" ] && [ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$tip\" ]"
+renumber; ended "AUTOPILOT_DONE: pr=none jira=none"; pass
+check "DS-441 AC2 once the worker has pushed, the next pass finds the base current and clears the tries" \
+  '[[ "$out" == *"merged-tree fix: try 1 of 2 on feat/x finished"* ]] && [[ "$out" == *"feat/x is current with main again"* ]] && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ] && origin_has_main'
+
+rm -f "$T/agents.json"; : > "$T/spawns"
+fresh tree5; feature; fixrow yes; treerow "sh $T/check.sh"; clash; tip=$(origin_tip); pass
+# The worker merged locally, could not make the check pass, and parked without pushing.
+git -C "$C/wt/base-feat-x" merge -q --no-edit origin/main; ended "AUTOPILOT_PARK: the check still fails"; pass
+check "DS-441 AC5 a fix that still fails is put to the person, quoting the check" \
+  '[[ "${out#*WAITING ON YOU}" == *"nothing pushed. Its output: Revision 121 is present more than once"* ]] && [[ "${out#*WAITING ON YOU}" == *"Still failing the check after 1 fix try; the last try parked: the check still fails"* ]]'
+check "DS-441 AC5 nothing was pushed and no second try starts" '[ "$(origin_tip)" = "$tip" ] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
+
+: > "$T/spawns"
+fresh tree4; treerow none; clash; pass
+check "DS-441 AC4 with the row none, a clean merge pushes as before" 'origin_has_main && [[ "$out" == *"and pushed"* ]]'
+fresh treeunset; clash; pass
+check "DS-441 AC4 with no row at all, likewise" 'origin_has_main'
+fresh treepass; treerow "sh $T/check.sh"; pass
+check "DS-441 negative: a merge the check passes is pushed" 'origin_has_main && [[ "$out" == *"and pushed"* ]] && [ -z "$(git -C "$C/wt/base-feat-x" status --porcelain)" ]'
+
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]
