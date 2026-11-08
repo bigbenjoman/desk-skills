@@ -154,6 +154,15 @@ approving review. The other is a red §4 State check of kind `approval`. Either 
 worker gives it the approval, though a red one is still rerun and repaired. The request is cleared
 once that no longer holds the PR. A §4 Merge holds path still waits for a person whatever its review says.
 
+Before a red check's approval goes to the person, a worker tries what a change on the branch can
+clear (`fix-tries.mjs` `gateTry`), read from the error lines the check's job gave. Protected files the
+line names go to a protected-files try: its worker drops each change the ticket's criteria do not need,
+or changes nothing and says which criterion needs it. One goes per head, only for a file no earlier one
+judged, two at most per PR, outside the fix tries. A file still in the diff after its try is the
+person's to approve. A line saying the gate reads no verdict at the head (none, a stale one, an old
+format) gets a review try there first, under the fix tries. A file count or a title alone is the
+person's.
+
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
 handle, and no bot, has reviewed or commented on it) or `pr-conflict-reviewed` (someone has) is
 `yes`, the rows a batch base's conflict reads too (`feature-branch.md`). Otherwise it goes under

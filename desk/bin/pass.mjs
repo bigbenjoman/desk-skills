@@ -40,12 +40,12 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessage, FAILED } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, FAILED } from './gate.mjs';
 import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT } from './suite-wait.mjs';
@@ -2809,16 +2809,17 @@ function withHistory(s, was) {
   const kept = was?.pr === s.pr && was.changed_at && seen(was) === seen(s);
   return { ...s, reruns, rerun_at: last ? new Date(last * 1000).toISOString() : null, changed_at: kept ? was.changed_at : s.at };
 }
-// An open PR's failed checks each keep the error their job gave (`error`), for needs-you, which makes no
-// network call: read once per job, and left unset where its annotations could not be read, so the next
-// pass reads them again.
+// An open PR's failed checks each keep the errors their job gave (`errors`, the first as `error`), for
+// needs-you, which makes no network call, and the gate tries: read once per job, and left unset where its
+// annotations could not be read, so the next pass reads them again.
 function withErrors(s, was) {
   if (s.state !== 'OPEN') return s;
   const checks = s.checks.map((c) => {
     if (!c.jobId || !FAILED.has(c.conclusion)) return c;
     const old = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
-    const error = old && 'error' in old ? old.error : failureMessage(GH_REPO, c.jobId);
-    return error === undefined ? c : { ...c, error };
+    if (old && 'error' in old) return { ...c, error: old.error, errors: old.errors ?? (old.error == null ? [] : [old.error]) };
+    const errors = failureMessages(GH_REPO, c.jobId);
+    return errors === undefined ? c : { ...c, error: errors[0] ?? null, errors };
   });
   return { ...s, checks };
 }
@@ -3371,7 +3372,9 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
     },
     conflictFiles: () => conflictFiles(t.branch),
   };
-  const c = fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
+  // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
+  // worker before anything is put to the person.
+  const c = gateTry(t, s, { ...ctx, baseMerge: baseMoves(t, s.head).baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
   if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
   applyFix(t, n, s.head, c);
 }
@@ -3465,9 +3468,11 @@ function applyFix(t, n, head, c) {
     return;
   }
   // A review try keeps what it quoted, so a later review can tell a finding it cleared from one that survived it.
-  const quoted = f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) } : {};
+  // A protected-files try keeps the files it judged, so none is sent to a worker twice.
+  const quoted = f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) }
+    : f.kind === 'protected' ? { paths: f.paths } : {};
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), at: PASS_AT }])}`, 'stuck=null');
-  out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? 'extra review try' : `${f.kind === 'rereview' ? 'review' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
+  out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? 'extra review try' : `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {

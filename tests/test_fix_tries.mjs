@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
 import { readVerdict, localReviewSet } from '../desk/bin/review-threads.mjs';
 let fails = 0;
@@ -595,6 +595,71 @@ t('DS-449 AC1 a clean verdict that does not carry is narrowed, asked with its co
 t('DS-449 AC3 an unclean verdict for an older head is not narrowed: the head is reviewed whole', 'targeted' in read433(pl(HEAD, marked(OLD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { carry: () => null, scope: () => scoped }), false);
 t('DS-449 a carried verdict is never narrowed', 'targeted' in read433(pl(HEAD, marked(OLD)), { carry: () => true, scope: () => { throw new Error('asked'); } }), false);
 t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');
+}
+
+// ---- A Review gate failure a change on the branch may clear goes to a worker before the person. The
+// protected lines are the recorded studia-web ones and those desk's own review-gate.mjs writes.
+{
+  const { failureLines, approvalFiles, staleVerdict } = await import('../desk/bin/gate.mjs');
+  const failureLine = (notes) => failureLines(notes)[0] ?? null;
+  const { checkApproval, checkVerdict } = await import('../desk/templates/scripts/desk/review-gate.mjs');
+  const NOTES = JSON.parse(readFileSync(new URL('./fixtures/review-gate-annotations.json', import.meta.url), 'utf8'));
+  const GATE = '🔐 Review gate';
+  const STATE_BARE = [{ name: GATE, kind: null }];
+  const studiaLine = failureLine(NOTES.protected), limitLine = failureLine(NOTES['file-limit']);
+  const pkgLine = 'Approval required — 1 protected file(s): `apps/portal/apps/web/package.json`.';
+  const deskLine = checkApproval({ title: 'feat: x', head: HEAD, author: 'me' }, [{ filename: 'package.json', additions: 1, deletions: 0 }], [], new Set(), { protected: 'package\\.json', generated: '^$', fileLimit: 30, exemptTypes: 'fix|docs|chore' }).message;
+  const staleLine = checkVerdict([{ user: { login: 'ben' }, body: `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${OLD} p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\nClean` }], HEAD, new Set(['ben'])).message;
+  // An old-format marker parses as no verdict, so desk's gate says none is posted.
+  const oldFormatLine = checkVerdict([{ user: { login: 'ben' }, body: '<!-- pullbot:local -->\n<!-- pullbot:verdict sha=abc p0=0 rounds=1 -->' }], HEAD, new Set(['ben'])).message;
+  const dirtyLine = checkVerdict([{ user: { login: 'ben' }, body: `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=1 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\nP0` }], HEAD, new Set(['ben'])).message;
+  const gateRed = (...errors) => ({ ...red(GATE, '7'), error: errors[0] ?? null, errors });
+  const gctx = (o = {}) => ({ required: ['tests'], advisory: [], stateChecks: STATE_BARE, base: 'main', baseMerge: () => false, ...o });
+
+  t('DS-500 the protected files are read from a repo\'s gate line', JSON.stringify(approvalFiles(studiaLine)), JSON.stringify({ files: ['packages/db-studia/prisma/migrations/20261104120000_sv3178_drop_duplicate_indexes/migration.sql', 'packages/db-studia/prisma/schema.prisma'], more: 0 }));
+  t('DS-500 and from desk\'s own', approvalFiles(deskLine)?.files.join(), 'package.json');
+  t('DS-500 a file-limit line names no protected file', approvalFiles(limitLine), null);
+  t('DS-500 a stale, missing or old-format verdict line reads stale', [staleLine, oldFormatLine].map(staleVerdict).join(), 'true,true');
+  t('DS-500 one that is there and not clean, or an approval line, does not', [dirtyLine, studiaLine, limitLine].map(staleVerdict).join(), 'false,false,false');
+
+  // AC1: a protected file the criteria may not need goes to a worker, with the files in its brief.
+  const p1 = gateTry(tk(), pr([ok('tests'), gateRed(pkgLine)]), gctx());
+  t('DS-500 AC1 a protected file goes to a protected-files try', `${p1?.call} ${p1?.fix.kind} ${p1?.fix.try}/${p1?.fix.of} ${p1?.fix.ready}`, `requeue protected 1/${FIX_TRIES_MAX} true`);
+  t('DS-500 AC1 it carries the files', p1?.fix.paths.join(), 'apps/portal/apps/web/package.json');
+  const pb = fixBrief(tk({ fix: p1.fix }));
+  t('DS-500 AC1 its brief lists each file and has the worker drop what the criteria do not need', pb.includes('- apps/portal/apps/web/package.json') && /acceptance criteria/.test(pb) && /never move it to another path/.test(pb), true);
+  t('DS-500 AC1 its task pushes only a drop, and leaves the PR out of draft', /If every change is needed, change nothing and push nothing.*leave the PR out of draft/.test(fixTask(tk({ fix: p1.fix }))), true);
+  t('DS-500 AC1 it is not one of the fix tries', fixCall(tk({ fix_tries: [p1.fix] }), pr([ok('tests'), red('Lint', '9')]), ctx({ reruns: () => 2, required: ['tests', 'Lint'] }))?.fix.try, 1);
+  t('DS-500 AC1 a protected try that moved no head leaves a red check\'s fix try to make', fixCall(tk({ fix_tries: [p1.fix] }), pr([ok('tests'), red('Lint', '9')]), ctx({ required: ['tests', 'Lint'] }))?.call, 'requeue');
+  t('DS-500 AC1 desk\'s own gate line goes the same way', gateTry(tk(), pr([ok('tests'), gateRed(deskLine)]), gctx({ stateChecks: [{ name: GATE, kind: 'approval' }] }))?.fix.paths.join(), 'package.json');
+
+  // AC3: a file the try judged needed is the person's: no worker again, at this head or the next.
+  t('DS-500 AC3 tried at this head: no second try', gateTry(tk({ fix_tries: [p1.fix] }), pr([ok('tests'), gateRed(pkgLine)]), gctx()), null);
+  t('DS-500 AC3 and fixCall then puts it to the person', fixCall(tk({ fix_tries: [p1.fix] }), pr([ok('tests'), gateRed(pkgLine)]), ctx({ stateChecks: STATE_BARE }))?.call, 'stuck');
+  const NEXT = 'c'.repeat(40);
+  const both = gateTry(tk(), pr([ok('tests'), gateRed(studiaLine)]), gctx());
+  t('DS-500 AC3 after a try dropped one file, the files it judged needed send no worker at the new head',
+    gateTry(tk({ fix_tries: [both.fix] }), pr([ok('tests'), gateRed(studiaLine)], { head: NEXT }), gctx()), null);
+  const added = gateTry(tk({ fix_tries: [p1.fix] }), pr([ok('tests'), gateRed(studiaLine)], { head: NEXT }), gctx());
+  t('DS-500 a file no try has judged gets one at a new head', `${added?.fix.kind} ${added?.fix.try}`, 'protected 2');
+  t('DS-500 at most FIX_TRIES_MAX protected tries a PR', gateTry(tk({ fix_tries: [p1.fix, { ...p1.fix, head: OLD, paths: ['x'] }] }), pr([ok('tests'), gateRed(studiaLine)], { head: NEXT }), gctx()), null);
+  t('DS-500 the file limit alone sends no worker: only a person approves it', gateTry(tk(), pr([ok('tests'), gateRed(limitLine)]), gctx()), null);
+
+  // AC2: a verdict the gate cannot read at the head is reviewed again there before any item.
+  const v2 = gateTry(tk(), pr([ok('tests'), gateRed(limitLine, oldFormatLine)]), gctx());
+  t('DS-500 AC2 an old-format verdict goes to a review try at the head', `${v2?.call} ${v2?.fix.kind} ${v2?.fix.head === HEAD} ${v2?.fix.ready}`, 'requeue rereview true true');
+  t('DS-500 AC2 its brief quotes the gate', fixBrief(tk({ fix: v2.fix })).includes(oldFormatLine), true);
+  t('DS-500 AC2 so does a stale one', gateTry(tk(), pr([ok('tests'), gateRed(staleLine)]), gctx())?.fix.kind, 'rereview');
+  t('DS-500 AC2 reviewed at this head already: left to fixCall and the person', gateTry(tk({ fix_tries: [v2.fix] }), pr([ok('tests'), gateRed(limitLine, oldFormatLine)]), gctx()), null);
+  const pv = gateTry(tk(), pr([ok('tests'), gateRed(pkgLine, staleLine)]), gctx());
+  t('DS-500 AC2 beside a protected file, the protected try goes first', pv?.fix.kind, 'protected');
+  t('DS-500 AC2 and the review try once it reported the file needed', gateTry(tk({ fix_tries: [pv.fix] }), pr([ok('tests'), gateRed(pkgLine, staleLine)]), gctx())?.fix.kind, 'rereview');
+  t('DS-500 a verdict check of kind verdict is verdictTry\'s, not this', gateTry(tk(), pr([ok('tests'), gateRed(staleLine)]), gctx({ stateChecks: [{ name: GATE, kind: 'verdict' }] })), null);
+  t('DS-500 a verdict that is there and not clean is a fix worker\'s', gateTry(tk(), pr([ok('tests'), gateRed(dirtyLine)]), gctx()), null);
+  t('DS-500 a draft, a conflict or a pending check: not this', [pr([gateRed(pkgLine)], { isDraft: true }), pr([gateRed(pkgLine)], { mergeable: 'CONFLICTING' }), pr([gateRed(pkgLine), { name: 'tests', status: 'in_progress', conclusion: null }])].map((s) => gateTry(tk(), s, gctx())).join(), ',,');
+  t('DS-500 AC2 beside another red check a worker can fix, the verdict is left to that check\'s fix try', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx()), null);
+  t('DS-500 AC2 which fixCall makes a red-checks fix', fixCall(tk(), pr([red('tests', '8'), gateRed(staleLine)]), ctx({ reruns: () => 2, required: ['tests'], stateChecks: STATE_BARE }))?.fix.kind, 'checks');
+  t('DS-500 AC2 beside a red check only a person runs, the review try still goes', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx({ operator: [{ name: 'tests', command: 'run the suite' }] }))?.fix.kind, 'rereview');
 }
 
 process.exit(fails ? 1 : 0);
