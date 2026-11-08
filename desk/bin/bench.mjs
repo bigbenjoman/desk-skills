@@ -200,13 +200,16 @@ export const armEnv = () => Object.fromEntries(Object.entries(otherRepoEnv())
   .filter(([k]) => !/^(DISABLE_PROMPT_CACHING|GH_TOKEN$|GITHUB_TOKEN$|DESK_AUTOPILOT_WORKER$|DESK_BATCH$)/.test(k)));
 
 const both = (p) => [...new Set([p, realpathSync(p)])];
-const shq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+export const shq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
 
 export function deskEnv(repo, ...args) {
   const r = spawnSync(process.execPath, [join(HERE, 'desk-env.mjs'), ...args], { cwd: repo.root ?? tmpdir(), env: repo.env, encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`desk-env ${args.join(' ')} for ${repo.name}: ${(r.stderr || '').trim()}`);
+  if (r.status !== 0) throw Object.assign(new Error(`desk-env ${args.join(' ')} for ${repo.name}: ${(r.stderr || '').trim()}`), { exitCode: r.status });
   return r.stdout.trim();
 }
+
+// One §4 command row's items. -> [{ dir, cmd }]
+export const cmdItems = (repo, id) => deskEnv(repo, 'cmds', id).split('\n').filter(Boolean).map((l) => { const [dir, cmd] = l.split('\t'); return { dir, cmd }; });
 
 // One repo's desk facts, read through a child so each repo's config decides. Throws on anything that
 // would only fail after a run was spent.
@@ -217,7 +220,7 @@ export function readRepo(name) {
   repo.root = deskEnv(repo, 'get', 'repo-root');
   if (!existsSync(repo.root)) throw new Error(`${name}: §2 Primary repo root ${repo.root} does not exist`);
   repo.env.DESK_REPO_DIR = repo.root;
-  repo.items = deskEnv(repo, 'cmds', 'test-cmd').split('\n').filter(Boolean).map((l) => { const [dir, cmd] = l.split('\t'); return { dir, cmd }; });
+  repo.items = cmdItems(repo, 'test-cmd');
   if (!repo.items.length) throw new Error(`${name}: §4 Unit tests is none, so nothing can score a hidden test`);
   const prefix = deskEnv(repo, 'get', 'command-prefix');
   repo.prefix = /^none\b/i.test(prefix) ? '' : prefix;
@@ -321,6 +324,41 @@ function stored(file) {
   try { const r = JSON.parse(readFileSync(file, 'utf8')); return SCORED.has(r.status) ? r : null; } catch { return null; }
 }
 
+// What stands around every paid run: the USD cap, the weekly quota and the ledger. `begin` either says
+// why the run may not start ({ notRun }) or starts it; `end` charges it and returns its quota, at the
+// per-run budget when its cost is unknown.
+export function spendGuard({ settings, ledger, budget, total, log }) {
+  let spent = 0, stopped = null;
+  const points = new Map();
+  return {
+    get spent() { return spent; },
+    get stopped() { return stopped; },
+    begin({ vendor, env, id, label, fields }) {
+      if (stopped) return { notRun: { status: 'not run', why: stopped, dir: null } };
+      if (vendor === 'claude' && spent + budget > total + 1e-9) { log(`skip ${label}: $${spent.toFixed(2)} of $${total} spent`); return { notRun: { status: 'not run', dir: null } }; }
+      const account = Q.accountFor(vendor, env);
+      const start = Q.startRun({ account, settings, ledger, env, id, fields });
+      points.set(account.key, start.line);
+      if (start.why) {
+        stopped = `stopped: ${start.why}`;
+        log(`stopped before ${label}: ${start.why}`);
+        log(points.get(account.key));
+        return { notRun: { status: 'not run', why: stopped, dir: null } };
+      }
+      return { vendor, env, label, account, start };
+    },
+    end({ vendor, env, label, account, start }, cost) {
+      if (vendor === 'claude') spent += cost ?? budget;
+      const end = Q.endRun({ account, settings, ledger, env, before: start.before, entry: start.entry, label });
+      if (end.stop) stopped = `stopped: ${end.stop}`;
+      else points.set(account.key, end.line);
+      return end.quota;
+    },
+    logStop({ account }) { if (stopped) { log(stopped); log(points.get(account.key)); } },
+    quota: () => ({ cap: settings.cap, reserve: settings.reserve, defaults: settings.defaults, stopped, accounts: [...points.values()] }),
+  };
+}
+
 // Runs every task on every arm and writes run.json under the output folder. A caller that chose the
 // tasks itself passes them as `taskList`, the ones it left out (with why) as `leftOut`, and any more
 // paths no arm may read as `secrets`.
@@ -337,11 +375,8 @@ export function runBench(opts, log = () => {}) {
   }
   const out = resolve(opts.out || join(dirname(resolve(opts.tasks)), 'bench-out'));
   mkdirSync(join(out, 'runs'), { recursive: true });
-  const budget = Number(opts.budget), total = Number(opts.total);
-  let spent = 0;
-  let stopped = null;
+  const guard = spendGuard({ settings, ledger, budget: Number(opts.budget), total: Number(opts.total), log });
   const armStops = new Map();
-  const points = new Map();
   const report = tasks.map((task) => {
     const repo = repos.get(task.repo);
     const order = armOrder(opts.arms, opts.seed, task.id);
@@ -350,41 +385,27 @@ export function runBench(opts, log = () => {}) {
       const dir = join(out, 'runs', `${task.id}.${arm.name}.${runKey(task, arm)}`);
       const prior = stored(join(dir, 'result.json'));
       if (prior) { log(`reuse ${task.id} (${arm.name}): ${prior.status}`); return { arm: arm.name, status: prior.status, reused: true, dir }; }
-      if (stopped) return { arm: arm.name, status: 'not run', why: stopped, dir: null };
-      if (armStops.has(arm.name)) return { arm: arm.name, status: 'not run', why: `stopped: ${armStops.get(arm.name)}`, dir: null };
-      const vendor = Q.armVendor(arm);
-      if (vendor === 'claude' && spent + budget > total + 1e-9) { log(`skip ${task.id} (${arm.name}): $${spent.toFixed(2)} of $${total} spent`); return { arm: arm.name, status: 'not run', dir: null }; }
+      if (!guard.stopped && armStops.has(arm.name)) return { arm: arm.name, status: 'not run', why: `stopped: ${armStops.get(arm.name)}`, dir: null };
       // The guard reads the account the run spends, so an arm with its own environment gives it here too.
       const env = arm.env ? arm.env(armEnv()) : armEnv();
-      const account = Q.accountFor(vendor, env);
-      const start = Q.startRun({ account, settings, ledger, env, id: `${dir}@${new Date().toISOString()}`, fields: { task: task.id, arm: arm.name } });
-      points.set(account.key, start.line);
-      if (start.why) {
-        stopped = `stopped: ${start.why}`;
-        log(`stopped before ${task.id} (${arm.name}): ${start.why}`);
-        log(points.get(account.key));
-        return { arm: arm.name, status: 'not run', why: stopped, dir: null };
-      }
+      const paid = guard.begin({ vendor: Q.armVendor(arm), env, id: `${dir}@${new Date().toISOString()}`, label: `${task.id} (${arm.name})`, fields: { task: task.id, arm: arm.name } });
+      if (paid.notRun) return { arm: arm.name, ...paid.notRun };
       log(`run ${task.id} (${arm.name})`);
       const r = runOne(repo, task, arm, order, opts, out, dir, secrets);
-      if (vendor === 'claude') spent += r.cost ?? budget;
-      const end = Q.endRun({ account, settings, ledger, env, before: start.before, entry: start.entry, label: `${task.id} (${arm.name})` });
-      r.quota = end.quota;
-      if (end.stop) stopped = `stopped: ${end.stop}`;
-      else points.set(account.key, end.line);
+      r.quota = guard.end(paid, r.cost);
       writeFileSync(join(dir, 'result.json'), `${JSON.stringify(r, null, 2)}\n`);
       log(`  ${r.status}${r.why ? `: ${r.why}` : ''}${r.quota.points == null ? '' : ` (${r.quota.points} quota points)`}`);
-      if (stopped) { log(stopped); log(points.get(account.key)); }
+      guard.logStop(paid);
       if (r.stop_arm) { armStops.set(arm.name, r.stop_arm); log(`stopped ${arm.name}: ${r.stop_arm}`); }
       return { arm: arm.name, status: r.status, why: r.why, quota_points: r.quota.points, dir };
     });
     return { task: task.id, order: order.map((a) => a.name), runs };
   });
-  const quotaReport = { cap: settings.cap, reserve: settings.reserve, defaults: settings.defaults, stopped, accounts: [...points.values()] };
+  const quotaReport = guard.quota();
   const path = join(out, 'run.json');
   const leftOut = opts.leftOut ?? [];
   const stops = [...armStops].map(([arm, why]) => ({ arm, why }));
-  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent, quota: quotaReport, tasks: report, ...(leftOut.length ? { left_out: leftOut } : {}), ...(stops.length ? { arm_stops: stops } : {}) }, null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify({ seed: opts.seed, spent: guard.spent, quota: quotaReport, tasks: report, ...(leftOut.length ? { left_out: leftOut } : {}), ...(stops.length ? { arm_stops: stops } : {}) }, null, 2)}\n`);
   return { path, report, quota: quotaReport, leftOut, armStops: stops };
 }
 

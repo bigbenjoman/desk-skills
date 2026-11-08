@@ -98,6 +98,13 @@ export function loadRun(out) {
 
 const median = (values) => quantile(values, 0.5);
 
+// Input tokens of all kinds, for one run.
+export const allInput = (t) => ['uncached', 'cacheWrite', 'cacheRead'].reduce((s, k) => s + (Number(t[k]) || 0), 0);
+// joined.json's scores for one arm. -> { mean, n } | null
+export const meanScore = (list) => (list.length ? { mean: list.reduce((s, x) => s + x.score, 0) / list.length, n: list.length } : null);
+// <blind>/joined.json, or null before the join has run.
+export const readJoined = (blind) => { const file = join(blind, 'joined.json'); return existsSync(file) ? readJson(file, 'the joined scores') : null; };
+
 const ALLOWANCES = [['claude', 'Claude'], ['codex', 'Codex']];
 const TOKEN_KINDS = [['uncached', 'uncached input'], ['cacheWrite', 'cache-write'], ['cacheRead', 'cache-read'], ['output', 'output']];
 
@@ -108,7 +115,7 @@ export function armFigures(tasks, arm, scores) {
   const accepted = ran.filter((r) => r.status === 'accepted');
   const withTokens = accepted.filter((r) => r.result?.tokens);
   const tokens = Object.fromEntries(TOKEN_KINDS.map(([k]) => [k, median(withTokens.map((r) => Number(r.result.tokens[k]) || 0))]));
-  tokens.input = median(withTokens.map((r) => ['uncached', 'cacheWrite', 'cacheRead'].reduce((s, k) => s + (Number(r.result.tokens[k]) || 0), 0)));
+  tokens.input = median(withTokens.map((r) => allInput(r.result.tokens)));
   const byAccount = (list) => {
     const m = new Map();
     for (const r of list) {
@@ -130,14 +137,14 @@ export function armFigures(tasks, arm, scores) {
     rejected: ran.filter((r) => r.status === 'rejected').length,
     failed: ran.filter((r) => r.status === 'failed').length,
     notRun: runs.filter((r) => r.status === 'not run').map((r) => ({ task: r.task, why: r.why })),
-    score: list.length ? { mean: list.reduce((s, x) => s + x.score, 0) / list.length, n: list.length } : null,
+    score: meanScore(list),
     tokens, tokensOver: withTokens.length,
     quotaAccepted: byAccount(accepted),
     quotaAll: byAccount(ran),
   };
 }
 
-const num = (n) => Math.round(n).toLocaleString('en-US');
+export const num = (n) => Math.round(n).toLocaleString('en-US');
 const pts = (n) => String(Math.round(n * 100) / 100);
 const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 const over = (k, of) => (k < of ? ` (over ${k} of ${of})` : '');
@@ -221,8 +228,7 @@ export function renderReport({ out, run, joined, baseline }) {
 // Reads the run, the scores and the baseline, and writes <out>/report.md. -> { path, text, compared }
 export function writeReport(o) {
   const run = loadRun(o.out);
-  const joinedFile = join(o.blind, 'joined.json');
-  const joined = existsSync(joinedFile) ? readJson(joinedFile, 'the joined scores') : null;
+  const joined = readJoined(o.blind);
   const r = renderReport({ out: o.out, run, joined, baseline: loadBaseline(o.baseline) });
   const path = join(o.out, 'report.md');
   writeFileSync(path, r.text);

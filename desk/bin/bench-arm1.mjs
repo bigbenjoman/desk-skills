@@ -60,9 +60,11 @@ export function leak(packet, sources) {
   return null;
 }
 
+export const noMerge = (task) => typeof task.merge !== 'string' || !/^[0-9a-f]{40}$/.test(task.merge);
+
 // The task's merged diff, read in its repo's primary checkout.
 export function mergedDiff(root, task) {
-  if (typeof task.merge !== 'string' || !/^[0-9a-f]{40}$/.test(task.merge)) throw new Error('the task records no merge commit to check its packet against');
+  if (noMerge(task)) throw new Error('the task records no merge commit to check its packet against');
   const r = spawnSync('git', ['-C', root, 'diff', '--no-color', '--no-ext-diff', task.base, task.merge], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
   if (r.status !== 0) throw new Error(`git diff ${task.base.slice(0, 12)} ${task.merge.slice(0, 12)} failed in ${root}: ${(r.stderr || '').trim()}`);
   return r.stdout;
