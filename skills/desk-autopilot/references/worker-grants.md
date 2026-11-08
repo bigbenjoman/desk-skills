@@ -75,7 +75,7 @@ worker parks asking to force-push its branch, an answer that approves it (one th
 yes, such as `yes` or `Yes, force-push it`, or `answer.mjs <TICKET> --approve "…"`) is recorded as the ticket's
 `grant`: its branch and the SHA the park named, as its `lease` input or the exact push in its
 question. A pass refuses a force-push park that names no SHA back to a worker, once; a second one
-stays parked and no answer can grant it. A yes to a park that only mentions a force-push records
+stays parked, no answer can grant it, and a requeue tells its next worker to name the SHA. A yes to a park that only mentions a force-push records
 nothing either. The requeued worker's settings then allow exactly
 `git push --force-with-lease=<branch>:<sha> origin <branch>`, and its prompt names it. Once origin's
 branch has moved off that SHA the grant is spent: git refuses the same push, and the next worker's

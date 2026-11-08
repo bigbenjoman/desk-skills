@@ -214,6 +214,8 @@ check "DS-514 AC1 a force-push park naming no SHA is refused back to a worker, w
   '[ "$(field F-1 state)" = "\"triaged\"" ] && [ "$(field F-1 park)" = null ] && [ "$(field F-1 lease_refused.question)" = "$(field F-1 prev_park.question)" ] && [[ "$(field F-1 lease_refused.question)" == *"force-push of feat/F-1"* ]] && [ "$(field F-1 grant)" = null ] && grep -q "F-1: its park asked for a force-push naming no lease SHA: refused back" <<< "$out"'
 check "DS-514 AC1 a second one stays parked, saying no answer can grant it" \
   '[ "$(field F-2 state)" = "\"parked\"" ] && [[ "$(field F-2 park.recovery)" == *"no answer can grant it"* ]]'
+check "DS-514 AC1 and it becomes the refused park, so a requeue tells the next worker why" \
+  '[ "$(field F-2 lease_refused.question)" = "$(field F-2 park.question)" ] && [[ "$(field F-2 lease_refused.question)" == *"force-push of feat/F-2"* ]]'
 check "DS-514 AC2 a force-push park naming the SHA is recorded, with its lease" \
   '[ "$(field F-3 state)" = "\"parked\"" ] && [ "$(field F-3 park.inputs)" = "{\"lease\":\"$PIN\"}" ] && [ "$(field F-3 park.recovery)" = null ]'
 check "DS-514 AC3 a park that only mentions a force-push is recorded and not refused" \

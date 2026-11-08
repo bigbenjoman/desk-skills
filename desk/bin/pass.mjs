@@ -393,11 +393,15 @@ function recommendsOf(t, question, log) {
 
 // A worker's park that asks for a force-push and names no lease SHA goes back to a worker, told to name
 // it (writeBrief), and is true when it went. Once a ticket: a second one stays parked, saying why no yes
-// can grant it, so a worker that never names the SHA cannot loop.
+// can grant it, so a worker that never names the SHA cannot loop. It records that park as the refused
+// one, so if the person requeues it the next worker is told why too (leaseRefusedBrief).
 function refuseUnnamedLease(t, question) {
   const left = (why) => { q('set', t.key, `park.recovery=${why}`); return false; };
   if (DRY) return false;
-  if (t.lease_refused) return left('it asks for a force-push naming no lease SHA, for the second time, so no answer can grant it');
+  if (t.lease_refused) {
+    q('set', t.key, `lease_refused=${JSON.stringify({ question })}`);
+    return left('it asks for a force-push naming no lease SHA, for the second time, so no answer can grant it: a requeue tells its next worker to name one');
+  }
   const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
   if (!rq.ok) return left(`it asks for a force-push naming no lease SHA, and the requeue to name one was refused (${rq.out.split('\n').pop()})`);
   q('set', t.key, `lease_refused=${JSON.stringify({ question })}`);
