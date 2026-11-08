@@ -13,13 +13,14 @@
 // Its tokens come from its own session log (the rollout under that login's sessions folder whose
 // session_meta names the checkout), copied to codex-session.jsonl. Any tool call the sandbox refused is
 // listed in result.json's `refusals`; the run is still scored on its hidden tests.
-import { readFileSync, readdirSync, statSync, copyFileSync, realpathSync } from 'node:fs';
+import { readFileSync, copyFileSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { armEnv, parseArgs as benchArgs, printBench, promptFor, runBench } from './bench.mjs';
 import { execArgs, KILL_GRACE_MS } from './codex-exec.mjs';
 import { accountFor } from './bench-quota.mjs';
+import { rolloutLogs } from './codex-usage.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 export const CODEX_MODEL = 'gpt-6.1-sol';
@@ -60,15 +61,10 @@ const same = (a, b) => { if (a === b) return true; try { return realpathSync(a) 
 
 // The rollout under `codexDir`/sessions, written since `since` (ms), whose session_meta cwd is `wt`.
 export function sessionLog(codexDir, wt, since) {
-  const root = join(codexDir, 'sessions');
-  let names = [];
-  try { names = readdirSync(root, { recursive: true }).map(String).filter((n) => /(^|\/)rollout-[^/]*\.jsonl$/.test(n)); } catch { return null; }
   const hits = [];
-  for (const n of names) {
-    const p = join(root, n);
-    let st;
-    try { st = statSync(p); } catch { continue; }
-    if (!st.isFile() || st.mtimeMs < since - 1000) continue;
+  // A run's own log is still plain: Codex compresses only older ones.
+  for (const { path: p, st } of rolloutLogs(codexDir) ?? []) {
+    if (p.endsWith('.zst') || st.mtimeMs < since - 1000) continue;
     let first;
     try { first = JSON.parse(readFileSync(p, 'utf8').split('\n', 1)[0]); } catch { continue; }
     if (first?.type === 'session_meta' && typeof first.payload?.cwd === 'string' && same(first.payload.cwd, wt)) hits.push({ p, at: st.mtimeMs });
