@@ -1980,7 +1980,7 @@ function usageHeadline(repos, now, t) {
 
 // A login being added: { tool, login, label }, its folder not signed in yet. It is one row on standby,
 // waiting, until the account check finds its folder signed in.
-const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir && !['signed in', 'duplicate'].includes(x.check?.state);
+const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir;
 function addingRow(a) {
   const segs = [['  ', null], ...fitCell([[cut(a.label ?? a.login.name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
     ...fitCell([['waiting for you to sign it in …', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
@@ -2023,10 +2023,10 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   const rows = [...claudeRows, ...(claudeRows.length && codexRows.length ? [{ line: '' }] : []), ...codexRows];
   if (adding) return { head: [usageHeadline(repos, now, t), ''], rows, foot: ['', ...addPanel(adding, t, w)] };
   const all = [...t.claude, ...t.codex];
-  const key = t.claude.length <= 1 && t.codex.length <= 1
-    ? leadLines('  ', [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]], w)
-    : wrapSegs([['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
-      [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], Math.max(20, w - 2)).map((l) => segLine([['  ', null], ...l]));
+  const key = leadLines('  ', t.claude.length <= 1 && t.codex.length <= 1
+    ? [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]]
+    : [['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
+      [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], w);
   const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => {
     const p = signInParts(x.login);
     return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
@@ -3045,8 +3045,8 @@ export const REFRESH_MS = 2000;
 const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 // The question before the supervisor goes off, in the terminal's own text colour with its keys bold.
-export const labelLine = (text) => segLine([['Label for the new Codex login: ', BOLD], [text, null], ['  enter add · esc cancel', DIM]]);
 export const askLine = (name) => segLine([[`Turn off the supervisor for ${name}? Running workers finish.  `, null], ['y', BOLD], [' / ', null], ['n', BOLD]]);
+const labelLine = (text) => segLine([['Label for the new Codex login: ', BOLD], [text, null], ['  enter add · esc cancel', DIM]]);
 const ESC = '\x1b[';
 // Mouse reporting in SGR form (1000 + 1006), so a click on the breadcrumb, a tab or a row arrives
 // as ESC [ < button ; column ; row M.
@@ -3104,7 +3104,7 @@ function deskEnvLogins(args, done) {
 // The account check is rerun this often while Usage is shown, and while a login is being added, this
 // often whatever is shown, so a sign-in shows well within a minute.
 const CHECK_EVERY_MS = 60_000;
-export const ADD_CHECK_MS = 10_000;
+const ADD_CHECK_MS = 10_000;
 // The longest label a Codex login can be given: the name column's width.
 const LABEL_MAX = U_NAME - 1;
 // What each rule means, as the footer says once one is saved.
@@ -3477,7 +3477,7 @@ export function interactive({
   const stopAdding = () => { clearInterval(addTimer); addTimer = null; adding = null; };
   // The check found the folder being added: signed in, it stays on standby (a computer with no
   // subscriptions file gets the rule written, so it has one); signed in to an account already listed,
-  // it is refused. Anything else waits for the next check.
+  // it is refused. Anything else waits for the next check, as does a save while another is running.
   function addChecked() {
     const a = adding;
     const c = checked?.get(checkKey(a.tool, a.login.configDir));
@@ -3486,6 +3486,7 @@ export function interactive({
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
       msg = `${a.login.name} is signed in to the same account as ${c.duplicateOf}, so desk won't use it. x removes it.`;
     } else if (c?.state === 'signed in') {
+      if (c.rule !== 'standby' && saving) return;
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
       const said = `${c.email ?? a.label ?? a.login.name} is signed in and on standby. space puts it in rotation.`;
@@ -3496,6 +3497,7 @@ export function interactive({
   // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
   // label. A folder the sign-in began is removed from the rules instead, so it is not found again.
   function stopWaiting() {
+    if (saving) { msg = 'Still saving the last change.'; return; }
     const a = adding;
     stopAdding();
     selId = null;

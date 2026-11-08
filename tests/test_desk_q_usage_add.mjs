@@ -2,8 +2,7 @@
 // desk-q's view 6 adding a Claude and a Codex login, under a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT,
 // DESK_LOCK_DIR, DESK_USAGE_DIR and subscriptions file, with fake claude and codex binaries the account
 // check (desk-env logins check) calls. A test signs a new folder in partway through the wait by writing
-// what the fake binary reads. Drawn at 104 columns under NO_COLOR. One check or more per acceptance
-// criterion of DS-474.
+// what the fake binary reads. Drawn at 104 columns under NO_COLOR.
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -58,14 +57,14 @@ const FIXED = new Date(2026, 9, 24, 9, 0).getTime();
 
 // desk-q open at 104 columns under NO_COLOR, its account check running desk-env for real, rerun every
 // 50ms while a login is being added.
-function open() {
+function open(opts = {}) {
   process.env.NO_COLOR = '1';
   const input = new PassThrough();
   Object.assign(input, { isTTY: true, setRawMode() {} });
   const output = { buf: '', columns: 104, rows: 60, write(s) { this.buf += s; }, on() {}, removeListener() {} };
   const copied = [];
   const ui = Q.interactive({ input, output, start: { kind: 'overview', all: false }, exit() {}, refreshMs: 600000, clock: () => FIXED, probeMs: 600000,
-    probeWith: async () => ({ ran: true }), copier: (s) => copied.push(s), addCheckMs: 50 });
+    probeWith: async () => ({ ran: true }), copier: (s) => copied.push(s), addCheckMs: 50, ...opts });
   const frame = () => output.buf.split('\x1b[H').at(-1).split('\r\n').map((l) => plain(l.replace(/\x1b\[J$/, '').replace(/\x1b\[K$/, '')));
   // Each key on its own read, as a terminal sends them.
   const press = async (...ks) => { for (const k of ks) { input.write(k); await sleep(60); } };
@@ -135,7 +134,7 @@ f = await E.until((x) => !rowOf(x, 'login-3'));
 t('AC4 esc removes the new row', rowOf(f, 'login-3'), null);
 t('AC4 and says it stopped waiting', has(f, 'Stopped waiting: login-3 is not added.'), true);
 t('AC4 the panel is gone', has(f, 'Add a Claude login'), false);
-t('AC4 esc while waiting stays on Usage', f[1], '1 Queue  2 Timeline  3 By day  4 Epics  5 Costs  6 Usage');
+t('AC4 esc while waiting stays on Usage', f.some((l) => l.startsWith('  CLAUDE') && l.includes('PLAN')), true);
 
 // ---- AC6: a on the CODEX table asks for the label first
 f = E.frame();
@@ -175,6 +174,49 @@ await C.press(ESC);
 f = await C.until((x) => has(x, 'Stopped waiting'));
 t('esc removes the folder desk made, which held only its label', `${existsSync(CODEX_3)} ${has(f, 'Stopped waiting: spare is not added.')}`, 'false true');
 C.done();
+
+// ---- a save still running holds back the next write: desk-env rewrites the whole subscriptions file
+const BEGUN = join(H, '.claude-logins', 'login-3');
+let checkOut = '{"logins":[]}';
+const writes = [];
+const heldOpts = { loginsWith: (args, done) => { if (args[0] === 'check') done({ code: 0, out: checkOut, err: '' }); else writes.push({ args, done }); } };
+const release = async () => { writes.at(-1).done({ code: 0, out: '', err: '' }); await sleep(20); };
+const W = open(heldOpts);
+await sleep(20);
+await W.press('6');
+await W.until((x) => has(x, 'a add a login'));
+await W.press('a');
+mkdirSync(BEGUN, { recursive: true });
+writeFileSync(join(BEGUN, 'begun'), '');
+await W.press('\x1b[A', ' ');
+t('a rule change on another row is saving', writes.map((w) => w.args[0]).join(), 'set');
+await W.press(ESC);
+f = await W.until((x) => has(x, 'Still saving the last change.'));
+t('esc during that save starts no second write', writes.length, 1);
+t('and says why, the row still waiting', `${has(f, 'Still saving the last change.')} ${!!rowOf(f, 'login-3')}`, 'true true');
+await release();
+await W.press(ESC);
+await W.until((x) => has(x, 'Saving…'));
+t('esc once it is saved removes the login', writes.map((w) => w.args.slice(0, 3).join(' ')).at(-1), 'remove claude login-3');
+await release();
+W.done();
+rmSync(BEGUN, { recursive: true, force: true });
+writes.length = 0;
+const V = open(heldOpts);
+await sleep(20);
+await V.press('6');
+await V.until((x) => has(x, 'a add a login'));
+await V.press('a', '\x1b[A', ' ');
+t('a rule change is saving as the folder signs in', writes.length, 1);
+checkOut = JSON.stringify({ logins: [{ tool: 'claude', configDir: BEGUN, state: 'signed in', rule: null, email: 'held@example.test' }] });
+await sleep(150);
+f = V.frame();
+t('the sign-in starts no second write during that save', writes.length, 1);
+t('and its one row keeps waiting', f.filter((l) => l.includes('waiting for you to sign it in')).length, 1);
+await release();
+await sleep(150);
+t('once saved, the next check puts it on standby', writes.map((w) => w.args.join(' ')).at(-1), 'set claude login-3 standby');
+V.done();
 
 // ---- AC2 with no subscriptions file: the signed-in login is written down on standby
 rmSync(env.DESK_SUBSCRIPTIONS);
