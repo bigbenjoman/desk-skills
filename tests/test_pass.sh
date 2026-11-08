@@ -47,6 +47,8 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
 // \$T/upload-left, when it exists, is an upload that left cells: what upload-images says, and its exit 4.
 if (existsSync('$T/upload-left')) { process.stdout.write(readFileSync('$T/upload-left', 'utf8')); process.exit(4); }
+// \$T/upload-crash, when it exists, is an uncaught exception: a stack, then node's version banner last.
+if (existsSync('$T/upload-crash')) { console.error('file:///up.mjs:9\nError: profile locked\n    at main (file:///up.mjs:9:9)\n\nNode.js v22.23.1'); process.exit(1); }
 console.log('done: 1 image(s) in the body, 0 placeholder(s) left');
 EOF
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
@@ -2016,6 +2018,38 @@ check "DS-492 AC4 a draft the person's done recorded as filled is taken out of d
   'grep -q "^pr ready 767" "$T/gh-calls" && [ "$(field S-7 undraft.call)" = "\"ready\"" ]'
 check "DS-492 AC4 negative control: put back to draft by a person, it stays held" \
   '! grep -q "^pr ready 768" "$T/gh-calls" && [ "$(field S-8 undraft.call)" = "\"held\"" ]'
+
+# ---- DS-429: an upload that crashes keeps its whole output and is tried once more by a later pass,
+# from the directory it was given, before its cells go to the person naming the saved log.
+# P-1: a finished worker whose upload crashes; its fix round's log names no screenshots.
+q add P-1; q set P-1 state=running session_id=gone lane=A branch=fix/P-1 result.pr=771; frx 771 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 771 '_drag p-1.png_'
+mkdir -p "$T/state-s/images/P-1"; : > "$T/state-s/images/P-1/p-1.png"
+say "AUTOPILOT_IMAGES: $T/state-s/images/P-1/" "AUTOPILOT_DONE: pr=771 jira=Done" > "$T/state-s/logs/P-1.log"
+# P-2: its upload already crashed once, on its own PR: the retry crashes too, and that is the last try.
+q add P-2; q set P-2 state=done lane=A branch=fix/P-2 result.pr=772 'upload_crash={"pr":772,"dir":"'"$T/state-s/images/P-2/"'","tries":1,"log":"x"}'
+frx 772 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 772 '_drag p-2.png_'; mkdir -p "$T/state-s/images/P-2"; : > "$T/state-s/images/P-2/p-2.png"
+: > "$T/upload-crash"; : > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-429 AC1 a crashed upload's whole output is saved, not just its last two lines" \
+  'grep -q "^Error: profile locked$" "$T/state-s/images/P-1.upload.log" && grep -q "^Node.js v22.23.1$" "$T/state-s/images/P-1.upload.log"'
+check "DS-429 AC1 and the failure line names that file" \
+  'echo "$out" | grep -qF "P-1: image upload to PR #771 crashed (try 1 of 2), and the next pass tries it again; its whole output is saved in $T/state-s/images/P-1.upload.log"'
+check "DS-429 a crash with a retry to come is not put to the person" \
+  '[ "$(field P-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "P-1: DRAFT" && ! grep -q "^pr ready 771" "$T/gh-calls"'
+check "DS-429 a pass tries an upload once: the retry step does not run it again" '[ "$(grep -c "^771 " "$T/uploads")" = 1 ]'
+check "DS-429 AC3 a retry that crashes too spends the tries, naming the saved log" \
+  'grep -qx "772 $T/state-s/images/P-2/" "$T/uploads" && [ "$(field P-2 upload_crash.tries)" = 2 ] && echo "$out" | grep -qF "P-2: image upload to PR #772 crashed (try 2 of 2), and its cells go to the undraft step"'
+check "DS-429 AC3 once spent, the person's item says the upload crashed and where its output is" \
+  '[ "$(field P-2 undraft.call)" = "\"person\"" ] && echo "$out" | grep -qF "P-2: DRAFT — PR #772 stays draft: 1 screenshot cell(s) left: p-2.png, and desk'"'"'s upload of them crashed on 2 tries; its output is saved in $T/state-s/images/P-2.upload.log"'
+# P-1 goes back to a fix worker, whose round's log has no AUTOPILOT_IMAGES line (the spawn clears images_dir).
+rm -f "$T/upload-crash"
+q set P-1 state=running session_id=gone images_dir=null images_uploaded=null; say "AUTOPILOT_DONE: pr=771 jira=Done" > "$T/state-s/logs/P-1.log"
+dragbody 771 '<img alt="p-1" src="https://github.com/user-attachments/assets/9">'
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-429 AC2 a later pass tries the crashed upload again from the ticket's images folder" \
+  'grep -qx "771 $T/state-s/images/P-1/" "$T/uploads" && [ "$(field P-1 images_uploaded)" = true ] && [ "$(field P-1 upload_crash)" = null ]'
+check "DS-429 AC4 every cell filled by the retry, it is not put to the person and leaves draft" \
+  '! echo "$out" | grep -q "P-1: DRAFT" && grep -q "^pr ready 771" "$T/gh-calls"'
+check "DS-429 AC3 a spent upload is not tried again" '! grep -q "^772 " "$T/uploads" && [ "$(field P-2 undraft.call)" = "\"person\"" ]'
 
 # ---- DS-493: a base that renumbers a migration sends the child naming it to a worker, before any other
 # fix try, and leaves a child naming none of it. A real clone, since the pass asks git.

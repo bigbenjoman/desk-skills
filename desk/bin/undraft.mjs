@@ -530,6 +530,12 @@ function evidenceCall(pr, cfg) {
 // What a person does about cells nothing of desk's can fill. They are never asked to upload.
 const noCellsLeft = (n) => `edit the body of #${n} so no \`_drag <file>_\` cell is left`;
 
+// The uploads a PR's screenshots get that exit with no result line before they are the person's: the
+// pass's own and one retry. The ticket's upload_crash is { pr, dir, tries, log }, log its whole output.
+export const UPLOAD_TRIES = 2;
+export const UPLOAD_CRASHED = /, and desk's upload of them crashed on \d+ tr(?:y|ies); its output is saved in /;
+const crashOf = (t, n) => (t.upload_crash && Number(t.upload_crash.pr) === Number(n) ? t.upload_crash : null);
+
 // The call for a draft's `_drag <file>_` cells, or null with none left: only the cells hold it here,
 // however its upload ended. Each goes to what can fill it: §4 Evidence workflow, then for any it left
 // with no file a capture worker (fix-tries.mjs captureTry), then for files desk holds the §3 pr-images
@@ -546,6 +552,14 @@ export function cellCall(t, pr, cfg) {
     return { ...person(`${missing.length} screenshot(s) in its body were never taken: ${missing.join(', ')}`, noCellsLeft(n)), call: 'capture', files: missing };
   }
   const left = `${cells} screenshot cell(s) left: ${dragFiles(pr.body).join(', ')}`;
+  const crash = crashOf(t, n);
+  if (crash && crash.tries < UPLOAD_TRIES) {
+    return { call: 'wait', why: `${left}: desk's upload of them crashed (try ${crash.tries} of ${UPLOAD_TRIES}), and the next pass tries it again; its output is saved in ${crash.log}`, crashed: crash };
+  }
+  if (crash) {
+    return { ...person(`${left}, and desk's upload of them crashed on ${crash.tries} ${crash.tries === 1 ? 'try' : 'tries'}; its output is saved in ${crash.log}`,
+      `read that output, then put them in with \`node ~/.claude/desk/bin/upload-images.mjs ${n} ${crash.dir}\` or ${noCellsLeft(n)}`), crashed: crash };
+  }
   if (t.images_reported === true && t.images_uploaded !== true) {
     return { ...person(`${left}, whose files are saved, but config §3 pr-images leaves their upload to you`, `approve it with \`DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs ${n} <its screenshot directory>\``), unapproved: true };
   }
@@ -561,6 +575,7 @@ export function cellPlan(t, pr, cfg) {
   const wf = `\`${cfg.evidence?.workflow}\``;
   const spent = c.call === 'capture' && captureTry(t, { pr: pr.number, head: pr.head, files: c.files })?.call === 'stuck';
   const doing = (file) => {
+    if (c.crashed) return c.call === 'wait' ? "desk's upload of it crashed, and the next pass tries it again" : `desk's upload of it crashed on every try (its output is in ${c.crashed.log})`;
     if (c.call === 'evidence') return `${wf} takes it at the next pass`;
     if (c.call === 'wait') return `${wf} is taking it now`;
     if (c.call === 'evidence-failed') return `${wf} ${c.conclusion === 'failure' ? 'failed' : 'filled none of its cells'}, so desk fixes the workflow for the repo and runs it again`;
