@@ -147,6 +147,43 @@ export function refusedStep(question) {
 }
 export const neverStep = (question) => { const s = refusedStep(question); return s && !s.grantable ? s.step : null; };
 
+// The SHA a park on `branch` says a force-push may overwrite, from the exact
+// `--force-with-lease=<branch>:<sha>` in its question and its inputs' `lease`, or null when it names
+// none, or two that differ: a yes cannot say which it meant. A question naming none takes the inputs'
+// SHA, which the person does not see (a re-park's comes from its clears-when, withLeaseInput): the
+// grant is still only for this branch, and only while origin is at that SHA (grantPush).
+export function namedLease(park, branch) {
+  const named = String(park?.inputs?.lease ?? '').trim();
+  const leases = new Set([...String(park?.question ?? '').matchAll(/--force-with-lease=([^\s:`'"]+):([0-9a-f]{40})(?![0-9a-f])/g)].filter((m) => m[1] === branch).map((m) => m[2]));
+  if (SHA.test(named)) leases.add(named);
+  return leases.size === 1 ? [...leases][0] : null;
+}
+
+// Whether a park's question asks for a force-push, clause by clause, rather than mentions one: the
+// clause says the push is needed, refused or wants approving (there or in the next clause), or gives
+// its flag, and does not set it aside ("merge rather than force-push", "it was refused, so I merged").
+// §3's row name is not a mention of a push. A miss costs less than a false match: a miss is an ordinary
+// park the person sees, and a false match sends the park's real question back unasked.
+const PUSH_ASKED = new RegExp(String.raw`${REFUSED.source}|\b(?:approv\w*|allow|grant|permission|authori[sz]e|need(?:s|ed)?|requires?|ok(?:ay)? to|may i|can i|should i|could i|shall i|want me to|please)\b|--force-with-lease\b|^\s*force[- ]?push\b.*\?\s*$`, 'i');
+const PUSH_SET_ASIDE = /\b(?:rather than|instead(?! of (?:merg|rebas))|without (?:\w+ )?force[- ]?push\w*|avoid\w*|no need|(?:do|does|did|will|would)(?:n't| not) need|(?:is|was|are|were)(?:n't| not) (?:needed|required)|no (?:\S+ )?force[- ]?push\w*|never|so i(?:'ve| have)? (?:merged|rebased|went|used|kept)|or (?:merg|rebas)\w*|(?:merg|rebas)\w* or)\b/i;
+const APPROVE_NEXT = /^\s*(?:please\s+)?(?:approve|confirm)\b/i;
+export function asksForcePush(question) {
+  const q = String(question ?? '').replace(/\bgit-force-with-lease\b/gi, '');
+  if (!refusedStep(q)?.grantable) return false;
+  return q.split(/(?<=[.?!;])\s+|\n+/).some((c, i, all) => FORCE_PUSH.test(c) && !PUSH_SET_ASIDE.test(c) && (PUSH_ASKED.test(c) || APPROVE_NEXT.test(all[i + 1] ?? '')));
+}
+
+// A park that asks for a force-push without naming the SHA it would overwrite: no grant can come from it.
+export const unnamedForcePush = (park, branch) => asksForcePush(park?.question) && namedLease(park, branch) === null;
+
+// The briefing section for the worker after such a park was refused, or null for any other round.
+export function leaseRefusedBrief(t) {
+  const question = t?.lease_refused?.question;
+  if (!question || question !== t.prev_park?.question) return null;
+  return `## Your last park was refused\n\nIt asked for a force-push and named no lease SHA, so no grant can come from it: ${question}\n` +
+    `If you still need that push, park again with the exact \`git push --force-with-lease=${t.branch}:<sha> origin ${t.branch}\` in the question and \`"lease": "<sha>"\` in AUTOPILOT_PARK_INPUTS, <sha> being what \`git rev-parse origin/${t.branch}\` prints. If you do not, carry on without asking.\n`;
+}
+
 // An answer approves the step it answers only when it is nothing but a yes ("yes", "approved", "Yes,
 // force-push it"): "Sure, merge instead" opens with one and approves nothing. Anything else takes --approve.
 const YES_WORD = String.raw`(?:yes|yep|y|approved?|ok(?:ay)?|go ahead|do it|push it|force[- ]?push(?: it)?|confirmed?|granted|sure|please)`;
@@ -154,23 +191,19 @@ const YES = new RegExp(String.raw`^\s*${YES_WORD}(?:[\s,.!:;-]+${YES_WORD})*[\s.
 export const approves = (text) => YES.test(String(text ?? ''));
 
 // The grant an answer records on a parked ticket, { grant }, or { why } when it records none. The lease
-// is the SHA the push may overwrite: the park inputs' `lease`, else `remoteSha(branch)`, origin's
-// branch as the ticket's worktree last saw it.
-export function grantFor({ t, text, approve = false, remoteSha = () => null, now = new Date() }) {
+// is the SHA the park names (namedLease), so the approval was of that one overwrite, and a grant is
+// always pinned: only a pinned grant lets a pass make the push unattended (passLeaseGrant).
+export function grantFor({ t, text, approve = false, now = new Date() }) {
   const step = refusedStep(t?.park?.question);
   if (t?.state !== 'parked' || !step) return { why: 'its park names no step a grant covers' };
   if (!step.grantable) return { why: `${step.step} is never a worker's, so only a session can do it` };
   if (!approve && !approves(text)) return { why: 'the answer approves nothing' };
+  if (!approve && !asksForcePush(t.park.question)) return { why: 'its park only mentions a force-push, so a yes to it approves none (--approve says it does)' };
   const branch = String(t.branch ?? '').trim();
   if (!branch) return { why: 'the ticket records no branch to push' };
-  const named = String(t.park?.inputs?.lease ?? '').trim();
-  const lease = SHA.test(named) ? named : remoteSha(branch);
-  if (!SHA.test(String(lease ?? ''))) return { why: `no lease SHA: the park names none, and origin/${branch} could not be read in its worktree` };
-  // Pinned: the park the person approved named this SHA itself (its inputs' lease, or the exact push in
-  // its question), so the approval was of that one overwrite, not of a park that merely mentions a
-  // force-push. Only a pinned grant lets a pass make the push unattended (passLeaseGrant).
-  const pinned = SHA.test(named) || String(t.park?.question ?? '').includes(`--force-with-lease=${branch}:${lease}`);
-  return { grant: { step: step.step, branch, lease, at: now.toISOString(), ...(pinned ? { pinned: true } : {}) } };
+  const lease = namedLease(t.park, branch);
+  if (!lease) return { why: `no lease SHA: the park names none, so requeue it for a worker to name the \`--force-with-lease=${branch}:<sha>\` it would overwrite` };
+  return { grant: { step: step.step, branch, lease, at: now.toISOString(), pinned: true } };
 }
 
 // A park's inputs as the pass records them: a park whose clears-when is a lease push names the SHA it
