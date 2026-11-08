@@ -10,7 +10,8 @@ S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/tickets" "$T/skills/desk-ticket/references" "$T/stub"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
-unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH AUTOPILOT_SKIP_CHALLENGE
+unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH AUTOPILOT_SKIP_CHALLENGE \
+  CLAUDE_CONFIG_DIR CODEX_HOME DESK_AUTOPILOT_WORKER
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 

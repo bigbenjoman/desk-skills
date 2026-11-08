@@ -163,7 +163,7 @@ try {
   const costs = join(T, 'config', 'costs.md');
   const env = { ...process.env, PATH: `${join(T, 'bin')}:${process.env.PATH}`, HOME: T, DESK_CONFIG_ROOT: join(T, 'config'),
     DESK_COSTS: costs, DESK_VERCEL_AUTH: join(T, 'auth.json'), DESK_VERCEL_API: `http://127.0.0.1:${server.address().port}`, AWS_CONFIG_FILE: join(T, 'aws') };
-  for (const k of ['DESK_CONFIG', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_MACHINE']) delete env[k];
+  for (const k of ['DESK_CONFIG', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_MACHINE', 'DESK_AUTOPILOT_WORKER']) delete env[k];
   const cli = (...a) => new Promise((res) => execFile('node', [join(BIN, 'desk-env.mjs'), 'costs', ...a], { env, cwd: T, encoding: 'utf8' },
     (err, stdout, stderr) => res({ rc: err ? err.code ?? 1 : 0, out: stdout + stderr })));
 
