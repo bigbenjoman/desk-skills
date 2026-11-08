@@ -81,12 +81,13 @@ t('AC2 median uncached input over accepted tasks only', row('Median uncached inp
 t('AC2 median cache-write', row('Median cache-write tokens per accepted task').slice(1).join(' / '), '2,000 / 600');
 t('AC2 median cache-read', row('Median cache-read tokens per accepted task').slice(1).join(' / '), '6,000 / 2,500');
 t('AC2 median output', row('Median output tokens per accepted task').slice(1).join(' / '), '400 / 225');
-t('AC2 quota points per accepted task, per account', row('Quota points per accepted task (median), per account').slice(1).join(' / '), 'ben: 3 · work: 3 / ben: 1.5');
-t('AC2 quota used by every run, an unreadable one named', row('Quota points used by every run, per account').slice(1).join(' / '), 'ben: 11 · work: 3 / ben: 4, 1 run(s) unreadable');
+t('AC2 quota points per accepted task, per account', row('Claude quota points per accepted task (median), per account').slice(1).join(' / '), 'ben: 3 · work: 3 / ben: 1.5');
+t('AC2 quota used by every run, an unreadable one named', row('Claude quota points used by every run, per account').slice(1).join(' / '), 'ben: 11 · work: 3 / ben: 4, 1 run(s) unreadable');
+t('a Claude arm spends no Codex allowance', row('Codex quota points used by every run, per account').join(' / '), '— / — / —');
 t('AC3 the baseline is named with its date', text.includes(`Phase 0 baseline: the 7 day(s) to 2026-11-05, from ${join(twoArms.out, 'phase0-baseline.txt')}`), true);
 t('AC3 baseline tokens per accepted ticket', `${row('Input tokens of all kinds per accepted task (median)')[0]} / ${row('Median output tokens per accepted task')[0]}`,
   '1,000,000 (mean over 3 ticket(s)) / 20,000 (mean over 3 ticket(s))');
-t('AC3 baseline quota per accepted ticket', row('Quota points per accepted task (median), per account')[0], 'signed-in login: 10.00 (40 point(s) ÷ 4 accepted)');
+t('AC3 baseline quota per accepted ticket', row('Claude quota points per accepted task (median), per account')[0], 'signed-in login: 10.00 (40 point(s) ÷ 4 accepted)');
 t('AC3 baseline repair cycles per ticket', row('Repair cycles per ticket')[0], '1.50 (fix tries per accepted ticket)');
 t('the arms\' input of all kinds is beside it', row('Input tokens of all kinds per accepted task (median)').slice(1).join(' / '), '8,200 / 3,160');
 t('no verdict is given', /verdict|keep|drop/i.test(text), false);

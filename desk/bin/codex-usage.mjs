@@ -91,6 +91,20 @@ function readingIn(path, st) {
   return reading;
 }
 
+// Every session log under a Codex login's folder, plain or compressed, with its stat.
+//   -> [{ path, st }], or null when the login has no sessions folder
+export function rolloutLogs(codexDir) {
+  const root = join(codexDir, 'sessions');
+  let names;
+  try { names = readdirSync(root, { recursive: true }).map(String).filter((n) => ROLLOUT.test(n)); } catch { return null; }
+  const logs = [];
+  for (const name of names) {
+    const path = join(root, name);
+    try { const st = statSync(path); if (st.isFile()) logs.push({ path, st }); } catch { /* gone */ }
+  }
+  return logs;
+}
+
 // One Codex login's newest reading, by the reading's own time, from the session logs under its own
 // folder. Logs are read newest-written first, stopping at one last written before the newest reading so
 // far: it cannot hold a newer one. A window whose reset has passed is no reading (null, and not in
@@ -98,14 +112,8 @@ function readingIn(path, st) {
 //   -> { five_hour, seven_day, at, none: [window], plan }
 export function readCodexUsage({ login, now = Date.now() }) {
   const empty = { five_hour: null, seven_day: null, at: null, none: [], plan: null };
-  const root = join(login.dir, 'sessions');
-  let names = [];
-  try { names = readdirSync(root, { recursive: true }).map(String).filter((n) => ROLLOUT.test(n)); } catch { return empty; }
-  const logs = [];
-  for (const name of names) {
-    const path = join(root, name);
-    try { const st = statSync(path); if (st.isFile()) logs.push({ path, st }); } catch { /* gone */ }
-  }
+  const logs = rolloutLogs(login.dir);
+  if (!logs) return empty;
   logs.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
   let best = null;
   for (const { path, st } of logs) {

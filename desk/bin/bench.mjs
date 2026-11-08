@@ -22,7 +22,12 @@
 // bench-out beside the task set, so results outlive a run.
 //
 // --total-budget-usd (default 5) caps the invocation as claude's reported cost: a run starts only while
-// it fits at its --max-budget-usd ceiling, and one that reports no cost counts as its ceiling.
+// it fits at its --max-budget-usd ceiling, and one that reports no cost counts as its ceiling. A Codex
+// arm (a GPT or Codex model) has no USD cost and spends none of it: its weekly allowance guards it.
+//
+// An arm runs on claude unless it carries a `runner` (a caller's arm, such as bench-arm3.mjs's Codex
+// sides): runner(task, arm, wt, settingsFile, opts, dir) -> { ok, why, cost, tokens, attempts, ranAt,
+// extra }, `extra` being more fields for result.json.
 //
 // Each weekly allowance is guarded too (bench-quota.mjs): before a run, the account it spends is read,
 // and the bench stops, naming the account, at the per-computer cap of points it may use in one weekly
@@ -296,8 +301,8 @@ function runOne(repo, task, arm, order, opts, out, dir, secrets) {
     makeCheckout(repo, task, wt);
     const settings = join(parent, 'settings.json');
     writeSettings(repo, task, wt, settings, secrets);
-    const run = runClaude(task, arm, wt, settings, opts, dir);
-    Object.assign(result, { cost: run.cost, tokens: run.tokens, attempts: run.attempts, ran_at: run.ranAt, why: run.why ?? null });
+    const run = (arm.runner ?? runClaude)(task, arm, wt, settings, opts, dir);
+    Object.assign(result, { cost: run.cost, tokens: run.tokens, attempts: run.attempts, ran_at: run.ranAt, why: run.why ?? null, ...run.extra });
     saveDiff(wt, task.base, join(dir, 'diff.patch'));
     if (run.ok) Object.assign(result, score(repo, task, wt, dir));
   } catch (e) {
@@ -343,8 +348,9 @@ export function runBench(opts, log = () => {}) {
       const prior = stored(join(dir, 'result.json'));
       if (prior) { log(`reuse ${task.id} (${arm.name}): ${prior.status}`); return { arm: arm.name, status: prior.status, reused: true, dir }; }
       if (stopped) return { arm: arm.name, status: 'not run', why: stopped, dir: null };
-      if (spent + budget > total + 1e-9) { log(`skip ${task.id} (${arm.name}): $${spent.toFixed(2)} of $${total} spent`); return { arm: arm.name, status: 'not run', dir: null }; }
-      const account = Q.accountFor(Q.armVendor(arm), armEnv());
+      const vendor = Q.armVendor(arm);
+      if (vendor === 'claude' && spent + budget > total + 1e-9) { log(`skip ${task.id} (${arm.name}): $${spent.toFixed(2)} of $${total} spent`); return { arm: arm.name, status: 'not run', dir: null }; }
+      const account = Q.accountFor(vendor, armEnv());
       const start = Q.startRun({ account, settings, ledger, env: armEnv(), id: `${dir}@${new Date().toISOString()}`, fields: { task: task.id, arm: arm.name } });
       points.set(account.key, start.line);
       if (start.why) {
@@ -355,7 +361,7 @@ export function runBench(opts, log = () => {}) {
       }
       log(`run ${task.id} (${arm.name})`);
       const r = runOne(repo, task, arm, order, opts, out, dir, secrets);
-      spent += r.cost ?? budget;
+      if (vendor === 'claude') spent += r.cost ?? budget;
       const end = Q.endRun({ account, settings, ledger, env: armEnv(), before: start.before, entry: start.entry, label: `${task.id} (${arm.name})` });
       r.quota = end.quota;
       if (end.stop) stopped = `stopped: ${end.stop}`;

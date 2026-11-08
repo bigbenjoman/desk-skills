@@ -17,6 +17,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { quantile } from './desk-ci.mjs';
+import { armVendor } from './bench-quota.mjs';
 
 const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>]';
 export const NOT_SCORED = 'not scored';
@@ -97,6 +98,7 @@ export function loadRun(out) {
 
 const median = (values) => quantile(values, 0.5);
 
+const ALLOWANCES = [['claude', 'Claude'], ['codex', 'Codex']];
 const TOKEN_KINDS = [['uncached', 'uncached input'], ['cacheWrite', 'cache-write'], ['cacheRead', 'cache-read'], ['output', 'output']];
 
 // One arm's figures over the runs it made. `scores` is joined.json's entry for the arm, or null.
@@ -119,8 +121,10 @@ export function armFigures(tasks, arm, scores) {
     return m;
   };
   const list = scores?.scores ?? [];
+  const model = ran.map((r) => r.result?.model).find(Boolean);
   return {
     arm,
+    vendor: armVendor({ model }),
     ran: ran.map((r) => r.task),
     accepted: accepted.length,
     rejected: ran.filter((r) => r.status === 'rejected').length,
@@ -153,10 +157,17 @@ function rows(baseline) {
     ['Mean blind score (1 to 5)', b ? '—' : none, (f) => (f.score ? `${f.score.mean.toFixed(2)} (${f.score.n} scored)` : NOT_SCORED)],
     ...TOKEN_KINDS.map(([k, label]) => [`Median ${label} tokens per accepted task`, k === 'output' ? perTicket('output') : b ? '—' : none, tok(k)]),
     ['Input tokens of all kinds per accepted task (median)', perTicket('input'), tok('input')],
-    ['Quota points per accepted task (median), per account',
-      !b ? none : b.quotaPoints == null ? 'not recorded' : !b.accepted ? 'no ticket accepted' : `signed-in login: ${(b.quotaPoints / b.accepted).toFixed(2)} (${b.quotaPoints} point(s) ÷ ${b.accepted} accepted)`,
-      (f) => noTask(f, accounts(f.quotaAccepted, (e) => (e.points.length ? `${pts(median(e.points))}${over(e.points.length, e.points.length + e.unreadable)}` : 'unreadable')))],
-    ['Quota points used by every run, per account', b ? '—' : none, (f) => accounts(f.quotaAll, (e) => `${pts(e.points.reduce((s, p) => s + p, 0))}${unread(e)}`)],
+    // Each allowance on its own line: an arm spends one vendor's, so the other's cell is a dash. The
+    // baseline's quota is the signed-in Claude login's.
+    ...ALLOWANCES.flatMap(([vendor, label]) => {
+      const own = (f, v) => (f.vendor === vendor ? v() : '—');
+      return [
+        [`${label} quota points per accepted task (median), per account`,
+          !b ? none : vendor !== 'claude' ? '—' : b.quotaPoints == null ? 'not recorded' : !b.accepted ? 'no ticket accepted' : `signed-in login: ${(b.quotaPoints / b.accepted).toFixed(2)} (${b.quotaPoints} point(s) ÷ ${b.accepted} accepted)`,
+          (f) => own(f, () => noTask(f, accounts(f.quotaAccepted, (e) => (e.points.length ? `${pts(median(e.points))}${over(e.points.length, e.points.length + e.unreadable)}` : 'unreadable'))))],
+        [`${label} quota points used by every run, per account`, b ? '—' : none, (f) => own(f, () => accounts(f.quotaAll, (e) => `${pts(e.points.reduce((s, p) => s + p, 0))}${unread(e)}`))],
+      ];
+    }),
     ['Repair cycles per ticket', !b ? none : b.fixTries == null ? 'no ticket accepted' : `${b.fixTries.toFixed(2)} (fix tries per accepted ticket)`, () => '— (one run per task)'],
   ];
 }
