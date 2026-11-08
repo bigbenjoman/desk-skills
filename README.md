@@ -296,7 +296,9 @@ and pushes taken out. Any attempt to push, open a PR or reach Jira is recorded i
 result. Arm order is shuffled per task from `--seed`, and prompt caching stays at the CLI's
 default. A result scored at the same base and arm settings is reused. Each run keeps its diff, its
 stream-json transcript, its test output and its tokens (uncached, cache write, cache read, output)
-under the output folder:
+under the output folder. Its `result.json` also has `ran_at`: the model and effort read back from
+the session's own init event. A value the log does not name is null, with the reason, and is never
+filled in from the arm's settings:
 
 ```
 node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<effort>]] [--arm …] \
@@ -397,6 +399,21 @@ mismatch:
 ```
 node ~/.claude/desk/bin/bench-replay.mjs --out <dir> [--state <dir>]… [--days 7] [--sample 20] [--model haiku] \
   [--max-budget-usd 0.5] [--total-budget-usd 5] [--seed <s>] [--no-haiku]
+```
+
+**`bench-arm1.mjs`** runs arm 1: each task twice, as `filed` (the ticket text alone) and as `packet`
+(the ticket text with its task packet after it), both on opus at medium effort, with nothing else
+different. A task's packet is `<set dir>/packets/<task id>.md`, written from the ticket and the base
+commit only, never from the merged PR. It names the entry points and consumers, the conventions to
+reuse, the criteria the worker can check itself and the commands that check them. No arm may read
+the packets folder. A task with no packet is skipped on both sides. A packet that quotes a line of the
+task's merged diff or hidden tests is refused. Lines under 20 characters, or with no letter or digit,
+do not count. Both kinds of task are named when the run starts and listed under "Left out" in
+the report. The report then puts `filed` beside `packet`:
+
+```
+node ~/.claude/desk/bin/bench-arm1.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
+  [--out <dir>] [--timeout 1800] [--seed <n>]
 ```
 
 ## Subagents
