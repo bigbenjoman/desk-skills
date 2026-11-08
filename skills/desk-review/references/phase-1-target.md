@@ -62,7 +62,9 @@ has the query, the jq, and why each part is written as it is. The two rules that
 `gh pr view <n> --json reviews` and count bodies starting with the marker). The round about to run
 is that count + 1; a branch with no PR is round 1. **A caller running its own loop before the PR
 exists** (desk-ticket Stage 4b) passes the loop's round and, from round 2, the SHA the previous round
-reviewed: use those instead, or the fix range never happens there. Phase 3 needs it.
+reviewed: use those instead, or the fix range never happens there. Phase 3 needs it. **An autopilot
+review try whose briefing has a "Targeted" section** reads only what a base move changed under a
+clean review: `references/targeted.md` says what the finders read and what the results add.
 
 **Oversized** (>2,000 changed lines, >80 files, or a file list the API truncated): review the
 highest-risk files and **name the ones skipped**. Never cap silently. The count of skipped

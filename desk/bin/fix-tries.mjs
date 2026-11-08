@@ -402,19 +402,22 @@ export const feedbackReply = (f, head) => `Worked by desk's fix try ${f.try} of 
 // it. Its try is one of the FIX_TRIES_MAX, once per head: still unread after one, it is the person's,
 // with `why` saying what the pass read last. A head a merge from the base last moved, since the last
 // try's head (baseMerge(lastHead), asked only when no review try was made at this head), changed with
-// no worker behind it, so its try is an extra one (`extra`), outside FIX_TRIES_MAX.
-export function reviewTry(t, { pr, head, why, base = null, baseMerge = null }) {
+// no worker behind it, so its try is an extra one (`extra`), outside FIX_TRIES_MAX. `targeted`
+// (undraft.mjs reviewScope) narrows the try to what an older clean review that did not carry still
+// needs read at the head; the review posted says what it carried from that one.
+export function reviewTry(t, { pr, head, why, base = null, baseMerge = null, targeted = null }) {
   if (!head) return null;
   const done = t.fix_tries ?? [];
   const triedHere = done.some((x) => x.head === head && x.kind === 'rereview');
   const last = done.at(-1)?.head;
+  const narrow = targeted ? { targeted } : {};
   if (!triedHere && last && last !== head && baseMerge?.(last)) {
-    return { call: 'requeue', fix: { try: triesMade(done), of: FIX_TRIES_MAX, extra: true, pr, head, kind: 'rereview', what: `review its head, moved by a merge from ${base ?? 'its base'}: ${why}` } };
+    return { call: 'requeue', fix: { try: triesMade(done), of: FIX_TRIES_MAX, extra: true, pr, head, kind: 'rereview', what: `review its head, moved by a merge from ${base ?? 'its base'}: ${why}`, ...narrow } };
   }
   if (spent(done, triedHere)) {
     return { call: 'stuck', why: `no review verdict readable at its head after ${tries(done.length)}: ${why}` };
   }
-  return nextTry(done, pr, head, { kind: 'rereview', what: `review its head: ${why}` });
+  return nextTry(done, pr, head, { kind: 'rereview', what: `review its head: ${why}`, ...narrow });
 }
 
 // A ready PR whose §4 State check of kind `verdict` is red, with no review at its head that reads as
@@ -444,7 +447,7 @@ export function verdictTry(t, s, ctx) {
   const at = ctx.atHead?.();
   if (!at || at.clean) return null;
   if (at.settle || at.person) return { call: 'stuck', why: at.why };
-  const c = asReady(reviewTry(t, { pr: s.pr, head: s.head, why: at.why, base: ctx.base, baseMerge: ctx.baseMerge }));
+  const c = asReady(reviewTry(t, { pr: s.pr, head: s.head, why: at.why, base: ctx.base, baseMerge: ctx.baseMerge, targeted: at.targeted }));
   return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, held: true } } : c;
 }
 
@@ -532,6 +535,7 @@ export function fixBrief(t) {
         ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not rerun the check that reads its review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
         : `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`,
       'Review that head with desk-review and post the review on the PR (desk-review Phase 7), so its verdict marker is on the head. Change no code in this try: a P0, a P1, a listed P2 or a gap the review finds goes to a fix worker at the next pass.', '',
+      ...targetedBrief(f.targeted),
       f.extra ? `A merge from the base moved this head, so this try is not one of the ${f.of} fix tries. A PR with no verdict readable at its head after it goes to the person.`
         : `This is try ${f.try} of ${f.of}. A PR with no verdict readable at its head after this try goes to the person.`, ''].join('\n');
   }
@@ -592,6 +596,17 @@ export function fixBrief(t) {
   return lines.join('\n');
 }
 
+// A review try's narrowing (reviewTry `targeted`): the files the base moved and the PR's code that uses
+// them, read as desk-review's targeted round; nothing for a whole review.
+function targetedBrief(x) {
+  if (!x) return [];
+  return ['### Targeted: review only what the base changed under the review', '',
+    `The desk-review posted on ${String(x.from).slice(0, 12)} was clean, and the PR's own diff is unchanged since. The base range \`${x.range}\` changed files that review rests on, and no lockfile, manifest or configuration file. ` +
+      "So run desk-review's targeted round (its references/targeted.md) on these and nothing else, and carry the rest of that review:", '',
+    `- Changed by the base: ${x.files.join(', ')}`,
+    `- The PR's code that uses them: ${x.users?.length ? x.users.join(', ') : 'none of its changed files names one'}`, ''];
+}
+
 const findingKinds = (findings) => (findings?.some((x) => x.sev === 'P2') ? 'P2' : 'P0 and P1');
 
 // The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK).
@@ -600,7 +615,7 @@ export function fixTask(t) {
   if (f.kind === 'rereview') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
       `Your task is ${f.extra ? 'a review try after a merge from the base' : `review try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
-      'Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code. ' +
+      `Review its head with desk-review${f.targeted ? ', in its targeted round on only what the briefing\'s "Targeted" section names,' : ''} and post that review on the PR (desk-review Phase 7), and change no code. ` +
       `Open no new PR, leave the PR ${f.ready ? 'out of' : 'in'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
   }
   if (f.kind === 'capture') {
