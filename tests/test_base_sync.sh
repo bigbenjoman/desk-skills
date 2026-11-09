@@ -602,10 +602,9 @@ mainmoves(){ git -C "$C/repo" commit -q --allow-empty -m three; git -C "$C/repo"
 fresh stale416; current; echo "[main, 'feat/**']" > "$T/mainwf"
 printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
 node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
-echo '[main]' > "$T/basewf"; echo b1 > "$T/bhead"; : > "$T/ghlog"; tip=$(origin_tip); pass
+echo '[main]' > "$T/basewf"; echo b1 > "$T/bhead"; : > "$T/ghlog"; pass
 check "DS-416 the PR's check only main's workflow runs on the base is recorded as behind" \
   '[ "$(jq -r ".tickets[\"T-1\"].pr_status.behind.tests" "$DESK_QUEUE")" != null ] && [ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered" "$DESK_QUEUE")" = null ] && [ "$(reopens)" = 0 ]'
-check "DS-416 nothing synced before the pass that read it" '[ "$(origin_tip)" = "$tip" ]'
 # The sync brings main's trigger to the base, which gh's base copy stands in for.
 echo "[main, 'feat/**']" > "$T/basewf"; mainmoves; pass
 check "DS-416 AC2 with nothing to spawn, the base syncs for the PR's CI" 'origin_has_main && [[ "$out" == *"merged 2 commit(s) from main into feat/x and pushed; PR #801 is reopened so CI runs"* ]] && [[ "$out" != *"spawned:"* ]]'
@@ -633,9 +632,9 @@ c=$(closes); r=$(reopens); pass
 check "DS-416 once reopened, the same base head does not close it again" '[ "$(closes)" = "$c" ] && [ "$(reopens)" = "$r" ]'
 fresh trig416 yes; current; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
 node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
-echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; tip=$(origin_tip); pass; pass
-check "DS-416 AC5 a check main's workflow does not run on the base either is untriggered: no sync, no reopen" \
-  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered.tests" "$DESK_QUEUE")" != null ] && [ "$(origin_tip)" = "$tip" ] && [ "$(reopens)" = 0 ]'
+echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; pass; mainmoves; pass
+check "DS-416 AC5 a check main's workflow does not run on the base either is untriggered: the behind base syncs, no reopen" \
+  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered.tests" "$DESK_QUEUE")" != null ] && origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x"* ]] && [[ "$out" != *"is reopened so CI runs"* ]] && [ "$(reopens)" = 0 ]'
 
 # DS-508: an epic batch not in feature mode lands its base through one epic PR, opened once every child
 # has merged. gh serves each PR from $T/ep/<n>.json and its GraphQL review read from $T/ep/<n>.graphql;
