@@ -69,6 +69,7 @@ import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resume
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
+import { followOnPending } from './harvest.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -450,6 +451,30 @@ function stepItem(key, ws) {
     since: finite(Math.min(...ws.map(({ t }) => timeOf(t.added_at) ?? Infinity))) };
 }
 
+// ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
+// Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
+// that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
+// records them run (follow_on_done) and the item leaves the list.
+const FOLLOW = 'follow:';
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter(followOnPending);
+function followItems(r) {
+  return followsOf(r).map((t) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t) }));
+}
+function followItem(r, t) {
+  const rowSaid = (row) => {
+    if (!row) return 'it names no §3 row';
+    let v;
+    try { v = repoPermission(r.slug, row); } catch { v = 'unread'; }
+    return `§3 ${row} is "${v}"`;
+  };
+  const steps = t.follow_on.map((s, i) => `(${i + 1}) ${one(s.step)} (${rowSaid(s.row)})`).join(' ');
+  const n = t.follow_on.length;
+  return { kind: 'follow', ticket: t.key,
+    need: `PR #${t.result?.pr ?? '?'} (${t.key}) is merged, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done`,
+    actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes the item off your list`], ['not-now']],
+    since: timeOf(t.merged_at) };
+}
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 function itemOf(r, x) {
   const t = x.t;
@@ -557,6 +582,7 @@ function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
   // A step: what waits on it in every batch of the repo, not its need, which names only those passed.
   if (item.kind === 'step') return { question: `${t.key} step`, inputs: { ticket: t.key, waiting: item.waiting.join(', ') } };
+  if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
@@ -619,6 +645,9 @@ export function needsCount(r) {
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
   }
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap(followItems)) {
+    if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
+  }
   return { shown: rows.length + steps, putOff, rows };
 }
 
@@ -669,6 +698,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
     }
   }
+  for (const f of inScope.flatMap(followItems)) repoItem(f.r, f.t, f.item, f.item.since);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -721,7 +751,7 @@ function queueCmd(r, args) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now) }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -956,7 +986,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, now, repos }) {
   const c = collect({ word, now, repos });
-  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step') && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow') && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
     const key = ticket.slice(UNSET.length);
@@ -975,6 +1005,10 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
   if (verb === 'not-now') {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
     return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
+  }
+  if (i.kind === 'follow') {
+    const m = queueCmd(i.r, ['set', i.ticket, `follow_on_done=${new Date(now).toISOString()}`]);
+    return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
   if (i.kind === TEMPLATES) {

@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
+import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
@@ -359,6 +360,43 @@ t('DS-402 AC3 no open PR: parked as today', bp(P603, null).r, null);
 t('DS-402 AC3 a check still running: parked as today', bp(P603, prOf([FLOWS, { name: 'lint', status: 'in_progress', conclusion: null }])).r, null);
 t('DS-402 AC3 nothing red: parked as today', bp(P603, prOf([])).r, null);
 for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass builds nothing: parked as today`, bp(P603, prOf([FLOWS]), { rerun }).r, null);
+
+// DS-509: a worker's park that waits only on its own green, clean PR merging is no park.
+{
+  const COND = { kind: 'pr-merged', pr: 871 };
+  const GRANT = { by: 'config', why: 'config §3 autopilot-merge is "yes" and pr-merge-green is "yes"' };
+  const pr871 = (more = {}) => ({ state: 'OPEN', number: 871, head: HEAD, checks: green, ...more });
+  const mp = (cond, pr, more = {}) => mergePark(cond, () => pr, { required: ['tests'], verdict: () => ({ clean: true }), ready: 'yes', merge: GRANT, ...more });
+  t('DS-509 AC1 green at head, clean review, pr-ready and the merge grant yes: recorded done on the PR', JSON.stringify(mp(COND, pr871())), JSON.stringify({ call: 'done', pr: 871, head: HEAD }));
+  t('DS-509 AC3 a clears-when other than its PR merging stays a park', mp({ kind: 'pr-ready', pr: 871 }, pr871()), null);
+  t('DS-509 AC3 a clears-when on another PR stays a park', mp({ kind: 'pr-merged', pr: 900 }, pr871()), null);
+  t('DS-509 AC3 no open PR stays a park', mp(COND, null), null);
+  t('DS-509 AC3 a red check stays a park', mp(COND, pr871({ checks: [{ name: 'tests', status: 'completed', conclusion: 'failure' }] })), null);
+  t('DS-509 AC3 a check still running stays a park', mp(COND, pr871({ checks: [{ name: 'tests', status: 'in_progress', conclusion: null }] })), null);
+  t('DS-509 AC3 no clean review at the head stays a park', mp(COND, pr871(), { verdict: () => ({ clean: false }) }), null);
+  t('DS-509 AC3 an unread review stays a park', mp(COND, pr871(), { verdict: () => null }), null);
+  const ask = mp(COND, pr871(), { merge: { by: null, why: 'config §3 pr-merge-green is "ask" with no batch approval' } });
+  t('DS-509 AC4 pr-merge-green not yes: the merge question, naming the row', `${ask?.call} | ${ask?.question}`,
+    `ask | PR #871 is green at ${HEAD.slice(0, 9)} with a clean review, and desk does not merge it because config §3 pr-merge-green is "ask" with no batch approval: undraft and merge it on GitHub, or set that row to yes with /desk-setup, and desk merges it; the ticket is then done`);
+  t('DS-509 AC4 pr-ready not yes: the question names it too', /config §3 pr-ready is "no"/.test(mp(COND, pr871(), { ready: 'no' })?.question ?? ''), true);
+  // AC2: the DONE marker's follow-on steps.
+  const fo = (s) => JSON.stringify(followOnIn(s));
+  t('DS-509 AC2 a DONE line with follow_on keeps each step and its row',
+    fo('pr=871 jira=In Review follow_on=[{"step": "run provision-telnyx-assistant.ts --env staging", "row": "staging-write"}, {"step": "start staging-crons frequent"}] said=two steps wait on the merge'),
+    JSON.stringify({ steps: [{ step: 'run provision-telnyx-assistant.ts --env staging', row: 'staging-write' }, { step: 'start staging-crons frequent', row: null }], error: null }));
+  t('DS-509 AC2 a step naming a ] in its text still reads', followOnIn('pr=1 follow_on=[{"step": "run x [staging]", "row": null}]').steps[0]?.step, 'run x [staging]');
+  t('DS-509 AC2 no follow_on: none', fo('pr=871 jira=In Review'), JSON.stringify({ steps: [], error: null }));
+  t('DS-509 AC2 one that does not read says so and keeps none', followOnIn('pr=1 follow_on=[{"step": 3}]').error?.startsWith('an entry is not'), true);
+  t('DS-509 AC2 one that is not JSON says so', followOnIn('pr=1 follow_on=run it').error, 'not a JSON array');
+  const step = [{ step: 'run x', row: null }];
+  t('DS-509 AC5 a merged ticket with steps not yet run waits on the person', followOnPending({ merged_at: '2026-11-08T10:00:00Z', follow_on: step }), true);
+  t('DS-509 AC5 one not merged, one said run, and one with no steps do not',
+    [{ follow_on: step }, { merged_at: '2026-11-08T10:00:00Z', follow_on: step, follow_on_done: '2026-11-08T11:00:00Z' }, { merged_at: '2026-11-08T10:00:00Z', follow_on: [] }].some(followOnPending), false);
+  // The worker brief forbids the park and names the follow-on form.
+  const s5c = doc('../skills/desk-autopilot/references/worker-contract-stage-5.md');
+  t('DS-509 the Stage 5 to 7 contract forbids a "who merges it" park', /\*\*Who merges your PR is never a park\.\*\*[^]*?print `AUTOPILOT_DONE`/.test(s5c), true);
+  t('DS-509 the Stage 5 to 7 contract makes post-merge steps follow-ons on the DONE line', /\*\*Steps that can only run once your PR merges are follow-ons, not a park\*\*[^]*?follow_on=\[\{"step"/.test(s5c), true);
+}
 
 // Evidence workflow: screenshot cells a repo's own workflow fills are started there, not put to the person.
 {

@@ -504,6 +504,27 @@ export function buildPark(question, readPr, cfg) {
   return { checks: names, command: [...new Set(used.map((b) => b.command))].join(' && ') };
 }
 
+// A worker's park that waits only on its own PR merging (clears_when pr-merged on the ticket's open PR),
+// where that PR is green at its head with a clean review there: nothing but a merge holds it, so it is
+// no park. Its wording is not read: post-merge steps in it depend on the merge and never block it.
+// readPr() -> { state, number, head, checks }; cfg: { required, advisory, verdict(pr) -> { clean },
+// ready (§3 pr-ready, or `yes` with the batch's approval), merge (desk-env mergeGrant) }. Returns null
+// to leave the park as it is; { call: 'done', pr, head } where desk may undraft and merge it, so the
+// ticket is recorded done on that PR; { call: 'ask', pr, head, question } where a row keeps desk from
+// it, the merge question for the person naming that row.
+export function mergePark(cond, readPr, cfg) {
+  if (cond?.kind !== 'pr-merged') return null;
+  const pr = readPr();
+  if (pr?.state !== 'OPEN' || Number(pr.number) !== Number(cond.pr)) return null;
+  const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
+  if (gate.state !== 'pass' || !cfg.verdict?.(pr)?.clean) return null;
+  const at = String(pr.head ?? '?').slice(0, 9);
+  const said = { pr: pr.number, head: pr.head };
+  const off = [...(cfg.ready === 'yes' ? [] : [`config §3 pr-ready is "${cfg.ready ?? 'unset'}"`]), ...(cfg.merge?.by ? [] : [cfg.merge?.why ?? 'no merge grant was read'])];
+  if (!off.length) return { call: 'done', ...said };
+  return { call: 'ask', ...said, question: `PR #${pr.number} is green at ${at} with a clean review, and desk does not merge it because ${off.join(', and ')}: undraft and merge it on GitHub, or set that row to yes with /desk-setup, and desk merges it; the ticket is then done` };
+}
+
 // A body with `_drag <file>_` cells left and a fenced ```evidence block, where §4 Evidence workflow
 // names the workflow that fills them (cfg.evidence, evidence.mjs), once per head (cfg.evidenceRun(head)):
 // `evidence` starts it, `wait` while it runs, `evidence-failed` once it failed or filled no cell (the pass

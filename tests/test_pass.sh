@@ -2530,6 +2530,106 @@ check "DS-402 AC2 its screenshots are read as a DONE worker's: the directory it 
 check "DS-402 AC3 a park whose draft is red on a check the row does not name is parked as today" \
   '[ "$(field V-5 state)" = "\"parked\"" ] && [ ! -e "$T/state-b/check-builds/765-$HB5.json" ]'
 
+# ---- DS-509: a park that asks only who merges a green, clean PR is no park
+# M-1 parks as VPL-722's worker did, clearing when its own PR #871 merges, green with a clean desk-review at its
+# head; M-2 parks the same way on a PR whose test is red. Under config-m, whose §3 lets desk merge, M-1 is
+# recorded done and M-2 parked as today. Under config-b, which grants no merge, M-3 gets the merge question.
+# The fake gh is DS-402's, plus a review-threads read built from $T/fb/<n>.json.
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') { const h = a[a.indexOf('--head') + 1]; try { const v = JSON.parse(fs.readFileSync('$T/fb/list-' + h.replace('/', '-') + '.json', 'utf8')); console.log(a.includes('.[0].number') ? v.number : JSON.stringify(v)); } catch { console.log(a.includes('-q') ? '' : '[]'); } }
+else if (a[0] === 'run' && a[1] === 'rerun') { /* re-run */ }
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { /* no PR was put back to draft */ }
+else if (a[0] === 'api' && a[1] === 'graphql') {
+  const n = (a.find((x) => x.startsWith('n=')) ?? '').slice(2);
+  let v; try { v = JSON.parse(fs.readFileSync('$T/fb/' + n + '.json', 'utf8')); } catch { process.exit(1); }
+  console.log(JSON.stringify({ data: { repository: { pullRequest: { headRefOid: v.headRefOid, reviewDecision: '', reviews: { nodes: v.reviews.map((r) => ({ ...r, commit: { oid: v.headRefOid } })) }, reviewThreads: { nodes: [] } } } } }));
+}
+else process.exit(1);
+EOF
+node -e 'const fs = require("fs"); const [from, to] = process.argv.slice(1); fs.writeFileSync(to, fs.readFileSync(from, "utf8").replace(/^(\| `pr-ready` .*)$/m, "$1\n| `autopilot-merge` | Merge driver | `yes` | `yes` |\n| `pr-merge-green` | Merge green PRs | `yes` | `yes` |"))' "$T/config-b.md" "$T/config-m.md"
+for k in 1 2 3; do vwt "M-$k"; done
+HM1=$(git -C "$T/wt/M-1" rev-parse HEAD); HM2=$(git -C "$T/wt/M-2" rev-parse HEAD); HM3=$(git -C "$T/wt/M-3" rev-parse HEAD)
+fbx 871 "$HM1" tests:SUCCESS; fbx 872 "$HM2" tests:FAILURE:9872; fbx 873 "$HM3" tests:SUCCESS
+node -e 'const fs = require("fs"); for (const n of [871, 872, 873]) { const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/${n}.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-${n - 870}.json`, JSON.stringify({ number: n, ...v })); }' "$T/fb"
+P722="PR #87N is green at head with a clean review. Who merges it (workers cannot), and once it is merged will Claude run (1) provision-telnyx-assistant.ts --env staging (2) staging-crons frequent? Not reached: the Jira comment and the transition"
+mpark(){ say "AUTOPILOT_PARK: ${P722/87N/87$2}" "AUTOPILOT_PARK_CLEARS_WHEN: PR #87$2 merged" > "$3/logs/M-$2.log"; q add "M-$2"; q set "M-$2" state=running lane=A "branch=fix/M-$2" "worktree=$T/wt/M-$2" "session_id=run-M-$2"; }
+export DESK_CONFIG="$T/config-m.md" DESK_QUEUE="$T/queue-m.json" DESK_AUTOPILOT_STATE="$T/state-m"
+mkdir -p "$T/state-m/logs"; q init m; q set-batch concurrency=5
+for k in 1 2; do mpark m "$k" "$T/state-m"; done
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC1 AC3 a park asking only who merges its green, clean PR is recorded done on that PR, with the reason" \
+  '[ "$(field M-1 state)" = "\"done\"" ] && [ "$(field M-1 result.pr)" = 871 ] && [ "$(field M-1 park)" = null ] && echo "$out" | grep -qF "M-1: PR #871 recorded done, not parked: its park waited only on #871 merging, and #871 is green with a clean review at ${HM1:0:9}, so the undraft step takes it out of draft and the merge driver merges it"'
+check "DS-509 AC2 the park's post-merge steps are kept as its follow-on" \
+  'field M-1 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
+check "DS-509 AC3 the same park on a PR with a red check is parked as today" \
+  '[ "$(field M-2 state)" = "\"parked\"" ] && field M-2 park.clears_when | grep -qF "\"pr-merged\""'
+export DESK_CONFIG="$T/config-b.md" DESK_QUEUE="$T/queue-mb.json" DESK_AUTOPILOT_STATE="$T/state-mb"
+mkdir -p "$T/state-mb/logs"; q init mb; q set-batch concurrency=5
+mpark mb 3 "$T/state-mb"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC4 with no merge grant, it is the merge question naming the rows, still waiting on the merge" \
+  '[ "$(field M-3 state)" = "\"parked\"" ] && field M-3 park.question | grep -qF "PR #873 is green at ${HM3:0:9} with a clean review, and desk does not merge it because config §3 autopilot-merge is" && field M-3 park.question | grep -qF "pr-merge-green" && field M-3 park.clears_when | grep -qF "\"pr-merged\""'
+check "DS-509 AC4 the merge question keeps the park's post-merge steps as its follow-on, for a merge made by hand" \
+  'field M-3 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
+# M-4 was parked on its own PR #874 merging while that PR was not yet green, so it keeps no follow-on.
+vwt M-4; HM4=$(git -C "$T/wt/M-4" rev-parse HEAD); fbx 874 "$HM4" tests:SUCCESS
+node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/874.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-4.json`, JSON.stringify({ number: 874, ...v }))' "$T/fb"
+q add M-4; q set M-4 state=running lane=A branch=fix/M-4 "worktree=$T/wt/M-4"; q park M-4 "${P722/87N/874}"; q clears-when M-4 'PR #874 merged'
+# The person sets the rows the question names: the next pass takes the parked M-3 back to the merge path.
+export DESK_CONFIG="$T/config-m.md"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC4 once its rows let desk merge it, the parked merge question is recorded done on its PR, with the reason" \
+  '[ "$(field M-3 state)" = "\"done\"" ] && [ "$(field M-3 result.pr)" = 873 ] && [ "$(field M-3 park)" = null ] && echo "$out" | grep -qF "M-3: PR #873 recorded done, no longer parked: its park waited only on #873 merging"'
+check "DS-509 AC2 a park recorded done once its PR turns green keeps its words as the follow-on" \
+  '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 result.pr)" = 874 ] && field M-4 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
+check "DS-509 AC2 with no tracker, a follow-on from either merge path stays on the queue entry alone" \
+  '[ "$(field M-3 follow_on_comment)" = "\"none\"" ] && [ "$(field M-4 follow_on_comment)" = "\"none\"" ]'
+# A new batch in the same queue keeps a merged ticket whose follow-on is not yet run, and nothing else.
+export DESK_QUEUE="$T/queue-m.json" DESK_AUTOPILOT_STATE="$T/state-m"
+q merged M-1; q init m2
+check "DS-509 AC5 a new batch keeps a merged ticket's unrun follow-on for needs-you, and drops the rest" \
+  '[ "$(field M-1 state)" = "\"done\"" ] && field M-1 follow_on | grep -qF "provision-telnyx-assistant.ts" && [ "$(field M-1 carried_from)" = "\"m\"" ] && [ "$(field M-2 state)" = null ] && [ "$(jq -r .batch "$DESK_QUEUE")" = m2 ]'
+q init m3 --standing --if-batch m2
+check "DS-509 AC5 a batch holding only carried tickets is not finished, so intake never replaces it" \
+  '[ "$(jq -r .batch "$DESK_QUEUE")" = m2 ]'
+# On Jira, the merge-only park's follow-on goes on its ticket as the worker's Stage 8 comment would have
+# put it: posted under config-mj, whose §3 jira-comment is yes, and put to the person under config-mn.
+# The fake desk-jira logs each call, reads no comment on any ticket, and posts every comment.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/jira-calls"
+case "\$1" in get) cat "$T/jira/\$2.json" ;; comments|comment) exit 0 ;; *) exit 1 ;; esac
+EOF
+for v in j:yes n:no; do node -e 'const fs = require("fs"); const [from, to, perm] = process.argv.slice(1); fs.writeFileSync(to, fs.readFileSync(from, "utf8").replace(/^(\| `pr-ready` .*)$/m, `$1\n| \`jira-comment\` | Comment on tickets | \`yes\` | \`${perm}\` |`) + "\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `M-[0-9]+` |\n")' "$T/config-m.md" "$T/config-m${v%%:*}.md" "${v#*:}"; done
+for k in 5 6; do vwt "M-$k"; done
+HM5=$(git -C "$T/wt/M-5" rev-parse HEAD); HM6=$(git -C "$T/wt/M-6" rev-parse HEAD)
+fbx 875 "$HM5" tests:SUCCESS; fbx 876 "$HM6" tests:SUCCESS
+node -e 'const fs = require("fs"); for (const n of [875, 876]) { const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/${n}.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-${n - 870}.json`, JSON.stringify({ number: n, ...v })); }' "$T/fb"
+rm -f "$T/jira-down"
+export DESK_CONFIG="$T/config-mj.md" DESK_QUEUE="$T/queue-mj.json" DESK_AUTOPILOT_STATE="$T/state-mj"
+mkdir -p "$T/state-mj/logs"; q init mj; q set-batch concurrency=5
+mpark mj 5 "$T/state-mj"
+: > "$T/jira-calls"; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-509 AC2 a dry run posts no follow-on comment and leaves it due" \
+  '[ "$(field M-5 state)" = "\"done\"" ] && [ "$(field M-5 follow_on_comment)" = "\"due\"" ] && ! grep -q "^comment" "$T/jira-calls" && echo "$out" | grep -qF "M-5 follow-on comment (dry run): would post it on the ticket for PR #875"'
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC2 with §3 jira-comment yes, the merge-only park's follow-on is posted on its ticket once its marker is not there" \
+  '[ "$(field M-5 state)" = "\"done\"" ] && grep -q "^comments M-5$" "$T/jira-calls" && grep -qF "comment M-5 Follow-on for after PR #875 merges (M-5/desk-autopilot follow-on)" "$T/jira-calls" && grep -qF "provision-telnyx-assistant.ts --env staging" "$T/jira-calls" && field M-5 follow_on_comment | grep -qE "^\"20[0-9]{2}-"'
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC2 a posted follow-on comment is never posted again" \
+  '! grep -q "^comment M-5" "$T/jira-calls"'
+export DESK_CONFIG="$T/config-mn.md" DESK_QUEUE="$T/queue-mn.json" DESK_AUTOPILOT_STATE="$T/state-mn"
+mkdir -p "$T/state-mn/logs"; q init mn; q set-batch concurrency=5
+mpark mn 6 "$T/state-mn"
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC2 with §3 jira-comment no, the follow-on comment is put to the person with its text, and nothing is posted" \
+  '[ "$(field M-6 state)" = "\"done\"" ] && [ "$(field M-6 follow_on_comment)" = "\"asked\"" ] && ! grep -q "^comment" "$T/jira-calls" && echo "$out" | grep -qF "M-6: its follow-on for after PR #876 merges is not on the ticket: config §3 jira-comment is \"no\""'
+
 # ---- DS-489: a check build runs the default branch's script, from the pass's checkout, never the worktree
 # The row names ./scripts/ensure.sh, relative as voicepa's is. C-1's branch changes that script and
 # leaves an ignored .env and an untracked script in its worktree; C-2's head was never pushed.

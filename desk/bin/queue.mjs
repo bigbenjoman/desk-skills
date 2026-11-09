@@ -19,9 +19,10 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
+import { followOnPending } from './harvest.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs } from './claude-logins.mjs';
-import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches } from './batches.mjs';
+import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -475,7 +476,7 @@ switch (cmd) {
       if (ifAt < 0) throw new Error('init --standing wants --if-batch <the batch it replaces, or none>');
       let cur = null;
       try { cur = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { cur = { batch: null, tickets: {} }; }
-      const rows = Object.values(cur?.tickets ?? {});
+      const rows = ownRows(cur);
       const same = cur ? String(cur.batch) === args[ifAt + 1] && rows.length > 0 && rows.every((t) => t.state === 'done') && !cur.base : args[ifAt + 1] === 'none';
       if (!same) throw new Error(`init --standing: the queue is batch ${cur?.batch ?? 'none'} now, not the finished ${args[ifAt + 1]}: left as it is`);
     }
@@ -486,6 +487,13 @@ switch (cmd) {
     const fresh = empty();
     fresh.batch = name ?? new Date().toISOString().slice(0, 16);
     if (standing) fresh.supervised = true;
+    // A merged ticket whose follow-on steps the person has not run yet (needs-you lists them from the
+    // queue) moves into the new batch, so replacing the old one never drops them from the list. Marked
+    // carried_from, it is no ticket of this batch: a queue holding only those is one not yet planned.
+    let prev = null;
+    try { prev = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { prev = null; }
+    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t))
+      .map(([k, t]) => [k, { ...t, carried_from: t.carried_from ?? prev.batch ?? null }]));
     save(fresh);
     // Batch notes record what workers learnt about *this* configuration. Carrying them
     // across batches propagates claims that a config change has since made false.

@@ -107,6 +107,30 @@ export function prBodyIn(texts) {
   return body == null ? null : body.replace(/^```[a-z]*\n/, '').replace(/\n```\s*$/, '');
 }
 
+// The steps a DONE marker names as waiting on its PR's merge: `follow_on=` then a one-line JSON array of
+// {"step": "<one line>", "row": "<the §3 key it needs>"} (row null where none says), before any said=,
+// which runs to the line's end. -> { steps, error }: steps [] with no follow_on=, and with an error
+// naming why where one is there but does not read.
+export const FOLLOW_ON_MAX = 500;
+export function followOnIn(done) {
+  const s = String(done ?? '');
+  const at = s.search(/\bfollow_on=/);
+  if (at < 0) return { steps: [], error: null };
+  const rest = s.slice(at + 'follow_on='.length);
+  if (!rest.startsWith('[')) return { steps: [], error: 'not a JSON array' };
+  let list = null;
+  // The array ends at the first `]` that closes a whole JSON value.
+  for (let i = rest.indexOf(']'); i >= 0 && list == null; i = rest.indexOf(']', i + 1)) {
+    try { list = JSON.parse(rest.slice(0, i + 1)); } catch { /* not closed yet */ }
+  }
+  if (!Array.isArray(list)) return { steps: [], error: 'not a JSON array' };
+  const bad = list.find((x) => typeof x?.step !== 'string' || !x.step.trim() || (x.row != null && typeof x.row !== 'string'));
+  if (bad !== undefined) return { steps: [], error: `an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}` };
+  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null })), error: null };
+}
+// A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
+export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Array.isArray(t.follow_on) && t.follow_on.length > 0;
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }

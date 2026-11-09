@@ -15,7 +15,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, renderMoved } from './handoff.mjs';
-import { workerMarkers, endedNormally, readLog, prBodyIn } from './harvest.mjs';
+import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_MAX } from './harvest.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
@@ -42,7 +42,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
-import { undraftCall, buildPark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
+import { undraftCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -403,17 +403,24 @@ function logDecisions(t, log, pr) {
   if (entries.length) appendDecisions(entries, STATE);
 }
 
-// A worker's park against the "not now" register: the inputs the question depends on, from the
-// `AUTOPILOT_PARK_INPUTS: {json}` after its last park (none is {}), and lookup()'s verdict on them.
-// A lease push it clears on (`cond`) adds its SHA as `lease` where they name none (withLeaseInput).
-function againstRegister(t, question, log, cond) {
+// The value of marker `mark` printed after a worker's last park, read quietly, or null: none since that
+// park, or no log. Each caller reports one that does not read.
+function afterLastPark(log, mark) {
   let raw = null;
   try {
     for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
       if (k === 'AUTOPILOT_PARK') raw = null;
-      else if (k === 'AUTOPILOT_PARK_INPUTS') raw = v;
+      else if (k === mark) raw = v;
     }
-  } catch { /* no log, no inputs */ }
+  } catch { /* no log, no marker */ }
+  return raw;
+}
+
+// A worker's park against the "not now" register: the inputs the question depends on, from the
+// `AUTOPILOT_PARK_INPUTS: {json}` after its last park (none is {}), and lookup()'s verdict on them.
+// A lease push it clears on (`cond`) adds its SHA as `lease` where they name none (withLeaseInput).
+function againstRegister(t, question, log, cond) {
+  const raw = afterLastPark(log, 'AUTOPILOT_PARK_INPUTS');
   const p = parseInputs(raw);
   // Logged, never waiting on the person: nobody can clear it, and the park itself is asked as usual.
   if (!p.ok) report.inputs.push(`${t.key}: unreadable park inputs (${p.why}), read as none: ${raw}`);
@@ -424,13 +431,7 @@ function againstRegister(t, question, log, cond) {
 // What clears a worker's park, from the `AUTOPILOT_PARK_CLEARS_WHEN:` after its last park (clears-when.mjs).
 // None given, or one that does not read, is none: the park waits for a person.
 function clearsWhenOf(t, log) {
-  let raw = null;
-  try {
-    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
-      if (k === 'AUTOPILOT_PARK') raw = null;
-      else if (k === 'AUTOPILOT_PARK_CLEARS_WHEN') raw = v;
-    }
-  } catch { /* no log, no condition */ }
+  const raw = afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN');
   const p = parseClearsWhen(raw);
   if (!p.ok) report.clears.push(`${t.key}: unreadable clears-when (${p.why}), recorded as none`);
   return p.ok ? p.cond : { kind: 'none' };
@@ -439,13 +440,7 @@ function clearsWhenOf(t, log) {
 // The call a worker's park recommends, from the `AUTOPILOT_PARK_RECOMMENDS:` after its last park
 // (recoveries.mjs), or null. One that does not read is logged and taken as none: the park is asked.
 function recommendsOf(t, question, log) {
-  let raw = null;
-  try {
-    for (const [k, v] of workerMarkers(readFileSync(log, 'utf8'))) {
-      if (k === 'AUTOPILOT_PARK') raw = null;
-      else if (k === RECOMMENDS_MARK) raw = v;
-    }
-  } catch { /* no log, no recommendation */ }
+  const raw = afterLastPark(log, RECOMMENDS_MARK);
   if (raw == null) return null;
   const r = parkRecommends(raw, question);
   if (!r.ok) report.inputs.push(`${t.key}: unreadable park recommendation (${r.why}), read as none: ${raw}`);
@@ -627,6 +622,33 @@ function buildParkOf(t, question) {
   return b ? { ...b, pr: pr.number, head: pr.headRefOid } : null;
 }
 
+// §1 GitHub handle, whose desk-review verdicts and reviews count as the user's own, or null unread.
+const conflictHandle = (() => { try { return E.githubHandle(); } catch { return null; } })();
+// A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when `cond` is
+// its own open PR merging, and that PR is green with a clean review at its head. Null when it is not,
+// or unread. `grantedOnly` reads nothing from GitHub unless desk may undraft and merge it.
+function mergeParkOf(t, cond, { grantedOnly = false } = {}) {
+  if (!t.branch || isSpine(t) || needsSession(t) || cond?.kind !== 'pr-merged') return null;
+  const perm = E.permission('pr-ready');
+  const ready = perm === 'ask' && queue().approved?.undraft === true ? 'yes' : perm;
+  const merge = E.mergeGrant(queue());
+  if (grantedOnly && (ready !== 'yes' || !merge.by)) return null;
+  const readPr = () => {
+    let pr = null;
+    try { pr = JSON.parse(sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'open', '--json', 'number,headRefOid,statusCheckRollup', '-q', '.[0]'], { tolerant: true }) || 'null'); } catch { pr = null; }
+    return pr ? { state: 'OPEN', number: pr.number, head: pr.headRefOid, checks: latestPerCheck(normaliseRollup(pr.statusCheckRollup)) } : null;
+  };
+  // Only a verdict posted at the head counts here; the undraft step reads it again, with its carries.
+  const verdict = (pr) => {
+    if (!localReviewSet(E.configValue('local-review')) || !conflictHandle) return null;
+    const fb = readFeedback(pr.number);
+    return fb ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict') }) : null;
+  };
+  return mergePark(cond, readPr, { ...gateLists(), verdict, ready, merge });
+}
+// A park's own words, kept as the one follow-on step a merge-only park leaves for after its merge.
+const parkFollowOn = (park) => `follow_on=${JSON.stringify([{ step: park.trim().slice(0, FOLLOW_ON_MAX), row: null }])}`;
+
 // §4 Live reads (live-read.mjs): run on this computer for a park that asks for nothing but entries the
 // row names, once per ticket head and entry, from the pass's own clean checkout of origin's default
 // branch (READ_CHECKOUT), never the ticket's worktree or the person's checkout. The "live reads"
@@ -760,15 +782,20 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // A park that waits only on a check §4 Check builds names, once its worker has exited (buildParkOf):
   // recorded done below, so its screenshots go to its PR here as a DONE worker's do.
   const built = park && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id)) ? buildParkOf(t, park.trim()) : null;
+  // A park asking only who merges its green, clean PR (mergeParkOf): done where desk may merge it, else
+  // the merge question naming the row that keeps desk from it.
+  const merging = park && !built && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id))
+    ? mergeParkOf(t, parseClearsWhen(afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN')).cond) : null;
+  const mergeOnly = merging?.call === 'done' ? merging : null;
   // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
-  const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? (built ? String(built.pr) : null) ?? t.result?.pr;
+  const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? (built ? String(built.pr) : null) ?? (mergeOnly ? String(mergeOnly.pr) : null) ?? t.result?.pr;
   if (imgDir && prNo && !t.images_uploaded) {
     // A directory that is missing or holds no screenshot means no images, not a failed upload. A
     // running worker may still capture into it, so only a finished one is recorded as having none.
     let shots = [];
     try { shots = readdirSync(imgDir).filter((f) => E.SCREENSHOT_FILE.test(f)); } catch { /* missing */ }
     if (!shots.length) {
-      if (done || built) q('set', t.key, 'images_uploaded=none');
+      if (done || built || mergeOnly) q('set', t.key, 'images_uploaded=none');
     } else if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
       uploadShots(t, prNo, imgDir);
     } else if (!t.images_reported) {
@@ -804,8 +831,19 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       // The screenshot directory the worker printed, for the undraft step's missing-shot check (shotsOf).
       sets: logImgDir ? [`images_dir=${logImgDir}`] : [],
     });
+  } else if (mergeOnly) {
+    // The park's own words are kept as its follow-on: the steps it named for after the merge are listed
+    // for the person once the PR merges (needs-you), never a reason to hold it.
+    const n = mergeOnly.pr;
+    recordDone(t, {
+      log, h, pr: String(n), summary: `parked only on who merges PR #${n}, which desk merges: recorded done`,
+      line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${E.mergeGrant(queue()).why}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
+      sets: [parkFollowOn(park), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
+    });
   } else if (park) {
-    q('park', t.key, park.trim());
+    // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
+    const asked = merging?.call === 'ask' ? `${merging.question}. The park: ${park.trim()}` : park.trim();
+    q('park', t.key, asked);
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.
@@ -816,14 +854,15 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     const cleared = read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log);
     const reg = againstRegister(t, park.trim(), log, cleared);
     const recommends = recommendsOf(t, park.trim(), log);
+    // A merge question keeps the park's words as its follow-on too, so a merge by hand still lists them.
     q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
-      ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []));
+      ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(merging?.call === 'ask' ? [parkFollowOn(park)] : []));
     // Before the requeue, which moves this round's log aside.
     logDecisions(t, log, null);
     if (!wedged && !read && !needsSession({ ...t, park: { question: park.trim() } }) && unnamedForcePush({ question: park.trim(), inputs: reg.inputs }, t.branch) && refuseUnnamedLease(t, park.trim())) continue;
     if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${READ_BRANCH} (${READ_CHECKOUT}), never the ticket's worktree; requeued once they finish. The park: ${park.trim()}`);
     else if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
-    else report.parked.push(`${t.key}: ${park.trim()}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
+    else report.parked.push(`${t.key}: ${asked}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
   }
   else if (handoff) handedOff(t, handoff, { log, h, imgs: logImgDir, stopped });
   else if (done) {
@@ -834,7 +873,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // the summary's 200 characters cut all but the first few (fix-tries.mjs captureTry). Written as JSON,
     // so a said= opening with a bracket is never parsed by queue.mjs as JSON and refused.
     const said = /\bsaid=(.*)$/.exec(done.trim())?.[1]?.trim();
-    recordDone(t, { log, h, pr, summary: done.trim(), line: `${done.trim()}${stopped}`, sets: said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : [] });
+    // Steps that wait on the merge (follow_on=), kept for needs-you once the PR merges.
+    const follow = followOnIn(done);
+    if (follow.error) report.inputs.push(`${t.key}: unreadable follow_on on its DONE marker (${follow.error}), nothing kept: ${done.trim()}`);
+    recordDone(t, { log, h, pr, summary: done.trim(), line: `${done.trim()}${stopped}`, sets: [
+      ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
+      ...(follow.steps.length ? [`follow_on=${JSON.stringify(follow.steps)}`] : []),
+    ] });
   } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
     // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
     // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,
@@ -1197,6 +1242,16 @@ for (const t of Object.values(queue().tickets)) {
   const cond = describeCond(c);
   // A lane left for a person never has its push made for it.
   if (c.kind === 'push-ok' && needsSession(t)) { report.clears.push(`${t.key}: "${cond}" not tried, since it is lane ${t.lane}: left parked for a person`); continue; }
+  // A merge question whose rows now let desk merge its green, clean PR (mergeParkOf) is done on it, as
+  // the harvest records one: the undraft step and the merge driver take it from there.
+  const merges = mergeParkOf(t, c, { grantedOnly: true });
+  if (merges?.call === 'done') {
+    q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${merges.pr}`,
+      `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`,
+      ...(t.follow_on?.length ? [] : [parkFollowOn(t.park.question ?? '')]), 'follow_on_comment=due');
+    report.done.push(`${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${E.mergeGrant(queue()).why})`);
+    continue;
+  }
   const r = checkCond(c, { ...clearsRead, push: (p) => pushParked(t, p) });
   if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); continue; }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
@@ -2805,6 +2860,41 @@ if (unreadEpics.length) {
     + (missed.length ? ` — not read, tried again next pass: ${missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ')}` : r.ok ? '' : ` — ${r.out.split('\n').pop()}`));
 }
 
+// ---- follow-on comments --------------------------------------------------
+// A park recorded done because it waited only on who merges its PR (mergeParkOf) never reached its
+// worker's Stage 8 comment, so its follow-on is posted on the ticket here, as that comment would have
+// listed it, under §3 jira-comment: follow_on_comment is `due` until then. Posted once (its marker is
+// looked for first); a failed read or post is tried again next pass. Not granted, the comment is put to
+// the person once. A ticket the tracker does not hold keeps its follow-on on its queue entry alone.
+for (const t of Object.values(queue().tickets)) {
+  if (t.follow_on_comment !== 'due') continue;
+  if (DRY) { report.advanced.push(`${t.key} follow-on comment (dry run): would post it on the ticket for PR #${t.result?.pr}`); continue; }
+  const kind = E.ticketKind(t.key);
+  if (!onJira || !kind.ok || kind.kind !== 'tracker' || !t.follow_on?.length) { q('set', t.key, 'follow_on_comment=none'); continue; }
+  const pr = t.result?.pr;
+  const mark = `(${t.key}/desk-autopilot follow-on)`;
+  const body = [
+    `Follow-on for after PR #${pr} merges ${mark}`, '',
+    `The worker parked only on who merges PR #${pr}, which is green with a clean review, so desk recorded this ticket done and merges the PR. Nothing runs these on its own: desk-needs-you lists them once #${pr} merges.`, '',
+    'Once this merges:',
+    ...t.follow_on.map((s, i) => `${i + 1}. ${s.step}${s.row ? ` (§3 ${s.row})` : ''}`),
+  ].join('\n');
+  const perm = E.permission('jira-comment');
+  if (perm !== 'yes') {
+    q('set', t.key, 'follow_on_comment=asked');
+    report.waiting.push(`${t.key}: its follow-on for after PR #${pr} merges is not on the ticket: config §3 ${E.permissionKey('jira-comment')} is "${perm}". Post it with desk-jira comment ${t.key} and this text: ${body}`);
+    continue;
+  }
+  const seen = shOut('desk-jira', ['comments', t.key]);
+  if (!seen.ok) { report.failed.push(`${t.key}: follow-on comment not posted, its comments could not be read (${seen.out.split('\n').pop()}): tried again next pass`); continue; }
+  if (!seen.out.includes(mark)) {
+    const r = shOut('desk-jira', ['comment', t.key, body]);
+    if (!r.ok) { report.failed.push(`${t.key}: follow-on comment not posted (${r.out.split('\n').pop()}): tried again next pass`); continue; }
+  }
+  q('set', t.key, `follow_on_comment=${new Date().toISOString()}`);
+  report.advanced.push(`${t.key} follow-on for after PR #${pr} merges → ticket comment`);
+}
+
 // ---- outside blockers ----------------------------------------------------
 // A ticket's open "is blocked by" links to tickets outside this queue, from its triage record's
 // `blockers`, kept on the ticket as outside_blockers [{key, category}] for desk-q. Only a ticket that
@@ -3643,7 +3733,6 @@ function conflictFiles(branch) {
 // Whether anyone but the user's own handle, and not a bot, has reviewed or commented on PR n: the line
 // between §3 pr-conflict-unreviewed and pr-conflict-reviewed, read as a draft's is (undraft.mjs). Unread,
 // it counts as reviewed.
-const conflictHandle = (() => { try { return E.githubHandle(); } catch { return null; } })();
 function humanSeen(n) {
   let v = null;
   try { v = JSON.parse(sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'reviews,comments'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return true; }
