@@ -220,7 +220,7 @@ worker: at its worktree root, removed at the end with `git clean -f`):
 ```
 
 - `codex`: with the codex lever on, `{"finder": "<model>:<effort>", "refuter": "<model>:<effort>"}`
-  as `desk-codex settings` prints them (Phase 0); left out otherwise.
+  as `desk-codex settings` prints them, and `login` (Phase 0); left out otherwise.
 - `seats`: every seat dispatched, Bea and simplicity included, each `ran` or `died` (Phase 3).
 - `reason`, on a seat that died, says why where it is known (`"timed out"`).
   `"fallback": true` where its named agent did not resolve and general-purpose ran its brief (not

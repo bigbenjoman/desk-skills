@@ -403,8 +403,9 @@ if (mode === 'triage') {
     ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !DISPATCH_RULES.length)),
     ...(DISPATCH_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
-    // The desk-env subcommands that write: the machine profile and the cost sources are the user's to confirm.
-    ...['machine write', 'costs write'].flatMap((w) => [
+    // The desk-env subcommands that write: the machine profile, the cost sources and the login rules
+    // are the user's to confirm. desk-env itself refuses them in a worker too, for the forms these miss.
+    ...E.WORKER_DENIED_WRITES.flatMap((w) => [
       `Bash(desk-env ${w}:*)`, `Bash(${E.HOME}/.local/bin/desk-env ${w}:*)`, `Bash(~/.local/bin/desk-env ${w}:*)`,
       ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs ${w}:*)`, `Bash(node ${b}/desk-env.mjs ${w}:*)`]),
     ]),
@@ -593,6 +594,8 @@ if (mode === 'triage') {
   if (codexPerm === 'yes') {
     allow.push(...bash('codex', ' exec --sandbox read-only'), ...exact('codex', ' --version'));
     deny.push(...bash('codex', ' *danger*', ' *--full-auto*', ' *--yolo*', ' *--config*', ' * -c *', ' *--sandbox=*', ' * -s *', ' *workspace-write*'));
+    // desk-codex picks the Codex login: a worker never points codex at one of its own choosing.
+    deny.push('Bash(*CODEX_HOME=*)');
     // With the codex lever on, desk-codex passes the model, effort and output file itself, so a
     // direct call may not.
     if (E.leverOn('codex')) {
@@ -707,6 +710,7 @@ if (mode === 'triage') {
   const templates = join(E.deskHome(), 'templates');
   if (existsSync(templates)) dirs.add(templates);
 
+  // The repo memory the user's own sessions write: the default login's, whatever login the worker runs on.
   // With the memory lever on, the worker's auto-memory is off (it gets a digest of the index in its
   // brief instead) and the memory folder is neither granted nor writable.
   const mem = E.memoryDir();

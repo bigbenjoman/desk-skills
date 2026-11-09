@@ -93,7 +93,7 @@ for it**, and only that one; the sections it names moved there word for word.
 | Step | Sections | Read |
 |---|---|---|
 | 1. Detecting this repo, then confirming each config section with the user: the scan, the rows it proposes, and what to fix before the interview | *1. Detect, then confirm* | `references/step-1-detect.md` |
-| 1, this computer: the machine profile, and how the §3b rows fall back to it | *This computer* | `references/step-1-this-computer.md` |
+| 1, this computer: the machine profile, the bench's cap and reserve, how the §3b rows fall back to it, and which logins new workers rotate between | *This computer*, *Subscriptions on this computer* | `references/step-1-this-computer.md` |
 | 1, once §4 Pre-push checks is confirmed and is not `none`: committing the hook and setting `core.hooksPath` | *The pre-push hook* | `references/step-1-pre-push-hook.md` |
 | 1, once §4 Local review command is `/desk-review`: committing the CI gate | *The desk gate workflow* | `references/step-1-desk-gate.md` |
 | 2. The permission interview: how to ask the §3 rows, the autopilot warning, the consistency checks and what is not on offer | *2. The permission interview* | `references/step-2-interview.md` |

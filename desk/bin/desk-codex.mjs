@@ -14,16 +14,22 @@
 // `desk-codex: timed out after <n>s` on stderr, exit 124: the review records that seat as died.
 // A worker can pass no codex flag through this: only a role, --cd and the prompt.
 //
-// Exit: 0 answered · codex's own non-zero exit · 124 timed out · 2 usage · 3 lever off or §3 refuses.
-import { spawn } from 'node:child_process';
+// With more than one Codex login, each call and probe runs on the one codex-login.mjs picks, with
+// CODEX_HOME set for it, and says `desk-codex: on Codex login <name>` on stderr for the review record.
+// With every usable Codex login at its limit no call runs: it says why, naming the earliest reset, exit
+// 75, and the review records the seat as died.
+//
+// Exit: 0 answered · codex's own non-zero exit · 124 timed out · 75 no Codex login can take it · 2 usage
+// · 3 lever off or §3 refuses.
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
+import { codexCallLogin } from './codex-login.mjs';
+import { codexExec, execArgs } from './codex-exec.mjs';
 
 const PROBE_PROMPT = 'Reply with exactly: CODEX_OK';
 const PROBE_FRESH_MS = 60 * 60 * 1000;
-const KILL_GRACE_MS = 5000;
 const say = (m) => process.stderr.write(`desk-codex: ${m}\n`);
 const usage = () => { say('usage: desk-codex probe | finder [--cd <dir>] <prompt> | refuter [--cd <dir>] <prompt> | settings'); process.exit(2); };
 
@@ -36,42 +42,37 @@ try {
 
 const describe = () => `finder ${cfg.finder.model} at ${cfg.finder.effort} · refuter ${cfg.refuter.model} at ${cfg.refuter.effort} · timeout ${cfg.timeout}s`;
 
-// The last probe result, per repo, in the state directory a worker is granted. Any answered call
-// counts as a pass and any failed one as a failure, so a seat that ran out of usage is not reused.
+// The login this call runs on, picked once per call. Settings needs none.
+let pick = { login: null, env: process.env, dead: null };
+const choose = () => {
+  try { pick = codexCallLogin(); } catch (e) { pick = { dead: `the Codex logins could not be read (${e.message})` }; }
+  if (pick.dead) { say(`${pick.dead}, so no codex call ran`); process.exit(75); }
+};
+const onLogin = () => pick.login?.name ?? null;
+
+// The last probe result, per repo, in the state directory a worker is granted, and the Codex login it
+// ran on when there is a choice. Any answered call counts as a pass and any failed one as a failure, so
+// a seat that ran out of usage is not reused, and a pass on one login says nothing about another.
 const recordPath = () => { try { return join(E.stateDir(), 'codex-probe.json'); } catch { return null; } };
 const readRecord = () => { try { return JSON.parse(readFileSync(recordPath(), 'utf8')); } catch { return null; } };
 const writeRecord = (ok) => {
   const p = recordPath();
   if (!p) return;
-  try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, `${JSON.stringify({ ok, at: new Date().toISOString() })}\n`); } catch { /* unrecorded: the next probe runs */ }
+  const login = onLogin();
+  try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, `${JSON.stringify({ ok, at: new Date().toISOString(), ...(login ? { login } : {}) })}\n`); } catch { /* unrecorded: the next probe runs */ }
 };
 
 function run(role, prompt, cd) {
   const { model, effort } = role === 'probe' ? cfg.refuter : cfg[role];
   const dir = mkdtempSync(join(tmpdir(), 'desk-codex-'));
   const last = join(dir, 'last-message.txt');
-  const args = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...(cd ? ['--cd', cd] : []),
-    '-m', model, '-c', `model_reasoning_effort="${effort}"`, '--output-last-message', last, '--', prompt];
-  const child = spawn('codex', args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
-  let tail = '';
-  child.stderr.on('data', (d) => { tail = (tail + d).slice(-4000); });
-  const group = (sig) => { try { process.kill(-child.pid, sig); } catch { /* already gone */ } };
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; group('SIGTERM'); setTimeout(() => group('SIGKILL'), KILL_GRACE_MS).unref(); }, cfg.timeout * 1000);
-  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => { group('SIGKILL'); process.exit(128 + ({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 })[sig]); });
+  if (onLogin()) say(`on Codex login ${onLogin()}`);
   // Sets the exit code and returns, never process.exit: a pipe write on macOS is asynchronous, and
   // exiting at once would cut a long final message short.
-  const finish = (code) => {
-    clearTimeout(timer);
-    let msg = '';
-    try { msg = readFileSync(last, 'utf8'); } catch { /* no final message */ }
+  codexExec({ args: execArgs({ sandbox: 'read-only', cd, model, effort, last, prompt }), last, env: pick.env, timeout: cfg.timeout }).then(({ code, timedOut, message: msg, tail, error }) => {
     rmSync(dir, { recursive: true, force: true });
-    if (timedOut) {
-      // codex itself has closed, but a descendant that ignored the SIGTERM would outlive the grace
-      // timer, which is unref'd: end the group now.
-      group('SIGKILL');
-      writeRecord(false); say(`timed out after ${cfg.timeout}s (${role}, ${model} at ${effort})`); process.exitCode = 124; return;
-    }
+    if (error) { writeRecord(false); say(`codex did not start: ${error}`); process.exit(127); }
+    if (timedOut) { writeRecord(false); say(`timed out after ${cfg.timeout}s (${role}, ${model} at ${effort})`); process.exitCode = 124; return; }
     const answered = code === 0 && msg.trim() !== '' && (role !== 'probe' || msg.includes('CODEX_OK'));
     writeRecord(answered);
     if (msg) process.stdout.write(msg.endsWith('\n') ? msg : `${msg}\n`);
@@ -79,9 +80,7 @@ function run(role, prompt, cd) {
     if (!answered) { say(`codex answered ${msg.trim() ? 'without CODEX_OK' : 'with no final message'} (${role}, ${model} at ${effort})`); process.exitCode = 1; return; }
     if (role === 'probe') say(describe());
     process.exitCode = 0;
-  };
-  child.on('error', (e) => { clearTimeout(timer); rmSync(dir, { recursive: true, force: true }); writeRecord(false); say(`codex did not start: ${e.message}`); process.exit(127); });
-  child.on('close', (code, signal) => finish(code ?? (signal ? 128 : 1)));
+  });
 }
 
 const [role, ...rest] = process.argv.slice(2);
@@ -90,11 +89,12 @@ if (role === 'settings') {
   console.log(`finder=${cfg.finder.model}:${cfg.finder.effort} refuter=${cfg.refuter.model}:${cfg.refuter.effort} timeout=${cfg.timeout}`);
 } else if (role === 'probe') {
   if (rest.length) usage();
+  choose();
   const r = readRecord();
-  const age = r?.ok === true ? Date.now() - Date.parse(r.at) : NaN;
+  const age = r?.ok === true && (r.login ?? null) === onLogin() ? Date.now() - Date.parse(r.at) : NaN;
   if (age >= 0 && age < PROBE_FRESH_MS) {
     console.log('CODEX_OK');
-    say(`a probe passed ${Math.round(age / 60000)} min ago, so none ran · ${describe()}`);
+    say(`a probe passed ${Math.round(age / 60000)} min ago${onLogin() ? ` on Codex login ${onLogin()}` : ''}, so none ran · ${describe()}`);
   } else run('probe', PROBE_PROMPT);
 } else if (E.CODEX_ROLES.includes(role)) {
   let cd = null;
@@ -104,5 +104,6 @@ if (role === 'settings') {
     rest.splice(0, 2);
   }
   if (rest.length !== 1 || !rest[0].trim()) usage();
+  choose();
   run(role, rest[0], cd);
 } else usage();

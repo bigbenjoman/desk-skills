@@ -7,6 +7,7 @@ import { readdirSync, statSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
+import { projectsDirs } from './claude-logins.mjs';
 
 export const CLAIM_ROW = E.CONFIG_ROWS['claim-release'].row;
 export const DEFAULT_CLAIM_HOURS = 12;
@@ -24,18 +25,20 @@ export function claimHours(raw = E.configValue('claim-release')) {
   return { bad: `config §3b "${CLAIM_ROW}" is "${raw}" — want a number of hours, or 0 to never release a claim` };
 }
 
-// The session's transcript, `<projects>/<any project>/<session>.jsonl`, and when it last changed: the
-// newest where a session id appears under more than one project. Null when there is none.
-export function transcriptOf(session, home = E.HOME) {
-  const root = join(home, '.claude', 'projects');
+// The session's transcript, `<projects>/<any project>/<session>.jsonl` under any Claude login's folder,
+// and when it last changed: the newest where a session id appears under more than one project. Null
+// when there is none.
+export function transcriptOf(session, roots = projectsDirs()) {
   let best = null;
-  let dirs = [];
-  try { dirs = readdirSync(root); } catch { return null; }
-  for (const d of dirs) {
-    const path = join(root, d, `${session}.jsonl`);
-    let st;
-    try { st = statSync(path); } catch { continue; }
-    if (!best || st.mtimeMs > best.mtimeMs) best = { path, mtimeMs: st.mtimeMs };
+  for (const root of roots) {
+    let dirs = [];
+    try { dirs = readdirSync(root); } catch { continue; }
+    for (const d of dirs) {
+      const path = join(root, d, `${session}.jsonl`);
+      let st;
+      try { st = statSync(path); } catch { continue; }
+      if (!best || st.mtimeMs > best.mtimeMs) best = { path, mtimeMs: st.mtimeMs };
+    }
   }
   return best;
 }

@@ -136,6 +136,11 @@ with no marker is. A fix try queued to resume its own session is never held as W
 the uncommitted changes or unpushed commits it left: they are its own.
 The count is the queue's `resumes`; a requeue starts a fresh session and clears a pending resume.
 
+A resume always runs on the login the worker started on (the row's `login`), whatever that login's
+rule is now, because its session lives in that login's folder. If that login has been signed out the
+ticket parks naming the login and its sign-in command, and no session starts. A new session,
+handoffs and requeues included, starts on the login with the most room.
+
 **A worker on the person's instruction is never recorded done on an open PR alone.** Ended with no
 marker, or killed past the limit, it parks with the fix left open, so the merge driver keeps holding
 the PR. A requeue sends the same instruction to a new worker.
@@ -183,6 +188,22 @@ re-running a ticket from scratch.
   `[preflight] usage-limit` when its call gets HTTP 429. The pass leaves that ticket as it was, spawns
   and preflights nothing more that pass, and records the hold on the queue (`usage_hold`), which
   desk-q shows as one note and desk-needs-you as one item. Retrying by hand only burns calls.
+- **With more than one login, a limit benches its own login, not the batch.** A worker or preflight
+  at a limit on one login benches that login (the queue's `benched`, one record per login) until its
+  reset passes or a probe call on it succeeds; one with no reset time waits for the probe. New work
+  starts on the other logins, on standby only once every login in rotation is benched. A worker
+  whose session ended at a login's limit moves to another login that can take new work (the queue's
+  `login_move`), as a fresh session: its transcript stays under its own login. It starts at the stage
+  it reached, from Stage 3 on, when its worktree holds its resume file, and otherwise at Stage 0,
+  its briefing saying why; a fix try starts its task again. Either way the briefing names the uncommitted changes the worktree kept,
+  and the move spends no resume try. With no other login open it stays paused and resumes its own
+  session once its login is back, as with one login. The batch holds as above only once every login
+  is benched, and its hold names each login's reset, earliest first.
+- **The pass's own model calls skip a benched login too.** The decider, triage and its lane
+  challenge, and epic planning's headless calls each start on a usable login no batch of the repo has
+  benched, chosen as a new worker's is (`call-login.mjs`). With every login benched, no decider
+  starts and its items wait for the next one; triage and epic planning run on the caller's own login,
+  as they do with one login.
 - **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
   batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
   once; exactly one row that is the same batch with tickets added or removed is the same session.

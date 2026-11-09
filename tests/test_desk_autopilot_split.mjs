@@ -42,8 +42,10 @@ const REWRITTEN = [
   ['DS-419', 'marks the done row `merged`, so both wake you.', 1], // a done row with an open PR reads PR OPEN
   ['DS-411', 'a person merges: the driver and you never merge them', 1], // a hold's named routine is the driver's
   ['DS-433', 'pinned, the moment it is green (never a PR under a §4 Merge holds glob)', 1], // it also needs a clean review at its head
+  ['DS-466', 'reports it as paused, holds every spawn and resume, and', 1], // with more than one login, only its login is benched
   ['DS-109', 'freeing its slot, unless its last marker is', 1], // a worker running its suite under the test lock, or waiting for it, is not stalled
   ['DS-435', 'and a head gets one try at most. After two tries', 1], // a conflict counts only conflict tries
+  ['DS-429', 'Only none matched is reported under `WAITING ON YOU`. Only the body\'s', 1], // a crashed upload is tried again
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',

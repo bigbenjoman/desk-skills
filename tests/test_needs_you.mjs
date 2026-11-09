@@ -1094,6 +1094,25 @@ writeFileSync(join(stateTau, 'images', 'U-3', 'u.png'), '');
 onGitHub(183, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag u.png_' });
 t('DS-492 AC5 a file whose upload waits for approval: done says so', N.record({ word: 'tau', ticket: 'U-3', action: 'done' }).line.endsWith('u.png: its file is saved, and config §3 pr-images leaves its upload to you.'), true);
 
+// ---- DS-429: an upload that crashed on every try names the crash and its saved output.
+// The why is the one the pass's undraft step records (undraft.mjs cellCall), not a copy of its wording.
+const { cellCall } = await import('../desk/bin/undraft.mjs');
+const crashLog = '/state/images/K-1.upload.log';
+const k1Crash = { pr: 191, dir: '/state/images/K-1', tries: 2, log: crashLog };
+const crashWhy = cellCall({ key: 'K-1', upload_crash: k1Crash }, { number: 191, body: '_drag k.png_' }, {}).why;
+put('kappa429', { port: 5330, beat: 1, supervised: true, merge: 'yes', prReady: 'yes', tickets: {
+  'K-1': { ...shotDraft(191, crashWhy), upload_crash: k1Crash },
+} });
+const stateK429 = loadRepos().find((x) => x.slug === 'acme__kappa429').stateDir;
+mkdirSync(join(stateK429, 'images', 'K-1'), { recursive: true });
+writeFileSync(join(stateK429, 'images', 'K-1', 'k.png'), '');
+const k429 = Object.fromEntries(N.collect({ word: 'kappa429' }).items.map((i) => [i.t.key, i]));
+t('DS-429 AC3 a crashed upload says it crashed and points at the saved log', /upload of them crashed on 2 tries; its output is saved in \/state\/images\/K-1\.upload\.log/.test(k429['K-1']?.need ?? ''), true);
+t('DS-429 AC3 its done says desk\'s upload crashed', /^desk's upload crashed on every try it gets/.test(k429['K-1']?.actions[0][1] ?? ''), true);
+t('DS-429 AC3 and it is not put as a step only the person can do', /only you can do this step/.test(k429['K-1']?.actions[0][1] ?? 'only you can do this step'), false);
+onGitHub(191, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: 'h'.repeat(40), body: '_drag k.png_' });
+t('DS-429 AC3 done with the cell left names the crash and the log', N.record({ word: 'kappa429', ticket: 'K-1', action: 'done' }).line.endsWith(`k.png: desk's upload of it crashed on every try (its output is in ${crashLog}).`), true);
+
 // ---- DS-380: a parked ticket moved into the repo's other running batch, on that batch's base
 put('omega', { port: 3900, beat: 1, supervised: true, tickets: {
   'M-1': parked('A', 30, 'a worker cannot change its own base: please move it to batch F-1'),

@@ -2,11 +2,11 @@
 // The machine profile: hardware parsing from fixture output, the sizing rules, the profile file, and
 // the §3b fallback through desk-env. Scratch directories only; nothing reads this computer.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList } from '../desk/bin/machine.mjs';
+import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed } from '../desk/bin/machine.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const sized = (hw) => Object.fromEntries(propose(hw).map((r) => [r.key, r]));
@@ -146,6 +146,8 @@ t('memory change reported', hardwareChanges(back, more).map((c) => `${c.key}:${c
 t('memory change re-proposes', sizingChanges(back, propose(more)).some((c) => c.key === 'memory-ceiling-gb' && c.now === '120'), true);
 
 // ---- desk-env: get/why, and the §3b fallback (a set repo row wins; no profile behaves as before)
+// desk-env refuses its config writes inside an autopilot worker; these tests are not one.
+delete process.env.DESK_AUTOPILOT_WORKER;
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
 const T = mkdtempSync(join(tmpdir(), 'desk-machine-'));
 const profile = join(T, 'machine.md');
@@ -176,6 +178,42 @@ t('machine --runner write is not a subcommand', env(['machine', '--runner', 'wri
 const missing = join(T, 'none.md');
 t('no profile: TODO row stays unset', env(['get', 'test-cap'], todo, missing), 'exit 3');
 t('no profile: machine get exits 3', env(['machine', 'get', 'memory-ceiling-gb'], absent, missing), 'exit 3');
+
+// ---- the bench's cap and reserve: set once per computer, read back by the bench, kept on re-write
+const quotaLine = (machine) => execFileSync('node', ['--input-type=module', '-e',
+  `const q = await import(${JSON.stringify(join(dirname(BIN), 'bench-quota.mjs'))}); console.log(q.settingsLine(q.quotaSettings()));`],
+{ encoding: 'utf8', env: { ...process.env, DESK_MACHINE: machine, HOME: T } }).trim();
+const setErr = (pairs, machine = profile) => {
+  try { execFileSync('node', [BIN, 'machine', 'set', ...pairs], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DESK_CONFIG: absent, DESK_MACHINE: machine, HOME: T } }); return 'exit 0'; }
+  catch (e) { return `exit ${e.status}: ${e.stderr.trim()}`; }
+};
+t('bench unset: both read as unset', `${env(['machine', 'get', 'bench-cap-points'], absent)} ${env(['machine', 'get', 'bench-reserve-percent'], absent)}`, 'exit 3 exit 3');
+const before = readFileSync(profile, 'utf8');
+t('a non-number is refused, named', setErr(['bench-cap-points=10', 'bench-reserve-percent=lots']),
+  'exit 1: nothing written: `bench-reserve-percent` is "lots": want a percentage of the weekly allowance from 0 to under 100');
+t('a refused set stores nothing', readFileSync(profile, 'utf8') === before, true);
+t('a key that is not a bench setting is refused', setErr(['test-cap=4']).startsWith('exit 1: nothing written: `test-cap` is not a bench setting'), true);
+t('machine set stores both', setErr(['bench-cap-points=10', 'bench-reserve-percent=25']), 'exit 0');
+t('both read back', `${env(['machine', 'get', 'bench-cap-points'], absent)} ${env(['machine', 'get', 'bench-reserve-percent'], absent)}`, '10 25');
+t('the sizes beside them are kept', env(['machine', 'get', 'memory-ceiling-gb'], absent), '8');
+t('the bench reads them on its next start', quotaLine(profile), 'quota: cap 10 points of each weekly allowance, reserve 25%');
+setErr(['bench-reserve-percent=30']);
+const reread = parseProfile(readFileSync(profile, 'utf8'));
+t('a changed value replaces its row', `${reread.sizing['bench-cap-points'].value} ${reread.sizing['bench-reserve-percent'].value} ${Object.keys(reread.sizing).filter((k) => k.startsWith('bench-')).length}`, '10 30 2');
+const rewritten = parseProfile(renderProfile(small, rewrittenSizing(reread, propose(small)), '2026-11-07'));
+t('a re-proposed profile keeps the bench rows', `${rewritten.sizing['bench-cap-points']?.value} ${rewritten.sizing['bench-reserve-percent']?.value}`, '10 30');
+t('with no profile, the bench keeps its defaults', quotaLine(missing), 'quota: cap 10 points of each weekly allowance, reserve 25% (the defaults: neither is set on this computer)');
+const fresh = join(T, 'fresh.md');
+t('a refused set with no profile writes no file', `${setErr(['bench-cap-points=ten'], fresh).startsWith('exit 1: nothing written')} ${existsSync(fresh)}`, 'true false');
+t('with no profile, machine set stores both', setErr(['bench-cap-points=12', 'bench-reserve-percent=20'], fresh), 'exit 0');
+const started = parseProfile(readFileSync(fresh, 'utf8'));
+t('the started profile holds only the bench rows', `${Object.keys(started.hardware).length} ${Object.keys(started.sizing).join()}`, '0 bench-cap-points,bench-reserve-percent');
+t('the bench reads them from it on its next start', quotaLine(fresh), 'quota: cap 12 points of each weekly allowance, reserve 20%');
+t('no sizes are proposed from it', sizesProposed(started), false);
+t('a §3b TODO row still has nothing to fall back to', env(['get', 'test-cap'], todo, fresh), 'exit 3');
+t('detect still offers the proposal', env(['machine', 'detect'], absent, fresh).includes('no sizes proposed'), true);
+const proposedOver = parseProfile(renderProfile(small, rewrittenSizing(started, propose(small)), '2026-11-08'));
+t('a later write keeps the bench rows and proposes the sizes', `${sizesProposed(proposedOver)} ${proposedOver.sizing['bench-cap-points']?.value} ${proposedOver.sizing['memory-ceiling-gb']?.value}`, 'true 12 8');
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'machine: all checks passed');
