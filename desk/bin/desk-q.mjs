@@ -2006,9 +2006,12 @@ function usageHeadline(repos, now, t) {
 // A login being added: { tool, login, label }, its folder not signed in yet. It is one row on standby,
 // waiting, until the account check finds its folder signed in.
 const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir;
+// What desk-q calls a login being added: a Codex one by the label typed for it, a Claude one as the new
+// account, never by its folder's name, which reads as an account in the column of emails.
+const addingName = (a) => a.label ?? 'the new account';
 function addingRow(a) {
-  const segs = [['  ', null], ...fitCell([[cut(a.label ?? a.login.name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
-    ...fitCell([['waiting for you to sign it in …', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
+  const segs = [['  ', null], ...fitCell([[cut(a.label ?? 'new account', U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
+    ...fitCell([['waiting for you to sign in: steps below', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
   return { id: 'adding', segs: segs.filter(([s]) => s), line: segText(segs) };
 }
 // Lines of coloured runs wrapped to `w`, the first after `lead` and the rest under it.
@@ -2017,17 +2020,19 @@ const leadLines = (lead, segs, w) => wrapSegs(segs, Math.max(20, w - lead.length
 function addPanel(a, t, w) {
   const { shell, then } = signInParts(a.login);
   const claude = a.tool === 'claude';
+  const tool = claude ? 'Claude' : 'Codex';
+  const step = (n, segs) => leadLines('     ', segs, w).map((l, i) => (i ? l : segLine([['  ', null], [n, BOLD], ['  ', null], ...l.segs.slice(1)])));
   return [
-    bold(`  Add a ${claude ? 'Claude' : 'Codex'} login`),
-    ...leadLines('  ', [[`desk never sees your password or token. You sign in with ${claude ? "Claude Code's" : "Codex's"} own login, and the login keeps its own folder, so its sessions and settings stay apart from your others.`, GREY]], w),
+    bold(`  Add another ${tool} account`),
+    ...leadLines('  ', [[`Workers are shared across your accounts, so a batch keeps running when one reaches its limit. desk never sees your password: you sign in with ${claude ? "Claude Code's" : "Codex's"} own login, in a folder of its own.`, GREY]], w),
     '',
-    segLine([['  ', null], ['1', BOLD], ['  In another terminal, run:', null]]),
+    ...step('1', [['Open a new terminal tab and paste this (press ', null], ['y', BOLD], [' to copy it):', null]]),
     { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
-    claude ? segLine([['     then type ', null], [then, HUE.cyan], [' and sign in with the account you want to add.', null]]) : '     and sign in with the account you want to add.',
-    ...leadLines('     ', [[claude ? "Come back here. desk-q finds it within a minute, checks it isn't an account already listed, and shows its email and plan."
-      : `Come back here. desk-q finds it within a minute and lists it as ${a.label}.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w)
-      .map((l, i) => (i ? l : segLine([['  ', null], ['2', BOLD], ['  ', null], ...l.segs.slice(1)]))),
-    ...(claude && t.codex.length ? ['', ...leadLines('  ', [['A Codex login is added the same way, with ', GREY], ['a', BOLD], [' on the CODEX table, which asks for its label first.', GREY]], w)] : []),
+    ...step('2', claude ? [['In that window, type ', null], [then, HUE.cyan], [' and sign in with an account not listed above.', null]]
+      : [['Sign in with an account not listed above.', null]]),
+    ...step('3', [[claude ? 'Come back here. Within a minute, "new account" changes to its email and plan.'
+      : `Come back here. Within a minute, ${a.label} shows as signed in.`, null], [' It waits on standby until you press ', null], ['space', BOLD], [' to start giving it workers.', null]]),
+    ...(claude && t.codex.length ? ['', ...leadLines('  ', [['To add a Codex account, select the CODEX table and press ', GREY], ['a', BOLD], ['. It asks for a name first.', GREY]], w)] : []),
   ];
 }
 
@@ -3299,7 +3304,7 @@ export function interactive({
     if (tab === 'usage' && hasTabs()) {
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
       const s = usageParts(repos, { now, width: w, checked, adding });
-      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc stop waiting · : command · q quit` };
+      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc cancel adding · : command · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
       const copy = x?.check?.state === 'signed out' ? 'y copy the sign-in command · ' : '';
       return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? `space change rule · x remove · ${copy}` : ''}a add a login · ${cmdKeys}` };
@@ -3495,7 +3500,7 @@ export function interactive({
     }
     adding = { tool, login: makeLogin({ tool, name: f.name, folder: f.dir, rule: 'standby', source: 'found' }), label: name };
     selId = 'adding';
-    msg = `esc stops waiting and removes ${name ?? f.name}.`;
+    msg = `esc cancels adding ${addingName(adding)}.`;
     clearInterval(addTimer);
     addTimer = setInterval(() => { if (!done && adding && !checking) checkLogins(); }, addCheckMs);
     if (!checking) checkLogins();
@@ -3510,12 +3515,12 @@ export function interactive({
     if (c?.state === 'duplicate') {
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      msg = `${a.login.name} is signed in to the same account as ${c.duplicateOf}, so desk won't use it. x removes it.`;
+      msg = `That account is already listed as ${c.duplicateOf}, so desk won't use it twice. x removes it.`;
     } else if (c?.state === 'signed in') {
       if (c.rule !== 'standby' && saving) return;
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      const said = `${c.email ?? a.label ?? a.login.name} is signed in and on standby. space puts it in rotation.`;
+      const said = `${c.email ?? a.label ?? 'The new account'} is added, on standby. Press space to start giving it workers.`;
       if (c.rule === 'standby') msg = said;
       else saveLogin(['set', a.tool, a.login.name, 'standby'], said, null);
     }
@@ -3527,13 +3532,13 @@ export function interactive({
     const a = adding;
     stopAdding();
     selId = null;
-    const name = a.label ?? a.login.name;
-    if (!existsSync(a.login.dir) || dropNewFolder(a.login.dir)) { msg = `Stopped waiting: ${name} is not added.`; return; }
-    saveLogin(['remove', a.tool, a.login.name], `Stopped waiting: ${name} is not added. Its folder ${a.login.folder} is left as it is.`, null);
+    const name = addingName(a);
+    if (!existsSync(a.login.dir) || dropNewFolder(a.login.dir)) { msg = `Cancelled: ${name} is not added.`; return; }
+    saveLogin(['remove', a.tool, a.login.name], `Cancelled: ${name} is not added. Its folder ${a.login.folder} is left as it is.`, null);
   }
   // a: a Codex login when the CODEX table's row is selected, which asks for its label first; else a Claude one.
   function addKey(x) {
-    if (adding) { msg = `Still waiting for ${adding.label ?? adding.login.name} to be signed in: esc stops waiting.`; return; }
+    if (adding) { msg = `Still waiting for ${addingName(adding)} to be signed in: esc cancels adding it.`; return; }
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (x?.login?.tool !== 'codex') return startAdding('claude');
     typed = '';
@@ -3573,8 +3578,7 @@ export function interactive({
     }
     if (k === 'y' && adding) {
       const { shell } = signInParts(adding.login);
-      const name = adding.label ?? adding.login.name;
-      try { copier(shell); msg = `The command is copied. esc stops waiting and removes ${name}.`; }
+      try { copier(shell); msg = `Copied. Paste it in a new terminal tab, or esc to cancel adding ${addingName(adding)}.`; }
       catch (e) { msg = `Could not copy the command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
       return;
     }
