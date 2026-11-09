@@ -2532,6 +2532,8 @@ check "DS-509 AC4 once its rows let desk merge it, the parked merge question is 
   '[ "$(field M-3 state)" = "\"done\"" ] && [ "$(field M-3 result.pr)" = 873 ] && [ "$(field M-3 park)" = null ] && echo "$out" | grep -qF "M-3: PR #873 recorded done, no longer parked: its park waited only on #873 merging"'
 check "DS-509 AC2 a park recorded done once its PR turns green keeps its words as the follow-on" \
   '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 result.pr)" = 874 ] && field M-4 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
+check "DS-509 AC2 with no tracker, a follow-on from either merge path stays on the queue entry alone" \
+  '[ "$(field M-3 follow_on_comment)" = "\"none\"" ] && [ "$(field M-4 follow_on_comment)" = "\"none\"" ]'
 # A new batch in the same queue keeps a merged ticket whose follow-on is not yet run, and nothing else.
 export DESK_QUEUE="$T/queue-m.json" DESK_AUTOPILOT_STATE="$T/state-m"
 q merged M-1; q init m2
@@ -2540,6 +2542,35 @@ check "DS-509 AC5 a new batch keeps a merged ticket's unrun follow-on for needs-
 q init m3 --standing --if-batch m2
 check "DS-509 AC5 a batch holding only carried tickets is not finished, so intake never replaces it" \
   '[ "$(jq -r .batch "$DESK_QUEUE")" = m2 ]'
+# On Jira, the merge-only park's follow-on goes on its ticket as the worker's Stage 8 comment would have
+# put it: posted under config-mj, whose §3 jira-comment is yes, and put to the person under config-mn.
+# The fake desk-jira logs each call, reads no comment on any ticket, and posts every comment.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/jira-calls"
+case "\$1" in get) cat "$T/jira/\$2.json" ;; comments|comment) exit 0 ;; *) exit 1 ;; esac
+EOF
+for v in j:yes n:no; do node -e 'const fs = require("fs"); const [from, to, perm] = process.argv.slice(1); fs.writeFileSync(to, fs.readFileSync(from, "utf8").replace(/^(\| `pr-ready` .*)$/m, `$1\n| \`jira-comment\` | Comment on tickets | \`yes\` | \`${perm}\` |`) + "\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `M-[0-9]+` |\n")' "$T/config-m.md" "$T/config-m${v%%:*}.md" "${v#*:}"; done
+for k in 5 6; do vwt "M-$k"; done
+HM5=$(git -C "$T/wt/M-5" rev-parse HEAD); HM6=$(git -C "$T/wt/M-6" rev-parse HEAD)
+fbx 875 "$HM5" tests:SUCCESS; fbx 876 "$HM6" tests:SUCCESS
+node -e 'const fs = require("fs"); for (const n of [875, 876]) { const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/${n}.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-${n - 870}.json`, JSON.stringify({ number: n, ...v })); }' "$T/fb"
+rm -f "$T/jira-down"
+export DESK_CONFIG="$T/config-mj.md" DESK_QUEUE="$T/queue-mj.json" DESK_AUTOPILOT_STATE="$T/state-mj"
+mkdir -p "$T/state-mj/logs"; q init mj; q set-batch concurrency=5
+mpark mj 5 "$T/state-mj"
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC2 with §3 jira-comment yes, the merge-only park's follow-on is posted on its ticket once its marker is not there" \
+  '[ "$(field M-5 state)" = "\"done\"" ] && grep -q "^comments M-5$" "$T/jira-calls" && grep -qF "comment M-5 Follow-on for after PR #875 merges (M-5/desk-autopilot follow-on)" "$T/jira-calls" && grep -qF "provision-telnyx-assistant.ts --env staging" "$T/jira-calls" && field M-5 follow_on_comment | grep -qE "^\"20[0-9]{2}-"'
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC2 a posted follow-on comment is never posted again" \
+  '! grep -q "^comment M-5" "$T/jira-calls"'
+export DESK_CONFIG="$T/config-mn.md" DESK_QUEUE="$T/queue-mn.json" DESK_AUTOPILOT_STATE="$T/state-mn"
+mkdir -p "$T/state-mn/logs"; q init mn; q set-batch concurrency=5
+mpark mn 6 "$T/state-mn"
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-509 AC2 with §3 jira-comment no, the follow-on comment is put to the person with its text, and nothing is posted" \
+  '[ "$(field M-6 state)" = "\"done\"" ] && [ "$(field M-6 follow_on_comment)" = "\"asked\"" ] && ! grep -q "^comment" "$T/jira-calls" && echo "$out" | grep -qF "M-6: its follow-on for after PR #876 merges is not on the ticket: config §3 jira-comment is \"no\""'
 
 # ---- DS-489: a check build runs the default branch's script, from the pass's checkout, never the worktree
 # The row names ./scripts/ensure.sh, relative as voicepa's is. C-1's branch changes that script and

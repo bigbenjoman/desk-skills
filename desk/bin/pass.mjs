@@ -755,7 +755,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     recordDone(t, {
       log, h, pr: String(n), summary: `parked only on who merges PR #${n}, which desk merges: recorded done`,
       line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${E.mergeGrant(queue()).why}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
-      sets: [parkFollowOn(park), ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
+      sets: [parkFollowOn(park), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
     });
   } else if (park) {
     // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
@@ -1086,7 +1086,7 @@ for (const t of Object.values(queue().tickets)) {
   if (merges?.call === 'done') {
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${merges.pr}`,
       `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`,
-      ...(t.follow_on?.length ? [] : [parkFollowOn(t.park.question ?? '')]));
+      ...(t.follow_on?.length ? [] : [parkFollowOn(t.park.question ?? '')]), 'follow_on_comment=due');
     report.done.push(`${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${E.mergeGrant(queue()).why})`);
     continue;
   }
@@ -2561,6 +2561,40 @@ if (unreadEpics.length) {
   const missed = r.out.split('\n').filter((l) => / epic NOT READ: /.test(l));
   epicLines.push(`epics: read for ${unreadEpics.length - missed.length} of ${unreadEpics.length} triage record(s) written before epics were recorded`
     + (missed.length ? ` — not read, tried again next pass: ${missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ')}` : r.ok ? '' : ` — ${r.out.split('\n').pop()}`));
+}
+
+// ---- follow-on comments --------------------------------------------------
+// A park recorded done because it waited only on who merges its PR (mergeParkOf) never reached its
+// worker's Stage 8 comment, so its follow-on is posted on the ticket here, as that comment would have
+// listed it, under §3 jira-comment: follow_on_comment is `due` until then. Posted once (its marker is
+// looked for first); a failed read or post is tried again next pass. Not granted, the comment is put to
+// the person once. A ticket the tracker does not hold keeps its follow-on on its queue entry alone.
+for (const t of Object.values(queue().tickets)) {
+  if (t.follow_on_comment !== 'due') continue;
+  const kind = E.ticketKind(t.key);
+  if (!onJira || !kind.ok || kind.kind !== 'tracker' || !t.follow_on?.length) { q('set', t.key, 'follow_on_comment=none'); continue; }
+  const pr = t.result?.pr;
+  const mark = `(${t.key}/desk-autopilot follow-on)`;
+  const body = [
+    `Follow-on for after PR #${pr} merges ${mark}`, '',
+    `The worker parked only on who merges PR #${pr}, which is green with a clean review, so desk recorded this ticket done and merges the PR. Nothing runs these on its own: desk-needs-you lists them once #${pr} merges.`, '',
+    'Once this merges:',
+    ...t.follow_on.map((s, i) => `${i + 1}. ${s.step}${s.row ? ` (§3 ${s.row})` : ''}`),
+  ].join('\n');
+  const perm = E.permission('jira-comment');
+  if (perm !== 'yes') {
+    q('set', t.key, 'follow_on_comment=asked');
+    report.waiting.push(`${t.key}: its follow-on for after PR #${pr} merges is not on the ticket: config §3 ${E.permissionKey('jira-comment')} is "${perm}". Post it with desk-jira comment ${t.key} and this text: ${body}`);
+    continue;
+  }
+  const seen = shOut('desk-jira', ['comments', t.key]);
+  if (!seen.ok) { report.failed.push(`${t.key}: follow-on comment not posted, its comments could not be read (${seen.out.split('\n').pop()}): tried again next pass`); continue; }
+  if (!seen.out.includes(mark)) {
+    const r = shOut('desk-jira', ['comment', t.key, body]);
+    if (!r.ok) { report.failed.push(`${t.key}: follow-on comment not posted (${r.out.split('\n').pop()}): tried again next pass`); continue; }
+  }
+  q('set', t.key, `follow_on_comment=${new Date().toISOString()}`);
+  report.advanced.push(`${t.key} follow-on for after PR #${pr} merges → ticket comment`);
 }
 
 // ---- outside blockers ----------------------------------------------------
