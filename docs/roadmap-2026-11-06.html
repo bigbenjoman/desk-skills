@@ -74,7 +74,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <header style="display:flex;flex-direction:column;gap:12px">
   <div class="eyebrow">desk-skills · as of Mon 9 Nov 2026, 12:05</div>
   <h1>Desk roadmap</h1>
-  <p class="lede">The goal from the 6 Nov throughput review: more tickets on the subscriptions you already pay for, at the same review quality and with less of your time. Your priorities, in order: <b>subscription rotation</b>, because batches kept stopping when one login ran out; <b>fewer tokens per ticket</b>; and <b>more autonomy</b>, meaning fewer stops that need you. Sentry intake waits. <b>Changed on 9 Nov:</b> the second engine to try is Z.ai's GLM‑5.3, not more ChatGPT. Codex stays as a reviewer only.</p>
+  <p class="lede">The goal from the 6 Nov throughput review: more tickets on the subscriptions you already pay for, at the same review quality and with less of your time. Your priorities, in order: <b>subscription rotation</b>, because batches kept stopping when one login ran out; <b>fewer tokens per ticket</b>; and <b>more autonomy</b>, meaning fewer stops that need you. Sentry intake waits. <b>Changed on 9 Nov:</b> instead of spending more on ChatGPT, desk evaluates other models one at a time on the test bench, starting with Kimi K3.1 Pro, and keeps whichever gives the most accepted tickets per pound. Codex stays as a reviewer only.</p>
   <div class="legend">
     <span class="chip c-done">Done</span><span class="chip c-filed">In Jira or in a batch</span><span class="chip c-none">Not drafted</span><span class="chip c-wait">Waiting on a gate</span><span class="chip c-you">Needs you</span>
   </div>
@@ -86,7 +86,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
     <div><span>Top priority</span><b>Rotation is live on main</b><span>Epic PR #519 merged at 06:42 today, and this Mac has installed it. You added <span class="k">login-2</span> as standby at 07:26. No worker has run on it yet, so rotation hasn't been seen working on two real logins.</span></div>
     <div><span>Fewer tokens</span><b>Phase 0 built, not measured</b><span>Every <span class="k">DS-443</span> child has merged. <span class="k">preflight</span> is the only lever on, and the others stay off until it has been measured against the baseline.</span></div>
     <div><span>Shipped since Sun 09:12</span><b>21 PRs merged</b><span>18 to <span class="k">main</span>, including rotation's epic PR, and 3 bench tickets to its feature branch before that. Both queues are empty: the standing batch has 123 done, and rotation's batch has been archived.</span></div>
-    <div><span>Waiting on you</span><b>3 items</b><span>The Z.ai trial needs your go-ahead and a subscription. Listed at the bottom.</span></div>
+    <div><span>Waiting on you</span><b>3 items</b><span>Starting the Kimi evaluation needs a subscription and your OK on its terms. Listed at the bottom.</span></div>
   </div>
 </section>
 
@@ -137,34 +137,34 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
     </div>
 
     <div class="phase">
-      <div class="phead"><h3>Phase 2 · A second engine: Z.ai, not more ChatGPT</h3><span class="when">weeks 3–5</span><span class="chip c-none">Not drafted · changed 9 Nov</span></div>
+      <div class="phead"><h3>Phase 2 · Evaluate other models, one at a time, on cost per accepted ticket</h3><span class="when">weeks 2–5</span><span class="chip c-none">Not drafted · changed 9 Nov</span></div>
       <div class="card">
-        <p>Before, this phase moved implementation onto Codex, which would have meant buying ChatGPT Pro 200 (£200 a month). Now the extra capacity is tried on <b>Z.ai Pro, about £60 a month on monthly billing</b>, running GLM‑5.3 inside Claude Code from its own config folder. Codex keeps the review work it already does on your current login.</p>
+        <p>This replaces buying ChatGPT Pro 200. Each candidate runs on the same frozen tasks as Opus, through the same harness, and is judged on one figure: <b>accepted tasks per pound of subscription</b>, as long as quality holds. Leaderboard scores pick the order to test them in, but they don't decide anything. Codex stays as a reviewer on your current plan.</p>
+        <div class="tbl"><table>
+          <thead><tr><th>#</th><th>Candidate</th><th>Plan</th><th>How the bench runs it</th><th>Why this place</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><b>Kimi K3.1 Pro</b></td><td>Kimi Code Plus, ¥99 a month. GBP to check at checkout</td><td>Claude Code pointed at Kimi's own Anthropic-compatible endpoint</td><td>Top score on Terminal-Bench 4.0 (67.2%, Opus 5.5 about 65%). Your choice to go first</td></tr>
+            <tr><td>2</td><td><b>DeepSeek V4.1 Flash</b></td><td>OpenCode Go, $10 a month</td><td><span class="k">opencode run --format json</span></td><td>The cheapest by far. About 32% on the same benchmark, so it's for routine fixes</td></tr>
+            <tr><td>3</td><td><b>Gemini 3.8 Flash</b> (4 Argon if Pro includes it)</td><td>Google AI Pro, £18.99 a month</td><td><span class="k">agy -p --output-format json --sandbox</span></td><td>The best sandbox of the four, and it reports tokens on every run. It needs a fix for a known bug in headless output</td></tr>
+            <tr><td>4</td><td><b>GLM‑5.3</b></td><td>Z.ai Pro, about $80 a month</td><td>Claude Code pointed at Z.ai's Anthropic-compatible endpoint</td><td>Moved to last place. It scores lowest (about 42%), costs the most, and Z.ai's assistant uploaded users' repos without consent this year</td></tr>
+          </tbody>
+        </table></div>
         <ul>
-          <li><b>Z.ai as an implementer.</b> GLM‑5.3 runs as a new bench arm on <span class="k">DS-475</span>'s frozen tasks first. Then one worker takes well-specified XS–M tickets in <span class="k">desk-skills</span> only. Every one of its PRs goes through the full review, with Claude and Codex seats. Claude Ultra keeps the harder tickets.</li>
-          <li><b>How it fits rotation.</b> A Z.ai worker is a Claude Code config folder that points at Z.ai, so it can sit in <span class="k">subscriptions.md</span>. Rotation must not hand it any ticket, though: it needs a rule limiting it to the lanes and sizes the bench clears. Z.ai also caps each five hours (12,000 credits on Pro), which Ultra and Pro 200 don't, so it has to be benched at that cap and not only at the weekly one.</li>
-          <li><b>Codex stays a reviewer.</b> It replaces one Opus review seat, with Claude reviewing anything Codex writes. The <span class="k">codex exec</span> implementer trial (about 20 XS/S tickets) is dropped, and so is buying Pro 200.</li>
-          <li>Fable 5.1 trialled as a Claude implementer, once usage credits are confirmed off on every account (bench arm 3, <span class="k">DS-484</span>).</li>
-          <li>§3b model tiering switched on only for the lanes the eval clears.</li>
+          <li><b>Same scaffold where possible.</b> Kimi and Z.ai both accept Claude Code's API format, so they run through the bench's existing Claude runner, with only the endpoint and key changed. The comparison then measures the model and not the CLI around it. It also keeps the bench's sandbox, which Kimi's own CLI doesn't have: its <span class="k">-p</span> mode approves every action.</li>
+          <li><b>What's measured for each run:</b> whether the hidden tests pass, a blind 1–5 quality score, tokens, and how much of the plan's allowance the run used. From those, the report gives <b>£ per accepted task</b> and <b>accepted tasks per 5-hour window</b>. The second figure matters because Kimi, OpenCode, Google and Z.ai all cap each 5 hours, and Ultra doesn't.</li>
+          <li><b>A concurrency check for each candidate:</b> two tasks at once, recording any queueing, rate-limit errors or failed runs.</li>
+          <li><b>Your code only.</b> The non-Anthropic arms run on frozen <span class="k">desk-skills</span> tasks only. None of the four confirms in writing that subscription code isn't used for training, and Kimi's and Google's consumer terms allow it. Client repos stay on Claude and Codex.</li>
         </ul>
-        <p class="gate"><b>Gate:</b> accepted PRs per 10% of weekly allowance, measured on the same frozen tasks and then on live tickets, counting rework. A GLM‑5.3 PR has to pass review as often as an Opus one, with no extra implementation pass. Expect a quality gap: GLM‑5.3 scored 71.5% against Opus 5.5's 87.6% on one independent Terminal-Bench run, and you've seen a 67% vs 87% drop with Sonnet before. If it can't match, it doesn't get live tickets.</p>
-        <p class="gate"><b>Before any live ticket:</b> repo code goes to Z.ai's servers. Start on <span class="k">desk-skills</span> only. Client repos (VoicePA and the others) wait until you've checked Z.ai's data terms against each client's terms.</p>
+        <p class="gate"><b>Gate for each candidate:</b> on the same tasks as Opus, at least as many accepted, a blind score no lower, and a lower £ per accepted task. About 24 tasks only shows big differences, so this is a screen. A candidate that passes then shadows a few live <span class="k">desk-skills</span> tickets, its PRs going through the full review, before it gets a worker. One that fails is cancelled after its first month.</p>
       </div>
     </div>
-
     <div class="phase">
       <div class="phead"><h3>Phase 3 · Decide the subscriptions</h3><span class="when">at renewal</span><span class="chip c-wait">Waits on Phase 2's numbers</span></div>
       <div class="card">
-        <p>Buy capacity where accepted tickets per pound, at equal quality, are highest. Claude Ultra (£180) stays the main builder and ChatGPT stays on its current plan for review. No upgrade to Pro 200.</p>
-        <ul>
-          <li>Z.ai Pro passes the gate: move it to quarterly (about £48 a month) or annual (about £42 a month) billing.</li>
-          <li>Several Z.ai workers keep hitting the five-hour cap: try Max, at about £126 a month, with 2.33× Pro's allowance.</li>
-          <li>Z.ai fails the gate: cancel it after the first month, and look at a second Ultra login.</li>
-        </ul>
-        <p class="gate">These prices come from ChatGPT's currency conversions on 7–8 Nov, before tax. The token allowances it quoted are labelled as a limited-time event. Check both at checkout.</p>
+        <p>Buy capacity where accepted tickets per pound, at equal quality, are highest. Claude Ultra (£180) stays the main builder, and ChatGPT stays on its current plan for review. No upgrade to Pro 200. A candidate that passes gets a worker in rotation, restricted to the lanes and sizes it cleared. Move it to a longer billing period, or a larger plan, only if its 5-hour cap is what's slowing the batch.</p>
+        <p class="gate">Prices here come from each provider's page where it publishes one (Google, OpenCode, Kimi in CNY). Z.ai's price is only from third parties. Check every price at checkout.</p>
       </div>
     </div>
-
   </div>
 </section>
 
@@ -185,14 +185,16 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
     </div>
 
     <div class="card">
-      <div class="phead"><h3>Test bench</h3><span class="chip c-done">12 of 12 on main · DS-475</span></div>
-      <p>About 24 frozen past tasks across the three repos, with hidden tests and blinded diffs. It supplies the gates for Phases 1 and 2, and now for the Z.ai trial.</p>
+      <div class="phead"><h3>Test bench: the evaluation harness</h3><span class="chip c-filed">Built, never run · DS-475</span></div>
+      <p>All 12 tickets are on <span class="k">main</span>: frozen past tasks with hidden tests, blind scoring, a report and a weekly-allowance guard. It has never been run, though. No task set is built, so there's no Opus baseline to compare a candidate with.</p>
       <ul>
-        <li><span class="chip c-done">on main</span> <span class="k">DS-476</span> (#473), <span class="k">DS-478</span> (#480), <span class="k">DS-479</span> (#474), then <span class="k">DS-477</span>, <span class="k">DS-480</span> to <span class="k">DS-487</span> through #519.</li>
-        <li><span class="chip c-none">next</span> A GLM‑5.3 arm, scored the same way as arm 3 (Fable) and arm 2 (the shadow Codex review seat). Not drafted yet.</li>
+        <li><span class="chip c-none">1 · build the set</span> Freeze about 24 merged <span class="k">desk-skills</span> PRs with <span class="k">bench-build.mjs</span>, and run the Opus arm as the baseline.</li>
+        <li><span class="chip c-none">2 · endpoint arm</span> An arm that runs Claude Code against another provider's Anthropic-compatible endpoint, with the key kept in a chmod 600 file. It refuses to start if a run could bill your Claude login instead. This covers Kimi and Z.ai.</li>
+        <li><span class="chip c-none">3 · allowance meters</span> The quota guard only reads Claude's and Codex's weekly windows. It needs readers for each provider's own windows (5-hour, weekly and monthly). Kimi and Z.ai only have undocumented usage endpoints, so the guard stops on any reading it can't trust.</li>
+        <li><span class="chip c-none">4 · £ in the report</span> £ per accepted task and accepted tasks per 5-hour window for each arm, priced from a table of plan prices and windows.</li>
+        <li><span class="chip c-none">later</span> Runners for OpenCode and Antigravity, before candidates 2 and 3.</li>
       </ul>
     </div>
-
     <div class="card">
       <div class="phead"><h3>Batch reliability</h3><span class="chip c-done">Today's bugs merged · DS-237</span></div>
       <p>Rotation's archive showed up two bugs. Both are fixed.</p>
@@ -245,7 +247,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
   <h2 id="you">Waiting on you</h2>
   <div class="card">
     <ul>
-      <li><span class="chip c-you">Decide</span> <b>Start the Z.ai trial.</b> Subscribe to Z.ai Pro on monthly billing (about £60, plus tax), and confirm it's for <span class="k">desk-skills</span> only until you've checked the data terms. Once you have, Claude drafts the Phase 2 tickets: the GLM‑5.3 bench arm, a login rule that limits it to cleared lanes, and benching it at the five-hour cap.</li>
+      <li><span class="chip c-you">Decide</span> <b>Start with Kimi.</b> Subscribe to Kimi Code Plus (¥99 a month; check the GBP and tax at checkout). Then confirm you accept that frozen <span class="k">desk-skills</span> code goes to Moonshot. Two points on that: its consumer terms forbid scripted use "unless explicitly authorized in writing", and only its API platform says code isn't used for training. You may want to ask Moonshot about both first. The harness tickets don't need the subscription, so Claude can file them now.</li>
       <li><span class="chip c-you">Check</span> <b>DS-431's live worker run.</b> Run one worker on an ai-agents ticket with studia-web listed, and confirm it reads the clone without parking. Its scope is accepted, and this is all that's left.</li>
       <li><span class="chip c-you">Check</span> <b>VPL-794.</b> Confirm that nothing outside the repo pulls <span class="k">:staging</span>.</li>
     </ul>
@@ -257,13 +259,14 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
   <ol class="next">
     <li><div><b>Admit the next batch.</b> The queue is empty. DS-442 (P1) and DS-260's 4 children (P1) are next. A batch about the size of last week's also serves as Phase 0's preflight measurement, and as the first real run of rotation on two logins.</div></li>
     <li><div><b>Phase 0 is measured:</b> preflight first, the other levers one at a time, and a measured batch decides Phase 1.</div></li>
-    <li><div><b>Z.ai trial, once you've subscribed:</b> run the GLM‑5.3 bench arm, and then, if it clears the gate, one worker on <span class="k">desk-skills</span> XS–M tickets.</div></li>
+    <li><div><b>The harness gets built and run on Opus:</b> Claude files the four bench tickets under DS-475. Freezing the task set and running the Opus baseline don't depend on any new subscription.</div></li>
+    <li><div><b>Kimi, then the rest in order:</b> the Kimi arm runs once you've subscribed and the endpoint arm has merged. Then DeepSeek on OpenCode Go, Gemini on Google AI Pro, and GLM‑5.3 on Z.ai, each only if the one before leaves a reason to keep looking.</div></li>
     <li><div><b>Claude tidies Jira:</b> closes DS-237, DS-455 and DS-515, closes DS-461 once rotation has been seen working, puts DS-503 under an epic, and moves DS-236's 4 open children to an open epic.</div></li>
     <li><div><b>When VPL-793 merges,</b> you restore VoicePA's §4 Check builds.</div></li>
   </ol>
 </section>
 
-<p class="foot">Sources: live Jira, queue, supervisor-log and GitHub reads at 12:00–12:05 on 9 Nov; <span class="k">~/.config/desk/subscriptions.md</span>; and your ChatGPT conversation of 7–8 Nov comparing ChatGPT Pro 200, Claude Ultra and Z.ai. Its prices and benchmark figures weren't checked independently. This page is a snapshot; Jira is the record.</p>
+<p class="foot">Sources: live Jira, queue, supervisor-log and GitHub reads at 12:00–12:05 on 9 Nov; <span class="k">~/.config/desk/subscriptions.md</span>; and your ChatGPT conversation of 7–8 Nov on subscription coding plans. Its claims were checked on 9 Nov against provider docs, Artificial Analysis and BenchLM. Two benchmark figures were wrong: on FrontierCode 2.0, Kimi K3.1 Pro (19.6%) is slightly ahead of DeepSeek V4.1 Flash (19.3%), not behind. Kimi's '2 or 4 concurrent tasks' is a figure for its web agent, not for CLI sessions. This page is a snapshot; Jira is the record.</p>
 </div>
 
 </html>
