@@ -99,6 +99,13 @@ for (const rule of ['in rotation', 'standby']) {
   r = codex('refuter', 'x');
   t(`sole login ${rule}: the call runs on the caller's environment, with no sign-in check`, [r.status, r.calls, r.home, r.statuses, r.on], [0, 1, 'unset', 0, null]);
 }
+// A sole listed login whose folder is gone: its rule still decides, ~/.codex being found does not.
+subs(['gone', 'off']);
+r = codex('refuter', 'x');
+t('sole login off, its folder gone: exit 75 and codex is not run', [r.status, r.calls], [75, 0]);
+subs(['gone', 'in rotation']);
+r = codex('refuter', 'x');
+t('sole login in rotation, its folder gone: the call runs on the caller\'s environment as before', [r.status, r.calls, r.home], [0, 1, 'unset']);
 rmSync(SUBS);
 
 // AC1: two logins in rotation: the one with the most room, named for the review record.

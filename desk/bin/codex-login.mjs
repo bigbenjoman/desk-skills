@@ -1,6 +1,6 @@
 // The Codex login a desk-codex call runs on. With one Codex login, or no subscriptions file, there is
-// nothing to choose and the call keeps the caller's environment, unless the file sets that one login
-// off, when no call runs. With more, it runs on the usable login (signed in, in rotation
+// nothing to choose and the call keeps the caller's environment, unless the file sets every Codex
+// login it lists off, when no call runs. With more, it runs on the usable login (signed in, in rotation
 // or on standby) with the most room, ranked as a Claude login's is (login-choice.mjs) on whichever
 // windows its plan has. A login whose newest reading is at a limit is benched until that window
 // resets; with every usable login benched, or none usable, no call runs and `dead` says why.
@@ -27,8 +27,8 @@ export function codexCallLogin({ env = process.env, now = Date.now() } = {}) {
   // With no subscriptions file desk has one login per tool, whatever folders exist (logins.mjs).
   const subs = readSubscriptions(subscriptionsPath());
   if (!subs.exists) return keep;
-  const logins = codexLogins();
-  if (logins.length <= 1) return logins[0]?.rule === 'off' ? none : keep;
+  // The file's rows decide, not the folders found: an off row whose folder is gone still sets it off.
+  if (codexLogins().length <= 1) return subs.logins.some((l) => l.tool === 'codex' && l.rule !== 'off') ? keep : none;
   const { usable } = checkLogins(subs, { tools: ['codex'], env });
   if (!usable.length) return none;
   const { login, read } = codexChoice(usable, now);
