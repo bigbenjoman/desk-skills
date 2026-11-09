@@ -334,10 +334,20 @@ t('DS-523 AC3 a handed ticket ready to run is parked, so no pass starts it', rea
 a = res(archiveMove('X-12', { 9: 'MERGED' }, 'still refused'));
 t('DS-523 AC3 a second check hands nothing new on', (a.lines ?? []).length === 0 && Object.keys(handed('X-12')).length === 1, true);
 // A hold outside every batch is one transfer would drop: that ticket is handed on, never moved.
-writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: lastRecorded, tickets: { 'X-15': { key: 'X-15', state: 'parked', held_by: 'OUT-1', held_outside: 'OUT-1' } } });
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: lastRecorded, tickets: {
+  'X-15': { key: 'X-15', state: 'parked', held_by: 'OUT-1', held_outside: 'OUT-1', park: { question: 'held by orchestrator: blocked by OUT-1', since: MERGED_AT } },
+  'X-16': { key: 'X-16', state: 'parked', park: { question: 'which copy?', since: MERGED_AT, clears_when: 'pr 5 merged' } },
+} });
 a = res(archiveMove('X-12', { 9: 'MERGED' }, null));
 t('DS-523 AC3 a ticket held outside every batch is not moved', a.archived === false && readQ('X-12').tickets['X-15']?.held_outside === 'OUT-1', true);
 t('DS-523 AC3 and is handed on naming its hold', Object.values(handed('X-12')).some((e) => e.ticket === 'X-15' && e.text.includes('held behind OUT-1 outside every batch')), true);
+// A hold or a clears-when a pass would release with no person is replaced by the archive's own park.
+const p15 = readQ('X-12').tickets['X-15']?.park ?? {};
+t('DS-523 AC3 a held leftover is parked under the archive, no longer a hold', p15.question?.startsWith('left in batch X-12 after its promotion PR #9 merged') && p15.question.includes('it was parked: held by orchestrator'), true);
+const p16 = readQ('X-12').tickets['X-16']?.park ?? {};
+t('DS-523 AC3 a leftover parked for its own reason loses its clears-when, keeping its question', p16.clears_when === undefined && p16.question?.includes('it was parked: which copy?'), true);
+a = res(archiveMove('X-12', { 9: 'MERGED' }, null));
+t('DS-523 AC3 the archive\'s own park is not parked again', readQ('X-12').tickets['X-16']?.park?.question === p16.question, true);
 writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-14': { key: 'X-14', state: 'failed' } } });
 a = res(archiveMove('X-12', { 9: 'CLOSED' }, null));
 t('DS-523 AC3 a closed promotion: its left ticket is handed on, not moved', a.archived === false && !!readQ('X-12').tickets['X-14'] && Object.values(handed('X-12')).some((e) => e.ticket === 'X-14' && e.text.includes('was closed')), true);

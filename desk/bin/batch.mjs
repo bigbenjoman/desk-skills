@@ -184,7 +184,9 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   // A left-behind ticket must not run here again. After the last promotion merged, one ready to run moves
   // to the standing batch. Any other is the person's: after a closed promotion (the epic abandoned), a
   // park or a hold the move would not carry over (queue.mjs transfer re-admits from the triage record),
-  // or a refused move. One ready to run is parked as it is handed, so no pass starts it meanwhile.
+  // or a refused move. Each is parked under the archive's own question as it is handed, its earlier park
+  // kept in the text: a pass releases a hold, a clears-when or a recommended take with no person, and
+  // would start it in the finished batch.
   const moved = [];
   const stay = [];
   for (const t of left) {
@@ -196,9 +198,11 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   }
   const movedText = moved.length ? `moved ${moved.join(', ')} to the standing batch, ` : '';
   if (stay.length) {
+    const leftPrefix = `left in batch ${b.name} after its promotion PR #${p} `;
     for (const { t, why } of stay) {
-      if (!['triaged', 'queued'].includes(t.state)) continue;
-      const r = park(b, t.key, `left in batch ${b.name} after its promotion PR #${p} ${ps.toLowerCase()}, and not moved to the standing batch (${why})`);
+      const was = String(t.park?.question ?? '');
+      if (!['triaged', 'queued', 'parked'].includes(t.state) || was.startsWith(leftPrefix)) continue;
+      const r = park(b, t.key, `${leftPrefix}${ps.toLowerCase()}, and not moved to the standing batch (${why})${was ? `; it was parked: ${was}` : ''}`);
       if (r) lines.push(`archive: ${t.key} in batch ${b.name} could not be parked (${r}): a pass may start it`);
     }
     const handed = stay.map(({ t, why }) => ({ item: { id: leftId(t), ticket: t.key, kind: 'archive',
