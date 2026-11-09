@@ -720,8 +720,23 @@ export function captureTry(t, { pr, head, files }) {
 
 const mergedTreeLine = (f) => `Where §4 Merged-tree check is set, run each item \`desk-env cmds merged-tree-check-cmd\` prints on the merged tree before you push. A failure is this try's to fix: where two files claim one place in a sequence (two migrations with one revision number), renumber your branch's own so they come after the head of ${f.base}. Push nothing while it fails.`;
 
-// The fix worker's briefing section, while its try is open.
-export function fixBrief(t) {
+// The review a worker runs and posts, where it is not desk-review: `review` is §4 Local review command
+// as `desk-env review-cmd` resolves it (desk-env reviewPlan's `run`). Unset, none or desk-review is null.
+const ownReview = (review) => {
+  const c = String(review ?? '').trim();
+  return !c || /^none$/i.test(c) || /^\/?desk-review(?=\s|$)/.test(c) ? null : c;
+};
+const reviewName = (review) => (ownReview(review) ? `${ownReview(review)} review` : 'desk-review');
+// "review <what> with <the review> and post it on the PR", as that review's own instructions post it.
+function reviewStep(review, what, how = '') {
+  const c = ownReview(review);
+  return c ? `review ${what} with ${c}${how} and post its review on the PR as its own instructions say`
+    : `review ${what} with desk-review${how} and post that review on the PR (desk-review Phase 7)`;
+}
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
+
+// The fix worker's briefing section, while its try is open. `review` as reviewStep reads it.
+export function fixBrief(t, review = null) {
   const f = t.fix;
   if (!f || f.finished) return '';
   if (f.kind === 'renames') {
@@ -742,7 +757,7 @@ export function fixBrief(t) {
   }
   if (f.kind === 'gaps') {
     return [`## Your call on PR #${f.pr}'s review gaps`, '',
-      `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the desk-review posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
+      `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the ${reviewName(review)} posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
       ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
   }
   if (f.kind === 'instruction') {
@@ -765,8 +780,8 @@ export function fixBrief(t) {
         : f.ready
         ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not rerun the check that reads its review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
         : `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`,
-      'Review that head with desk-review and post the review on the PR (desk-review Phase 7), so its verdict marker is on the head. Change no code in this try: a P0, a P1, a listed P2 or a gap the review finds goes to a fix worker at the next pass.', '',
-      ...targetedBrief(f.targeted),
+      `${ownReview(review) ? cap(reviewStep(review, 'that head')) : 'Review that head with desk-review and post the review on the PR (desk-review Phase 7)'}, so its verdict marker is on the head. Change no code in this try: a P0, a P1, a listed P2 or a gap the review finds goes to a fix worker at the next pass.`, '',
+      ...targetedBrief(ownReview(review) ? null : f.targeted),
       f.extra ? `A merge from the base moved this head, so this try is not one of the ${f.of} fix tries. A PR with no verdict readable at its head after it goes to the person.`
         : `This is try ${f.try} of ${f.of}. A PR with no verdict readable at its head after this try goes to the person.`, ''].join('\n');
   }
@@ -796,7 +811,7 @@ export function fixBrief(t) {
       'Answer every thread with gh pr comment, naming it by its file:line and quoting its first line, saying what you changed in which commit or why the code stands. Do not resolve threads yourself: once you have pushed past this head and finished, the pass replies on each thread quoted here and resolves it.',
       'A thread you cannot fix, or one that needs a product call or another person\'s ruling, is not yours: park (AUTOPILOT_PARK) naming the thread and exactly what blocks it.');
   } else if (f.kind === 'review') {
-    lines.push(`Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the desk-review posted on its head ${String(f.head).slice(0, 12)} is not clean${f.verdict ? ` (\`${f.verdict}\`)` : ''}.`);
+    lines.push(`Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the ${reviewName(review)} posted on its head ${String(f.head).slice(0, 12)} is not clean${f.verdict ? ` (\`${f.verdict}\`)` : ''}.`);
     if (f.findings?.length) {
       lines.push(`Fix each ${findingKinds(f.findings)} finding it lists${f.findings.some((x) => x.sev === 'P2') ? ', or carry one in your next review where fixing it would mean another round (worker contract Stage 4)' : ''}:`, '');
       for (const x of f.findings) lines.push(`- ${x.sev}: ${x.text}`);
@@ -843,7 +858,8 @@ export function fixBrief(t) {
 }
 
 // A review try's narrowing (reviewTry `targeted`): the files the base moved and the PR's code that uses
-// them, read as desk-review's targeted round; nothing for a whole review.
+// them, read as desk-review's targeted round; nothing for a whole review, which is what a review other
+// than desk-review runs, since the targeted round is desk-review's own.
 function targetedBrief(x) {
   if (!x) return [];
   return ['### Targeted: review only what the base changed under the review', '',
@@ -855,26 +871,27 @@ function targetedBrief(x) {
 
 const findingKinds = (findings) => (findings?.some((x) => x.sev === 'P2') ? 'P2' : 'P0 and P1');
 
-// The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK).
-export function fixTask(t) {
+// The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK). `review` as reviewStep reads it.
+export function fixTask(t, review = null) {
   const f = t.fix;
+  const afterReview = `, then ${reviewStep(review, 'the new head')}`;
   if (f.kind === 'renames') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
       `Your task is the migration rename try on PR #${f.pr}, already open on your branch: the "Migration rename try" section of your briefing names each old and new filename and the files naming it. ` +
       `Fix only that: merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and update those references: this task is your authority to merge it. ` +
-      `Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${f.draft ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : ''}. ` +
+      `Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${f.draft ? afterReview : ''}. ` +
       `Open no new PR, leave the PR ${f.draft ? 'in' : 'out of'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
   }
   if (f.kind === 'rereview') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
       `Your task is ${f.extra ? 'a review try after a merge from the base' : `review try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
-      `Review its head with desk-review${f.targeted ? ', in its targeted round on only what the briefing\'s "Targeted" section names,' : ''} and post that review on the PR (desk-review Phase 7), and change no code. ` +
+      `${cap(reviewStep(review, 'its head', f.targeted && !ownReview(review) ?', in its targeted round on only what the briefing\'s "Targeted" section names,' : ''))}, and change no code. ` +
       `Open no new PR, leave the PR ${f.ready ? 'out of' : 'in'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
   }
   if (f.kind === 'protected') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
       `Your task is protected files try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Protected files try" section of your briefing lists the protected files its check wants an approval for. ` +
-      "Drop each change to them that the ticket's acceptance criteria do not need, and nothing else. If you dropped any, verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), push to the same branch with git push origin <your branch>, then review the new head with desk-review and post that review on the PR (desk-review Phase 7). If every change is needed, change nothing and push nothing. " +
+      `Drop each change to them that the ticket's acceptance criteria do not need, and nothing else. If you dropped any, verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), push to the same branch with git push origin <your branch>${afterReview}. If every change is needed, change nothing and push nothing. ` +
       `Open no new PR, leave the PR out of draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status> said=<for each file, dropped, or needed and the criterion that needs it>.`;
   }
   if (f.kind === 'capture') {
@@ -887,8 +904,8 @@ export function fixTask(t) {
   const gaps = f.kind === 'gaps', instruction = f.kind === 'instruction';
   // A draft's red checks or conflict are fixed in draft and reviewed again, as a review fix is, and so
   // is a ready PR's review feedback or review, and whatever the person sent back.
-  const review = f.kind === 'review' || f.kind === 'feedback' || personCall(f) || f.draft === true;
-  const inDraft = review && !f.ready && f.kind !== 'feedback';
+  const reviewed = f.kind === 'review' || f.kind === 'feedback' || personCall(f) || f.draft === true;
+  const inDraft = reviewed && !f.ready && f.kind !== 'feedback';
   const how = f.kind === 'conflict'
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and resolve the conflicts: this task is your authority to resolve them`
     : f.kind === 'sync' ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push), run the repo's checks on the merged head, and fix each break the merge brought in, in a commit of its own after the merge: this task is your authority to merge it`
@@ -900,7 +917,7 @@ export function fixTask(t) {
         : `fix each ${findingKinds(f.findings)} finding it quotes${f.findings?.some((x) => x.sev === 'P2') ? ', or carry one in your review of the new head where fixing it would mean another round' : ''}, and nothing else`)
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
-  const after = review ? ', then review the new head with desk-review and post that review on the PR (desk-review Phase 7)' : '';
+  const after = reviewed ? afterReview : '';
   // A conflict try's DONE line is the reason a PR stuck after its last try gives (stillInConflict).
   const said = f.kind === 'conflict' ? ' said=<one line: what you resolved, or what is still in conflict and why>'
     : f.kind === 'sync' ? ' said=<one line: what the merge broke and how you fixed it, or what still fails and why>' : '';

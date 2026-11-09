@@ -773,4 +773,38 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-494 each line once, at most five', errorLinesIn(['a error', 'a error', 'b error', 'c error', 'd error', 'e error', 'f error'].join('\n')).length, 5);
 }
 
+{
+  // Each try that asks for a review names §4 Local review command's, and desk-review only in its place.
+  const H = 'a'.repeat(40);
+  const tries = {
+    rereview: { try: 1, of: 2, pr: 9, head: H, kind: 'rereview', what: 'review its head: no verdict is posted' },
+    review: { try: 1, of: 2, pr: 9, head: H, kind: 'review', verdict: 'p0=0 p1=1', findings: [{ sev: 'P1', text: 'src/a.ts:1 x' }] },
+    renames: { try: 0, of: 2, extra: true, pr: 9, head: H, kind: 'renames', base: 'main', draft: true, renames: [{ old: 'a.sql', new: 'b.sql', to: 'm/b.sql', files: ['t.ts'] }] },
+    protected: { try: 1, of: 2, pr: 9, head: H, kind: 'protected', checks: ['protected-path approval'], paths: ['x.sql'] },
+    instruction: { try: 1, of: 1, pr: 9, head: H, kind: 'instruction', ready: true, what: 'your instruction', answer: 'do x' },
+    gaps: { try: 1, of: 1, pr: 9, head: H, kind: 'gaps', ready: false, what: 'review gaps: your call', answer: 'drop it' },
+  };
+  const pull = (s) => `${s.includes('/pullbot')} ${s.includes('desk-review')}`;
+  t('DS-545 AC1 a review try\'s task names /pullbot, never desk-review', pull(fixTask(tk({ fix: tries.rereview }), '/pullbot')), 'true false');
+  t('DS-545 AC1 and so does its Review try section', pull(fixBrief(tk({ fix: tries.rereview }), '/pullbot')), 'true false');
+  t('DS-545 AC1 and it is told to post the review as /pullbot says', fixTask(tk({ fix: tries.rereview }), '/pullbot').includes('Review its head with /pullbot and post its review on the PR as its own instructions say, and change no code.'), true);
+  t('DS-545 AC2 a review fix reviews the new head with /pullbot', /review the new head with \/pullbot and post its review on the PR as its own instructions say/.test(fixTask(tk({ fix: tries.review }), '/pullbot')), true);
+  t('DS-545 AC2 and neither its task nor its brief names desk-review', `${fixTask(tk({ fix: tries.review }), '/pullbot').includes('desk-review')} ${fixBrief(tk({ fix: tries.review }), '/pullbot').includes('desk-review')}`, 'false false');
+  t('DS-545 AC3 a draft\'s rename try re-reviews with /pullbot', pull(fixTask(tk({ fix: tries.renames }), '/pullbot')), 'true false');
+  t('DS-545 AC3 so does a protected-file try', pull(fixTask(tk({ fix: tries.protected }), '/pullbot')), 'true false');
+  t('DS-545 AC4 the person\'s instruction re-reviews with /pullbot', pull(fixTask(tk({ fix: tries.instruction }), '/pullbot')), 'true false');
+  t('DS-545 AC4 so does the person\'s call on gaps, brief included', `${pull(fixTask(tk({ fix: tries.gaps }), '/pullbot'))} ${pull(fixBrief(tk({ fix: tries.gaps }), '/pullbot'))}`, 'true false true false');
+  for (const [kind, fix] of Object.entries(tries)) {
+    const asToday = [fixTask(tk({ fix })), fixBrief(tk({ fix }))];
+    const same = ['/desk-review', 'none', '', null].every((r) => fixTask(tk({ fix }), r) === asToday[0] && fixBrief(tk({ fix }), r) === asToday[1]);
+    t(`DS-545 AC5 a ${kind} try under /desk-review, none or an unset row reads as today`, same, true);
+  }
+  // A narrowed try's targeted round is desk-review's own, so another review reads the whole head.
+  const tT = fixTask(tk({ fix: rvT.fix }), '/pullbot'), bT = fixBrief(tk({ fix: rvT.fix }), '/pullbot');
+  t('DS-545 AC1 a narrowed review try under /pullbot names /pullbot alone, task and brief', `${pull(tT)} ${pull(bT)}`, 'true false true false');
+  t('DS-545 AC1 and it asks for a whole review, with no Targeted section', `${tT.includes('targeted')} ${bT.includes('Targeted')}`, 'false false');
+  t('DS-545 AC5 a narrowed try under /desk-review reads as today', fixTask(tk({ fix: rvT.fix }), '/desk-review') === fixTask(tk({ fix: rvT.fix })) && fixBrief(tk({ fix: rvT.fix }), '/desk-review') === briefT, true);
+  t('DS-545 AC5 and today\'s names desk-review Phase 7', fixTask(tk({ fix: tries.rereview })).includes('Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code.'), true);
+}
+
 process.exit(fails ? 1 : 0);
