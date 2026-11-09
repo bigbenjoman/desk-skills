@@ -677,7 +677,7 @@ const round544 = (sha, counts) => ({ id: 'RP', author: { login: 'ben' }, commit:
 for (const clean of ['no P0, P1 or P2 findings', PULLBOT_CLEAN_COUNTS]) {
   t(`DS-544 AC6 a clean PullBot round at the head reads clean under "${clean}"`, read433(pl(PULLBOT_SHA, round544(PULLBOT_SHA)), { clean }).clean, true);
   const p1 = read433(pl(PULLBOT_SHA, round544(PULLBOT_SHA, 'p0=0 p1=1 p2=0 deferred=0 gaps=0')), { clean });
-  t(`DS-544 AC3 a P1 in it under "${clean}" is a review at the head to settle`, `${p1.clean} ${p1.settle}`, 'false true');
+  t(`DS-544 AC3 a P1 in it under "${clean}" is a review at the head to settle, named`, `${p1.clean} ${p1.settle} ${p1.why.includes('p1=1')}`, 'false true true');
   t(`DS-544 AC6 the thread read takes it as the clean verdict under "${clean}"`, readThreads(pl(PULLBOT_SHA, round544(PULLBOT_SHA)), { handle: 'ben', clean }).verdict, PULLBOT_SHA);
 }
 t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');

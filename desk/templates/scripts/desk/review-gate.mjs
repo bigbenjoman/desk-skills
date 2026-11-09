@@ -22,7 +22,7 @@ const VERDICT = new RegExp(
 );
 export const COUNTS = ['p0', 'p1', 'p2', 'deferred', 'gaps', 'unrefuted', 'partial'];
 // A PullBot round carries its own pair of markers, with fewer counts and `rounds` for desk-review's `round`.
-export const PULLBOT_MARKER = '<!-- pullbot:local -->';
+const PULLBOT_MARKER ='<!-- pullbot:local -->';
 const PULLBOT_VERDICT = new RegExp(
   '^<!--\\s*pullbot:verdict\\s+v=1\\s+sha=(?<sha>[0-9a-f]{7,40})' +
     '\\s+p0=(?<p0>\\d+)\\s+p1=(?<p1>\\d+)\\s+p2=(?<p2>\\d+)\\s+deferred=(?<deferred>\\d+)\\s+gaps=(?<gaps>\\d+)' +

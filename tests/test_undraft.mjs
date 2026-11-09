@@ -85,7 +85,7 @@ t('AC3 and still ignore a plain review', call('p0=0 p1=0 gaps=0', [review(CLEAN_
     const p1 = at(clean, [review(pullbotRound(PULLBOT_SHA, 'p0=0 p1=1 p2=0 deferred=0 gaps=0'), PULLBOT_SHA)]);
     t(`DS-544 AC3 a P1 at the head under "${clean}" goes to a fix worker, named`, `${p1?.call} ${p1?.why.includes('p1=1')}`, 'findings true');
     const old = at(clean, [review(pullbotRound(OLD), OLD)]);
-    t(`DS-544 AC4 a round for an older head under "${clean}" asks for a review of the head`, `${old?.call} ${old?.why.includes(`is for ${OLD.slice(0, 9)}, not the head`)}`, 'review true');
+    t(`DS-544 AC4 a round for an older head under "${clean}" asks for a review of the head`, `${old?.call} ${old?.why.includes(`its review verdict is for ${OLD.slice(0, 9)}, not the head`)}`, 'review true');
   }
   t('DS-544 AC1 another handle\'s round attests nothing', at(PLAIN, [review(pullbotRound(), PULLBOT_SHA, 'mousedown')])?.call, 'review');
   t('DS-544 a PullBot marker the gate cannot read is no verdict, never a plain review',
