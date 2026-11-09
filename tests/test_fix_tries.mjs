@@ -799,6 +799,11 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
     const same = ['/desk-review', 'none', '', null].every((r) => fixTask(tk({ fix }), r) === asToday[0] && fixBrief(tk({ fix }), r) === asToday[1]);
     t(`DS-545 AC5 a ${kind} try under /desk-review, none or an unset row reads as today`, same, true);
   }
+  // A narrowed try's targeted round is desk-review's own, so another review reads the whole head.
+  const tT = fixTask(tk({ fix: rvT.fix }), '/pullbot'), bT = fixBrief(tk({ fix: rvT.fix }), '/pullbot');
+  t('DS-545 AC1 a narrowed review try under /pullbot names /pullbot alone, task and brief', `${pull(tT)} ${pull(bT)}`, 'true false true false');
+  t('DS-545 AC1 and it asks for a whole review, with no Targeted section', `${tT.includes('targeted')} ${bT.includes('Targeted')}`, 'false false');
+  t('DS-545 AC5 a narrowed try under /desk-review reads as today', fixTask(tk({ fix: rvT.fix }), '/desk-review') === fixTask(tk({ fix: rvT.fix })) && fixBrief(tk({ fix: rvT.fix }), '/desk-review') === briefT, true);
   t('DS-545 AC5 and today\'s names desk-review Phase 7', fixTask(tk({ fix: tries.rereview })).includes('Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code.'), true);
 }
 

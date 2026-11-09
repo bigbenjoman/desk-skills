@@ -781,7 +781,7 @@ export function fixBrief(t, review = null) {
         ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not rerun the check that reads its review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
         : `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`,
       `${ownReview(review) ? cap(reviewStep(review, 'that head')) : 'Review that head with desk-review and post the review on the PR (desk-review Phase 7)'}, so its verdict marker is on the head. Change no code in this try: a P0, a P1, a listed P2 or a gap the review finds goes to a fix worker at the next pass.`, '',
-      ...targetedBrief(f.targeted),
+      ...targetedBrief(ownReview(review) ? null : f.targeted),
       f.extra ? `A merge from the base moved this head, so this try is not one of the ${f.of} fix tries. A PR with no verdict readable at its head after it goes to the person.`
         : `This is try ${f.try} of ${f.of}. A PR with no verdict readable at its head after this try goes to the person.`, ''].join('\n');
   }
@@ -858,7 +858,8 @@ export function fixBrief(t, review = null) {
 }
 
 // A review try's narrowing (reviewTry `targeted`): the files the base moved and the PR's code that uses
-// them, read as desk-review's targeted round; nothing for a whole review.
+// them, read as desk-review's targeted round; nothing for a whole review, which is what a review other
+// than desk-review runs, since the targeted round is desk-review's own.
 function targetedBrief(x) {
   if (!x) return [];
   return ['### Targeted: review only what the base changed under the review', '',
@@ -884,7 +885,7 @@ export function fixTask(t, review = null) {
   if (f.kind === 'rereview') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
       `Your task is ${f.extra ? 'a review try after a merge from the base' : `review try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
-      `${cap(reviewStep(review, 'its head', f.targeted ? ', in its targeted round on only what the briefing\'s "Targeted" section names,' : ''))}, and change no code. ` +
+      `${cap(reviewStep(review, 'its head', f.targeted && !ownReview(review) ?', in its targeted round on only what the briefing\'s "Targeted" section names,' : ''))}, and change no code. ` +
       `Open no new PR, leave the PR ${f.ready ? 'out of' : 'in'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
   }
   if (f.kind === 'protected') {
