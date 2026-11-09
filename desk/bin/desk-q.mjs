@@ -1861,11 +1861,11 @@ function loginLine(tool, s, { now, solid = false, nameW = 0 }, { held = false, h
   const label = [pad(tool, 8), GREY];
   if (!s.login) {
     const f = s.out[0];
-    return segLine([label, [`all ${s.n} logins at their limit`, FAIL], ['  · first back ', GREY], [f.login.name, null],
+    return segLine([label, [`all ${s.n} logins at their limit`, FAIL], ['  · first back ', GREY], [loginLabel(f.login), null],
       ...(f.at != null ? [[' at ', GREY], [resetText(f.at * 1000, now), null]] : [])]);
   }
   const r = s.reading;
-  const segs = [label, [`${s.login.name.padEnd(nameW)}  `, null]];
+  const segs = [label, [`${loginLabel(s.login).padEnd(nameW)}  `, null]];
   if (r?.at == null) segs.push(['no reading yet', GREY]);
   else segs.push(...barSegs(r, false, now, solid));
   if (s.out.length) segs.push(['  │ ', GREY], [`${s.out.length} at limit`, FAIL], ...(s.out[0].at != null ? [[` to ${resetText(s.out[0].at * 1000, now)}`, GREY]] : []));
@@ -1876,7 +1876,7 @@ function loginLine(tool, s, { now, solid = false, nameW = 0 }, { held = false, h
 }
 export function usageLines(u, opts) {
   const l = u.logins;
-  const o = { ...opts, nameW: Math.max(0, ...[l?.claude, l?.codex].map((s) => s?.login?.name.length ?? 0)) };
+  const o = { ...opts, nameW: Math.max(0, ...[l?.claude, l?.codex].map((s) => (s?.login ? loginLabel(s.login).length : 0))) };
   return [l?.claude ? loginLine('Claude', l.claude, o, u) : usageLine(u, opts), ...(l?.codex ? [loginLine('Codex', l.codex, o)] : [])];
 }
 
@@ -1886,7 +1886,7 @@ function allOutNote(s, now) {
   const f = s.out[0];
   const standby = s.out.some((o) => o.login.rule === 'standby');
   return { tag: '▲ usage', sgr: WARN, text: [[`Every Claude login is at its limit${standby ? ', standby ones too' : ''}, so no new workers start. `
-    + `The first back is ${f.login.name}${f.at != null ? ` at ${resetText(f.at * 1000, now)}` : ', once a probe call on it succeeds'}. `, null], ['Add a login on view 6 to start sooner.', BOLD]] };
+    + `The first back is ${loginLabel(f.login)}${f.at != null ? ` at ${resetText(f.at * 1000, now)}` : ', once a probe call on it succeeds'}. `, null], ['Add a login on view 6 to start sooner.', BOLD]] };
 }
 
 // ---- Usage -------------------------------------------------------------------------------------
@@ -1962,13 +1962,13 @@ function ruleCell(x, n) {
 }
 // A signed-out or refused login has one cell across both windows, saying desk won't use it.
 const unusable = (x) => (x.check?.state === 'signed out' ? '◆ signed out: desk won\'t use it'
-  : x.check?.state === 'duplicate' ? `◆ the same account as ${x.check.duplicateOf}: desk won't use it` : null);
+  : x.check?.state === 'duplicate' ? '◆ same account as above: no new workers' : null);
 function loginRow(x, n, now, solid) {
   const no = unusable(x);
   const windows = no ? fitCell([[no, YOU]], U_5H + U_7D)
     : [...fitCell(x.login.rule === 'off' ? [['not used', GREY]] : windowCell(x, 'five_hour', now, solid), U_5H), ...fitCell(windowCell(x, 'seven_day', now, solid), U_7D)];
   const workers = x.workers == null ? ['—', GREY] : [String(x.workers), x.workers ? null : GREY];
-  const segs = [['  ', null], ...fitCell([[cut(loginLabel(x.login), U_NAME - 1), null]], U_NAME), ...fitCell([[x.plan ?? '—', no || !x.plan ? GREY : null]], U_PLAN),
+  const segs = [['  ', null], ...fitCell([[cut(loginLabel(x.login), U_NAME - 1), null]], U_NAME), ...fitCell([[cut(x.plan ?? '—', U_PLAN - 1), no || !x.plan ? GREY : null]], U_PLAN),
     ...fitCell([ruleCell(x, n)], U_RULE), ...windows, ...fitCell([workers], U_WORKERS, true)];
   return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check };
 }
@@ -1977,11 +1977,17 @@ const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${
 // The line under the tabs: the logins new work starts on and any at its limit until when, or with one
 // login per tool, that every worker runs on it.
 function usageHeadline(repos, now, t) {
+  // Two logins on one account are one account's room: what follows would name it as both open and at its limit.
+  const dup = t.claude.find((x) => x.check?.state === 'duplicate');
+  if (dup) {
+    const name = loginLabel(dup.login);
+    return segLine([[`${t.claude.filter((x) => loginLabel(x.login) === name).length} logins are signed in to `, GREY], [name, BOLD], [', so desk counts them as one.', GREY]]);
+  }
   const s = loginsNow(repos, now);
   const oneEach = segLine([['Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.', GREY]]);
   if (!s || (t.claude.length <= 1 && t.codex.length <= 1)) return oneEach;
   const { claude: c, codex: x } = s;
-  const when = (o) => (o.at != null ? resetText(o.at * 1000, now) : null);
+  const when = (o) => (o.at != null ? resetText(o.at * 1000, now).replace(' ', '\u00a0') : null);
   // Every login of a tool at its limit: the first back, and when.
   const byReset = (a, b) => (a.at ?? Infinity) - (b.at ?? Infinity);
   const allOut = (tool, side, held, unknown) => {
@@ -2046,7 +2052,7 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   };
   const claudeRows = table('CLAUDE', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
   const rows = [...claudeRows, ...(claudeRows.length && codexRows.length ? [{ line: '' }] : []), ...codexRows];
-  if (adding) return { head: [usageHeadline(repos, now, t), ''], rows, foot: ['', ...addPanel(adding, t, w)] };
+  if (adding) return { head: [...leadLines('', usageHeadline(repos, now, t).segs, w), ''], rows, foot: ['', ...addPanel(adding, t, w)] };
   const all = [...t.claude, ...t.codex];
   const key = leadLines('  ', t.claude.length <= 1 && t.codex.length <= 1
     ? [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]]
@@ -2057,6 +2063,12 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
       ...(p.then ? [[', then ', null], [p.then, HUE.cyan]] : [])] };
   });
+  for (const x of t.claude.filter((c) => c.check?.state === 'duplicate')) {
+    const own = t.claude.find((c) => c.login.name === x.check.duplicateOf);
+    if (!own) continue;
+    notes.push({ tag: '◆ one account', sgr: YOU, text: [[`${own.login.name} and ${x.login.name} are both signed in to ${loginLabel(x.login)}. Running /login replaces the account of the login it runs in. To use your other subscription, sign one of them in to it: `, null],
+      [signInParts(own.login).shell, HUE.cyan], [` for ${own.login.name}, or `, null], [signInParts(x.login).shell, HUE.cyan], [` for ${x.login.name}, then `, null], ['/login', HUE.cyan], ['.', null]] });
+  }
   if (t.claude.some((x) => inUse(x.login) && !unusable(x) && x.reading?.at == null)) {
     notes.push({ tag: 'no reading', sgr: GREY, text: [['Logins with no reading yet are read in the next 5 minutes. A login with no reading still takes workers, after the logins whose room is known.', null]] });
   }
@@ -2065,7 +2077,7 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   const rot = ats('in rotation'), standby = ats('standby');
   const stale = rot.length && standby.length && Math.min(...standby) < Math.max(...rot) ? ` Standby logins were last read at ${resetText(Math.min(...standby), now)}.` : '';
   const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.${stale}` : '  No login has a reading yet.');
-  return { head: [usageHeadline(repos, now, t), ''], rows, foot: ['', ...key, ...(notes.length ? ['', ...noteLines(notes, 14, w)] : []), '', readLine] };
+  return { head: [...leadLines('', usageHeadline(repos, now, t).segs, w), ''], rows, foot: ['', ...key, ...(notes.length ? ['', ...noteLines(notes, 14, w)] : []), '', readLine] };
 }
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not

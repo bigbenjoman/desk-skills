@@ -171,6 +171,35 @@ await S.press(' '); await S.until(checked);
 t('space from off comes round to in rotation', /`personal` \| `~\/.claude` \| `in rotation` \|/.test(subsText()), true);
 S.done();
 
+// ---- two logins on one account: the row, the line under the tabs and a note that says how to fix it
+account(join(SPARE, '.claude.json'), 'me@example.test', 'Ultra');
+const D = open({ kind: 'overview', all: false });
+await sleep(20);
+await D.press('6');
+f = await D.until((x) => x.some((l) => l.includes('◆ same account')));
+t('a refused row points at the row it repeats and promises only what is true', f.filter((l) => l.slice(2).startsWith('me@example.test ') && l.includes('◆ same account as above: no new workers')).length, 1);
+t('the line under the tabs says what is wrong, not a limit on an account it also starts work on', f[3], '2 logins are signed in to me@example.test, so desk counts them as one.');
+const prose = f.join(' ').replace(/\s+/g, ' ');
+t('a note names both logins and the account', prose.includes('◆ one account'), true);
+t('and says what changed it', prose.includes('personal and spare are both signed in to me@example.test. Running /login replaces the account of the login it runs in.'), true);
+t('and gives the command for each', prose.includes('To use your other subscription, sign one of them in to it: claude for personal, or CLAUDE_CONFIG_DIR=~/.claude-logins/spare claude for spare, then /login.'), true);
+D.done();
+account(join(SPARE, '.claude.json'), 'spare@example.test', 'Pro');
+
+// ---- the line under the tabs wraps, whole, however long the account names are
+const LONG = 'a.very.long.account.name.indeed@example.test';
+account(join(WORK, '.claude.json'), LONG, 'Max 5x');
+repo({ default: { login: 'personal', config_dir: null, type: 'seven_day', resets_at: at(27, 6, 0), since: 'x', by: 'x' } });
+const LW = open({ kind: 'overview', all: false });
+await sleep(20);
+await LW.press('6');
+f = LW.frame().map((l) => l.replace(/\u00a0/g, ' '));
+t('a long headline is not cut', `${f[3]} ${f[4]}`, `New Claude workers start on ${LONG}: me@example.test is at its weekly limit until Tue 06:00.`);
+t('and a reset time stays on one line', f[4].endsWith('Tue 06:00.') && !f[3].endsWith('Tue'), true);
+LW.done();
+account(join(WORK, '.claude.json'), 'work@example.test', 'Max 5x');
+repo();
+
 // ---- AC10, AC11: a signed-out login says so, and y copies its sign-in command
 writeFileSync(join(SPARE, '.signed-out'), '');
 const O = open({ kind: 'overview', all: false });
