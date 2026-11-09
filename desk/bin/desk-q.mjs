@@ -3500,7 +3500,7 @@ export function interactive({
     }
     adding = { tool, login: makeLogin({ tool, name: f.name, folder: f.dir, rule: 'standby', source: 'found' }), label: name };
     selId = 'adding';
-    msg = `esc cancels adding ${name ?? 'the new account'}.`;
+    msg = `esc cancels adding ${addingName(adding)}.`;
     clearInterval(addTimer);
     addTimer = setInterval(() => { if (!done && adding && !checking) checkLogins(); }, addCheckMs);
     if (!checking) checkLogins();
@@ -3520,7 +3520,7 @@ export function interactive({
       if (c.rule !== 'standby' && saving) return;
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      const said = `${c.email ?? a.label ?? a.login.name} is added, on standby. Press space to start giving it workers.`;
+      const said = `${c.email ?? a.label ?? 'The new account'} is added, on standby. Press space to start giving it workers.`;
       if (c.rule === 'standby') msg = said;
       else saveLogin(['set', a.tool, a.login.name, 'standby'], said, null);
     }
