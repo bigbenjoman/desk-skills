@@ -188,11 +188,8 @@ AUTOPILOT_NOTE:  <a discovery a sibling ticket in this batch would want>
 AUTOPILOT_DECISION: <one JSON object per call you took (section 1)>
 AUTOPILOT_IMAGES: <the absolute screenshot directory from your briefing>
 AUTOPILOT_PARK:  <question>
-AUTOPILOT_DONE:  pr=<number> jira=<status, or "none" with no tracker> [follow_on=<JSON array>]
+AUTOPILOT_DONE:  pr=<number> jira=<status, or "none" with no tracker>
 ```
-
-`follow_on=` names the steps that can only run once your PR merges (Stage 5 file, "Steps that can
-only run once your PR merges"); who merges the PR is never a park.
 
 Emit `AUTOPILOT_STAGE` **as you reach each stage**, not batched into your final message: a worker
 that reports only at the end is indistinguishable from one that has wedged.
