@@ -169,6 +169,31 @@ before = read(standingQ);
 r = cli('queue.mjs', ['admit', 'G-3']);
 t('DS-307 a feature batch done but unpromoted keeps its epic\'s child', r.code !== 0 && r.out.includes('G-3 is a child of epic G-1') && read(standingQ) === before, true);
 
+// A feature batch past its last promotion takes no more tickets, though it is listed until archived.
+// gh is faked: FAKE_PR_STATE and FAKE_MERGED_AT answer `gh pr view`.
+const FAKEGH = join(T, 'fakegh');
+mkdirSync(FAKEGH, { recursive: true });
+writeFileSync(join(FAKEGH, 'gh'), '#!/bin/sh\ncase "$*" in *mergedAt*) echo "$FAKE_MERGED_AT" ;; *) echo "$FAKE_PR_STATE" ;; esac\n', { mode: 0o755 });
+const gh = (state, at = '') => ({ PATH: `${FAKEGH}:${process.env.PATH}`, FAKE_PR_STATE: state, FAKE_MERGED_AT: at });
+const g1 = read(namedQ('G-1'));
+const g1With = (promotion, tickets = {}) => writeFileSync(namedQ('G-1'), JSON.stringify({ ...JSON.parse(g1), promotion, tickets: { ...JSON.parse(g1).tickets, ...tickets } }));
+const g1Live = (env) => run(env, "console.log(B.liveBatch('G-1'))").out;
+// AC4: a promotion PR still open keeps the epic's children, as before.
+g1With({ pr: 7 });
+t('DS-523 AC4 an open promotion PR: the feature batch is live', g1Live(gh('OPEN')), 'true');
+r = cli('queue.mjs', ['admit', 'G-3'], gh('OPEN'));
+t('DS-523 AC4 its epic\'s child is refused naming that batch', r.code !== 0 && r.out.includes('G-3 is a child of epic G-1') && read(standingQ) === before, true);
+// AC1: the last promotion merged, recorded by a pass or with every ticket merged before it.
+g1With({ pr: 7, merged: [{ pr: 7, slice: 1 }] });
+t('DS-523 AC1 a last promotion a pass recorded: not live, asking GitHub nothing', g1Live(gh('OPEN')), 'false');
+g1With({ pr: 7 }, { 'G-2': { key: 'G-2', state: 'done', merged_at: '2026-11-09T06:00:00Z' } });
+t('DS-523 AC1 a merged promotion every ticket merged before: not live', g1Live(gh('MERGED', '2026-11-09T06:42:00Z')), 'false');
+t('DS-523 a merged slice with a ticket merged after it: still live', g1Live(gh('MERGED', '2026-11-09T05:00:00Z')), 'true');
+t('DS-523 AC1 promotedEpicBatch names the batch and PR', run(gh('MERGED', '2026-11-09T06:42:00Z'), "console.log(JSON.stringify(B.promotedEpicBatch({ epic: { key: 'G-1' } })))").out, '{"batch":"G-1","pr":7}');
+r = cli('queue.mjs', ['admit', 'G-3'], gh('MERGED', '2026-11-09T06:42:00Z'));
+t('DS-523 AC1 its epic\'s child is admitted into the standing batch', r.code === 0 && JSON.parse(read(standingQ)).tickets['G-3']?.state, 'triaged');
+writeFileSync(namedQ('G-1'), g1);
+
 // Another batch's queue that cannot be read refuses the key naming it, never a crash.
 mkdirSync(dirname(namedQ('Z-1')), { recursive: true });
 writeFileSync(namedQ('Z-1'), '{ not json');

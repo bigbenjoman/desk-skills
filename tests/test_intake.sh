@@ -466,6 +466,23 @@ search Z-2 Z-3; out=$(intake); rc=$?
 check "DS-307: another batch's unreadable queue is reported per ticket, and the run carries on" '[ $rc -eq 0 ] && grep -q "intake: not admitted: Z-2 cannot be checked against batch Z-1" <<< "$out" && grep -q "Z-3 cannot be checked" <<< "$out" && [ "$(qget tickets.Z-2)" = undefined ]'
 rm -rf "$ZB"; out=$(intake)
 check "DS-307: once that queue is fixed, the ticket is taken" '[ "$(qget tickets.Z-2.state)" = triaged ]'
+# A feature batch past its last promotion, which a pass recorded, waits only to be archived: it takes
+# nothing more. Its epic's child and a ticket blocked by one of its tickets go to the standing batch.
+WB="$DESK_HOME/repos/acme__widgets/batches/W-1"; mkdir -p "$WB"
+wq(){ printf '{"version":1,"batch":"W-1","epic":"W-1","base":"feat/w-1","supervised":true,"promotion":%s,"tickets":{"W-0":{"key":"W-0","state":"triaged"}}}\n' "$1" > "$WB/queue.json"; }
+wq '{"pr":7,"merged":[{"pr":7,"slice":1}]}'
+rec W-2 A '"epic":{"key":"W-1","summary":"a promoted feature"}'
+rec W-3 A '"blockers":[{"key":"W-0","category":"new"}]'
+search W-2 W-3; out=$(intake)
+check "DS-523 AC1: a child of an epic whose last promotion merged is admitted into the standing batch" '[ "$(qget tickets.W-2.state)" = triaged ] && ! grep -q "W-2" "$WB/queue.json"'
+check "DS-523 AC1: the report says the epic's batch has finished" 'grep -q "intake: admitted W-2 by intake into batch b1 .*: epic W-1.s feature batch has finished (its last promotion PR #7 merged), so it joins the standing batch$" <<< "$out"'
+check "DS-523 AC2: a ticket blocked by one in that batch is placed in the standing batch" '[ "$(qget tickets.W-3)" != undefined ] && ! grep -q "W-3" "$WB/queue.json"'
+# AC4: while its promotion PR is open (the fake gh reads OPEN), the batch is live and keeps its children.
+wq '{"pr":7}'
+rec W-4 A '"epic":{"key":"W-1","summary":"a feature"}'
+search W-4; out=$(intake)
+check "DS-523 AC4: with the promotion PR open, the epic's child is not admitted into the standing batch" '[ "$(qget tickets.W-4)" = undefined ] && grep -q "intake: W-4 not admitted: W-4 is a child of epic W-1, whose feature batch W-1 is running" <<< "$out"'
+rm -rf "$WB"
 
 # ---- DS-351: an epic admitted with no session ------------------------------------------------------
 # The checkout gets an origin to push the feature branch to. expand-parent and plan-batch are fakes in
