@@ -64,7 +64,7 @@ import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, personStep } from './batch-state.mjs';
-import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
+import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 
@@ -200,6 +200,15 @@ const batchEnv = (b) => {
 // The named batches that are live (listed, readable and not finished): feature batches, by name.
 function liveFeatureBatches() {
   try { return listBatches().filter((b) => b.name && liveBatch(b.name)); } catch { return []; /* outside a repo there are none */ }
+}
+// Whether epic `key` has a feature batch listed, live or past its last promotion and not yet archived.
+function epicBatchListed(key) {
+  try { return listBatches().some((b) => b.name === key); } catch { return false; }
+}
+// What the report says of a ticket whose epic's feature batch is past its last promotion, or ''.
+function epicFinishedNote(rec) {
+  const f = promotedEpicBatch(rec);
+  return f ? `: epic ${f.batch}'s feature batch has finished (its last promotion PR #${f.pr} merged), so it joins the standing batch` : '';
 }
 // Whether live named batch `name` is handed to the supervisor.
 function handedOver(name) {
@@ -423,7 +432,7 @@ function placeOne(key, rec, { started, by, now, mayStart = true }) {
     batch = started = st.name;
   }
   const a = admitHeld(key, holds, by);
-  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, started: startNew ? started : null } : { admitFailed: a.why, started: startNew ? started : null };
+  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, started: startNew ? started : null, note: epicFinishedNote(rec) } : { admitFailed: a.why, started: startNew ? started : null };
 }
 
 async function intake({ state, query, reg, now }) {
@@ -493,8 +502,9 @@ async function intake({ state, query, reg, now }) {
   // drafted and left for the person, beside the standing batch and any other epic's.
   const epicKeys = open.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key);
   for (const [n, key] of epicKeys.entries()) {
-    if (liveFeatureBatches().some((b) => b.name === key)) {
-      const text = `an epic, and its feature batch ${key} is already running: its children join that batch`;
+    if (epicBatchListed(key)) {
+      const text = liveBatch(key) ? `an epic, and its feature batch ${key} is already running: its children join that batch`
+        : `an epic, and its feature batch ${key} is past its last promotion, waiting to be archived: its children join the standing batch`;
       reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: key, text };
       writeIntake(state, reg);
       lines.push(`intake: ${key} not admitted: ${text}`);
@@ -579,7 +589,7 @@ async function intake({ state, query, reg, now }) {
     reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}${parked}` };
     writeIntake(state, reg);
     admitted.push(key);
-    lines.push(`intake: admitted ${key} by intake into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r)}${took}${parked}`);
+    lines.push(`intake: admitted ${key} by intake into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r)}${took}${parked}${r.note ?? ''}`);
   }
   return done({ started });
 }
@@ -710,6 +720,7 @@ async function byHand(keys, { state, by, front, now, onLine }) {
     if (isEpic({ name: t.rec.type })) {
       // Each epic runs as its own feature batch, beside the standing batch and any other epic's.
       if (liveFeatureBatches().some((b) => b.name === key)) return refuse(key, `an epic, and its feature batch ${key} is already running: admit its children, which join that batch`);
+      if (epicBatchListed(key)) return refuse(key, `an epic, and its feature batch ${key} is past its last promotion, waiting to be archived: admit its children, which join the standing batch`);
       // Without a standing grant for headless workers, a session plans it with the person.
       if (!mayStart) {
         plan.push(key);
@@ -764,7 +775,7 @@ async function byHand(keys, { state, by, front, now, onLine }) {
     reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}, by ${by}` };
     writeIntake(state, reg);
     admitted.push(key);
-    say(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}`);
+    say(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}${r.note ?? ''}`);
     const open = new Set(openBlockers(rec));
     for (const b of r.outside ?? []) if (open.has(b) && !keys.includes(b)) next.add(b);
     if (front) say(toFrontIn(feature ? batchEnv(feature) : process.env, key));

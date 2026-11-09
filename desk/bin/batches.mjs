@@ -96,6 +96,16 @@ export function lastPromotion(tickets, mergedAt) {
   return Object.values(tickets ?? {}).every((t) => t.merged_at && at != null && Date.parse(t.merged_at) <= at);
 }
 
+// Whether a feature batch's last promotion PR has merged, so it takes no more tickets: as a pass
+// recorded it (pass.mjs nextPromotion), or with every ticket merged before it. GitHub is asked only
+// when no pass has recorded it.
+export const lastPromotionRecorded = (q) => q?.promotion?.pr != null && (q.promotion.merged ?? []).some((m) => String(m.pr) === String(q.promotion.pr));
+export function promoted(q, { state = prState, mergedAt = prMergedAt } = {}) {
+  const p = q?.promotion?.pr;
+  if (p == null) return false;
+  return lastPromotionRecorded(q) || (state(p) === 'MERGED' && lastPromotion(q.tickets, mergedAt(p)));
+}
+
 // The pid holding a batch's pass lock, or its supervisor lock other than this process's own, or null.
 // A holder that has exited holds nothing.
 export const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
@@ -132,17 +142,29 @@ export function otherRunningBatches(slug, own, defaultBase, isFinished = finishe
 const peek = (b) => { try { return { q: readQueue(b.queue) }; } catch (e) { return { unreadable: e.message }; } };
 const where = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 
-// Whether the named batch `name` is listed, readable and not finished.
+// Whether the named batch `name` is listed, readable, not finished, and not past its last promotion.
 export function liveBatch(name) {
   let b;
   try { b = listBatches().find((x) => x.name === name); } catch { return false; }
   const { q } = b ? peek(b) : {};
-  return !!q && !finished(q);
+  return !!q && !finished(q) && !promoted(q);
+}
+
+// The feature batch of the epic that triage record `rec` names, when it is listed but its last
+// promotion has merged: {batch, pr}, or null. Its children go to the standing batch.
+export function promotedEpicBatch(rec) {
+  const epic = rec?.epic?.key;
+  if (!epic) return null;
+  let b;
+  try { b = listBatches().find((x) => x.name === epic); } catch { return null; }
+  const { q } = b ? peek(b) : {};
+  return q && promoted(q) ? { batch: epic, pr: q.promotion.pr } : null;
 }
 
 // Why `key` may not join the batch whose queue is `own`, or null: another unfinished batch holds it
 // (`held` then names that batch, its state directory and the ticket's state there), or
-// its triage record `rec` names an epic whose feature batch is unfinished. -> {batch, why},
+// its triage record `rec` names an epic whose feature batch is unfinished and not past its last
+// promotion. -> {batch, why},
 // with `epic` set to that epic for its child, and `unreadable` set when another batch's queue cannot be
 // read, so the key cannot be checked. Never
 // throws: callers check one key of many. Outside a repo there are no batches to list.
@@ -160,7 +182,7 @@ export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
       why: `${key} is in ${where(held.b)}: a ticket is in one batch at most; ${move}` };
   }
   const epic = rec?.epic?.key;
-  const feature = epic && live.find((x) => x.b.name === epic);
+  const feature = epic && live.find((x) => x.b.name === epic && !promoted(x.q));
   if (feature) return { batch: epic, epic, why: `${key} is a child of epic ${epic}, whose feature batch ${epic} is running: it joins that batch, never another` };
   return null;
 }
