@@ -3,11 +3,12 @@
 // make triage ask or a worker park, so it is fixed before the ticket reaches a batch. desk-jira lint
 // and create gather the ticket and pipe it here; ticket-facts.mjs records the result for plan-batch.
 //   node ticket-lint.mjs [--json] < ticket.json
-// ticket.json: {key, type, text, wiki, size, blocks, parent, siblings, facts}
+// ticket.json: {key, type, text, wiki, size, blocks, blocked_by, parent, siblings, facts}
 //   text      the description: Jira wiki markup when wiki is true (render checks run), else markdown
 //   size      the Size field's value, '' or null when unset (a first line `Size: M` also counts);
 //             leave it out where a ticket has no size at all
 //   blocks    the keys this ticket has a Blocks link with, either direction
+//   blocked_by  the keys of those it is "blocked by"
 //   parent    the parent as desk-jira get --json gives it, or null
 //   siblings  [{key, summary}]: the parent's children
 //   facts     [{line, text}]: the status, priority and size lines desk-jira refuses in a body
@@ -18,6 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { baseRef, checkTicket, designDir, sections } from './desk-design.mjs';
 import { configValue, isNone, stateDir } from './desk-env.mjs';
+import { isEpic } from './desk-q-eta.mjs';
 
 // The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
 // code reads as prose and line numbers still match the source.
@@ -118,6 +120,11 @@ export function lintTicket(t, { root, dir, ref } = {}) {
   // ---- advisory ----
   if (!sec(/^out of scope\b/i)) add('advisory', 'section', 'no "Out of scope" section ("None." is an answer)');
   if (!sec(/^verification\b/i)) add('advisory', 'section', 'no "Verification" section');
+
+  const parent = t.parent?.key;
+  if (parent && isEpic(t.parent?.fields?.issuetype) && (t.blocked_by ?? []).includes(parent)) {
+    add('advisory', 'dependency', `linked as blocked by its own epic ${parent}, which is Done only once its children are, so the link can never clear: autopilot ignores it; remove it (desk-jira unlink)`);
+  }
 
   const blocks = new Set(t.blocks ?? []);
   const skip = new Set([t.key, t.parent?.key, ...blocks].filter(Boolean));

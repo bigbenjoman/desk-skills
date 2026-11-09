@@ -125,7 +125,7 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, base: 'main', required: [], advisory: [] };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, jiraDone: () => false, base: 'main', required: [], advisory: [] };
 // A park the person answered through desk-needs-you whose requeue was left to the live session running
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
@@ -164,6 +164,8 @@ function holdContext(r) {
   try { granted = mergeGrant(r.q, (id) => repoPermission(r.slug, id)).by != null; } catch { /* a grant that cannot be read is none */ }
   const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
+  // Whether ticket `key`'s triage record last read its blocker `b` Done in Jira.
+  const jiraDone = (key, b) => (triageOf(r.stateDir, key)?.blockers ?? []).some((x) => x?.key === b && x.category === 'done');
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
   let base = typeof r.q?.base === 'string' ? r.q.base.trim() : '';
   if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* an unreadable row reads as main */ } }
@@ -176,7 +178,7 @@ function holdContext(r) {
   let basePush = 'no';
   try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, jiraDone, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -199,7 +201,10 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
 function blockerHold(q, key, b, ctx, seen) {
   const bt = q.tickets?.[b];
-  if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) return { k: 'waiting', name: b, text: `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
+  if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) {
+    return { k: 'waiting', name: b, text: ctx.jiraDone?.(key, b) ? `behind ${b}, outside this batch: Done, waiting for its code to reach ${ctx.base}`
+      : `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
+  }
   if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {

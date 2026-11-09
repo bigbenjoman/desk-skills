@@ -14,7 +14,9 @@
 //
 // Adds, for a tracker key:
 //   blockers     [{key, category, summary, type}] — "is blocked by" (Blocks) links, with the blocker's
-//                status category, summary and issue type
+//                status category, summary and issue type, less any to its own epic (its parent epic
+//                or the batch's), which can never be Done before it
+//   own_epic_blockers  [key] — those links to its own epic, ignored; absent when there are none
 //   other_links  how many links of another type (not Blocks, not Relates) were ignored
 //   size         XS|S|M|L|XL from the field named "Size", else a first description line "Size: M", else null
 //   epic         {key, summary, children: [{key, done}]} when its Jira parent is an epic, else null; the
@@ -30,13 +32,24 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { ghRepo, stateDir, ticketKind } from './desk-env.mjs';
+import { ghRepo, queueFile, stateDir, ticketKind } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 import { baseRef, designFact } from './desk-design.mjs';
-import { SIZES, epicFact, blockersFact } from './desk-q-eta.mjs';
+import { SIZES, epicFact, blockersFact, splitOwnEpic } from './desk-q-eta.mjs';
 
 const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').pop();
 const jira = (args) => JSON.parse(execFileSync('desk-jira', [...args, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }));
+
+// The epic the batch this record belongs to runs, or null.
+const batchEpic = () => { try { return JSON.parse(readFileSync(queueFile(), 'utf8')).epic ?? null; } catch { return null; } };
+// `blockers` from the issue, less a link to the ticket's own epic, which is kept as own_epic_blockers.
+function setBlockers(rec, issue) {
+  const { blockers, own } = splitOwnEpic(blockersFact(issue), epicFact(issue, null)?.key, batchEpic());
+  rec.blockers = blockers;
+  if (own.length) rec.own_epic_blockers = own;
+  else delete rec.own_epic_blockers;
+}
+const ownEpicNote = (rec) => (rec.own_epic_blockers?.length ? `  ignored: blocked by its own epic ${rec.own_epic_blockers.join(', ')}` : '');
 
 // The epic's children in this repo, so the forecast can count the ones not queued yet; a child
 // under another key pattern never runs in this queue (expand-parent.mjs drops it the same way).
@@ -63,9 +76,9 @@ if (process.argv[2] === '--blockers') {
     try { rec = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: no readable triage record at ${path}`); continue; }
     let issue;
     try { issue = jira(['get', key]); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: ${lastLine(e) || 'desk-jira get failed'}`); continue; }
-    rec.blockers = blockersFact(issue);
+    setBlockers(rec, issue);
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
-    console.log(`[facts] ${key}  blocked by ${rec.blockers.map((b) => `${b.key} (${b.category})`).join(', ') || 'nothing'}`);
+    console.log(`[facts] ${key}  blocked by ${rec.blockers.map((b) => `${b.key} (${b.category})`).join(', ') || 'nothing'}${ownEpicNote(rec)}`);
   }
   process.exit(failed ? 1 : 0);
 }
@@ -95,7 +108,7 @@ if (!kind.ok) { console.error(kind.error); process.exit(2); }
 const path = join(stateDir(), 'triage', `${key}.json`);
 if (!existsSync(path)) { console.error(`no triage record at ${path}`); process.exit(1); }
 const rec = JSON.parse(readFileSync(path, 'utf8'));
-for (const f of ['blockers', 'other_links', 'size', 'labels', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
+for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'labels', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
 
 // The design fact, read against the base a worker branches from, as origin has it where fetched.
 function design(text) {
@@ -130,7 +143,7 @@ if (kind.kind !== 'tracker') {
   }
   if (issue) {
     const links = issue.fields?.issuelinks ?? [];
-    rec.blockers = blockersFact(issue);
+    setBlockers(rec, issue);
     rec.other_links = links.filter((l) => !/block/i.test(l.type?.name ?? '') && !/^relates$/i.test(l.type?.name ?? '')).length;
     const sizeField = Object.entries(issue.names ?? {}).find(([, n]) => /^(t-shirt )?size$/i.test(String(n).trim()))?.[0];
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';
@@ -153,4 +166,4 @@ writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
 const blocking = (rec.lint ?? []).filter((f) => f.severity === 'blocking').length;
 console.log(`[facts] ${key}  ${rec.links === 'n/a' ? 'links n/a'
   : rec.facts_error ? `NOT READ: ${rec.facts_error}`
-  : `blocked by ${rec.blockers.map((b) => b.key).join(', ') || 'nothing'}  size ${rec.size ?? '-'}`}  ${rec.lint_error ? `lint NOT RUN: ${rec.lint_error}` : `lint ${blocking} blocking`}`);
+  : `blocked by ${rec.blockers.map((b) => b.key).join(', ') || 'nothing'}${ownEpicNote(rec)}  size ${rec.size ?? '-'}`}  ${rec.lint_error ? `lint NOT RUN: ${rec.lint_error}` : `lint ${blocking} blocking`}`);

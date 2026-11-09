@@ -61,6 +61,12 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   blocker in no batch that the ticket was admitted behind (`held_outside`) is not STUCK: the pass
   lifts it once it is Done in Jira and its PR has merged to the batch's base.
 
+**A link to the ticket's own epic never holds it.** An epic is Done only once its children are, so a
+ticket linked "is blocked by" its Jira parent epic, or by the epic its batch runs, would wait for ever.
+Triage leaves that link out of the ticket's blockers, the pass lifts any hold already on it and prints
+one `lint:` line saying the link is ignored, and `desk-jira lint` flags it. Nothing writes to Jira:
+removing the link is the person's.
+
 **A blocker in no batch that is a step only the person takes holds the merge, not the build.** A
 Task whose summary says apply, confirm or sign off, or a blocker whose summary names one of the
 ticket's triage `ben_steps`, is recorded on the ticket at admission as `merge_after`, not as a hold:

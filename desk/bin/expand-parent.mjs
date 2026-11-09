@@ -95,7 +95,8 @@ for (const c of jira('children', key, '--json')) {
       else open.push(s);
     }
     if (open.length) {
-      containers[c.key] = { subtasks: open.map((s) => s.key), blocked_by: blockersOf(c) };
+      // A link to the epic itself never clears before its children do, so it is not carried over.
+      containers[c.key] = { subtasks: open.map((s) => s.key), blocked_by: blockersOf(c).filter((b) => b.key !== key) };
       say(`  ${c.key}${cat === 'indeterminate' ? ' (in progress)' : ''} → ${open.map((s) => s.key).join(' ')} (its open subtasks)`);
       keys.push(...open.map((s) => s.key));
       continue;

@@ -1254,6 +1254,36 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-391 AC1 a blocker in no batch whose link was removed no longer holds the ticket" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-8 no longer linked as a blocker; RELEASED"'
 q drop J-7
+# A link to the ticket's own epic, the batch's or its Jira parent, never holds it: an epic is Done only
+# once its children are. The record here predates ticket-facts.mjs leaving such a link out.
+blocked_by(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"%s","fields":{"status":{"statusCategory":{"key":"indeterminate"}}}}}]}}\n' "$2" > "$T/jira/$1.json"; }
+q set-batch epic=E-1
+q add J-9; q set J-9 state=parked open_questions=1 held_by=E-1 held_outside=E-1 'park={"question":"held by orchestrator: blocked by E-1 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"E-1","category":"indeterminate"}]}' > "$T/state-j/triage/J-9.json"
+blocked_by J-9 E-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-541 AC1 a ticket linked as blocked by its batch's epic is not held, and its outside blockers do not list the epic" \
+  '[ "$(field J-9 held_by)" = null ] && [ "$(field J-9 held_outside)" = null ] && [ "$(field J-9 park)" = null ] && [ "$(field J-9 outside_blockers)" = "[]" ] && echo "$out" | grep -q "outside hold: J-9: E-1 its own epic, so its link is ignored; RELEASED"'
+check "DS-541 AC1 the pass prints one line saying the ticket is linked as blocked by its own epic and the link is ignored" \
+  '[ "$(echo "$out" | grep -c "lint: J-9 is linked as blocked by its own epic E-1, .*: the link is ignored")" = 1 ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-541 AC1 the next pass does not say it again" '! echo "$out" | grep -q "J-9 is linked as blocked by its own epic"'
+node "$B/ticket-facts.mjs" --blockers J-9 >/dev/null 2>&1
+check "DS-541 a re-read of the ticket's blockers leaves its batch's epic out of them, kept as own_epic_blockers" \
+  '[ "$(jq -c "[.blockers, .own_epic_blockers]" "$T/state-j/triage/J-9.json")" = "[[],[\"E-1\"]]" ]'
+q set-batch epic=null; q drop J-9
+q add J-10; q set J-10 state=parked open_questions=1 held_by=E-2 held_outside=E-2 'park={"question":"held by orchestrator: blocked by E-2 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":{"key":"E-2","summary":"the epic"},"blockers":[{"key":"E-2","category":"indeterminate"}]}' > "$T/state-j/triage/J-10.json"
+blocked_by J-10 E-2
+q add J-11; q set J-11 state=parked open_questions=1 held_by=X-11 held_outside=X-11 'park={"question":"held by orchestrator: blocked by X-11 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":{"key":"E-2","summary":"the epic"},"blockers":[{"key":"X-11","category":"indeterminate"}]}' > "$T/state-j/triage/J-11.json"
+blocked_by J-11 X-11
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-541 AC2 in the standing batch, a ticket linked as blocked by its Jira parent epic is not held behind it" \
+  '[ "$(field J-10 held_outside)" = null ] && [ "$(field J-10 outside_blockers)" = "[]" ] && echo "$out" | grep -q "lint: J-10 is linked as blocked by its own epic E-2"'
+check "DS-541 AC3 a ticket blocked by an open ticket outside the batch that is not its epic is still held behind it" \
+  '[ "$(field J-11 state)" = "\"parked\"" ] && [ "$(field J-11 held_outside)" = "\"X-11\"" ] && [ "$(field J-11 outside_blockers | jq -c "[.[].key]")" = "[\"X-11\"]" ] && ! echo "$out" | grep -q "J-11 is linked as blocked by its own epic"'
+q drop J-10; q drop J-11
 # A done ticket whose PR waits on the person's step (merge_after) is read from Jira again, and the step
 # is lifted once Jira has it Done.
 ops1(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"OPS-1","fields":{"summary":"Apply the migration","issuetype":{"name":"Task"},"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-8.json"
