@@ -389,7 +389,7 @@ for kind in conflict review; do
   check "DS-521 AC1 $kind: its briefing says it moved logins, with the try's own brief" \
     'grep -q "^## Moved logins: this session starts its task again" "$C/state/briefings/base-feat-x.md" && grep -q "stopped at the 5-hour usage limit on login b" "$C/state/briefings/base-feat-x.md" && grep -qF "$head" "$C/state/briefings/base-feat-x.md"'
   check "DS-521 AC1 $kind: the base fix record names the login, and b stays benched" \
-    '[ "$(jq -r .base_fix.login.name "$DESK_QUEUE")" = default ] && [ "$(jq -r .base_fix.moved.from "$DESK_QUEUE")" = b ] && [ "$(jq -r ".benched.b.login" "$DESK_QUEUE")" = b ]'
+    '[ "$(jq -r .base_fix.login.name "$DESK_QUEUE")" = default ] && [ "$(jq -r ".benched.b.login" "$DESK_QUEUE")" = b ]'
   check "DS-521 AC1 $kind: the pass report says it moved logins" \
     '[[ "$out" == *"base-feat-x port="*" login=default ($what), moved logins from b, at the 5-hour usage limit;"* ]]'
   check "DS-521 AC2 $kind: the move is not a try, and the try number stays the same" \

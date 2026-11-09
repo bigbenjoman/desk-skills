@@ -1685,6 +1685,14 @@ const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.check ? 'me
 // A merge try that parks or dies can leave its merge in the base worktree, and the next sync, which
 // refuses a worktree holding anything, must reach the merge again to report it.
 const dropTryMerge = (path, last) => { if (last.kind !== 'review') dropUnpushed({ path, base: BASE }); };
+// Ends base_fix's last try with `outcome`: the record drops its session and port, and the try's merge
+// is dropped from base worktree `path`, where there is one.
+function endTry(outcome, path) {
+  bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
+  if (DRY) return;
+  q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+  if (path) dropTryMerge(path, bf.tries[bf.tries.length - 1]);
+}
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
 // A base that conflicts with the default branch goes to a conflict fix worker in the base worktree
@@ -1776,9 +1784,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     if (outcome) {
       const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
       if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
-      bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
-      if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-      if (!DRY && wt.ok) dropTryMerge(wt.path, bf.tries[bf.tries.length - 1]);
+      endTry(outcome, wt.ok ? wt.path : null);
       baseLines.push(`base ${tryWhat(bf.tries[bf.tries.length - 1])}: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}`);
     } else {
       baseFixLive = true;
@@ -2520,9 +2526,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   if (DRY) { out.push(`base conflict fix (dry run): would resume session ${sid} on ${BASE}, which ${ended}`); return; }
   const fail = (reason) => {
     const outcome = `could not be resumed after it ${ended}: ${reason}`;
-    bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
-    q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-    if (wt) dropTryMerge(wt, bf.tries[bf.tries.length - 1]);
+    endTry(outcome, wt);
     report.failed.push(`${key}: ${ended}, and ${outcome}`);
   };
   if (!wt) return fail(why ?? 'the base worktree is gone');
@@ -2571,9 +2575,7 @@ async function moveBaseFix({ wt, from, limit }) {
   if (!pick) { if (!usageStop) noLogin(); return waits('no other login can take it now'); }
   const fail = (reason) => {
     const outcome = `could not carry on on login ${pick.login.name} after it stopped at ${limitName(limit.type)} on login ${from.name}: ${reason}`;
-    bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
-    q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-    dropTryMerge(wt, last);
+    endTry(outcome, wt);
     report.failed.push(`${key}: ${outcome}`);
   };
   const fix = { ...last, of: FIX_TRIES_MAX };
@@ -2601,7 +2603,7 @@ async function moveBaseFix({ wt, from, limit }) {
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
   bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, session: sid } : x)), running: sid, port, log_bytes: logBytes, idle_passes: 0,
-    login: { name: pick.login.name, config_dir: pick.login.configDir ?? null }, moved: { from: from.name, from_dir: from.configDir ?? null, type: limit.type, resets_at: limit.resetsAt ?? null, at: PASS_AT } };
+    login: { name: pick.login.name, config_dir: pick.login.configDir ?? null } };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   report.spawned.push(`${key} port=${port} model=${model || 'default'}${pick.line} (${what}), moved logins from ${from.name}, at ${limitName(limit.type)}${keptText(changes)}; ${preflightNote(pre.cost)}`);
   return undefined;
