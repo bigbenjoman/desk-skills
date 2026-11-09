@@ -61,16 +61,16 @@ import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
-import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
+import { parseVerdict as gateVerdict, LOCAL_MARKER, LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 // The name of desk-gate.yml's verdict job, the check that runs review-gate.mjs verdict.
 export const VERDICT_CHECK = 'desk-review verdict';
 
 // A posted desk-review's verdict as the review gate reads it, or null. Values are strings, in
-// marker order, as the §4 Clean review verdict row compares them; the heading is left out.
+// marker order, as the §4 Clean review verdict row compares them; the heading and form are left out.
 export function parseVerdict(body) {
   const v = gateVerdict(String(body ?? ''));
   if (!v) return null;
-  const { heading, ...marker } = v;
+  const { heading, kind, ...marker } = v;
   return Object.fromEntries(Object.entries(marker).map(([k, x]) => [k, String(x)]));
 }
 
@@ -99,10 +99,12 @@ export function verdictAt(v, head, clean) {
 }
 
 // A §4 Clean review verdict that is plain text (`no findings`, as the config template offers) names no
-// counts. A desk-review verdict marker is then read against every count desk-review writes. A review
+// counts. A verdict marker, desk-review's or PullBot's, is then read against every count it writes. A review
 // with no marker is clean when it is the latest at the head, a line of it opens with the value as its
 // outcome, it states that nothing is deferred or carried, and no line defers, carries or counts an item.
 export const DESK_REVIEW_CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
+// DESK_REVIEW_CLEAN cut to the counts a parsed marker writes: a PullBot verdict has no unrefuted or partial.
+export const markerClean = (v) => Object.keys(pairs(DESK_REVIEW_CLEAN)).filter((k) => k in (v ?? {})).map((k) => `${k}=0`).join(' ') || DESK_REVIEW_CLEAN;
 const LEFT = '(?:defer(?:s|red|ring|rals?)?|carr(?:y|ies|ied|ying))';
 const LEFT_OVER = new RegExp(`\\b${LEFT}\\b`, 'i');
 // "nothing deferred or carried", "no items carried", "nothing to defer", "deferred: none", "carried 0",
@@ -125,9 +127,10 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   const r = ownReviews(reviews, handle).filter((x) => String(x.body ?? '').trim()).pop();
   if (!r) return { clean: false, why: `no review stating "${clean}" is posted on it` };
   const v = parseVerdict(r.body);
-  if (v) return { ...verdictAt(v, head, DESK_REVIEW_CLEAN), verdict: v };
-  // A desk-review whose marker the review gate cannot read is no verdict, never a plain review.
-  if (String(r.body).split(/\r?\n/)[0].trim() === LOCAL_MARKER) return { clean: false, why: 'its desk-review verdict marker is not one the review gate reads' };
+  if (v) return { ...verdictAt(v, head, markerClean(v)), verdict: v };
+  // A local review whose marker the review gate cannot read is no verdict, never a plain review.
+  const opener = String(r.body).split(/\r?\n/)[0].trim();
+  if (LOCAL_MARKERS.includes(opener)) return { clean: false, why: `its ${opener === LOCAL_MARKER ? 'desk-review' : 'PullBot'} verdict marker is not one the review gate reads` };
   const at = r.commit?.oid ?? '';
   if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its latest review is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
   const c = clean.toLowerCase();
@@ -155,7 +158,7 @@ export function verdictAtHead(reviews, handle, head, clean, carry, scope = null)
   let carried = null, range = null, targeted = null;
   const older = !v.clean && !v.settle && found?.sha && head && !head.startsWith(found.sha);
   const held = older ? carry?.(found.sha, review?.body) : null;
-  const was = older ? verdictAt(found, found.sha, plain ? DESK_REVIEW_CLEAN : clean) : null;
+  const was = older ? verdictAt(found, found.sha, plain ? markerClean(found) : clean) : null;
   if (held) {
     v = { ...was, ...(plain ? { verdict: found } : {}) };
     carried = found.sha;

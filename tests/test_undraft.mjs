@@ -8,6 +8,7 @@ import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
 import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
+import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -69,6 +70,27 @@ t('AC2 a marker with only a P2 under "no findings" is the person\'s', call('no f
 t('AC3 key=value counts still undraft a clean marker', call('p0=0 p1=0 gaps=0', [review(marker(ALL_ZERO))])?.call, 'ready');
 t('AC3 but not a marker the review gate rejects: the head is reviewed again (DS-316)', call('p0=0 p1=0 gaps=0', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'review');
 t('AC3 and still ignore a plain review', call('p0=0 p1=0 gaps=0', [review(CLEAN_TEXT)])?.why, 'no desk-review verdict is posted on it');
+
+// DS-544: a PullBot round's own markers are a verdict, compared on the counts PullBot writes.
+{
+  const at = (clean, reviews, head = PULLBOT_SHA) => undraftCall(tk, { number: 2640, head, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks: green },
+    { perm: 'yes', localReview: '/pullbot', clean, handle: 'ben', required: ['tests'] });
+  const PLAIN = 'no P0, P1 or P2 findings';
+  const round = review(pullbotRound(), PULLBOT_SHA);
+  const approval = review(PULLBOT_APPROVAL, PULLBOT_SHA, 'mousedown');
+  const plainClean = at(PLAIN, [round, approval]);
+  t('DS-544 AC1 a clean PullBot round at the head under the plain-text row is undrafted', `${plainClean?.call} ${plainClean?.verdict?.sha === PULLBOT_SHA}`, 'ready true');
+  t('DS-544 AC2 and under the counts row', at(PULLBOT_CLEAN_COUNTS, [round, approval])?.call, 'ready');
+  for (const clean of [PLAIN, PULLBOT_CLEAN_COUNTS]) {
+    const p1 = at(clean, [review(pullbotRound(PULLBOT_SHA, 'p0=0 p1=1 p2=0 deferred=0 gaps=0'), PULLBOT_SHA)]);
+    t(`DS-544 AC3 a P1 at the head under "${clean}" goes to a fix worker, named`, `${p1?.call} ${p1?.why.includes('p1=1')}`, 'findings true');
+    const old = at(clean, [review(pullbotRound(OLD), OLD)]);
+    t(`DS-544 AC4 a round for an older head under "${clean}" asks for a review of the head`, `${old?.call} ${old?.why.includes(`is for ${OLD.slice(0, 9)}, not the head`)}`, 'review true');
+  }
+  t('DS-544 AC1 another handle\'s round attests nothing', at(PLAIN, [review(pullbotRound(), PULLBOT_SHA, 'mousedown')])?.call, 'review');
+  t('DS-544 a PullBot marker the gate cannot read is no verdict, never a plain review',
+    at(PLAIN, [review(pullbotRound().replace(' rounds=5', ''), PULLBOT_SHA)])?.why, 'its PullBot verdict marker is not one the review gate reads');
+}
 
 // AC4: unset or not filled in.
 for (const clean of [null, '', 'TODO (how the local review says clean)', 'none']) {

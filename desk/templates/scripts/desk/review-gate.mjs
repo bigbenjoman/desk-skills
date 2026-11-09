@@ -21,21 +21,36 @@ const VERDICT = new RegExp(
     '\\s+vendor=(?<vendor>[a-z-]+)\\s+round=(?<round>\\d+)\\s*-->$',
 );
 export const COUNTS = ['p0', 'p1', 'p2', 'deferred', 'gaps', 'unrefuted', 'partial'];
+// A PullBot round carries its own pair of markers, with fewer counts and `rounds` for desk-review's `round`.
+export const PULLBOT_MARKER = '<!-- pullbot:local -->';
+const PULLBOT_VERDICT = new RegExp(
+  '^<!--\\s*pullbot:verdict\\s+v=1\\s+sha=(?<sha>[0-9a-f]{7,40})' +
+    '\\s+p0=(?<p0>\\d+)\\s+p1=(?<p1>\\d+)\\s+p2=(?<p2>\\d+)\\s+deferred=(?<deferred>\\d+)\\s+gaps=(?<gaps>\\d+)' +
+    '\\s+vendor=(?<vendor>[a-z-]+)\\s+rounds=(?<round>\\d+)\\s*-->$',
+);
+const FORMS = [
+  { kind: 'desk-review', marker: LOCAL_MARKER, verdict: VERDICT },
+  { kind: 'pullbot', marker: PULLBOT_MARKER, verdict: PULLBOT_VERDICT },
+];
+// The first line of every local review, whether or not its verdict line reads.
+export const LOCAL_MARKERS = FORMS.map((f) => f.marker);
 // Only someone who can push to the repo can attest a review or approve one: on a public repo anyone
 // can post a review. `writers` below is the set of logins main() confirmed have write access, read
 // from the permission endpoint; author_association cannot say it (MEMBER is any org member, read
 // access included).
 
 // The verdict a review body carries, with the visible heading (its first non-blank line after the
-// markers), or null. A desk-review:reply or any body not opening with the local marker has none.
+// markers) and `kind`, the form it was read in, or null. A desk-review:reply or any body not opening
+// with a local marker has none. A PullBot verdict has only the counts its marker writes.
 export function parseVerdict(body) {
   const lines = (body || '').split(/\r?\n/);
-  if (lines[0].trim() !== LOCAL_MARKER) return null;
-  const m = VERDICT.exec((lines[1] || '').trim());
+  const form = FORMS.find((f) => f.marker === lines[0].trim());
+  const m = form?.verdict.exec((lines[1] || '').trim());
   if (!m) return null;
   const v = { ...m.groups };
-  for (const k of [...COUNTS, 'round']) v[k] = Number(v[k]);
+  for (const k of [...COUNTS, 'round']) if (k in v) v[k] = Number(v[k]);
   v.heading = lines.slice(2).map((l) => l.trim()).find((l) => l) || '';
+  v.kind = form.kind;
   return v;
 }
 
@@ -71,12 +86,13 @@ export function checkVerdict(reviews, head, writers, { vendor = '' } = {}) {
   if (v.sha !== head) {
     return { ok: false, message: `The latest desk-review verdict is at ${at}, not the head ${head.slice(0, 9)}. Review this head.` };
   }
-  const dirty = COUNTS.filter((k) => v[k] !== 0).map((k) => `${k}=${v[k]}`);
+  const dirty = COUNTS.filter((k) => k in v && v[k] !== 0).map((k) => `${k}=${v[k]}`);
   if (dirty.length) return { ok: false, message: `The desk-review verdict at ${at} is not clean: ${dirty.join(' ')}.` };
   if (vendor && v.vendor !== vendor) {
     return { ok: false, message: `The desk-review verdict at ${at} was refuted ${v.vendor}, and this gate needs ${vendor}.` };
   }
-  const bad = headingMismatch(v);
+  // PullBot writes its own heading, so only desk-review's is held to its marker.
+  const bad = v.kind === 'desk-review' ? headingMismatch(v) : null;
   if (bad) return { ok: false, message: `The desk-review review at ${at} disagrees with its own verdict: ${bad}.` };
   return { ok: true, message: `desk-review clean at ${at}, round ${v.round}, ${v.vendor}.` };
 }
