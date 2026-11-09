@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: base sync (a batch base's worktree, synced from the default branch before a pass spawns)
-# pass.mjs with a batch base: every pass makes the base its own worktree, and a pass that will spawn
-# first merges main into the base and pushes it. A conflict, a refused push or the §3 batch-base-push
+# pass.mjs with a batch base: every pass makes the base its own worktree, and a pass that will spawn,
+# or finds the base behind main, first merges main into the base and pushes it. A conflict, a refused push or the §3 batch-base-push
 # row pushes nothing and is reported; in feature mode it also holds the spawns. A non-fast-forward
 # push is fetched, merged and retried once. A primary checkout on the base gets no worktree and no
 # sync. Each case has its own throwaway origin; the real pass.mjs runs with stub claude, gh,
@@ -104,14 +104,16 @@ check "no base: a pass spawns as before"              '[[ "$out" == *"spawned: T
 check "no base: no base worktree is made"            '[ -z "$(ls "$C/wt" | grep base-)" ]'
 check "no base: no sync is attempted"                '[[ "$out" != *"base sync"* ]]'
 
-# AC1, AC3: the first pass makes the base worktree; a pass that spawns nothing does not sync.
-fresh idle; node "$B/queue.mjs" set T-1 state=done >/dev/null; tip=$(origin_tip); pass
+# AC1, AC3: the first pass makes the base worktree. DS-542 AC1: a pass that spawns nothing still syncs a
+# base behind main, and a later one, with the base current, says nothing about it.
+fresh idle; node "$B/queue.mjs" set T-1 state=done >/dev/null; pass
 check "the first pass makes the base worktree"       "[ \"\$(git -C $BWT symbolic-ref --short HEAD)\" = feat/x ]"
 check "it is a worktree of the primary checkout"     'git -C "$C/repo" worktree list | grep -q "base-feat-x .*\[feat/x\]"'
 check "the report says it was made"                  '[[ "$out" == *"base worktree for feat/x made at $C/wt/base-feat-x"* ]]'
-check "a pass that spawns nothing does not sync"     '[ "$(origin_tip)" = "$tip" ] && [[ "$out" != *"base sync"* ]]'
-pass
+check "DS-542 AC1 a pass that spawns nothing syncs a base behind main" 'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"spawned:"* ]]'
+tip=$(origin_tip); pass
 check "a second pass keeps the worktree, quietly"    '[[ "$out" != *"base worktree"* ]] && [ -d "$C/wt/base-feat-x" ]'
+check "DS-542 a current base on a pass that spawns nothing is left, quietly" '[ "$(origin_tip)" = "$tip" ] && [[ "$out" != *"base sync"* ]]'
 
 # AC2: a base behind main that merges cleanly is merged, pushed and counted before the spawn.
 fresh clean; pass
@@ -593,15 +595,18 @@ exit 0
 EOF
 chmod +x "$T/stub/gh"
 reopens(){ grep -c "^pr reopen 801" "$T/ghlog" 2>/dev/null || true; }
-fresh stale416; echo "[main, 'feat/**']" > "$T/mainwf"
+# A base behind main syncs on any pass (DS-542), so these bases start current with main, and main moves
+# on only after the pass that reads the PR.
+current(){ git -C "$C/repo" push -q origin main:feat/x; }
+mainmoves(){ git -C "$C/repo" commit -q --allow-empty -m three; git -C "$C/repo" commit -q --allow-empty -m four; git -C "$C/repo" push -q origin main; }
+fresh stale416; current; echo "[main, 'feat/**']" > "$T/mainwf"
 printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
 node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
-echo '[main]' > "$T/basewf"; echo b1 > "$T/bhead"; : > "$T/ghlog"; tip=$(origin_tip); pass
+echo '[main]' > "$T/basewf"; echo b1 > "$T/bhead"; : > "$T/ghlog"; pass
 check "DS-416 the PR's check only main's workflow runs on the base is recorded as behind" \
   '[ "$(jq -r ".tickets[\"T-1\"].pr_status.behind.tests" "$DESK_QUEUE")" != null ] && [ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered" "$DESK_QUEUE")" = null ] && [ "$(reopens)" = 0 ]'
-check "DS-416 nothing synced before the pass that read it" '[ "$(origin_tip)" = "$tip" ]'
 # The sync brings main's trigger to the base, which gh's base copy stands in for.
-echo "[main, 'feat/**']" > "$T/basewf"; pass
+echo "[main, 'feat/**']" > "$T/basewf"; mainmoves; pass
 check "DS-416 AC2 with nothing to spawn, the base syncs for the PR's CI" 'origin_has_main && [[ "$out" == *"merged 2 commit(s) from main into feat/x and pushed; PR #801 is reopened so CI runs"* ]] && [[ "$out" != *"spawned:"* ]]'
 check "DS-416 AC4 the PR is closed and reopened, and the base head recorded" \
   'grep -q "^pr close 801" "$T/ghlog" && [ "$(reopens)" = 1 ] && [ "$(jq -r .reopened_at "$DESK_QUEUE")" = b1 ] && [[ "$out" == *"closed and reopened PR #801 (T-1)"* ]]'
@@ -625,11 +630,11 @@ check "DS-416 the next pass reads the closed PR again and reopens it without clo
   '[ "$(cat "$T/prstate")" = OPEN ] && [ "$(closes)" = "$c" ] && [ "$(jq -r ".tickets[\"T-1\"].reopening" "$DESK_QUEUE")" = null ] && [[ "$out" == *"closed and reopened PR #801 (T-1)"* ]]'
 c=$(closes); r=$(reopens); pass
 check "DS-416 once reopened, the same base head does not close it again" '[ "$(closes)" = "$c" ] && [ "$(reopens)" = "$r" ]'
-fresh trig416 yes; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
+fresh trig416 yes; current; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
 node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
-echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; tip=$(origin_tip); pass; pass
-check "DS-416 AC5 a check main's workflow does not run on the base either is untriggered: no sync, no reopen" \
-  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered.tests" "$DESK_QUEUE")" != null ] && [ "$(origin_tip)" = "$tip" ] && [ "$(reopens)" = 0 ]'
+echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; pass; mainmoves; pass
+check "DS-416 AC5 a check main's workflow does not run on the base either is untriggered: the behind base syncs, no reopen" \
+  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered.tests" "$DESK_QUEUE")" != null ] && origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x"* ]] && [[ "$out" != *"is reopened so CI runs"* ]] && [ "$(reopens)" = 0 ]'
 
 # DS-508: an epic batch not in feature mode lands its base through one epic PR, opened once every child
 # has merged. gh serves each PR from $T/ep/<n>.json and its GraphQL review read from $T/ep/<n>.graphql;
@@ -794,5 +799,29 @@ epicbeside efull '1 / 1'
 check "DS-520 AC3 with the §3b cap full, the review waits" '! grep -q "^base-feat-x " "$T/spawns" && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
 check "DS-520 AC3 and the pass says why" '[[ "$out" == *"epic PR #300: review try 1 of 2 starts once a worker may (none may this pass: repo workers: 1 of the §3b cap of 1 running"* ]]'
 rm -f "$SIB"
+
+# DS-542: parks waiting on "base contains main", in a batch that spawns nothing (every ticket held).
+# waitpark <KEY> <question>: a lane A ticket parked on the base containing main.
+waitpark(){ node "$B/queue.mjs" add "$1" Story A >/dev/null; node "$B/queue.mjs" park "$1" "$2" >/dev/null; node "$B/queue.mjs" clears-when "$1" "base contains main" >/dev/null; }
+Q1="requeue me once the hotfix is on main and main has been merged into feat/x"
+Q2="requeue me once main is merged into feat/x, then build the image"
+fresh bparks; node "$B/queue.mjs" set-batch concurrency=0 >/dev/null; node "$B/queue.mjs" set T-1 state=done >/dev/null
+waitpark W-1 "$Q1"; waitpark W-2 "$Q2"; node "$B/not-now.mjs" add W-2 "$Q2" >/dev/null 2>&1
+put_off(){ node "$B/not-now.mjs" check "$1" >/dev/null 2>&1; [ $? -eq 3 ]; }
+check "DS-542 a put-off park starts in the not-now register" 'put_off "$Q2"'
+pass
+check "DS-542 AC1 with nothing to spawn, main is merged into the base and pushed" 'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"spawned:"* ]]'
+check "DS-542 AC2 the park on the base containing main is requeued in the same pass, naming the condition" \
+  '[ "$(jq -r ".tickets[\"W-1\"].state" "$DESK_QUEUE")" = triaged ] && [[ "$out" == *"W-1: \"the batch base contains main\" holds: requeued"* ]]'
+check "DS-542 AC2 the next worker is told what cleared it" '[ "$(jq -r ".tickets[\"W-1\"].cleared.what" "$DESK_QUEUE")" = "the batch base contains main" ]'
+check "DS-542 AC3 a put-off one is requeued and its not-now entry lifted" \
+  '[ "$(jq -r ".tickets[\"W-2\"].state" "$DESK_QUEUE")" = triaged ] && [[ "$out" == *"W-2: \"the batch base contains main\" holds: requeued, its not-now entry lifted"* ]] && ! put_off "$Q2"'
+
+fresh bparkconflict; conflict; node "$B/queue.mjs" set-batch concurrency=0 >/dev/null; node "$B/queue.mjs" set T-1 state=done >/dev/null
+waitpark W-3 "$Q1"; tip=$(origin_tip); pass
+check "DS-542 AC4 a conflicting sync leaves the park" '[ "$(jq -r ".tickets[\"W-3\"].state" "$DESK_QUEUE")" = parked ]'
+check "DS-542 AC4 the merge is aborted: nothing pushed, the base worktree clean" "[ \"\$(origin_tip)\" = \"\$tip\" ] && [ -z \"\$(git -C $BWT status --porcelain)\" ]"
+check "DS-542 AC4 the pass says why the base did not sync, on the base and on the park" \
+  '[[ "$out" == *"base sync: merging main into feat/x conflicts, nothing pushed. Conflicting files: a.txt"* ]] && [[ "$out" == *"W-3: waiting on \"the batch base contains main\" (feat/x is 3 commit(s) behind main, and the base did not sync this pass: merging main into feat/x conflicts"*"): left parked"* ]]'
 
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]

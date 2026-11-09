@@ -32,9 +32,12 @@ reported" and nothing ever merges.
 
 **`pass.mjs` keeps the base current; do not merge into it by hand.** Every pass makes sure the base
 has its own worktree, `<§2 Worktrees directory>/base-<branch>` (a plain `git worktree add`, no
-database or env files). Before a pass that will spawn, and only then, it merges §0 Default branch into
-the base there as a merge commit (never a rebase, so running workers' bases stay valid) and pushes
-it, and the report says how many commits came in. A push refused as non-fast-forward (the merge
+database or env files). Before a pass that will spawn, and on every pass that finds the base behind
+§0 Default branch whether it spawns or not, it merges §0 Default branch into the base there as a merge
+commit (never a rebase, so running workers' bases stay valid) and pushes it, and the report says how
+many commits came in. A park recorded as `base contains <§0 Default branch>` is checked after that
+sync, so the pass that syncs the base requeues it (and lifts any not-now on it); one whose sync could
+not run stays parked, its line under `clears-when:` saying why. A push refused as non-fast-forward (the merge
 driver just merged into the base) is fetched, merged again and retried once. Pushing is config §3
 `batch-base-push`: unset or `ask` is one approval per batch, so ask it at Stage 3 and run passes with
 `AUTOPILOT_BASE_PUSH_APPROVED=1`. A sync that cannot run pushes nothing and goes under `WAITING ON

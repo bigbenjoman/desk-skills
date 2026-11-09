@@ -123,7 +123,7 @@ key drops the Jira rows (`references/batch-arguments.md`).
 | §3 key | `yes` | anything else |
 |---|---|---|
 | `autopilot-workers` | `pass.mjs` spawns workers; `triage.sh` runs | `ask`: `triage.sh` still runs (read-only, foreground); confirm the batch at Stage 3, then run passes with `AUTOPILOT_USER_APPROVED=1`. `no`: neither runs; say so |
-| `batch-base-push` | `pass.mjs` merges §0 Default branch into a batch base and pushes it before a pass that spawns; in feature mode it also pushes the empty commit a promotion PR needs, and the base gate syncs the base once more | unset or `ask`: ask once at Stage 3, then run passes with `AUTOPILOT_BASE_PUSH_APPROVED=1`. `no`: the base is not synced; the report says so, and a feature-mode batch spawns nothing |
+| `batch-base-push` | `pass.mjs` merges §0 Default branch into a batch base that is behind and pushes it, on every pass; in feature mode it also pushes the empty commit a promotion PR needs, and the base gate syncs the base once more | unset or `ask`: ask once at Stage 3, then run passes with `AUTOPILOT_BASE_PUSH_APPROVED=1`. `no`: the base is not synced; the report says so, and a feature-mode batch spawns nothing |
 | `git-push`, `pr-open`, `pr-edit` | worker pushes / opens the draft / edits the body | worker parks at that step with the branch or PR body; you ask, then do it |
 | `pr-self-review-comment` | worker posts the §4 Local review command's report (`gh pr review`, `gh pr comment`) | worker parks with the report; you ask, then post it |
 | `pr-reply` | a worker may reply with `gh pr comment`; resolving threads (GraphQL, `gh api`) is yours, since workers never get `gh api` whatever this row says | the worker parks with its replies; you post them or report the threads to the user |
