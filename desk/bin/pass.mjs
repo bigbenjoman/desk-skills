@@ -2361,6 +2361,11 @@ async function resumeKilled(t) {
   runningKeys.add(t.key);
 }
 
+// The review a fix worker runs and posts, as `desk-env review-cmd` prints it; null with no rows to read.
+function reviewRun() {
+  try { return E.reviewRows().run; } catch { return null; }
+}
+
 // The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling tickets have
 // learnt, and — critically — the answers the user has already given. Compose it, never overwrite the
 // answers: answer.mjs writes into this file, and clobbering it silently sends the worker in without the
@@ -2393,7 +2398,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
     // notes, or to the end of the file, so nothing but answers may follow one.
     h,
     ownedBrief(t, wt),
-    fixBrief(t),
+    fixBrief(t, reviewRun()),
     baselineBrief(),
     triageBrief(t),
     migrateFailed && `## Your database did not migrate\n\nSetup could not apply migrations to ${migrateFailed}, so it is empty or partial. The output is in ${join(wt, '.desk-migrate.log')}. ` +
@@ -2910,7 +2915,7 @@ for (const t of spawnable) {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), ...(resumed.stage ? { AUTOPILOT_START_STAGE: resumed.stage } : {}),
       // A fix try's worker is given the fix as its task, in place of working the ticket from Stage 0.
-      ...(t.fix && !t.fix.finished && !resumed.stage ? { AUTOPILOT_TASK: fixTask(t) } : {}),
+      ...(t.fix && !t.fix.finished && !resumed.stage ? { AUTOPILOT_TASK: fixTask(t, reviewRun()) } : {}),
       ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   const refused = spawnRefusal(spawned.out);
