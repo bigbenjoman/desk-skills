@@ -116,11 +116,19 @@ desk_require_headless() {
 # the command started (docker exec under a wrapper, a shell's pipeline) does not outlive it. 124 on
 # timeout (137 from timeout(1) when the command outlived the TERM), otherwise the command's own
 # status (128+n when a signal ended it).
+# Only GNU's timeout(1) is used: Ubuntu 26.04 ships uutils' as `timeout`, whose KILL reaches the
+# command but not the group, so a child of a command deaf to TERM outlived it. Read once per shell.
 desk_timeout() {
   local secs="$1"; shift
-  if command -v timeout >/dev/null 2>&1; then timeout -k 2 "$secs" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout -k 2 "$secs" "$@"
-  else desk_timeout_perl "$secs" "$@"
+  if [ -z "${_desk_timeout_bin:-}" ]; then
+    _desk_timeout_bin=perl
+    local t; for t in timeout gtimeout; do
+      command -v "$t" >/dev/null 2>&1 || continue
+      case "$("$t" --version 2>/dev/null)" in *"GNU coreutils"*) _desk_timeout_bin=$t; break ;; esac
+    done
+  fi
+  if [ "$_desk_timeout_bin" = perl ]; then desk_timeout_perl "$secs" "$@"
+  else "$_desk_timeout_bin" -k 2 "$secs" "$@"
   fi
 }
 
