@@ -2571,6 +2571,7 @@ if (unreadEpics.length) {
 // the person once. A ticket the tracker does not hold keeps its follow-on on its queue entry alone.
 for (const t of Object.values(queue().tickets)) {
   if (t.follow_on_comment !== 'due') continue;
+  if (DRY) { report.advanced.push(`${t.key} follow-on comment (dry run): would post it on the ticket for PR #${t.result?.pr}`); continue; }
   const kind = E.ticketKind(t.key);
   if (!onJira || !kind.ok || kind.kind !== 'tracker' || !t.follow_on?.length) { q('set', t.key, 'follow_on_comment=none'); continue; }
   const pr = t.result?.pr;

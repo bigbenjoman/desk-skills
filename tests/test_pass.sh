@@ -2559,6 +2559,9 @@ rm -f "$T/jira-down"
 export DESK_CONFIG="$T/config-mj.md" DESK_QUEUE="$T/queue-mj.json" DESK_AUTOPILOT_STATE="$T/state-mj"
 mkdir -p "$T/state-mj/logs"; q init mj; q set-batch concurrency=5
 mpark mj 5 "$T/state-mj"
+: > "$T/jira-calls"; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-509 AC2 a dry run posts no follow-on comment and leaves it due" \
+  '[ "$(field M-5 state)" = "\"done\"" ] && [ "$(field M-5 follow_on_comment)" = "\"due\"" ] && ! grep -q "^comment" "$T/jira-calls" && echo "$out" | grep -qF "M-5 follow-on comment (dry run): would post it on the ticket for PR #875"'
 : > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-509 AC2 with §3 jira-comment yes, the merge-only park's follow-on is posted on its ticket once its marker is not there" \
   '[ "$(field M-5 state)" = "\"done\"" ] && grep -q "^comments M-5$" "$T/jira-calls" && grep -qF "comment M-5 Follow-on for after PR #875 merges (M-5/desk-autopilot follow-on)" "$T/jira-calls" && grep -qF "provision-telnyx-assistant.ts --env staging" "$T/jira-calls" && field M-5 follow_on_comment | grep -qE "^\"20[0-9]{2}-"'
