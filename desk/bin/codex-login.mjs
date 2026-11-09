@@ -27,8 +27,13 @@ export function codexCallLogin({ env = process.env, now = Date.now() } = {}) {
   // With no subscriptions file desk has one login per tool, whatever folders exist (logins.mjs).
   const subs = readSubscriptions(subscriptionsPath());
   if (!subs.exists) return keep;
-  // The file's rows decide, not the folders found: an off row whose folder is gone still sets it off.
-  if (codexLogins().length <= 1) return subs.logins.some((l) => l.tool === 'codex' && l.rule !== 'off') ? keep : none;
+  // The one login found runs only if it is not off and the file has a Codex row that is not off: an
+  // off row whose folder is gone leaves ~/.codex found with no rule of its own.
+  const found = codexLogins();
+  if (found.length <= 1) {
+    const anyOn = subs.logins.some((l) => l.tool === 'codex' && l.rule !== 'off');
+    return found[0]?.rule === 'off' || !anyOn ? none : keep;
+  }
   const { usable } = checkLogins(subs, { tools: ['codex'], env });
   if (!usable.length) return none;
   const { login, read } = codexChoice(usable, now);

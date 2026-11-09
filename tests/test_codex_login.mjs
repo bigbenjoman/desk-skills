@@ -106,6 +106,12 @@ t('sole login off, its folder gone: exit 75 and codex is not run', [r.status, r.
 subs(['gone', 'in rotation']);
 r = codex('refuter', 'x');
 t('sole login in rotation, its folder gone: the call runs on the caller\'s environment as before', [r.status, r.calls, r.home], [0, 1, 'unset']);
+subs(['default', 'off'], ['gone', 'in rotation']);
+r = codex('refuter', 'x');
+t('the one login found is off, another row in rotation has no folder: exit 75 and codex is not run', [r.status, r.calls], [75, 0]);
+writeFileSync(SUBS, `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| claude | default | ${join(H, '.claude')} | in rotation |\n`);
+r = codex('refuter', 'x');
+t('a file listing only Claude logins: the sole Codex login runs on the caller\'s environment as before', [r.status, r.calls, r.home], [0, 1, 'unset']);
 rmSync(SUBS);
 
 // AC1: two logins in rotation: the one with the most room, named for the review record.
