@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { checkVerdict, checkClaudeMd, checkApproval, titleType, exemptType, parseVerdict, COUNTS } from '../desk/templates/scripts/desk/review-gate.mjs';
 import { parseVerdict as undraftVerdict, verdictAt } from '../desk/bin/undraft.mjs';
 import * as oldGate from './fixtures/review-gate-v1.mjs';
+import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 
 let fails = 0;
@@ -52,6 +53,22 @@ t('a verdict from someone without write access is ignored', verdict([review(body
 t('nor can it override the latest real verdict', verdict([review(body({ p0: 1, heading: '1 P0' })), review(body(), { user: { login: 'reader' } })]).ok, false);
 t('same-vendor passes by default', verdict([review(body({ vendor: 'same-vendor' }))]).ok, true);
 t('same-vendor fails when codex-cross is required', verdict([review(body({ vendor: 'same-vendor' }))], { vendor: 'codex-cross' }).ok, false);
+
+// DS-544: a PullBot round is read on the counts its marker writes, under PullBot's own heading.
+{
+  const at = (b) => checkVerdict([review(b)], PULLBOT_SHA, WRITERS);
+  const v = parseVerdict(pullbotRound());
+  t('DS-544 a PullBot round parses as a verdict at its sha', `${v?.kind} ${v?.sha === PULLBOT_SHA} ${v?.round} ${'unrefuted' in v}`, 'pullbot true 5 false');
+  t('DS-544 a clean PullBot round at the head passes', at(pullbotRound()).ok, true);
+  for (const k of ['p0', 'p1', 'p2', 'deferred', 'gaps']) {
+    has(`DS-544 a PullBot ${k}=1 fails, named`, at(pullbotRound(PULLBOT_SHA, PULLBOT_CLEAN_COUNTS.replace(`${k}=0`, `${k}=1`))).message, `${k}=1`);
+  }
+  t('DS-544 a PullBot round for another sha fails', at(pullbotRound(OTHER)).ok, false);
+  t('DS-544 a pullbot:verdict line without the pullbot:local opener is no verdict', parseVerdict(pullbotRound().split('\n').slice(1).join('\n')), null);
+  t('DS-544 nor one under the desk-review opener', parseVerdict(pullbotRound().replace('pullbot:local', 'desk-review:local')), null);
+  t('DS-544 nor a PullBot approval', parseVerdict(PULLBOT_APPROVAL), null);
+  t('DS-544 a desk-review verdict reads as desk-review', parseVerdict(body())?.kind, 'desk-review');
+}
 
 // The visible heading against a clean marker.
 const heading = (h, o = {}) => verdict([review(body({ heading: h, ...o }))]);

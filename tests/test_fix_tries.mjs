@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs';
 import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
-import { readVerdict, localReviewSet } from '../desk/bin/review-threads.mjs';
+import { readVerdict, readThreads, localReviewSet } from '../desk/bin/review-threads.mjs';
+import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
 import { errorLinesIn } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -670,6 +671,15 @@ const narrowRead = read433(pl(HEAD, marked(OLD)), { carry: () => null, scope: (s
 t('DS-449 AC1 a clean verdict that does not carry is narrowed, asked with its commit and body', `${narrowRead.clean} ${narrowRead.targeted === scoped} ${JSON.stringify(scopeAsked)}`, `false true ${JSON.stringify([OLD, true])}`);
 t('DS-449 AC3 an unclean verdict for an older head is not narrowed: the head is reviewed whole', 'targeted' in read433(pl(HEAD, marked(OLD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { carry: () => null, scope: () => scoped }), false);
 t('DS-449 a carried verdict is never narrowed', 'targeted' in read433(pl(HEAD, marked(OLD)), { carry: () => true, scope: () => { throw new Error('asked'); } }), false);
+// DS-544 AC6: the merge driver reads a clean PullBot round at the head as clean under either row, so a
+// PR it held as unreadable is released on the next pass.
+const round544 = (sha, counts) => ({ id: 'RP', author: { login: 'ben' }, commit: { oid: sha }, body: pullbotRound(sha, counts) });
+for (const clean of ['no P0, P1 or P2 findings', PULLBOT_CLEAN_COUNTS]) {
+  t(`DS-544 AC6 a clean PullBot round at the head reads clean under "${clean}"`, read433(pl(PULLBOT_SHA, round544(PULLBOT_SHA)), { clean }).clean, true);
+  const p1 = read433(pl(PULLBOT_SHA, round544(PULLBOT_SHA, 'p0=0 p1=1 p2=0 deferred=0 gaps=0')), { clean });
+  t(`DS-544 AC3 a P1 in it under "${clean}" is a review at the head to settle, named`, `${p1.clean} ${p1.settle} ${p1.why.includes('p1=1')}`, 'false true true');
+  t(`DS-544 AC6 the thread read takes it as the clean verdict under "${clean}"`, readThreads(pl(PULLBOT_SHA, round544(PULLBOT_SHA)), { handle: 'ben', clean }).verdict, PULLBOT_SHA);
+}
 t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');
 }
 

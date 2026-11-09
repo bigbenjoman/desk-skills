@@ -59,6 +59,14 @@ reap "$P"
 "desk_timeout_perl" 5 /nonexistent/cmd 2>/dev/null; rc=$?
 check "desk_timeout_perl: a command that cannot run exits 127" '[ $rc -eq 127 ]'
 
+# A timeout(1) that is not GNU's (uutils', Ubuntu 26.04's default) does not KILL the whole group, so
+# desk_timeout passes over it to the perl fallback rather than run it.
+mkdir -p "$T/uu"
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo "timeout (uutils coreutils) 0.2.2"; exit 0; }\nexit 99\n' > "$T/uu/timeout"
+cp "$T/uu/timeout" "$T/uu/gtimeout"; chmod +x "$T/uu/timeout" "$T/uu/gtimeout"
+out=$(PATH="$T/uu:$PATH"; unset _desk_timeout_bin; desk_timeout 5 sh -c 'exit 3'; echo "rc=$? bin=${_desk_timeout_bin:-}")
+check "desk_timeout: a timeout(1) that is not GNU's is passed over for perl" '[[ "$out" == "rc=3 bin=perl" ]]'
+
 # setup-worktree.sh against a container whose psql never answers.
 git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init

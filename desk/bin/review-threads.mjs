@@ -26,9 +26,9 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, markerClean } from './undraft.mjs';
 import { pairs, leverOn } from './desk-env.mjs';
-import { LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
+import { LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
   headRefOid reviewDecision
@@ -41,7 +41,7 @@ const rowSet = (row) => { const s = String(row ?? '').trim(); return !!s && !/^(
 const firstLine = (s) => String(s ?? '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
 
 // payload: the GraphQL response. handle: §1 GitHub handle. clean: the §4 Clean review verdict row; a
-// plain-text row is read against desk-review's own counts, and an unset one settles nothing.
+// plain-text row is read against every count the verdict's marker writes, and an unset one settles nothing.
 // `review` is the handle's latest desk-review when its verdict is at the head and not clean
 // ({ id, verdict, body }), else null.
 export function readThreads(payload, { handle, clean }) {
@@ -49,8 +49,8 @@ export function readThreads(payload, { handle, clean }) {
   if (!pr) return null;
   const reviews = pr.reviews?.nodes ?? [];
   const row = String(clean ?? '').trim();
-  const want = !rowSet(row) ? null : Object.keys(pairs(row)).length ? row : DESK_REVIEW_CLEAN;
-  const latest = handle && want ? latestReview(reviews, handle) : null;
+  const latest = handle && rowSet(row) ? latestReview(reviews, handle) : null;
+  const want = Object.keys(pairs(row)).length ? row : markerClean(latest?.verdict);
   const atHead = latest ? verdictAt(latest.verdict, pr.headRefOid, want) : null;
   const settles = !!atHead?.clean;
   const review = atHead?.settle ? { id: latest.id, verdict: latest.verdict, body: latest.body } : null;
@@ -64,7 +64,7 @@ export function readThreads(payload, { handle, clean }) {
     const i = index.get(c?.pullRequestReview?.id);
     const opener = i == null ? null : reviews[i];
     const ours = settles && own(c?.author?.login) && own(opener?.author?.login)
-      && firstLine(opener?.body) === LOCAL_MARKER && i < at;
+      && LOCAL_MARKERS.includes(firstLine(opener?.body)) && i < at;
     const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(c?.body) };
     (ours ? resolve : left).push({ ...th, text: threadLine(th) });
   }
