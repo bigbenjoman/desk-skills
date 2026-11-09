@@ -427,7 +427,8 @@ export function needsMigration(subs) {
 // The file's text migrated to account pins: each signed-in folder, listed or found, pinned to its email
 // (the first in file order keeps one that two share, the other stays unpinned with its rule), and the
 // ~/.claude row moved to Removed. `check` is -> checkLogins' result.
-//   -> { text, hint }; hint is the email ~/.claude was signed in to when no folder is pinned to it, else null
+//   -> { text, hint }; text is null, and nothing is to be written, when no folder can be pinned (~/.claude
+//   then stays as it is); hint is the email ~/.claude was signed in to when no folder is pinned to it, else null
 export function migrateSubscriptions(subs, check) {
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
   const claude = check().logins.filter((l) => l.tool === 'claude');
@@ -436,6 +437,7 @@ export function migrateSubscriptions(subs, check) {
     const live = l.liveEmail?.toLowerCase();
     if (live && !pins.has(live)) pins.set(live, l.dir);
   }
+  if (!pins.size) return { text: null, hint: null };
   const pin = (l) => ({ ...l, account: [...pins].find(([, d]) => d === l.dir)?.[0] ?? null });
   const own = defaultRows(subs);
   const listed = subs.logins.filter((l) => !own.includes(l)).map((l) => (l.tool === 'claude' ? pin(l) : l));

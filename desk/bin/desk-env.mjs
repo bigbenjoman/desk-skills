@@ -2019,6 +2019,7 @@ if (isMain) {
         if (sub === 'migrate' && rest.length === 0) {
           if (!L.needsMigration(subs)) { console.log('nothing to migrate'); break; }
           const r = L.migrateSubscriptions(subs, () => L.checkLogins(subs));
+          if (r.text === null) { console.log('nothing to migrate'); break; }
           console.log(writeWithBackup(path, r.text));
           if (r.hint) console.log(`add ${r.hint} with a in view 6`);
           break;

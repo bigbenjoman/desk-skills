@@ -280,6 +280,17 @@ sc = scenario(OLD, { default: 'x@a.io', 'login-2': null });
 m = await sc.run('migrate');
 after = sc.read();
 t('AC3 migrate: a signed-out login-2 is unpinned and keeps its rule', pinState(after, 'login-2'), 'unpinned/standby');
+t('no pin possible: nothing to migrate, exit 0', `${m.rc} ${m.out.trim()}`, '0 nothing to migrate');
+t('no pin possible: the file is byte-identical, ~/.claude stays, no .bak', `${sc.text() === OLD} ${pinState(after, 'default')} ${existsSync(`${sc.path}.bak`)}`, 'true unpinned/in rotation false');
+m = await sc.run('migrate');
+t('no pin possible: again changes nothing', `${m.out.trim()} ${sc.text() === OLD} ${existsSync(`${sc.path}.bak`)}`, 'nothing to migrate true false');
+
+const THREE = ROWS(['| `claude` | `default` | `~/.claude` | `in rotation` |', '| `claude` | `login-2` | `~/.claude-logins/login-2` | `standby` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `in rotation` |']);
+sc = scenario(THREE, { default: 'x@a.io', 'login-2': 'y@a.io', 'login-3': null });
+m = await sc.run('migrate');
+after = sc.read();
+t('mixed: the signed-in folder is pinned, the signed-out one keeps its rule unpinned', `${pinState(after, 'login-2')} ${pinState(after, 'login-3')}`, 'y@a.io/standby unpinned/in rotation');
+t('mixed: ~/.claude goes to Removed and the hint names its account', `${after.removed.some((r) => r.folder === '~/.claude')} ${m.out.includes('add x@a.io with a in view 6')}`, 'true true');
 
 const codexOnly = ROWS(['| `claude` | `default` | `~/.claude` | `standby` |', '| `codex` | `default` | `~/.codex` | `in rotation` |']);
 sc = scenario(codexOnly, { default: 'x@a.io' });
