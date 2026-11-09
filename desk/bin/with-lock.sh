@@ -94,7 +94,8 @@ if command -v flock >/dev/null 2>&1; then
     # The descriptor form, so a timeout is told apart from the command's own exit status. The command
     # inherits fd 9, so the lock is held until it exits.
     exec 9>>"$lock" || exit 2
-    flock -w "$timeout" 9 || gave_up
+    # A timeout of 0 is one try: -n, since some flock builds (Homebrew's) refuse `-w 0`.
+    if [ "$timeout" -eq 0 ]; then flock -n 9 || gave_up; else flock -w "$timeout" 9 || gave_up; fi
     holder 1
     exec "$@"
   fi
