@@ -50,7 +50,8 @@ user. One whose inputs changed is asked, with a line saying what changed since i
 - **A park can say what clears it**: a worker's `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` on the
   line after its park (`pr <n> merged`, `pr <n> ready` for out of draft, `ticket <KEY> done`,
   `variable <NAME> set` for a repo Actions variable, `run <id> completed` for a GitHub Actions run
-  to finish, or `none`), or
+  to finish, `base contains <branch>` for the batch base to hold every commit on that branch, as
+  `base contains main` once main is merged into it, or `none`), or
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
   left out (or `none`) when only a person can settle it. Each pass checks it, and once it holds settles the park as

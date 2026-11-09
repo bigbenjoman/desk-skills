@@ -93,7 +93,16 @@ park.
 
 **Check a step before asking if it was done**, and after a park print
 `AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok), plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>`
-where a script can read what clears it: `desk-autopilot` *Ask or take* says how.
+where a script can read what clears it: `desk-autopilot` *Ask or take* says how. A park that waits
+for the default branch to reach your batch's base (a hotfix you need, merged to main) clears with
+`AUTOPILOT_PARK_CLEARS_WHEN: base contains <§0 Default branch>`: every pass syncs a base that is
+behind, and requeues you in the pass that does.
+
+**Before you park for a person to build an image from your branch** (a Flows or Grader image, or
+any build that runs from your branch rather than from CI), merge origin's §0 Default branch (the
+repo's own default, not your batch's base) into your branch and push it, then park: a build script
+may refuse a branch that conflicts with the default branch or is behind it, which wastes the
+person's turn. Merge, never rebase, and resolve any conflict as Stage 5's §4 says.
 
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 

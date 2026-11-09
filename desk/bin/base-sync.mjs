@@ -3,8 +3,9 @@
 // A batch base (queue.mjs set-batch base=<branch>) drifts from the default branch for as long as the
 // batch runs. pass.mjs keeps one worktree for it under the worktrees directory, a plain
 // `git worktree add` (setup-worktree.sh also makes a database and copies env files, which the base
-// needs neither of), and, before any pass that spawns, merges the default branch into the base there
-// and pushes it, so new workers start on a current tree.
+// needs neither of), and, before any pass that spawns and on any pass that finds the base behind,
+// merges the default branch into the base there and pushes it, so new workers start on a current tree
+// and a park waiting on the base containing the default branch clears.
 //
 // The sync is a merge commit, never a rebase: running workers branched from the base, and a rewritten
 // base would strand them. It is all or nothing: a conflict is aborted and a refused push is rolled

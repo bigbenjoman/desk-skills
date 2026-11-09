@@ -19,7 +19,7 @@ import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
-import { readRegister, lookup, parseInputs, refreshInputs, inputsHash } from './not-now.mjs';
+import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
@@ -1171,6 +1171,19 @@ const clearsRead = {
   variable: (name) => cached('variables', () => JSON.parse(readOrThrow('gh variable list', 'gh', ['variable', 'list', '--repo', GH_REPO, '--json', 'name'])))
     .some((v) => v?.name === name),
   run: (id) => cached(`run:${id}`, () => JSON.parse(readOrThrow(`gh run view ${id}`, 'gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,conclusion']))),
+  // Read after the base sync ("parks waiting on the base"), from origin as fetched now. With no batch base, the
+  // default branch is the base.
+  baseContains: (branch) => {
+    const source = E.configValue('default-branch');
+    const base = E.batchBase() ?? source;
+    if (base === branch) return { holds: true };
+    cached(`fetch:${base}:${branch}`, () => readOrThrow(`git fetch ${base} ${branch}`, 'git',
+      ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`, `refs/heads/${branch}:refs/remotes/origin/${branch}`]));
+    const n = Number(readOrThrow(`git rev-list origin/${base}..origin/${branch}`, 'git', ['-C', MAIN, 'rev-list', '--count', `origin/${base}..origin/${branch}`]));
+    if (!n) return { holds: true };
+    const why = branch === source && baseNotSynced ? `, and the base did not sync this pass: ${baseNotSynced}` : '';
+    return { holds: false, note: `${base} is ${n} commit(s) behind ${branch}${why}` };
+  },
 };
 // The ticket's own PR, if it merged: the one it recorded, else a merged PR from its branch.
 function ownMergedPr(t) {
@@ -1234,15 +1247,22 @@ function pushParked(t, c) {
   if (unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
   return stop(`git refused it: ${push.out.split('\n').pop()}`);
 }
-for (const t of Object.values(queue().tickets)) {
+// A claimed ticket is released only by the claims loop below, once its session is idle and its
+// worktree clean, so a condition that holds never hands it to a worker under a live session.
+// A ticket left in a finished feature batch is the person's to move, whatever its earlier park waited on.
+const clearable = (t) => {
   const c = t.park?.clears_when;
-  // A claimed ticket is released only by the claims loop below, once its session is idle and its
-  // worktree clean, so a condition that holds never hands it to a worker under a live session.
-  // A ticket left in a finished feature batch is the person's to move, whatever its earlier park waited on.
-  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || leftPark(t) || t.park?.claim?.session || !c || c.kind === 'none' || c.kind === LIVE_READ) continue;
+  return !(t.state !== 'parked' || isHeld(t) || spinePark(t) || leftPark(t) || t.park?.claim?.session || !c || c.kind === 'none' || c.kind === LIVE_READ);
+};
+// "base contains <branch>" is checked after the base sync below, so the pass that syncs the base also
+// requeues what waited on it ("parks waiting on the base", after the base sync).
+const BASE_CONTAINS = 'base-contains';
+for (const t of Object.values(queue().tickets)) if (clearable(t) && t.park.clears_when.kind !== BASE_CONTAINS) settleClear(t);
+function settleClear(t) {
+  const c = t.park.clears_when;
   const cond = describeCond(c);
   // A lane left for a person never has its push made for it.
-  if (c.kind === 'push-ok' && needsSession(t)) { report.clears.push(`${t.key}: "${cond}" not tried, since it is lane ${t.lane}: left parked for a person`); continue; }
+  if (c.kind === 'push-ok' && needsSession(t)) { report.clears.push(`${t.key}: "${cond}" not tried, since it is lane ${t.lane}: left parked for a person`); return; }
   // A merge question whose rows now let desk merge its green, clean PR (mergeParkOf) is done on it, as
   // the harvest records one: the undraft step and the merge driver take it from there.
   const merges = mergeParkOf(t, c, { grantedOnly: true });
@@ -1251,31 +1271,39 @@ for (const t of Object.values(queue().tickets)) {
       `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`,
       ...(t.follow_on?.length ? [] : [parkFollowOn(t.park.question ?? '')]), 'follow_on_comment=due');
     report.done.push(`${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${E.mergeGrant(queue()).why})`);
-    continue;
+    return;
   }
   const r = checkCond(c, { ...clearsRead, push: (p) => pushParked(t, p) });
-  if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); continue; }
+  if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); return; }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
-  if (!r.holds) { if (r.note) report.clears.push(`${t.key}: waiting on "${cond}" (${r.note}): left parked`); continue; }
+  if (!r.holds) { if (r.note) report.clears.push(`${t.key}: waiting on "${cond}" (${r.note}): left parked`); return; }
   const what = r.note ? `${cond}, ${r.note}` : cond;
   if (needsSession(t)) {
     report.clears.push(`${t.key}: "${what}" holds, but it is lane ${t.lane}: left parked for a person, never requeued for a headless worker`);
-    continue;
+    return;
   }
   let own;
   try { own = ownMergedPr(t); } catch (e) {
     report.clears.push(`${t.key}: "${what}" holds, but whether its own PR merged could not be read (${e.message}): left parked`);
-    continue;
+    return;
   }
   if (own != null) {
     const before = report.failed.length;
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=closed out: ${what}, and its PR #${own} merged`, `result.pr=${own}`);
     if (report.failed.length === before) report.clears.push(`${t.key}: "${what}" holds and its PR #${own} merged: recorded done`);
   } else {
+    const wasPutOff = putOff(t);
     const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
     // The next worker's briefing says what cleared the park (writeBrief), so it acts on the result.
     if (rq.ok) q('set', t.key, `cleared=${JSON.stringify({ what })}`);
-    report.clears.push(rq.ok ? `${t.key}: "${what}" holds: requeued` : `${t.key}: "${what}" holds, but the requeue was refused (${rq.out.split('\n').pop()}): left parked`);
+    // A park put off with not-now that clears is no longer put off: the same question parked again is
+    // asked, and desk-needs-you no longer lists it under Put off.
+    let lifted = '';
+    if (rq.ok && wasPutOff && !DRY) {
+      const cl = clearPutOff(t.park.question, STATE);
+      lifted = cl.ok ? ', its not-now entry lifted' : `, but its not-now entry could not be lifted (${cl.why})`;
+    }
+    report.clears.push(rq.ok ? `${t.key}: "${what}" holds: requeued${lifted}` : `${t.key}: "${what}" holds, but the requeue was refused (${rq.out.split('\n').pop()}): left parked`);
   }
 }
 
@@ -1662,6 +1690,9 @@ const gateFixDue = E.batchBase() != null && fresh.gate?.state === 'failed' && Ar
 const BASE = E.batchBase();
 const SOURCE = E.configValue('default-branch');
 const baseLines = [];
+// Why this pass did not sync the base, for a park waiting on it ("parks waiting on the base"); null when it did,
+// or had no need to.
+let baseNotSynced = null;
 // An epic batch not in feature mode (epicBatch), and its epic PR as readEpicPr read it.
 const epicOn = !!BASE && !!SOURCE && BASE !== SOURCE && epicBatch(fresh);
 const epicPr = epicOn ? readEpicPr(fresh) : null;
@@ -1783,14 +1814,22 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   // base's does not (pr_status.behind, from the last pass), gets CI only once the base is synced, so the
   // base syncs even with nothing to spawn. So does an open epic PR, which merges into the default branch.
   const staleCI = behindPrs(fresh);
-  const wantSync = willSpawn || staleCI.length > 0 || epicPr?.state === 'OPEN';
+  // A base behind the default branch syncs on every pass, spawning or not: a batch whose every ticket
+  // is held spawns nothing, and a park waiting on "base contains <branch>" would otherwise wait for
+  // ever. Read from origin as fetched now; a fetch that fails reads the refs as they were.
+  const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
+  sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], quiet);
+  const behindNow = Number(sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet)) > 0;
+  const wantSync = willSpawn || staleCI.length > 0 || epicPr?.state === 'OPEN' || behindNow;
   const holdNote = featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands';
   const blocked = (why) => {
+    baseNotSynced = why;
     report.waiting.push(`base sync: ${why} — ${holdNote}`);
     if (featureMode) baseHold = true;
   };
   // Held as a blocked sync is, but a worker's to clear, not the person's.
   const heldForFix = (why) => {
+    baseNotSynced = why;
     baseLines.push(`base sync: ${why} — ${featureMode ? 'feature mode, so nothing else spawns this pass' : holdNote}`);
     if (featureMode) baseHold = true;
   };
@@ -1892,7 +1931,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     if (wantSync) blocked(wt.why);
     else report.waiting.push(`base worktree: ${wt.why}`);
   } else if (wantSync && gateBusy) {
-    baseLines.push(`base sync: skipped while the base gate runs in ${wt.path}; spawning carries on from ${BASE} as it stands`);
+    baseNotSynced = `skipped while the base gate runs in ${wt.path}`;
+    baseLines.push(`base sync: ${baseNotSynced}; spawning carries on from ${BASE} as it stands`);
   } else if (wantSync && baseFixLive) {
     // The worktree is the fix worker's until it ends.
     metConflict = true;
@@ -1928,6 +1968,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
         // No session is there to ask, so the batch is asked once, as one needs-you item; the approval
         // it records on the queue is passed to every later pass by the supervisor.
         if (!fresh.base_push_ask && !DRY) q('set-batch', `base_push_ask=${JSON.stringify({ since: PASS_AT, base: BASE, source: SOURCE })}`);
+        baseNotSynced = why;
         baseLines.push(`base sync: ${why}: asked once for the batch in /desk-needs-you (its base-push item) — ${holdNote}`);
         if (featureMode) baseHold = true;
       } else {
@@ -1961,6 +2002,11 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   if (wt.ok && epicOn && !fixOwns && epicDue(fresh) && (ep?.pr == null || ep.merged_at)) openPromotion(wt.path, ep?.merged_at ? { since: ep.merged_at } : {});
   if (wt.ok) baseWt = wt.path;
 }
+
+// ---- parks waiting on the base -------------------------------------------------
+// A park on "base contains <branch>" is checked here, after the sync above, so the
+// pass that merges the default branch into the base also requeues what waited on it.
+for (const t of Object.values(queue().tickets)) if (clearable(t) && t.park.clears_when.kind === BASE_CONTAINS) settleClear(t);
 
 // The epic PR of an epic batch not in feature mode, as GitHub has it: { pr, state, isDraft, head }, or
 // { pr, unreadable }, or null with none open. One that merged is recorded as `promotion.merged_at`.

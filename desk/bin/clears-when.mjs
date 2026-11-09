@@ -13,9 +13,14 @@
 //                          itself, and `--force-with-lease=<branch>:<sha>` may come before `origin`.
 //                          A lease with no SHA is not read: a pass pushes long after the worker did,
 //                          so it must name what it may overwrite
+//   base contains <branch> origin's batch base has every commit on origin's <branch> (with no batch
+//                          base, the default branch has): "base contains main" is a park waiting for
+//                          main to be merged into the base. The pass syncs a base behind the default
+//                          branch first, and checks this after that sync, in the same pass
 //   none                   nothing a script can read; the park waits for a person
 // Stored on the park as {kind, pr | ticket | name | run | branch}: kind is pr-merged, pr-ready,
-// ticket-done, variable-set, run-completed, push-ok (with lease: <sha> for a lease push) or none.
+// ticket-done, variable-set, run-completed, push-ok (with lease: <sha> for a lease push),
+// base-contains or none.
 // The pass records one more itself, live-read {reads, head}, for a park waiting on §4 Live reads it
 // runs (live-read.mjs), and settles it in its own section.
 
@@ -27,9 +32,10 @@ const FORMS = [
   [/^run\s+#?(\d+)\s+completed$/i, (m) => ({ kind: 'run-completed', run: Number(m[1]) })],
   [/^git\s+push\s+(?:(?:-u|--set-upstream)\s+)?origin\s+([\w./-]+)\s+succeeds$/i, (m) => ({ kind: 'push-ok', branch: m[1] })],
   [/^git\s+push\s+--force-with-lease=([\w./-]+):([0-9a-f]{40})\s+origin\s+\1\s+succeeds$/, (m) => ({ kind: 'push-ok', branch: m[1], lease: m[2] })],
+  [/^(?:the\s+)?(?:batch\s+)?base\s+contains\s+(?:origin\/)?([\w.-]+(?:\/[\w.-]+)*)$/i, (m) => ({ kind: 'base-contains', branch: m[1] })],
   [/^none$/i, () => ({ kind: 'none' })],
 ];
-export const CLEARS_WHEN_FORMS = 'pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, or none';
+export const CLEARS_WHEN_FORMS = 'pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, base contains <branch>, or none';
 
 // {ok: true, cond} or {ok: false, why}. Nothing given is none.
 export function parseClearsWhen(raw) {
@@ -51,6 +57,7 @@ export function describeCond(c) {
     case 'variable-set': return `repo variable ${c.name} set`;
     case 'run-completed': return `Actions run ${c.run} completed`;
     case 'push-ok': return `git push ${c.lease ? `--force-with-lease=${c.branch}:${c.lease} ` : ''}origin ${c.branch} succeeds`;
+    case 'base-contains': return `the batch base contains ${c.branch}`;
     case 'live-read': return `live read ${(c.reads ?? []).join(', ')} finished`;
     default: return 'none';
   }
@@ -61,6 +68,7 @@ export function describeCond(c) {
 // the reading and throw on any failure, so a check that could not run is never read as cleared:
 //   pr(n) → {state, isDraft}   ticket(key) → the status category key   variable(name) → bool
 //   run(id) → {status, conclusion}   push(c) → {holds, note?}, having tried the push
+//   baseContains(branch) → {holds, note?}, the note saying how far behind the base is and why
 export function checkCond(c, read) {
   try {
     switch (c?.kind) {
@@ -76,6 +84,7 @@ export function checkCond(c, read) {
           : { holds: false, note: `still ${r.status}` };
       }
       case 'push-ok': return read.push(c);
+      case 'base-contains': return read.baseContains(c.branch);
       default: return { holds: false };
     }
   } catch (e) { return { error: String(e?.message ?? e).trim().split('\n').pop() || 'the check failed' }; }

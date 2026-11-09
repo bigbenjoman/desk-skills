@@ -156,7 +156,15 @@ say "AUTOPILOT_PARK: needs a force-push of feat/F-3. Approve?" "AUTOPILOT_PARK_I
 say "AUTOPILOT_PARK: should I merge rather than force-push?" > "$T/state/logs/F-4.log"
 say "AUTOPILOT_PARK: needs a force-push of feat/F-5, which my settings deny. Approve?" > "$T/state/logs/F-5.log"
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
-check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, or none" <<< "$out"'
+check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, base contains <branch>, or none" <<< "$out"'
+# DS-542 AC5: a park waiting on main being merged into the batch base.
+parked B-1 A "requeue me once main has been merged into the base"
+out=$(node "$B/queue.mjs" clears-when B-1 "base contains main" 2>&1); rc=$?
+check "DS-542 AC5 queue.mjs clears-when records base contains main on the park" \
+  '[ $rc -eq 0 ] && [ "$(field B-1 park.clears_when)" = "{\"kind\":\"base-contains\",\"branch\":\"main\"}" ] && grep -q "B-1: its park clears when the batch base contains main" <<< "$out"'
+out=$(node "$B/queue.mjs" clears-when B-1 "base contains main and the hotfix" 2>&1); rc=$?
+check "DS-542 AC5 an unknown form is still refused, listing the forms" '[ $rc -ne 0 ] && grep -q "is not one of: .*base contains <branch>, or none" <<< "$out"'
+q drop B-1
 check "DS-496 queue.mjs clears-when stores a push" '[ "$(field P-1 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-1\"}" ]'
 check "DS-496 and a lease push, with the SHA it may overwrite" '[ "$(field P-4 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-4\",\"lease\":\"$PIN\"}" ]'
 out=$(node "$B/queue.mjs" clears-when E-2 "git push --force-with-lease origin feat/P-4 succeeds" 2>&1); rc=$?
