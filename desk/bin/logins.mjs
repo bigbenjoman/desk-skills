@@ -15,6 +15,11 @@
 // from the rules leaves its folder and sign-in alone: the file's Removed table names the folder, so it
 // is not found again.
 //
+// A Claude row may carry an Account: the email the folder belongs to, lowercased. Once any Claude row
+// has one the file is in multi-account mode: ~/.claude is no longer one of the Claude logins, and a
+// folder is used only while it is signed in to the account it is pinned to. Background code only reads
+// the file; the commands a person runs write the pins.
+//
 // This module imports nothing from desk-env.mjs: desk-env's CLI imports it at run time, and a cycle
 // through a module still running its top-level await never settles.
 import { spawnSync } from 'node:child_process';
@@ -53,10 +58,13 @@ export const ruleError = (v) => `"${v}" is not a rule: use one of ${RULES.map((r
 
 // A login as every reader gets it. configDir is the folder to point the tool at, or null for the
 // tool's own default folder (no override).
-export function login({ tool, name, folder, rule, source }) {
+// account is a Claude login's pinned email, lowercased, or null.
+export function login({ tool, name, folder, rule, source, account = null }) {
   const dir = resolve(expand(folder));
-  return { tool, name, folder: tilde(dir), dir, configDir: dir === TOOL[tool].dir() ? null : dir, rule, source };
+  return { tool, name, folder: tilde(dir), dir, configDir: dir === TOOL[tool].dir() ? null : dir, rule, source, account: account ? String(account).toLowerCase() : null };
 }
+// True when any Claude login has an account: the file is then in multi-account mode.
+export const multiAccount = (subs) => (subs?.logins ?? []).some((l) => l.tool === 'claude' && l.account);
 export const defaultLogin = (tool) => login({ tool, name: 'default', folder: TOOL[tool].dir(), rule: 'in rotation', source: 'default' });
 
 // The environment a login's tool runs in: the caller's, never with an API key (the call stays on the
@@ -68,6 +76,7 @@ export function loginEnv(l, env = process.env) {
 
 // ---- the file --------------------------------------------------------------------------------
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 
 // -> { exists, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A malformed
@@ -91,22 +100,29 @@ export function parseSubscriptions(text, { exists = true } = {}) {
       else removed.push(removedLogin(tool, name, folder));
       return;
     }
-    if (header.join('|') !== 'tool|name|folder|rule') return;
-    const [tool, name, folder, ruleText] = c;
+    const pinned = header.join('|') === 'tool|name|folder|account|rule';
+    if (!pinned && header.join('|') !== 'tool|name|folder|rule') return;
+    const [tool, name, folder, ...rest] = c;
+    const ruleText = rest.at(-1);
+    const accountText = pinned ? rest[0] : '';
+    const account = accountText === '-' ? '' : accountText;
     const rule = normRule(ruleText);
-    if (c.length !== 4) errors.push(`${at}: want 4 cells (Tool, Name, Folder, Rule), got ${c.length}`);
+    if (c.length !== (pinned ? 5 : 4)) errors.push(`${at}: want ${pinned ? '5 cells (Tool, Name, Folder, Account, Rule)' : '4 cells (Tool, Name, Folder, Rule)'}, got ${c.length}`);
     else if (!TOOLS.includes(tool)) errors.push(`${at}: tool "${tool}" is neither claude nor codex`);
     else if (!NAME.test(name)) errors.push(`${at}: name "${name}" wants letters, digits, dots, dashes or underscores`);
     else if (!folder) errors.push(`${at}: ${tool} ${name} has no folder`);
+    else if (account && tool === 'codex') errors.push(`${at}: codex ${name}: a Codex row takes no account`);
+    else if (account && !EMAIL.test(account)) errors.push(`${at}: claude ${name}: account "${account}" is not an email`);
     else if (!rule) errors.push(`${at}: ${tool} ${name}: ${ruleError(ruleText)}`);
     else {
-      const l = login({ tool, name, folder, rule, source: 'file' });
+      const l = login({ tool, name, folder, rule, source: 'file', account });
       const same = logins.find((o) => o.tool === tool && (o.name === name || o.dir === l.dir));
       if (same) errors.push(`${at}: ${tool} ${name} repeats ${same.name === name ? 'the name' : `the folder of ${same.name}`}`);
       else logins.push(l);
     }
   });
-  for (const tool of TOOLS) if (!logins.some((l) => l.tool === tool)) logins.push(defaultLogin(tool));
+  // A file with pins has no ~/.claude login unless it lists one.
+  for (const tool of TOOLS) if (!logins.some((l) => l.tool === tool) && !(tool === 'claude' && multiAccount({ logins }))) logins.push(defaultLogin(tool));
   return { exists, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
 }
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
@@ -118,6 +134,7 @@ export const readSubscriptions = (path) => (path && existsSync(path)
 
 const cell = (v) => `\`${String(v).replace(/\|/g, '\\|')}\``;
 export function renderSubscriptions(logins, removed = []) {
+  const pinned = logins.some((l) => l.account);
   return [
     '# Subscriptions',
     '',
@@ -127,10 +144,10 @@ export function renderSubscriptions(logins, removed = []) {
     'rotation is at its limit) or `off` (never used). `desk-env logins set` changes a rule and',
     '`desk-env logins remove` removes a login, each keeping the previous copy as subscriptions.md.bak;',
     '`desk-env logins check` confirms each is signed in. No token or credential is kept here.',
+    ...(pinned ? ['Account is the Claude account a folder belongs to: desk uses the folder only while it is signed in to that account.'] : []),
     '',
-    '| Tool | Name | Folder | Rule |',
-    '|---|---|---|---|',
-    ...sortLogins(logins).map((l) => `| ${cell(l.tool)} | ${cell(l.name)} | ${cell(l.folder)} | ${cell(l.rule)} |`),
+    ...(pinned ? ['| Tool | Name | Folder | Account | Rule |', '|---|---|---|---|---|'] : ['| Tool | Name | Folder | Rule |', '|---|---|---|---|']),
+    ...sortLogins(logins).map((l) => `| ${cell(l.tool)} | ${cell(l.name)} | ${cell(l.folder)} | ${pinned ? `${cell(l.account ?? '-')} | ` : ''}${cell(l.rule)} |`),
     '',
     ...(removed.length ? [
       '## Removed',
@@ -235,36 +252,64 @@ export const foundLogin = (tool, dir, subs) => login({ tool, name: basename(dir)
 // the tool but not this one gives it no rule. Folders that do not exist are kept: the caller filters.
 //   -> [login]
 export function toolLogins(tool, subs, extra = []) {
-  const out = [defaultLogin(tool)];
-  const add = (l) => { if (!out.some((o) => o.dir === l.dir)) out.push(l); };
+  // With pins, Claude has no default login: every account has its own folder.
+  const own = tool === 'claude' && multiAccount(subs);
+  const out = own ? [] : [defaultLogin(tool)];
+  const add = (l) => { if (!out.some((o) => o.dir === l.dir) && !(own && !l.configDir)) out.push(l); };
   for (const l of subs.logins) if (l.tool === tool) add(l);
   for (const dir of unlistedFolders(tool, out, subs.removed)) add(foundLogin(tool, dir, subs));
   for (const l of extra) add(l);
-  const fileDefault = subs.logins.find((l) => l.tool === tool && l.dir === out[0].dir);
-  out[0] = fileDefault ?? { ...out[0], rule: null };
+  if (!own) {
+    const fileDefault = subs.logins.find((l) => l.tool === tool && l.dir === out[0].dir);
+    out[0] = fileDefault ?? { ...out[0], rule: null };
+  }
   return out;
 }
 
-// Every login checked, the found ones added, duplicates refused, and the usable ones named.
-//   -> { exists, errors, logins: [{ ...login, state, email, plan, why, duplicateOf }], usable: [login] }
-// state is 'signed in', 'signed out', 'error' or 'duplicate'; a usable login is signed in with a rule
-// of in rotation or standby. `tools` narrows the check to those tools' logins.
+// Every login checked, the found ones added, and the usable ones named.
+//   -> { exists, errors, logins: [{ ...login, state, email, plan, why, liveEmail, pinnable }], usable: [login] }
+// state is 'signed in', 'signed out', 'error', 'wrong account' or 'not set up'; a usable login is signed
+// in with a rule of in rotation or standby. `tools` narrows the check to those tools' logins.
+//   email     the pinned email when there is a pin, else the live one
+//   liveEmail what the folder is signed in to, or null
+//   pinnable  true only for a not set up folder signed in to an email no other login is pinned to
+// Without pins, a second Claude folder on one account is not set up, and the first keeps it. With pins
+// (multi-account mode) ~/.claude is never checked: a pinned folder is signed in only on its own account,
+// wrong account on another, and a check that fails leaves its state as the check reported it, never
+// re-pinning; an unpinned folder is not set up; two rows pinned to one email leave it to the first.
 export function checkLogins(subs, { tools = TOOLS, ...opts } = {}) {
-  const checked = subs.logins.filter((l) => tools.includes(l.tool)).map((l) => ({ ...l, ...checkLogin(l, opts), duplicateOf: null }));
+  const multi = multiAccount(subs);
+  const skip = (l) => multi && l.tool === 'claude' && !l.configDir;
+  const checked = subs.logins.filter((l) => tools.includes(l.tool) && !skip(l)).map((l) => ({ ...l, ...checkLogin(l, opts) }));
   for (const tool of tools) {
     for (const dir of unlistedFolders(tool, subs.logins, subs.removed)) {
       const l = foundLogin(tool, dir, subs);
       const c = checkLogin(l, opts);
-      if (c.state === 'signed in') checked.push({ ...l, ...c, duplicateOf: null });
+      if (c.state === 'signed in') checked.push({ ...l, ...c });
     }
   }
-  // Two Claude names on one account: the first keeps it.
+  const claude = checked.filter((l) => l.tool === 'claude');
+  const pins = new Map();
+  for (const l of claude) if (l.account && !pins.has(l.account)) pins.set(l.account, l);
   const owner = new Map();
   for (const l of checked) {
-    if (l.tool !== 'claude' || l.state !== 'signed in' || !l.email) continue;
-    const key = l.email.toLowerCase();
-    if (owner.has(key)) Object.assign(l, { state: 'duplicate', duplicateOf: owner.get(key).name, why: `the same account as ${owner.get(key).name}` });
-    else owner.set(key, l);
+    l.liveEmail = l.tool === 'claude' ? l.email : null;
+    l.pinnable = false;
+    if (l.tool !== 'claude') continue;
+    const live = l.liveEmail?.toLowerCase() ?? null;
+    if (multi) {
+      if (l.account && pins.get(l.account) !== l) Object.assign(l, { state: 'not set up', why: `pinned to the same account as ${pins.get(l.account).name}` });
+      else if (l.account) {
+        l.email = l.account;
+        if (l.state === 'signed in' && !live) Object.assign(l, { state: 'error', why: 'its account could not be read' });
+        else if (l.state === 'signed in' && live !== l.account) Object.assign(l, { state: 'wrong account', why: `signed in to ${l.liveEmail}` });
+      } else if (l.state === 'signed in') Object.assign(l, { state: 'not set up', why: null, pinnable: !!live && !pins.has(live) });
+      else if (l.state === 'signed out') Object.assign(l, { state: 'not set up', why: `signed out${l.why ? ` (${l.why})` : ''}` });
+    } else if (l.state === 'signed in' && live) {
+      // Two Claude names on one account: the first keeps it.
+      if (owner.has(live)) Object.assign(l, { state: 'not set up', why: `the same account as ${owner.get(live).name}` });
+      else owner.set(live, l);
+    }
   }
   const logins = sortLogins(checked);
   return { exists: subs.exists, errors: subs.errors, logins, usable: logins.filter(isUsable) };
@@ -336,7 +381,7 @@ export function removeLogin(subs, { tool, name, check }) {
 }
 
 // ---- what the person is shown ----------------------------------------------------------------
-const STATE = { 'signed in': 'signed in', 'signed out': 'signed out', error: 'not checked', duplicate: 'refused' };
+const STATE = { 'signed in': 'signed in', 'signed out': 'signed out', error: 'not checked', 'wrong account': 'wrong account', 'not set up': 'not set up' };
 
 // The file's status line, its unreadable rows, then the rows as aligned columns.
 function tableLines(subs, path, head, body) {
@@ -358,7 +403,9 @@ export function checkLines(r, path) {
   for (const l of r.logins) {
     if (l.state === 'signed out') notes.push(`${l.tool} ${l.name} is signed out${l.why ? ` (${l.why})` : ''}: sign it in, in another terminal: ${signInCommand(l)}`);
     if (l.state === 'error') notes.push(`${l.tool} ${l.name} could not be checked: ${l.why}`);
-    if (l.state === 'duplicate') notes.push(`${l.tool} ${l.name} refused: ${l.name} and ${l.duplicateOf} are signed in to the same account; desk uses ${l.duplicateOf}`);
+    if (l.state === 'wrong account') notes.push(`${l.tool} ${l.name} is signed in to ${l.liveEmail}, not ${l.account}: desk won't use it until it is signed back in`);
+    if (l.state === 'not set up') notes.push(l.pinnable ? `${l.tool} ${l.name} is not set up: desk-env logins pin ${l.tool} ${l.name} pins it to the account it is signed in to`
+      : `${l.tool} ${l.name} is not set up: ${l.why ?? 'it is not signed in to an account'}; desk won't use it`);
   }
   const found = r.logins.filter((l) => l.source === 'found');
   if (found.length && !r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}: no rule until one is set (desk-env logins set <tool> <name> <rule>)`);
@@ -377,4 +424,5 @@ export function listLines(subs, path) {
 
 // The JSON a script reads: nothing from a status call but the fields above.
 export const loginJson = (l) => ({ tool: l.tool, name: l.name, folder: l.folder, configDir: l.configDir, rule: l.rule, source: l.source,
-  ...(l.state ? { state: l.state, email: l.email, plan: l.plan, why: l.why, duplicateOf: l.duplicateOf, signIn: l.state === 'signed out' ? signInCommand(l) : null } : {}) });
+  ...(l.account ? { account: l.account } : {}),
+  ...(l.state ? { state: l.state, email: l.email, plan: l.plan, why: l.why, account: l.account ?? null, liveEmail: l.liveEmail ?? null, pinnable: !!l.pinnable, signIn: l.state === 'signed out' ? signInCommand(l) : null } : {}) });

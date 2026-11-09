@@ -4,12 +4,12 @@
 // signed-in and signed-out; no fixture token in anything shown; rule changes through the CLI. A
 // scratch HOME only; nothing reads this computer's logins.
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule,
+  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule, multiAccount, toolLogins,
 } from '../desk/bin/logins.mjs';
 
 let fails = 0;
@@ -95,7 +95,8 @@ t('AC3 the default login\'s plan is planDisplayName from ~/.claude.json', by('cl
 t('AC3 printed as Ultra', row(/^claude\s+default\s+~\/\.claude\s+signed in\s+ben@example\.com\s+Ultra\s+in rotation$/), true);
 t('AC4 a signed-out login is marked signed out', by('claude', 'login-3').state, 'signed out');
 t('AC4 with the command that signs it in', out.includes('sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/login-3 claude, then /login'), true);
-t('AC5 the second name on one account is refused, naming both', out.includes('claude login-4 refused: login-4 and default are signed in to the same account; desk uses default'), true);
+t('AC17 the second name on one account is not set up, not pinnable, and nothing is duplicate', `${by('claude', 'login-4').state} ${by('claude', 'login-4').pinnable} ${r.logins.some((l) => l.state === 'duplicate')}`, 'not set up false false');
+t('AC17 and says which login keeps the account', by('claude', 'login-4').why, 'the same account as default');
 t('AC4 AC5 AC12 usable logins leave out the signed-out and the refused', r.usable.map((l) => `${l.tool}:${l.name}`).join(), 'claude:default,claude:login-2,codex:default');
 t('AC11 each Codex login: name, folder, state and rule', row(/^codex\s+login-2\s+~\/\.codex-logins\/login-2\s+signed out\s+-\s+-\s+standby$/), true);
 t('AC12 a signed-out Codex login gets codex\'s own login command', out.includes('codex login-2 is signed out: sign it in, in another terminal: CODEX_HOME=~/.codex-logins/login-2 codex login'), true);
@@ -166,6 +167,70 @@ refused = '';
 const onlyFound = { usable: [{ tool: 'claude', name: 'login-9', dir: join(H, '.claude-logins', 'login-9') }] };
 try { setRule(parseSubscriptions(ROWS(['| `claude` | `default` | `~/.claude` | `in rotation` |'])), { tool: 'claude', name: 'login-9', rule: 'off', check: () => onlyFound }); } catch (e) { refused = e.message; }
 t('AC10 a found folder that is the last usable Claude login cannot be turned off', /desk needs one login it can use/.test(refused), true);
+
+// ---- the Account column (DS-529)
+const FIVE = '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `login-2` | `~/.claude-logins/login-2` | `Ben.Lavender1@Gmail.com` | `in rotation` |\n| `codex` | `default` | `~/.codex` | `-` | `in rotation` |\n';
+const s5 = parseSubscriptions(FIVE);
+t('the Account column is read, lowercased', s5.logins.find((l) => l.name === 'login-2').account, 'ben.lavender1@gmail.com');
+t('a pin puts the file in multi-account mode', multiAccount(s5), true);
+t('a 4-column file has no pins', multiAccount(parseSubscriptions('| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n')), false);
+t('multi-account mode drops ~/.claude from the Claude logins', toolLogins('claude', s5).some((l) => !l.configDir), false);
+t('and from the parsed rows', s5.logins.filter((l) => l.tool === 'claude').map((l) => l.name).join(), 'login-2');
+t('a pinned file renders 5 columns', renderSubscriptions(s5.logins, s5.removed).includes('| `claude` | `login-2` | `~/.claude-logins/login-2` | `ben.lavender1@gmail.com` | `in rotation` |'), true);
+t('a pinned file renders the Codex row with - as its account', renderSubscriptions(s5.logins, s5.removed).includes('| `codex` | `default` | `~/.codex` | `-` | `in rotation` |'), true);
+t('a pinned file explains the column', renderSubscriptions(s5.logins).includes('Account is the Claude account a folder belongs to: desk uses the folder only while it is signed in to that account.'), true);
+t('a pinned file round-trips', renderSubscriptions(parseSubscriptions(renderSubscriptions(s5.logins, s5.removed)).logins), renderSubscriptions(s5.logins));
+t('an unpinned file still renders 4 columns', renderSubscriptions(parseSubscriptions('').logins).includes('| Tool | Name | Folder | Rule |'), true);
+t('and none of the Account copy', renderSubscriptions(parseSubscriptions('').logins).includes('Account is'), false);
+const badAcc = parseSubscriptions('| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `x` | `~/.claude-logins/x` | `not-an-email` | `standby` |\n| `codex` | `c` | `~/.codex` | `a@b.c` | `standby` |\n');
+t('an Account that is not an email is a named error', badAcc.errors.some((e) => /^line 3: .*not an email/.test(e)), true);
+t('an Account on a Codex row is a named error', badAcc.errors.some((e) => /^line 4: .*codex/.test(e)), true);
+t('those rows are left out and the defaults stand', badAcc.logins.map((l) => `${l.tool}:${l.name}`).join(), 'claude:default,codex:default');
+t('setRule keeps a pin', setRule(s5, { tool: 'claude', name: 'login-2', rule: 'standby', check: () => ({ usable: [] }) }).text.includes('`ben.lavender1@gmail.com` | `standby`'), true);
+
+// ---- the account check states (DS-529): login-2 pinned to a@x.io, login-3 to b@x.io, login-4 unlisted
+const L2 = join(H, '.claude-logins', 'login-2'), L3 = join(H, '.claude-logins', 'login-3'), L4 = join(H, '.claude-logins', 'login-4');
+const PINNED = '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `login-2` | `~/.claude-logins/login-2` | `a@x.io` | `in rotation` |\n| `claude` | `login-3` | `~/.claude-logins/login-3` | `B@x.io` | `standby` |\n';
+const pinCheck = (opts) => checkLogins(parseSubscriptions(PINNED), { ...fakes, ...opts });
+const stOf = (res, n) => res.logins.find((l) => l.name === n);
+for (const d of [L2, L3, L4]) rmSync(d, { recursive: true, force: true });
+claudeIn(L2, 'a@x.io', 'Ultra'); claudeIn(L3, 'b@x.io', 'Pro');
+let pc = pinCheck();
+t('a pinned folder on its account is signed in', stOf(pc, 'login-2').state, 'signed in');
+t('and usable', pc.usable.filter((l) => l.tool === 'claude').map((l) => l.name).join(), 'login-2,login-3');
+claudeIn(L2, 'A@X.io', 'Ultra');
+pc = pinCheck();
+t('case does not matter', `${stOf(pc, 'login-2').state} ${stOf(pc, 'login-2').email}`, 'signed in a@x.io');
+claudeIn(L2, 'b@x.io', 'Ultra');
+pc = pinCheck();
+t('a pinned folder on another account is wrong account', `${stOf(pc, 'login-2').state} ${stOf(pc, 'login-2').liveEmail} ${stOf(pc, 'login-2').why}`, 'wrong account b@x.io signed in to b@x.io');
+t('and is not usable', pc.usable.some((l) => l.name === 'login-2'), false);
+t('and keeps its pinned label', stOf(pc, 'login-2').email, 'a@x.io');
+t('and login-3 stays signed in', stOf(pc, 'login-3').state, 'signed in');
+t('checkLines names the wrong account', checkLines(pc, join(T, 'subscriptions.md')).some((l) => l.includes('claude login-2 is signed in to b@x.io, not a@x.io: desk won\'t use it until it is signed back in')), true);
+claudeIn(L2, 'a@x.io', 'Ultra');
+t('signed back in it is usable again, in its rule', `${pinCheck().usable.find((l) => l.name === 'login-2')?.rule}`, 'in rotation');
+claudeIn(L4, 'c@x.io', 'Pro');
+pc = pinCheck();
+t('an unlisted signed-in folder is not set up and pinnable', `${stOf(pc, 'login-4').state} ${stOf(pc, 'login-4').pinnable}`, 'not set up true');
+t('and is not usable', pc.usable.some((l) => l.name === 'login-4'), false);
+t('checkLines says how to pin it', checkLines(pc, join(T, 'subscriptions.md')).some((l) => l === 'claude login-4 is not set up: desk-env logins pin claude login-4 pins it to the account it is signed in to'), true);
+claudeIn(L4, 'b@x.io', 'Pro');
+t('an unlisted folder on a pinned account is not pinnable', `${stOf(pinCheck(), 'login-4').state} ${stOf(pinCheck(), 'login-4').pinnable}`, 'not set up false');
+claudeIn(L4, 'c@x.io', 'Pro');
+writeFileSync(join(L2, 'status.json'), 'not json');
+pc = pinCheck();
+t('a check that errors on a pinned folder stays error', `${stOf(pc, 'login-2').state} ${stOf(pc, 'login-2').account}`, 'error a@x.io');
+claudeIn(L2, 'a@x.io', 'Ultra');
+writeFileSync(CALLS, '');
+pinCheck();
+t('~/.claude is never checked in multi-account mode', readFileSync(CALLS, 'utf8').split('\n').some((x) => x.startsWith('claude|unset|')), false);
+const twice = parseSubscriptions(PINNED.replace('`B@x.io`', '`A@x.io`'));
+const tw = checkLogins(twice, fakes);
+t('two rows pinned to one email: the first keeps it', `${stOf(tw, 'login-2').state} ${stOf(tw, 'login-3').state} ${stOf(tw, 'login-3').pinnable}`, 'signed in not set up false');
+t('and the second says whose it is', stOf(tw, 'login-3').why, 'pinned to the same account as login-2');
+t('loginJson carries the account fields and no duplicateOf', JSON.stringify(loginJson(stOf(pc, 'login-4'))).includes('"pinnable":true') && !('duplicateOf' in loginJson(stOf(pc, 'login-4'))) && loginJson(stOf(pc, 'login-4')).liveEmail === 'c@x.io', true);
+for (const d of [L2, L3, L4]) rmSync(d, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'all logins checks passed');
 process.exit(fails ? 1 : 0);

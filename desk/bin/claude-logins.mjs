@@ -23,7 +23,7 @@ const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: d
 //   -> [login]
 export function claudeLogins(env = process.env) {
   const extra = env.CLAUDE_CONFIG_DIR ? [envLogin(resolve(env.CLAUDE_CONFIG_DIR))] : [];
-  return toolLogins('claude', readSubscriptions(subscriptionsPath()), extra).filter((l, i) => i === 0 || isDir(l.dir));
+  return toolLogins('claude', readSubscriptions(subscriptionsPath()), extra).filter((l) => !l.configDir || isDir(l.dir));
 }
 
 // The logins work may be running on: every login above, then each removed one whose folder exists, as

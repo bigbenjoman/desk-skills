@@ -1960,9 +1960,12 @@ function ruleCell(x, n) {
   if (n === 1 && inUse(x.login)) return ['● only login', GOOD];
   return RULE_CELL[x.login.rule] ?? ['· no rule', GREY];
 }
-// A signed-out or refused login has one cell across both windows, saying desk won't use it.
+// The login a second folder on one account repeats, from the check's reason ("the same account as <name>",
+// or "pinned to the same account as <name>"), or null: a not set up folder with another reason is not one.
+const sameAccountAs = (check) => (check?.state === 'not set up' ? /same account as (\S+)$/.exec(check.why ?? '')?.[1] ?? null : null);
+// A signed-out or not set up login has one cell across both windows, saying desk won't use it.
 const unusable = (x) => (x.check?.state === 'signed out' ? '◆ signed out: desk won\'t use it'
-  : x.check?.state === 'duplicate' ? '◆ same account as above: no new workers' : null);
+  : x.check?.state === 'not set up' ? '◆ not set up: desk won\'t use it' : null);
 function loginRow(x, n, now, solid) {
   const no = unusable(x);
   const windows = no ? fitCell([[no, YOU]], U_5H + U_7D)
@@ -1978,7 +1981,7 @@ const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${
 // login per tool, that every worker runs on it.
 function usageHeadline(repos, now, t) {
   // Two logins on one account are one account's room: what follows would name it as both open and at its limit.
-  const dup = t.claude.find((x) => x.check?.state === 'duplicate');
+  const dup = t.claude.find((x) => sameAccountAs(x.check));
   if (dup) {
     const name = loginLabel(dup.login);
     return segLine([[`${t.claude.filter((x) => loginLabel(x.login) === name).length} logins are signed in to `, GREY], [name, BOLD], [', so desk counts them as one.', GREY]]);
@@ -2063,8 +2066,8 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
       ...(p.then ? [[', then ', null], [p.then, HUE.cyan]] : [])] };
   });
-  for (const x of t.claude.filter((c) => c.check?.state === 'duplicate')) {
-    const own = t.claude.find((c) => c.login.name === x.check.duplicateOf);
+  for (const x of t.claude.filter((c) => sameAccountAs(c.check))) {
+    const own = t.claude.find((c) => c.login.name === sameAccountAs(x.check));
     if (!own) continue;
     notes.push({ tag: '◆ one account', sgr: YOU, text: [[`${own.login.name} and ${x.login.name} are both signed in to ${loginLabel(x.login)}. Running /login replaces the account of the login it runs in. To use your other subscription, sign one of them in to it: `, null],
       [signInParts(own.login).shell, HUE.cyan], [` for ${own.login.name}, or `, null], [signInParts(x.login).shell, HUE.cyan], [` for ${x.login.name}, then `, null], ['/login', HUE.cyan], ['.', null]] });
@@ -3519,10 +3522,10 @@ export function interactive({
   function addChecked() {
     const a = adding;
     const c = checked?.get(checkKey(a.tool, a.login.configDir));
-    if (c?.state === 'duplicate') {
+    if (sameAccountAs(c)) {
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      msg = `${a.login.name} is signed in to the same account as ${c.duplicateOf}, so desk won't use it. x removes it.`;
+      msg = `${a.login.name} is signed in to the same account as ${sameAccountAs(c)}, so desk won't use it. x removes it.`;
     } else if (c?.state === 'signed in') {
       if (c.rule !== 'standby' && saving) return;
       stopAdding();
