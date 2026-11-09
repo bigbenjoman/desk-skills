@@ -4,12 +4,12 @@
 // signed-in and signed-out; no fixture token in anything shown; rule changes through the CLI. A
 // scratch HOME only; nothing reads this computer's logins.
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule, multiAccount, toolLogins,
+  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule, multiAccount, toolLogins, needsMigration,
 } from '../desk/bin/logins.mjs';
 
 let fails = 0;
@@ -231,6 +231,98 @@ t('two rows pinned to one email: the first keeps it', `${stOf(tw, 'login-2').sta
 t('and the second says whose it is', stOf(tw, 'login-3').why, 'pinned to the same account as login-2');
 t('loginJson carries the account fields and no duplicateOf', JSON.stringify(loginJson(stOf(pc, 'login-4'))).includes('"pinnable":true') && !('duplicateOf' in loginJson(stOf(pc, 'login-4'))) && loginJson(stOf(pc, 'login-4')).liveEmail === 'c@x.io', true);
 for (const d of [L2, L3, L4]) rmSync(d, { recursive: true, force: true });
+
+// ---- pin and migrate (DS-530), each scenario in a fresh HOME and config folder
+let scn = 0;
+function scenario(file, signed = {}) {
+  const home = join(T, `home-pin-${++scn}`), cfg = join(T, `config-pin-${scn}`);
+  mkdirSync(cfg, { recursive: true });
+  const dirOf = (n) => (n === 'default' ? join(home, '.claude') : join(home, '.claude-logins', n));
+  for (const [n, email] of Object.entries(signed)) {
+    if (n === 'default') claudeIn(dirOf(n), email, 'Pro', { claudeJson: join(home, '.claude.json') });
+    else if (email) claudeIn(dirOf(n), email, 'Pro');
+    else mkdirSync(dirOf(n), { recursive: true });
+  }
+  const path = join(cfg, 'subscriptions.md');
+  if (file !== null) writeFileSync(path, file);
+  const e = { ...env, HOME: home, DESK_CONFIG_ROOT: cfg };
+  const run = (...a) => new Promise((res) => execFile('node', [join(BIN, 'desk-env.mjs'), 'logins', ...a], { env: e, cwd: T, encoding: 'utf8' },
+    (err, stdout, stderr) => res({ rc: err ? err.code ?? 1 : 0, out: stdout, err: stderr })));
+  const read = () => { process.env.HOME = home; const r = readSubscriptions(path); process.env.HOME = H; return r; };
+  return { home, path, run, read, text: () => readFileSync(path, 'utf8'), has: () => existsSync(path) };
+}
+const OLD = ROWS(['| `claude` | `default` | `~/.claude` | `in rotation` |', '| `claude` | `login-2` | `~/.claude-logins/login-2` | `standby` |']);
+const lg = (subs, n) => subs.logins.find((l) => l.tool === 'claude' && l.name === n);
+const pinState = (subs, n) => `${lg(subs, n)?.account ?? 'unpinned'}/${lg(subs, n)?.rule}`;
+
+let sc = scenario(OLD, { default: 'x@a.io', 'login-2': 'y@a.io', 'login-3': 'x@a.io' });
+process.env.HOME = sc.home;
+t('the old file needs migrating', needsMigration(sc.read()), true);
+process.env.HOME = H;
+let m = await sc.run('migrate');
+let after = sc.read();
+t('AC1 migrate: login-2 pinned and on standby', pinState(after, 'login-2'), 'y@a.io/standby');
+t('AC1 migrate: the found login-3 is pinned', pinState(after, 'login-3'), 'x@a.io/standby');
+t('AC1 migrate: ~/.claude is in the Removed table', `${after.removed.some((r) => r.tool === 'claude' && r.folder === '~/.claude')} ${lg(after, 'default')}`, 'true undefined');
+t('AC1 migrate: no add hint when x@a.io is pinned', `${m.rc} ${m.out.includes('with a in view 6')}`, '0 false');
+t('AC11 migrate: the previous file kept as a backup', readFileSync(`${sc.path}.bak`, 'utf8') === OLD, true);
+t('AC6 migrate: a pinned file needs no migrating', (await sc.run('migrate')).out.trim(), 'nothing to migrate');
+const pinnedText = sc.text();
+t('AC6 and is left as it was', `${sc.text() === pinnedText}`, 'true');
+
+sc = scenario(OLD, { default: 'x@a.io', 'login-2': 'y@a.io', 'login-3': 'y@a.io' });
+m = await sc.run('migrate');
+after = sc.read();
+t('AC2 migrate: login-3 on a pinned account stays unpinned', `${pinState(after, 'login-3')} ${pinState(after, 'login-2')}`, 'unpinned/standby y@a.io/standby');
+t('AC2 migrate: names the account to add', m.out.includes('add x@a.io with a in view 6'), true);
+
+sc = scenario(OLD, { default: 'x@a.io', 'login-2': null });
+m = await sc.run('migrate');
+after = sc.read();
+t('AC3 migrate: a signed-out login-2 is unpinned and keeps its rule', pinState(after, 'login-2'), 'unpinned/standby');
+
+const codexOnly = ROWS(['| `claude` | `default` | `~/.claude` | `standby` |', '| `codex` | `default` | `~/.codex` | `in rotation` |']);
+sc = scenario(codexOnly, { default: 'x@a.io' });
+process.env.HOME = sc.home;
+t('a Codex-only file is left alone', needsMigration(parseSubscriptions(codexOnly)), false);
+process.env.HOME = H;
+m = await sc.run('migrate');
+t('AC4 migrate: nothing to migrate, file unchanged', `${m.out.trim()} ${sc.text() === codexOnly} ${existsSync(`${sc.path}.bak`)}`, 'nothing to migrate true false');
+
+sc = scenario(null, { default: 'x@a.io', 'login-2': 'y@a.io' });
+process.env.HOME = sc.home;
+t('no file is left alone', needsMigration(readSubscriptions(join(T, 'none.md'))), false);
+process.env.HOME = H;
+m = await sc.run('migrate');
+t('AC5 migrate: no file, nothing written', `${m.out.trim()} ${sc.has()}`, 'nothing to migrate false');
+
+// pin
+const ROT = ROWS(['| `claude` | `default` | `~/.claude` | `in rotation` |', '| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |']);
+sc = scenario(ROT, { default: 'x@a.io', 'login-4': 'z@a.io' });
+let p = await sc.run('pin', 'claude', 'login-4');
+after = sc.read();
+t('AC7 pin: an unlisted login-4 is added, pinned, on standby', `${p.rc} ${pinState(after, 'login-4')}`, '0 z@a.io/standby');
+t('AC11 pin: the previous file kept as a backup', readFileSync(`${sc.path}.bak`, 'utf8') === ROT, true);
+
+sc = scenario(ROT, { default: 'x@a.io', 'login-2': 'y@a.io' });
+p = await sc.run('pin', 'claude', 'login-2');
+after = sc.read();
+t('AC8 pin: a listed login-2 keeps its rule', `${p.rc} ${pinState(after, 'login-2')}`, '0 y@a.io/in rotation');
+t('AC8 pin: and a listed unpinned ~/.claude row goes to Removed', `${lg(after, 'default')} ${after.removed.some((r) => r.folder === '~/.claude')}`, 'undefined true');
+
+sc = scenario(ROT, { default: 'x@a.io', 'login-2': 'y@a.io', 'login-4': 'Y@a.io' });
+await sc.run('pin', 'claude', 'login-2');
+const before = sc.text();
+p = await sc.run('pin', 'claude', 'login-4');
+t('AC9 pin: an account pinned elsewhere is refused', `${p.rc} ${p.err.trim()}`, '1 logins: y@a.io is already pinned to login-2');
+t('AC9 pin: and the file is unchanged', sc.text() === before, true);
+
+sc = scenario(ROT, { default: 'x@a.io', 'login-4': null });
+p = await sc.run('pin', 'claude', 'login-4');
+t('AC10 pin: a signed-out login-4 is refused', `${p.rc} ${p.err.trim()} ${sc.text() === ROT}`, '1 logins: claude login-4 is not signed in true');
+
+t('usage names pin and migrate', (await sc.run('bogus')).err.includes('| pin claude <name> | migrate'), true);
+
 
 console.log(fails ? `${fails} FAILED` : 'all logins checks passed');
 process.exit(fails ? 1 : 0);

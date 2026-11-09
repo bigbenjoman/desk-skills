@@ -380,6 +380,71 @@ export function removeLogin(subs, { tool, name, check }) {
   return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };
 }
 
+// ---- pinning a folder to its account ---------------------------------------------------------
+const underLogins = (l) => l.dir.startsWith(`${loginsFolder(l.tool)}/`);
+// A listed ~/.claude row has no place once pins are written: it goes to Removed, as migration does.
+const defaultRows = (subs) => subs.logins.filter((l) => l.tool === 'claude' && !l.configDir);
+const removedFrom = (subs, rows) => [...subs.removed, ...rows.map((l) => ({ tool: l.tool, name: l.name, folder: l.folder, dir: l.dir }))];
+
+// The file's text with one Claude folder pinned to the email it is signed in to. A folder the file does
+// not list is added on standby (a Removed one with its own folder, or a folder of that name under
+// ~/.claude-logins); a listed one keeps its rule. `check` is -> checkLogins' result.
+//   -> { text, login }, or throws with the reason
+export function pinLogin(subs, { tool, name, check }) {
+  if (tool !== 'claude') throw new Error(`logins: only a Claude login is pinned, not ${tool}`);
+  if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
+  const dir = NAME.test(name) ? join(loginsFolder(tool), name) : null;
+  const gone = subs.removed.find((r) => r.tool === tool && r.name === name);
+  const target = subs.logins.find((l) => l.tool === tool && l.name === name)
+    ?? (gone ? login({ tool, name, folder: gone.dir, rule: 'standby', source: 'file' }) : null)
+    ?? (dir && isDir(dir) ? login({ tool, name, folder: dir, rule: 'standby', source: 'file' }) : null);
+  if (!target) {
+    const names = subs.logins.filter((l) => l.tool === tool).map((l) => l.name);
+    throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
+  }
+  if (!target.configDir) throw new Error(`logins: ${tool} ${name} is ${tilde(TOOL[tool].dir())}, which desk does not pin: sign a folder under ${tilde(loginsFolder(tool))} in to the account instead`);
+  const c = check().logins.find((l) => l.tool === tool && l.dir === target.dir) ?? checkLogin(target);
+  if (c.state === 'error') throw new Error(`logins: claude ${name} could not be checked: ${c.why}`);
+  const live = ('liveEmail' in c ? c.liveEmail : c.email)?.toLowerCase() ?? null;
+  if (!live) throw new Error(`logins: claude ${name} is not signed in`);
+  const other = subs.logins.find((l) => l.tool === tool && l.account === live && l.dir !== target.dir);
+  if (other) throw new Error(`logins: ${live} is already pinned to ${other.name}`);
+  const listed = subs.logins.some((l) => l.tool === tool && l.dir === target.dir);
+  const changed = { ...target, account: live, source: 'file' };
+  const kept = subs.logins.filter((l) => !defaultRows(subs).includes(l));
+  const logins = listed ? kept.map((l) => (l.dir === changed.dir ? changed : l)) : [...kept, changed];
+  const removed = removedFrom({ removed: subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir)) }, defaultRows(subs));
+  return { text: renderSubscriptions(logins, removed), login: changed };
+}
+
+// True when the file exists, has no pins, and lists or finds a Claude folder under ~/.claude-logins that
+// the Removed table does not name. A file for Codex rules or a rule on ~/.claude alone is left alone.
+export function needsMigration(subs) {
+  if (!subs.exists || multiAccount(subs)) return false;
+  return subs.logins.some((l) => l.tool === 'claude' && l.configDir && underLogins(l)) || unlistedFolders('claude', subs.logins, subs.removed).length > 0;
+}
+
+// The file's text migrated to account pins: each signed-in folder, listed or found, pinned to its email
+// (the first in file order keeps one that two share, the other stays unpinned with its rule), and the
+// ~/.claude row moved to Removed. `check` is -> checkLogins' result.
+//   -> { text, hint }; hint is the email ~/.claude was signed in to when no folder is pinned to it, else null
+export function migrateSubscriptions(subs, check) {
+  if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
+  const claude = check().logins.filter((l) => l.tool === 'claude');
+  const pins = new Map();
+  for (const l of claude.filter((x) => x.configDir)) {
+    const live = l.liveEmail?.toLowerCase();
+    if (live && !pins.has(live)) pins.set(live, l.dir);
+  }
+  const pin = (l) => ({ ...l, account: [...pins].find(([, d]) => d === l.dir)?.[0] ?? null });
+  const own = defaultRows(subs);
+  const listed = subs.logins.filter((l) => !own.includes(l)).map((l) => (l.tool === 'claude' ? pin(l) : l));
+  const found = claude.filter((l) => l.configDir && !subs.logins.some((o) => o.dir === l.dir)).map((l) => pin(foundLogin('claude', l.dir, subs)));
+  const live = claude.find((l) => !l.configDir)?.liveEmail?.toLowerCase() ?? null;
+  const rows = own.length ? own : [defaultLogin('claude')];
+  return { text: renderSubscriptions([...listed, ...found], removedFrom(subs, rows)), hint: live && !pins.has(live) ? live : null };
+}
+
 // ---- what the person is shown ----------------------------------------------------------------
 const STATE = { 'signed in': 'signed in', 'signed out': 'signed out', error: 'not checked', 'wrong account': 'wrong account', 'not set up': 'not set up' };
 

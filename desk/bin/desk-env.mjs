@@ -2010,7 +2010,20 @@ if (isMain) {
           console.log(`${tool} ${name}: removed; ${r.login.folder} and its sign-in are left as they are`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | set <claude|codex> <name> <${L.RULES.join('|')}> | remove <claude|codex> <name>`);
+        if (sub === 'pin' && rest.length === 2 && rest[0] === 'claude') {
+          const r = L.pinLogin(subs, { tool: 'claude', name: rest[1], check: () => L.checkLogins(subs) });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`claude ${r.login.name}: pinned to ${r.login.account}, ${r.login.rule}`);
+          break;
+        }
+        if (sub === 'migrate' && rest.length === 0) {
+          if (!L.needsMigration(subs)) { console.log('nothing to migrate'); break; }
+          const r = L.migrateSubscriptions(subs, () => L.checkLogins(subs));
+          console.log(writeWithBackup(path, r.text));
+          if (r.hint) console.log(`add ${r.hint} with a in view 6`);
+          break;
+        }
+        console.error(`usage: desk-env.mjs logins list|check [--json] | set <claude|codex> <name> <${L.RULES.join('|')}> | remove <claude|codex> <name> | pin claude <name> | migrate`);
         process.exit(2);
         break;
       }
