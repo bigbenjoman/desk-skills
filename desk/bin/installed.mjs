@@ -118,7 +118,7 @@ function restartDriver({ slug, batch = null, dir, pid }, ps) {
   const raw = E.repoConfigValue(slug, 'repo-root');
   const root = raw && E.expandHome(raw).replace(/\/+$/, '');
   if (!root || !existsSync(root)) return `${name}: left running on the old code, ${slug} has no §2 Primary repo root here to start it from`;
-  // The driver traps TERM once its sleep returns, so the sleep is stopped too.
+  // The driver stops on TERM in its pause; its sleep is stopped too.
   for (const p of [pid, ...kids.map((k) => k.pid)]) { try { process.kill(p, 'SIGTERM'); } catch { /* gone */ } }
   if (!waitFor(() => !alive(pid) && lockPid(dir) !== pid)) return `${name}: did not stop within ${WAIT_MS / 1000}s of SIGTERM, so it was not started again`;
   const env = { ...driverEnv(), DESK_REPO_DIR: root, DESK_AUTOPILOT_STATE: dir };
