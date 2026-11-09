@@ -19,7 +19,9 @@
 # push) and AUTOPILOT_DATABASE (its `database=` line; migrate and seed are allowed only for a
 # per-ticket database). Standalone, the branch is read from the worktree and the database is none.
 # AUTOPILOT_START_STAGE starts a fresh session at that stage: 4b or 7 after a handoff, or Stage 3 on
-# when a requeue resumes the round its worker parked in.
+# when a requeue resumes the round its worker parked in. AUTOPILOT_LOGIN_DIR is the Claude login it
+# runs on, its preflight too: a config folder, or empty for the default login. Unset, it keeps the
+# caller's own.
 set -euo pipefail
 
 # shellcheck source=desk-env.sh
@@ -87,6 +89,10 @@ CODEX_PERM="$(desk_perm codex-review)"
 MODEL="${AUTOPILOT_MODEL:-}"
 MODEL_ARGS=()
 [ -n "$MODEL" ] && MODEL_ARGS=(--model "$MODEL")
+
+if [ -n "${AUTOPILOT_LOGIN_DIR+set}" ]; then
+  if [ -n "$AUTOPILOT_LOGIN_DIR" ]; then export CLAUDE_CONFIG_DIR="$AUTOPILOT_LOGIN_DIR"; else unset CLAUDE_CONFIG_DIR; fi
+fi
 
 # What this session starts as, and the effort config §3b Worker effort names for it. With the effort
 # lever off it is `default` and no --effort is passed. A malformed row is refused here, before the
@@ -200,8 +206,9 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
     fi
   fi
   rm -f "$PREFLIGHT_RECORD"
-  RAW=$(desk_timeout 300 claude -p "Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
-$CHECKS" \
+  PRE_PROMPT="Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
+$CHECKS"
+  RAW=$(desk_timeout 300 claude -p "$PRE_PROMPT" \
     --setting-sources "" --strict-mcp-config \
     ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} \
     --settings "$SETTINGS" \
@@ -211,6 +218,16 @@ $CHECKS" \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
     ${PRE_EFFORT_ARGS[@]+"${PRE_EFFORT_ARGS[@]}"} \
     --max-budget-usd 2 --output-format json 2>&1 < /dev/null | tr -d '\r') || true
+  # The call as the bench replays it (preflight-record.mjs), taken before any check tidies its files.
+  # A record that cannot be written never stops the spawn.
+  REC_ARGS=()
+  for p in "${TOOL_PROBES[@]}"; do REC_ARGS+=(--probe "$p"); done
+  for d in "${ADD_DIRS[@]}"; do [ "$d" != --add-dir ] && REC_ARGS+=(--add-dir "$d"); done
+  printf '%s' "$RAW" | node "$BIN/preflight-record.mjs" --state "$STATE" --ticket "$TICKET" --prompt "$PRE_PROMPT" \
+    --worktree "$WT" --canary "$CANARY" --settings "$SETTINGS" --agents "$AGENTS" --model "$MODEL" \
+    --effort "${PRE_EFFORT_ARGS[1]:-}" --tools "${TOOL_ARGS[1]:-}" --agent-names "$AGENT_NAMES" \
+    --gate "tracker=$TRACKER" --gate "codex-review=$CODEX_PERM" --gate "jira=$HAVE_JIRA" --gate "codex=$HAVE_CODEX" \
+    ${REC_ARGS[@]+"${REC_ARGS[@]}"} >/dev/null 2>&1 || echo "  note: the preflight call could not be recorded for the bench" >&2
   # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
   # a timeout) the raw output stands in for the reply, so its message still shows, and the cost is
   # unknown, never zero. pass.mjs reads the [preflight] cost line.
@@ -376,8 +393,10 @@ $(cat "$BRIEFING")"
   if [ -n "${AUTOPILOT_TASK:-}" ]; then SYSTEM="$SYSTEM$BRIEF_TEXT"; else PROMPT="$PROMPT$BRIEF_TEXT"; fi
 fi
 # The memory digest goes where the briefing does, and its size into the log after the preflight's
-# cost line. No index is no digest; a resumed session already holds the one it started with.
-if [ "$MEMORY_LEVER" = on ] && [ -z "${AUTOPILOT_RESUME:-}" ]; then
+# cost line. No index is no digest; a resumed session already holds the one it started with. A worker
+# sent to another login takes it whatever the lever says: its auto-memory is that login's folder's,
+# which does not hold this repo's index.
+if { [ "$MEMORY_LEVER" = on ] || [ -n "${AUTOPILOT_LOGIN_DIR:-}" ]; } && [ -z "${AUTOPILOT_RESUME:-}" ]; then
   DIGEST="$(node "$BIN/memory-digest.mjs" "$DESK_MEMORY_DIR" --log "$LOG" 2>/dev/null </dev/null || true)"
   if [ -n "$DIGEST" ]; then
     DIGEST="
@@ -400,6 +419,10 @@ cd "$WT"
 export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
+# The login this worker runs on (its CLAUDE_CONFIG_DIR, or the default), read back by the pass and
+# desk-q (claude-logins.mjs) to probe that login's usage. Beside its settings, never in its log, whose
+# growth is the worker's own output.
+node "$DESK_ENV_DIR/claude-logins.mjs" login-event > "$STATE/workers/$TICKET.login.json" 2>/dev/null < /dev/null || true
 # Where desk-env lines finds what this worker may read (worker-settings.mjs writes it beside these settings).
 export DESK_WORKER_SETTINGS="$SETTINGS"
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
@@ -421,8 +444,9 @@ desk_detach claude -p "$PROMPT" \
 disown $! 2>/dev/null || true
 
 PID="?"
+# The registry across every Claude login, so a worker on another login is found too.
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  FOUND=$(claude agents --json 2>/dev/null | SID="$SID" node -e '
+  FOUND=$(node "$DESK_ENV_DIR/claude-logins.mjs" agents 2>/dev/null < /dev/null | SID="$SID" node -e '
     let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
       try { const a = JSON.parse(s).find((x) => x.sessionId === process.env.SID); if (a?.pid) console.log(a.pid); } catch {}
     });' 2>/dev/null || true)
@@ -435,4 +459,4 @@ printf '[spawn] ticket=%s pid=%s port=%s model=%s session=%s%s\n' \
 printf '[spawn] log=%s\n' "$LOG"
 [ -n "$DENIED" ] && printf '[spawn] %s\n' "$DENIED"
 [ -n "$GRANTED" ] && printf '[spawn] CONFIG_GRANT: %s\n' "$GRANTED"
-printf '[spawn] wait: until ! claude agents --json | grep -q %s; do sleep 20; done\n' "$SID"
+printf '[spawn] wait: until ! %sclaude agents --json | grep -q %s; do sleep 20; done\n' "${CLAUDE_CONFIG_DIR:+CLAUDE_CONFIG_DIR=$(printf '%q' "$CLAUDE_CONFIG_DIR") }" "$SID"

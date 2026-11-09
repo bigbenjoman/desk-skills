@@ -15,6 +15,7 @@ import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mj
 import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor } from './batch-state.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
+import { readRegistry } from './claude-logins.mjs';
 
 crashShowsPerson();
 const QUEUE = join(binDir(), 'queue.mjs');
@@ -52,8 +53,7 @@ try {
   const park = Q0.tickets?.[ticket]?.park;
   if (park) parkedReason = (park.question ?? JSON.stringify(park)).slice(0, 300);
   if (sid) {
-    const live = JSON.parse(execFileSync('claude', ['agents', '--json'], { encoding: 'utf8' }));
-    waiting = Array.isArray(live) && live.some((a) => a.sessionId === sid);
+    waiting = !!readRegistry().live?.some((a) => a.sessionId === sid);
   }
 } catch { waiting = false; }
 

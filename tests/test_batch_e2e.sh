@@ -119,7 +119,13 @@ if (a[0] === 'agents') {
   console.log(JSON.stringify(live));
   process.exit(0);
 }
+// The sign-in check: each config folder is its own account.
+if (a[0] === 'auth') {
+  console.log(JSON.stringify({ loggedIn: true, email: (process.env.CLAUDE_CONFIG_DIR ?? 'default').split('/').pop() + '@example.com' }));
+  process.exit(0);
+}
 const prompt = at('-p') ?? '';
+const onLogin = (what) => fs.appendFileSync(T + '/logins.log', what + ' ' + (process.env.CLAUDE_CONFIG_DIR ?? 'default') + '\n');
 // --model, as the real CLI takes it: a model it does not know fails the call before any turn.
 const model = a.includes('--model') ? at('--model') : 'none';
 if (model === 'no-such-model' || model === 'nosuchalias') {
@@ -147,6 +153,7 @@ if (prompt === 'Reply with: ok') {
 }
 if (prompt.startsWith('Perform these')) {
   fs.appendFileSync(T + '/calls.log', 'claude preflight model=' + model + '\n');
+  onLogin('preflight');
   // Refused at the usage limit: the json result the real CLI writes for HTTP 429, and no checks.
   if (fs.existsSync(T + '/preflight-429')) {
     console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, api_error: 'usage_limit_reached', num_turns: 1, total_cost_usd: 0, result: "You've hit your weekly limit · resets Nov 1 at 3pm" }));
@@ -165,6 +172,7 @@ if (prompt.startsWith('Perform these')) {
 const ticket = /Your ticket is (\S+?)\./.exec(prompt)?.[1];
 const sid = at('--session-id');
 fs.appendFileSync(T + '/calls.log', 'claude worker ' + ticket + '\n');
+onLogin('worker');
 const round = fs.readdirSync(T + '/runs').filter((f) => f.startsWith(ticket + '.')).length + 1;
 fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model, partial: a.includes('--include-partial-messages'), agents: a.includes('--agents') ? Object.keys(JSON.parse(fs.readFileSync(at('--agents'), 'utf8'))) : null, sources: a.includes('--setting-sources') ? at('--setting-sources') : null, settings: a.filter((x) => x === '--settings').length }));
 const reg = T + '/live/' + sid + '.json';
@@ -812,5 +820,24 @@ pass
 echo MERGED > "$T/pr/202"; echo 2999-01-01T00:00:00Z > "$T/pr/202.merged_at"
 pass
 check "AC6: a promotion PR merged after every child opens no further one" '[ "$(grep -c "^pr create" "$T/gh.log")" = 3 ] && [ "$(bfield promotion.merged.2.pr)" = 202 ]'
+
+# ---- a login in rotation with more room: the real spawn-worker.sh puts the preflight and worker on it --
+export DESK_QUEUE="$T/queue-l.json" DESK_AUTOPILOT_STATE="$T/state-l" DESK_SUBSCRIPTIONS="$T/subscriptions.md" DESK_USAGE_DIR="$T/usage"
+LOGIN_B="$T/home/.claude-logins/b"
+mkdir -p "$T/state-l/triage" "$T/usage" "$LOGIN_B"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `in rotation` |\n' > "$DESK_SUBSCRIPTIONS"
+reading(){ node -e 'const r = Math.floor(Date.now() / 1000) + 3600; const u = Number(process.argv[1]); console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: u, resetsAt: r }, seven_day: { utilization: u, resetsAt: r } } } }))' "$1"; }
+reading 0.9 > "$T/usage/probe.log"; reading 0.1 > "$T/usage/probe.b.log"
+printf '{"ticket": "T-91", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-91", "files_in_scope": ["src/l.txt"], "unknowns": []}\n' > "$T/state-l/triage/T-91.json"
+printf 'WAIT\nAUTOPILOT_DONE: pr=191 jira=none\n' > "$T/scripts/T-91.1"
+q init logins; q admit T-91
+: > "$T/logins.log"
+MEM="$T/home/.claude/projects/$(printf '%s' "$T/repo" | tr -c 'A-Za-z0-9' '-')/memory"
+mkdir -p "$MEM"; echo '- [A hazard](hazard.md) — the one to remember' > "$MEM/MEMORY.md"
+pass
+check "DS-465 AC2 the real preflight and the worker both run in the chosen login's folder" '[ "$(cat "$T/logins.log")" = "$(printf "preflight %s\nworker %s" "$LOGIN_B" "$LOGIN_B")" ]'
+check "DS-465 AC1 the row and the worker's login file name it" '[ "$(field T-91 login.name)" = "\"b\"" ] && grep -q "\"login\":\"b\"" "$T/state-l/workers/T-91.login.json"'
+check "DS-465 a worker on another login gets the memory index in its brief, its auto-memory being that login's" 'run_has "$T/runs/T-91.1" prompt "the one to remember"'
+finish T-91
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

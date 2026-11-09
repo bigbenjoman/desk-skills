@@ -23,11 +23,12 @@
 // seconds), DESK_SOURCE_CHECKOUT (the desk-skills checkout), DESK_REBOOT_CHECK_CMD and DESK_RESTART_CMD
 // (each run with sh -c).
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { uptime } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { readRegistry } from './claude-logins.mjs';
 import { takeBorrowLock, otherQueues } from './borrow.mjs';
 import { readInstalled } from './installed.mjs';
 
@@ -513,7 +514,7 @@ if (isMain) {
   const running = runningWorkers(q);
   let live;
   const stop = (t) => {
-    if (live === undefined) { try { live = JSON.parse(execFileSync('claude', ['agents', '--json'], { encoding: 'utf8' })); } catch { live = null; } }
+    if (live === undefined) live = readRegistry().live;
     return stopForWindow(t, {
       live,
       kill: (pid) => spawnSync('kill', [String(pid)]),

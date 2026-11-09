@@ -17,9 +17,10 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, HOME as E_HOME } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
+import { projectsDirs } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
@@ -273,7 +274,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
   const pending = String(t.held_by ?? '').split('|').filter((p) => p && (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null,
+  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null,
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
@@ -648,7 +649,7 @@ switch (cmd) {
     const [key, ...rest] = at < 0 ? args : args.filter((_, i) => i !== at && i !== at + 1);
     if (at >= 0 && !SESSION_ID.test(session ?? '')) throw new Error('usage: queue.mjs park <TICKET> --claimed-by <session id> [<question>]');
     // A session name, or a session from another computer, has no transcript to read idleness from.
-    if (session && !transcriptOf(session)) throw new Error(`no transcript for session ${session} under ${join(E_HOME, '.claude', 'projects')}: --claimed-by wants the session id of a session on this computer`);
+    if (session && !transcriptOf(session)) throw new Error(`no transcript for session ${session} under ${projectsDirs().join(' or ')}: --claimed-by wants the session id of a session on this computer`);
     const t = ticket(q, key);
     const now = new Date().toISOString();
     if (session && (isHeld(t) || spinePark(t))) throw new Error(`${key} is parked by the orchestrator (${t.park.question}): only its release or approval settles it, so it cannot be claimed`);

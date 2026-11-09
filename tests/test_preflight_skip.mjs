@@ -1,9 +1,9 @@
 // suite: preflight skip (with the lever on, a preflight is skipped on a passed fingerprint and otherwise runs at low effort)
-// covers: desk/bin/preflight-fingerprint.mjs desk/bin/spawn-worker.sh
+// covers: desk/bin/preflight-fingerprint.mjs desk/bin/spawn-worker.sh desk/bin/preflight-record.mjs
 // A stub claude on PATH answers the version and account reads from files, and each -p call as the
 // $T/reply file says, recording its argv. A scratch desk home links the real desk/bin beside its own
 // installed.json. Scratch HOME and repo only.
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -107,6 +107,14 @@ t('AC2 with no record the preflight runs and passes', [...ran(r), r.passed], [..
 t('AC2 it runs at low effort', /--effort low( |$)/.test(r.calls[0]), true);
 t('a pass records the fingerprint', /^\{"fingerprint":"[0-9a-f]{64}"\}\n$/.test(readFileSync(record, 'utf8')), true);
 const first = readFileSync(record, 'utf8');
+// The call is kept for the bench's replay (preflight-record.mjs), every file of it.
+const kept = readdirSync(join(T, 'state', 'preflight')).sort();
+const keptBase = kept.find((n) => n.endsWith('.prompt.md'))?.slice(0, -'.prompt.md'.length);
+t('the call is recorded as prompt, reply, inputs, settings and agents', kept.map((n) => n.slice(keptBase.length)).join(' '), '.agents.json .inputs.json .json .prompt.md .settings.json');
+t('the recorded prompt is the one sent', readFileSync(join(T, 'state', 'preflight', `${keptBase}.prompt.md`), 'utf8').startsWith('Perform these'), true);
+t('the recorded reply is the raw reply', readFileSync(join(T, 'state', 'preflight', `${keptBase}.json`), 'utf8'), result(GOOD));
+const keptInputs = JSON.parse(readFileSync(join(T, 'state', 'preflight', `${keptBase}.inputs.json`), 'utf8'));
+t('the recorded inputs name the worktree, effort and files', [keptInputs.ticket, keptInputs.worktree, keptInputs.effort, keptInputs.files.w_in, keptInputs.probes.length > 0], [KEY, join(T, 'repo'), 'low', false, true]);
 
 r = preflight();
 t('AC1 the same inputs make no call', ran(r), SKIPPED);

@@ -77,6 +77,10 @@
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
 //   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
+//   node desk-env.mjs machine set <key>=<value>...
+//                                             set the bench's bench-cap-points and bench-reserve-percent in
+//                                             the profile (only after the user answers); a bad value exits 1
+//                                             naming it, and nothing is written
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
 //   node desk-env.mjs costs detect            print the GitHub repos, Vercel teams and projects and AWS
 //                                             profiles this computer can see
@@ -86,6 +90,16 @@
 //                                             edits: --name <supplier>:<key>=<name>, --drop <supplier>:<key>,
 //                                             --actions-budget <usd>, --credit <profile>=<usd>@<YYYY-MM-DD>
 //   node desk-env.mjs costs show [--json]     print the saved cost sources; a missing file is "no cost sources"
+//   node desk-env.mjs logins list [--json]    print the Claude and Codex logins in ~/.config/desk/subscriptions.md,
+//                                             each with its folder and rule; a missing file is ~/.claude and ~/.codex
+//   node desk-env.mjs logins check [--json]   as list, with each login's sign-in, account and plan, the signed-in
+//                                             folders under ~/.claude-logins and ~/.codex-logins it does not list,
+//                                             and the usable ones (logins.mjs)
+//   node desk-env.mjs logins set <claude|codex> <name> <in rotation|standby|off>
+//                                             change one login's rule, keeping the previous file as .bak
+//   node desk-env.mjs logins remove <claude|codex> <name>
+//                                             remove one login from the rules, leaving its folder and sign-in;
+//                                             a folder under the logins folder is not found again
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
@@ -508,6 +522,9 @@ export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
 // reads as no cost sources. costs.mjs is imported only by the `costs` command, so the scripts that
 // copy this file on its own need nothing new.
 export const costsPath = () => expandHome(process.env.DESK_COSTS ?? join(deskConfigRoot(), 'costs.md'));
+// The Claude and Codex logins desk may use, one file per computer beside costs.md: read and change
+// it with logins.mjs, which only the `logins` command imports. A missing file is the default logins.
+export const subscriptionsPath = () => expandHome(process.env.DESK_SUBSCRIPTIONS ?? join(deskConfigRoot(), 'subscriptions.md'));
 // Every configured repo: its config file and §0 GitHub repo (the slug's, where the row is unset).
 export function configuredRepos(root = deskConfigRoot()) {
   let slugs = [];
@@ -979,13 +996,18 @@ export function readRepos() {
   return items.map((repo) => ({ repo, path: /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.includes('..') ? join(readRepoDir(), slugOf(repo)) : null }));
 }
 
+// The file naming the login a worker runs on (claude-logins.mjs reads it).
+export const loginFile = (state, key) => join(state, 'workers', `${key}.login.json`);
+
 // Move a ticket's last round aside so the next worker starts clean: its log (a kept AUTOPILOT_DONE
 // blocks the respawn, and a kept PR line sends screenshots to the old PR), its park record (an old
 // question reads as the new worker's) and, with `answers`, its mailbox (a stale answer satisfies the
 // next park instantly). All take one suffix, the first `.round<n>` free for every one of them, so a
 // round's files stay together. The log is gzipped as it moves (`.round<n>.gz`, its time kept, since a
 // batch's cost and spawn history read a round's time); one that fails to compress stays as it was,
-// and every reader of round logs takes both. An empty log is left in place. Returns the files moved.
+// and every reader of round logs takes both. An empty log is left in place. The worker's login file
+// is copied to the same suffix, as the next round's start overwrites it and a round's usage readings
+// stay its login's. Returns the files moved.
 export function rotateRound(key, { answers = false } = {}) {
   const state = stateDir();
   const files = [join(state, 'logs', `${key}.log`), join(state, 'parks', `${key}.json`)];
@@ -994,6 +1016,8 @@ export function rotateRound(key, { answers = false } = {}) {
   if (!present.length) return [];
   let n = 1;
   while (files.some((f) => existsSync(`${f}.round${n}`) || existsSync(`${f}.round${n}.gz`))) n += 1;
+  const login = loginFile(state, key);
+  if (existsSync(login)) copyFileSync(login, `${login}.round${n}`);
   return present.map((f) => {
     const to = `${f}.round${n}`;
     renameSync(f, to);
@@ -1519,6 +1543,10 @@ const PATHS = {
 };
 const IDENTITY = { DESK_GITHUB_HANDLE: githubHandle, DESK_JIRA_NAME: jiraName };
 const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+// The subcommands that write the machine profile, the cost sources or the login rules: the user's to
+// confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
+// command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
+export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins remove'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
@@ -1529,6 +1557,10 @@ const isMain = (() => {
 })();
 if (isMain) {
   const [cmd, ...args] = process.argv.slice(2);
+  if (process.env.DESK_AUTOPILOT_WORKER === '1' && WORKER_DENIED_WRITES.includes(`${cmd} ${args[0]}`)) {
+    console.error(`desk-env ${cmd} ${args[0]}: refused in an autopilot worker; this change is the user's to confirm.`);
+    process.exit(4);
+  }
   try {
     switch (cmd) {
       case 'where': {
@@ -1850,7 +1882,6 @@ if (isMain) {
         break;
       }
       case 'machine': {
-        // The subcommand is always the first word, so a worker's `machine write` deny rule holds.
         const [sub, ...rest] = args;
         const [key] = rest;
         const path = machineProfilePath();
@@ -1860,16 +1891,35 @@ if (isMain) {
           console.log(v);
           break;
         }
-        if (!['detect', 'propose', 'write'].includes(sub)) {
-          console.error('usage: desk-env.mjs machine detect|propose|write|get <key>|why <key>');
+        if (!['detect', 'propose', 'write', 'set'].includes(sub)) {
+          console.error('usage: desk-env.mjs machine detect|propose|write|set <key>=<value>...|get <key>|why <key>');
           process.exit(2);
         }
-        const hw = M.gather();
         const profile = machineProfile();
+        if (sub === 'set') {
+          // Every pair is checked before anything is written, so one bad value stores nothing.
+          const rows = [];
+          for (const pair of rest) {
+            const i = pair.indexOf('=');
+            const k = (i > 0 ? pair.slice(0, i) : pair).trim().toLowerCase();
+            const v = i > 0 ? pair.slice(i + 1).trim() : '';
+            const bad = i > 0 ? M.benchSettingError(k, v) : `"${pair}" is not <key>=<value>`;
+            if (bad) { console.error(`nothing written: ${bad}`); process.exit(1); }
+            rows.push({ key: k, value: v, why: M.benchWhy(k) });
+          }
+          if (!rows.length) { console.error('usage: desk-env.mjs machine set <key>=<value>...'); process.exit(2); }
+          // Without a profile, one is started holding only these rows: no hardware, so the next detect
+          // still offers the whole proposal.
+          const text = existsSync(path) ? readFileSync(path, 'utf8') : M.BENCH_ONLY_PROFILE;
+          console.log(writeWithBackup(path, M.setSizingRows(text, rows)));
+          break;
+        }
+        const hw = M.gather();
         const proposal = M.propose(hw);
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }
+          if (!M.sizesProposed(profile)) { console.log(`\nno sizes proposed in ${path} yet: desk-env machine propose shows the sizes it would write`); break; }
           const hwc = M.hardwareChanges(profile, hw);
           const szc = M.sizingChanges(profile, proposal);
           if (!hwc.length && !szc.length) { console.log(`\nunchanged since ${path}`); break; }
@@ -1887,12 +1937,12 @@ if (isMain) {
           }
           break;
         }
-        // write: overwrites; /desk-setup runs it only after the user confirms the proposal.
-        console.log(writeWithBackup(path, M.renderProfile(hw, proposal, new Date().toISOString().slice(0, 10))));
+        // write: overwrites; /desk-setup runs it only after the user confirms the proposal. Rows the
+        // proposal does not make (the bench settings) are kept.
+        console.log(writeWithBackup(path, M.renderProfile(hw, M.rewrittenSizing(profile, proposal), new Date().toISOString().slice(0, 10))));
         break;
       }
       case 'costs': {
-        // The subcommand is always the first word, so a worker's `costs write` deny rule holds.
         const [sub, ...rest] = args;
         const C = await import('./costs.mjs');
         const path = costsPath();
@@ -1929,8 +1979,43 @@ if (isMain) {
         console.log(writeWithBackup(path, C.renderCosts(proposal)));
         break;
       }
+      case 'logins': {
+        const [sub, ...rest] = args;
+        const L = await import('./logins.mjs');
+        const path = subscriptionsPath();
+        const subs = L.readSubscriptions(path);
+        const json = rest.includes('--json');
+        if (sub === 'list') {
+          if (json) console.log(JSON.stringify({ file: path, exists: subs.exists, errors: subs.errors, logins: subs.logins.map(L.loginJson) }, null, 2));
+          else for (const l of L.listLines(subs, path)) console.log(l);
+          break;
+        }
+        if (sub === 'check') {
+          const r = L.checkLogins(subs);
+          if (json) console.log(JSON.stringify({ file: path, exists: r.exists, errors: r.errors, logins: r.logins.map(L.loginJson), usable: r.usable.map((l) => `${l.tool}:${l.name}`) }, null, 2));
+          else for (const l of L.checkLines(r, path)) console.log(l);
+          break;
+        }
+        if (sub === 'set' && rest.length >= 3) {
+          const [tool, name, ...rule] = rest;
+          const r = L.setRule(subs, { tool, name, rule: rule.join(' '), check: () => L.checkLogins(subs) });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`${tool} ${name}: ${r.login.rule}`);
+          break;
+        }
+        if (sub === 'remove' && rest.length === 2) {
+          const [tool, name] = rest;
+          const r = L.removeLogin(subs, { tool, name, check: () => L.checkLogins(subs) });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`${tool} ${name}: removed; ${r.login.folder} and its sign-in are left as they are`);
+          break;
+        }
+        console.error(`usage: desk-env.mjs logins list|check [--json] | set <claude|codex> <name> <${L.RULES.join('|')}> | remove <claude|codex> <name>`);
+        process.exit(2);
+        break;
+      }
       default:
-        console.error('usage: desk-env.mjs where|get|review-cmd|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs');
+        console.error('usage: desk-env.mjs where|get|review-cmd|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
         process.exit(2);
     }
   } catch (e) {

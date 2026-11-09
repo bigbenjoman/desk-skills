@@ -23,6 +23,7 @@ import { CLEARS_WHEN_FORMS, describeCond } from './clears-when.mjs';
 import { needsSession, planPark, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
+import { callLogin } from './call-login.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -258,9 +259,12 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
   ].join('\n');
 }
 
-// Starts the session detached, its JSON result written to <state>/decider/<id>.json. Returns the
-// record the supervisor keeps until the session ends.
-export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], cwd, env = process.env, claude = 'claude', now = new Date() }) {
+// Starts the session detached, on a Claude login that is not benched (call-login.mjs), its JSON result
+// written to <state>/decider/<id>.json. Returns the record the supervisor keeps until the session
+// ends, or null, starting nothing, when every usable login is benched.
+export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
+  const { login, env, all } = callLogin({ env: callerEnv, now: now.getTime() });
+  if (all) return null;
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
@@ -277,7 +281,7 @@ export function startDecider({ state, slug, bin, report, items, rules, webRead =
   closeSync(fd);
   child.on('error', () => {});
   child.unref();
-  return { id, pid: child.pid ?? null, started: now.toISOString(), out, items, targets };
+  return { id, pid: child.pid ?? null, started: now.toISOString(), out, items, targets, login: login?.name ?? null };
 }
 
 // The payload on the last `mark` line of a headless session's `--output-format json` text:

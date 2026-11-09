@@ -61,7 +61,10 @@ check "bash <repo script>: exact command allowed"         'allows "Bash(bash tes
 check "bash <repo script>: probed with bash --version"    '[[ "$out" == *"TOOLCHAIN_PROBE: bash --version"* ]] && allows "Bash(bash --version)"'
 check "bash <repo script>: no wholesale bash rule"        '! allows "Bash(bash:*)"'
 check "desk-env machine write denied, reads allowed"      'allows "Bash(desk-env:*)" && jq -e ".permissions.deny | index(\"Bash(desk-env machine write:*)\")" "$T/ws.json" >/dev/null'
-check "desk-env costs write denied"                       'jq -e ".permissions.deny | index(\"Bash(desk-env costs write:*)\") and index(\"Bash(node $B/desk-env.mjs costs write:*)\")" "$T/ws.json" >/dev/null'
+check "desk-env machine set denied"                       'jq -e ".permissions.deny | index(\"Bash(desk-env machine set:*)\") and index(\"Bash(node $B/desk-env.mjs machine set:*)\")" "$T/ws.json" >/dev/null'
+check "desk-env costs write denied"                      'jq -e ".permissions.deny | index(\"Bash(desk-env costs write:*)\") and index(\"Bash(node $B/desk-env.mjs costs write:*)\")" "$T/ws.json" >/dev/null'
+check "desk-env logins set denied"                        'jq -e ".permissions.deny | index(\"Bash(desk-env logins set:*)\") and index(\"Bash(node $B/desk-env.mjs logins set:*)\")" "$T/ws.json" >/dev/null'
+check "desk-env logins remove denied"                     'jq -e ".permissions.deny | index(\"Bash(desk-env logins remove:*)\") and index(\"Bash(node $B/desk-env.mjs logins remove:*)\")" "$T/ws.json" >/dev/null'
 check "desk-design save, status and check allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
 check "desk-design render allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs render:*)" && ! allows "Bash(node $B/desk-design.mjs render:*)"'
 check "DS-382 desk-design compare allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs compare:*)" && ! allows "Bash(node $B/desk-design.mjs compare:*)"'
@@ -540,6 +543,10 @@ check "DS-452 AC1 memory lever on: the memory folder is not granted, and writing
 settings '`bash tests/run.sh`' '' "$(lever3b codex)"
 check "DS-452 AC5 memory lever off: auto-memory is left as it is" '[ $rc -eq 0 ] && [ "$(jq -c .autoMemoryEnabled "$T/ws.json")" = null ]'
 check "DS-452 AC5 memory lever off: the memory folder is granted, and not denied" 'readable "$MEM" && ! denies "Edit(/$MEM/**)"'
+export CLAUDE_CONFIG_DIR="$HOME/.claude-logins/b"
+settings '`bash tests/run.sh`' '' "$(lever3b codex)"
+unset CLAUDE_CONFIG_DIR
+check "DS-463 AC8 a worker on another login is granted the default login's memory folder" '[ $rc -eq 0 ] && readable "$MEM"'
 
 # The codex lever, under §3 codex-review yes: on, desk-codex is allowed and a direct codex call may not
 # pass a model, profile or output file; off, codex is allowed and denied as it always was.
@@ -559,5 +566,19 @@ check "DS-445 AC6 codex lever on: a direct call with a model, profile, output fi
   'no "codex exec --sandbox read-only -m gpt-5 '"'x'"'" "codex exec --sandbox read-only --model=gpt-5 '"'x'"'" "codex exec --sandbox read-only -p fast '"'x'"'" \
       "codex exec --sandbox read-only --profile fast '"'x'"'" "codex exec --sandbox read-only -o out.txt '"'x'"'" "codex exec --sandbox read-only --output-last-message out.txt '"'x'"'" \
       "codex exec --sandbox read-only -c model=x '"'x'"'" "codex exec --sandbox read-only -cmodel=x '"'x'"'" "codex exec --sandbox workspace-write '"'x'"'"'
+# The CODEX_HOME rule itself refuses each command, not a missing allow rule: under allow rules wide
+# enough to admit it, it is refused while the rule is there and allowed once the rule is taken out.
+codexHome(){ local c w="$T/ws-wide.json" o="$T/ws-wide-nodeny.json"
+  jq '.permissions.allow += ["Bash(*desk-codex*)", "Bash(*codex exec --sandbox read-only*)", "Bash(export *)"]' "$T/ws.json" > "$w"
+  jq '.permissions.deny -= ["Bash(*CODEX_HOME=*)"]' "$w" > "$o"
+  no "$@" || return 1
+  for c in "$@"; do
+    [ "$(node "$T/match.mjs" "$w" bash "$c")" = refused ] && [ "$(node "$T/match.mjs" "$o" bash "$c")" = allow ] || { out="not refused by the CODEX_HOME rule: $c"; return 1; }
+  done; }
+check "DS-470 AC7 a codex call with a CODEX_HOME of the worker's own choosing is refused" \
+  'codexHome "CODEX_HOME=$HOME/.codex-logins/b desk-codex probe" "env CODEX_HOME=/x desk-codex refuter '"'x'"'" \
+      "export CODEX_HOME=/x" "CODEX_HOME=/x codex exec --sandbox read-only --skip-git-repo-check '"'x'"'" "CODEX_HOME=/x node $B/desk-codex.mjs finder '"'x'"'"'
+settings '`bash tests/run.sh`' '' "$(rows3 codex-review=yes)"
+check "DS-470 AC7 with the codex lever off too" 'codexHome "CODEX_HOME=/x codex exec --sandbox read-only '"'x'"'"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
