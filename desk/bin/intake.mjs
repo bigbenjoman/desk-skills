@@ -64,7 +64,7 @@ import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, personStep } from './batch-state.mjs';
-import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch } from './batches.mjs';
+import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 
@@ -190,12 +190,6 @@ const toFrontIn = (env, key, state) => {
   if (['running', 'done', 'failed'].includes(state)) return `${key} not moved to the front: it is ${state}, so it has no place left in the spawn order`;
   const f = queueCmdIn(env, ['front', key]);
   return f.status === 0 ? f.stdout.trim() : `${key} not moved to the front: ${lastLine(f)}`;
-};
-// The environment that points queue.mjs and triage.sh at named batch `b` (listBatches), whatever this
-// one pins: the batch's base comes from its queue, never this process's default branch.
-const batchEnv = (b) => {
-  const { DESK_DEFAULT_BRANCH: _pinned, ...env } = process.env;
-  return { ...env, DESK_BATCH: b.name, DESK_QUEUE: b.queue, DESK_AUTOPILOT_STATE: b.state };
 };
 // The named batches that are live (listed, readable and not finished): feature batches, by name.
 function liveFeatureBatches() {

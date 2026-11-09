@@ -325,13 +325,19 @@ t('DS-523 a merged slice no pass recorded as last: not archived, nothing moved',
 // A refused move, or a closed promotion, hands the ticket to the digest and holds the archive.
 const archiveMove = (name, states, why) => run(`const s = ${JSON.stringify(states)}; const b = B.listBatches().find((x) => x.name === '${name}');
   console.log(JSON.stringify(A.archiveCheck(b, { state: (n) => s[n] ?? 'OPEN', mergedAt: (n) => (s[n] === 'MERGED' ? '${MERGED_AT}' : null), move: () => ${JSON.stringify(why)} })))`);
-writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: lastRecorded, tickets: { 'X-13': { key: 'X-13', state: 'parked' } } });
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: lastRecorded, tickets: { 'X-13': { key: 'X-13', state: 'triaged' } } });
 a = res(archiveMove('X-12', { 9: 'MERGED' }, 'the standing batch is not running'));
 t('DS-523 AC3 a refused move: not archived', a.archived === false && existsSync(namedQ('X-12')), true);
 t('DS-523 AC3 the ticket is handed to the digest with the reason', Object.values(handed('X-12')).some((e) => e.kind === 'archive' && e.ticket === 'X-13' && e.text.includes('the standing batch is not running')), true);
 t('DS-523 AC3 the report names it', (a.lines ?? []).join(' ').includes('waits on X-13'), true);
+t('DS-523 AC3 a handed ticket ready to run is parked, so no pass starts it', readQ('X-12').tickets['X-13']?.state === 'parked' && readQ('X-12').tickets['X-13']?.park?.question.includes('the standing batch is not running'), true);
 a = res(archiveMove('X-12', { 9: 'MERGED' }, 'still refused'));
 t('DS-523 AC3 a second check hands nothing new on', (a.lines ?? []).length === 0 && Object.keys(handed('X-12')).length === 1, true);
+// A hold outside every batch is one transfer would drop: that ticket is handed on, never moved.
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: lastRecorded, tickets: { 'X-15': { key: 'X-15', state: 'parked', held_by: 'OUT-1', held_outside: 'OUT-1' } } });
+a = res(archiveMove('X-12', { 9: 'MERGED' }, null));
+t('DS-523 AC3 a ticket held outside every batch is not moved', a.archived === false && readQ('X-12').tickets['X-15']?.held_outside === 'OUT-1', true);
+t('DS-523 AC3 and is handed on naming its hold', Object.values(handed('X-12')).some((e) => e.ticket === 'X-15' && e.text.includes('held behind OUT-1 outside every batch')), true);
 writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-14': { key: 'X-14', state: 'failed' } } });
 a = res(archiveMove('X-12', { 9: 'CLOSED' }, null));
 t('DS-523 AC3 a closed promotion: its left ticket is handed on, not moved', a.archived === false && !!readQ('X-12').tickets['X-14'] && Object.values(handed('X-12')).some((e) => e.ticket === 'X-14' && e.text.includes('was closed')), true);

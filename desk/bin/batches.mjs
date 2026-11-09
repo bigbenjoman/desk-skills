@@ -100,11 +100,18 @@ export function lastPromotion(tickets, mergedAt) {
 // recorded it (pass.mjs nextPromotion), or with every ticket merged before it. GitHub is asked only
 // when no pass has recorded it.
 export const lastPromotionRecorded = (q) => q?.promotion?.pr != null && (q.promotion.merged ?? []).some((m) => String(m.pr) === String(q.promotion.pr));
-export function promoted(q, { state = prState, mergedAt = prMergedAt } = {}) {
+function promoted(q) {
   const p = q?.promotion?.pr;
   if (p == null) return false;
-  return lastPromotionRecorded(q) || (state(p) === 'MERGED' && lastPromotion(q.tickets, mergedAt(p)));
+  return lastPromotionRecorded(q) || (prState(p) === 'MERGED' && lastPromotion(q.tickets, prMergedAt(p)));
 }
+
+// The environment that points queue.mjs and triage.sh at named batch `b` (listBatches), whatever this
+// one pins: the batch's base comes from its queue, never this process's default branch.
+export const batchEnv = (b) => {
+  const { DESK_DEFAULT_BRANCH: _pinned, ...env } = process.env;
+  return { ...env, DESK_BATCH: b.name, DESK_QUEUE: b.queue, DESK_AUTOPILOT_STATE: b.state };
+};
 
 // The pid holding a batch's pass lock, or its supervisor lock other than this process's own, or null.
 // A holder that has exited holds nothing.
