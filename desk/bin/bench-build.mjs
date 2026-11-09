@@ -12,7 +12,8 @@
 // is kept under <set dir>/<task id>/validate/{base,merge}/.
 //
 // A PR already in the set, kept or dropped, is left exactly as it is unless --rewrite is given, which
-// builds the PRs named on this run again. The set file is written only when something in it changed.
+// builds the PRs named on this run again. The set file is written after each PR, and only when
+// something in it changed.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
@@ -221,6 +222,15 @@ export function build(opts, log = () => {}) {
   const tasks = [...(prior.tasks ?? [])];
   const dropped = [...(prior.dropped ?? [])];
   const repos = new Map();
+  let written = false;
+  // Saved after every PR, so a build that is killed keeps each PR it finished.
+  const save = () => {
+    const text = `${JSON.stringify({ tasks, counts: counts(tasks), dropped }, null, 2)}\n`;
+    if (existsSync(path) && readFileSync(path, 'utf8') === text) return;
+    mkdirSync(setDir, { recursive: true });
+    writeFileSync(path, text);
+    written = true;
+  };
   for (const want of opts.prs) {
     const name = `${want.repo}#${want.pr}`;
     const t = tasks.findIndex(same(want)), d = dropped.findIndex(same(want));
@@ -237,12 +247,10 @@ export function build(opts, log = () => {}) {
       dropped.push({ repo: want.repo, pr: want.pr, why: e.message });
       log(`  dropped: ${e.message}`);
     }
+    save();
   }
-  const next = { tasks, counts: counts(tasks), dropped };
-  const text = `${JSON.stringify(next, null, 2)}\n`;
-  const written = !existsSync(path) || readFileSync(path, 'utf8') !== text;
-  if (written) { mkdirSync(setDir, { recursive: true }); writeFileSync(path, text); }
-  return { path, written, ...next };
+  save();
+  return { path, written, tasks, counts: counts(tasks), dropped };
 }
 
 const isMain = (() => {

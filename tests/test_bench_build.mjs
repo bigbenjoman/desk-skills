@@ -82,6 +82,7 @@ const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ kind: '${kind}', args: a, cwd: process.cwd() }) + '\\n');
 const f = ${pick};
+if (fs.existsSync(f.replace(/\\.json$/, '.kill'))) process.kill(process.ppid, 'SIGKILL');
 if (!fs.existsSync(f)) { process.stderr.write('not found'); process.exit(1); }
 process.stdout.write(fs.readFileSync(f, 'utf8'));
 `;
@@ -195,6 +196,14 @@ t('AC8 a frozen task\'s hidden tests are left alone', readFileSync(join(hiddenDi
 r = run(['--set', setFile, '--pr', 'acme/widgets#1', '--rewrite']);
 t('--rewrite builds it again', calls().some((c) => c.kind === 'gh') && readFileSync(join(hiddenDir, 'tests', 'test_fix.sh'), 'utf8') === FIX_TEST, true);
 t('--rewrite keeps the others', JSON.parse(readFileSync(setFile, 'utf8')).dropped.length, 4);
+
+// A build killed partway keeps each PR it finished before the kill.
+writeFileSync(join(stub, 'gh', '6.kill'), '');
+const killedSet = join(dir, 'killed', 'tasks.json');
+r = run(['--set', killedSet, '--pr', 'acme/widgets#1', '--pr', 'acme/widgets#2', '--pr', 'acme/widgets#6']);
+t('a killed build is killed', r.signal, 'SIGKILL');
+const kept = existsSync(killedSet) ? JSON.parse(readFileSync(killedSet, 'utf8')) : { tasks: [], dropped: [] };
+t('a killed build keeps the PRs it finished', `${kept.tasks.map((x) => x.id)}|${kept.dropped.map((d) => d.pr)}`, 'acme__widgets-1|2');
 
 // A PR outside any desk config, or not merged, is dropped with the reason.
 r = run(['--set', join(dir, 'other.json'), '--pr', 'acme/other#1']);
