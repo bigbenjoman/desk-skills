@@ -186,7 +186,7 @@ fi
 # The last line is always the exit code, so the supervisor can tell a driver that failed from one it
 # never saw stop. The lock is removed only once this driver holds it, never another driver's.
 LOCK_HELD=""
-on_exit(){ rc=$?; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
+on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
 trap on_exit EXIT
 
 # Who lets this driver merge: config §3 (`config`), or the batch's Stage 3 approval (`batch`). It is
@@ -254,7 +254,11 @@ echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
 # The desk version this driver runs, so the supervisor can tell it started before the last install.
 node "$DESK_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
-trap 'exit 143' TERM
+# TERM is a request to stop: a driver between loops stops at once (pause), and one mid-loop finishes
+# the PR it is on first (stop_if_asked), so a stop never leaves a merge half-recorded.
+STOP=""; SLEEP_PID=""
+trap 'STOP=143' TERM
+stop_if_asked(){ if [ -n "$STOP" ]; then exit "$STOP"; fi; }
 
 cd "$DESK_REPO_ROOT" || exit 1
 log(){ echo "$(date -u +%H:%M:%SZ) $*"; }
@@ -977,9 +981,17 @@ EOF_RESOLVE
 log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD merge-by=$GRANT_BY required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)] state=[$(printf '%s' "$STATE_CHECKS" | cut -f1 | paste -sd ',' -)]"
 # One release pass and out: for tests, and for checking by hand what would be released now.
 if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
-# pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run.
-pause(){ if [ -n "${MERGE_DRIVER_ONE_LOOP:-}" ]; then exit "${2:-0}"; fi; sleep "$1"; }
+# pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run. The sleep
+# runs in the background, since `wait` returns as soon as TERM arrives where a foreground sleep would not.
+pause(){
+  if [ -n "${MERGE_DRIVER_ONE_LOOP:-}" ]; then exit "${2:-0}"; fi
+  stop_if_asked
+  sleep "$1" & SLEEP_PID=$!
+  wait "$SLEEP_PID"; kill "$SLEEP_PID" 2>/dev/null; SLEEP_PID=""
+  stop_if_asked
+}
 while true; do
+  stop_if_asked
   join_queue_tickets
   release_chain
 
@@ -1008,6 +1020,7 @@ while true; do
     [ -n "$n" ] || continue
     # stdin from /dev/null: nothing inside may eat the list this loop is reading.
     if try_pr "$n" "$key" "$kind" </dev/null; then merged=1; release_chain </dev/null; break; fi
+    stop_if_asked
   done <<EOF_READY
 $ready
 EOF_READY

@@ -241,7 +241,8 @@ Each tick does this for every batch the repo holds, one after another: the stand
 named batch, each on its own base, with its own log and merge driver. A named batch whose last promotion
 PR is merged, or whose promotion PR is closed, with no ticket running and no ticket PR open, is archived under
 `batches/.done/` instead; a ticket PR still open then goes to the check-in digest for you to merge or
-close. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
+close. A merge driver still running for such a batch has nothing left to merge, so the tick stops it
+(one mid-merge finishes that merge first) and a later tick archives the batch. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
 `batch.mjs discard <EPIC>` removes one no ticket has started in.
 `./install.sh` records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
 reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting

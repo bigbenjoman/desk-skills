@@ -13,12 +13,13 @@
 //
 // The supervisor runs the archive check for each named batch on every tick. A batch is archived once
 // its last promotion PR is merged, or its promotion PR is closed, no ticket runs, no ticket PR is open, and no pass, merge driver
-// or queue write holds it. A ticket PR still open then is the person's to merge or close, never desk's:
+// or queue write holds it. A merge driver still running then has nothing left to merge, so the check
+// stops it, and a later tick archives the batch once it has exited. A ticket PR still open then is the person's to merge or close, never desk's:
 // it goes to the check-in digest, handed on as kind `archive` until it is merged or closed. A ticket left
 // in the batch, not done and not running, is moved to the standing batch first when a merged last
 // promotion leaves it ready to run, and otherwise parked and handed on the same way, holding the
 // archive until it is moved or dropped.
-import { existsSync, mkdirSync, renameSync, rmSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -147,7 +148,8 @@ function moveDone(dir, at) {
 
 // The archive check for one named batch {name, queue, state}. -> {archived, lines, log}: `lines` go in
 // the batch's own log, `log` in the standing batch's, since an archived batch's own log moves with it.
-export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date(), move = moveToStanding, park = parkIn } = {}) {
+// `stopped` is set when the check told the batch's merge driver to stop, and the batch waits for it to exit.
+export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date(), move = moveToStanding, park = parkIn, stop = (pid) => process.kill(pid, 'SIGTERM') } = {}) {
   const none = { archived: false, lines: [], log: [] };
   if (!b?.name) return none;
   let q;
@@ -180,6 +182,18 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
     return { ...none, lines };
   }
   const busy = holder(b);
+  // A shut batch leaves its merge driver nothing to merge, so it is stopped; a driver mid-merge finishes
+  // that merge first. The archive waits for the lock to go, on a later tick.
+  const driver = busy === 'its merge driver' ? E.mergeDriverHolder(b.state) : null;
+  if (typeof driver === 'number') {
+    const told = readStopped(b.state);
+    if (told?.pid === driver) return { ...none, stopped: true, lines: [...lines, `archive: batch ${b.name} is ready to archive; its merge driver (pid ${driver}) was told to stop at ${told.at} and has not exited yet, so the next tick tries again`] };
+    try { stop(driver); } catch (e) {
+      if (e.code !== 'ESRCH') return { ...none, lines: [...lines, `archive: batch ${b.name} is ready to archive, but its merge driver (pid ${driver}) could not be stopped (${e.code ?? e.message}); the next tick tries again`] };
+    }
+    writeFileSync(join(b.state, STOPPED), `${JSON.stringify({ pid: driver, at: now.toISOString() })}\n`);
+    return { ...none, stopped: true, lines: [...lines, `archive: batch ${b.name} is ready to archive: its merge driver (pid ${driver}) has nothing left to merge, so it was told to stop; the batch is archived once it has exited`] };
+  }
   if (busy) return { ...none, lines: [...lines, `archive: batch ${b.name} is ready to archive, but ${busy} holds it; the next tick tries again`] };
   // A left-behind ticket must not run here again. After the last promotion merged, one ready to run moves
   // to the standing batch. Any other is the person's: after a closed promotion (the epic abandoned), a
@@ -215,9 +229,17 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
     }
     return { ...none, lines };
   }
+  const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);
   const s2 = moveDone(b.state, now);
-  return { archived: true, lines: [], log: [`batch ${b.name} archived: its promotion PR #${p} is ${ps.toLowerCase()} and no ticket runs or has a PR open; ${movedText}moved ${dirname(b.queue)} to ${q2}${s2 ? ` and ${b.state} to ${s2}` : ''}`] };
+  const stoppedText = told ? `; its merge driver (pid ${told.pid}) was stopped for it at ${told.at}, since it had nothing left to merge` : '';
+  return { archived: true, lines: [], log: [`batch ${b.name} archived: its promotion PR #${p} is ${ps.toLowerCase()} and no ticket runs or has a PR open${stoppedText}; ${movedText}moved ${dirname(b.queue)} to ${q2}${s2 ? ` and ${b.state} to ${s2}` : ''}`] };
+}
+
+// <state>/archive-driver-stopped.json: the merge driver the archive check told to stop, {pid, at}.
+const STOPPED = 'archive-driver-stopped.json';
+function readStopped(state) {
+  try { const v = JSON.parse(readFileSync(join(state, STOPPED), 'utf8')); return Number.isInteger(v?.pid) ? v : null; } catch { return null; }
 }
 
 // Runs queue.mjs `args` against named batch `b`. -> null, or why it failed.

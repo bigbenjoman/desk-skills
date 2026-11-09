@@ -56,7 +56,8 @@
 // before its pass (epic-plan.mjs actOnPlan): started, started with the edit applied, asked again
 // naming what could not be applied, or discarded. Each named batch first gets its archive check (batch.mjs archiveCheck): once its
 // last promotion PR is merged, or its promotion PR closed, with no ticket running and no ticket PR open, it is moved under
-// batches/.done/, logged in the standing batch's log, and not run. An explicit DESK_BATCH, DESK_QUEUE or
+// batches/.done/, logged in the standing batch's log, and not run. A merge driver still running for such
+// a batch is stopped first, and the batch is not run until a later tick archives it. An explicit DESK_BATCH, DESK_QUEUE or
 // DESK_AUTOPILOT_STATE names one batch, and a tick runs only that one, with no archive check.
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
@@ -308,12 +309,18 @@ function templateCheck(standing) {
 }
 
 // A named batch's archive check (batch.mjs): what it says goes in the batch's own log, and an archive in
-// the standing batch's, since the batch's log moves with it. -> whether it was archived.
+// the standing batch's, since the batch's log moves with it. -> whether the batch's tick ends here: it
+// was archived, or its merge driver was told to stop for the archive, which no pass may start again.
 function archived(b, standing) {
   const a = archiveCheck(b);
   if (a.lines.length) { mkdirSync(b.state, { recursive: true }); logTo(b.state)([`== ${stamp()} ${a.lines.join('\n')}`]); }
   if (a.archived) { mkdirSync(standing, { recursive: true }); logTo(standing)(a.log.map((l) => `== ${stamp()} ${l}`)); }
-  return a.archived;
+  if (a.stopped) {
+    // A driver stopped for the archive did not fail, so it counts no failed start.
+    const s = readState(b.state);
+    if (s.driver?.pid) { s.driver.pid = null; writeState(b.state, s); }
+  }
+  return a.archived || Boolean(a.stopped);
 }
 
 // A feature batch whose epic's plan the person answered (epic-plan.mjs actOnPlan): started, edited and

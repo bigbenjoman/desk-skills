@@ -377,6 +377,37 @@ mkdirSync(namedS('X-4'), { recursive: true });
 writeFileSync(join(namedS('X-4'), 'orchestrator.lock'), JSON.stringify({ pid: process.pid }));
 a = res(archive('X-4', { 9: 'MERGED' }));
 t('a live pass keeps the batch for the next tick', a.archived === false && existsSync(namedQ('X-4')) && (a.lines ?? []).join(' ').includes('a pass (pid'), true);
+rmSync(join(namedS('X-4'), 'orchestrator.lock'));
+
+// A live merge driver on a shut batch is stopped, and the batch archives once it has exited. `stop` is
+// injected: it records the pid it was asked to stop in stops.log.
+const stops = join(namedS('X-4'), 'stops.log');
+const stopsMade = () => (existsSync(stops) ? readFileSync(stops, 'utf8').trim().split('\n').filter(Boolean) : []);
+const archiveStop = (name, states) => run(`const s = ${JSON.stringify(states)}; const b = B.listBatches().find((x) => x.name === '${name}');
+  const { appendFileSync } = await import('node:fs');
+  console.log(JSON.stringify(A.archiveCheck(b, { state: (n) => s[n] ?? 'OPEN', mergedAt: (n) => (s[n] === 'MERGED' ? '${MERGED_AT}' : null), stop: (p) => appendFileSync('${stops}', p + '\\n') })))`);
+const driverLock = join(namedS('X-4'), 'merge-driver.lock.d');
+mkdirSync(driverLock, { recursive: true });
+writeFileSync(join(driverLock, 'pid'), String(process.pid));
+// AC2: an open promotion, or a ticket PR still open, leaves the driver running.
+a = res(archiveStop('X-4', { 9: 'OPEN' }));
+t('DS-525 AC2 an open promotion leaves the driver running', `${a.archived} ${a.stopped ?? false} ${stopsMade().length}`, 'false false 0');
+writeQ('X-4', { epic: 'X-4', base: 'feat/x-4', promotion: { pr: 9 }, tickets: { 'X-9': { key: 'X-9', state: 'done', result: { pr: 13 } } } });
+a = res(archiveStop('X-4', { 9: 'CLOSED', 13: 'OPEN' }));
+t('DS-525 AC2 an open ticket PR leaves the driver running', `${a.archived} ${a.stopped ?? false} ${stopsMade().length}`, 'false false 0');
+// AC1: shut, nothing running, no ticket PR open: the driver is told to stop, once.
+writeQ('X-4', { epic: 'X-4', base: 'feat/x-4', promotion: { pr: 9 }, tickets: {} });
+a = res(archiveStop('X-4', { 9: 'MERGED' }));
+t('DS-525 AC1 a shut batch\'s live driver is told to stop', `${a.archived} ${a.stopped} ${stopsMade().join(',')}`, `false true ${process.pid}`);
+t('DS-525 AC1 the report says so', (a.lines ?? []).join(' ').includes(`its merge driver (pid ${process.pid}) has nothing left to merge, so it was told to stop`), true);
+a = res(archiveStop('X-4', { 9: 'MERGED' }));
+t('DS-525 AC1 a driver still exiting is not told again', `${a.archived} ${a.stopped} ${stopsMade().length}`, 'false true 1');
+t('DS-525 AC1 and the report says it has not exited yet', (a.lines ?? []).join(' ').includes('has not exited yet'), true);
+// Once it has exited, the next tick archives the batch, saying the driver was stopped for it.
+rmSync(driverLock, { recursive: true, force: true });
+a = res(archiveStop('X-4', { 9: 'MERGED' }));
+t('DS-525 AC1 the next tick archives it', a.archived === true && !existsSync(namedQ('X-4')), true);
+t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(' ').includes(`its merge driver (pid ${process.pid}) was stopped for it`), true);
 
 // The standing batch is never archived, even with a promotion that would archive a named one.
 writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 's1', promotion: { pr: 9 }, tickets: {} }));

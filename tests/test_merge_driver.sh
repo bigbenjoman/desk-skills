@@ -260,6 +260,21 @@ check "the approved spine merges, pinned, and its child is released" 'grep -qx "
 echo '{}' > "$T/prs.json"
 loop
 check "AC1: a loop with no ready PRs exits 0 without sleeping"       '[ $rc -eq 0 ] && [ ! -e "$T/sleeps" ] && echo "$out" | grep -q "no ready batch PRs$"'
+# A driver told to stop in its pause stops then, not once the sleep is out: this sleep asks it to stop,
+# then sleeps on for 30s.
+mkdir -p "$T/slowstub"
+cat > "$T/slowstub/sleep" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_SLEEPS"
+kill -TERM "$PPID"
+exec /bin/sleep 30
+EOF
+chmod +x "$T/slowstub/sleep"
+began=$SECONDS
+out=$(PATH="$T/slowstub:$PATH" MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" 2>&1); rc=$?
+took=$((SECONDS - began))
+check "DS-525 AC3: a stop during the pause ends the driver at once"   '[ $rc -eq 143 ] && [ $took -lt 15 ] && grep -qx 60 "$T/sleeps" && echo "$out" | grep -q "merge driver exited 143$"'
+rm -f "$T/sleeps"
 cat > "$T/prs.json" <<EOF
 {
   "131": { "head": "fix/T-1", "base": "release", "sha": "$SHA1", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
