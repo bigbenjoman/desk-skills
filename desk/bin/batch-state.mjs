@@ -86,6 +86,12 @@ export function spinePark(t) {
 export const FEATURE_PLAN_PREFIX = 'feature plan awaiting your answer';
 export const planPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(FEATURE_PLAN_PREFIX);
 
+// A ticket left in a finished feature batch, parked by the archive check (batch.mjs archiveCheck) with
+// any earlier park kept behind this prefix. Only the person moves or drops it: no requeue, recorded
+// condition or recommended take may start it in the finished batch.
+export const LEFT_PREFIX = 'left in batch ';
+export const leftPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(LEFT_PREFIX);
+
 // A park waiting on the §4 Live reads it named (live-read.mjs), which a pass runs on the host and
 // settles: it waits on the pass, not on the person.
 export const LIVE_READ = 'live-read';

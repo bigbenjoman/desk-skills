@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -225,10 +225,19 @@ const answerWith = (t) => `answer with answer.mjs ${t.key} "<answer>"`;
 // edit that fails silently. The last round's log, park record and mailbox move aside to one
 // `.round<n>`, so pass.mjs neither refuses it as finished nor reports an old question as the new
 // worker's. The branch is kept: the merge driver finds the ticket's PR by it.
+// A ticket the archive check left in a finished feature batch (leftPark) runs there never again: the
+// person moves it to the standing batch or drops it, whatever park it carried before.
+function refuseLeft(t, key, what) {
+  if (!leftPark(t)) return;
+  const name = String(t.park.question).slice(LEFT_PREFIX.length).split(/\s/)[0];
+  throw new Error(`${key} was left in finished batch ${name} (${t.park.question}), so it is not ${what} there: move it (node queue.mjs --batch ${name} transfer ${key} standing) or drop it`);
+}
+
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
   if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
   if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
+  refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
   // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
   // dependency cycle), a lane C, or a lane D parked on its design would slip by. A worker's own park never has open questions:
@@ -671,6 +680,7 @@ switch (cmd) {
     if (!key || !rest.length) throw new Error(`usage: queue.mjs clears-when <TICKET> <${CLEARS_WHEN_FORMS}>`);
     const t = ticket(q, key);
     if (t.state !== 'parked' || isHeld(t)) throw new Error(`${key} is not parked for its own reason (state ${t.state}), so it has no park to clear`);
+    refuseLeft(t, key, 'given a condition to clear on');
     const p = parseClearsWhen(rest.join(' '));
     if (!p.ok) throw new Error(p.why);
     t.park.clears_when = p.cond;

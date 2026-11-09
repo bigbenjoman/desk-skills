@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1193,7 +1193,8 @@ for (const t of Object.values(queue().tickets)) {
   const c = t.park?.clears_when;
   // A claimed ticket is released only by the claims loop below, once its session is idle and its
   // worktree clean, so a condition that holds never hands it to a worker under a live session.
-  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || t.park?.claim?.session || !c || c.kind === 'none' || c.kind === LIVE_READ) continue;
+  // A ticket left in a finished feature batch is the person's to move, whatever its earlier park waited on.
+  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || leftPark(t) || t.park?.claim?.session || !c || c.kind === 'none' || c.kind === LIVE_READ) continue;
   const cond = describeCond(c);
   // A lane left for a person never has its push made for it.
   if (c.kind === 'push-ok' && needsSession(t)) { report.clears.push(`${t.key}: "${cond}" not tried, since it is lane ${t.lane}: left parked for a person`); continue; }
@@ -1356,7 +1357,7 @@ function takeRecommended(t) {
   return true;
 }
 for (const t of DRY ? [] : Object.values(queue().tickets)) {
-  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t) || t.park?.claim?.session || needsSession(t) || putOff(t)) continue;
+  if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t) || leftPark(t) || t.park?.claim?.session || needsSession(t) || putOff(t)) continue;
   if (t.branch && dropDuplicate(t)) continue;
   // Waiting on a recorded condition, or tried once already: the clears-when check or the person settles it.
   if ((t.park?.clears_when?.kind && t.park.clears_when.kind !== 'none') || t.park?.recovery) continue;
@@ -1384,9 +1385,9 @@ if (CLAIMS.bad) report.waiting.push(`${CLAIMS.bad} — no claim is released unti
 for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
   const c = t.park?.claim;
   if (t.state !== 'parked' || !c?.session) continue;
-  // Held, a spine awaiting its person, or a lane C or D parked at triage: never a headless worker's,
-  // however idle the session (as the clears-when loop above).
-  if (isHeld(t) || spinePark(t) || needsSession(t)) continue;
+  // Held, a spine awaiting its person, a lane C or D parked at triage, or left in a finished feature
+  // batch: never a headless worker's, however idle the session (as the clears-when loop above).
+  if (isHeld(t) || spinePark(t) || needsSession(t) || leftPark(t)) continue;
   const tr = transcriptOf(c.session);
   if (!tr) { report.clears.push(`${t.key}: claimed by session ${c.session}, whose transcript is gone: left claimed`); continue; }
   const since = Math.max(tr.mtimeMs, Date.parse(c.at) || 0);

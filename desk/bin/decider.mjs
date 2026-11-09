@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS, describeCond } from './clears-when.mjs';
-import { needsSession, planPark, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
+import { needsSession, planPark, leftPark, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 import { callLogin } from './call-login.mjs';
@@ -98,6 +98,8 @@ export function presort(items, state = null) {
     const prevAt = item.prev?.since ?? item.prev?.requeued_at;
     if (item.kind === 'parked' && planPark({ state: 'parked', park: { question: item.text } })) {
       hand.push({ item, why: 'an epic\'s drafted plan: only the person starts, edits or discards it' });
+    } else if (item.kind === 'parked' && leftPark({ state: 'parked', park: { question: item.text } })) {
+      hand.push({ item, why: 'left in a finished feature batch: only the person moves it to the standing batch or drops it' });
     } else if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (item.kind === 'parked' && item.clears) {
@@ -235,7 +237,7 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
     `- requeue a ticket whose worker parked asking for more agent work, on lane A, B, D or E:\`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
     ...onMove,
     `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory`,
-    '- never requeue a lane C ticket or a park that starts `lane C` or `lane D` (parked at triage on its lane), never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
+    `- never requeue a lane C ticket or a park that starts \`lane C\` or \`lane D\` (parked at triage on its lane), never requeue or record a clears-when for a park that starts \`${LEFT_PREFIX}\` (left in a finished feature batch), never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not \`yes\`: hand those on`,
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
     ...onWeb,

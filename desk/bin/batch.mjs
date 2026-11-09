@@ -23,7 +23,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readQueue, EXIT, crashShowsPerson, describeCrash } from './batch-state.mjs';
+import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX } from './batch-state.mjs';
 import { listBatches, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
@@ -198,7 +198,8 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   }
   const movedText = moved.length ? `moved ${moved.join(', ')} to the standing batch, ` : '';
   if (stay.length) {
-    const leftPrefix = `left in batch ${b.name} after its promotion PR #${p} `;
+    // batch-state.mjs leftPark reads LEFT_PREFIX, so requeue, clears-when, the decider and a pass leave it to the person.
+    const leftPrefix = `${LEFT_PREFIX}${b.name} after its promotion PR #${p} `;
     for (const { t, why } of stay) {
       const was = String(t.park?.question ?? '');
       if (!['triaged', 'queued', 'parked'].includes(t.state) || was.startsWith(leftPrefix)) continue;
