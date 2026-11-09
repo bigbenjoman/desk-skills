@@ -46,6 +46,9 @@ const REWRITTEN = [
   ['DS-109', 'freeing its slot, unless its last marker is', 1], // a worker running its suite under the test lock, or waiting for it, is not stalled
   ['DS-435', 'and a head gets one try at most. After two tries', 1], // a conflict counts only conflict tries
   ['DS-429', 'Only none matched is reported under `WAITING ON YOU`. Only the body\'s', 1], // a crashed upload is tried again
+  ['DS-542', 'and pushes it before a pass that spawns;', 1], // a base behind syncs on every pass
+  ['DS-542', 'Before a pass that will spawn, and only then, it merges', 1],
+  ['DS-542', 'Actions run to finish, or `none`), or', 1], // base contains <branch> is a clears-when form
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',
