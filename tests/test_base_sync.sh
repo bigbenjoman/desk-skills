@@ -17,7 +17,7 @@ git config --global init.defaultBranch main
 # An autopilot worker inherits spawn-worker's exports, which would point this suite at the real repo.
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR AUTOPILOT_BATCH_BUDGET_USD \
-  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE
+  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -335,11 +335,13 @@ check "DS-339 a base fix try moves an earlier try's resume file and handoff asid
 # ~/.claude-logins/b), all in rotation. A folder listed in $LIM, as `<folder> <reset>`, is at its
 # limit: its preflight and its probe are refused. The spawn line records the login it was given.
 LB="$HOME/.claude-logins/b"; LD="$HOME/.claude"; LIM="$T/limited"
-mkdir -p "$LB" "$LD" "$T/usage"
+mkdir -p "$LD" "$T/usage"
 export DESK_USAGE_DIR="$T/usage"
+# Only the listed logins' folders exist: a folder under ~/.claude-logins is a login whether listed or not.
 logins(){
+  rm -rf "$HOME/.claude-logins"
   printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n' > "$T/subs.md"
-  for n in "$@"; do printf '| `claude` | `%s` | `%s` | `in rotation` |\n' "$n" "$([ "$n" = default ] && echo '~/.claude' || echo "~/.claude-logins/$n")" >> "$T/subs.md"; done
+  for n in "$@"; do [ "$n" = default ] || mkdir -p "$HOME/.claude-logins/$n"; printf '| `claude` | `%s` | `%s` | `in rotation` |\n' "$n" "$([ "$n" = default ] && echo '~/.claude' || echo "~/.claude-logins/$n")" >> "$T/subs.md"; done
   export DESK_SUBSCRIPTIONS="$T/subs.md"
 }
 cat > "$T/stub/claude" <<EOF
