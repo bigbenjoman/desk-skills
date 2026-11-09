@@ -636,7 +636,11 @@ jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD
       "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"},
       "issuelinks": [{"id": "5", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}, "inwardIssue": {"key": "KAN-3"}}]},
     "KAN-47": {"summary": "a canvas", "issuetype": {"name": "Story"}, "description": $d47,
-      "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}}},
+      "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}},
+    "KAN-48": {"summary": "blocked by its own epic", "issuetype": {"name": "Story"}, "description": $d45,
+      "parent": {"key": "KAN-2", "fields": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}}},
+      "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"},
+      "issuelinks": [{"id": "6", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}, "inwardIssue": {"key": "KAN-2"}}]}},
    "children": {"KAN-2": ["KAN-45", "KAN-46"]},
    "fields": [{"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}]}' > "$T/lint.json"
 stub_jira $((PORT + 3)) "$T/lint.log" "" "$T/lint.json"; LSTUB=$STUB_PID; LPORT=$STUB_PORT
@@ -648,8 +652,12 @@ klint KAN-46
 check "lint KEY: only advisory findings, exit 0" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "^blocking"'
 check "lint KEY: a key named with no Blocks link is advisory, a linked one is not" 'printf "%s\n" "$out" | grep -q "^advisory: names KAN-4 with no Blocks link"'
 check "lint KEY: a sibling title named with no Blocks link is advisory" 'printf "%s\n" "$out" | grep -q "^advisory: names its sibling KAN-45 (\"Lint every ticket before create\")"'
+check "DS-541 AC4 lint KEY: a ticket blocked by another ticket, not its epic, has no own-epic finding" '! printf "%s\n" "$out" | grep -q "its own epic"'
 check "lint KEY: a status or priority line is advisory" 'printf "%s\n" "$out" | grep -q "^advisory: line [0-9]*, \"Priority: P2\""'
 check "lint KEY: markdown that will not render is advisory, each kind named" 'printf "%s\n" "$out" | grep "^advisory: markdown that will not render" | grep "markdown heading" | grep "\*\*bold\*\*" | grep "backtick span" | grep -q "unescaped -- inside"'
+klint KAN-48
+check "DS-541 AC4 lint KEY: a ticket linked as blocked by its own parent epic is an advisory finding naming the epic and the link" \
+  '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: linked as blocked by its own epic KAN-2, .*autopilot ignores it; remove it (desk-jira unlink)"'
 klint KAN-47
 check "lint KEY: an unsaved Claude Design canvas is desk-design's blocking finding" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: design: KAN-47.s Design section links the Claude Design artifact https://claude.ai/design/p/abc123, but no copy is saved"'
 mkdir -p "$T/state/designs/KAN-47"; printf '{"url":"https://claude.ai/design/p/abc123#board"}' > "$T/state/designs/KAN-47/source.json"

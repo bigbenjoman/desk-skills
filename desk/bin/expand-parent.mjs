@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, ticketKind } from './desk-env.mjs';
 import { sections } from './desk-design.mjs';
-import { blockersFact } from './desk-q-eta.mjs';
+import { blockersFact, splitOwnEpic } from './desk-q-eta.mjs';
 
 const [key, ...flags] = process.argv.slice(2);
 const subtasks = flags.includes('--subtasks');
@@ -95,7 +95,7 @@ for (const c of jira('children', key, '--json')) {
       else open.push(s);
     }
     if (open.length) {
-      containers[c.key] = { subtasks: open.map((s) => s.key), blocked_by: blockersOf(c) };
+      containers[c.key] = { subtasks: open.map((s) => s.key), blocked_by: splitOwnEpic(blockersOf(c), key).blockers };
       say(`  ${c.key}${cat === 'indeterminate' ? ' (in progress)' : ''} → ${open.map((s) => s.key).join(' ')} (its open subtasks)`);
       keys.push(...open.map((s) => s.key));
       continue;

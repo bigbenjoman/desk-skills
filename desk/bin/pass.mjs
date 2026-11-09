@@ -34,7 +34,7 @@ import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey, probeLogins } from './claude-logins.mjs';
 import { checkLogin, checkLogins, readSubscriptions, signInCommand } from './logins.mjs';
 import { claudeChoice, laterLift, nothingToChoose } from './call-login.mjs';
-import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
+import { firstSpawnFromLogs, epicUnread, splitOwnEpic, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
@@ -3020,8 +3020,12 @@ for (const t of Object.values(queue().tickets)) {
 // read while it waits, done or not and whether or not a step has since joined this queue.
 const qB = queue();
 const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
+// A link to the ticket's own epic, its parent epic or this batch's, never holds it: ticket-facts.mjs
+// leaves it out of `blockers` (own_epic_blockers), and a record written before that is split here.
+const ownEpicSplit = (rec) => splitOwnEpic(rec?.blockers, rec?.epic?.key, qB.epic);
+const ownEpicOf = (rec) => [...new Set([...(Array.isArray(rec?.own_epic_blockers) ? rec.own_epic_blockers : []), ...ownEpicSplit(rec).own])];
 const outsideOf = (rec) => (Array.isArray(rec?.blockers)
-  ? rec.blockers.filter((b) => !(b.key in qB.tickets) && b.category !== 'done').map((b) => ({ key: b.key, category: b.category }))
+  ? ownEpicSplit(rec).blockers.filter((b) => !(b.key in qB.tickets) && b.category !== 'done').map((b) => ({ key: b.key, category: b.category }))
   : null);
 const waitsOnStep = (t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
 const onTracker = Object.values(qB.tickets).filter((t) => {
@@ -3039,16 +3043,24 @@ if (blockersDue.length) {
   for (const key of blockersDue) q('set', key, `outside_blockers_read=${readAt}`);
 }
 for (const t of onTracker) {
-  const now = outsideOf(triageRec(t.key));
+  const rec = triageRec(t.key);
+  const now = outsideOf(rec);
   if (now && JSON.stringify(now) !== JSON.stringify(t.outside_blockers ?? null)) q('set', t.key, `outside_blockers=${JSON.stringify(now)}`);
+  // Said once per link: own_epic_link records the links already reported.
+  const own = ownEpicOf(rec);
+  if (own.join('|') !== keysOf(t.own_epic_link).join('|')) {
+    if (own.length) epicLines.push(`lint: ${t.key} is linked as blocked by its own epic ${own.join(', ')}, which is Done only once its children are: the link is ignored`);
+    if (!DRY) q('set', t.key, `own_epic_link=${own.join('|') || 'null'}`);
+  }
 }
 
 // ---- outside holds -------------------------------------------------------
 // A ticket admitted behind blockers in no batch (held_outside, also in held_by) waits until each is
 // Done in Jira, as its triage record's `blockers` last read it, and its code is on this batch's base
 // (landedOn, asked only of Done ones). Each such blocker is lifted from the hold, as is one the record
-// no longer lists (its link was removed, so it blocks nothing); one admitted to this batch since is
-// left in held_by as an ordinary hold, released when it merges here. The merge driver never releases a
+// no longer lists (its link was removed, so it blocks nothing), and one that is the ticket's own epic
+// (ownEpicOf) at once; one admitted to this batch since is left in held_by as an ordinary hold,
+// released when it merges here. The merge driver never releases a
 // ticket held outside its batch, so lifting the last blocker releases it here.
 // Whether epic `key`'s batch, `qO` itself or the repo's batch named for it, recorded its epic PR merged.
 // The supervisor archives a batch whose epic PR merged before its own pass runs, so a merge nothing
@@ -3075,20 +3087,22 @@ const epicMerged = (qO, key) => {
   const landed = new Map();
   for (const t of Object.values(qO.tickets).filter((x) => isHeld(x) && x.held_outside)) {
     const outside = keysOf(t.held_outside);
-    const blockers = triageRec(t.key)?.blockers;
+    const rec = triageRec(t.key);
+    const ownEpic = outside.filter((p) => !qO.tickets[p] && ownEpicOf(rec).includes(p));
+    const blockers = rec?.blockers;
     const done = new Set((blockers ?? []).filter((b) => b?.category === 'done').map((b) => b.key));
-    const unlinked = Array.isArray(blockers) ? outside.filter((p) => !qO.tickets[p] && !blockers.some((b) => b?.key === p)) : [];
+    const unlinked = Array.isArray(blockers) ? outside.filter((p) => !qO.tickets[p] && !ownEpic.includes(p) && !blockers.some((b) => b?.key === p)) : [];
     const isLanded = (p) => { if (!landed.has(p)) landed.set(p, landedOn(p, DEFAULT_BRANCH)); return landed.get(p) === true; };
     // An epic whose own batch (this one, or the batch named for it) landed its base through its epic
     // PR, whatever Jira says: the epic itself is never transitioned.
-    const epicLanded = outside.filter((p) => !qO.tickets[p] && epicMerged(qO, p));
-    const landedNow = outside.filter((p) => !qO.tickets[p] && !epicLanded.includes(p) && done.has(p) && isLanded(p));
-    const lifted = [...epicLanded, ...landedNow, ...unlinked];
+    const epicLanded = outside.filter((p) => !qO.tickets[p] && !ownEpic.includes(p) && epicMerged(qO, p));
+    const landedNow = outside.filter((p) => !qO.tickets[p] && !ownEpic.includes(p) && !epicLanded.includes(p) && done.has(p) && isLanded(p));
+    const lifted = [...ownEpic, ...epicLanded, ...landedNow, ...unlinked];
     const left = outside.filter((p) => !qO.tickets[p] && !lifted.includes(p));
     if (left.length === outside.length) continue;
     const by = keysOf(t.held_by).filter((p) => !lifted.includes(p));
     const joined = outside.filter((p) => qO.tickets[p]);
-    const what = [epicLanded.length && `${epicLanded.join(', ')} landed on ${REPO_DEFAULT} through its epic PR`,
+    const what = [ownEpic.length && `${ownEpic.join(', ')} its own epic, so its link is ignored`, epicLanded.length &&`${epicLanded.join(', ')} landed on ${REPO_DEFAULT} through its epic PR`,
       landedNow.length && `${landedNow.join(', ')} Done and on ${DEFAULT_BRANCH}`, unlinked.length && `${unlinked.join(', ')} no longer linked as a blocker`,
       joined.length && `${joined.join(', ')} now in this batch`].filter(Boolean).join('; ');
     if (DRY) { epicLines.push(`outside hold (dry run): ${t.key}: ${what}`); continue; }

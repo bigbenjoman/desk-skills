@@ -954,6 +954,7 @@ lint_issue() {  # <issue json from get with expand=names> [--json]
     key: $i.key, type: ($f.issuetype.name // ""), text: ($f.description // ""), wiki: true,
     size: ($f | size_of($sf)),
     blocks: [($f.issuelinks // [])[] | select(.type.name == "Blocks") | (.inwardIssue // .outwardIssue).key],
+    blocked_by: [($f.issuelinks // [])[] | select(.inwardIssue != null and (.type.inward // "" | test("blocked by"; "i"))) | .inwardIssue.key],
     parent: $f.parent, siblings: .[1]}') || return 2
   lint_run "$t" "$(printf '%s' "$1" | jq -r '.fields.description // ""')" ${2:+"$2"}
 }

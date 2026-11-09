@@ -323,6 +323,10 @@ const heldText = ({ held = [], outside = [], merge = [], base = null }, refused 
   ? `, waiting for ${outside.map((k) => (refused.has(k) ? `${k} (not admitted in this call)` : k)).join(', ')}, outside the batch, until ${outside.length === 1 ? 'it is' : 'each is'} Done and on ${base ?? 'its base'}` : ''}${merge.length
   ? `, built now and merged only once ${merge.join(', ')} (${merge.length === 1 ? "the person's step" : "the person's steps"}) ${merge.length === 1 ? 'is' : 'are'} Done` : ''}`;
 
+// A link to the ticket's own epic, which ticket-facts.mjs left out of its blockers, as the admit line says it.
+const ownEpicText = (rec) => (rec.own_epic_blockers?.length
+  ? `; linked as blocked by its own epic ${rec.own_epic_blockers.join(', ')}, which is Done only once its children are: the link is ignored` : '');
+
 // Logs each call the triage record took on its recommendation to the decision log in `state`, the
 // state of the batch the ticket joined, for the check-in digest: ", took N call(s) …", or ''.
 function logTaken(key, rec, state) {
@@ -769,7 +773,7 @@ async function byHand(keys, { state, by, front, now, onLine }) {
     reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}, by ${by}` };
     writeIntake(state, reg);
     admitted.push(key);
-    say(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}${r.note ?? ''}`);
+    say(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}${r.note ?? ''}${ownEpicText(rec)}`);
     const open = new Set(openBlockers(rec));
     for (const b of r.outside ?? []) if (open.has(b) && !keys.includes(b)) next.add(b);
     if (front) say(toFrontIn(feature ? batchEnv(feature) : process.env, key));
