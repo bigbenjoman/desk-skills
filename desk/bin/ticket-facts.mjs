@@ -35,16 +35,14 @@ import { join } from 'node:path';
 import { ghRepo, queueFile, stateDir, ticketKind } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 import { baseRef, designFact } from './desk-design.mjs';
-import { SIZES, epicFact, blockersFact, splitOwnEpic } from './desk-q-eta.mjs';
+import { SIZES, epicFact, blockersFact, splitOwnEpic, queueEpic } from './desk-q-eta.mjs';
 
 const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').pop();
 const jira = (args) => JSON.parse(execFileSync('desk-jira', [...args, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }));
 
-// The epic the batch this record belongs to runs, or null.
-const batchEpic = () => { try { return JSON.parse(readFileSync(queueFile(), 'utf8')).epic ?? null; } catch { return null; } };
 // `blockers` from the issue, less a link to the ticket's own epic, which is kept as own_epic_blockers.
 function setBlockers(rec, issue) {
-  const { blockers, own } = splitOwnEpic(blockersFact(issue), epicFact(issue, null)?.key, batchEpic());
+  const { blockers, own } = splitOwnEpic(blockersFact(issue), epicFact(issue, null)?.key, queueEpic(queueFile()));
   rec.blockers = blockers;
   if (own.length) rec.own_epic_blockers = own;
   else delete rec.own_epic_blockers;

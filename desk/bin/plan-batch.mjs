@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn } from './desk-env.mjs';
 import { placement } from './cloud-worker.mjs';
-import { SIZES } from './desk-q-eta.mjs';
+import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
 
 const AS_JSON = process.argv.includes('--json');
@@ -116,7 +116,7 @@ const mergesFirst = (a, b) => radius(a) - radius(b) || sizeRank(a) - sizeRank(b)
 const expansionPath = join(STATE, 'expansion.json');
 // Only the expansion of this batch's own epic (queue.mjs set-batch epic=<KEY>): a file left by an
 // earlier epic must not reshape an unrelated batch.
-const batchEpic = (() => { try { return JSON.parse(readFileSync(queueFile(), 'utf8')).epic ?? null; } catch { return null; } })();
+const batchEpic = queueEpic(queueFile());
 const expansion = existsSync(expansionPath)
   ? readJsonOrRefuse(expansionPath, `re-run expand-parent.mjs ${batchEpic ?? '<epic>'}`)
   : null;
