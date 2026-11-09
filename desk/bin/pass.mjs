@@ -1741,6 +1741,14 @@ const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.check ? 'me
 // A merge try that parks or dies can leave its merge in the base worktree, and the next sync, which
 // refuses a worktree holding anything, must reach the merge again to report it.
 const dropTryMerge = (path, last) => { if (last.kind !== 'review') dropUnpushed({ path, base: BASE }); };
+// Ends base_fix's last try with `outcome`: the record drops its session and port, and the try's merge
+// is dropped from base worktree `path`, where there is one.
+function endTry(outcome, path) {
+  bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
+  if (DRY) return;
+  q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+  if (path) dropTryMerge(path, bf.tries[bf.tries.length - 1]);
+}
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
 // A base that conflicts with the default branch goes to a conflict fix worker in the base worktree
@@ -1753,6 +1761,8 @@ let baseFix = null;
 let baseFixLive = false;
 // A try's worker that exited at the usage limit and is resumed this pass, after its reset.
 let baseFixResume = null;
+// A try's worker that exited at one login's limit and carries on on another this pass.
+let baseFixMove = null;
 let gateConflict = null;
 // Pacing holds new tickets, never a fix try (as for a PR's), so it does not hold this one either. The
 // machine budget and the repo's shared §3b cap bind it as they bind every worker.
@@ -1830,9 +1840,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     if (outcome) {
       const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
       if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
-      bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
-      if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-      if (!DRY && wt.ok) dropTryMerge(wt.path, bf.tries[bf.tries.length - 1]);
+      endTry(outcome, wt.ok ? wt.path : null);
       baseLines.push(`base ${tryWhat(bf.tries[bf.tries.length - 1])}: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}`);
     } else {
       baseFixLive = true;
@@ -1842,10 +1850,19 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       }
       // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and
       // nothing else holds spawns: another limit, the maintenance window, the budget, memory.
-      const up = awaitsLift && lifted(atLimit, loginOf(loginDirOf({ key: BASE_FIX_KEY })));
+      const from = loginOf(loginDirOf({ key: BASE_FIX_KEY, login: bf.login }));
+      const up = awaitsLift && lifted(atLimit, from);
       const ended = up ? `exited at ${limitName(atLimit.type)}, which lifted (${liftedHow(atLimit)})` : null;
+      // With more than one login, the limit benches its login, as a ticket worker's does. While another
+      // login can take new work, the try carries on there as a fresh session in the same worktree
+      // (moveBaseFix): its transcript lives under its own login's folder.
+      const benched = awaitsLift && !up && rotating && wt.ok && !onlyUsable([from]);
+      if (benched) bench(from, atLimit, BASE_FIX_KEY);
+      const moves = benched && otherOpen(from);
       if (up && !resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume_limits: usage.limits.length } };
       else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
+      else if (moves && !resumeHeld) baseFixMove = { wt: wt.path, from, limit: atLimit };
+      else if (moves) report.paused.push(`${BASE_FIX_KEY}: stopped at ${limitName(atLimit.type)} on login ${from.name}${untilText(atLimit)}; it carries on on another login once nothing holds spawns (${resumeHeld})`);
       else if (paused || awaitsLift) report.paused.push(`${BASE_FIX_KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
       else if (idle >= QUIET_PASSES) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
     }
@@ -2367,6 +2384,15 @@ function resumeRound(t, { wt, kept, branch }) {
   return { stage, brief, line: ` resumed at Stage ${stage}, where its last round parked` };
 }
 
+// The uncommitted changes a stopped session left in worktree `wt`, as git status --porcelain prints
+// them. Read whole, not through shOut, whose trim would cut the first line's leading status column.
+// Paths under .claude/ are setup-worktree.sh's (agent links, a disabled settings file): a worker
+// cannot write there.
+function keptChanges(wt) {
+  try { return execFileSync('git', ['-C', wt, 'status', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter((l) => l && !/^.. "?\.claude\//.test(l)); } catch { return []; /* not a git worktree */ }
+}
+const keptText = (changes) => (changes.length ? `, keeping ${changes.length} uncommitted change(s)` : '');
+
 // A worker moving off a login at its usage limit (login_move) starts a fresh session on login `to` at
 // the stage its stopped session reached, from Stage 3 on, when its worktree is on the queue's branch and
 // holds the resume file that stage left; otherwise at Stage 0, saying why. Either way its briefing names
@@ -2389,16 +2415,11 @@ function moveRound(t, { wt, kept, branch, to }) {
     if (!r.ok) why = r.why;
     else if (!existsSync(r.path)) why = `it left no resume file (${r.path})`;
   }
-  // Read whole, not through shOut, whose trim would cut the first line's leading status column. Paths
-  // under .claude/ are setup-worktree.sh's (agent links, a disabled settings file): a worker cannot write there.
-  let changes = [];
-  if (kept) {
-    try { changes = execFileSync('git', ['-C', wt, 'status', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter((l) => l && !/^.. "?\.claude\//.test(l)); } catch { /* not a git worktree */ }
-  }
+  const changes = kept ? keptChanges(wt) : [];
   const base = `origin/${DEFAULT_BRANCH}`;
   const brief = renderMoved({ key: t.key, from: m.from, to: to.name, limit: limitName(m.type), task, stage: why || task ? null : stage, why, branch, worktree: wt, base,
     commits: kept ? branchCommits(wt, base) : [], resumePath, changes });
-  const keptNote = changes.length ? `, keeping ${changes.length} uncommitted change(s)` : '';
+  const keptNote = keptText(changes);
   if (task) return { stage: null, brief, line: ` starting its task again after moving logins${keptNote}` };
   return why
     ? { stage: null, brief, line: ` from Stage 0 (not resumed after moving logins: ${why})${keptNote}` }
@@ -2561,13 +2582,11 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   if (DRY) { out.push(`base conflict fix (dry run): would resume session ${sid} on ${BASE}, which ${ended}`); return; }
   const fail = (reason) => {
     const outcome = `could not be resumed after it ${ended}: ${reason}`;
-    bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
-    q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-    if (wt) dropTryMerge(wt, bf.tries[bf.tries.length - 1]);
+    endTry(outcome, wt);
     report.failed.push(`${key}: ${ended}, and ${outcome}`);
   };
   if (!wt) return fail(why ?? 'the base worktree is gone');
-  const loginDir = loginDirOf({ key });
+  const loginDir = loginDirOf({ key, login: bf.login });
   const login = loginOf(loginDir);
   const own = rotating ? benchOf(login) : null;
   if (own) { waitsOnBench(key, own); return undefined; }
@@ -2596,6 +2615,56 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${rotating ? ` login=${login.name}` : ''} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
+
+// A try's worker that exited at login `from`'s limit, carried on as a fresh session on another login
+// in the same base worktree: its transcript stays under `from`, so it starts its task again, with a
+// briefing naming the uncommitted changes the stopped session left. It is the same try, not a new one.
+// One that cannot start on another login waits on its own, as before; one whose start fails ends its try.
+async function moveBaseFix({ wt, from, limit }) {
+  const key = BASE_FIX_KEY;
+  const last = bf.tries[bf.tries.length - 1];
+  const review = last.kind === 'review';
+  const what = `${tryWhat(last)} try ${last.try} of ${FIX_TRIES_MAX} on ${BASE}${review ? `, PR #${last.pr}` : ''}`;
+  if (DRY) { out.push(`base ${what} (dry run): would carry on off login ${from.name}, at ${limitName(limit.type)}, in a fresh session on another login`); return undefined; }
+  const waits = (why) => report.paused.push(`${key}: not moved off login ${from.name}, as ${why}: it waits there, and resumes its own session once its limit lifts`);
+  const pick = pickLogin();
+  if (!pick) { if (!usageStop) noLogin(); return waits('no other login can take it now'); }
+  const fail = (reason) => {
+    const outcome = `could not carry on on login ${pick.login.name} after it stopped at ${limitName(limit.type)} on login ${from.name}: ${reason}`;
+    endTry(outcome, wt);
+    report.failed.push(`${key}: ${outcome}`);
+  };
+  const fix = { ...last, of: FIX_TRIES_MAX };
+  const ctx = { base: BASE, source: SOURCE, epic: fresh.epic, fix };
+  const changes = keptChanges(wt);
+  const moved = renderMoved({ key, from: from.name, to: pick.login.name, limit: limitName(limit.type), task: true, branch: BASE, worktree: wt, base: `origin/${BASE}`,
+    commits: branchCommits(wt, `origin/${BASE}`), changes });
+  const model = models.off ? '' : models[tierFor({ key })];
+  const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model, ...pick.vars };
+  const pre = preflight(key, wt, workerEnv);
+  if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return waits(`login ${pick.login.name} was refused at the limit too`); }
+  if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  // Written once it goes ahead: a try left waiting resumes its own session with the briefing it had.
+  const briefPath = writeBrief({ key }, wt, `${moved}\n${(review ? epicReviewBrief : baseFixBrief)(ctx)}`, { notes: true });
+  const sid = E.uuid();
+  const port = await freePort();
+  E.rotateRound(key);
+  const logBytes = logPreflight(key, pre.cost);
+  // A task starts again: the stopped session's handoff briefing or resume file must not stand in for it.
+  for (const p of [handoffPath(STATE, key), workerResumePath(STATE, key)]) if (existsSync(p)) renameSync(p, `${p}.old`);
+  const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, briefPath], {
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_TASK: (review ? epicReviewTask : baseFixTask)(ctx) },
+  });
+  const refused = spawnRefusal(spawned.out);
+  if (refused) return fail(refused);
+  bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, session: sid } : x)), running: sid, port, log_bytes: logBytes, idle_passes: 0,
+    login: { name: pick.login.name, config_dir: pick.login.configDir ?? null } };
+  q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+  report.spawned.push(`${key} port=${port} model=${model || 'default'}${pick.line} (${what}), moved logins from ${from.name}, at ${limitName(limit.type)}${keptText(changes)}; ${preflightNote(pre.cost)}`);
+  return undefined;
+}
+if (baseFixMove) await moveBaseFix(baseFixMove);
 
 // Why a ticket's worktree must not get a worker now, or null. A worktree another process works in (a
 // session fixing the branch by hand) would have the worker reset or push over its work, and the pass

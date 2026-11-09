@@ -17,7 +17,7 @@ git config --global init.defaultBranch main
 # An autopilot worker inherits spawn-worker's exports, which would point this suite at the real repo.
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR AUTOPILOT_BATCH_BUDGET_USD \
-  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE
+  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -328,6 +328,101 @@ mkdir -p "$C/state/resume" "$C/state/handoffs"; echo '{"branch":"feat/x"}' > "$C
 pass
 check "DS-339 a base fix try moves an earlier try's resume file and handoff aside" \
   'grep -q "^base-feat-x " "$T/spawns" && [ ! -e "$C/state/resume/base-feat-x.json" ] && [ -e "$C/state/resume/base-feat-x.json.old" ] && [ ! -e "$C/state/handoffs/base-feat-x.json" ]'
+
+# DS-521: with more than one login, a base worker try (a conflict fix or an epic PR review) whose
+# session exited at one login's limit carries on as a fresh session on another, in the base worktree,
+# as the same try. logins <names>: the subscriptions file lists each (`default` is ~/.claude, `b` is
+# ~/.claude-logins/b), all in rotation. A folder listed in $LIM, as `<folder> <reset>`, is at its
+# limit: its preflight and its probe are refused. The spawn line records the login it was given.
+LB="$HOME/.claude-logins/b"; LD="$HOME/.claude"; LIM="$T/limited"
+mkdir -p "$LD" "$T/usage"
+export DESK_USAGE_DIR="$T/usage"
+# Only the listed logins' folders exist: a folder under ~/.claude-logins is a login whether listed or not.
+logins(){
+  rm -rf "$HOME/.claude-logins"
+  printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n' > "$T/subs.md"
+  # The table holds a literal ~ as a user's does, for the reader to expand.
+  # shellcheck disable=SC2088
+  for n in "$@"; do [ "$n" = default ] || mkdir -p "$HOME/.claude-logins/$n"; printf '| `claude` | `%s` | `%s` | `in rotation` |\n' "$n" "$([ "$n" = default ] && echo '~/.claude' || echo "~/.claude-logins/$n")" >> "$T/subs.md"; done
+  export DESK_SUBSCRIPTIONS="$T/subs.md"
+}
+cat > "$T/stub/claude" <<EOF
+#!/bin/sh
+d="\${CLAUDE_CONFIG_DIR:-$LD}"
+case "\$1" in
+  auth) printf '{"loggedIn":true,"email":"%s@example.com"}\n' "\$(basename "\$d")" ;;
+  -p) r=\$(grep -F "\$d " "$LIM" 2>/dev/null | head -n 1 | cut -d' ' -f2)
+    if [ -n "\$r" ]; then printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":%s}}\n' "\$r"; echo '{"type":"result","is_error":true}'; exit 1; fi
+    echo '{"type":"result","is_error":false}' ;;
+  *) cat "$T/agents.json" 2>/dev/null || echo "[]" ;;
+esac
+EOF
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+ld="\${AUTOPILOT_LOGIN_DIR:-$LD}"
+if [ "\$3" = preflight ]; then if grep -qF "\$ld " "$LIM" 2>/dev/null; then echo "[preflight] usage-limit: the account is at its usage limit"; else echo "[preflight] pass"; fi
+else echo "\$1 \$2 login=\${AUTOPILOT_LOGIN_DIR-unset} \${AUTOPILOT_TASK:-}\${AUTOPILOT_RESUME:+RESUME session=\$3}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
+EOF
+# A try of each kind, as base_fix records it, running as session sid-old.
+TRY_conflict='{"try":1,"head":"abc","source":"def","files":["a.txt"],"at":"2026-11-09T00:00:00Z","session":"sid-old"}'
+TRY_review='{"kind":"review","try":1,"head":"abc","pr":300,"at":"2026-11-09T00:00:00Z","session":"sid-old"}'
+WHAT_conflict='conflict fix try 1 of 2 on feat/x'; WHAT_review='epic PR review try 1 of 2 on feat/x, PR #300'
+TASK_conflict='Your task is conflict fix try 1 of 2 on feat/x'; TASK_review='It is epic PR #300'
+HEAD_conflict='## Base conflict fix try 1 of 2: feat/x'; HEAD_review='## Epic PR review try 1 of 2: #300'
+# stopped <case> <kind> [login folder]: the try's session, on login b unless given, exited at that
+# login's 5-hour limit, an hour off, in the base worktree on feat/x.
+stopped(){
+  : > "$T/spawns"; rm -f "$T/agents.json"; fresh "$1"; feature; fixrow yes
+  git -C "$C/repo" fetch -q origin; git -C "$C/repo" worktree add -q --track -b feat/x "$C/wt/base-feat-x" origin/feat/x
+  local try="TRY_$2"
+  node "$B/queue.mjs" set-batch "base_fix={\"tries\":[${!try}],\"running\":\"sid-old\",\"port\":3510}" >/dev/null
+  mkdir -p "$C/state/logs" "$C/state/workers"
+  local on=${3:-$LB}
+  [ "$on" = "$LD" ] || printf '{"login":"b","config_dir":"%s"}\n' "$on" > "$C/state/workers/base-feat-x.login.json"
+  limit_event "$(( $(date +%s) + 3600 ))"; age_log
+  echo "$on $(( $(date +%s) + 3600 ))" > "$LIM"
+}
+bench_default(){ node "$B/queue.mjs" set-batch "benched={\"default\":{\"login\":\"default\",\"config_dir\":null,\"type\":\"five_hour\",\"resets_at\":$(( $(date +%s) + 7200 )),\"since\":\"2026-11-09T00:00:00Z\",\"by\":\"T-9\"}}" >/dev/null; echo "$LD $(( $(date +%s) + 7200 ))" >> "$LIM"; }
+for kind in conflict review; do
+  what="WHAT_$kind"; task="TASK_$kind"; head="HEAD_$kind"; what=${!what}; task=${!task}; head=${!head}
+  # AC1, AC2: login b at its limit, the default login with room.
+  logins default b; stopped "m1$kind" "$kind"; pass
+  check "DS-521 AC1 $kind: a fresh session carries on the try on the other login, in the base worktree" \
+    '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && grep -q "^base-feat-x $C/wt/base-feat-x login=unset .*$task" "$T/spawns" && ! grep -q RESUME "$T/spawns" && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != sid-old ]'
+  check "DS-521 AC1 $kind: its briefing says it moved logins, with the try's own brief" \
+    'grep -q "^## Moved logins: this session starts its task again" "$C/state/briefings/base-feat-x.md" && grep -q "stopped at the 5-hour usage limit on login b" "$C/state/briefings/base-feat-x.md" && grep -qF "$head" "$C/state/briefings/base-feat-x.md"'
+  check "DS-521 AC1 $kind: the base fix record names the login, and b stays benched" \
+    '[ "$(jq -r .base_fix.login.name "$DESK_QUEUE")" = default ] && [ "$(jq -r ".benched.b.login" "$DESK_QUEUE")" = b ]'
+  check "DS-521 AC1 $kind: the pass report says it moved logins" \
+    '[[ "$out" == *"base-feat-x port="*" login=default ($what), moved logins from b, at the 5-hour usage limit;"* ]]'
+  check "DS-521 AC2 $kind: the move is not a try, and the try number stays the same" \
+    '[ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r ".base_fix.tries[0].try" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r ".base_fix.tries[0].session" "$DESK_QUEUE")" = "$(jq -r .base_fix.running "$DESK_QUEUE")" ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ]'
+  # AC3: uncommitted changes in the base worktree stay, and the briefing names them.
+  logins default b; stopped "m3$kind" "$kind"; echo half > "$C/wt/base-feat-x/a.txt"; echo new > "$C/wt/base-feat-x/new.txt"; pass
+  check "DS-521 AC3 $kind: the worktree keeps the changes" '[ "$(cat "$C/wt/base-feat-x/a.txt")$(cat "$C/wt/base-feat-x/new.txt")" = halfnew ]'
+  check "DS-521 AC3 $kind: the briefing and the report say they are there" \
+    'grep -q "^### Uncommitted changes in your worktree" "$C/state/briefings/base-feat-x.md" && grep -qF -- "- \` M a.txt\`" "$C/state/briefings/base-feat-x.md" && grep -qF -- "- \`?? new.txt\`" "$C/state/briefings/base-feat-x.md" && [[ "$out" == *"keeping 2 uncommitted change(s)"* ]]'
+  # AC4: every other login benched. It waits on its own, then resumes its own session there once b is back.
+  logins default b; stopped "m4$kind" "$kind"; bench_default; pass
+  check "DS-521 AC4 $kind: with every other login benched it waits on its own" \
+    '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r ".benched | keys | join(\",\")" "$DESK_QUEUE")" = b,default ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
+  echo "$LD $(( $(date +%s) + 7200 ))" > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
+  check "DS-521 AC4 $kind: once b is back it resumes its own session there, as today" \
+    'grep -q "^base-feat-x $C/wt/base-feat-x login=$LB .*RESUME session=sid-old" "$T/spawns" && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ]'
+  # The login it would move to is refused at its preflight: it goes back to waiting on its own.
+  logins default b; stopped "m6$kind" "$kind"; echo "$LD $(( $(date +%s) + 7200 ))" >> "$LIM"; pass
+  check "DS-521 $kind: a move refused on the other login waits on its own, with no try ended" \
+    '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x: not moved off login b, as login default was refused at the limit too"* ]]'
+  # AC5: one login. It is held and resumed exactly as today.
+  logins default; stopped "m5$kind" "$kind" "$LD"; pass
+  check "DS-521 AC5 $kind: one login: it waits, nothing benched or moved" \
+    '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r .benched "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
+  : > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
+  check "DS-521 AC5 $kind: one login: once the limit lifts it resumes its own session" 'grep -q "^base-feat-x .* login=unset .*RESUME session=sid-old" "$T/spawns"'
+done
+unset DESK_SUBSCRIPTIONS; rm -f "$LIM"; probe_off
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \$2 \${AUTOPILOT_BRANCH:-} \${AUTOPILOT_TASK:-}\${AUTOPILOT_RESUME:+RESUME session=\$3 \$AUTOPILOT_RESUME}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
+EOF
 
 # An ordinary batch plan-batch seeded while feature.json still names the epic and a spine (here §4
 # Acceptance specs is unset, so feature mode is off): a failed sync holds no spawns.
