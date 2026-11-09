@@ -64,7 +64,7 @@ check "desk_timeout_perl: a command that cannot run exits 127" '[ $rc -eq 127 ]'
 mkdir -p "$T/uu"
 printf '#!/bin/sh\n[ "$1" = --version ] && { echo "timeout (uutils coreutils) 0.2.2"; exit 0; }\nexit 99\n' > "$T/uu/timeout"
 cp "$T/uu/timeout" "$T/uu/gtimeout"; chmod +x "$T/uu/timeout" "$T/uu/gtimeout"
-out=$(PATH="$T/uu:$PATH"; unset _desk_timeout_bin; desk_timeout 5 sh -c 'exit 3'; echo "rc=$? bin=$_desk_timeout_bin")
+out=$(PATH="$T/uu:$PATH"; unset _desk_timeout_bin; desk_timeout 5 sh -c 'exit 3'; echo "rc=$? bin=${_desk_timeout_bin:-}")
 check "desk_timeout: a timeout(1) that is not GNU's is passed over for perl" '[[ "$out" == "rc=3 bin=perl" ]]'
 
 # setup-worktree.sh against a container whose psql never answers.
