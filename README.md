@@ -330,7 +330,7 @@ and arm not yet scored. The cap and reserve are per computer, set as the machine
 for once per computer and stores with `desk-env machine set`, which starts a profile holding only them where there is none. A value that is not a number refuses to
 start.
 
-An arm on OpenCode Go (`--arm <name>=opencode-go/<model>`) has no meter to read: each Go response
+An arm on OpenCode Go (model `opencode-go/<model>`) has no meter to read: each Go response
 reports only `opencode.allowance`, the dollars that request counted against the model's monthly
 limit. So the guard adds up the allowance the bench's own runs on that model recorded over rolling
 windows of 5 hours, 7 days and 30 days. It measures each window against the model's monthly limit in
@@ -345,6 +345,9 @@ or when no plan table row gives the model a monthly limit. A run whose allowance
 holds that model's runs until the run is 30 days old. An arm on any other `<provider>/<model>` has no
 meter and no ledger, so it is refused unless the machine profile gives that provider a run limit,
 the most runs a week the bench may start on it: `desk-env machine set bench-run-limit-<provider>=<runs>`.
+Either kind of arm also needs a runner that sends its runs to that provider, and a Go one that records
+each response's allowance. An `--arm` from the command line has none and would run on claude, so
+the bench refuses it.
 
 **`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
 merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and

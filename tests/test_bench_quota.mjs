@@ -140,11 +140,13 @@ const plansPath = join(T, 'plans.json');
 writeFileSync(plansPath, JSON.stringify({ plans: [{ provider: 'OpenCode', plan: 'Go Plus', price: 40, currency: 'USD', read: '2026-11-09', url: 'https://opencode.ai/docs/console/go',
   windows: [{ name: 'monthly', hours: 720, size: 15, unit: 'usd' }], serves: [{ model: 'opencode-go/kimi-k3' }] }] }));
 const plans = loadPlans(plansPath);
-const kimi = { name: 'kimi', model: 'opencode-go/kimi-k3' };
+const runner = () => ({});
+const kimi = { name: 'kimi', model: 'opencode-go/kimi-k3', runner };
 const goAccount = Q.accountFor(Q.GO, {}, kimi);
 const goLedger = join(T, 'usage', 'go.jsonl');
 const H = 3_600_000;
-const allowances = (...bodies) => ({ opencode_allowance: bodies.map(Q.responseAllowance) });
+// What a Go runner records from each response body.
+const allowances = (...bodies) => ({ opencode_allowance: bodies.map((b) => b?.opencode?.allowance ?? null) });
 const go = (id, at, more = {}) => Q.startRun({ account: goAccount, settings, ledger: goLedger, id, fields: { task: id, arm: 'kimi' }, plans, arm: kimi, now: at, ...more });
 const goEnd = (s, result, at) => Q.endRun({ account: goAccount, settings, ledger: goLedger, before: s.before, entry: s.entry, label: `${s.entry.task} (kimi)`, result, now: at });
 
@@ -153,7 +155,7 @@ t('AC1 the windows are 20%, 50% and 100% of the monthly limit, and say they coun
 const g1 = Q.readLedger(goLedger).find((e) => e.id === 'g1');
 const end1 = goEnd({ before: { limit: 15 }, entry: g1 }, allowances(fx.good), now + 1000);
 t('AC4 a run\'s points are its dollars as a share of each window, weekly as its points', JSON.stringify(end1.quota),
-  JSON.stringify({ account: 'OpenCode Go model opencode-go/kimi-k3', model: 'opencode-go/kimi-k3', allowance: 0.3, points: 4, windows: { '5-hour': 10, weekly: 4, monthly: 2 }, use: { usd: 0.3 }, own: Q.OWN_USE }));
+  JSON.stringify({ account: 'OpenCode Go model opencode-go/kimi-k3', model: 'opencode-go/kimi-k3', allowance: 0.3, points: 4, windows: { '5-hour': 10, weekly: 4, monthly: 2 } }));
 t('AC4 on that model\'s own line in the ledger', JSON.stringify(Q.readLedger(goLedger).filter((e) => e.id === 'g1').map((e) => [e.account, e.allowance])), JSON.stringify([['opencode-go:opencode-go/kimi-k3', 0.3]]));
 t('AC1 the cap applies to the 5-hour window, naming the bench\'s own use', go('g-capped', now + 2000).why,
   "the bench has used 10% of OpenCode Go model opencode-go/kimi-k3's 5-hour allowance ($0.30 of $3.00), at its 10-point cap; the bench's own use only: Go publishes no meter");
@@ -170,7 +172,7 @@ t('AC2 an allowance in a shape the reader does not know', Q.allowanceOf(allowanc
 t('AC2 a negative allowance', Q.allowanceOf([0.1, -1]).why, 'response 2 of 2\'s opencode.allowance is -1, not a finite non-negative number of dollars');
 t('AC2 a run with no responses', Q.allowanceOf(undefined).why, 'the run recorded no response carrying opencode.allowance');
 t('a run\'s allowance is the sum of its responses', Q.allowanceOf([0.1, 0.25, 0]).usd, 0.35);
-const noRow = { name: 'other', model: `opencode-go/${fx.noPlanRow.model}` };
+const noRow = { name: 'other', model: `opencode-go/${fx.noPlanRow.model}`, runner };
 t('AC2 a model with no plan table row stops, naming it', Q.startRun({ account: Q.accountFor(Q.GO, {}, noRow), settings, ledger: goLedger, id: 'n1', plans, arm: noRow, now }).why,
   `the OpenCode Go quota is unreadable for OpenCode Go model opencode-go/no-such-model: no row in the plan table ${plansPath} serves it`);
 t('AC2 with no plan table at all, it stops', go('n2', now, { plans: loadPlans(join(T, 'none.json')) }).why, `the OpenCode Go quota is unreadable for OpenCode Go model opencode-go/kimi-k3: there is no plan table at ${join(T, 'none.json')}`);
@@ -181,13 +183,22 @@ t('AC1 the reserve applies to each window', Q.goGate({ account: goAccount, use: 
 // A provider with no meter and no ledger: refused, unless the machine profile gives it a run limit.
 const limitLedger = join(T, 'usage', 'limit.jsonl');
 const zai = Q.accountFor('zai', {});
-t('AC3 a provider with no meter and no run limit is refused', Q.startRun({ account: zai, settings, ledger: limitLedger, id: 'z1', now }).why,
+t('AC3 a provider with no meter and no run limit is refused', Q.startRun({ account: zai, settings, ledger: limitLedger, id: 'z1', arm: { name: 'z', model: 'zai/glm-5.3', runner }, now }).why,
   'provider zai has no meter and no allowance ledger the bench can read, so its arm is refused rather than run unmetered: set a run limit with `desk-env machine set bench-run-limit-zai=<runs a week>`');
 const deepseek = Q.accountFor('deepseek', {});
-const d1 = Q.startRun({ account: deepseek, settings, ledger: limitLedger, id: 'd1', now });
+const dsArm = { name: 'ds', model: 'deepseek/v4.1-flash', runner };
+const d1 = Q.startRun({ account: deepseek, settings, ledger: limitLedger, id: 'd1', arm: dsArm, now });
 t('AC3 with a run limit set, it runs', d1.why, undefined);
 t('AC3 an unmetered run records no points', JSON.stringify(Q.endRun({ account: deepseek, settings, ledger: limitLedger, entry: d1.entry, label: 'd1', now }).quota), JSON.stringify({ account: 'provider deepseek', points: null, unmetered: true }));
-t('AC3 and stops at the limit', Q.startRun({ account: deepseek, settings, ledger: limitLedger, id: 'd2', now }).why, 'the bench has started 1 run(s) on provider deepseek this week, at its 1-run limit');
+t('AC3 and stops at the limit', Q.startRun({ account: deepseek, settings, ledger: limitLedger, id: 'd2', arm: dsArm, now }).why, 'the bench has started 1 run(s) on provider deepseek this week, at its 1-run limit');
+
+// An arm on such a provider with no runner of its own would run on claude: refused before any ledger line.
+const before = Q.readLedger(goLedger).length;
+t('a Go arm with no runner is refused', go('r1', now + 40 * 24 * H, { arm: { name: 'kimi', model: 'opencode-go/kimi-k3' } }).why,
+  "OpenCode Go model opencode-go/kimi-k3 has no runner that sends its runs there and records each response's opencode.allowance, and the default runner, claude, would spend the Claude login instead, so its arm is refused");
+t('and it leaves no ledger line to hold the model', Q.readLedger(goLedger).length, before);
+t('an arm on another provider with no runner is refused, run limit or not', Q.startRun({ account: deepseek, settings, ledger: limitLedger, id: 'd3', arm: { name: 'ds', model: 'deepseek/v4.1-flash' }, now: now + 8 * 24 * H }).why,
+  'provider deepseek has no runner that sends its runs there, and the default runner, claude, would spend the Claude login instead, so its arm is refused');
 const { benchSettingError } = await import('../desk/bin/machine.mjs');
 t('a run limit must be a whole number of runs', benchSettingError('bench-run-limit-zai', '1.5'), '`bench-run-limit-zai` is "1.5": want a whole number of runs a week, 1 or more');
 t('a run limit of a whole number is taken', benchSettingError('bench-run-limit-zai', '3'), null);

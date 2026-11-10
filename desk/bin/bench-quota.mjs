@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { machineValue } from './desk-env.mjs';
-import { BENCH_CAP_KEY, BENCH_RESERVE_KEY, benchSettingError as settingError } from './machine.mjs';
+import { BENCH_CAP_KEY, BENCH_RESERVE_KEY, benchRunLimitKey, benchSettingError as settingError } from './machine.mjs';
 import { loginProbeLog, probeNow, readLoginUsage, usageDir } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { defaultLogin, login as makeLogin } from './logins.mjs';
@@ -84,6 +84,10 @@ export function accountFor(vendor, env = process.env, arm = null) {
   const label = vendor === 'codex' ? 'Codex' : 'Claude';
   return { vendor, label, login: l, key: `${vendor}:${l.dir}`, name: `${label} login ${l.name}` };
 }
+
+// The refusal for an arm on a provider other than Claude or Codex that carries no runner of its own:
+// the bench's default runner is claude, which would send the run to the Claude login.
+export const noRunner = (account) => `${account.name} has no runner that sends its runs there${account.vendor === GO ? ' and records each response\'s opencode.allowance' : ''}, and the default runner, claude, would spend the Claude login instead, so its arm is refused`;
 
 // The stop for a reading that cannot be trusted, before a run or (`when`) after one.
 export const unreadable = (account, why, when = '') => `the ${account.label} quota is unreadable for ${account.name}${when}: ${why}`;
@@ -223,6 +227,7 @@ export const pointsLine = (account, used, settings, reading) =>
 // (`plans`, as bench-report.mjs's loadPlans returns it) and its `arm`.
 //   -> { line, why } | { line, before, entry }
 export function startRun({ account, settings, ledger = ledgerPath(), env = process.env, id, fields = {}, plans, arm, now = Date.now() }) {
+  if (!metered(account.vendor) && typeof arm?.runner !== 'function') return { line: `quota: ${account.name}: no runner`, why: noRunner(account) };
   if (account.vendor === GO) return goStart({ account, settings, ledger, id, fields, plans, arm, now });
   if (!metered(account.vendor)) return limitStart({ account, ledger, id, fields, now });
   const before = readWeekly(account, { env });
@@ -285,9 +290,6 @@ export function goLimit(plans, arm) {
   if (!month || month.hours < MONTH_MIN_HOURS) return { why: `${row} gives it no monthly limit in usd` };
   return { limit: month.size };
 }
-
-// What one Go response body reports as its allowance, as the runner records it: null when it has none.
-export const responseAllowance = (body) => body?.opencode?.allowance ?? null;
 
 // One run's allowance from what each response reported.  -> { usd } | { why }
 export function allowanceOf(values) {
@@ -355,20 +357,19 @@ function goEnd({ account, ledger, before, entry, label, result, now }) {
   }
   const share = Object.fromEntries(GO_WINDOWS.map((w) => [w.name, round1((a.usd / (before.limit * w.share)) * 100)]));
   record({ ...entry, ended, allowance: a.usd, points: share }, ledger);
-  const quota = { account: account.name, model: account.model, allowance: a.usd, points: share.weekly, windows: share, use: { usd: a.usd }, own: OWN_USE };
+  const quota = { account: account.name, model: account.model, allowance: a.usd, points: share.weekly, windows: share };
   return { quota, line: goLine(account, goUse(readLedger(ledger), account, before.limit, now)) };
 }
 
 // ---- a provider with no meter and no ledger: a run limit, or no run --------------------------------
 // The machine profile's Sizing row `bench-run-limit-<provider>` is the most runs the bench may start on
 // that provider in a rolling week. Unset, an arm on it is refused rather than run unmetered.
-export const runLimitKey = (vendor) => `bench-run-limit-${vendor}`;
 const WEEK_MS = 7 * 24 * HOUR_MS;
 const runsThisWeek = (entries, account, at) => entries.filter((e) => e.account === account.key && at - Date.parse(e.at) < WEEK_MS).length;
 const limitLine = (account, limit, runs) => `quota: ${account.name}: no meter, so the bench counts its runs: ${runs} of its ${limit}-run weekly limit`;
 
 function limitStart({ account, ledger, id, fields, now }) {
-  const key = runLimitKey(account.vendor);
+  const key = benchRunLimitKey(account.vendor);
   const raw = machineValue(key);
   const refused = `${account.name} has no meter and no allowance ledger the bench can read, so its arm is refused rather than run unmetered`;
   if (raw == null) return { line: `quota: ${account.name}: no meter and no run limit`, why: `${refused}: set a run limit with \`desk-env machine set ${key}=<runs a week>\`` };

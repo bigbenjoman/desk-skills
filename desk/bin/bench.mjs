@@ -40,7 +40,8 @@
 // `opencode.allowance` in `extra.opencode_allowance`, and the guard keeps the bench's own ledger of
 // them against the model's monthly limit in the plan table, <plans> (default <out>/plans.json, the
 // file bench-report.mjs reads). An arm on any other `<provider>/<model>` runs only within the run
-// limit the machine profile sets for that provider.
+// limit the machine profile sets for that provider. Either needs a runner of its own: one that runs on
+// claude is refused before it starts.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, mkdtempSync, rmSync, cpSync, openSync, closeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
