@@ -55,7 +55,7 @@ import { FILE_SAFE, USD, claudeArgs, readRun, readTasks } from './skill-eval.mjs
 import { logTokens } from './worker-cost.mjs';
 import { runItem } from './baseline.mjs';
 import { nearestDir, takesFiles } from './test-scope.mjs';
-import { lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.mjs';
+import { HOME, lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.mjs';
 import * as Q from './bench-quota.mjs';
 import { loadPlans } from './bench-report.mjs';
 import { endpointArms, providersPath } from './bench-endpoint.mjs';
@@ -172,13 +172,16 @@ const OUT_OF_BOUNDS = /\b(gh|desk-jira|desk-gh|desk-env|desk-design|codex|docker
 
 // A worker's generated settings cut down for an arm: its Edit rules only in the checkout, none of
 // its grants beyond the repo's own toolchain, and `secrets` (the primary checkout, the task set, the
-// hidden tests, the bench's results) denied by name to every tool.
+// hidden tests, the bench's results, an endpoint arm's key file and its folder) denied by name to
+// every tool. A command names a path under $HOME by `~` or $HOME as well, so each is denied in those
+// spellings too.
+const homeForms = (p) => (p.startsWith(`${HOME}/`) ? [p, ...['~', '$HOME', '${HOME}', '"$HOME"'].map((h) => `${h}${p.slice(HOME.length)}`)] : [p]);
 export function armSettings(generated, { wt, secrets, lockDirs }) {
   const s = structuredClone(generated);
   const p = s.permissions;
   p.allow = p.allow.filter((r) => !OUT_OF_BOUNDS.test(r) && (!r.startsWith('Edit(') || r.startsWith(`Edit(/${wt}/`)));
   p.deny.push('WebFetch', 'WebSearch', 'Bash(gh:*)', 'Bash(desk-jira:*)', 'Bash(desk-gh:*)',
-    ...secrets.flatMap((d) => [`Read(/${d})`, `Read(/${d}/**)`, `Bash(*${d}*)`]));
+    ...secrets.flatMap((d) => [`Read(/${d})`, `Read(/${d}/**)`, ...homeForms(d).map((f) => `Bash(*${f}*)`)]));
   p.additionalDirectories = p.additionalDirectories.filter((d) => lockDirs.includes(d) || d === '/proc');
   s.autoMemoryEnabled = false;
   return s;
@@ -394,7 +397,8 @@ export function runBench(opts, log = () => {}) {
   const report = tasks.map((task) => {
     const repo = repos.get(task.repo);
     const order = armOrder(arms, opts.seed, task.id);
-    const keys = arms.flatMap((a) => (a.endpoint ? [a.endpoint.keyFile] : []));
+    // The folder too, so a glob in it names no file and still matches; never $HOME itself.
+    const keys = arms.flatMap((a) => (a.endpoint ? [a.endpoint.keyFile, dirname(a.endpoint.keyFile)] : [])).filter((k) => k !== HOME);
     const secrets = [repo.root, resolve(opts.tasks), task.hidden_tests.dir, out, ...[...(opts.secrets ?? []), ...keys].filter(existsSync)].flatMap(both);
     const runs = order.map((arm) => {
       const dir = join(out, 'runs', `${task.id}.${arm.name}.${runKey(task, arm)}`);

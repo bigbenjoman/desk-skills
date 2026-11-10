@@ -10,6 +10,8 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { baseUrlProblem, endpointArms, endpointEnv, loginReach, readKey } from '../desk/bin/bench-endpoint.mjs';
 import { bodyAllowance, withKey } from '../desk/bin/endpoint-proxy.mjs';
+import { armSettings } from '../desk/bin/bench.mjs';
+import { HOME } from '../desk/bin/desk-env.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -186,7 +188,7 @@ t('AC1 claude is asked for the model after the provider', c[0]?.model, 'kimi-k3.
 t('AC1 every model alias is that model', `${c[0]?.haiku} ${c[0]?.subagent}`, 'kimi-k3.1-pro kimi-k3.1-pro');
 t('AC5 claude holds the run\'s own token, never the key', `${c[0]?.token !== KEY} ${/^desk-endpoint-[0-9a-f]{48}$/.test(c[0]?.token ?? '')}`, 'true true');
 t('claude talks to the local proxy', /^http:\/\/127\.0\.0\.1:\d+$/.test(c[0]?.base ?? ''), true);
-t('AC5 the arm may not read the key file', c[0]?.deny.some((d) => d === `Read(/${keyFile})`), true);
+t('AC5 the arm may not read the key file or its folder', ['Read', 'Bash'].every((tool) => [keyFile, dirname(keyFile)].every((p) => c[0]?.deny.some((d) => d === (tool === 'Read' ? `Read(/${p})` : `Bash(*${p}*)`)))), true);
 t('a request without the run\'s token is refused and never sent on', readFileSync(`${stubLog}.other`, 'utf8'), '401');
 t('AC3 no inherited OAuth token or API key reaches claude', `${c[0]?.oauth} ${c[0]?.apiKey}`, 'null null');
 t('AC3 claude has a fresh empty config folder, not the inherited login', `${c[0]?.config !== inherited} ${c[0]?.configEntries}`, 'true 0');
@@ -266,6 +268,12 @@ t('a Claude arm needs no providers file', endpointArms([{ name: 'o', model: 'opu
 t('an endpoint arm with no providers file is refused, naming it', /there is no providers file at .*none\.json/.test(throws(() => endpointArms([{ name: 'g', model: 'opencode-go/m' }], join(dir, 'none.json')))), true);
 t('a relative key file is read beside the providers file', endpointArms([{ name: 'g', model: 'opencode-go/kimi-k3.1-pro' }], providersFile)[0].endpoint.keyFile, keyFile);
 t('the key file keeps its mode', (statSync(keyFile).mode & 0o777).toString(8), '600');
+
+// A path under $HOME is denied in every spelling a command can name it by.
+const underHome = `${HOME}/.config/desk/go.key`;
+const denied = armSettings({ permissions: { allow: [], deny: [], additionalDirectories: [] } }, { wt: '/w', secrets: [underHome, '/elsewhere/k'], lockDirs: [] }).permissions.deny;
+t('AC5 a key under $HOME is denied by ~ and $HOME too', ['', '~', '$HOME', '${HOME}', '"$HOME"'].map((h) => `Bash(*${h ? `${h}/.config/desk/go.key` : underHome}*)`).every((r) => denied.includes(r)), true);
+t('a path elsewhere only by itself', denied.filter((r) => r.includes('elsewhere')).join(' '), 'Read(//elsewhere/k) Read(//elsewhere/k/**) Bash(*/elsewhere/k*)');
 
 // The proxy's key swap.
 t('a bearer token of the run\'s is swapped for the key', withKey({ authorization: 'Bearer tok', 'x-b': '1' }, 'tok', 'K').authorization, 'Bearer K');

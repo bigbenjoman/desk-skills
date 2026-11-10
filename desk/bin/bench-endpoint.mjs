@@ -16,7 +16,8 @@
 // Every arm's entry and key file are checked before the bench starts any run: a key file must exist,
 // hold the key and be open to its owner only (chmod 600). Claude runs behind endpoint-proxy.mjs, which
 // alone reads the key and puts it on each request it sends on, so neither claude nor any command the
-// model under test runs has it to print; the key file is also one of the paths the arm may not read.
+// model under test runs has it to print; the key file and its folder are among the paths the arm's
+// settings deny (bench.mjs armSettings).
 //
 // The run's USD figure is claude's own pricing at Anthropic's rates, which do not apply: it is kept as
 // `claude_priced_usd` and its `cost` is null, so it spends nothing of --total-budget-usd (bench.mjs
