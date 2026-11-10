@@ -97,7 +97,7 @@ export function counts(tasks) {
 const run = (cmd, args, opts) => spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts });
 
 function ghPr({ repo, pr }) {
-  const r = run('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'number,title,headRefName,state,baseRefOid,mergeCommit,files,commits']);
+  const r = run('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'number,title,headRefName,state,mergeCommit,files,commits']);
   if (r.status !== 0) throw new Error(`gh pr view failed: ${(r.stderr || '').trim()}`);
   return JSON.parse(r.stdout);
 }
@@ -164,7 +164,6 @@ function freeze(want, setDir, opts, repos) {
   if (repo instanceof Error) fail(repo.message);
   const pr = ghPr(want);
   if (pr.state !== 'MERGED' || !SHA.test(pr.mergeCommit?.oid ?? '')) fail('the PR is not merged');
-  if (!SHA.test(pr.baseRefOid ?? '')) fail('GitHub gives no base commit for the PR');
   const { files, run: runs } = testFiles((pr.files ?? []).filter((f) => f.changeType !== 'DELETED').map((f) => f.path));
   if (!runs.length) fail('the PR changed no test files, so it has no tests to hide');
 
@@ -177,8 +176,13 @@ function freeze(want, setDir, opts, repos) {
   const ticket = ticketAt(repo, key, first);
   if (!ticket.description.trim() && !ticket.summary.trim()) fail(`${key} had no text when the PR's first commit was made`);
 
-  const base = pr.baseRefOid, merge = pr.mergeCommit.oid;
-  for (const sha of [base, merge]) haveCommit(repo.root, sha);
+  // The base is the commit the merge applied the PR to, so the merge differs from it by the PR alone.
+  // GitHub's baseRefOid can be older: work merged to the base branch after it would reach the hidden
+  // tests without reaching the run.
+  const merge = pr.mergeCommit.oid;
+  haveCommit(repo.root, merge);
+  const base = git(repo.root, ['rev-parse', '--verify', '--quiet', `${merge}^1`]).stdout?.trim();
+  if (!SHA.test(base ?? '')) fail('the merge commit has no parent to start from');
   const id = taskId(want);
   if (!FILE_SAFE.test(id)) fail(`cannot make a task id from ${want.repo}#${want.pr}`);
   const taskDir = join(setDir, id);

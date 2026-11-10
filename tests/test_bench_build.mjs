@@ -205,6 +205,15 @@ t('a killed build is killed', r.signal, 'SIGKILL');
 const kept = existsSync(killedSet) ? JSON.parse(readFileSync(killedSet, 'utf8')) : { tasks: [], dropped: [] };
 t('a killed build keeps the PRs it finished', `${kept.tasks.map((x) => x.id)}|${kept.dropped.map((d) => d.pr)}`, 'acme__widgets-1|2');
 
+// The base is the merge commit's first parent, not GitHub's baseRefOid: PR 7 merged as c2 onto c1,
+// though GitHub names c0, from before DS-1's fix landed. Read from c0, DS-1's fix would pass as PR 7's.
+pr(7, c0, c2, ['tests/test_fix.sh']);
+issue('DS-7', { summary: 'DS-7', description: 'text', customfield_1: { value: 'S' } }, []);
+const staleSet = join(dir, 'stale', 'tasks.json');
+r = run(['--set', staleSet, '--pr', 'acme/widgets#7']);
+const stale = JSON.parse(readFileSync(staleSet, 'utf8'));
+t('a stale baseRefOid is not the base: the PR\'s tests already pass at its real base', stale.tasks.length === 0 && /already pass at the base/.test(stale.dropped[0]?.why), true);
+
 // A PR outside any desk config, or not merged, is dropped with the reason.
 r = run(['--set', join(dir, 'other.json'), '--pr', 'acme/other#1']);
 t('a repo with no desk config is dropped', /acme\/other#1: no desk config/.test(r.stdout), true);
