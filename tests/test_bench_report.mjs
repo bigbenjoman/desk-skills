@@ -107,7 +107,7 @@ t('the arms\' input of all kinds is beside it', row('Input tokens of all kinds p
 t('no verdict is given', /verdict|keep|drop/i.test(text), false);
 t('the CLI prices each arm from <out>/plans.json', row('£ per accepted task').slice(1).map((c) => c.slice(0, 5)).join(' / '), '£0.55 / £1.60');
 
-// DS-538: £ per accepted task and accepted tasks per 5-hour window, priced from the plan table.
+// £ per accepted task and accepted tasks per 5-hour window, priced from the plan table.
 const NOW = Date.parse('2026-11-10T12:00:00Z');
 const plansFile = (name, table) => { const p = join(dir, `${name}.json`); writeFileSync(p, JSON.stringify(table)); return loadPlans(p); };
 const priced = (table, name = 'plans') => {
@@ -140,9 +140,10 @@ const badPlan = plansFile('bad', { plans: [{ ...plansTable.plans[0], windows: [{
 t('a plan row it cannot use is named, not skipped', armValue({ arm: 'opus', accepted: 1, acceptedQuota: [] }, badPlan, NOW).perTask, `${NOT_PRICED}: Anthropic Max: opus: its window {"hours":5} needs hours, size and unit`);
 const go = plansFile('go', plansTable);
 t('a served model matches the arm\'s model, any case', planFor(go, { arm: 'k', model: 'KIMI' })?.plan.plan, 'Plus');
-const kimi = armValue({ arm: 'k', model: 'kimi', accepted: 2, acceptedQuota: [{ use: { usd: 2 } }, { use: { usd: 4 } }, { points: 9 }] }, go, NOW);
-t('a window\'s use is read in its own unit', kimi.perWindow.startsWith('4.0 (12 usd ÷ 3 per accepted task)'), true);
-const unmeasured = armValue({ arm: 'opus', accepted: 1, acceptedQuota: [{ use: { usd: 1 } }] }, go, NOW);
+const kimi = armValue({ arm: 'k', model: 'kimi', accepted: 2, acceptedQuota: [{ points: 2 }, { points: 9 }] }, go, NOW);
+t('a window in a unit the bench does not record is not measured, and says so', kimi.perWindow, `not measured: the bench records use only in ${WEEKLY_POINTS}, not usd`);
+t('nor is its £ per accepted task', kimi.perTask, `not measured: the bench records use only in ${WEEKLY_POINTS}, not usd`);
+const unmeasured = armValue({ arm: 'opus', accepted: 1, acceptedQuota: [{ account: 'ben', points: null }] }, go, NOW);
 t('a use never recorded in the window\'s unit is not measured', unmeasured.perWindow, `not measured: no accepted run recorded its use in ${WEEKLY_POINTS}`);
 
 // AC4: no baseline report.

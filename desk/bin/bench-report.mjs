@@ -113,8 +113,9 @@ export const readJoined = (blind) => { const file = join(blind, 'joined.json'); 
 //   { rates: [{ currency, toGBP, read }],
 //     plans: [{ provider, plan, price, currency, read, url, windows, serves: [{ arm | model, windows? }] }] }
 // A window is { name, hours, size, unit }: `size` of `unit` every `hours`. A served entry's own windows
-// replace the plan's, for a plan whose allowance is per model. A run's use in a unit is its result's
-// quota.use[unit]; WEEKLY_POINTS is quota.points, the rise in the account's weekly use in percent.
+// replace the plan's, for a plan whose allowance is per model. The bench records a run's use only in
+// WEEKLY_POINTS (quota.points, the rise in the account's weekly use in percent), so a window in any
+// other unit reads "not measured".
 export const NOT_PRICED = 'not priced';
 export const WEEKLY_POINTS = 'weekly points';
 export const STALE_DAYS = 31;
@@ -190,18 +191,19 @@ export function armValue(f, plans, now = Date.now()) {
   const gbp = cur === 'GBP' ? plan.price : rate ? plan.price * rate.toGBP : null;
   const base = { plan, rate, stale, gbp };
   if (!f.accepted) return { ...base, perTask: 'no task accepted', perWindow: 'no task accepted' };
-  const use = (unit) => median(f.acceptedQuota.map((q) => (unit === WEEKLY_POINTS ? q.points : q.use?.[unit])).filter((v) => typeof v === 'number'));
-  const windows = (served.windows ?? plan.windows).map((w) => ({ ...w, use: use(w.unit) }));
+  const points = median(f.acceptedQuota.map((q) => q.points).filter((v) => typeof v === 'number'));
+  const windows = (served.windows ?? plan.windows).map((w) => ({ ...w, use: w.unit === WEEKLY_POINTS ? points : null }));
   const label = (w) => w.name ?? `${w.hours}-hour`;
+  const notMeasured = (w) => (w.unit === WEEKLY_POINTS ? `no accepted run recorded its use in ${WEEKLY_POINTS}` : `the bench records use only in ${WEEKLY_POINTS}, not ${w.unit}`);
   const measured = windows.filter((w) => w.use > 0);
-  const unmeasured = windows.filter((w) => !(w.use > 0)).map((w) => `${label(w)} window not measured in ${w.unit}`);
+  const unmeasured = windows.filter((w) => !(w.use > 0)).map((w) => `${label(w)} window not measured: ${notMeasured(w)}`);
   const five = windows.find((w) => w.hours === 5);
   const perWindow = !five ? `${planName(plan)} has no 5-hour window`
-    : !(five.use > 0) ? `not measured: no accepted run recorded its use in ${five.unit}`
+    : !(five.use > 0) ? `not measured: ${notMeasured(five)}`
     : `${tasksN(five.size / five.use)} (${five.size} ${five.unit} ÷ ${pts(five.use)} per accepted task)${stale}`;
   let perTask;
   if (gbp == null) perTask = `${NOT_PRICED}: no ${cur} rate in the plan table`;
-  else if (!measured.length) perTask = `not measured: no accepted run recorded its use in ${windows.map((w) => w.unit).join(' or ')}`;
+  else if (!measured.length) perTask = `not measured: ${[...new Set(windows.map(notMeasured))].join('; ')}`;
   else {
     const bound = measured.map((w) => ({ w, tasks: (MONTH_HOURS / w.hours) * (w.size / w.use) })).sort((a, b) => a.tasks - b.tasks)[0];
     perTask = `${money(gbp / bound.tasks)} (${money(gbp)} a month ÷ ${tasksN(bound.tasks)} task(s), bound by the ${label(bound.w)} window${unmeasured.length ? `; ${unmeasured.join('; ')}` : ''})${stale}`;

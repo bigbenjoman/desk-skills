@@ -387,7 +387,8 @@ served entry may carry its own windows where the plan's allowance is per model. 
 list gives each other currency's rate to GBP and the date it was read. Accepted tasks per 5-hour
 window is that window's size over the arm's median use per accepted task. £ per accepted task is the
 monthly price in £ over the accepted tasks a month of windows allows at that use, the tightest
-window binding. An arm with no plan, or a price with no rate, reads "not priced" and the report
+window binding. The bench records use only in `weekly points`, so a window in any other unit reads
+"not measured". An arm with no plan, or a price with no rate, reads "not priced" and the report
 names why; a price read over 31 days ago is flagged stale. The report states figures and gives no
 verdict:
 
