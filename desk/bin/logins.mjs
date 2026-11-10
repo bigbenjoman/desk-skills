@@ -303,7 +303,10 @@ export function checkLogins(subs, { tools = TOOLS, ...opts } = {}) {
         l.email = l.account;
         if (l.state === 'signed in' && !live) Object.assign(l, { state: 'error', why: 'its account could not be read' });
         else if (l.state === 'signed in' && live !== l.account) Object.assign(l, { state: 'wrong account', why: `signed in to ${l.liveEmail}` });
-      } else if (l.state === 'signed in') Object.assign(l, { state: 'not set up', why: null, pinnable: !!live && !pins.has(live) });
+      } else if (l.state === 'signed in') {
+        const other = live ? pins.get(live) : null;
+        Object.assign(l, { state: 'not set up', why: other ? `the same account as ${other.name}` : null, pinnable: !!live && !other });
+      }
       else if (l.state === 'signed out') Object.assign(l, { state: 'not set up', why: `signed out${l.why ? ` (${l.why})` : ''}` });
     } else if (l.state === 'signed in' && live) {
       // Two Claude names on one account: the first keeps it.

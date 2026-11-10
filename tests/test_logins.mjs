@@ -225,6 +225,8 @@ t('and is not usable', pc.usable.some((l) => l.name === 'login-4'), false);
 t('checkLines says how to pin it', checkLines(pc, join(T, 'subscriptions.md')).some((l) => l === 'claude login-4 is not set up: desk-env logins pin claude login-4 pins it to the account it is signed in to'), true);
 claudeIn(L4, 'b@x.io', 'Pro');
 t('an unlisted folder on a pinned account is not pinnable', `${stOf(pinCheck(), 'login-4').state} ${stOf(pinCheck(), 'login-4').pinnable}`, 'not set up false');
+t('and names the login that account is pinned to', stOf(pinCheck(), 'login-4').why, 'the same account as login-3');
+t('checkLines gives that reason, not "not signed in"', checkLines(pinCheck(), join(T, 'subscriptions.md')).includes('claude login-4 is not set up: the same account as login-3; desk won\'t use it'), true);
 claudeIn(L4, 'c@x.io', 'Pro');
 writeFileSync(join(L2, 'status.json'), 'not json');
 pc = pinCheck();
@@ -349,7 +351,7 @@ t('AC10 pin: a signed-out login-4 is refused', `${p.rc} ${p.err.trim()} ${sc.tex
 
 t('usage names pin and migrate', (await sc.run('bogus')).err.includes('| pin claude <name> | migrate'), true);
 
-// DS-529 AC12: a check that fails on a pinned folder writes nothing
+// A check that fails on a pinned folder writes nothing
 const ONEPIN = '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `login-2` | `~/.claude-logins/login-2` | `a@x.io` | `in rotation` |\n';
 sc = scenario(ONEPIN, { 'login-2': 'a@x.io' });
 writeFileSync(join(sc.home, '.claude-logins', 'login-2', 'status.json'), 'not json');
@@ -357,7 +359,7 @@ p = await sc.run('check');
 t('AC12 the CLI check shows a non-JSON answer as not checked', p.out.split('\n').some((l) => /^claude\s+login-2\s.*\snot checked\s/.test(l)), true);
 t('AC12 and leaves the pin as it was', `${sc.text() === ONEPIN} ${existsSync(`${sc.path}.bak`)}`, 'true false');
 
-// DS-529 AC20: one login on ~/.claude and no file prints what it printed before pins
+// One login on ~/.claude and no file prints what it printed before pins
 sc = scenario(null, { default: 'x@a.io' });
 codexIn(join(sc.home, '.codex'));
 p = await sc.run('check');
