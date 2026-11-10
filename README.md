@@ -377,11 +377,24 @@ ticket, and it names the baseline's last day. With no baseline, the column reads
 the report gives the command that produces one. Until the scores are joined, the score reads "not
 scored". A run the cap or budget never started is listed as not run. When the arms did not run the
 same tasks, the report puts no two arms side by side: each arm gets its own table beside the
-baseline. The report states figures and gives no verdict:
+baseline.
+
+Each arm also shows £ per accepted task and accepted tasks per 5-hour window, priced from the plan
+table at `<out>/plans.json` (or `--plans <file>`), which you write by hand from each provider's own
+page. Each plan row gives its provider, plan, monthly price and currency, the date and URL the price
+was read from, its windows (`{ name, hours, size, unit }`), and the arms or models it serves; a
+served entry may carry its own windows where the plan's allowance is per model. The table's `rates`
+list gives each other currency's rate to GBP and the date it was read. Accepted tasks per 5-hour
+window is that window's size over the arm's median use per accepted task. £ per accepted task is the
+monthly price in £ over the accepted tasks a month of windows allows at that use, the tightest
+window binding. The bench records use only in `weekly points`, so a window in any other unit reads
+"not measured". An arm with no plan, or a price with no rate, reads "not priced" and the report
+names why; a price read over 31 days ago is flagged stale. The report states figures and gives no
+verdict:
 
 ```
 node ~/.claude/desk/bin/phase0-report.mjs --days 7 > <out>/phase0-baseline.txt
-node ~/.claude/desk/bin/bench-report.mjs --tasks <tasks.json> [--out <dir>] [--blind <dir>] [--baseline <file>]
+node ~/.claude/desk/bin/bench-report.mjs --tasks <tasks.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]
 ```
 
 **`bench-replay.mjs`** asks whether the spawn preflight and the decider need Opus. It samples
