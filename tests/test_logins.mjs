@@ -30,6 +30,7 @@ const CALLS = join(T, 'calls');
 writeFileSync(join(FB, 'claude'), `#!/bin/sh
 d="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 printf 'claude|%s|%s|%s\\n' "\${CLAUDE_CONFIG_DIR-unset}" "\${ANTHROPIC_API_KEY-unset}" "$*" >> "${CALLS}"
+[ -f "$d/hang" ] && kill -KILL $$
 [ -f "$d/status.json" ] || { echo '{"loggedIn": false}'; exit 1; }
 cat "$d/status.json"
 `);
@@ -183,8 +184,14 @@ t('a pinned file round-trips', renderSubscriptions(parseSubscriptions(renderSubs
 t('an unpinned file still renders 4 columns', renderSubscriptions(parseSubscriptions('').logins).includes('| Tool | Name | Folder | Rule |'), true);
 t('and none of the Account copy', renderSubscriptions(parseSubscriptions('').logins).includes('Account is'), false);
 const badAcc = parseSubscriptions('| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `x` | `~/.claude-logins/x` | `not-an-email` | `standby` |\n| `codex` | `c` | `~/.codex` | `a@b.c` | `standby` |\n');
-t('an Account that is not an email is a named error', badAcc.errors.some((e) => /^line 3: .*not an email/.test(e)), true);
-t('an Account on a Codex row is a named error', badAcc.errors.some((e) => /^line 4: .*codex/.test(e)), true);
+t('an Account that is not an email is a named error', badAcc.errors.includes('line 3: claude x: account "not-an-email" is not an email'), true);
+t('an Account on a Codex row is a named error', badAcc.errors.includes('line 4: codex c: a Codex row takes no account'), true);
+const goodAndBad = parseSubscriptions('| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `x` | `~/.claude-logins/x` | `not-an-email` | `standby` |\n| `claude` | `y` | `~/.claude-logins/y` | `y@x.io` | `standby` |\n');
+t('a bad Account leaves the rest read', `${goodAndBad.errors.length} ${goodAndBad.logins.filter((l) => l.tool === 'claude').map((l) => `${l.name}:${l.account}`).join()}`, '1 y:y@x.io');
+const mixed = renderSubscriptions([...s5.logins, ...parseSubscriptions('| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `spare` | `~/.claude-logins/spare` | `standby` |\n').logins.filter((l) => l.tool === 'claude')]).split('\n');
+t('a pinned file has the 5-column header', mixed.includes('| Tool | Name | Folder | Account | Rule |'), true);
+t('an unpinned Claude row beside a pin carries -', mixed.includes('| `claude` | `spare` | `~/.claude-logins/spare` | `-` | `standby` |'), true);
+t('no row has an account: the 4-column header, exactly', renderSubscriptions(two.logins).split('\n').includes('| Tool | Name | Folder | Rule |'), true);
 t('those rows are left out and the defaults stand', badAcc.logins.map((l) => `${l.tool}:${l.name}`).join(), 'claude:default,codex:default');
 t('setRule keeps a pin', setRule(s5, { tool: 'claude', name: 'login-2', rule: 'standby', check: () => ({ usable: [] }) }).text.includes('`ben.lavender1@gmail.com` | `standby`'), true);
 
@@ -201,6 +208,7 @@ t('and usable', pc.usable.filter((l) => l.tool === 'claude').map((l) => l.name).
 claudeIn(L2, 'A@X.io', 'Ultra');
 pc = pinCheck();
 t('case does not matter', `${stOf(pc, 'login-2').state} ${stOf(pc, 'login-2').email}`, 'signed in a@x.io');
+t('and it is usable', pc.usable.some((l) => l.name === 'login-2'), true);
 claudeIn(L2, 'b@x.io', 'Ultra');
 pc = pinCheck();
 t('a pinned folder on another account is wrong account', `${stOf(pc, 'login-2').state} ${stOf(pc, 'login-2').liveEmail} ${stOf(pc, 'login-2').why}`, 'wrong account b@x.io signed in to b@x.io');
@@ -221,7 +229,14 @@ claudeIn(L4, 'c@x.io', 'Pro');
 writeFileSync(join(L2, 'status.json'), 'not json');
 pc = pinCheck();
 t('a check that errors on a pinned folder stays error', `${stOf(pc, 'login-2').state} ${stOf(pc, 'login-2').account}`, 'error a@x.io');
+t('and is shown not checked, never wrong account', checkLines(pc, join(T, 'subscriptions.md')).some((l) => /^claude\s+login-2\s.*\snot checked\s/.test(l)), true);
 claudeIn(L2, 'a@x.io', 'Ultra');
+writeFileSync(join(L2, 'hang'), '');
+pc = pinCheck();
+t('a check that does not answer on a pinned folder is error too', `${stOf(pc, 'login-2').state} ${stOf(pc, 'login-2').account} ${stOf(pc, 'login-2').why}`, `error a@x.io ${fakes.claude} did not answer within 20s`);
+t('and is not usable', pc.usable.some((l) => l.name === 'login-2'), false);
+t('and is shown not checked', checkLines(pc, join(T, 'subscriptions.md')).includes(`claude login-2 could not be checked: ${fakes.claude} did not answer within 20s`), true);
+rmSync(join(L2, 'hang'));
 writeFileSync(CALLS, '');
 pinCheck();
 t('~/.claude is never checked in multi-account mode', readFileSync(CALLS, 'utf8').split('\n').some((x) => x.startsWith('claude|unset|')), false);
@@ -333,6 +348,28 @@ p = await sc.run('pin', 'claude', 'login-4');
 t('AC10 pin: a signed-out login-4 is refused', `${p.rc} ${p.err.trim()} ${sc.text() === ROT}`, '1 logins: claude login-4 is not signed in true');
 
 t('usage names pin and migrate', (await sc.run('bogus')).err.includes('| pin claude <name> | migrate'), true);
+
+// DS-529 AC12: a check that fails on a pinned folder writes nothing
+const ONEPIN = '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `login-2` | `~/.claude-logins/login-2` | `a@x.io` | `in rotation` |\n';
+sc = scenario(ONEPIN, { 'login-2': 'a@x.io' });
+writeFileSync(join(sc.home, '.claude-logins', 'login-2', 'status.json'), 'not json');
+p = await sc.run('check');
+t('AC12 the CLI check shows a non-JSON answer as not checked', p.out.split('\n').some((l) => /^claude\s+login-2\s.*\snot checked\s/.test(l)), true);
+t('AC12 and leaves the pin as it was', `${sc.text() === ONEPIN} ${existsSync(`${sc.path}.bak`)}`, 'true false');
+
+// DS-529 AC20: one login on ~/.claude and no file prints what it printed before pins
+sc = scenario(null, { default: 'x@a.io' });
+codexIn(join(sc.home, '.codex'));
+p = await sc.run('check');
+t('AC20 one login on ~/.claude, no file: the check is unchanged', p.out.trimEnd().split('\n').slice(1).join('\n'), [
+  '',
+  'TOOL    NAME     FOLDER     STATE      ACCOUNT  PLAN  RULE',
+  'claude  default  ~/.claude  signed in  x@a.io   Pro   in rotation',
+  'codex   default  ~/.codex   signed in  -        -     in rotation',
+  '',
+  'usable: claude default, codex default',
+].join('\n'));
+t('AC20 and names the missing file first', /^no subscriptions file at .*: desk uses ~\/\.claude and ~\/\.codex$/.test(p.out.split('\n')[0]), true);
 
 
 console.log(fails ? `${fails} FAILED` : 'all logins checks passed');
