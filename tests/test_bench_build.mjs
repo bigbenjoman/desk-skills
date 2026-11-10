@@ -214,6 +214,27 @@ r = run(['--set', staleSet, '--pr', 'acme/widgets#7']);
 const stale = JSON.parse(readFileSync(staleSet, 'utf8'));
 t('a stale baseRefOid is not the base: the PR\'s tests already pass at its real base', stale.tasks.length === 0 && /already pass at the base/.test(stale.dropped[0]?.why), true);
 
+// A rebase merge lands the PR's two commits on main one by one, author dates kept: PR 8's tests in c5,
+// its fix in c6. The base is c4, before both; c6's first parent, c5, already holds the tests.
+const authored = (files, msg, date) => {
+  for (const [f, body] of Object.entries(files)) writeFileSync(join(repo, f), body);
+  git('add', '-A');
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', msg], { env: { ...gitEnv, GIT_AUTHOR_DATE: date } });
+  return git('rev-parse', 'HEAD');
+};
+const c5 = authored({ 'tests/test_rebased.sh': 'grep -q rebased src.txt\n' }, 'DS-8 test', '2026-01-02T00:00:00Z');
+const c6 = authored({ 'src.txt': 'rebased\n' }, 'DS-8 fix', '2026-01-03T00:00:00Z');
+writeFileSync(join(stub, 'gh', '8.json'), JSON.stringify({
+  number: 8, title: 'feat: DS-8 change', headRefName: 'feat/DS-8-x', state: 'MERGED', mergeCommit: { oid: c6 },
+  files: [{ path: 'src.txt', changeType: 'MODIFIED' }, { path: 'tests/test_rebased.sh', changeType: 'ADDED' }],
+  commits: [{ authoredDate: '2026-01-02T00:00:00Z' }, { authoredDate: '2026-01-03T00:00:00Z' }],
+}));
+issue('DS-8', { summary: 'DS-8', description: 'text', customfield_1: { value: 'S' } }, []);
+const rebasedSet = join(dir, 'rebased', 'tasks.json');
+r = run(['--set', rebasedSet, '--pr', 'acme/widgets#8']);
+const rebased = JSON.parse(readFileSync(rebasedSet, 'utf8'));
+t('a rebase-merged PR starts before its first commit, not at the merge\'s parent', rebased.tasks[0]?.base, c4);
+
 // A PR outside any desk config, or not merged, is dropped with the reason.
 r = run(['--set', join(dir, 'other.json'), '--pr', 'acme/other#1']);
 t('a repo with no desk config is dropped', /acme\/other#1: no desk config/.test(r.stdout), true);

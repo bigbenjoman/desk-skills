@@ -157,6 +157,18 @@ function validateAt(repo, task, commit, dir, timeout) {
 
 const fail = (why) => { throw Object.assign(new Error(why), { drop: true }); };
 
+// How many first-parent commits the PR put on the base branch. A merge commit or a squash is one. A
+// rebase merge lands each of the PR's commits with the author dates they had, so the merge commit is
+// the last of them: read from its first parent, the base would already hold the rest of the PR.
+function commitsLanded(root, merge, commits) {
+  if (commits.length < 2) return 1;
+  const r = git(root, ['log', '--first-parent', '--format=%P %at', '-n', String(commits.length), merge]);
+  const landed = (r.stdout ?? '').trim().split('\n').reverse().map((line) => line.split(' '));
+  const rebased = landed.length === commits.length && landed.every((f, i) =>
+    f.length === 2 && Number(f[1]) === Date.parse(commits[i].authoredDate) / 1000);
+  return rebased ? commits.length : 1;
+}
+
 // One PR to a validated task, or a thrown reason it was dropped.
 function freeze(want, setDir, opts, repos) {
   if (!repos.has(want.repo)) repos.set(want.repo, (() => { try { return readRepo(want.repo); } catch (e) { return e; } })());
@@ -181,7 +193,7 @@ function freeze(want, setDir, opts, repos) {
   // tests without reaching the run.
   const merge = pr.mergeCommit.oid;
   haveCommit(repo.root, merge);
-  const base = git(repo.root, ['rev-parse', '--verify', '--quiet', `${merge}^1`]).stdout?.trim();
+  const base = git(repo.root, ['rev-parse', '--verify', '--quiet', `${merge}~${commitsLanded(repo.root, merge, pr.commits ?? [])}`]).stdout?.trim();
   if (!SHA.test(base ?? '')) fail('the merge commit has no parent to start from');
   const id = taskId(want);
   if (!FILE_SAFE.test(id)) fail(`cannot make a task id from ${want.repo}#${want.pr}`);
