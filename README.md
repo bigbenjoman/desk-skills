@@ -303,7 +303,8 @@ filled in from the arm's settings:
 
 ```
 node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<effort>]] [--arm …] \
-  --max-budget-usd <usd> [--total-budget-usd 5] [--out <dir>] [--timeout 1800] [--seed <n>]
+  --max-budget-usd <usd> [--total-budget-usd 5] [--out <dir>] [--timeout 1800] [--seed <n>] \
+  [--plans <file>] [--providers <file>]
 ```
 
 Keep the task set outside this repo. Its paths are relative to the file:
@@ -346,8 +347,30 @@ holds that model's runs until the run is 30 days old. An arm on any other `<prov
 meter and no ledger, so it is refused unless the machine profile gives that provider a run limit,
 the most runs a week the bench may start on it: `desk-env machine set bench-run-limit-<provider>=<runs>`.
 Either kind of arm also needs a runner that sends its runs to that provider, and a Go one that records
-each response's allowance. An `--arm` from the command line has none and would run on claude, so
-the bench refuses it.
+each response's allowance. An `--arm` from the command line has one only as an endpoint arm (below);
+otherwise it would run on claude, so the bench refuses it.
+
+An endpoint arm runs Claude Code itself against the provider's Anthropic-compatible endpoint, so the
+task, brief, sandbox and scoring are the Claude arms' and only the model differs:
+`--arm go-kimi=opencode-go/kimi-k3.1-pro`. The provider needs an entry in the providers file
+(`--providers <file>`, default `bench-providers.json` in the desk usage dir, beside
+`bench-quota.jsonl`):
+
+```json
+{"providers": {"opencode-go": {"base_url": "https://opencode.ai/inference/go/anthropic",
+  "key_file": "~/.config/desk/opencode-go.key", "session_header": "x-opencode-session"}}}
+```
+
+`headers` (name to value) are sent with every request, and `session_header` with one new id per run.
+Before any run, the bench refuses an arm whose entry is missing, whose base URL is unset or
+Anthropic's, or whose key file is missing, empty or open to group or others (fix: `chmod 600`).
+Claude runs with the base URL, the key and the model after the slash. Its environment holds no Claude
+credential and its `CLAUDE_CONFIG_DIR` is a fresh empty folder, checked again just before it starts,
+so the run cannot bill a Claude login. The key is never written to a file. Its tokens come from the
+session's own log. Its USD figure is claude's pricing at Anthropic's rates, so it is kept as
+`claude_priced_usd`, its `cost` is null, and it spends none of `--total-budget-usd`. On OpenCode Go,
+claude runs behind a local forwarding proxy (`endpoint-proxy.mjs`) that records each response's
+`opencode.allowance` for the guard.
 
 **`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
 merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and

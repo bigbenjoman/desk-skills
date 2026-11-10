@@ -4,6 +4,7 @@
 //
 //   node bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd>
 //                  [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>]
+//                  [--providers <file>]
 //
 // The task set is JSON, kept outside desk-skills, with paths relative to the file:
 //   {"tasks": [{"id", "repo": "<owner/name>", "base": "<full commit SHA>", "prompt": "<ticket text>",
@@ -41,7 +42,9 @@
 // them against the model's monthly limit in the plan table, <plans> (default <out>/plans.json, the
 // file bench-report.mjs reads). An arm on any other `<provider>/<model>` runs only within the run
 // limit the machine profile sets for that provider. Either needs a runner of its own: one that runs on
-// claude is refused before it starts.
+// claude is refused before it starts. An arm with no runner on such a provider is an endpoint arm
+// when the providers file (--providers, default bench-providers.json in the desk usage dir) has an
+// entry for it: Claude Code on that provider's Anthropic-compatible endpoint (bench-endpoint.mjs).
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, mkdtempSync, rmSync, cpSync, openSync, closeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -55,9 +58,10 @@ import { nearestDir, takesFiles } from './test-scope.mjs';
 import { lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.mjs';
 import * as Q from './bench-quota.mjs';
 import { loadPlans } from './bench-report.mjs';
+import { endpointArms, providersPath } from './bench-endpoint.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
-const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>]';
+const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>] [--providers <file>]';
 const SHA = /^[0-9a-f]{40}$/;
 const SCORED = new Set(['accepted', 'rejected']);
 // The hidden tests' ceiling, wait for the test lock included.
@@ -66,7 +70,7 @@ const SCORE_TIMEOUT_MS = 60 * 60 * 1000;
 // argv -> options. Throws, naming the flag, on anything missing or malformed.
 export function parseArgs(argv) {
   const o = { arms: [], timeout: 1800, total: '5', seed: String(Date.now()) };
-  const names = { '--tasks': 'tasks', '--max-budget-usd': 'budget', '--total-budget-usd': 'total', '--out': 'out', '--timeout': 'timeout', '--seed': 'seed', '--plans': 'plans' };
+  const names = { '--tasks': 'tasks', '--max-budget-usd': 'budget', '--total-budget-usd': 'total', '--out': 'out', '--timeout': 'timeout', '--seed': 'seed', '--plans': 'plans', '--providers': 'providers' };
   for (let i = 0; i < argv.length; i++) {
     const key = names[argv[i]];
     if (!key && argv[i] !== '--arm') throw new Error(`unknown argument ${argv[i]}\n${USAGE}`);
@@ -382,13 +386,14 @@ export function runBench(opts, log = () => {}) {
     const { orphans } = testRuns(repos.get(t.repo).items, runFiles(t));
     if (orphans.length) throw new Error(`task ${t.id}: no §4 Unit tests item covers ${orphans.join(', ')}`);
   }
+  const arms = endpointArms(opts.arms, resolve(opts.providers ?? providersPath()));
   const out = resolve(opts.out || join(dirname(resolve(opts.tasks)), 'bench-out'));
   mkdirSync(join(out, 'runs'), { recursive: true });
   const guard = spendGuard({ settings, ledger, budget: Number(opts.budget), total: Number(opts.total), log, plans: loadPlans(resolve(opts.plans ?? join(out, 'plans.json'))) });
   const armStops = new Map();
   const report = tasks.map((task) => {
     const repo = repos.get(task.repo);
-    const order = armOrder(opts.arms, opts.seed, task.id);
+    const order = armOrder(arms, opts.seed, task.id);
     const secrets = [repo.root, resolve(opts.tasks), task.hidden_tests.dir, out, ...(opts.secrets ?? []).filter(existsSync)].flatMap(both);
     const runs = order.map((arm) => {
       const dir = join(out, 'runs', `${task.id}.${arm.name}.${runKey(task, arm)}`);
