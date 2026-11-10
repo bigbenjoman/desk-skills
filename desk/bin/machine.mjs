@@ -33,11 +33,19 @@ const BENCH_RULES = Object.freeze({
   [BENCH_RESERVE_KEY]: { ok: (n) => n < 100, want: 'a percentage of the weekly allowance from 0 to under 100',
     why: '% of each weekly allowance the bench leaves for interactive work, set in /desk-setup' },
 });
-export const benchWhy = (key) => BENCH_RULES[key]?.why;
+// `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
+// has no meter or allowance ledger for, which it otherwise refuses.
+const BENCH_RUN_LIMIT_PREFIX = 'bench-run-limit-';
+export const benchRunLimitKey = (provider) => `${BENCH_RUN_LIMIT_PREFIX}${provider}`;
+const BENCH_RUN_LIMIT = new RegExp(`^${BENCH_RUN_LIMIT_PREFIX}[a-z0-9][a-z0-9-]*$`);
+const RUN_LIMIT_RULE = Object.freeze({ ok: (n) => Number.isInteger(n) && n > 0, want: 'a whole number of runs a week, 1 or more',
+  why: 'runs a week the bench may start on this provider, which it has no meter for, set by its user' });
+const benchRule = (key) => BENCH_RULES[key] ?? (BENCH_RUN_LIMIT.test(key) ? RUN_LIMIT_RULE : null);
+export const benchWhy = (key) => benchRule(key)?.why;
 // Why a value cannot be stored or read as one of the bench settings, or null when it can.
 export function benchSettingError(key, raw) {
-  const rule = BENCH_RULES[key];
-  if (!rule) return `\`${key}\` is not a bench setting: want ${Object.keys(BENCH_RULES).join(' or ')}`;
+  const rule = benchRule(key);
+  if (!rule) return `\`${key}\` is not a bench setting: want ${Object.keys(BENCH_RULES).join(' or ')} or ${benchRunLimitKey('<provider>')}`;
   const v = String(raw ?? '').trim();
   return /^\d+(\.\d+)?$/.test(v) && rule.ok(Number(v)) ? null : `\`${key}\` is "${raw}": want ${rule.want}`;
 }

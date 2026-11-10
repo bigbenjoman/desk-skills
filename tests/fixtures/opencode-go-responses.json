@@ -1,0 +1,8 @@
+{
+  "recorded": false,
+  "source": "UNRECORDED: written by hand from opencode.ai/docs/console/go and opencode.ai/docs/console/api/inference (read 2026-11-10), which name opencode.allowance as the dollars a request counted against the model's monthly limit but do not document its shape. Replace each response with one recorded from a live OpenCode Go run, and set recorded to true.",
+  "good": { "id": "chatcmpl-unrecorded-1", "object": "chat.completion", "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 1200, "completion_tokens": 300 }, "opencode": { "allowance": 0.3 } },
+  "missing": { "id": "chatcmpl-unrecorded-2", "object": "chat.completion", "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 1200, "completion_tokens": 300 } },
+  "unknownShape": { "id": "chatcmpl-unrecorded-3", "object": "chat.completion", "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 1200, "completion_tokens": 300 }, "opencode": { "allowance": { "usd": 0.3 } } },
+  "noPlanRow": { "id": "chatcmpl-unrecorded-4", "object": "chat.completion", "model": "no-such-model", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 1200, "completion_tokens": 300 }, "opencode": { "allowance": 0.3 } }
+}
