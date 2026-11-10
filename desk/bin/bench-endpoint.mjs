@@ -9,19 +9,19 @@
 //                                  "key_file": "~/.config/desk/opencode-go.key",
 //                                  "headers": {"<name>": "<value>"}, "session_header": "x-opencode-session"}}}
 // A relative key_file is relative to the providers file. `session_header`, when set, is sent with one
-// new id per run. Claude runs with that base URL and key and the model after the slash, and never with a
-// Claude login: every credential and setting that could reach one is dropped from its environment and
+// new id per run. Claude runs on that endpoint with the model after the slash, and never with a Claude
+// login: every credential and setting that could reach one is dropped from its environment and
 // CLAUDE_CONFIG_DIR is a fresh empty folder, which is checked again just before claude starts.
 //
 // Every arm's entry and key file are checked before the bench starts any run: a key file must exist,
-// hold the key and be open to its owner only (chmod 600). The key goes to claude in its environment
-// and is never written to a file.
+// hold the key and be open to its owner only (chmod 600). Claude runs behind endpoint-proxy.mjs, which
+// alone reads the key and puts it on each request it sends on, so neither claude nor any command the
+// model under test runs has it to print; the key file is also one of the paths the arm may not read.
 //
 // The run's USD figure is claude's own pricing at Anthropic's rates, which do not apply: it is kept as
 // `claude_priced_usd` and its `cost` is null, so it spends nothing of --total-budget-usd (bench.mjs
 // counts only Claude arms' cost there). Its allowance is the provider's (bench-quota.mjs). On OpenCode
-// Go, claude runs behind endpoint-proxy.mjs, which records each response's opencode.allowance for the
-// result's `opencode_allowance`.
+// Go, the proxy also records each response's opencode.allowance for the result's `opencode_allowance`.
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
@@ -45,8 +45,9 @@ export function baseUrlProblem(raw) {
   if (typeof raw !== 'string' || !raw.trim()) return 'no base URL is set, so claude would call Anthropic';
   let u;
   try { u = new URL(raw); } catch { return `its base URL ${raw} is not a URL`; }
-  if (ANTHROPIC_HOST.test(u.hostname)) return `its base URL ${raw} is Anthropic's, so the run would bill a Claude account`;
-  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOCAL_HOST.test(u.hostname))) return `its base URL ${raw} is not https`;
+  const host = u.hostname.replace(/\.+$/, '');
+  if (ANTHROPIC_HOST.test(host)) return `its base URL ${raw} is Anthropic's, so the run would bill a Claude account`;
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOCAL_HOST.test(host))) return `its base URL ${raw} is not https`;
   return null;
 }
 
@@ -61,13 +62,13 @@ export function readKey(file) {
   return { key };
 }
 
-// claude's environment for one run: `env` without anything that reaches a Claude login, on a fresh
-// config folder, with the endpoint, key and model, and the provider's headers.
-export function endpointEnv(env, ep, key, configDir, session = randomUUID()) {
+// The environment for one run: `env` without anything that reaches a Claude login, on a fresh config
+// folder, with the endpoint and model and the provider's headers. No key: the proxy adds its own token.
+export function endpointEnv(env, ep, configDir, session = randomUUID()) {
   const kept = Object.fromEntries(Object.entries(env).filter(([k]) => !CLAUDE_REACH.test(k)));
   const headers = { ...ep.headers, ...(ep.sessionHeader ? { [ep.sessionHeader]: session } : {}) };
   const m = ep.model;
-  return { ...kept, CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_BASE_URL: ep.baseUrl, ANTHROPIC_AUTH_TOKEN: key,
+  return { ...kept, CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_BASE_URL: ep.baseUrl,
     ANTHROPIC_DEFAULT_OPUS_MODEL: m, ANTHROPIC_DEFAULT_SONNET_MODEL: m, ANTHROPIC_DEFAULT_HAIKU_MODEL: m, ANTHROPIC_SMALL_FAST_MODEL: m,
     CLAUDE_CODE_SUBAGENT_MODEL: m, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     ...(Object.keys(headers).length ? { ANTHROPIC_CUSTOM_HEADERS: Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n') } : {}) };
@@ -149,12 +150,12 @@ export function runEndpoint(task, arm, wt, settings, opts, dir, { env = armEnv()
   const home = join(dirname(wt), 'endpoint');
   const configDir = join(home, 'claude-config');
   mkdirSync(configDir, { recursive: true });
-  const e = endpointEnv(env, ep, k.key, configDir);
+  const e = endpointEnv(env, ep, configDir);
   const reach = loginReach(e);
   if (reach) return refuse(reach);
   const go = ep.provider === GO;
   const allowance = join(home, 'allowance.json');
-  const wrap = go ? { command: [process.execPath, join(HERE, 'endpoint-proxy.mjs'), allowance, 'claude'], killSignal: 'SIGTERM' } : {};
-  const run = runClaude(task, { ...arm, model: ep.model }, wt, settings, opts, dir, { env: e, ...wrap });
+  const command = [process.execPath, join(HERE, 'endpoint-proxy.mjs'), ep.keyFile, go ? allowance : '-', 'claude'];
+  const run = runClaude(task, { ...arm, model: ep.model }, wt, settings, opts, dir, { env: e, command, killSignal: 'SIGTERM' });
   return { ...run, cost: null, extra: { runner: 'endpoint', provider: ep.provider, claude_priced_usd: run.cost ?? null, ...(go ? { opencode_allowance: readAllowance(allowance) } : {}) } };
 }

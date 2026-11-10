@@ -364,13 +364,14 @@ task, brief, sandbox and scoring are the Claude arms' and only the model differs
 `headers` (name to value) are sent with every request, and `session_header` with one new id per run.
 Before any run, the bench refuses an arm whose entry is missing, whose base URL is unset or
 Anthropic's, or whose key file is missing, empty or open to group or others (fix: `chmod 600`).
-Claude runs with the base URL, the key and the model after the slash. Its environment holds no Claude
-credential and its `CLAUDE_CONFIG_DIR` is a fresh empty folder, checked again just before it starts,
-so the run cannot bill a Claude login. The key is never written to a file. Its tokens come from the
-session's own log. Its USD figure is claude's pricing at Anthropic's rates, so it is kept as
-`claude_priced_usd`, its `cost` is null, and it spends none of `--total-budget-usd`. On OpenCode Go,
-claude runs behind a local forwarding proxy (`endpoint-proxy.mjs`) that records each response's
-`opencode.allowance` for the guard.
+Claude runs on that endpoint with the model after the slash, behind a local forwarding proxy
+(`endpoint-proxy.mjs`) that alone reads the key: claude, and every command the model runs, hold only a
+token made for that run, which the proxy swaps for the key on each request it sends on, and the arm
+may not read the key file. Its environment holds no Claude credential and its `CLAUDE_CONFIG_DIR` is a
+fresh empty folder, checked again just before it starts, so the run cannot bill a Claude login. Its
+tokens come from the session's own log. Its USD figure is claude's pricing at Anthropic's rates, so it
+is kept as `claude_priced_usd`, its `cost` is null, and it spends none of `--total-budget-usd`. On
+OpenCode Go, the proxy also records each response's `opencode.allowance` for the guard.
 
 **`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
 merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and

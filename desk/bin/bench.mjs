@@ -394,7 +394,8 @@ export function runBench(opts, log = () => {}) {
   const report = tasks.map((task) => {
     const repo = repos.get(task.repo);
     const order = armOrder(arms, opts.seed, task.id);
-    const secrets = [repo.root, resolve(opts.tasks), task.hidden_tests.dir, out, ...(opts.secrets ?? []).filter(existsSync)].flatMap(both);
+    const keys = arms.flatMap((a) => (a.endpoint ? [a.endpoint.keyFile] : []));
+    const secrets = [repo.root, resolve(opts.tasks), task.hidden_tests.dir, out, ...[...(opts.secrets ?? []), ...keys].filter(existsSync)].flatMap(both);
     const runs = order.map((arm) => {
       const dir = join(out, 'runs', `${task.id}.${arm.name}.${runKey(task, arm)}`);
       const prior = stored(join(dir, 'result.json'));

@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { baseUrlProblem, endpointArms, endpointEnv, loginReach, readKey } from '../desk/bin/bench-endpoint.mjs';
-import { bodyAllowance } from '../desk/bin/endpoint-proxy.mjs';
+import { bodyAllowance, withKey } from '../desk/bin/endpoint-proxy.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -74,8 +74,10 @@ writeFileSync(setFile, JSON.stringify({ tasks: [{ id: 'fix', repo: 'acme/widgets
 
 const bin = join(dir, 'bin');
 mkdirSync(bin);
-// The stub claude: records its environment, and with a local base URL (the Go proxy) sends one JSON
-// and one streamed Messages request and a token count through it.
+// The stub claude: records its environment, sends one JSON and one streamed Messages request and a
+// token count through its base URL (the proxy), and one request with a token not its own. Like a model
+// that dumps its environment while debugging, it prints that environment into the transcript as a tool
+// result and writes it into the checkout.
 writeFileSync(join(bin, 'claude'), `#!/usr/bin/env node
 const fs = require('fs');
 const a = process.argv.slice(2);
@@ -84,17 +86,19 @@ const e = process.env;
 const cfg = e.CLAUDE_CONFIG_DIR;
 fs.appendFileSync(e.STUB_LOG, JSON.stringify({ model: val('--model'), base: e.ANTHROPIC_BASE_URL || null, token: e.ANTHROPIC_AUTH_TOKEN || null,
   apiKey: e.ANTHROPIC_API_KEY || null, oauth: e.CLAUDE_CODE_OAUTH_TOKEN || null, config: cfg || null, configEntries: cfg && fs.existsSync(cfg) ? fs.readdirSync(cfg).length : null,
-  headers: e.ANTHROPIC_CUSTOM_HEADERS || null, haiku: e.ANTHROPIC_DEFAULT_HAIKU_MODEL || null, subagent: e.CLAUDE_CODE_SUBAGENT_MODEL || null }) + '\\n');
+  headers: e.ANTHROPIC_CUSTOM_HEADERS || null, haiku: e.ANTHROPIC_DEFAULT_HAIKU_MODEL || null, subagent: e.CLAUDE_CODE_SUBAGENT_MODEL || null,
+  deny: JSON.parse(fs.readFileSync(val('--settings'), 'utf8')).permissions.deny }) + '\\n');
 const say = (o) => console.log(JSON.stringify(o));
 (async () => {
-  if (/^http:\\/\\/127\\.0\\.0\\.1:/.test(e.ANTHROPIC_BASE_URL || '')) {
-    const extra = Object.fromEntries((e.ANTHROPIC_CUSTOM_HEADERS || '').split('\\n').filter(Boolean).map((l) => l.split(': ')));
-    const post = (path, body) => fetch(e.ANTHROPIC_BASE_URL + path, { method: 'POST', headers: { authorization: 'Bearer ' + e.ANTHROPIC_AUTH_TOKEN, 'content-type': 'application/json', ...extra }, body: JSON.stringify(body) }).then((r) => r.text());
-    await post('/v1/messages', { model: val('--model'), stream: false });
-    await post('/v1/messages/count_tokens', { model: val('--model') });
-    await post('/v1/messages?beta=true', { model: val('--model'), stream: true });
-  }
+  const extra = Object.fromEntries((e.ANTHROPIC_CUSTOM_HEADERS || '').split('\\n').filter(Boolean).map((l) => l.split(': ')));
+  const post = (path, body, token = e.ANTHROPIC_AUTH_TOKEN) => fetch(e.ANTHROPIC_BASE_URL + path, { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', ...extra }, body: JSON.stringify(body) });
+  await post('/v1/messages', { model: val('--model'), stream: false }).then((r) => r.text());
+  await post('/v1/messages/count_tokens', { model: val('--model') }).then((r) => r.text());
+  await post('/v1/messages?beta=true', { model: val('--model'), stream: true }).then((r) => r.text());
+  fs.writeFileSync(e.STUB_LOG + '.other', String((await post('/v1/messages', { model: val('--model') }, 'not-the-run-token')).status));
   say({ type: 'system', subtype: 'init', model: val('--model'), effort: 'medium' });
+  say({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: JSON.stringify(e) }] } });
+  fs.writeFileSync('env-dump.txt', JSON.stringify(e));
   if (val('-p').includes('FIX')) fs.writeFileSync('src.txt', 'the widget counter starts at one hundred\\n');
   say({ type: 'result', subtype: 'success', is_error: false, result: 'done', total_cost_usd: 0.01,
     modelUsage: { m: { inputTokens: 10, outputTokens: 20, cacheCreationInputTokens: 30, cacheReadInputTokens: 40 } } });
@@ -140,7 +144,7 @@ writeFileSync(keyFile, `${KEY}\n`);
 chmodSync(keyFile, 0o600);
 const providersFile = join(dir, 'providers.json');
 const GO_BASE = `http://127.0.0.1:${port}/inference/go/anthropic`;
-const DIRECT_BASE = 'https://api.example-kimi.test/anthropic';
+const DIRECT_BASE = `http://127.0.0.1:${port}/kimi/anthropic`;
 const providers = (go = {}) => writeFileSync(providersFile, JSON.stringify({ providers: {
   'opencode-go': { base_url: GO_BASE, key_file: 'keys/go.key', session_header: 'x-opencode-session', ...go },
   kimi: { base_url: DIRECT_BASE, key_file: keyFile, headers: { 'x-plan': 'direct' } },
@@ -180,8 +184,10 @@ let c = lines(stubLog);
 t('claude runs once', c.length, 1);
 t('AC1 claude is asked for the model after the provider', c[0]?.model, 'kimi-k3.1-pro');
 t('AC1 every model alias is that model', `${c[0]?.haiku} ${c[0]?.subagent}`, 'kimi-k3.1-pro kimi-k3.1-pro');
-t('AC1 claude has the key', c[0]?.token, KEY);
-t('AC1 on Go, claude talks to the local proxy', /^http:\/\/127\.0\.0\.1:\d+$/.test(c[0]?.base ?? ''), true);
+t('AC5 claude holds the run\'s own token, never the key', `${c[0]?.token !== KEY} ${/^desk-endpoint-[0-9a-f]{48}$/.test(c[0]?.token ?? '')}`, 'true true');
+t('claude talks to the local proxy', /^http:\/\/127\.0\.0\.1:\d+$/.test(c[0]?.base ?? ''), true);
+t('AC5 the arm may not read the key file', c[0]?.deny.some((d) => d === `Read(/${keyFile})`), true);
+t('a request without the run\'s token is refused and never sent on', readFileSync(`${stubLog}.other`, 'utf8'), '401');
 t('AC3 no inherited OAuth token or API key reaches claude', `${c[0]?.oauth} ${c[0]?.apiKey}`, 'null null');
 t('AC3 claude has a fresh empty config folder, not the inherited login', `${c[0]?.config !== inherited} ${c[0]?.configEntries}`, 'true 0');
 const up = lines(upstreamLog);
@@ -200,14 +206,16 @@ t('the model ran at is the one asked for', res.ran_at.model, 'kimi-k3.1-pro');
 t('AC5 the key is in no file under the output folder', filesUnder(goOut).filter((f) => readFileSync(f, 'utf8').includes(KEY)).join(' '), '');
 t('AC5 nor in the ledger', readFileSync(join(usage, 'bench-quota.jsonl'), 'utf8').includes(KEY), false);
 
-// AC1 on a direct provider: claude talks to the endpoint itself, with the provider's headers.
+// AC1 on a direct provider: claude behind the proxy too, with the provider's headers.
 const directOut = join(dir, 'out-direct');
 r = run(['--arm', 'kimi=kimi/kimi-k3.1-pro', '--out', directOut]);
 if (r.status !== 0) console.log(r.stderr);
 c = lines(stubLog);
 t('a direct endpoint run completes', `${r.status} ${c.length}`, '0 1');
-t('AC1 a direct provider\'s base URL goes to claude as it is', c[0]?.base, DIRECT_BASE);
 t('AC1 with its headers', c[0]?.headers, 'x-plan: direct');
+const direct = lines(upstreamLog);
+t('AC1 a direct provider\'s requests reach its base URL with the key and its headers', direct.every((u) => u.url.startsWith('/kimi/anthropic/v1/messages') && u.auth === `Bearer ${KEY}` && u.plan === 'direct' && u.session === null) && direct.length === 3, true);
+t('AC5 the direct run\'s claude never holds the key', c[0]?.token === KEY, false);
 res = resultOf(directOut);
 t('a direct provider records no Go allowance', 'opencode_allowance' in res, false);
 t('AC5 the key is in no file under the direct run', filesUnder(directOut).some((f) => readFileSync(f, 'utf8').includes(KEY)), false);
@@ -237,15 +245,16 @@ providers();
 // The checks on their own.
 t('AC2 a key file open to its owner only is read', readKey(keyFile).key, KEY);
 t('AC3 a base URL on a subdomain of anthropic.com', /is Anthropic's/.test(baseUrlProblem('https://x.anthropic.com/v1')), true);
+t('AC3 an Anthropic host written with a trailing dot', /is Anthropic's/.test(baseUrlProblem('https://api.anthropic.com./v1')), true);
 t('AC3 plain http to another host', baseUrlProblem('http://example.test'), 'its base URL http://example.test is not https');
 t('an https base URL elsewhere is taken', baseUrlProblem('https://opencode.ai/inference/go/anthropic'), null);
 const fresh = join(dir, 'fresh');
 mkdirSync(fresh);
 const ep = { provider: 'opencode-go', model: 'glm-5.3', baseUrl: 'https://opencode.ai/inference/go/anthropic', headers: { 'x-a': 'b' }, sessionHeader: 'x-opencode-session' };
-const env = endpointEnv({ PATH: '/bin', CLAUDE_CODE_OAUTH_TOKEN: 'o', ANTHROPIC_API_KEY: 'k', CLAUDE_CONFIG_DIR: inherited, CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_MODEL: 'opus' }, ep, 'the-key', fresh, 'sess');
-t('the run\'s environment drops every inherited Claude credential and model', ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'ANTHROPIC_MODEL'].filter((k) => k in env).join(' '), '');
-t('and carries the endpoint, key, headers and session', `${env.ANTHROPIC_BASE_URL} ${env.ANTHROPIC_AUTH_TOKEN} ${JSON.stringify(env.ANTHROPIC_CUSTOM_HEADERS)} ${env.CLAUDE_CONFIG_DIR === fresh}`,
-  'https://opencode.ai/inference/go/anthropic the-key "x-a: b\\nx-opencode-session: sess" true');
+const env = endpointEnv({ PATH: '/bin', CLAUDE_CODE_OAUTH_TOKEN: 'o', ANTHROPIC_API_KEY: 'k', ANTHROPIC_AUTH_TOKEN: 't', CLAUDE_CONFIG_DIR: inherited, CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_MODEL: 'opus' }, ep, fresh, 'sess');
+t('the run\'s environment drops every inherited Claude credential, token and model', ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'ANTHROPIC_MODEL'].filter((k) => k in env).join(' '), '');
+t('and carries the endpoint, headers and session', `${env.ANTHROPIC_BASE_URL} ${JSON.stringify(env.ANTHROPIC_CUSTOM_HEADERS)} ${env.CLAUDE_CONFIG_DIR === fresh}`,
+  'https://opencode.ai/inference/go/anthropic "x-a: b\\nx-opencode-session: sess" true');
 t('a clean environment reaches no login', loginReach(env), null);
 t('AC3 an OAuth token is named', loginReach({ ...env, CLAUDE_CODE_OAUTH_TOKEN: 'o' }), 'a Claude OAuth token is set (CLAUDE_CODE_OAUTH_TOKEN)');
 t('AC3 an API key is named', loginReach({ ...env, ANTHROPIC_API_KEY: 'k' }), 'an Anthropic API key is set (ANTHROPIC_API_KEY)');
@@ -257,6 +266,11 @@ t('a Claude arm needs no providers file', endpointArms([{ name: 'o', model: 'opu
 t('an endpoint arm with no providers file is refused, naming it', /there is no providers file at .*none\.json/.test(throws(() => endpointArms([{ name: 'g', model: 'opencode-go/m' }], join(dir, 'none.json')))), true);
 t('a relative key file is read beside the providers file', endpointArms([{ name: 'g', model: 'opencode-go/kimi-k3.1-pro' }], providersFile)[0].endpoint.keyFile, keyFile);
 t('the key file keeps its mode', (statSync(keyFile).mode & 0o777).toString(8), '600');
+
+// The proxy's key swap.
+t('a bearer token of the run\'s is swapped for the key', withKey({ authorization: 'Bearer tok', 'x-b': '1' }, 'tok', 'K').authorization, 'Bearer K');
+t('so is an x-api-key one', withKey({ 'x-api-key': 'tok' }, 'tok', 'K')['x-api-key'], 'K');
+t('any other token is not', `${withKey({ authorization: 'Bearer nope' }, 'tok', 'K')} ${withKey({}, 'tok', 'K')}`, 'null null');
 
 // The proxy's reader.
 t('a JSON body\'s allowance', bodyAllowance(JSON.stringify(fx.good), 'application/json'), 0.3);
