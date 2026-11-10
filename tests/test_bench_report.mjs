@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { parseBaseline, loadBaseline, loadRun, renderReport, NO_BASELINE, NOT_SCORED } from '../desk/bin/bench-report.mjs';
+import { parseBaseline, loadBaseline, loadRun, renderReport, loadPlans, planFor, armValue, NO_BASELINE, NOT_SCORED, NOT_PRICED, WEEKLY_POINTS, MONTH_HOURS } from '../desk/bin/bench-report.mjs';
 import { report as phase0, figureLines, totalOf } from '../desk/bin/phase0-report.mjs';
 
 let fails = 0;
@@ -65,6 +65,20 @@ const empty = parseBaseline(header.join('\n'));
 t('a baseline with nothing accepted says so', `${empty.perTicketWhy} ${empty.fixTries} ${empty.quotaPoints}`, 'no ticket accepted null null');
 t('text that is not a baseline is refused', parseBaseline('hello\ntotal:\n').why, 'its first line is not a PHASE 0 BASELINE header');
 
+// A plan table: opus on a USD plan with a 5-hour and a weekly window, sonnet on a stale plan whose
+// allowance is per model.
+const plansTable = {
+  rates: [{ currency: 'USD', toGBP: 0.8, read: '2026-11-01' }],
+  plans: [
+    { provider: 'Anthropic', plan: 'Max', price: 100, currency: 'USD', read: '2026-11-01', url: 'https://example.com/max',
+      windows: [{ name: '5-hour', hours: 5, size: 30, unit: WEEKLY_POINTS }, { name: 'weekly', hours: 168, size: 100, unit: WEEKLY_POINTS }], serves: [{ arm: 'opus' }] },
+    { provider: 'Go', plan: 'Plus', price: 40, currency: 'USD', read: '2026-09-01', url: 'https://example.com/go',
+      windows: [{ name: '5-hour', hours: 5, size: 12, unit: 'usd' }],
+      serves: [{ model: 'kimi' }, { arm: 'sonnet', windows: [{ name: '5-hour', hours: 5, size: 6, unit: WEEKLY_POINTS }, { name: 'monthly', hours: MONTH_HOURS, size: 30, unit: WEEKLY_POINTS }] }] },
+  ],
+};
+writeFileSync(join(twoArms.out, 'plans.json'), JSON.stringify(plansTable));
+
 // AC1 to AC3: the CLI writes report.md with both arms beside the baseline.
 let r = run('--tasks', twoArms.set);
 if (r.status !== 0) console.log(r.stderr);
@@ -91,6 +105,45 @@ t('AC3 baseline quota per accepted ticket', row('Claude quota points per accepte
 t('AC3 baseline repair cycles per ticket', row('Repair cycles per ticket')[0], '1.50 (fix tries per accepted ticket)');
 t('the arms\' input of all kinds is beside it', row('Input tokens of all kinds per accepted task (median)').slice(1).join(' / '), '8,200 / 3,160');
 t('no verdict is given', /verdict|keep|drop/i.test(text), false);
+t('the CLI prices each arm from <out>/plans.json', row('£ per accepted task').slice(1).map((c) => c.slice(0, 5)).join(' / '), '£0.55 / £1.60');
+
+// DS-538: £ per accepted task and accepted tasks per 5-hour window, priced from the plan table.
+const NOW = Date.parse('2026-11-10T12:00:00Z');
+const plansFile = (name, table) => { const p = join(dir, `${name}.json`); writeFileSync(p, JSON.stringify(table)); return loadPlans(p); };
+const priced = (table, name = 'plans') => {
+  const rep = renderReport({ out: twoArms.out, run: loadRun(twoArms.out), joined: null, baseline: { ok: false, why: 'x', path: 'p' }, plans: plansFile(name, table), now: NOW }).text;
+  const cells = (label) => rep.split('\n').find((l) => l.startsWith(`| ${label} |`))?.split(' | ').slice(2).map((c) => c.replace(/ \|$/, '')).join(' / ');
+  return { rep, perTask: cells('£ per accepted task'), perWindow: cells('Accepted tasks per 5-hour window') };
+};
+const p1 = priced(plansTable);
+t('AC1 £ per accepted task, the tightest window binding', p1.perTask,
+  '£0.55 (£80.00 a month ÷ 145 task(s), bound by the weekly window) / £1.60 (£32.00 a month ÷ 20.0 task(s), bound by the monthly window) (stale: price read 2026-09-01, 70 days ago)');
+t('AC1 accepted tasks per 5-hour window, a per-model allowance for sonnet', p1.perWindow,
+  '10.0 (30 weekly points ÷ 3 per accepted task) / 4.0 (6 weekly points ÷ 1.5 per accepted task) (stale: price read 2026-09-01, 70 days ago)');
+t('AC1 the value rows sit beside accepted tasks and blind score', /Mean blind score.*\n\| £ per accepted task .*\n\| Accepted tasks per 5-hour window /.test(p1.rep), true);
+t('AC2 the conversion names the rate and its date', p1.rep.includes('- Anthropic Max (opus): 100 USD a month = £80.00 at 0.8 GBP per USD, rate read 2026-11-01; price read 2026-11-01 from https://example.com/max.'), true);
+t('AC4 a stale plan is flagged in the prices too', p1.rep.includes('- Go Plus (sonnet): 40 USD a month = £32.00 at 0.8 GBP per USD, rate read 2026-11-01; price read 2026-09-01 from https://example.com/go (stale: price read 2026-09-01, 70 days ago).'), true);
+const yen = priced({ ...plansTable, plans: [{ ...plansTable.plans[0], currency: 'JPY' }, plansTable.plans[1]] }, 'yen');
+t('AC2 a price with no rate is not priced, never a guess', yen.perTask.split(' / ')[0], `${NOT_PRICED}: no JPY rate in the plan table`);
+t('AC2 and the prices say so', yen.rep.includes('- Anthropic Max (opus): 100 JPY a month, not priced: the plan table has no JPY rate; price read 2026-11-01'), true);
+const gbp = priced({ rates: [], plans: [{ ...plansTable.plans[0], currency: 'GBP', price: 90 }] }, 'gbp');
+t('a price in £ needs no rate', gbp.perTask.split(' / ')[0].startsWith('£0.62 (£90.00 a month'), true);
+t('AC3 an arm with no plan is not priced', gbp.perTask.split(' / ')[1], `${NOT_PRICED}: no plan serves this arm`);
+t('AC3 its 5-hour figure too', gbp.perWindow.split(' / ')[1], `${NOT_PRICED}: no plan serves this arm`);
+t('AC3 the report names the missing plan', gbp.rep.includes(`- sonnet: ${NOT_PRICED}: no plan in ${join(dir, 'gbp.json')} serves it.`), true);
+const fresh = priced({ ...plansTable, plans: [plansTable.plans[0], { ...plansTable.plans[1], read: '2026-10-10' }] }, 'fresh');
+t('AC4 a plan 31 days old is not stale', fresh.perTask.includes('stale'), false);
+const noTable = renderReport({ out: 'x', run: loadRun(twoArms.out), joined: null, baseline: { ok: false, why: 'x', path: 'p' }, plans: loadPlans(join(dir, 'none.json')) }).text;
+t('no plan table: every value figure is not priced, and the report says why', noTable.includes(`| £ per accepted task | ${NO_BASELINE} | ${NOT_PRICED}: no plan table | ${NOT_PRICED}: no plan table |`)
+  && noTable.includes(`Value figures read "${NOT_PRICED}": there is no plan table at ${join(dir, 'none.json')}.`), true);
+const badPlan = plansFile('bad', { plans: [{ ...plansTable.plans[0], windows: [{ hours: 5 }] }] });
+t('a plan row it cannot use is named, not skipped', armValue({ arm: 'opus', accepted: 1, acceptedQuota: [] }, badPlan, NOW).perTask, `${NOT_PRICED}: Anthropic Max: opus: its window {"hours":5} needs hours, size and unit`);
+const go = plansFile('go', plansTable);
+t('a served model matches the arm\'s model, any case', planFor(go, { arm: 'k', model: 'KIMI' })?.plan.plan, 'Plus');
+const kimi = armValue({ arm: 'k', model: 'kimi', accepted: 2, acceptedQuota: [{ use: { usd: 2 } }, { use: { usd: 4 } }, { points: 9 }] }, go, NOW);
+t('a window\'s use is read in its own unit', kimi.perWindow.startsWith('4.0 (12 usd ÷ 3 per accepted task)'), true);
+const unmeasured = armValue({ arm: 'opus', accepted: 1, acceptedQuota: [{ use: { usd: 1 } }] }, go, NOW);
+t('a use never recorded in the window\'s unit is not measured', unmeasured.perWindow, `not measured: no accepted run recorded its use in ${WEEKLY_POINTS}`);
 
 // AC4: no baseline report.
 rmSync(join(twoArms.out, 'phase0-baseline.txt'));

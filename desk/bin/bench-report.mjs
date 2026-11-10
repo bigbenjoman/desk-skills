@@ -1,13 +1,16 @@
 // The bench report: each arm's quality and cost over one bench run, beside the Phase 0 baseline.
 //
-//   node bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>]
+//   node bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]
 //
 // <out> is bench.mjs's output folder (bench-out beside the task set by default). Its run.json says
 // which runs each arm made, and each run's result.json holds its status, tokens and quota points. The
 // report goes to <out>/report.md. <blind> (default <out>/blind) is bench-blind.mjs's folder: its
 // joined.json holds the blind scores, and until it exists every score reads "not scored".
 // <baseline> (default <out>/phase0-baseline.txt) is phase0-report.mjs's output saved to a file: its
-// total section gives the baseline column, which reads "no baseline" when there is none.
+// total section gives the baseline column, which reads "no baseline" when there is none. <plans>
+// (default <out>/plans.json) is the plan table, written by hand from each provider's own page: it
+// prices each arm's £ per accepted task and accepted tasks per 5-hour window, and an arm it does not
+// price reads "not priced".
 //
 // A failed run counts in no figure but its own row. A task the run left out before any arm (run.json's
 // left_out, such as arm 1's tasks with no packet) is listed with why. A task a run left unstarted is listed as not
@@ -19,14 +22,14 @@ import { fileURLToPath } from 'node:url';
 import { quantile } from './desk-ci.mjs';
 import { armVendor } from './bench-quota.mjs';
 
-const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>]';
+const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]';
 export const NOT_SCORED = 'not scored';
 export const NO_BASELINE = 'no baseline';
 const PRODUCE = (path) => `node ~/.claude/desk/bin/phase0-report.mjs --days 7 > ${path}`;
 
-// argv -> { tasks, out, blind, baseline }. Throws, naming the flag, on anything missing.
+// argv -> { tasks, out, blind, baseline, plans }. Throws, naming the flag, on anything missing.
 export function parseArgs(argv) {
-  const names = { '--tasks': 'tasks', '--out': 'out', '--blind': 'blind', '--baseline': 'baseline' };
+  const names = { '--tasks': 'tasks', '--out': 'out', '--blind': 'blind', '--baseline': 'baseline', '--plans': 'plans' };
   const o = {};
   for (let i = 0; i < argv.length; i++) {
     const key = names[argv[i]];
@@ -38,6 +41,7 @@ export function parseArgs(argv) {
   o.out = resolve(o.out || join(dirname(resolve(o.tasks)), 'bench-out'));
   o.blind = resolve(o.blind || join(o.out, 'blind'));
   o.baseline = resolve(o.baseline || join(o.out, 'phase0-baseline.txt'));
+  o.plans = resolve(o.plans || join(o.out, 'plans.json'));
   return o;
 }
 
@@ -105,6 +109,129 @@ export const meanScore = (list) => (list.length ? { mean: list.reduce((s, x) => 
 // <blind>/joined.json, or null before the join has run.
 export const readJoined = (blind) => { const file = join(blind, 'joined.json'); return existsSync(file) ? readJson(file, 'the joined scores') : null; };
 
+// The plan table: what each plan costs a month and how big its windows are.
+//   { rates: [{ currency, toGBP, read }],
+//     plans: [{ provider, plan, price, currency, read, url, windows, serves: [{ arm | model, windows? }] }] }
+// A window is { name, hours, size, unit }: `size` of `unit` every `hours`. A served entry's own windows
+// replace the plan's, for a plan whose allowance is per model. A run's use in a unit is its result's
+// quota.use[unit]; WEEKLY_POINTS is quota.points, the rise in the account's weekly use in percent.
+export const NOT_PRICED = 'not priced';
+export const WEEKLY_POINTS = 'weekly points';
+export const STALE_DAYS = 31;
+export const MONTH_HOURS = (365.25 * 24) / 12;
+const DAY_MS = 86_400_000;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+const windowWhy = (ws) => {
+  if (!Array.isArray(ws) || !ws.length) return 'it has no windows';
+  const bad = ws.find((w) => !(w?.hours > 0) || !(w?.size > 0) || typeof w?.unit !== 'string' || !w.unit);
+  return bad ? `its window ${JSON.stringify(bad)} needs hours, size and unit` : null;
+};
+
+// One plan row -> why it cannot price anything, or null.
+export function planWhy(p) {
+  if (!p || typeof p !== 'object') return 'it is not an object';
+  for (const k of ['provider', 'plan', 'currency', 'url']) if (typeof p[k] !== 'string' || !p[k]) return `it has no ${k}`;
+  if (typeof p.price !== 'number' || !(p.price >= 0)) return 'it has no monthly price';
+  if (typeof p.read !== 'string' || !DATE.test(p.read)) return 'it has no date read (YYYY-MM-DD)';
+  if (!Array.isArray(p.serves) || !p.serves.length) return 'it serves no arm or model';
+  for (const s of p.serves) {
+    if (!s?.arm && !s?.model) return 'a served entry names no arm or model';
+    const why = windowWhy(s.windows ?? p.windows);
+    if (why) return `${s.arm ?? s.model}: ${why}`;
+  }
+  return null;
+}
+
+// The plan table file -> { ok: true, path, rates, plans } | { ok: false, path, why }. A row that
+// cannot price is kept with its `why`, so an arm it serves names it rather than reading unserved.
+export function loadPlans(path) {
+  if (!existsSync(path)) return { ok: false, path, why: `there is no plan table at ${path}` };
+  let t;
+  try { t = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { return { ok: false, path, why: `cannot read the plan table ${path}: ${e.message}` }; }
+  if (!Array.isArray(t?.plans)) return { ok: false, path, why: `the plan table ${path} has no plans list` };
+  const rates = (Array.isArray(t.rates) ? t.rates : []).filter((r) => typeof r?.currency === 'string' && r.toGBP > 0 && DATE.test(r.read ?? ''));
+  return { ok: true, path, rates, plans: t.plans.map((p) => ({ ...p, why: planWhy(p) })) };
+}
+
+const lower = (s) => String(s ?? '').toLowerCase();
+const planName = (p) => `${p.provider ?? '?'} ${p.plan ?? '?'}`;
+
+// The plan row serving this arm, and the entry in it: an arm named outright beats one matched by model.
+export function planFor(plans, f) {
+  const hit = (test) => {
+    for (const p of plans.plans) {
+      const s = (Array.isArray(p.serves) ? p.serves : []).find(test);
+      if (s) return { plan: p, served: s };
+    }
+    return null;
+  };
+  return hit((s) => s?.arm === f.arm) ?? (f.model ? hit((s) => s?.model && lower(s.model) === lower(f.model)) : null);
+}
+
+const money = (n) => `£${n < 0.1 ? n.toPrecision(2) : n.toFixed(2)}`;
+const tasksN = (n) => (n >= 100 ? num(n) : (Math.round(n * 10) / 10).toFixed(1));
+
+// One arm's value figures. -> { perTask, perWindow, plan, gbp, rate, stale, why }
+//   perTask: £ per accepted task: the monthly price in £ over the accepted tasks one month of the
+//     plan's windows allows at the arm's median use per accepted task, the tightest window binding.
+//   perWindow: the 5-hour window's size over that median use, in the window's unit.
+export function armValue(f, plans, now = Date.now()) {
+  const not = (why) => ({ perTask: `${NOT_PRICED}: ${why}`, perWindow: `${NOT_PRICED}: ${why}`, why });
+  if (!plans.ok) return not('no plan table');
+  const m = planFor(plans, f);
+  if (!m) return not('no plan serves this arm');
+  const { plan, served } = m;
+  if (plan.why) return { ...not(`${planName(plan)}: ${plan.why}`), plan };
+  const cur = plan.currency.toUpperCase();
+  const rate = cur === 'GBP' ? null : plans.rates.find((r) => r.currency.toUpperCase() === cur);
+  const age = Math.floor((now - Date.parse(`${plan.read}T00:00:00Z`)) / DAY_MS);
+  const stale = age > STALE_DAYS ? ` (stale: price read ${plan.read}, ${age} days ago)` : '';
+  const gbp = cur === 'GBP' ? plan.price : rate ? plan.price * rate.toGBP : null;
+  const base = { plan, rate, stale, gbp };
+  if (!f.accepted) return { ...base, perTask: 'no task accepted', perWindow: 'no task accepted' };
+  const use = (unit) => median(f.acceptedQuota.map((q) => (unit === WEEKLY_POINTS ? q.points : q.use?.[unit])).filter((v) => typeof v === 'number'));
+  const windows = (served.windows ?? plan.windows).map((w) => ({ ...w, use: use(w.unit) }));
+  const label = (w) => w.name ?? `${w.hours}-hour`;
+  const measured = windows.filter((w) => w.use > 0);
+  const unmeasured = windows.filter((w) => !(w.use > 0)).map((w) => `${label(w)} window not measured in ${w.unit}`);
+  const five = windows.find((w) => w.hours === 5);
+  const perWindow = !five ? `${planName(plan)} has no 5-hour window`
+    : !(five.use > 0) ? `not measured: no accepted run recorded its use in ${five.unit}`
+    : `${tasksN(five.size / five.use)} (${five.size} ${five.unit} ÷ ${pts(five.use)} per accepted task)${stale}`;
+  let perTask;
+  if (gbp == null) perTask = `${NOT_PRICED}: no ${cur} rate in the plan table`;
+  else if (!measured.length) perTask = `not measured: no accepted run recorded its use in ${windows.map((w) => w.unit).join(' or ')}`;
+  else {
+    const bound = measured.map((w) => ({ w, tasks: (MONTH_HOURS / w.hours) * (w.size / w.use) })).sort((a, b) => a.tasks - b.tasks)[0];
+    perTask = `${money(gbp / bound.tasks)} (${money(gbp)} a month ÷ ${tasksN(bound.tasks)} task(s), bound by the ${label(bound.w)} window${unmeasured.length ? `; ${unmeasured.join('; ')}` : ''})${stale}`;
+  }
+  return { ...base, perTask, perWindow };
+}
+
+// The plan table's lines under the arms: each plan priced, with its conversion, and each arm unpriced.
+function pricesSection(figures, values, plans) {
+  if (!plans.ok) return ['## Prices', '', `Value figures read "${NOT_PRICED}": ${plans.why}.`, ''];
+  const out = ['## Prices', ''];
+  const seen = new Set();
+  figures.forEach((f, i) => {
+    const v = values[i];
+    if (!v.plan) { out.push(`- ${f.arm}${f.model ? ` (model ${f.model})` : ''}: ${NOT_PRICED}: no plan in ${plans.path} serves it.`); return; }
+    if (seen.has(v.plan)) return;
+    seen.add(v.plan);
+    const p = v.plan;
+    const arms = figures.filter((_, j) => values[j].plan === p).map((g) => g.arm).join(', ');
+    if (p.why) { out.push(`- ${planName(p)} (${arms}): ${NOT_PRICED}: ${p.why}.`); return; }
+    const cur = p.currency.toUpperCase();
+    const conv = cur === 'GBP' ? `£${p.price} a month`
+      : v.rate ? `${p.price} ${cur} a month = ${money(v.gbp)} at ${v.rate.toGBP} GBP per ${cur}, rate read ${v.rate.read}`
+      : `${p.price} ${cur} a month, ${NOT_PRICED}: the plan table has no ${cur} rate`;
+    out.push(`- ${planName(p)} (${arms}): ${conv}; price read ${p.read} from ${p.url}${v.stale}.`);
+  });
+  out.push('', `A month is ${MONTH_HOURS} hours, every window used in full. A price is flagged stale once it is over ${STALE_DAYS} days old.`, '');
+  return out;
+}
+
 const ALLOWANCES = [['claude', 'Claude'], ['codex', 'Codex']];
 const TOKEN_KINDS = [['uncached', 'uncached input'], ['cacheWrite', 'cache-write'], ['cacheRead', 'cache-read'], ['output', 'output']];
 
@@ -131,7 +258,9 @@ export function armFigures(tasks, arm, scores) {
   const model = ran.map((r) => r.result?.model).find(Boolean);
   return {
     arm,
+    model: model ?? null,
     vendor: armVendor({ model }),
+    acceptedQuota: accepted.map((r) => r.result?.quota).filter(Boolean),
     ran: ran.map((r) => r.task),
     accepted: accepted.length,
     rejected: ran.filter((r) => r.status === 'rejected').length,
@@ -162,6 +291,8 @@ function rows(baseline) {
     ['Tasks accepted, of tasks run', b ? `${b.accepted} ticket(s) accepted of ${b.tickets} worked` : none, (f) => `${f.accepted} of ${f.accepted + f.rejected}`],
     ['Runs failed (not counted)', b ? '—' : none, (f) => String(f.failed)],
     ['Mean blind score (1 to 5)', b ? '—' : none, (f) => (f.score ? `${f.score.mean.toFixed(2)} (${f.score.n} scored)` : NOT_SCORED)],
+    ['£ per accepted task', b ? '—' : none, (f) => f.value.perTask],
+    ['Accepted tasks per 5-hour window', b ? '—' : none, (f) => f.value.perWindow],
     ...TOKEN_KINDS.map(([k, label]) => [`Median ${label} tokens per accepted task`, k === 'output' ? perTicket('output') : b ? '—' : none, tok(k)]),
     ['Input tokens of all kinds per accepted task (median)', perTicket('input'), tok('input')],
     // Each allowance on its own line: an arm spends one vendor's, so the other's cell is a dash. The
@@ -186,8 +317,9 @@ function table(figures, baseline) {
 }
 
 // The markdown report. -> { text, compared, figures }
-export function renderReport({ out, run, joined, baseline }) {
+export function renderReport({ out, run, joined, baseline, plans = { ok: false, path: null, why: 'no plan table was given' }, now = Date.now() }) {
   const figures = run.arms.map((a) => armFigures(run.tasks, a, joined?.arms && Object.hasOwn(joined.arms, a) ? joined.arms[a] : null));
+  for (const f of figures) f.value = armValue(f, plans, now);
   const same = figures.every((f) => f.ran.join('\n') === figures[0].ran.join('\n'));
   const text = [`# Bench report: ${out}`, '',
     `${run.tasks.length} task(s) · arms ${run.arms.join(', ')}${run.seed ? ` · seed ${run.seed}` : ''}`, ''];
@@ -221,7 +353,8 @@ export function renderReport({ out, run, joined, baseline }) {
     text.push(`No comparison between arms: they did not run the same tasks (${figures.map((f) => `${f.arm} ran ${f.ran.length}`).join(', ')}). Each arm stands beside the baseline on its own.`);
     for (const f of figures) text.push('', `### ${f.arm}`, '', ...table([f], baseline));
   }
-  text.push('', 'A failed run is in neither tasks accepted nor tasks run. Quota points are the rise in the account\'s weekly use during a run, other work on that account included.');
+  text.push('', ...pricesSection(figures, figures.map((f) => f.value), plans));
+  text.push('A failed run is in neither tasks accepted nor tasks run. Quota points are the rise in the account\'s weekly use during a run, other work on that account included.');
   return { text: `${text.join('\n')}\n`, compared: same, figures };
 }
 
@@ -229,7 +362,7 @@ export function renderReport({ out, run, joined, baseline }) {
 export function writeReport(o) {
   const run = loadRun(o.out);
   const joined = readJoined(o.blind);
-  const r = renderReport({ out: o.out, run, joined, baseline: loadBaseline(o.baseline) });
+  const r = renderReport({ out: o.out, run, joined, baseline: loadBaseline(o.baseline), plans: loadPlans(o.plans) });
   const path = join(o.out, 'report.md');
   writeFileSync(path, r.text);
   return { path, ...r };
