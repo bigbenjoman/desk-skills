@@ -330,6 +330,22 @@ and arm not yet scored. The cap and reserve are per computer, set as the machine
 for once per computer and stores with `desk-env machine set`, which starts a profile holding only them where there is none. A value that is not a number refuses to
 start.
 
+An arm on OpenCode Go (`--arm <name>=opencode-go/<model>`) has no meter to read: each Go response
+reports only `opencode.allowance`, the dollars that request counted against the model's monthly
+limit. So the guard adds up the allowance the bench's own runs on that model recorded over rolling
+windows of 5 hours, 7 days and 30 days. It measures each window against the model's monthly limit in
+the plan table (below; `--plans <file>`, default `<out>/plans.json`), read from the longest `usd`
+window on the row serving the model. The 5-hour window is 20% of that limit, the week 50% and the
+month 100%, and the cap and reserve apply to each window. A run's `quota.points` is its share of the
+weekly window, and `quota.windows` holds its share of each window. Every stop line and report row
+for Go says it counts the bench's own use only, since use of the plan outside the bench is invisible
+to it. The bench stops before the next run on that model, naming the model and the reason, when a
+response's allowance is missing, is not a finite non-negative number or has a shape it does not know,
+or when no plan table row gives the model a monthly limit. A run whose allowance was never recorded
+holds that model's runs until the run is 30 days old. An arm on any other `<provider>/<model>` has no
+meter and no ledger, so it is refused unless the machine profile gives that provider a run limit,
+the most runs a week the bench may start on it: `desk-env machine set bench-run-limit-<provider>=<runs>`.
+
 **`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
 merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and
 description as they read when the PR's first commit was authored: later edits are undone from the

@@ -98,6 +98,7 @@ t('AC2 median output', row('Median output tokens per accepted task').slice(1).jo
 t('AC2 quota points per accepted task, per account', row('Claude quota points per accepted task (median), per account').slice(1).join(' / '), 'ben: 3 · work: 3 / ben: 1.5');
 t('AC2 quota used by every run, an unreadable one named', row('Claude quota points used by every run, per account').slice(1).join(' / '), 'ben: 11 · work: 3 / ben: 4, 1 run(s) unreadable');
 t('a Claude arm spends no Codex allowance', row('Codex quota points used by every run, per account').join(' / '), '— / — / —');
+t('the OpenCode Go rows say they count the bench\'s own use only', row("OpenCode Go quota points used by every run, per account (a share of each model's weekly allowance; the bench's own use only: Go publishes no meter)")?.join(' / '), '— / — / —');
 t('AC3 the baseline is named with its date', text.includes(`Phase 0 baseline: the 7 day(s) to 2026-11-05, from ${join(twoArms.out, 'phase0-baseline.txt')}`), true);
 t('AC3 baseline tokens per accepted ticket', `${row('Input tokens of all kinds per accepted task (median)')[0]} / ${row('Median output tokens per accepted task')[0]}`,
   '1,000,000 (mean over 3 ticket(s)) / 20,000 (mean over 3 ticket(s))');

@@ -3,7 +3,7 @@
 // whether the task is accepted.
 //
 //   node bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd>
-//                  [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>]
+//                  [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>]
 //
 // The task set is JSON, kept outside desk-skills, with paths relative to the file:
 //   {"tasks": [{"id", "repo": "<owner/name>", "base": "<full commit SHA>", "prompt": "<ticket text>",
@@ -35,6 +35,12 @@
 // window, under the interactive reserve, or on a reading it cannot trust. The rise in weekly use
 // during a run is that run's quota points, kept in its result.json. Run again once the window
 // resets, it picks up at the first task and arm not yet scored.
+//
+// An arm on OpenCode Go (model `opencode-go/<model>`) has no meter: its runner puts each response's
+// `opencode.allowance` in `extra.opencode_allowance`, and the guard keeps the bench's own ledger of
+// them against the model's monthly limit in the plan table, <plans> (default <out>/plans.json, the
+// file bench-report.mjs reads). An arm on any other `<provider>/<model>` runs only within the run
+// limit the machine profile sets for that provider.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, mkdtempSync, rmSync, cpSync, openSync, closeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -47,9 +53,10 @@ import { runItem } from './baseline.mjs';
 import { nearestDir, takesFiles } from './test-scope.mjs';
 import { lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.mjs';
 import * as Q from './bench-quota.mjs';
+import { loadPlans } from './bench-report.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
-const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>]';
+const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>]';
 const SHA = /^[0-9a-f]{40}$/;
 const SCORED = new Set(['accepted', 'rejected']);
 // The hidden tests' ceiling, wait for the test lock included.
@@ -58,7 +65,7 @@ const SCORE_TIMEOUT_MS = 60 * 60 * 1000;
 // argv -> options. Throws, naming the flag, on anything missing or malformed.
 export function parseArgs(argv) {
   const o = { arms: [], timeout: 1800, total: '5', seed: String(Date.now()) };
-  const names = { '--tasks': 'tasks', '--max-budget-usd': 'budget', '--total-budget-usd': 'total', '--out': 'out', '--timeout': 'timeout', '--seed': 'seed' };
+  const names = { '--tasks': 'tasks', '--max-budget-usd': 'budget', '--total-budget-usd': 'total', '--out': 'out', '--timeout': 'timeout', '--seed': 'seed', '--plans': 'plans' };
   for (let i = 0; i < argv.length; i++) {
     const key = names[argv[i]];
     if (!key && argv[i] !== '--arm') throw new Error(`unknown argument ${argv[i]}\n${USAGE}`);
@@ -328,17 +335,17 @@ function stored(file) {
 // What stands around every paid run: the USD cap, the weekly quota and the ledger. `begin` either says
 // why the run may not start ({ notRun }) or starts it; `end` charges it and returns its quota, at the
 // per-run budget when its cost is unknown.
-export function spendGuard({ settings, ledger, budget, total, log }) {
+export function spendGuard({ settings, ledger, budget, total, log, plans }) {
   let spent = 0, stopped = null;
   const points = new Map();
   return {
     get spent() { return spent; },
     get stopped() { return stopped; },
-    begin({ vendor, env, id, label, fields }) {
+    begin({ vendor, env, id, label, fields, arm = null }) {
       if (stopped) return { notRun: { status: 'not run', why: stopped, dir: null } };
       if (vendor === 'claude' && spent + budget > total + 1e-9) { log(`skip ${label}: $${spent.toFixed(2)} of $${total} spent`); return { notRun: { status: 'not run', dir: null } }; }
-      const account = Q.accountFor(vendor, env);
-      const start = Q.startRun({ account, settings, ledger, env, id, fields });
+      const account = Q.accountFor(vendor, env, arm);
+      const start = Q.startRun({ account, settings, ledger, env, id, fields, plans, arm });
       points.set(account.key, start.line);
       if (start.why) {
         stopped = `stopped: ${start.why}`;
@@ -348,9 +355,9 @@ export function spendGuard({ settings, ledger, budget, total, log }) {
       }
       return { vendor, env, label, account, start };
     },
-    end({ vendor, env, label, account, start }, cost) {
+    end({ vendor, env, label, account, start }, cost, result = null) {
       if (vendor === 'claude') spent += cost ?? budget;
-      const end = Q.endRun({ account, settings, ledger, env, before: start.before, entry: start.entry, label });
+      const end = Q.endRun({ account, settings, ledger, env, before: start.before, entry: start.entry, label, result });
       if (end.stop) stopped = `stopped: ${end.stop}`;
       else points.set(account.key, end.line);
       return end.quota;
@@ -376,7 +383,7 @@ export function runBench(opts, log = () => {}) {
   }
   const out = resolve(opts.out || join(dirname(resolve(opts.tasks)), 'bench-out'));
   mkdirSync(join(out, 'runs'), { recursive: true });
-  const guard = spendGuard({ settings, ledger, budget: Number(opts.budget), total: Number(opts.total), log });
+  const guard = spendGuard({ settings, ledger, budget: Number(opts.budget), total: Number(opts.total), log, plans: loadPlans(resolve(opts.plans ?? join(out, 'plans.json'))) });
   const armStops = new Map();
   const report = tasks.map((task) => {
     const repo = repos.get(task.repo);
@@ -389,11 +396,11 @@ export function runBench(opts, log = () => {}) {
       if (!guard.stopped && armStops.has(arm.name)) return { arm: arm.name, status: 'not run', why: `stopped: ${armStops.get(arm.name)}`, dir: null };
       // The guard reads the account the run spends, so an arm with its own environment gives it here too.
       const env = arm.env ? arm.env(armEnv()) : armEnv();
-      const paid = guard.begin({ vendor: Q.armVendor(arm), env, id: `${dir}@${new Date().toISOString()}`, label: `${task.id} (${arm.name})`, fields: { task: task.id, arm: arm.name } });
+      const paid = guard.begin({ vendor: Q.armVendor(arm), env, id: `${dir}@${new Date().toISOString()}`, label: `${task.id} (${arm.name})`, fields: { task: task.id, arm: arm.name }, arm });
       if (paid.notRun) return { arm: arm.name, ...paid.notRun };
       log(`run ${task.id} (${arm.name})`);
       const r = runOne(repo, task, arm, order, opts, out, dir, secrets);
-      r.quota = guard.end(paid, r.cost);
+      r.quota = guard.end(paid, r.cost, r);
       writeFileSync(join(dir, 'result.json'), `${JSON.stringify(r, null, 2)}\n`);
       log(`  ${r.status}${r.why ? `: ${r.why}` : ''}${r.quota.points == null ? '' : ` (${r.quota.points} quota points)`}`);
       guard.logStop(paid);

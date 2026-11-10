@@ -78,8 +78,9 @@
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
 //   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine set <key>=<value>...
-//                                             set the bench's bench-cap-points and bench-reserve-percent in
-//                                             the profile (only after the user answers); a bad value exits 1
+//                                             set the bench's bench-cap-points, bench-reserve-percent and
+//                                             bench-run-limit-<provider> in the profile (only after the
+//                                             user answers); a bad value exits 1
 //                                             naming it, and nothing is written
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
 //   node desk-env.mjs costs detect            print the GitHub repos, Vercel teams and projects and AWS

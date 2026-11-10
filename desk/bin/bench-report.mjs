@@ -20,7 +20,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { quantile } from './desk-ci.mjs';
-import { armVendor } from './bench-quota.mjs';
+import { GO, OWN_USE, armVendor } from './bench-quota.mjs';
 
 const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]';
 export const NOT_SCORED = 'not scored';
@@ -234,7 +234,10 @@ function pricesSection(figures, values, plans) {
   return out;
 }
 
-const ALLOWANCES = [['claude', 'Claude'], ['codex', 'Codex']];
+// [vendor, label, what its points measure where a reading does not say it]. Built when called, since
+// bench-quota.mjs imports this module and its bindings are not yet set while this one loads.
+const allowances = () => [['claude', 'Claude', ''], ['codex', 'Codex', ''],
+  [GO, 'OpenCode Go', ` (a share of each model's weekly allowance; ${OWN_USE})`]];
 const TOKEN_KINDS = [['uncached', 'uncached input'], ['cacheWrite', 'cache-write'], ['cacheRead', 'cache-read'], ['output', 'output']];
 
 // One arm's figures over the runs it made. `scores` is joined.json's entry for the arm, or null.
@@ -299,13 +302,13 @@ function rows(baseline) {
     ['Input tokens of all kinds per accepted task (median)', perTicket('input'), tok('input')],
     // Each allowance on its own line: an arm spends one vendor's, so the other's cell is a dash. The
     // baseline's quota is the signed-in Claude login's.
-    ...ALLOWANCES.flatMap(([vendor, label]) => {
+    ...allowances().flatMap(([vendor, label, note]) => {
       const own = (f, v) => (f.vendor === vendor ? v() : '—');
       return [
-        [`${label} quota points per accepted task (median), per account`,
+        [`${label} quota points per accepted task (median), per account${note}`,
           !b ? none : vendor !== 'claude' ? '—' : b.quotaPoints == null ? 'not recorded' : !b.accepted ? 'no ticket accepted' : `signed-in login: ${(b.quotaPoints / b.accepted).toFixed(2)} (${b.quotaPoints} point(s) ÷ ${b.accepted} accepted)`,
           (f) => own(f, () => noTask(f, accounts(f.quotaAccepted, (e) => (e.points.length ? `${pts(median(e.points))}${over(e.points.length, e.points.length + e.unreadable)}` : 'unreadable'))))],
-        [`${label} quota points used by every run, per account`, b ? '—' : none, (f) => own(f, () => accounts(f.quotaAll, (e) => `${pts(e.points.reduce((s, p) => s + p, 0))}${unread(e)}`))],
+        [`${label} quota points used by every run, per account${note}`, b ? '—' : none, (f) => own(f, () => accounts(f.quotaAll, (e) => `${pts(e.points.reduce((s, p) => s + p, 0))}${unread(e)}`))],
       ];
     }),
     ['Repair cycles per ticket', !b ? none : b.fixTries == null ? 'no ticket accepted' : `${b.fixTries.toFixed(2)} (fix tries per accepted ticket)`, () => '— (one run per task)'],
