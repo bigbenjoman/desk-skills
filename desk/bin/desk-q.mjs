@@ -690,7 +690,9 @@ const lineLogin = () => { const own = ownLogin(); return own?.configDir && other
 // its rule is one desk may not start work on (off); with no rule, as one login no file names, it is.
 // With accounts pinned, ~/.claude is the person's own Claude Code and is never probed.
 //   -> [{ login }]
-const pinnedOwn = (own) => { try { return !!own && !own.configDir && multiAccount(readSubscriptions(subscriptionsPath())); } catch { return false; } };
+// True when the subscriptions file pins Claude folders to accounts; false with none, or one unreadable.
+const pinnedFile = () => { try { return multiAccount(readSubscriptions(subscriptionsPath())); } catch { return false; } };
+const pinnedOwn = (own) => !!own && !own.configDir && pinnedFile();
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
@@ -1919,8 +1921,6 @@ function accountOf(l) {
 // What the view calls a login: a Claude login's pinned account, else the email its folder records, else
 // a Codex login's label where it was given one, else its name.
 const loginLabel = (l) => (l.tool === 'claude' ? l.account : null) ?? accountOf(l).email ?? (l.tool === 'codex' ? loginLabelOf(l) : null) ?? l.name;
-// True when the subscriptions file pins Claude folders to accounts; false with none, or one unreadable.
-const pinnedFile = () => { try { return multiAccount(readSubscriptions(subscriptionsPath())); } catch { return false; } };
 const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
 
 // Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check }. `out` is
