@@ -2684,7 +2684,7 @@ check "DS-509 AC4 the merge question keeps the park's post-merge steps as its fo
 vwt M-4; HM4=$(git -C "$T/wt/M-4" rev-parse HEAD); fbx 874 "$HM4" tests:SUCCESS
 node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/874.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-4.json`, JSON.stringify({ number: 874, ...v }))' "$T/fb"
 q add M-4; q set M-4 state=running lane=A branch=fix/M-4 "worktree=$T/wt/M-4"; q park M-4 "${P722/87N/874}"; q clears-when M-4 'PR #874 merged'
-# M-7 is M-4 with a link the pass could not make (DS-557): its follow-on holds only that link step.
+# M-7 is M-4 with a link the pass could not make: its follow-on holds only that link step.
 vwt M-7; HM7=$(git -C "$T/wt/M-7" rev-parse HEAD); fbx 877 "$HM7" tests:SUCCESS
 node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/877.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-7.json`, JSON.stringify({ number: 877, ...v }))' "$T/fb"
 q add M-7; q set M-7 state=running lane=A branch=fix/M-7 "worktree=$T/wt/M-7"; q park M-7 "${P722/87N/877}. Issue links not made: no grant: desk-jira link M-7 relates-to M-1"; q clears-when M-7 'PR #877 merged'
