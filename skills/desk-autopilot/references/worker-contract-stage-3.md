@@ -117,13 +117,13 @@ Your settings are an **allow-list**: anything not named here is refused.
   needs `-X GET`.
 - **`gh workflow run`**, only where §3 `worker-workflow-dispatch` is `yes`, and only exactly as
   §4 Worker workflows (`desk-env list worker-workflows`) lists each entry: `gh workflow run <file>.yml --ref <your branch> -f …` (or
-  with `--repo <§0 GitHub repo>` after the file), no input added or changed. Any other workflow, ref
-  or input is refused; so is `gh workflow enable`/`disable`. Once the queue holds your PR, also the §4
-  Evidence workflow: `gh workflow run <file>.yml --ref <§0 Default branch> -f pr=<your PR>`; before,
-  leave its `_drag` cells and `evidence` block, never a park: the pass starts it. Read a run's id
-  from the `/actions/runs/<id>` URL it prints, then park on it with
-  `AUTOPILOT_PARK_CLEARS_WHEN: run <id> completed`: you cannot wait, and the first pass after the
-  run finishes requeues you with its conclusion. Otherwise park naming the row.
+  `--repo <§0 GitHub repo>` after the file), no input added or changed. Anything else is refused,
+  `gh workflow enable`/`disable` too. Once the queue holds your PR, also the §4 Evidence workflow:
+  `gh workflow run <file>.yml --ref <§0 Default branch> -f pr=<your PR>`; before, leave its `_drag`
+  cells and `evidence` block, never park: the pass starts it. Its run id is in the
+  `/actions/runs/<id>` URL it prints (else `gh run list --workflow <file>.yml --branch <its --ref>
+  --limit 1 --json databaseId`); park on it with `AUTOPILOT_PARK_CLEARS_WHEN: run <id> completed`:
+  the pass then requeues you with its conclusion. Otherwise park naming the row.
   Which entry you start, and the line on why in that park, follow the Stage 4 file's "A CI or
   end-to-end run you ask for is the narrowest one that covers your change": read it first.
 - **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
