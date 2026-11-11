@@ -1039,6 +1039,18 @@ t('DS-417 the skill names the list form', skillList, 'list <repo>');
 t('DS-417 AC1 a 600-character need is listed whole, recommendation included', `${longNeed.length >= 600} ${longLine('L-1').includes(`| ${longNeed} |`)}`, 'true true');
 t('DS-417 AC2 a URL in a parked need is printed whole', longLine('L-2').includes(`${runUrl}?q=${'a'.repeat(260)} and the docs disagree. |`), true);
 t('DS-417 AC2 a URL in a PR item\'s recorded reason is printed whole', longLine('L-3').includes(runUrl), true);
+// ---- DS-560: a SHA set off by commas leaves no double comma; an unwrapped SHA and a URL read as before.
+const shaUrl = 'https://github.com/acme/comma560/commit/57e3a9253abcdef0';
+put('comma560', { port: 5171, beat: 1, supervised: true, tickets: {
+  'C-1': draftPr(181, passed, { call: 'person', why: 'its latest review, at 57e3a9253, does not open a line with "x" as its outcome', action: 'settle it on #181' }),
+  'C-2': draftPr(182, passed, { call: 'person', why: 'its review at 3725bcebd states "x"', action: 'settle it on #182' }),
+  'C-3': draftPr(183, passed, { call: 'person', why: `its run failed, see ${shaUrl}`, action: 'settle it on #183' }),
+} });
+const c560 = Object.fromEntries(N.collect({ word: 'comma560' }).items.map((i) => [i.t.key, i.need]));
+t('DS-560 AC1 a comma-wrapped SHA is taken out with its commas', c560['C-1'], 'PR #181 is a draft: latest review does not open a line with "x" as its outcome. Settle it on #181; the next pass then picks it up.');
+t('DS-560 AC2 an unwrapped SHA is taken out as before', c560['C-2'], 'PR #182 is a draft: review states "x". Settle it on #182; the next pass then picks it up.');
+t('DS-560 AC3 a URL holding a hex run is left whole', c560['C-3']?.includes(shaUrl), true);
+
 t('DS-417 AC3 a done note still follows the need whole', /\| PR #161 [^|]*\. \(You said done at [^|]*, and GitHub still showed it unmerged, still a draft\.\) \|/.test(longLine('L-3')), true);
 
 // ---- A review stuck recorded at a head the PR has since left is gone
