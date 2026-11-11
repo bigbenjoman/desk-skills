@@ -1007,7 +1007,9 @@ check "out of DIRTY with no new push (the base moved): no repair, no hold" '[ "$
 # ---- §4 Merged-tree check: two green PRs that each add the next migration revision ------------------
 # Each adds a migration numbered 131 on top of main's 130, under its own filename: git merges both
 # cleanly and GitHub says neither is BEHIND, so only the check sees the second leaves two heads.
-git init -q --bare "$T/tc-origin.git"; git -C "$T/repo" remote add origin "$T/tc-origin.git"
+git init -q --bare "$T/tc-origin.git"
+git -C "$T/repo" remote add origin "$T/tc-origin.git" 2>/dev/null || git -C "$T/repo" remote set-url origin "$T/tc-origin.git"
+WT_BEFORE=$(git -C "$T/repo" worktree list | wc -l | tr -d ' ')
 mkdir -p "$T/repo/migrations"; echo base > "$T/repo/migrations/130_base.py"
 git -C "$T/repo" add migrations; git -C "$T/repo" commit -q -m m130; git -C "$T/repo" push -q origin main
 TCMAIN=$(git -C "$T/repo" rev-parse HEAD)
@@ -1026,8 +1028,8 @@ HOLDS_ROW='| Merge holds | `none` |'; READY_ROW='| `pr-ready` | Undraft | `yes` 
 conflict_rows(){ printf '%s\n| `pr-conflict-unreviewed` | Conflicts | `yes` | `%s` |\n| `pr-conflict-reviewed` | Conflicts | `yes` | `%s` |' "$READY_ROW" "$1" "$1"; }
 TC=$(cat "$T/config.md"); TC=${TC/"$HOLDS_ROW"/"$HOLDS_ROW"$'\n'"| Merged-tree check | \`sh $T/tc-check.sh\` |"}
 printf '%s\n' "$TC" > "$T/config-tc.md"
-printf '%s\n' "${TC/"$READY_ROW"/"$(conflict_rows yes)"}" > "$T/config-tc-fix.md"
-printf '%s\n' "${TC/"$READY_ROW"/"$(conflict_rows no)"}" > "$T/config-tc-no.md"
+ROWS=$(conflict_rows yes); TCF=${TC/"$READY_ROW"/$ROWS}; printf '%s\n' "$TCF" > "$T/config-tc-fix.md"
+ROWS=$(conflict_rows no); TCF=${TC/"$READY_ROW"/$ROWS}; printf '%s\n' "$TCF" > "$T/config-tc-no.md"
 tcloop(){ out=$(DESK_CONFIG="${TC_CONFIG:-$T/config-tc.md}" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-501 T-502" 2>&1); rc=$?; }
 : > "$T/merges.log"; q init tree-check
 cat > "$T/prs.json" <<EOF
@@ -1047,7 +1049,7 @@ check "DS-552 AC1: the second PR is not merged, and the log names the failed mer
 check "DS-552 AC1: the hold is on the ticket for the pass, with the head and the check's output, not as merge_blocked" \
   '[ "$(qf T-502 .tree_check.head)" = "$SHA502" ] && [ "$(qf T-502 .tree_check.output)" = "Multiple head revisions are present: 131" ] && [ "$(qf T-502 .tree_check.base_sha)" = "$SHA501" ] && [ "$(qf T-502 .merge_blocked)" = null ]'
 check "DS-552: the throwaway checkout is gone and the repo's worktrees are as they were" \
-  '[ -z "$(find "$T/state" -name "tree-502-checkout")" ] && [ "$(git -C "$T/repo" worktree list | wc -l | tr -d " ")" = 1 ] && [ -z "$(git -C "$T/repo" status --porcelain)" ]'
+  '[ -z "$(find "$T/state" -name "tree-502-checkout")" ] && [ "$(git -C "$T/repo" worktree list | wc -l | tr -d " ")" = "$WT_BEFORE" ] && [ -z "$(git -C "$T/repo" status --porcelain)" ]'
 tcloop
 check "DS-552: held at the same head and base, the next loop reads its kept result and still does not merge" \
   '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#502 HELD: merged into main" && [ "$(find "$T/state" -name "tree-502-$SHA502-$SHA501.json" | wc -l | tr -d " ")" = 1 ]'
