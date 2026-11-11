@@ -283,9 +283,9 @@ t('AC1 migrate: the found login-3 is pinned', pinState(after, 'login-3'), 'x@a.i
 t('AC1 migrate: ~/.claude is in the Removed table', `${after.removed.some((r) => r.tool === 'claude' && r.folder === '~/.claude')} ${lg(after, 'default')}`, 'true undefined');
 t('AC1 migrate: no add hint when x@a.io is pinned', `${m.rc} ${m.out.includes('with a in view 6')}`, '0 false');
 t('AC11 migrate: the previous file kept as a backup', readFileSync(`${sc.path}.bak`, 'utf8') === OLD, true);
-t('AC6 migrate: a pinned file needs no migrating', (await sc.run('migrate')).out.trim(), 'nothing to migrate');
 const pinnedText = sc.text();
-t('AC6 and is left as it was', `${sc.text() === pinnedText}`, 'true');
+t('AC6 migrate: a pinned file needs no migrating', (await sc.run('migrate')).out.trim(), 'nothing to migrate');
+t('AC6 and is left as it was, with no new backup', `${sc.text() === pinnedText} ${readFileSync(`${sc.path}.bak`, 'utf8') === OLD}`, 'true true');
 
 sc = scenario(OLD, { default: 'x@a.io', 'login-2': 'y@a.io', 'login-3': 'y@a.io' });
 m = await sc.run('migrate');
