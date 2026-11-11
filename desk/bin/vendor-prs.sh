@@ -3,6 +3,9 @@
 # new vendor PR supersedes an older open one when every pin the older one moves is either upgraded by
 # this run (upstream's newest, so the same or newer) or already pinned on main at exactly the older
 # one's pin. One moving a pin this run left alone and main has elsewhere, or not at all, stays open.
+#   vendor-prs.sh free <checkout> <owner/name> <branch>
+#       exit 0: <branch> is neither in the checkout nor on origin, so it can be cut; 1: it exists,
+#       named with where and any open PR from it; 2: origin could not be read
 #   vendor-prs.sh same <checkout> <branch>
 #       exit 0: <branch>'s vendor/ equals origin/main's, so there is nothing to open; 1: it differs
 #   vendor-prs.sh open <checkout> <owner/name> <branch> <title> <body>
@@ -16,13 +19,30 @@ PREFIX=chore/vendor-
 same(){ git -C "$1" diff --quiet origin/main "$2" -- vendor/; }
 
 case "${1:-}" in
+  free)
+    [ "$#" = 4 ] || { echo "usage: vendor-prs.sh free <checkout> <owner/name> <branch>" >&2; exit 2; }
+    D="$2"; REPO="$3"; BRANCH="$4"; where=""
+    git -C "$D" show-ref --verify --quiet "refs/heads/$BRANCH" && where="in the checkout"
+    git -C "$D" ls-remote --exit-code --heads origin "refs/heads/$BRANCH" >/dev/null </dev/null; rc=$?
+    case "$rc" in
+      0) where="${where:+$where and }on origin" ;;
+      2) ;;
+      *) echo "vendor-prs.sh: could not read origin's branches in $D" >&2; exit 2 ;;
+    esac
+    [ -n "$where" ] || exit 0
+    if prs=$(gh pr list --repo "$REPO" --state open --limit 200 --json number,headRefName,isCrossRepository </dev/null \
+      | jq -r --arg b "$BRANCH" '[.[] | select(.headRefName == $b and (.isCrossRepository | not)) | "#\(.number)"] | join(", ")'); then
+      pr="open PR: ${prs:-none}"
+    else pr="its open PRs could not be read"; fi
+    echo "$BRANCH exists $where ($pr): upgrade nothing until it is merged, closed or deleted"
+    exit 1 ;;
   same)
     [ "$#" = 3 ] || { echo "usage: vendor-prs.sh same <checkout> <branch>" >&2; exit 2; }
     same "$2" "$3"; rc=$?
     [ "$rc" -le 1 ] || { echo "vendor-prs.sh: could not compare $3 with origin/main in $2" >&2; exit 2; }
     exit "$rc" ;;
   open) ;;
-  *) echo "usage: vendor-prs.sh same <checkout> <branch> | open <checkout> <owner/name> <branch> <title> <body>" >&2; exit 2 ;;
+  *) echo "usage: vendor-prs.sh free <checkout> <owner/name> <branch> | same <checkout> <branch> | open <checkout> <owner/name> <branch> <title> <body>" >&2; exit 2 ;;
 esac
 
 [ "$#" = 6 ] || { echo "usage: vendor-prs.sh open <checkout> <owner/name> <branch> <title> <body>" >&2; exit 2; }

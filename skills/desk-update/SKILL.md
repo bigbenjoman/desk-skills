@@ -190,11 +190,17 @@ that is checked out (the tree must be clean; if it is not, say so and upgrade no
 
 ```bash
 git -C "$D" fetch -q origin
-git -C "$D" switch --no-track -c "chore/vendor-$(date +%F)" origin/main   # exists already: say so and stop
+bash ~/.claude/desk/bin/vendor-prs.sh free "$D" <owner/name> "chore/vendor-$(date +%F)"   # exit 1: it exists; print its line and stop
+git -C "$D" switch --no-track -c "chore/vendor-$(date +%F)" origin/main
 skills-upstream upgrade <name>...          # writes vendor/<name> and the pin; nothing is installed yet
 git -C "$D" diff --stat -- vendor/
 git -C "$D" diff -- vendor/<name>/SKILL.md # summarise the substance for the user
 ```
+
+`free` exits 1 when today's branch is already in the checkout, on origin, or both: its line names where and
+any open PR from it. Report that line and upgrade nothing, since an upgrade on a fresh local branch
+would be thrown away when its push fails as non-fast-forward. Exit 2 means origin could not be read:
+say so and upgrade nothing. `<owner/name>` is as for `open` below.
 
 A `REFUSED` line means a local patch in that entry's `patches` no longer applies: that skill is not
 upgraded; tell the user, and never drop the patch to get past it.

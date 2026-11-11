@@ -4,7 +4,8 @@
 # vendor-prs.sh against a fake gh and a throwaway checkout with an origin: the PR opens, then only the
 # other open chore/vendor-* PRs from this repo whose every moved pin the new branch upgrades, or main
 # pins at exactly that commit, are closed naming it; any other stays open; a failed create closes nothing; a branch
-# whose vendor/ equals origin/main's opens nothing.
+# whose vendor/ equals origin/main's opens nothing; `free` refuses a branch already in the checkout or
+# on origin, naming its open PR.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -93,6 +94,21 @@ printf '%s,\n {"number":275,"headRefName":"chore/vendor-gone","isCrossRepository
 : > "$GH_LOG"
 out=$(bash "$V" open "$D" acme/desk chore/vendor-2026-11-02 t b 2>&1); rc=$?
 check "an unreadable older vendor PR is left open and exits 4" '[ $rc -eq 4 ] && [[ "$out" == *"could not read #275"* ]] && ! grep -q "^pr close 275" "$GH_LOG"'
+
+# free: today's branch only on origin, with an open PR, stops the upgrade and names both.
+printf '%s]\n' "$LIST" > "$T/list.json"
+git -C "$D" push -q origin chore/vendor-2026-11-02:refs/heads/chore/vendor-2026-11-07
+out=$(bash "$V" free "$D" acme/desk chore/vendor-2026-11-07 2>&1); rc=$?
+check "free: a branch only on origin exits 1 and names it" '[ $rc -eq 1 ] && [[ "$out" == "chore/vendor-2026-11-07 exists on origin (open PR: none)"* ]]'
+out=$(bash "$V" free "$D" acme/desk chore/vendor-2026-11-02 2>&1); rc=$?
+check "free: a local branch exits 1, naming its open PR" '[ $rc -eq 1 ] && [[ "$out" == "chore/vendor-2026-11-02 exists in the checkout (open PR: #401)"* ]]'
+git -C "$D" push -q origin chore/vendor-2026-11-02
+out=$(bash "$V" free "$D" acme/desk chore/vendor-2026-11-02 2>&1); rc=$?
+check "free: local and on origin names both" '[[ "$out" == "chore/vendor-2026-11-02 exists in the checkout and on origin (open PR: #401)"* ]]'
+out=$(bash "$V" free "$D" acme/desk chore/vendor-2026-11-09 2>&1); rc=$?
+check "free: a branch on neither exits 0, silently" '[ $rc -eq 0 ] && [ -z "$out" ]'
+out=$(bash "$V" free "$T/nowhere" acme/desk chore/vendor-2026-11-09 2>&1); rc=$?
+check "free: an unreadable origin exits 2" '[ $rc -eq 2 ]'
 
 # A branch outside chore/vendor-* is refused before gh runs.
 : > "$GH_LOG"
