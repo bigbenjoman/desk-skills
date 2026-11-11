@@ -70,12 +70,14 @@ Your settings are an **allow-list**: anything not named here is refused.
   runners (`npx`, `npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`, `bunx`, `uvx`) and the §4 Command
   prefix (`desk-env get command-prefix`) run on its own (`<prefix> <anything>`) are refused. Run a TS script
   with the worktree's installed runner, e.g. `node <worktree>/node_modules/tsx/dist/cli.mjs <file>.ts`.
-- **Screenshot capture**, only where §3 `worker-screenshots` is `yes`, and only under the browser
-  lock from your worktree: `~/.claude/desk/bin/with-lock.sh browser` then `node ./<script>` or
-  `node <worktree>/<script>` (a capture script at the root, or Playwright under `node_modules/`),
+- **Screenshot and image scripts**, only where §3 `worker-screenshots` is `yes`, and only under the
+  browser lock from your worktree: `~/.claude/desk/bin/with-lock.sh browser` then `node ./<script>` or
+  `node <worktree>/<script>` (a script at the root, or Playwright under `node_modules/`),
   `./node_modules/.bin/<playwright|storybook|test-storybook|storycap> …`, or
-  `<python|python3|uv run python|.venv/bin/python> ./<script>.py`. Never a `..`. Otherwise parks
-  naming the row.
+  `<python|python3|uv run python|.venv/bin/python> ./<script>.py`. This is the route for any script in
+  your worktree that captures a screenshot or generates an image file (a PNG, JPEG or SVG the ticket
+  asks for), not only a browser capture: `with-lock.sh browser uv run python ./make_picture.py` runs
+  here rather than parking. Never a `..`. Otherwise parks naming the row.
 - **Local services**: only where §3 `worker-local-services` is `yes`, and only
   `docker compose -f <main checkout>/<its compose file> [-f <its override file>] up -d --no-recreate
   --no-deps <service>` for a service §4 Local services (`desk-env list local-services`) names: the shared project, never one named
