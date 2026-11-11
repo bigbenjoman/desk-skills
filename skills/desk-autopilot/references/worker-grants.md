@@ -36,7 +36,7 @@ a worker cannot:
   `gh pr create --repo <§0 GitHub repo> --draft`;
 - run `gh workflow` beyond the exact §4 Worker workflows dispatches on its own branch, and the §4
   Evidence workflow as `gh workflow run <file>.yml [--repo <§0 GitHub repo>] --ref <§0 Default
-  branch> -f pr=<n>` with a number for `<n>`, where §3
+  branch> -f pr=<n>` with `<n>` its own PR's number, once the queue records it, where §3
   `worker-workflow-dispatch` is `yes`: no other workflow, input or ref, none in a dry run, and
   never `gh workflow enable` or `disable`;
 - run the package manager beyond `install` with no arguments and the configured rows (no `add`,

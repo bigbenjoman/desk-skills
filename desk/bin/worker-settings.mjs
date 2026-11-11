@@ -313,7 +313,8 @@ if (mode === 'triage') {
   })();
   // The person's one-off grant on this ticket (answer.mjs, batch-state.mjs grantFor): one exact force-push of this
   // branch over the SHA they approved, while origin still holds that SHA.
-  const ticketGrant = (() => { try { return JSON.parse(readFileSync(E.queueFile(), 'utf8')).tickets?.[T]?.grant ?? null; } catch { return null; } })();
+  const QUEUED = (() => { try { return JSON.parse(readFileSync(E.queueFile(), 'utf8')).tickets?.[T] ?? null; } catch { return null; } })();
+  const ticketGrant = QUEUED?.grant ?? null;
   const ONE_PUSH = baseFix ? null : grantPush(ticketGrant, { branch: BRANCH, remote: REMOTE_SHA });
   // A rebased branch that is already on origin can only go back by force-push, so it is rebased only
   // where §3 allows that; otherwise it takes `git merge origin/<base>`. A one-off grant adds no rebase:
@@ -335,19 +336,16 @@ if (mode === 'triage') {
     }
   }
   // §4 Evidence workflow, under the same row, in the form the pass starts it (evidence.mjs): on §0
-  // Default branch, whose code it runs, with the PR number as its one input. The number is a `*`, as
-  // the PR does not exist at spawn, so every value but digits is denied: a space (another argument)
-  // or any other printable character. `*`, `:`, `(`, `)` and `\` are left out, as the harness reads
-  // them in a rule's syntax; none reaches the workflow without a quote or `$`, which are denied.
+  // Default branch, whose code it runs, with this ticket's own PR number as its one input. The rule is
+  // exact, so it is written only once the queue records that PR (a fix or capture try's, or the
+  // finished ticket's): a `pr=*` rule cannot hold the value to digits, as the shell expands an
+  // unquoted `*` against files the worker writes, and no rule can name a literal `*`.
   const EVIDENCE_RULES = [];
-  const EVIDENCE_DENY = [];
   const evidence = DISPATCH === 'yes' && dispatchRef ? parseEvidenceRow(cfgList('evidence-workflow')) : null;
+  const ownPr = [QUEUED?.fix?.pr, QUEUED?.result?.pr].map((n) => String(n ?? '')).find((n) => /^[1-9]\d*$/.test(n));
   if (evidence?.errors) warns.push(`§4 Evidence workflow ${evidence.errors.join('; ')} — not allow-listed`);
-  else if (evidence) {
-    const ref = String(cfg('default-branch') ?? '').trim() || 'main';
-    for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) EVIDENCE_RULES.push(...bash('gh', ` workflow run ${evidence.workflow}${r} --ref ${ref} -f pr=*`));
-    const NOT_DIGIT = [' ', '\t', ...Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter((c) => !/[0-9*:()\\]/.test(c))];
-    EVIDENCE_DENY.push(...bash('gh', ` workflow run ${evidence.workflow} * -f pr=`, ...NOT_DIGIT.map((c) => ` workflow run ${evidence.workflow} *-f pr=*${c}*`)));
+  else if (evidence && ownPr) {
+    for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) EVIDENCE_RULES.push(...exact('gh', ` workflow run ${evidence.workflow}${r} --ref ${DEFAULT} -f pr=${ownPr}`));
   }
   // This worktree as given and as its real path (a symlinked --wt, or macOS's /tmp and /var).
   const WTS = [...new Set([WT, (() => { try { return realpathSync(WT); } catch { return WT; } })()])];
@@ -418,7 +416,6 @@ if (mode === 'triage') {
     // `gh workflow` gives way only to the dispatches above; enable and disable stay denied.
     ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !(DISPATCH_RULES.length || EVIDENCE_RULES.length))),
     ...(DISPATCH_RULES.length || EVIDENCE_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
-    ...EVIDENCE_DENY,
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
     // The desk-env subcommands that write: the machine profile, the cost sources and the login rules
     // are the user's to confirm. desk-env itself refuses them in a worker too, for the forms these miss.
