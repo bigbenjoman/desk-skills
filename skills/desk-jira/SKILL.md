@@ -168,6 +168,7 @@ them as a batch. The commands:
 ```bash
 desk-jira children ABC-900                         # its children (or a story's subtasks), rank order
 desk-jira create Story "<summary>" body.md parent=ABC-900 <size field>=M
+desk-jira edit ABC-905 parent=                     # take ABC-905 out of its epic (read back)
 desk-jira create-batch tickets.tsv                 # a set of tickets, one line each (below)
 desk-jira link ABC-903 blocked-by ABC-901          # ABC-903 cannot start until ABC-901 merges
 desk-jira link ABC-904 duplicates ABC-850          # any type the site has: relates, is-cloned-by, …
