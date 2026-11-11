@@ -1103,7 +1103,16 @@ q add T-61 Story A; q set T-61 branch=fix/T-61 state=done result.pr=610 merged_a
 jq -n --arg s "$SHAEP" --arg pl "$T/vp-601.json" \
   '{ "601": { head: "feat/TC", base: "main", sha: $s, state: "open", draft: false, title: "T-600: promote feat/TC to main", payload: $pl, checks: [["test", "SUCCESS"]] } }' > "$T/prs.json"
 RV_TICKETS="T-61"; RV_CONFIG="$T/config-rv-tc.md"; rvloop; rvloop; RV_CONFIG=""
-check "DS-552: an epic PR whose base lacks main's newest migration is held on the merged-tree check, for the base sync" \
-  '[ -z "$(merged)" ] && echo "$out" | grep -q "#601 HELD: merged into main at ${SHA501:0:9}, it fails the merged-tree check \`sh $T/tc-check.sh\`: Multiple head revisions are present: 131 — not merging; the pass'"'"'s next base sync sends it to a base fix try"'
+check "DS-552: an epic PR whose merge into main fails the merged-tree check is held" \
+  '[ -z "$(merged)" ] && echo "$out" | grep -q "#601 HELD: merged into main at ${SHA501:0:9}, it fails the merged-tree check \`sh $T/tc-check.sh\`: Multiple head revisions are present: 131 — not merging; noted on the batch'"'"'s promotion for the person"'
+check "DS-552: and the hold is noted on the queue's promotion, which the pass reports, not left in the log alone" \
+  '[ "$(jq -r .promotion.merge_blocked "$DESK_QUEUE")" = "merged-tree check: merged into main at ${SHA501:0:9}, it fails the merged-tree check \`sh $T/tc-check.sh\`: Multiple head revisions are present: 131" ]'
+# The base renumbers its migration after main's: the epic PR passes, its note is cleared and it merges.
+git -C "$T/repo" switch -q feat/TC; git -C "$T/repo" merge -q --no-edit "$SHA501"
+git -C "$T/repo" mv migrations/131_epic_child.py migrations/132_epic_child.py; git -C "$T/repo" commit -q -m renumber
+SHAEP=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" push -q origin feat/TC; git -C "$T/repo" switch -q main
+vp 601 "$SHAEP" "$CLEAN"; jq --arg s "$SHAEP" '."601".sha = $s' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+RV_CONFIG="$T/config-rv-tc.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-552: renumbered, the epic PR passes, its note is cleared and it merges" '[ "$(merged)" = 601 ] && [ "$(jq -r .promotion.merge_blocked "$DESK_QUEUE")" = null ]'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
