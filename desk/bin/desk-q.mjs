@@ -52,7 +52,7 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } f
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, nextLoginFolder, readSubscriptions,
+import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, nextLoginFolder, readSubscriptions,
   signInParts } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
@@ -1892,29 +1892,31 @@ function allOutNote(s, now) {
 // ---- Usage -------------------------------------------------------------------------------------
 // View 6: every Claude and Codex login on this computer, a table per tool, each login with its plan, its
 // rule, both windows and the workers on it. A Claude login's plan and email are what its .claude.json
-// records; a Codex login's plan is what its newest reading logs, and its name is its label. Sign-in is
+// records; a Codex login's are its auth.json id_token's, never the plan its session log names, and with
+// no email its name is its label. Sign-in is
 // the account check's (`desk-env logins check`), which the screen runs in the background: `checked` maps
 // `<tool> <folder>` to each login it lists, and a found folder it leaves out is signed out. Until a check
 // has run, every login reads as signed in.
 const U_NAME = 25, U_PLAN = 9, U_RULE = 14, U_5H = 21, U_7D = 25, U_WORKERS = 7;
 const RULE_CELL = { 'in rotation': ['● in rotation', GOOD], standby: ['○ standby', HUE.blue], off: ['◌ off', GREY] };
 const LIMIT_WORDS = { five_hour: '5-hour', seven_day: 'weekly' };
-// A Claude login's .claude.json, read again only when it changes: the default's ~/.claude.json is large.
+// A login's account: a Claude login's .claude.json (the default's ~/.claude.json is large) or a Codex
+// login's auth.json id_token payload, each read again only when the file changes.
 const accounts = new Map();
 function accountOf(l) {
-  if (l.tool !== 'claude') return { email: null, plan: null };
-  const path = claudeJsonPath(l);
+  const codex = l.tool === 'codex';
+  const path = codex ? codexAuthPath(l) : claudeJsonPath(l);
   let m = null;
   try { m = statSync(path).mtimeMs; } catch { /* no file: nothing recorded */ }
   const had = accounts.get(path);
   if (had && had.m === m) return had.a;
-  const a = m == null ? { email: null, plan: null } : claudeAccount(l);
+  const a = m == null ? { email: null, plan: null } : codex ? codexAccount(l) : claudeAccount(l);
   accounts.set(path, { m, a });
   return a;
 }
-// What the view calls a login: a Claude login's email where its folder records one, a Codex login's
-// label where it was given one, else its name.
-const loginLabel = (l) => (l.tool === 'codex' ? loginLabelOf(l) : accountOf(l).email) ?? l.name;
+// What the view calls a login: the email its folder records, else a Codex login's label where it was
+// given one, else its name.
+const loginLabel = (l) => accountOf(l).email ?? (l.tool === 'codex' ? loginLabelOf(l) : null) ?? l.name;
 const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
 
 // Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check }. `out` is
@@ -1930,7 +1932,7 @@ function usageTable(repos, now, checked = null) {
     return { tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: b ? { at: b.resets_at ?? null, type: b.type } : null,
       workers: runningOn(repos, l), check: checkOf(l) };
   });
-  const codex = codexChoice(codexLogins(), now).read.map((x) => ({ tool: 'codex', login: x.login, plan: x.reading.plan, reading: x.claude,
+  const codex = codexChoice(codexLogins(), now).read.map((x) => ({ tool: 'codex', login: x.login, plan: accountOf(x.login).plan, reading: x.claude,
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login) }));
   return { claude, codex };
 }
@@ -2034,7 +2036,7 @@ function addPanel(a, t, w) {
     { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
     claude ? segLine([['     then type ', null], [then, HUE.cyan], [' and sign in with the account you want to add.', null]]) : '     and sign in with the account you want to add.',
     ...leadLines('     ', [[claude ? "Come back here. desk-q finds it within a minute, checks it isn't an account already listed, and shows its email and plan."
-      : `Come back here. desk-q finds it within a minute and lists it as ${a.label}.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w)
+      : `Come back here. desk-q finds it within a minute and shows its email and plan, or ${a.label} where its sign-in names no email.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w)
       .map((l, i) => (i ? l : segLine([['  ', null], ['2', BOLD], ['  ', null], ...l.segs.slice(1)]))),
     ...(claude && t.codex.length ? ['', ...leadLines('  ', [['A Codex login is added the same way, with ', GREY], ['a', BOLD], [' on the CODEX table, which asks for its label first.', GREY]], w)] : []),
   ];
@@ -3552,7 +3554,7 @@ export function interactive({
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (x?.login?.tool !== 'codex') return startAdding('claude');
     typed = '';
-    msg = "Type the name desk-q lists the new Codex login under, such as its account's email.";
+    msg = 'Type a label for the new Codex login. desk-q lists it by its email once it is signed in, or by this label where it has none.';
   }
   function labelKey(str, key) {
     if (key.name === 'return' || key.name === 'enter') {

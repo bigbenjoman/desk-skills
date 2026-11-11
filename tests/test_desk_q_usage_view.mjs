@@ -135,10 +135,10 @@ t('AC2 the work login in rotation', rowOf(f, 'work@example.test'),
   row(0, 'work@example.test', 'Max 5x', '● in rotation', '██████···· 58% 13:20', '███████··· 72% Mon 09:00', '0'));
 t('AC2 a folder under ~/.claude-logins the file does not list, on standby', rowOf(f, 'spare@example.test'),
   row(0, 'spare@example.test', 'Pro', '○ standby', '·········· 0% 15:00', '██········ 18% Thu 22:00', '0'));
-t('AC4 a Codex login\'s PLAN is the plan its newest reading names, and Codex has no worker count', rowOf(f, 'codexmain'),
-  row(0, 'codexmain', 'pro', '● in rotation', '██········ 16% 16:40', '███······· 27% Mon 09:00', '—'));
-t('AC4 the other Codex login on standby, its plan as logged', rowOf(f, 'alt'),
-  row(0, 'alt', 'plus', '○ standby', '·········· 0% 12:00', '█········· 9% Fri 18:00', '—'));
+t('AC4 a Codex login with no auth.json: its name, PLAN — whatever its reading logs (DS-532 AC3, AC6), and no worker count', rowOf(f, 'codexmain'),
+  row(0, 'codexmain', '—', '● in rotation', '██········ 16% 16:40', '███······· 27% Mon 09:00', '—'));
+t('AC4 the other Codex login on standby', rowOf(f, 'alt'),
+  row(0, 'alt', '—', '○ standby', '·········· 0% 12:00', '█········· 9% Fri 18:00', '—'));
 t('AC6 the line under the tabs names the logins new Claude and Codex work starts on', f[3],
   'New Claude workers start on me@example.test, Codex workers on codexmain: the most room.');
 t('AC16 standby logins read before those in rotation: the footer says when', f.find((l) => l.startsWith('  Read at')),
@@ -278,7 +278,7 @@ const W = open();
 await sleep(20);
 await W.press('6');
 t('AC5 the 5H cell says the plan has no 5-hour window, never 0% or no reading yet', rowOf(W.frame(), 'codexmain'),
-  row(0, 'codexmain', 'prolite', '● in rotation', 'no 5h limit', '███······· 27% Mon 09:00', '—'));
+  row(0, 'codexmain', '—', '● in rotation', 'no 5h limit', '███······· 27% Mon 09:00', '—'));
 W.done();
 
 // ---- AC12: a login with no reading yet
@@ -301,7 +301,7 @@ await X.press('6');
 f = X.frame();
 t('AC13 every Codex login at its limit: the line under the tabs names the first back and its reset time', f[3],
   'Every Codex login is at its limit, so no new Codex calls start. The first back is alt at 12:00.');
-t('AC13 and its RULE cell shows it at its limit', rowOf(f, 'alt').slice(0, 50), row(0, 'alt', 'plus', '■ at limit', '', '', '').slice(0, 50));
+t('AC13 and its RULE cell shows it at its limit', rowOf(f, 'alt').slice(0, 50), row(0, 'alt', '—', '■ at limit', '', '', '').slice(0, 50));
 X.done();
 codexReading(join(H, '.codex'), null, [27, at(26, 9, 0)], 'prolite');
 
@@ -314,9 +314,70 @@ await sleep(20);
 await One.press('6');
 f = One.frame();
 t('AC15 the Claude login shows only login as its rule', rowOf(f, 'me@example.test').slice(0, 50), row(1, 'me@example.test', 'Ultra', '● only login', '', '', '').slice(0, 50));
-t('AC15 so does the Codex login', rowOf(f, 'codexmain').slice(0, 50), row(0, 'codexmain', 'prolite', '● only login', '', '', '').slice(0, 50));
+t('AC15 so does the Codex login', rowOf(f, 'codexmain').slice(0, 50), row(0, 'codexmain', '—', '● only login', '', '', '').slice(0, 50));
 t('AC15 the line under the tabs says every worker runs on the one login', f[3], 'Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.');
 One.done();
+
+// ---- DS-532: a Codex row named by its auth.json id_token's email, with its plan title-cased
+// Each auth.json is given its own mtime: the view reads one again only when that changes.
+let authAt = FIXED / 1000;
+const ACCESS = ['access', 'fixture0token0never0shown'].join('-'), REFRESH = ['refresh', 'fixture0token0never0shown'].join('-');
+const idToken = (payload) => ['e30', Buffer.from(JSON.stringify(payload)).toString('base64url'), 'sig'].join('.');
+const claim = (email, plan) => ({ ...(email ? { email } : {}), 'https://api.openai.com/auth': plan ? { chatgpt_plan_type: plan } : {} });
+function auth(dir, body) {
+  const path = join(dir, 'auth.json');
+  if (body == null) rmSync(path, { force: true });
+  else { writeFileSync(path, JSON.stringify(body)); authAt += 60; utimesSync(path, authAt, authAt); }
+}
+const signedIn = (idTok) => ({ OPENAI_API_KEY: null, tokens: { id_token: idTok, access_token: ACCESS, refresh_token: REFRESH, account_id: 'a' } });
+const codexRow = async (name) => {
+  const V = open();
+  await sleep(20);
+  await V.press('6');
+  const fr = await V.until((x) => x.some((l) => l.includes('CODEX')));
+  V.done();
+  return { row: rowOf(fr, name), frame: fr.join('\n') };
+};
+const LEAD = (name, plan) => row(0, name, plan, '● only login', '', '', '').slice(0, 50);
+codexReading(join(H, '.codex'), null, [27, at(26, 9, 0)], 'self_serve');
+
+auth(join(H, '.codex'), signedIn(idToken(claim('me@x.io', 'pro'))));
+let v = await codexRow('me@x.io');
+t('DS-532 AC1 the Codex row is labelled by its id_token\'s email and its PLAN is the plan type title-cased', v.row?.slice(0, 50), LEAD('me@x.io', 'Pro'));
+t('DS-532 AC6 the session log\'s self_serve is not shown as the PLAN', v.frame.includes('self_serve'), false);
+t('DS-532 AC9 neither the access nor the refresh token\'s text is in the frame', v.frame.includes(ACCESS) || v.frame.includes(REFRESH), false);
+
+auth(join(H, '.codex'), signedIn(idToken(claim('me@x.io', null))));
+t('DS-532 AC2 an id_token with no plan type: PLAN —', (await codexRow('me@x.io')).row?.slice(0, 50), LEAD('me@x.io', '—'));
+
+auth(join(H, '.codex'), null);
+v = await codexRow('codexmain');
+t('DS-532 AC3 no auth.json: labelled by its name, PLAN —', v.row?.slice(0, 50), LEAD('codexmain', '—'));
+t('DS-532 AC3 AC6 and self_serve is not shown in its place', v.frame.includes('self_serve'), false);
+t('DS-532 AC3 and no error is shown', /auth\.json|error|could not/i.test(v.frame), false);
+writeFileSync(join(H, '.codex', 'desk-label'), 'Main Codex\n');
+t('DS-532 AC3 no auth.json: labelled by its desk label where it has one', (await codexRow('Main Codex'))?.row?.slice(0, 50), LEAD('Main Codex', '—'));
+rmSync(join(H, '.codex', 'desk-label'));
+
+auth(join(H, '.codex'), { OPENAI_API_KEY: ['sk', 'fixture0key0never0shown'].join('-'), tokens: null });
+v = await codexRow('codexmain');
+t('DS-532 AC4 an auth.json holding only an API key falls back as with none', v.row?.slice(0, 50), LEAD('codexmain', '—'));
+t('DS-532 AC4 and the key is not in the frame', v.frame.includes('fixture0key0never0shown'), false);
+
+auth(join(H, '.codex'), signedIn(`e30.${Buffer.from(JSON.stringify(claim('me@x.io', 'pro'))).toString('base64url')}`));
+t('DS-532 AC5 an id_token of two parts falls back', (await codexRow('codexmain')).row?.slice(0, 50), LEAD('codexmain', '—'));
+auth(join(H, '.codex'), signedIn('e30.!!not-json!!.sig'));
+t('DS-532 AC5 an id_token whose middle part does not decode falls back', (await codexRow('codexmain')).row?.slice(0, 50), LEAD('codexmain', '—'));
+auth(join(H, '.codex'), null);
+
+// AC7: a Codex login whose CODEX_HOME is ~/.codex-work.
+const CW = join(H, '.codex-work');
+mkdirSync(CW, { recursive: true });
+codexReading(CW, null, [9, at(30, 18, 0)], 'self_serve');
+auth(CW, signedIn(idToken(claim('work@x.io', 'plus'))));
+subscriptions([ROWS[0], ['codex', 'codexmain', '~/.codex', 'off'], ['codex', 'cw', '~/.codex-work', 'in rotation']]);
+v = await codexRow('work@x.io');
+t('DS-532 AC7 a Codex login whose folder is ~/.codex-work is labelled by its own id_token\'s email', v.row?.slice(0, 50), row(0, 'work@x.io', 'Plus', '● in rotation', '', '', '').slice(0, 50));
 
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all desk-q Usage view checks passed');

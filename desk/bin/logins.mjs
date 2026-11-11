@@ -9,8 +9,9 @@
 // The account check signs nothing in and reads no credential: a Claude login's account is what
 // `claude auth status --json` says under its CLAUDE_CONFIG_DIR, and its plan is oauthAccount's
 // planDisplayName in that folder's .claude.json (~/.claude.json for the default login). A Codex login
-// is only `codex login status` under its CODEX_HOME, whose output is never shown: it can quote part
-// of an API key. Signed-in folders under ~/.claude-logins and ~/.codex-logins that the file does not
+// is `codex login status` under its CODEX_HOME, whose output is never shown: it can quote part of an
+// API key. Its email and plan are the id_token's payload in that folder's auth.json (codexAccount);
+// the access and refresh tokens are never read out. Signed-in folders under ~/.claude-logins and ~/.codex-logins that the file does not
 // list are found: on standby when there is a file, with no rule when there is none. A login removed
 // from the rules leaves its folder and sign-in alone: the file's Removed table names the folder, so it
 // is not found again.
@@ -182,7 +183,7 @@ export function checkLogin(l, { claude = 'claude', codex = 'codex', env = proces
   if (l.tool === 'codex') {
     const r = run(codex, ['login', 'status'], loginEnv(l, env));
     if (r.error) return { ...out, state: 'error', why: r.error };
-    return r.code === 0 ? { ...out, state: 'signed in' } : out;
+    return r.code === 0 ? { ...out, state: 'signed in', ...codexAccount(l) } : out;
   }
   const r = run(claude, ['auth', 'status', '--json'], loginEnv(l, env));
   if (r.error) return { ...out, state: 'error', why: r.error };
@@ -195,6 +196,26 @@ export function checkLogin(l, { claude = 'claude', codex = 'codex', env = proces
   const account = claudeAccount(l);
   const email = [status.email, account.email].find((e) => typeof e === 'string' && e) ?? null;
   return { ...out, state: 'signed in', email, plan: account.plan ?? 'unknown' };
+}
+
+// A Codex login's account as its folder's auth.json records it, with no call and no signature check:
+// the email and the https://api.openai.com/auth claim's chatgpt_plan_type, title-cased (pro -> Pro),
+// from the id_token's payload alone. The access and refresh tokens are never read out. Each is null
+// with no file, an API key only, or an id_token that is not three parts with a JSON middle.
+//   -> { email, plan }
+export const codexAuthPath = (l) => join(l.dir, 'auth.json');
+const titleCase = (s) => s.split(/[_\s-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+export function codexAccount(l) {
+  const none = { email: null, plan: null };
+  const jwt = readJson(codexAuthPath(l))?.tokens?.id_token;
+  const parts = typeof jwt === 'string' ? jwt.split('.') : [];
+  if (parts.length !== 3) return none;
+  let p = null;
+  try { p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')); } catch { return none; }
+  if (!p || typeof p !== 'object') return none;
+  const text = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  const plan = text(p['https://api.openai.com/auth']?.chatgpt_plan_type);
+  return { email: text(p.email), plan: plan && titleCase(plan) };
 }
 
 // A Claude login's account as its folder's .claude.json records it (~/.claude.json for the default),
