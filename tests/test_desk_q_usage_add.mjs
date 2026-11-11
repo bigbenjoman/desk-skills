@@ -85,7 +85,7 @@ let f = await A.until((x) => has(x, 'Press a to add a login.'));
 const offerAt = f.findIndex((l) => l.startsWith('  If you have'));
 t('AC5 with one login of each, a line offers a to add a login', f.slice(offerAt, offerAt + 2).join(' ').replace(/\s+/g, ' ').trim(),
   'If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press a to add a login.');
-t('AC5 and the keys offer a', f.at(-1).includes('a add a login'), true);
+t('AC5 and the keys offer a', f.at(-1).includes('a add an account'), true);
 
 // ---- AC1: a adds a row on standby, waiting, and shows the sign-in command with y to copy it
 await A.press('a');
@@ -126,7 +126,11 @@ rmSync(DUP, { recursive: true, force: true });
 const E = open();
 await sleep(20);
 await E.press('6');
-await E.until((x) => has(x, 'a add a login'));
+await E.until((x) => has(x, 'a add an account'));
+// The file the last session's add left lists ~/.claude and finds login-2, so this session migrates it
+// to account pins (DS-533 AC17) before a starts another add.
+await E.until(() => /\| Account \|/.test(subsText()));
+await sleep(300);
 await E.press('a');
 t('AC4 a third Claude login waits as login-3', rowOf(E.frame(), 'login-3'), row(1, 'login-3', '—', '○ standby', 'waiting for you to sign it in …', null, '0'));
 await E.press(ESC);
@@ -165,7 +169,7 @@ E.done();
 const C = open();
 await sleep(20);
 await C.press('6');
-await C.until((x) => has(x, 'a add a login'));
+await C.until((x) => has(x, 'a add an account'));
 for (let i = 0; i < 6 && !C.frame().find((l) => l.startsWith('›'))?.includes('codexmain'); i++) await C.press(DOWN);
 await C.press('a', ...'spare', '\r');
 const CODEX_3 = join(H, '.codex-logins', 'login-3');
@@ -184,7 +188,7 @@ const release = async () => { writes.at(-1).done({ code: 0, out: '', err: '' });
 const W = open(heldOpts);
 await sleep(20);
 await W.press('6');
-await W.until((x) => has(x, 'a add a login'));
+await W.until((x) => has(x, 'a add an account'));
 await W.press('a');
 mkdirSync(BEGUN, { recursive: true });
 writeFileSync(join(BEGUN, 'begun'), '');
@@ -205,7 +209,7 @@ writes.length = 0;
 const V = open(heldOpts);
 await sleep(20);
 await V.press('6');
-await V.until((x) => has(x, 'a add a login'));
+await V.until((x) => has(x, 'a add an account'));
 await V.press('a', '\x1b[A', ' ');
 t('a rule change is saving as the folder signs in', writes.length, 1);
 checkOut = JSON.stringify({ logins: [{ tool: 'claude', configDir: BEGUN, state: 'signed in', rule: null, email: 'held@example.test' }] });
@@ -224,7 +228,7 @@ rmSync(join(H, '.claude-logins'), { recursive: true, force: true });
 const N = open();
 await sleep(20);
 await N.press('6');
-await N.until((x) => has(x, 'a add a login'));
+await N.until((x) => has(x, 'a add an account'));
 await N.press('a');
 account(join(NEW, '.claude.json'), 'other@example.test', 'Max 5x');
 f = await N.until((x) => has(x, 'other@example.test is signed in'));
@@ -239,7 +243,7 @@ writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |
 const P = open();
 await sleep(20);
 await P.press('6');
-await P.until((x) => has(x, 'a add a login'));
+await P.until((x) => has(x, 'a add an account'));
 await P.press('a');
 const pinNew = /login-\d+/.exec(P.frame().find((l) => l.trim().startsWith('CLAUDE_CONFIG_DIR=')) ?? '')?.[0];
 account(join(H, '.claude-logins', pinNew ?? 'missing', '.claude.json'), 'pin@example.test', 'Ultra');
