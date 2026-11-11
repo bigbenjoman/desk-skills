@@ -244,6 +244,11 @@ const LANE_D = /(?<!\b(?:not|from|no longer|than) )\blane D\b/i;
 const NO_CANVAS = /\bcanvas (?:is |was )?not (?:saved|on)\b|\bno saved canvas\b|\blinks no Claude Design canvas\b|\bonly (?:in|design is a) Figma\b/i;
 export const sessionPark = (question) => LANE_C.test(question) || (LANE_D.test(question) && NO_CANVAS.test(question)) || neverStep(question) !== null;
 
+// A park saying its ticket has no worker work left: it asks for the ticket to leave the queue, or says
+// no worker has anything to do on it. A requeue only parks it again, so drop is its recommendation.
+const NO_WORKER_WORK = /\bno (?:more |further )?worker work\b|\bnothing (?:left )?for (?:a |the |any )?worker\b|\b(?:take|drop|remove) (?:it|this(?: ticket)?|[A-Z][A-Z0-9]*-\d+) (?:off|out of|from) (?:the |its |this )?(?:autopilot )?(?:queue|batch)\b/i;
+export const noWorkerWork = (question) => NO_WORKER_WORK.test(String(question ?? ''));
+
 // A queue ticket only an interactive session takes on: lane C, one parked at triage on its lane, or
 // one whose worker parked it in lane C or a canvas-less lane D. Any other lane D park is requeued.
 export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? ''));

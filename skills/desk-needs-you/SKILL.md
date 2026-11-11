@@ -38,7 +38,8 @@ Otherwise it prints:
 `<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch). Pass it to
 `record` as it is printed.
 
-`<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `plan` (an
+`<kind>` is `parked` (lane A, B or E), `session` (lane C or D; both offer `drop`, recommended where
+the park says there is no worker work), `spine` (feature specs), `plan` (an
 epic admitted with `/desk-admit` or by intake: its drafted plan, in the file the need names, waits
 for start, discard or an edit, and its children wait behind it. The supervisor acts on the answer
 at its next tick: start starts the feature batch, an edit is applied as it stands and the batch
@@ -85,7 +86,10 @@ line on what it recorded.
   answered but not requeued, and desk-q shows it waiting on that session. `SendMessage` that text to the session named `<name>`. If that name is
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
-- **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).
+- **`drop`** (a `parked` or `session` item, a stopped session, or a PR closed unmerged): takes the
+  ticket out of its batch and removes its worktree (`queue.mjs drop`), and leaves Jira as it is. It
+  is recommended first where the park says the ticket has no worker work. A worktree holding
+  uncommitted files or unpushed commits refuses it, naming the worktree and what is in it.
 - **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the
   `/desk-ticket` or `/desk-admit` to run.
 - **`not-now`**: puts it in the not-now register; `list` and `left` hide it until its

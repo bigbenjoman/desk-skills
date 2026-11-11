@@ -411,6 +411,29 @@ function dropStaleWorktree(key, cut) {
   return wt;
 }
 
+// The worktree a dropped ticket `t` was given: removed with its local branch when nothing in it is
+// missing from origin. -> the path removed, or null when there is none. Throws, removing nothing,
+// naming the worktree and what it holds, when it has uncommitted files or commits no origin ref has.
+function dropWorktree(key, t) {
+  const wt = t.worktree || join(worktreesDir(), key);
+  if (!existsSync(wt)) return null;
+  const lines = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split('\n').filter(Boolean);
+  const listed = (ls) => `${ls.slice(0, 5).join('; ')}${ls.length > 5 ? `; and ${ls.length - 5} more` : ''}`;
+  const holds = [];
+  let branch = 'HEAD';
+  try {
+    const dirty = lines('status', '--porcelain').map((l) => l.slice(3));
+    if (dirty.length) holds.push(`uncommitted or untracked files: ${listed(dirty)}`);
+    branch = lines('rev-parse', '--abbrev-ref', 'HEAD')[0];
+    const unpushed = lines('log', '--format=%h %s', 'HEAD', '--not', '--remotes=origin');
+    if (unpushed.length) holds.push(`${unpushed.length} commit(s) not pushed: ${listed(unpushed)}`);
+  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
+  if (holds.length) throw new Error(`${key}'s worktree ${wt} holds work origin does not have (${holds.join('; ')}): push or discard it, then drop ${key} again. Nothing was dropped`);
+  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
+  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
+  return wt;
+}
+
 // Move `key` from this queue `q` (whose lock is held) to the running batch `to` (`standing` for the
 // standing batch), under that batch's queue lock too. It joins from this batch's triage record, held
 // behind its blockers there and the unfinished tickets it collides with, and its next worker is cut
@@ -859,10 +882,12 @@ switch (cmd) {
 
   case 'drop': {
     const key = args[0];
-    ticket(q, key);
+    const t = ticket(q, key);
+    if (t.state === 'running') throw new Error(`${key} is running: stop its worker first. Nothing was dropped`);
+    const removed = dropWorktree(key, t);
     delete q.tickets[key];
     save(q);
-    console.log(`dropped ${key} from the batch`);
+    console.log(`dropped ${key} from the batch${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : ''}`);
     break;
   }
 
