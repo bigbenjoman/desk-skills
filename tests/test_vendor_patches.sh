@@ -2,7 +2,8 @@
 # suite: vendor patches (a local change re-applied on upgrade)
 # Tests sources.json `patches`: `skills-upstream upgrade` re-applies a skill's local patch to the new
 # upstream before it lands in vendor/, records the tree hash after patching, and refuses the skill,
-# leaving vendor/ and the pin alone, when the patch no longer applies. Against a scratch desk-skills
+# leaving vendor/ and the pin alone, when the patch no longer applies. An upgrade rewrites
+# sources.json only when it moved something, so a checkout upgrade leaves it byte-for-byte. Against a scratch desk-skills
 # tree, a stub gh serving a fake upstream and a temp dir inside a git repo; no network. Then checks
 # this repo's own patched skills: each patch is applied in vendor/ and the hash is the patched one.
 set -u
@@ -65,9 +66,33 @@ check "AC3 tree_sha256 is recorded after patching (rehash of vendor/ agrees)" '[
 
 # Upstream moves on without touching the patched text: the patched result equals vendor/.
 export LATEST=cccccccccccc
+cp "$R/vendor/sources.json" "$T/sources.before"
 U upgrade demo
 check "an upstream identical under the patch updates the pin only" \
   '[ $rc -eq 0 ] && [[ "$out" == *"upstream content is identical to vendor/demo; pin updated only"* ]] && [ "$(pin)" = ccccccccc ]'
+# shellcheck disable=SC2034
+moved=$(diff "$T/sources.before" "$R/vendor/sources.json" | grep -E '^[<>]')
+check "AC2 a vendored upgrade changes only that entry's pin lines in sources.json" \
+  '[ -n "$moved" ] && ! printf "%s\n" "$moved" | grep -vqE "^[<>] +\"(commit|date)\": "'
+
+# AC1: upgrading a checkout entry pulls the clone and leaves a hand-formatted sources.json untouched.
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+git init -q --bare "$T/clerk.git"
+git clone -q "$T/clerk.git" "$T/clerk-work" 2>/dev/null
+echo one > "$T/clerk-work/SKILL.md"; git -C "$T/clerk-work" add -A; git -C "$T/clerk-work" commit -qm one
+git -C "$T/clerk-work" branch -qM main; git -C "$T/clerk-work" push -q origin main
+mkdir -p "$HOME/.agents/skills"; git clone -q -b main "$T/clerk.git" "$HOME/.agents/skills/clerk"
+echo two > "$T/clerk-work/SKILL.md"; git -C "$T/clerk-work" commit -qam two; git -C "$T/clerk-work" push -q origin main
+cp "$R/vendor/sources.json" "$T/sources.keep"
+cat > "$R/vendor/sources.json" <<'J'
+{"skills": {"clerk": {"source": {"type": "checkout", "repo": "acme/clerk", "branch": "main"},
+  "patches": ["kept/inline.patch"]}}}
+J
+cp "$R/vendor/sources.json" "$T/sources.before"
+U upgrade clerk
+check "AC1 a checkout upgrade pulls the clone" '[ $rc -eq 0 ] && grep -qx two "$HOME/.agents/skills/clerk/SKILL.md"'
+check "AC1 and leaves sources.json byte-for-byte as it was" 'cmp -s "$T/sources.before" "$R/vendor/sources.json"'
+cp "$T/sources.keep" "$R/vendor/sources.json"
 
 # Upstream rewrites the patched line: refused loudly, nothing reverted.
 printf 'line one\nAsk first, and ask again.\nline three\n' > "$UP/SKILL.md"
@@ -124,6 +149,19 @@ loader.exec_module(m)
 print(m.tree_sha256(sys.argv[2]))
 PY
 REPO="$S/.."
+# AC2: sources.json is already in save()'s format, so a vendored upgrade's diff is only its pin and hash.
+FMT="$T/format.py"
+cat > "$FMT" <<'PY'
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader("su", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("su", loader))
+sys.modules["su"] = m
+loader.exec_module(m)
+text = open(m.SOURCES).read()
+print("same" if json.dumps(json.loads(text), indent=2, ensure_ascii=False) + "\n" == text else "differs")
+PY
+out=$(python3 "$FMT" "$REPO/bin/skills-upstream"); rc=$?
+check "AC2 this repo's vendor/sources.json is in skills-upstream's save format" '[ "$out" = same ]'
 for name in $(jq -r '.skills | to_entries[] | select(.value.patches) | .key' "$REPO/vendor/sources.json"); do
   for p in $(jq -r --arg n "$name" '.skills[$n].patches[]' "$REPO/vendor/sources.json"); do
     out=$(cd "$REPO/vendor/$name" && GIT_CEILING_DIRECTORIES="$(cd "$REPO/vendor" && pwd -P)" git apply --reverse --check "$REPO/$p" 2>&1); rc=$?
