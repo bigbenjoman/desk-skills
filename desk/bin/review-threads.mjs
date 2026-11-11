@@ -6,6 +6,7 @@
 //   review-threads.mjs query      the GraphQL query the payload answers
 //   review-threads.mjs read --handle <§1 GitHub handle> --clean "<§4 Clean review verdict>" < payload.json
 //   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> < payload.json
+//   review-threads.mjs approved --handle <handle> --clean "<row>" < payload.json   (approvedAt)
 //
 // prints one JSON line: { decision, head, verdict, resolve: [thread], left: [thread] }, where a thread is
 // { id, path, line, first, text }: `first` is the first line of its opening comment, `text` the two as
@@ -32,7 +33,7 @@ import { LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
   headRefOid reviewDecision
-  reviews(last:100){nodes{id author{login} body commit{oid}}}
+  reviews(last:100){nodes{id author{login} body state submittedAt commit{oid}}}
   reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine
     comments(first:1){nodes{author{login} body pullRequestReview{id}}}}}}}}`;
 
@@ -93,7 +94,26 @@ export function readVerdict(payload, { handle, clean, carry, scope }) {
   return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, ...(targeted ? { targeted } : {}) };
 }
 
-// A thread as one line names it: `path:line "first line"`, cut to a readable length.
+// When the PR last had an approval at its head: the newest of an APPROVED review of the head and the
+// handle's clean verdict at it (never one carried from an older head). { head, at, by }, `at` null when
+// there is neither, for the driver to weigh against when a red approval check's run started.
+export function approvedAt(payload, { handle, clean }) {
+  const pr = payload?.data?.repository?.pullRequest;
+  if (!pr) return null;
+  const head = pr.headRefOid ?? '';
+  const reviews = pr.reviews?.nodes ?? [];
+  const hits = reviews.filter((r) => r.state === 'APPROVED' && head && r.commit?.oid === head && r.submittedAt)
+    .map((r) => ({ at: r.submittedAt, by: `an APPROVED review by ${r.author?.login ?? 'someone'}` }));
+  if (rowSet(clean)) {
+    const { v, review } = verdictAtHead(reviews, handle, head, String(clean).trim());
+    const r = v.clean && review?.id ? reviews.find((x) => x.id === review.id) : null;
+    if (r?.submittedAt) hits.push({ at: r.submittedAt, by: 'a clean review verdict' });
+  }
+  const best = hits.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))[0];
+  return { head, at: best?.at ?? null, by: best?.by ?? null };
+}
+
+// A thread as one line names it:`path:line "first line"`, cut to a readable length.
 function threadLine(t, max = 100) {
   const where = t.path ? `${t.path}${t.line ? `:${t.line}` : ''}` : 'a PR-level thread';
   const first = t.first.length > max ? `${t.first.slice(0, max - 1)}…` : t.first;
@@ -127,6 +147,11 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   } catch { /* unreadable: null */ }
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
   console.log(JSON.stringify(r));
+} else if (a[0] === 'approved') {
+  let r = null;
+  try { r = approvedAt(JSON.parse(readFileSync(0, 'utf8')), { handle: at('--handle'), clean: at('--clean') }); } catch { /* unreadable: null */ }
+  if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
+  console.log(JSON.stringify(r));
 } else {
-  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> < payload.json'); process.exit(2);
+  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> < payload.json | approved --handle <login> --clean "<row>" < payload.json'); process.exit(2);
 }
