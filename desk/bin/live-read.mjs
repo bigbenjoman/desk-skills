@@ -16,8 +16,10 @@
 //
 // A read that exits 0 having printed at most MAX_BYTES has its stdout saved, mode 0644, to
 // <fixtures>/<KEY>/<name>.json, where the requeued worker reads it as an untrusted API response.
-import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { BATCHES_DIR } from './desk-env.mjs';
 import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
 import { parseOperatorChecks } from './fix-tries.mjs';
 import { parkOnlyNames } from './undraft.mjs';
@@ -117,4 +119,52 @@ export function saveFixture(fixtures, key, name, out) {
   copyFileSync(out, to);
   chmodSync(to, 0o644);
   return to;
+}
+
+// Where a ticket's fixtures are copied in its worktree, relative to the root: untracked, and kept out
+// of git status by the worktree's info/exclude.
+export const WORKTREE_FIXTURES = '.desk-fixtures';
+
+// The repo's own state folder for a state folder that may be a named batch's (<repo state>/batches/<name>).
+export const repoStateOf = (state) => state.replace(new RegExp(`[/\\\\]${BATCHES_DIR}[/\\\\][^/\\\\]+[/\\\\]?$`), '');
+
+// Copies ticket `key`'s fixtures into `worktree`/WORKTREE_FIXTURES/<key>/, from <state>/fixtures/<key>/
+// and, for a named batch, the repo state's, where a person saves them and which a worker cannot read.
+// Only regular files of at most `max` bytes are copied; a name in both folders is copied from the
+// batch's. A file over the limit, a name holding a path separator, or anything that is not a regular
+// file (a symlink, a folder) is left, with why. Returns null when neither folder exists, otherwise
+// { dir, copied: [name], refused: [{ name, why }] }.
+export function copyFixtures({ state, key, worktree, max = MAX_BYTES }) {
+  const from = [...new Set([state, repoStateOf(state)])].map((s) => join(s, 'fixtures', key)).filter((d) => existsSync(d));
+  if (!from.length) return null;
+  const dir = join(worktree, WORKTREE_FIXTURES, key);
+  const copied = [];
+  const refused = [];
+  for (const src of from) {
+    for (const name of readdirSync(src).sort()) {
+      if (copied.includes(name)) continue;
+      if (/[/\\]/.test(name)) { refused.push({ name, why: 'its name holds a path separator' }); continue; }
+      const st = lstatSync(join(src, name));
+      if (!st.isFile()) { refused.push({ name, why: `it is ${st.isSymbolicLink() ? 'a symlink' : 'not a file'}` }); continue; }
+      if (st.size > max) { refused.push({ name, why: `it is ${st.size} bytes, over the ${max}-byte copy limit` }); continue; }
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(join(src, name), join(dir, name));
+      chmodSync(join(dir, name), 0o644);
+      copied.push(name);
+    }
+  }
+  if (copied.length) excludeFromGit(worktree, `/${WORKTREE_FIXTURES}/`);
+  return { dir, copied, refused };
+}
+
+// Adds `pattern` to the worktree's info/exclude, once, so it stays out of git status without touching
+// the repo's .gitignore (setup-worktree.sh exclude_from_git).
+function excludeFromGit(worktree, pattern) {
+  const r = spawnSync('git', ['-C', worktree, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' });
+  if (r.status !== 0) return;
+  const excl = resolve(worktree, r.stdout.trim());
+  const now = existsSync(excl) ? readFileSync(excl, 'utf8') : '';
+  if (now.split('\n').includes(pattern)) return;
+  mkdirSync(dirname(excl), { recursive: true });
+  appendFileSync(excl, `${now && !now.endsWith('\n') ? '\n' : ''}${pattern}\n`);
 }
