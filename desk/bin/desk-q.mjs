@@ -2039,31 +2039,51 @@ function usageHeadline(repos, now, t) {
     [` is at its ${LIMIT_WORDS[type] ? `${LIMIT_WORDS[type]} ` : ''}limit${when(f) ? ` until ${when(f)}` : ''}${out.length > 1 ? `, and ${out.length - 1} more` : ''}.`, GREY]]);
 }
 
-// A login being added: { tool, login, label }, its folder not signed in yet. It is one row on standby,
-// waiting, until the account check finds its folder signed in.
-const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir;
+// A login being added: { tool, login, label, first, taken }, its folder not signed in yet. It is one row on
+// standby, waiting, until the account check finds its folder signed in. On a computer with no pins, a
+// Claude add first signs the current account in to a folder of its own: `first` is { email, next, rule },
+// the account, the new account's folder after it, and the rule its folder takes from ~/.claude. `taken`
+// is the pinned account the folder was signed in to instead of a new one.
+const isAdding = (adding, x) => adding && x.login.tool === adding.tool && [adding.login.dir, adding.first?.next.dir].includes(x.login.dir);
 function addingRow(a) {
-  const segs = [['  ', null], ...fitCell([[cut(a.label ?? a.login.name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
-    ...fitCell([['waiting for you to sign it in …', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
+  const claude = a.tool === 'claude';
+  const name = claude ? a.first?.email ?? 'new account' : a.label ?? a.login.name;
+  const segs = [['  ', null], ...fitCell([[cut(name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
+    ...fitCell([[claude ? 'waiting for you to sign in…' : 'waiting for you to sign it in …', GREY]], U_5H + U_7D), ...fitCell([[claude ? '0' : '—', GREY]], U_WORKERS, true)];
   return { id: 'adding', segs: segs.filter(([s]) => s), line: segText(segs) };
 }
 // Lines of coloured runs wrapped to `w`, the first after `lead` and the rest under it.
 const leadLines = (lead, segs, w) => wrapSegs(segs, Math.max(20, w - lead.length)).map((l, i) => segLine([[i ? ' '.repeat(lead.length) : lead, null], ...l]));
-// How to sign the login being added in, in place of the key and notes while desk-q waits.
-function addPanel(a, t, w) {
+// A numbered step, its runs wrapped under the text after the number.
+const stepLines = (n, segs, w) => leadLines('     ', segs, w).map((l, i) => (i ? l : segLine([['  ', null], [n, BOLD], ['  ', null], ...l.segs.slice(1)])));
+// How to sign the Claude account being added in, in place of the key and notes while desk-q waits.
+function addAccountPanel(a, w) {
   const { shell, then } = signInParts(a.login);
-  const claude = a.tool === 'claude';
+  const steps = a.first
+    ? [...stepLines('1', [['In another terminal, run ', null], [shell, HUE.cyan], [', then type ', null], [then, HUE.cyan], [` and sign in to ${a.first.email}.`, null]], w),
+      ...stepLines('2', [['Then desk asks for the account you want to add, in a folder of its own.', null]], w)]
+    : [{ ...segLine([['  ', null], ['1', BOLD], ['  In another terminal, run ', null], [shell, HUE.cyan]]), whole: true },
+      ...stepLines('2', [['Type ', null], [then, HUE.cyan], [' and sign in to the account you want to add.', null]], w)];
   return [
-    bold(`  Add a ${claude ? 'Claude' : 'Codex'} login`),
-    ...leadLines('  ', [[`desk never sees your password or token. You sign in with ${claude ? "Claude Code's" : "Codex's"} own login, and the login keeps its own folder, so its sessions and settings stay apart from your others.`, GREY]], w),
+    bold('  ADD A CLAUDE ACCOUNT'),
+    '',
+    ...steps,
+    '',
+    ...leadLines('  ', [["Desk adds the account on standby as soon as it sees you're signed in. An account that's already listed isn't added twice: desk asks you to sign in to a different one.", GREY]], w),
+    ...(a.taken ? ['', ...leadLines('  ', [[`That's ${a.taken}, which desk already has. Sign this folder in to a different account, or press esc.`, null]], w)] : []),
+  ];
+}
+// How to sign the Codex login being added in.
+function addPanel(a, w) {
+  const { shell } = signInParts(a.login);
+  return [
+    bold('  Add a Codex login'),
+    ...leadLines('  ', [["desk never sees your password or token. You sign in with Codex's own login, and the login keeps its own folder, so its sessions and settings stay apart from your others.", GREY]], w),
     '',
     segLine([['  ', null], ['1', BOLD], ['  In another terminal, run:', null]]),
     { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
-    claude ? segLine([['     then type ', null], [then, HUE.cyan], [' and sign in with the account you want to add.', null]]) : '     and sign in with the account you want to add.',
-    ...leadLines('     ', [[claude ? "Come back here. desk-q finds it within a minute, checks it isn't an account already listed, and shows its email and plan."
-      : `Come back here. desk-q finds it within a minute and shows its email and plan, or ${a.label} where its sign-in names no email.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w)
-      .map((l, i) => (i ? l : segLine([['  ', null], ['2', BOLD], ['  ', null], ...l.segs.slice(1)]))),
-    ...(claude && t.codex.length ? ['', ...leadLines('  ', [['A Codex login is added the same way, with ', GREY], ['a', BOLD], [' on the CODEX table, which asks for its label first.', GREY]], w)] : []),
+    '     and sign in with the account you want to add.',
+    ...stepLines('2', [[`Come back here. desk-q finds it within a minute and shows its email and plan, or ${a.label} where its sign-in names no email.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w),
   ];
 }
 
@@ -2083,7 +2103,7 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   };
   const claudeRows = table('CLAUDE', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
   const rows = [...claudeRows, ...(claudeRows.length && codexRows.length ? [{ line: '' }] : []), ...codexRows];
-  if (adding) return { head: [...leadLines('', usageHeadline(repos, now, t).segs, w), ''], rows, foot: ['', ...addPanel(adding, t, w)] };
+  if (adding) return { head: [...leadLines('', usageHeadline(repos, now, t).segs, w), ''], rows, foot: ['', ...(adding.tool === 'claude' ? addAccountPanel(adding, w) : addPanel(adding, w))] };
   const all = [...t.claude, ...t.codex];
   const key = leadLines('  ', t.claude.length <= 1 && t.codex.length <= 1
     ? [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]]
@@ -3321,7 +3341,7 @@ export function interactive({
   // Usage's account check: `checked` the last one's logins by checkKey, at `checkedAt`; `checking` while
   // one runs. `saving` while a rule change or removal runs; `undo`, what u puts back.
   let checked = null, checkedAt = null, checking = false, saving = false, undo = null;
-  // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` ({ tool, login, label })
+  // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` (as isAdding describes)
   // until the check finds it signed in or esc stops it, the check rerun by `addTimer`.
   let typed = null, adding = null, addTimer = null;
   const stack = [];
@@ -3374,7 +3394,7 @@ export function interactive({
     if (tab === 'usage' && hasTabs()) {
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
       const s = usageParts(repos, { now, width: w, checked, adding, selected: selId });
-      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc stop waiting · : command · q quit` };
+      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy command · esc stop adding · : command · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
       const copy = x?.fix ? 'y copy command · ' : '';
       return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? `space change rule · x remove · ${copy}` : ''}a add an account · ${cmdKeys}` };
@@ -3584,13 +3604,21 @@ export function interactive({
   // ---- adding a login ----
   // The next folder for a login of `tool`, its row waiting on standby and the check rerun until it is
   // signed in. A Codex login's folder is made now, holding its label; a Claude one is made by its sign-in.
+  // With no Claude account pinned and ~/.claude signed in, the first folder is for ~/.claude's account
+  // and the next one for the new account.
   function startAdding(tool, name = null) {
     const subs = readSubscriptions(subscriptionsPath());
-    const f = nextLoginFolder(tool, subs, (tool === 'claude' ? claudeLogins() : codexLogins()).length);
+    const email = tool === 'claude' && !multiAccount(subs) ? accountOf(defaultLogin('claude')).email?.toLowerCase() ?? null : null;
+    const f = nextLoginFolder(tool, subs, email ? 0 : (tool === 'claude' ? claudeLogins() : codexLogins()).length);
     if (tool === 'codex') {
       try { makeLabelledFolder(f.dir, name); } catch (e) { msg = `Could not make the new login's folder ${f.dir}: ${describeCrash(e)}`; return; }
     }
-    adding = { tool, login: makeLogin({ tool, name: f.name, folder: f.dir, rule: 'standby', source: 'found' }), label: name };
+    const folder = (x) => makeLogin({ tool, name: x.name, folder: x.dir, rule: 'standby', source: 'found' });
+    adding = { tool, login: folder(f), label: name };
+    if (email) {
+      const own = subs.logins.find((l) => l.tool === 'claude' && !l.configDir);
+      adding.first = { email, next: folder(nextLoginFolder(tool, { ...subs, logins: [...subs.logins, adding.login] }, 0)), rule: own?.rule === 'in rotation' ? 'in rotation' : 'standby' };
+    }
     tried.add('migrate');
     selId = 'adding';
     msg = `esc stops waiting and removes ${name ?? f.name}.`;
@@ -3599,17 +3627,21 @@ export function interactive({
     if (!checking) checkLogins();
   }
   const stopAdding = () => { clearInterval(addTimer); addTimer = null; adding = null; };
-  // The check found the folder being added: signed in, it stays on standby (a computer with no
-  // subscriptions file gets the rule written, so it has one); signed in to an account already listed,
-  // it is refused. Anything else waits for the next check, as does a save while another is running.
+  // The check found the folder being added. The first add's folder for the current account is pinned to
+  // whatever it signed in to. Otherwise, signed in, it stays on standby (settleAccounts pins a new
+  // Claude folder first; a computer with no subscriptions file gets the rule written, so it has one);
+  // signed in to an account already listed, it keeps waiting and the panel says so. Anything else waits
+  // for the next check, as does a save while another is running.
   function addChecked() {
     const a = adding;
     const c = checked?.get(checkKey(a.tool, a.login.configDir));
-    if (sameAccountAs(c)) {
-      stopAdding();
-      selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      msg = `${a.login.name} is signed in to the same account as ${sameAccountAs(c)}, so desk won't use it. x removes it.`;
-    } else if (c?.state === 'signed in') {
+    if (a.first) {
+      if (!saving && c?.liveEmail && ['signed in', 'not set up'].includes(c.state)) pinFirst(a, c.liveEmail.toLowerCase());
+      return;
+    }
+    const taken = sameAccountAs(c) ? c.liveEmail?.toLowerCase() ?? null : null;
+    if (taken !== (a.taken ?? null)) adding = { ...a, taken };
+    if (c?.state === 'signed in') {
       if (c.rule !== 'standby' && saving) return;
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
@@ -3617,6 +3649,27 @@ export function interactive({
       if (c.rule === 'standby') msg = said;
       else saveLogin(['set', a.tool, a.login.name, 'standby'], said, null);
     }
+  }
+  // The current account's folder is signed in: pinning it starts multi-account mode, ~/.claude going to
+  // the Removed table, and the folder takes ~/.claude's rule. Then the add waits for the new account.
+  function pinFirst(a, email) {
+    saving = true;
+    msg = 'Saving…';
+    const fail = (r) => { saving = false; stopAdding(); msg = notSaved(r); if (!done) draw(); };
+    const next = () => {
+      saving = false;
+      lastLogins = null;
+      adding = { tool: a.tool, login: a.first.next, label: null };
+      selId = 'adding';
+      msg = `${email} signs in for desk through ${a.login.folder}. esc stops waiting and removes ${a.first.next.name}.`;
+      if (!done && !checking) checkLogins();
+      if (!done) draw();
+    };
+    loginsWith(['pin', 'claude', a.login.name], (r) => {
+      if (r.code !== 0) return fail(r);
+      if (a.first.rule !== 'in rotation') return next();
+      loginsWith(['set', 'claude', a.login.name, 'in rotation'], (s) => (s.code === 0 ? next() : fail(s)));
+    });
   }
   // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
   // label. A folder the sign-in began is removed from the rules instead, so it is not found again.
@@ -3650,6 +3703,7 @@ export function interactive({
     else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ' && typed.length < LABEL_MAX) typed += str;
     return frame();
   }
+  const notSaved = (r) => `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^logins: /, '') ?? `desk-env exited ${r.code}`}`;
   // A login's rule set, or the login removed, then the footer says what changed and u puts back `then`.
   function saveLogin(args, said, then) {
     saving = true;
@@ -3657,7 +3711,7 @@ export function interactive({
     loginsWith(args, (r) => {
       saving = false;
       if (r.code === 0) { undo = then; msg = `${said}${then ? ' · u undo' : ''}`; }
-      else msg = `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^logins: /, '') ?? `desk-env exited ${r.code}`}`;
+      else msg = notSaved(r);
       if (!done) draw();
     });
   }
