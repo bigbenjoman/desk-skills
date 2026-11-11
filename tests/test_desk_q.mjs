@@ -118,7 +118,16 @@ const vpl3 = lines(repo.out).find((l) => /VPL-3/.test(l)) ?? '';
 t('AC7 waiting, behind the running blocker, not the merged one', /waiting\s+behind VPL-1\s/.test(vpl3) && !/VPL-0/.test(vpl3), true);
 // ---- AC8: prefix, spawn order, position, state, detail, title, done count
 const pre = W.run('--plain', 'vo');
-t('AC8 a prefix resolves', pre.code === 0 && pre.out === repo.out, true);
+// Each run reads the clock itself, so a minute can tick between two of them: compare with the
+// relative times ("4m ago", "1h 0m ago", "just now") masked and runs of spaces closed up.
+const unclocked = (s) => s.replace(/(?:\d+[dhm] )*\d+[dhm] ago|just now/g, 'AGO').replace(/ +/g, ' ');
+t('AC8 a prefix resolves', pre.code === 0 && unclocked(pre.out) === unclocked(repo.out), true);
+// DS-527: the 'vo' run as it reads when the clock has ticked a minute past the 'voicepa' run (the
+// last pass "4m ago" becomes "5m ago"; its "as of" clock time does not move) still matches; another
+// repo's table still does not.
+const preLater = pre.out.replace(/\b4m ago\b/g, '5m ago');
+t('DS-527 AC1 a minute ticking between the two runs still resolves', preLater !== repo.out && unclocked(preLater) === unclocked(repo.out), true);
+t('DS-527 AC2 a prefix that lands on another repo fails the comparison', unclocked(W.run('--plain', 'desk-skills').out) === unclocked(repo.out), false);
 const tickets = lines(pre.out).filter((l) => /^\s+\*?\d+\s{2}/.test(l));
 t('AC8 unfinished tickets in spawn order with positions', tickets.map((l) => l.trim().split(/\s+/).slice(0, 2).join(' ')).join(), '1 VPL-1,2 VPL-2,3 VPL-3');
 t('AC8 state, detail and triage title', /running\s+stage 4\/9 as of \d\d:\d\d\s+—\s+—\s+Running-late sheet$/.test(tickets[0]), true);
