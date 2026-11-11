@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule, multiAccount, toolLogins, needsMigration,
+  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule, multiAccount, toolLogins, needsMigration, codexAccount,
 } from '../desk/bin/logins.mjs';
 
 let fails = 0;
@@ -147,7 +147,16 @@ c = await cli('check', '--json');
 const codexJson = JSON.parse(c.out).logins.find((l) => l.tool === 'codex' && l.name === 'default');
 t('DS-532 AC8 the check\'s JSON names the Codex login\'s email and plan from its id_token', `${codexJson.email} ${codexJson.plan}`, 'me@x.io Pro');
 t('DS-532 AC8 and neither the access nor the refresh token\'s text', c.out.includes(ACCESS) || c.out.includes(REFRESH), false);
+const cxDefault = toolLogins('codex', parseSubscriptions(FILE))[0];
+const authIs = (body) => { writeFileSync(join(H, '.codex', 'auth.json'), typeof body === 'string' ? body : JSON.stringify(body)); return JSON.stringify(codexAccount(cxDefault)); };
+const NONE = JSON.stringify({ email: null, plan: null });
+t('DS-532 codexAccount: no plan type gives a null plan', authIs({ tokens: { id_token: idToken({ email: 'me@x.io' }) } }), JSON.stringify({ email: 'me@x.io', plan: null }));
+t('DS-532 codexAccount: an API key only gives nothing', authIs({ OPENAI_API_KEY: 'k' }), NONE);
+t('DS-532 codexAccount: an id_token of two parts gives nothing', authIs({ tokens: { id_token: 'a.b' } }), NONE);
+t('DS-532 codexAccount: an id_token whose middle does not decode gives nothing', authIs({ tokens: { id_token: 'a.!!!.c' } }), NONE);
+t('DS-532 codexAccount: an auth.json that is not JSON gives nothing', authIs('{not json'), NONE);
 rmSync(join(H, '.codex', 'auth.json'));
+t('DS-532 codexAccount: no auth.json gives nothing', JSON.stringify(codexAccount(cxDefault)), NONE);
 c = await cli('set', 'claude', 'login-2', 'sometimes');
 t('AC9 an unknown rule is refused, naming the three', `${c.rc} ${c.out.trim()}`, '1 logins: "sometimes" is not a rule: use one of `in rotation`, `standby`, `off`');
 c = await cli('set', 'codex', 'login-2', 'in', 'rotation');
