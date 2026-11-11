@@ -4,7 +4,8 @@
   harness-rules.py add <plan.json>          apply a plan; prints which rules were new. A plan for a
                                             repo's .claude/ also gets the orchestrator-tools entries
                                             (Monitor, mcp__claude-in-chrome__*, ArtifactComments,
-                                            ArtifactData, Edit on the repo's session memory dir;
+                                            ArtifactData, desk-design.mjs check/status/save/
+                                            import/propose, Edit on the repo's session memory dir;
                                             ~/.desk-autopilot and ~/.claude/desk as
                                             additionalDirectories with Read on each, Edit on the
                                             first; Read on the config files in ~/.config/desk, and
@@ -432,10 +433,14 @@ REOWNED = [("ask", ROUTE_ASK, "jira-assign-self", "jira-create")]
 
 # Tools an orchestrator or interactive desk session relies on, written whenever `add` writes a plan
 # to a repo: Monitor (waiting on a batch), the Chrome extension's tools, the Artifact tools Claude
-# Design canvases are read with, Edit on this repo's session memory directory, and the desk folders
+# Design canvases are read with, desk-design.mjs's DESIGN_COMMANDS (they write only the state folder,
+# the design directory and a docs/design-* worktree, and never push; `write` and `compare --out` take
+# any path and `render` and `compare` launch a browser, so those keep prompting), Edit on this repo's session memory directory, and the desk folders
 # it works in all day (DESK_FOLDERS).
 ORCHESTRATOR = "orchestrator-tools"
-ORCHESTRATOR_TOOLS = ["Monitor", "mcp__claude-in-chrome__*", "ArtifactComments", "ArtifactData"]
+DESIGN_COMMANDS = ["check", "status", "save", "import", "propose"]
+ORCHESTRATOR_TOOLS = ["Monitor", "mcp__claude-in-chrome__*", "ArtifactComments", "ArtifactData"] + [
+    f"Bash(node ~/.claude/desk/bin/desk-design.mjs {c} *)" for c in DESIGN_COMMANDS]
 # The batch state and the installed desk scripts are additional directories with Read on each, and
 # Edit under the state folder (design snapshots land there). Edit on the install asks, so a mode that
 # approves edits inside the session's directories cannot change what workers run. The desk config
