@@ -232,6 +232,23 @@ t('AC2 with no subscriptions file the new login is saved on standby', /^\| `clau
 t('AC2 and its row shows it on standby', rowOf(f, 'other@example.test')?.slice(0, 50), row(1, 'other@example.test', 'Max 5x', '○ standby', '', null, '').slice(0, 50));
 N.done();
 
+// ---- AC3 with pins: a new folder signed in to a pinned account is refused, naming the pinned login
+rmSync(join(H, '.claude-logins'), { recursive: true, force: true });
+account(join(H, '.claude-logins', 'work', '.claude.json'), 'pin@example.test', 'Ultra');
+writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `work` | `~/.claude-logins/work` | `pin@example.test` | `in rotation` |\n| `codex` | `codexmain` | `~/.codex` | `-` | `in rotation` |\n');
+const P = open();
+await sleep(20);
+await P.press('6');
+await P.until((x) => has(x, 'a add a login'));
+await P.press('a');
+const pinNew = /login-\d+/.exec(P.frame().find((l) => l.trim().startsWith('CLAUDE_CONFIG_DIR=')) ?? '')?.[0];
+account(join(H, '.claude-logins', pinNew ?? 'missing', '.claude.json'), 'pin@example.test', 'Ultra');
+f = await P.until((x) => has(x, 'so desk won\'t use it. x removes it.'));
+t('AC3 with pins the footer names the pinned login', has(f, `${pinNew} is signed in to the same account as work, so desk won't use it. x removes it.`), true);
+t('AC3 with pins the row reads not set up', f.some((l) => l.includes('◆ not set up: desk won\'t use it')), true);
+t('AC3 with pins nothing waits any longer', has(f, 'waiting for you to sign it in'), false);
+P.done();
+
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all desk-q Usage add-a-login checks passed');
 process.exit(fails ? 1 : 0);
