@@ -11,7 +11,7 @@ T="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home" "$T/bin" "$T/fakes" "$T/repo" "$T/state/triage" "$T/recs" "$T/no-skills"
 export HOME="$T/home"
-unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO \
+unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO DESK_BATCH \
   AUTOPILOT_DRY_RUN AUTOPILOT_BASE_PUSH_APPROVED AUTOPILOT_USER_APPROVED DESK_DIGEST_DIR
 export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" \
   DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_SKILLS_DIR="$T/no-skills"
@@ -185,6 +185,16 @@ check "DS-351: an epic whose feature batch cannot start goes to the digest with 
 n=$(count "$T/triage.calls")
 search C-1 Q-1 X-1; out=$(intake)
 check "AC8: a ticket already handed on is not triaged again" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$out" = "intake: nothing new" ]'
+
+# DS-531: with accounts pinned and none with room (its one folder is not signed in), intake triages and
+# plans nothing, and leaves each ticket for the next intake.
+printf '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `a` | `~/.claude-logins/a` | `a@example.com` | `in rotation` |\n' > "$T/subs.md"
+rec WT-1 A; rec WE-1 A '"type":"Epic","branch":"feat/WE-1-waits"'; n=$(count "$T/triage.calls")
+echo '{"issues":[{"key":"WE-1","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}},{"key":"WT-1"}]}' > "$T/search.json"
+out=$(DESK_SUBSCRIPTIONS="$T/subs.md" intake)
+check "DS-531 AC4 AC5: no triage or planning session starts" '[ "$(count "$T/triage.calls")" = "$n" ]'
+check "DS-531 AC5: the ticket is still waiting for triage" '[ "$(handed WT-1)" = none ] && [ "$(qget tickets.WT-1)" = undefined ] && grep -qF "intake: triages nothing: every Claude account is at its limit or signed out, so triage waits for one with room (WT-1); the next intake tries again" <<< "$out"'
+check "DS-531 AC4: the epic is not started, handed on or left a batch, and the reason is given" '[ "$(handed WE-1)" = none ] && ! grep -q "started feature batch WE-1" <<< "$out" && grep -qF "intake: epic WE-1 not started: every Claude account is at its limit or signed out, so planning waits for one with room; the next intake tries again" <<< "$out"'
 
 # The digest lists what intake handed on, with the way to try it again.
 D=$(cd "$T/repo" && node --input-type=module -e "
@@ -805,6 +815,18 @@ rm -f "$T/link.fails"; clear_calls
 answer E-39 start; out=$(btick)
 check "DS-434 AC5: the next start finishes the link and does not file a second spine" '! grep -q "^create" "$T/jira.calls" && grep -q "^link E-11 Blocks E-38$" "$T/jira.calls" && [ "$(eget E-39 tickets.E-39)" = undefined ]'
 cleared E-39
+
+# DS-531: a start answer with no Claude account to triage its spine on is left for a later tick, not
+# asked again; once an account has room, the same answer starts the batch.
+config yes '`none`'; required; startepic E-41 E-42; drafted "Spine: the AC1 spec
+Size: M
+Priority: P2" E-42; clear_calls
+out=$(admit E-41 --by ben); q0=$(pq E-41); answer E-41 start
+out=$(DESK_SUBSCRIPTIONS="$T/subs.md" btick)
+check "DS-531 AC4: a start with no account to triage the spine on waits, and is not asked again" '[ "$(pq E-41)" = "$q0" ] && [ ! -f "$ES/E-41/triage/$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).spine)" "$ES/E-41/feature.json").json" ] && grep -qF "E-41: your start answer to its plan is not carried out yet: every Claude account is at its limit or signed out, so planning waits for one with room" "$ES/E-41/supervisor.log"'
+out=$(btick)
+check "DS-531 AC4: once an account has room, the same start answer starts the batch" '[ "$(eget E-41 tickets.E-41)" = undefined ]'
+cleared E-41
 
 # The §4 Size field is carried with no Required fields rule for it, and asked for like one.
 config yes '`none`'; printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Size field | `customfield_10208` |\n' >> "$T/cfg/repos/acme__widgets/config.md"

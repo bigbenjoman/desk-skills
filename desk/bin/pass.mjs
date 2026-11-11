@@ -32,7 +32,7 @@ import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText, limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey, probeLogins } from './claude-logins.mjs';
-import { checkLogin, checkLogins, readSubscriptions, signInCommand } from './logins.mjs';
+import { checkLogin, checkLogins, multiAccount, readSubscriptions, signInCommand } from './logins.mjs';
 import { claudeChoice, laterLift, nothingToChoose } from './call-login.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health } from './health.mjs';
@@ -233,8 +233,12 @@ const IN_USE = probeLogins();
 const rotating = !nothingToChoose(SUBS, OWN_LOGIN, IN_USE);
 let CHECKED = null;
 const PROBES = new Map();
-// At most one probe a login a pass, made only when something on that login is held on the limit.
+// At most one probe a login a pass, made only when something on that login is held on the limit. With
+// accounts pinned, ~/.claude is the person's own Claude Code and is never probed: a hold on it lifts
+// only at its reset.
+const NOT_PROBED = { ok: false, limit: null, why: '~/.claude is not probed once accounts are pinned' };
 const probeOnce = (login = OWN_LOGIN) => {
+  if (!login.configDir && multiAccount(SUBS)) return NOT_PROBED;
   const k = loginKey(login);
   if (!PROBES.has(k)) PROBES.set(k, probeNow({ login }));
   return PROBES.get(k);

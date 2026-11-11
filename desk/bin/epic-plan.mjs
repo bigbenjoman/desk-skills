@@ -18,7 +18,7 @@ import { listBatches } from './batches.mjs';
 import { markedResult, answers } from './decider.mjs';
 import { NOT_NOW } from './not-now.mjs';
 import { admissionRefusal } from './gate.mjs';
-import { callLogin } from './call-login.mjs';
+import { callLogin, NO_ROOM } from './call-login.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -317,11 +317,12 @@ export function readDraft(text) {
 }
 
 // One headless session with no tools, answering `prompt`: the spawn result. It runs on a Claude login
-// that is not benched (call-login.mjs), or as the caller does when every one is.
+// that is not benched (call-login.mjs), or as the caller does when every one is. With accounts pinned
+// and none with room there is no environment (null), and nothing is started.
 const headlessArgs = (prompt) => ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
   '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)];
 export const headlessEnv = (env) => callLogin({ env }).env;
-const headless = (claude, prompt, env) => run(claude, headlessArgs(prompt), headlessEnv(env), { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+export const PLAN_WAITS = `${NO_ROOM}, so planning waits for one with room`;
 
 // One headless session drafts the plan: {plan} or {why}.
 async function draft({ epic, state, children, env, claude }) {
@@ -329,7 +330,9 @@ async function draft({ epic, state, children, env, claude }) {
   const expansion = readJson(join(state, 'expansion.json'), {});
   const prompt = draftPrompt({ epic, epicText: epicText.status === 0 ? epicText.stdout : '', criteria: expansion.criteria, children, fields: fieldsSection(DRAFT_FIELDS, env) });
   writeFileSync(join(state, 'plan-draft.prompt.md'), prompt);
-  const r = await runLater(claude, headlessArgs(prompt), headlessEnv(env), { timeout: DRAFT_TIMEOUT_MS });
+  const e = headlessEnv(env);
+  if (!e) return { why: PLAN_WAITS, wait: true };
+  const r = await runLater(claude, headlessArgs(prompt), e, { timeout: DRAFT_TIMEOUT_MS });
   if (r.error || r.status !== 0) return { why: `the plan drafter failed (${lastLine(r)})` };
   const p = readDraft(r.stdout);
   return p.why ? p : { plan: { epic, spine: null, draft: p.draft, owners: p.owners, contributors: p.contributors, untestable: p.untestable }, cost: p.cost };
@@ -357,11 +360,13 @@ export const planQuestion = (epic, n, path, feature, ask = null) => `${FEATURE_P
 
 // Starts epic `key`'s feature batch, triaged rec `rec` (its `branch` is the feature branch), and leaves
 // its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind, and
-// carries `limited`, the child's triage.sh run, when that triage stopped at a usage limit (exit 3).
+// carries `limited`, the child's triage.sh run, when that triage stopped at a usage limit (exit 3), or
+// `wait` when no Claude account has room for its triage and drafting, so it is started by a later run.
 // `say` is called with each of `lines` as it happens, and as each child's triage starts and ends.
 export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say = () => {} } = {}) {
   const branch = rec?.branch;
   if (!branch) return { why: `its triage record names no branch for the feature batch: run /desk-autopilot ${key}` };
+  if (!headlessEnv(process.env)) return { why: PLAN_WAITS, wait: true };
   const noBranch = ensureBranch(branch);
   if (noBranch) return { why: noBranch };
   const env = batchEnv(key);
@@ -404,7 +409,7 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
   let ask = null;
   if (wantsPlan) {
     const d = await draft({ epic: key, state, env, claude, children: children.map((c) => ({ key: c, summary: recs[c].summary, files: recs[c].files_in_scope })) });
-    if (d.why) return discard(d.why);
+    if (d.why) return { ...discard(d.why), ...(d.wait ? { wait: true } : {}) };
     writeFileSync(join(state, 'feature.json'), `${JSON.stringify(d.plan, null, 2)}\n`);
     tell(`drafted ${key}'s spine and owner table headless${d.cost != null ? ` ($${d.cost.toFixed(2)})` : ''}`);
     v = planOf(children, env);
@@ -537,7 +542,7 @@ function linkSpine({ spine, env, draft }) {
 }
 
 // Seeds the batch with `children` (and, in feature mode, the spine, filed first) and takes the epic out
-// of it: -> {lines} or {why}.
+// of it: -> {lines} or {why}, with `wait` too when no Claude account has room to triage the spine.
 function startPlan({ epic, state, env, children }) {
   let v = planOf(children, env);
   if (v.why) return v;
@@ -561,6 +566,8 @@ function startPlan({ epic, state, env, children }) {
     const unlinked = linkSpine({ spine, env, draft: plan.draft });
     if (unlinked) return { why: unlinked };
     if (!readJson(join(state, 'triage', `${spine}.json`), null)) {
+      // With no Claude account to triage it on, the answer waits for a later tick; the spine stays filed.
+      if (!headlessEnv(env)) return { why: PLAN_WAITS, wait: true };
       const t = run(join(HERE, 'triage.sh'), [spine], env);
       if (t.status !== 0 || !readJson(join(state, 'triage', `${spine}.json`), null)) return { why: `its spine ${spine} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})` };
     }
@@ -583,8 +590,11 @@ function startPlan({ epic, state, env, children }) {
   return { lines: [`${epic}'s feature batch started on ${after.base ?? 'its feature branch'}${spine ? `, with its spine ${spine} first` : ''}: ${children.length} ${children.length === 1 ? 'child' : 'children'} seeded by plan-batch`] };
 }
 
-// Applies an edit to the plan, then starts the batch: -> {lines} or {why} (asked again).
+// Applies an edit to the plan, then starts the batch: -> {lines} or {why} (asked again), or {wait} when
+// no Claude account has room, the answer then left for a later tick.
 function editPlan({ epic, state, env, children, edit, claude }) {
+  const headless = headlessEnv(env);
+  if (!headless) return { wait: true };
   const path = join(state, 'feature.json');
   const before = readJson(path, null);
   const plan = before?.draft ? before : null;
@@ -592,7 +602,7 @@ function editPlan({ epic, state, env, children, edit, claude }) {
   try { planText = readFileSync(planFile(state), 'utf8'); } catch { /* the prompt says so */ }
   const prompt = editPrompt({ epic, edit, planText, plan, children, fields: plan ? fieldsSection(EDIT_FIELDS, env) : [] });
   writeFileSync(join(state, 'plan-edit.prompt.md'), prompt);
-  const r = headless(claude, prompt, env);
+  const r = run(claude, headlessArgs(prompt), headless, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
   if (r.error || r.status !== 0) return { why: `your edit was not applied: the plan editor failed (${lastLine(r)})` };
   const e = readEdit(r.stdout, { children, plan });
   if (e.why) return { why: `your edit was not applied: ${e.why}` };
@@ -662,6 +672,7 @@ export function actOnPlan(b, { claude = 'claude', lock = { take: () => true, dro
     const r = kind === 'discard' ? discardPlan({ name: b.name, env, children })
       : kind === 'start' ? startPlan({ epic, state: b.state, env, children })
         : editPlan({ epic, state: b.state, env, children, edit: last.text, claude });
+    if (r.wait) return { ...none, lines: [`${epic}: your ${kind === 'start' ? 'start' : 'edit'} answer to its plan is not carried out yet: ${PLAN_WAITS}`] };
     if (!r.why) return { acted: kind, lines: r.lines, gone: r.gone === true };
     // Parked again with why: a new needs-you item, and an answer to it is newer than this park.
     const p = queueIn(env)(['park', epic, replanQuestion(epic, r.why, planFile(b.state))]);

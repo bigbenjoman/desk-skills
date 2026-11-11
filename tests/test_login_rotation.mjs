@@ -71,8 +71,9 @@ if [ "$3" = preflight ]; then
   if grep -qF "$ld " "${LIMITED}" 2>/dev/null; then echo "[preflight] usage-limit: the account is at its usage limit"; else echo "[preflight] pass"; fi
 else echo "[spawn] ticket=$1"; fi\n`);
 // Sign-in per folder: a folder's name is its account, or its .account file's, and a signed-out folder
-// answers loggedIn false. Every `auth` call is recorded.
+// answers loggedIn false. Every `auth` call is recorded, and the folder of every `-p` call.
 const AUTHS = join(T, 'auths');
+const PROBES = join(T, 'probes');
 writeFileSync(join(W, 'stub', 'claude'), `#!/bin/sh
 d="\${CLAUDE_CONFIG_DIR:-${H}/.claude}"
 case "$1" in
@@ -80,7 +81,8 @@ case "$1" in
   auth) echo "$d" >> "${AUTHS}"
     if grep -qx "$d" "${SIGNED_OUT}" 2>/dev/null; then echo '{"loggedIn":false}'; exit 1; fi
     a="$(cat "$d/.account" 2>/dev/null || basename "$d")"; printf '{"loggedIn":true,"email":"%s@example.com"}\\n' "$a" ;;
-  -p) lim="$(grep -F "$d " "${LIMITED}" 2>/dev/null | head -n 1 | cut -d' ' -f2)"
+  -p) echo "$d" >> "${PROBES}"
+    lim="$(grep -F "$d " "${LIMITED}" 2>/dev/null | head -n 1 | cut -d' ' -f2)"
     if [ "$lim" = none ]; then echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}'; echo '{"type":"result","is_error":true}'; exit 1; fi
     if [ -n "$lim" ]; then printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":%s}}\\n' "$lim"; echo '{"type":"result","is_error":true}'; exit 1; fi
     echo '{"type":"result","is_error":false}' ;;
@@ -113,7 +115,7 @@ const event = (five, week) => JSON.stringify({ type: 'rate_limit_event', rate_li
 
 // `logins` is [name, rule, five, week]: `default` is ~/.claude, any other a folder under ~/.claude-logins.
 function world(logins, tickets) {
-  for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, STARTS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins')]) rmSync(p, { recursive: true, force: true });
+  for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, STARTS, AUTHS, PROBES, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins')]) rmSync(p, { recursive: true, force: true });
   mkdirSync(join(state, 'logs'), { recursive: true });
   mkdirSync(join(state, 'workers'), { recursive: true });
   mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
@@ -553,14 +555,19 @@ const calling = (env) => {
   const js = `
     const { existsSync, readFileSync } = await import('node:fs');
     const { startDecider } = await import(${JSON.stringify(join(BIN, 'decider.mjs'))});
-    const { headlessEnv } = await import(${JSON.stringify(join(BIN, 'epic-plan.mjs'))});
+    const { headlessEnv, startEpic } = await import(${JSON.stringify(join(BIN, 'epic-plan.mjs'))});
+    const { callLogin } = await import(${JSON.stringify(join(BIN, 'call-login.mjs'))});
     const rec = startDecider({ state: ${JSON.stringify(state)}, slug: 'acme__widgets', bin: ${JSON.stringify(BIN)}, report: '', items: [], rules: '', cwd: process.cwd(), claude: ${JSON.stringify(DECIDER_CLAUDE)} });
     for (let i = 0; rec && !existsSync(${JSON.stringify(SEEN)}) && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
     const decider = rec ? readFileSync(${JSON.stringify(SEEN)}, 'utf8') : 'none';
-    console.log(JSON.stringify({ decider, line: rec?.login ?? null, epic: headlessEnv(process.env).CLAUDE_CONFIG_DIR ?? 'unset' }));`;
+    const h = headlessEnv(process.env);
+    // An epic is started only where its planning would wait: elsewhere it would start a real batch.
+    const planning = h ? null : (await startEpic('E-9', { branch: 'feat/E-9-plan' })).why;
+    const c = callLogin();
+    console.log(JSON.stringify({ decider, line: rec?.login ?? null, epic: h ? h.CLAUDE_CONFIG_DIR ?? 'unset' : 'none', planning, wait: c.wait, own: c.env === process.env }));`;
   const r = spawnSync('node', ['--input-type=module', '-e', js], { env, cwd: join(W, 'repo'), encoding: 'utf8' });
   const d = spawnSync('node', [join(BIN, 'call-login.mjs'), 'dir'], { env, cwd: join(W, 'repo'), encoding: 'utf8' });
-  try { return { ...JSON.parse(r.stdout.trim().split('\n').pop()), triage: d.stdout.trim() }; } catch { return { error: `${r.stdout}${r.stderr}` }; }
+  try { return { ...JSON.parse(r.stdout.trim().split('\n').pop()), triage: d.stdout.trim(), triageExit: d.status }; } catch { return { error: `${r.stdout}${r.stderr}` }; }
 };
 
 // AC1 to AC4: login A (the default) benched, B with room.
@@ -604,6 +611,58 @@ t('DS-468 AC8 one login: every call runs as today', `${got.decider} ${got.triage
 env = world(null, {});
 got = calling(env);
 t('DS-468 AC8 no subscriptions file: every call runs as today', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
+t('DS-531 AC3 no subscriptions file: the call keeps the caller\'s own environment', `${got.own} ${got.wait} ${got.triageExit}`, 'true false 0');
+
+// ---- DS-531: with accounts pinned, desk waits for one with room instead of using ~/.claude ---------
+// `logins` as world's, each a folder under ~/.claude-logins pinned to the account the fake signs it in to.
+const pinned = (logins, tickets) => {
+  const e = world(logins, tickets);
+  const rows = logins.map(([n, r]) => `| \`claude\` | \`${n}\` | \`~/.claude-logins/${n}\` | \`${n}@example.com\` | \`${r}\` |`);
+  writeFileSync(process.env.DESK_SUBSCRIPTIONS, `| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n${rows.join('\n')}\n`);
+  return e;
+};
+const probes = () => (existsSync(PROBES) ? readFileSync(PROBES, 'utf8').trim().split('\n').filter(Boolean) : []);
+const PINNED = [['login-2', 'in rotation', 10, 10], ['login-3', 'in rotation', 60, 60]];
+const WAITS = 'every Claude account is at its limit or signed out, so planning waits for one with room';
+
+// AC1: every pinned account benched.
+env = pinned(PINNED, {});
+preset({ 'login-2': benchRow('login-2'), 'login-3': benchRow('login-3') });
+got = calling(env);
+t('DS-531 AC1 every account benched: no login is given, and the call waits', `${got.wait} ${got.decider} ${got.epic}`, 'true none none');
+t('DS-531 AC1 the login CLI prints all, and exits 3 so triage starts nothing', `${got.triage} ${got.triageExit}`, 'all 3');
+t('DS-531 AC4 epic planning starts no batch, and says why', got.planning, WAITS);
+t('DS-531 AC4 no batch is left behind', existsSync(join(dirname(QF), 'batches', 'E-9')), false);
+env = pinned(PINNED, fresh);
+preset({ 'login-2': benchRow('login-2'), 'login-3': benchRow('login-3') });
+atLimit(dirOf('login-2')); atLimit(dirOf('login-3'));
+pass(env);
+t('DS-531 AC1 and the pass starts no worker', `${row('Y-1').state} ${calls('Y-1').length}`, 'triaged 0');
+t('DS-531 AC1 and makes no call on ~/.claude', probes().includes(DEF), false);
+// AC2: no pinned account signed in.
+env = pinned(PINNED, fresh);
+writeFileSync(SIGNED_OUT, `${dirOf('login-2')}\n${dirOf('login-3')}\n`);
+got = calling(env);
+t('DS-531 AC2 nothing signed in: no login is given, and the call waits', `${got.wait} ${got.decider} ${got.epic} ${got.triage} ${got.triageExit}`, 'true none none all 3');
+pass(env);
+t('DS-531 AC2 and the pass starts no worker', `${row('Y-1').state} ${calls('Y-1').length}`, 'triaged 0');
+// With room on one account, the calls run there.
+env = pinned(PINNED, {});
+preset({ 'login-3': benchRow('login-3') });
+got = calling(env);
+t('DS-531 an account with room takes the calls', `${got.wait} ${got.decider} ${got.triage} ${got.epic}`, `false ${dirOf('login-2')} ${dirOf('login-2')} ${dirOf('login-2')}`);
+// AC6: a worker that started on ~/.claude ended its session at the limit: the check whether it lifted
+// makes no call there.
+const ON_OWN = { ...PAUSED, login: { name: 'default', config_dir: null } };
+env = pinned(PINNED, { 'K-2': ON_OWN });
+writeFileSync(join(state, 'logs', 'K-2.log'), rejected);
+atLimit(DEF);
+pass(env);
+t('DS-531 AC6 a hold on ~/.claude is never probed', probes().includes(DEF), false);
+// AC9: a session that started on login-2 resumes on login-2, though login-3 has more room.
+env = pinned([['login-2', 'in rotation', 90, 90], ['login-3', 'in rotation', 10, 10]], { 'K-1': { ...RESUMING('pending')['K-1'], login: { name: 'login-2', config_dir: dirOf('login-2') } } });
+pass(env);
+t('DS-531 AC9 a session that started on login-2 resumes on login-2', calls('K-1').at(-1), `K-1|sess-1|${dirOf('login-2')}|resume`);
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }

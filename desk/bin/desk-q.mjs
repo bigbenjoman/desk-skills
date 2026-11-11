@@ -52,8 +52,8 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } f
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, nextLoginFolder, readSubscriptions,
-  signInParts } from './logins.mjs';
+import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder,
+  multiAccount, nextLoginFolder, readSubscriptions, signInParts } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -688,11 +688,13 @@ const lineLogin = () => { const own = ownLogin(); return own?.configDir && other
 // reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
 // worker runs on it, judged on that login's own probe reading. desk-q's own login is never probed when
 // its rule is one desk may not start work on (off); with no rule, as one login no file names, it is.
+// With accounts pinned, ~/.claude is the person's own Claude Code and is never probed.
 //   -> [{ login }]
+const pinnedOwn = (own) => { try { return !!own && !own.configDir && multiAccount(readSubscriptions(subscriptionsPath())); } catch { return false; } };
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
-  const ownProbed = own?.rule == null || inUse(own);
+  const ownProbed = !pinnedOwn(own) && (own?.rule == null || inUse(own));
   if (!own || !others.length) return ownProbed && probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
   return [...(ownProbed ? [own] : []), ...others].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
 }
