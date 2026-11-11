@@ -21,6 +21,15 @@ with the Artifact tool, and hand it the files.
 
 **Core principle: read the artifact once, completely, then work only from the saved copy.**
 
+Resolve this repo's config first:
+
+```bash
+desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
+```
+
+`EXISTS=no`: run `/desk-setup` first; the design directory, breakpoints and Storybook rows all come
+from the config.
+
 Every design belongs to a ticket: `--key` is required, and the copy lands under the ticket's epic,
 or the ticket itself (`check` names the folder). With no ticket named, ask for one; never invent a key.
 
