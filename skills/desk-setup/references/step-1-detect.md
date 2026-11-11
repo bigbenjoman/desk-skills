@@ -229,7 +229,10 @@ How to turn what you find into rows:
   - **`routine`**: it already names one; propose it as it is.
 
   The user can force a hold to be a person's whatever its wording: `person only` anywhere in the
-  reason makes `hold-kind` print `person`.
+  reason makes `hold-kind` print `person`. The classifier reads words, so where an item `hold-kind`
+  prints as `agent` is in one of the ask classes all the same (a fact only the user holds, copy
+  whose length costs money), or the user says the step is theirs, add `; person only` to its reason
+  and propose it with no routine: never write a routine for it, and never leave it out.
 
   **Then propose the holds on how CI checks things**, so a PR that changes the checks is never
   merged without a person. These are defaults the user confirms or declines one by one; a

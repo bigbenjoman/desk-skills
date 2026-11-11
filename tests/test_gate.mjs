@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -278,6 +278,13 @@ const askClass = ['content/legal/**: legal copy sign-off', 'src/billing/**: touc
 t('DS-503 AC3 a hold in an ask class, or a sign-off, deploy or push, stays a person\'s', kinds(askClass), askClass.map(() => 'person').join());
 t('DS-503 AC3 `person only` in the reason forces a person\'s hold', kinds(['docs/**: read the docs preview; person only']), 'person');
 t('DS-503 AC3 so does a code-owner approval', holdNeedsPerson('CODEOWNERS path, needs your code-owner approval'), true);
+const factsAndCopy = ['launch/**: Ben confirms the launch date first', 'marketing/**: the client signs off the wording', 'sms/**: SMS template text, each message is billed',
+  'content/**: design review by Sam before merging', 'partners/**: ask the partner for their logo'];
+t('DS-503 AC3 a fact only the person holds, or copy that costs, stays a person\'s', kinds(factsAndCopy), factsAndCopy.map(() => 'person').join());
+t('DS-503 a reason desk wrote itself (no reason given, the PR\'s files unreadable) is a person\'s, never a config gap',
+  `${kinds(['legacy/**'])} ${holdKind({ why: UNREAD_FILES })} ${holdKind({ why: `${NO_REASON} (scripts could not be compared, so held)` })}`, 'person person person');
+const order = [{ glob: 'a', why: 'read the bot comment' }, { glob: 'b', why: 'legal sign-off' }, { glob: 'c', why: 'x', routine: './c.sh' }, { glob: 'd', why: 'read the dry-run' }, { glob: 'e', why: 'y', routine: './e.sh' }];
+t('DS-503 agentLast puts a person\'s hold before an agent\'s, so the merge driver\'s note names the person\'s step', agentLast(order).map((h) => h.glob).join(''), 'bcead');
 const ciRows = [...setup.matchAll(/\| `` `([^`]+)` `` \|/g)].map((m) => m[1]).filter((x) => /^[^:]+: changes /.test(x));
 t('DS-503 AC3 every hold on the checks desk-setup proposes stays a person\'s', `${ciRows.length > 5} ${kinds(ciRows)}`, `true ${ciRows.map(() => 'person').join()}`);
 t('DS-503 negative control: a check with no ask-class word is an agent\'s', kinds(['claude.md: house rules', 'e2e/**: read the dry-run comment the docs bot posts']), 'agent,agent');
