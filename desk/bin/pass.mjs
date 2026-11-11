@@ -448,7 +448,10 @@ function settleLinks(t, log) {
   }
   return needs;
 }
-const linksLine = (needs) => `Issue links not made: ${needs.join('; ')}`;
+const LINKS_HEAD = 'Issue links not made: ';
+const linksLine = (needs) => `${LINKS_HEAD}${needs.join('; ')}`;
+// A park question without the links line the park path adds to it, which its link steps already hold.
+const ownWords = (question) => String(question ?? '').split(`. ${LINKS_HEAD}`)[0];
 // Each link settleLinks could not make is kept as a follow-on step under §3 jira-edit, which needs-you
 // lists with its command once the PR merges. Never a park on a ticket recorded done: nothing returns
 // one to done, so its PR would never leave draft. Kept on the ticket, so a park the pass settles
@@ -1353,7 +1356,8 @@ function settleClear(t) {
   if (merges?.call === 'done') {
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${merges.pr}`,
       `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`,
-      ...(t.follow_on?.length ? [] : [parkFollowOn(t.park.question ?? '')]), 'follow_on_comment=due');
+      // Link steps alone (keepLinks) do not hold the park's words: those are added after them.
+      ...(t.follow_on?.length > linkSteps(t.follow_on).length ? [] : [parkFollowOn(ownWords(t.park.question), t.follow_on)]), 'follow_on_comment=due');
     report.done.push(`${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${E.mergeGrant(queue()).why})`);
     return;
   }

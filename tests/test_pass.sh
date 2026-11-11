@@ -2684,6 +2684,11 @@ check "DS-509 AC4 the merge question keeps the park's post-merge steps as its fo
 vwt M-4; HM4=$(git -C "$T/wt/M-4" rev-parse HEAD); fbx 874 "$HM4" tests:SUCCESS
 node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/874.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-4.json`, JSON.stringify({ number: 874, ...v }))' "$T/fb"
 q add M-4; q set M-4 state=running lane=A branch=fix/M-4 "worktree=$T/wt/M-4"; q park M-4 "${P722/87N/874}"; q clears-when M-4 'PR #874 merged'
+# M-7 is M-4 with a link the pass could not make (DS-557): its follow-on holds only that link step.
+vwt M-7; HM7=$(git -C "$T/wt/M-7" rev-parse HEAD); fbx 877 "$HM7" tests:SUCCESS
+node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/877.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-7.json`, JSON.stringify({ number: 877, ...v }))' "$T/fb"
+q add M-7; q set M-7 state=running lane=A branch=fix/M-7 "worktree=$T/wt/M-7"; q park M-7 "${P722/87N/877}. Issue links not made: no grant: desk-jira link M-7 relates-to M-1"; q clears-when M-7 'PR #877 merged'
+q set M-7 'follow_on=[{"step":"Issue link not made: no grant: desk-jira link M-7 relates-to M-1","row":"jira-edit"}]'
 # The person sets the rows the question names: the next pass takes the parked M-3 back to the merge path.
 export DESK_CONFIG="$T/config-m.md"
 out=$(node "$B/pass.mjs" 2>&1)
@@ -2691,6 +2696,8 @@ check "DS-509 AC4 once its rows let desk merge it, the parked merge question is 
   '[ "$(field M-3 state)" = "\"done\"" ] && [ "$(field M-3 result.pr)" = 873 ] && [ "$(field M-3 park)" = null ] && echo "$out" | grep -qF "M-3: PR #873 recorded done, no longer parked: its park waited only on #873 merging"'
 check "DS-509 AC2 a park recorded done once its PR turns green keeps its words as the follow-on" \
   '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 result.pr)" = 874 ] && field M-4 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
+check "DS-557 a park whose follow-on holds only link steps keeps its own words after them, without the links line twice" \
+  '[ "$(field M-7 state)" = "\"done\"" ] && [ "$(field M-7 follow_on.length)" = 2 ] && [ "$(field M-7 follow_on.0.row)" = "\"jira-edit\"" ] && field M-7 follow_on.1.step | grep -qF "provision-telnyx-assistant.ts --env staging" && ! field M-7 follow_on.1.step | grep -qF "Issue links not made"'
 check "DS-509 AC2 with no tracker, a follow-on from either merge path stays on the queue entry alone" \
   '[ "$(field M-3 follow_on_comment)" = "\"none\"" ] && [ "$(field M-4 follow_on_comment)" = "\"none\"" ]'
 # A new batch in the same queue keeps a merged ticket whose follow-on is not yet run, and nothing else.
