@@ -153,7 +153,7 @@ t('AC7 resume is refused for a lane C park', `${c2.ok} ${queueOf('alpha').ticket
 t('AC7 open names the desk-ticket session', /\/desk-ticket A-2/.test(o2.line), true);
 t('AC7 its recommendation is to open it', itemLines.some((l) => l.startsWith('alpha A-2 session') && l.includes('1. open (recommended:')), true);
 // DS-297 AC3: a lane C or D park offers open and not-now only; a bare answer would leave it counted.
-t('DS-297 AC3 a lane C park offers open and not-now only', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. drop | 3. not-now');
+t('DS-297 AC3 a lane C park offers open, done, drop and not-now, never resume', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. done | 3. drop | 4. not-now');
 const ca2 = N.record({ word: 'alpha', ticket: 'A-2', action: 'answer', text: 'go' });
 t('DS-297 AC3 answer on a lane C park is refused', `${ca2.ok} ${/answer is not an action for a session item/.test(ca2.line)}`, 'false true');
 
