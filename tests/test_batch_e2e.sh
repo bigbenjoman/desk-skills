@@ -590,7 +590,9 @@ pass
 # An approved spine sent back again needs a fresh approval, and its PR back in draft.
 out=$(node "$B/queue.mjs" requeue T-20 2>&1)
 check "requeueing an approved spine clears its approval and says its PR left draft" '[ "$(field T-20 approved)" = null ] && echo "$out" | grep -q "gh pr ready 120 --repo acme/widgets --undo"'
-q drop T-20
+# Its worktree holds the spine's unpushed spec commits, which drop refuses to discard: discarded first.
+check "drop refuses a worktree holding unpushed commits, naming it" 'node "$B/queue.mjs" drop T-20 2>&1 | grep -q "$T/wt/T-20 holds work origin does not have (.*commit(s) not pushed" && [ -d "$T/wt/T-20" ]'
+git -C "$T/repo" worktree remove --force "$T/wt/T-20"; q drop T-20
 
 # ---- feature children: each makes the specs it owns pass and leaves the others alone ----------------
 # The merged spine's specs on main, and an acceptance runner that logs the ids it was given and fails

@@ -152,7 +152,7 @@ t('AC7 resume is refused for a lane C park', `${c2.ok} ${queueOf('alpha').ticket
 t('AC7 open names the desk-ticket session', /\/desk-ticket A-2/.test(o2.line), true);
 t('AC7 its recommendation is to open it', itemLines.some((l) => l.startsWith('alpha A-2 session') && l.includes('1. open (recommended:')), true);
 // DS-297 AC3: a lane C or D park offers open and not-now only; a bare answer would leave it counted.
-t('DS-297 AC3 a lane C park offers open and not-now only', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. not-now');
+t('DS-297 AC3 a lane C park offers open and not-now only', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. drop | 3. not-now');
 const ca2 = N.record({ word: 'alpha', ticket: 'A-2', action: 'answer', text: 'go' });
 t('DS-297 AC3 answer on a lane C park is refused', `${ca2.ok} ${/answer is not an action for a session item/.test(ca2.line)}`, 'false true');
 
@@ -505,18 +505,22 @@ put('kappa', { port: 4000, beat: 1, supervised: true, tickets: {
   'K-6': parked('A', 25, 'This is not lane C on its own: which endpoint should the export use?'),
   'K-7': parked('D', 15, 'Lane D, its canvas is saved on main, but the empty state is not on it: which board?'),
   'K-8': parked('A', 5, 'lane C, build it in an interactive desk-ticket session'),
+  'K-9': { state: 'failed', lane: 'A' },
 }, triage: { 'K-5': { lane: 'B' } } });
 mkdirSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks'), { recursive: true });
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-4.json'), JSON.stringify({ question: 'Please take it out of the autopilot queue: lane C' }));
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-9.json'), JSON.stringify({ question: 'Ben runs this step: there is no worker work left' }));
 const kappa = Object.fromEntries(N.collect({ word: 'kappa' }).items.map((i) => [i.t.key, i]));
 const firstOf = (k) => `${kappa[k]?.actions[0][0]} (${kappa[k]?.actions[0][1]})`;
 const offers = (k) => kappa[k]?.actions.map((a) => a[0]).join();
-t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} ${offers('K-1')}`, 'open (lane C/D: a worker would only park on it) open,not-now');
-t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, 'open (lane C/D: a worker would only park on it) open,not-now');
+t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} ${offers('K-1')}`, 'open (lane C/D: a worker would only park on it) open,drop,not-now');
+t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, 'open (lane C/D: a worker would only park on it) open,drop,not-now');
 t('DS-322 AC1 a park opening "lane C" on a lane A ticket gives the lane C/D reason', firstOf('K-8'), 'open (lane C/D: a worker would only park on it)');
 const { presort } = await import('../desk/bin/decider.mjs');
 t('DS-322 AC1 the decider hands the same park to a session, never a requeue', presort([{ kind: 'parked', lane: 'A', text: 'Demoted to lane C, build it in an interactive desk-ticket session' }]).hand.length, 1);
-t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue', `${kappa['K-4']?.kind} ${firstOf('K-4')} ${offers('K-4')}`, 'stopped open (lane C/D: a worker would only park on it) open,not-now');
+t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, 'stopped drop,open,not-now lane C/D: a worker would only park on it');
+t('DS-556 AC3 a stopped worker whose park says it has no worker work, in no lane C, recommends drop over requeue', `${kappa['K-9']?.kind} ${firstOf('K-9')} ${offers('K-9')} ${kappa['K-9']?.actions[1][2]}`,
+  `stopped drop (its park says it has no worker work, so a requeue would only park it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is) drop,requeue,not-now its worker gave up; a requeue lets the next pass start it again`);
 t('DS-322 AC2 its need shows the park, not "requeue it"', kappa['K-4']?.need, 'worker stopped: Please take it out of the autopilot queue: lane C');
 t('DS-322 AC2 requeue is refused for it', N.record({ word: 'kappa', ticket: 'K-4', action: 'requeue' }).ok, false);
 t('DS-322 AC3 a lane D park resumes, naming the queue\'s lane', firstOf('K-3'), 'resume (lane D: a worker finishes it once it has your answer)');
@@ -767,6 +771,39 @@ const dr = N.record({ word: 'tau', ticket: 'T-1', action: 'drop' });
 t('drop takes the ticket out of its batch, through queue.mjs, and it is no longer listed',
   `${dr.ok} ${'T-1' in queueOf('tau').tickets} ${'T-2' in queueOf('tau').tickets} ${N.collect({ word: 'tau' }).items.map((i) => i.t.key).join()}`, 'true false true T-2');
 t('an open PR offers no drop', N.record({ word: 'eta', ticket: 'E-2', action: 'drop' }).ok, false);
+
+// ---- A parked or session ticket can be dropped: it leaves its batch and its clean worktree is removed,
+// refused naming the worktree and what it holds while that has work origin lacks. Recommended first
+// where the park says the ticket has no worker work.
+const benStep = 'This is a Ben-step, so there is no worker work: will you take it off the autopilot queue and free its clean worktree?';
+const dpRoot = join(T, 'repos', 'dropper'), dpWt = (k) => join(T, 'dropper-worktrees', k);
+put('dropper', { port: 5010, beat: 1, supervised: true, tickets: {
+  'P-1': { ...parked('A', 40, benStep), worktree: dpWt('P-1'), branch: 'fix/P-1' },
+  'P-2': { ...parked('A', 30, 'Which copy?'), worktree: dpWt('P-2'), branch: 'fix/P-2' },
+  'P-3': parked('C', 20, 'lane C: build it in an interactive desk-ticket session; no worker work is left'),
+  'P-4': parked('C', 10, 'lane C: the plan needs agreeing'),
+} });
+const dpGit = (...a) => spawnSync('git', ['-C', dpRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+dpGit('commit', '-q', '--allow-empty', '-m', 'base'); dpGit('update-ref', 'refs/remotes/origin/main', 'HEAD');
+dpGit('worktree', 'add', '-q', '-b', 'fix/P-1', dpWt('P-1')); dpGit('worktree', 'add', '-q', '-b', 'fix/P-2', dpWt('P-2'));
+spawnSync('git', ['-C', dpWt('P-2'), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'half a fix']);
+writeFileSync(join(dpWt('P-2'), 'notes.txt'), 'x');
+const dp = Object.fromEntries(N.collect({ word: 'dropper' }).items.map((i) => [i.t.key, i]));
+const dpActs = (k) => dp[k]?.actions.map(([a, why]) => `${a}${why ? '*' : ''}`).join();
+t('DS-556 AC3 a park saying it has no worker work recommends drop first, and resume stays on offer', `${dp['P-1']?.kind} ${dpActs('P-1')}`, 'parked drop*,resume,not-now');
+t('DS-556 AC3 the resume it displaced keeps its reason as a note', /^lane A: /.test(dp['P-1']?.actions[1][2] ?? ''), true);
+t('DS-556 any other park offers drop before not-now, unrecommended', dpActs('P-2'), 'resume*,drop,not-now');
+t('DS-556 AC3 a session park saying it has no worker work recommends drop first', `${dp['P-3']?.kind} ${dpActs('P-3')}`, 'session drop*,open,not-now');
+t('DS-556 any other session park offers drop too', dpActs('P-4'), 'open*,drop,not-now');
+const drop1 = N.record({ word: 'dropper', ticket: 'P-1', action: 'drop' });
+t('DS-556 AC1 drop takes it out of its batch and removes its clean worktree and branch',
+  `${drop1.ok} ${'P-1' in queueOf('dropper').tickets} ${existsSync(dpWt('P-1'))} ${dpGit('branch', '--list', 'fix/P-1').stdout.trim()}|`, 'true false false |');
+t('DS-556 AC1 its line says the worktree went and Jira was left as it is', /worktree .*P-1, holding nothing origin lacks, was removed .*Jira is left as it is/.test(drop1.line), true);
+const drop2 = N.record({ word: 'dropper', ticket: 'P-2', action: 'drop' });
+t('DS-556 AC2 a worktree with unpushed commits and untracked files refuses the drop',
+  `${drop2.ok} ${'P-2' in queueOf('dropper').tickets} ${existsSync(join(dpWt('P-2'), 'notes.txt'))}`, 'false true true');
+t('DS-556 AC2 the refusal names the worktree and what is in it',
+  drop2.line.includes(dpWt('P-2')) && /notes\.txt/.test(drop2.line) && /1 commit\(s\) not pushed: [0-9a-f]+ half a fix/.test(drop2.line), true);
 
 // ---- A ticket the pass would not spawn because its worktree is in use (worktree_busy) needs you, in
 // desk-q and here alike, until a pass finds it clean and drops the record.
@@ -1214,16 +1251,16 @@ NN.addPutOff(NN.putOffEntry({ question: 'the file is on the feature branch', tic
 NN.addPutOff(NN.putOffEntry({ question: 'and this one', ticket: 'M-5', inputs: {} }), omegaState);
 const omega = () => Object.fromEntries(N.collect({ word: 'omega' }).items.map((i) => [i.t.key, i]));
 t('DS-401 AC1 an item put off offering resume and not-now is listed again once it offers move, saying so',
-  /^this one too \(Changed since it was put off on \d{4}-\d\d-\d\d: actions resume, not-now → resume, not-now, move\.\)$/.test(omega()['M-3']?.need ?? ''), true);
+  /^this one too \(Changed since it was put off on \d{4}-\d\d-\d\d: actions resume, not-now → resume, drop, not-now, move\.\)$/.test(omega()['M-3']?.need ?? ''), true);
 t('DS-401 AC1 a put-off from before entries recorded actions (KAN-1291) is listed again once, saying so',
-  /\(Changed since it was put off on \d{4}-\d\d-\d\d: actions \(not recorded\) → resume, not-now, move\.\)$/.test(omega()['M-2']?.need ?? ''), true);
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: actions \(not recorded\) → resume, drop, not-now, move\.\)$/.test(omega()['M-2']?.need ?? ''), true);
 t('DS-401 AC1 desk-q counts them as needing you', N.needsCount(loadRepos().find((r) => r.name === 'omega')).rows.some((x) => x.t.key === 'M-3'), true);
 t('DS-401 AC4 a put-off written since with no actions stays put off in the list and in desk-q\'s count',
   `${'M-5' in omega()} ${N.needsCount(loadRepos().find((r) => r.name === 'omega')).rows.some((x) => x.t.key === 'M-5')}`, 'false false');
 N.record({ word: 'omega', ticket: 'M-3', action: 'not-now' });
 N.record({ word: 'omega', ticket: 'M-2', action: 'not-now' });
 const m3Entry = NN.readRegister(omegaState).entries.get(NN.questionKey('this one too'));
-t('DS-401 a park put off again records the actions it offers', m3Entry?.actions?.join(), 'resume,not-now,move');
+t('DS-401 a park put off again records the actions it offers', m3Entry?.actions?.join(), 'resume,drop,not-now,move');
 t('DS-401 the actions are no input: the pass and the digest read the park as put off', NN.lookup(NN.readRegister(omegaState), { question: 'this one too', inputs: {} }).status, 'put_off');
 t('DS-401 AC4 with its question, inputs and actions unchanged, it stays put off, on this run and a later one',
   `${'M-3' in omega()} ${'M-2' in omega()} ${N.collect({ word: 'omega', repos: loadRepos(NOW + 86400000) }).items.some((i) => ['M-2', 'M-3'].includes(i.t.key))}`, 'false false false');
@@ -1236,9 +1273,9 @@ writeFileSync(omegaQ, JSON.stringify(oq));
 const runIn = (script, ...args) => spawnSync(process.execPath, [join(REAL_BIN, script), ...args], { encoding: 'utf8', cwd: T, env: { ...process.env, DESK_AUTOPILOT_STATE: omegaState, DESK_QUEUE: omegaQ } });
 const ans6 = runIn('answer.mjs', 'M-6', 'not now');
 const entryOf = (q) => NN.readRegister(omegaState).entries.get(NN.questionKey(q));
-t('DS-401 AC1 a park put off through answer.mjs records the actions it offers', `${ans6.status} ${entryOf('which copy for M-6?')?.actions?.join()}`, '0 resume,not-now,move');
+t('DS-401 AC1 a park put off through answer.mjs records the actions it offers', `${ans6.status} ${entryOf('which copy for M-6?')?.actions?.join()}`, '0 resume,drop,not-now,move');
 const add7 = runIn('not-now.mjs', 'add', 'M-7', 'which copy for M-7?');
-t('DS-401 AC1 a park put off through not-now.mjs add records them too', `${add7.status} ${entryOf('which copy for M-7?')?.actions?.join()}`, '0 resume,not-now,move');
+t('DS-401 AC1 a park put off through not-now.mjs add records them too', `${add7.status} ${entryOf('which copy for M-7?')?.actions?.join()}`, '0 resume,drop,not-now,move');
 t('DS-401 AC4 and both stay put off', `${'M-6' in omega()} ${'M-7' in omega()}`, 'false false');
 NN.addPutOff(NN.putOffEntry({ question: 'this one too', ticket: 'M-3', inputs: {}, actions: ['resume', 'not-now'] }), omegaState);
 runIn('not-now.mjs', 'add', 'M-3', 'some other question');
@@ -1280,7 +1317,7 @@ const grT2 = queueOf('grantee').tickets['GR-2'];
 t('DS-390 AC5 an answer that approves nothing records no grant', `${gr2.ok} ${grT2.state} ${grT2.grant ?? null}`, 'true triaged null');
 const grI3 = N.collect({ word: 'grantee' }).items.find((i) => i.t.key === 'GR-3');
 t('DS-390 AC3 a park on a step no worker is allowed is a session item, offering open and not-now only',
-  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${/never allowed aws/.test(grI3?.actions[0][1] ?? '')}`, 'session open,not-now true');
+  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${/never allowed aws/.test(grI3?.actions[0][1] ?? '')}`, 'session open,drop,not-now true');
 const gr3 = N.record({ word: 'grantee', ticket: 'GR-3', action: 'resume', text: 'Yes, read it yourself' });
 t('DS-390 AC3 an answer approving it is not requeued to a worker', `${gr3.ok} ${queueOf('grantee').tickets['GR-3'].state} ${queueOf('grantee').tickets['GR-3'].grant ?? null}`, 'false parked null');
 t('DS-390 AC3 open names the session and says why', /not requeued \(a step no worker is allowed\).*\/desk-ticket GR-3/.test(N.record({ word: 'grantee', ticket: 'GR-3', action: 'open' }).line), true);
@@ -1397,10 +1434,10 @@ const sigmaState = join(env.HOME, '.desk-autopilot', 'acme__sigma');
 const sigmaQ = () => readFileSync(join(env.DESK_HOME, 'repos', 'acme__sigma', 'queue.json'), 'utf8');
 const sgItems = () => N.collect({ word: 'sigma' }).items;
 const verbs = (k) => sgItems().find((i) => i.t.key === k)?.actions.map((a) => a[0]).join();
-t('DS-399 AC1 a lane D session item with its worktree offers resume beside open and not-now', `${sgItems().find((i) => i.t.key === 'S-1')?.kind} ${verbs('S-1')}`, 'session open,resume,not-now');
+t('DS-399 AC1 a lane D session item with its worktree offers resume beside open and not-now', `${sgItems().find((i) => i.t.key === 'S-1')?.kind} ${verbs('S-1')}`, 'session open,resume,drop,not-now');
 t('DS-399 AC1 the list line says what resume does', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-1 session') && l.includes('2. resume (once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review)')), true);
-t('DS-399 a lane C park no worker ever worked has no worktree to start in, so no resume', verbs('S-2'), 'open,not-now');
-t('DS-399 a park on a step no worker is allowed is not offered resume, worktree or not', verbs('S-4'), 'open,not-now');
+t('DS-399 a lane C park no worker ever worked has no worktree to start in, so no resume', verbs('S-2'), 'open,drop,not-now');
+t('DS-399 a park on a step no worker is allowed is not offered resume, worktree or not', verbs('S-4'), 'open,drop,not-now');
 const sgBefore = sigmaQ();
 const sgOpen = N.record({ word: 'sigma', ticket: 'S-1', action: 'open' });
 t('DS-399 AC4 open still only names the session, and the queue is unchanged', `${sgOpen.ok} ${/\/desk-ticket S-1/.test(sgOpen.line)} ${sigmaQ() === sgBefore}`, 'true true true');
