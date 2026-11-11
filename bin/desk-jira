@@ -387,7 +387,11 @@ fields_from_args() {
   for pair in "$@"; do
     [[ "$pair" == *=* ]] || die "expected field=value, got: $pair"
     k="${pair%%=*}"; v="${pair#*=}"
-    if [[ "$k" == parent ]]; then   # only a key: a file, a JSON number or object here is a mistake
+    if [[ "$k" == parent ]]; then   # only a key, or empty: a file, a JSON number or object here is a mistake
+      if [[ -z "$v" || "$v" == null ]]; then   # parent= takes the issue out of its epic or story
+        obj=$(printf '%s' "$obj" | jq '.parent=null')
+        continue
+      fi
       [[ "$v" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || die "desk-jira: parent must be an issue key (e.g. ABC-12), got: $v"
       obj=$(printf '%s' "$obj" | jq --arg v "$v" '.parent={key:$v}')
       continue
@@ -1040,7 +1044,8 @@ Bodies:        a .md file (create's description, comment, edit description=@file
                "Size: <X>" passes, where config names no §4 Size field)
 Field values:  field=@file reads a file · JSON passes through · a bare value is wrapped
                (customfield_12345=P1 -> {"value":"P1"}, assignee=me -> your accountId)
-               parent=ABC-12 files the new issue under that epic or story
+               parent=ABC-12 files the new issue under that epic or story; on edit, an empty
+               parent= takes the issue out of its epic or story (read back, so it fails if it stays)
 
 Field rules:   config §4, checked before create or edit sends anything. A create missing a §4
                Required fields field for its type is refused, and so is an edit clearing one. §4 Size
@@ -1309,6 +1314,9 @@ case "$cmd" in
         || die "desk-jira: parent must be an issue key (e.g. ABC-12), got: $pending (parent=@<row> is for create-batch)"
     fi
     extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"}) || exit 2
+    if printf '%s' "$extra" | jq -e 'has("parent") and .parent == null' >/dev/null; then
+      die "desk-jira: parent= clears a parent, which only edit does: leave parent out to file the issue under none"
+    fi
     if [[ -n "$pending" ]]; then extra=$(printf '%s' "$extra" | jq --arg p "$pending" '.parent={key:$p}'); fi
     # An issuetype among the fields replaces <type> in the payload, so the rules read that one.
     # Only {"name"}: Jira resolves an id before a name, so an id would bypass the type read here.
@@ -1514,11 +1522,12 @@ case "$cmd" in
       | if $v == null and $sent[$k] != null then "  \($k): (empty - the write did not stick)"
         else "  \($k): " + ($v | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end)
         end'
-    # A parent that does not stick files the issue under the wrong epic or none, so it fails.
-    want=$(printf '%s' "$f" | jq -r '.parent.key // empty')
-    if [[ -n "$want" ]]; then
+    # A parent that does not stick files the issue under the wrong epic or none, so it fails; so does
+    # a cleared parent that is still there.
+    if printf '%s' "$f" | jq -e 'has("parent")' >/dev/null; then
+      want=$(printf '%s' "$f" | jq -r '.parent.key // empty')
       got=$(printf '%s' "$back" | jq -r '.fields.parent.key // empty')
-      [[ "$got" == "$want" ]] || die "desk-jira: the parent of $key reads back as ${got:--}, not $want: the parent did not stick"
+      [[ "$got" == "$want" ]] || die "desk-jira: the parent of $key reads back as ${got:--}, not ${want:-none}: the parent did not stick"
     fi
     if [[ -n "$APPROVED" ]]; then record_approval "$key" "$f" "$APPROVED"; fi
     ;;

@@ -247,6 +247,16 @@ J edit KAN-93 parent=KAN-10
 check "edit parent=KEY that reads back exits 0" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^updated KAN-93"'
 out=$(JIRA_SITE="http://127.0.0.1:$DPORT" desk-jira edit KAN-93 parent=KAN-10 2>&1); rc=$?
 check "edit exits 1 when the parent does not stick" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "reads back as -, not KAN-10"'
+: > "$LOG"; J edit KAN-93 parent=
+check "edit parent= sends a null parent and reads back none" '[ $rc -eq 0 ] && [ "$(grep PUT "$LOG" | jq -r .body | jq -c .fields)" = "{\"parent\":null}" ] && printf "%s" "$out" | grep -q "^  parent: -$"'
+J get KAN-93 --json
+check "the cleared parent is gone from the issue" '[ $rc -eq 0 ] && [ "$(printf "%s" "$out" | jq -c .fields.parent)" = "null" ]'
+: > "$LOG"; J edit KAN-93 parent=null
+check "edit parent=null clears it too" '[ $rc -eq 0 ] && [ "$(grep PUT "$LOG" | jq -r .body | jq -c .fields)" = "{\"parent\":null}" ]'
+out=$(JIRA_SITE="http://127.0.0.1:$DPORT" desk-jira edit KAN-56 parent= 2>&1); rc=$?
+check "edit exits 1 when a cleared parent is still there" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "reads back as KAN-10, not none"'
+: > "$LOG"; J create Story "s" b.md parent= --no-lint
+check "create refuses parent= (only edit clears one)" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "only edit does" && ! grep -q "\"/rest/api/2/issue\"" "$LOG"'
 
 # ---------------------------------------------------------------------------------------------------
 # B expand-parent
