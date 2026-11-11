@@ -65,7 +65,8 @@ import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, personStep } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor } from './batches.mjs';
-import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
+import { startEpic, clearAbandoned, elapsed, triageDone, triageRun, PLAN_WAITS } from './epic-plan.mjs';
+import { callLogin, NO_ROOM } from './call-login.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -492,6 +493,10 @@ async function intake({ state, query, reg, now }) {
   // An epic is a feature batch's, never a worker's: one a run has its batch started, and its plan
   // drafted and left for the person, beside the standing batch and any other epic's.
   const epicKeys = open.filter((x) => isEpic(x.fields?.issuetype)).map((x) => x.key);
+  // With accounts pinned and none with room, nothing is triaged or planned: each ticket is left as it
+  // was, for the next intake. Asked once, and only once there is something to triage.
+  let room = null;
+  const noRoom = () => (room ??= callLogin({ now: now.getTime() })).wait;
   for (const [n, key] of epicKeys.entries()) {
     if (liveFeatureBatches().some((b) => b.name === key)) {
       const text = `an epic, and its feature batch ${key} is already running: its children join that batch`;
@@ -501,9 +506,11 @@ async function intake({ state, query, reg, now }) {
       continue;
     }
     if (n > 0) { lines.push(`intake: epic ${key} waits for the next intake: one epic's feature batch is started a run`); continue; }
+    if (noRoom()) { lines.push(`intake: epic ${key} not started: ${PLAN_WAITS}; the next intake tries again`); continue; }
     const t = triage(key, state);
     if (!t.rec) { lines.push(`intake: epic ${key} not admitted: ${t.why}; the next intake tries again`); continue; }
     const s = await startEpic(key, t.rec, { by: 'intake' });
+    if (s.wait) { lines.push(`intake: epic ${key} not started: ${s.why}; the next intake tries again`); continue; }
     if (s.why) { hand(key, `an epic, and its feature batch was not started: ${s.why}`); continue; }
     reg.tickets[key] = epicEntry(s, 'intake', now);
     writeIntake(state, reg);
@@ -513,6 +520,10 @@ async function intake({ state, query, reg, now }) {
   const fresh = open.filter((i) => !epicKeys.includes(i.key) && isNew(i.key)).map((i) => i.key);
   for (const why of unchecked.values()) lines.push(`intake: not admitted: ${why}; the next intake tries again`);
   if (!fresh.length) return done();
+  if (noRoom()) {
+    lines.push(`intake: triages nothing: ${NO_ROOM}, so triage waits for one with room (${fresh.join(', ')}); the next intake tries again`);
+    return done();
+  }
   const triageNow = fresh.slice(0, MAX_TRIAGE);
   if (fresh.length > triageNow.length) lines.push(`intake: ${fresh.length - triageNow.length} more ticket(s) wait for the next intake (${fresh.slice(MAX_TRIAGE).join(', ')}): ${MAX_TRIAGE} are triaged a run`);
 

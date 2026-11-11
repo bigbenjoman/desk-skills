@@ -27,10 +27,13 @@ export function claudeLogins(env = process.env) {
 }
 
 // The logins work may be running on: every login above, then each removed one whose folder exists, as
-// a worker started on a login before it was removed is still running.
+// a worker started on a login before it was removed is still running. ~/.claude is always among them:
+// with accounts pinned desk starts nothing there, but a worker started there before is still running.
 //   -> [login]
 function runningLogins(env = process.env) {
   const out = claudeLogins(env);
+  const own = defaultLogin('claude');
+  if (!out.some((l) => l.dir === own.dir) && isDir(own.dir)) out.unshift(own);
   for (const r of readSubscriptions(subscriptionsPath()).removed) {
     if (r.tool === 'claude' && isDir(r.dir) && !out.some((l) => l.dir === r.dir)) out.push(login({ tool: 'claude', name: r.name, folder: r.dir, rule: null, source: 'removed' }));
   }

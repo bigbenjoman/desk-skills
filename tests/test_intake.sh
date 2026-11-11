@@ -186,6 +186,16 @@ n=$(count "$T/triage.calls")
 search C-1 Q-1 X-1; out=$(intake)
 check "AC8: a ticket already handed on is not triaged again" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$out" = "intake: nothing new" ]'
 
+# DS-531: with accounts pinned and none with room (its one folder is not signed in), intake triages and
+# plans nothing, and leaves each ticket for the next intake.
+printf '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `a` | `~/.claude-logins/a` | `a@example.com` | `in rotation` |\n' > "$T/subs.md"
+rec WT-1 A; rec WE-1 A '"type":"Epic","branch":"feat/WE-1-waits"'; n=$(count "$T/triage.calls")
+echo '{"issues":[{"key":"WE-1","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}},{"key":"WT-1"}]}' > "$T/search.json"
+out=$(DESK_SUBSCRIPTIONS="$T/subs.md" intake)
+check "DS-531 AC4 AC5: no triage or planning session starts" '[ "$(count "$T/triage.calls")" = "$n" ]'
+check "DS-531 AC5: the ticket is still waiting for triage" '[ "$(handed WT-1)" = none ] && [ "$(qget tickets.WT-1)" = undefined ] && grep -qF "intake: triages nothing: every Claude account is at its limit or signed out, so triage waits for one with room (WT-1); the next intake tries again" <<< "$out"'
+check "DS-531 AC4: the epic is not started, handed on or left a batch, and the reason is given" '[ "$(handed WE-1)" = none ] && ! grep -q "started feature batch WE-1" <<< "$out" && grep -qF "intake: epic WE-1 not started: every Claude account is at its limit or signed out, so planning waits for one with room; the next intake tries again" <<< "$out"'
+
 # The digest lists what intake handed on, with the way to try it again.
 D=$(cd "$T/repo" && node --input-type=module -e "
 import { openQuestions, renderPage } from '$B/digest.mjs';
