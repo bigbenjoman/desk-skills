@@ -2036,7 +2036,7 @@ function addPanel(a, t, w) {
     { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
     claude ? segLine([['     then type ', null], [then, HUE.cyan], [' and sign in with the account you want to add.', null]]) : '     and sign in with the account you want to add.',
     ...leadLines('     ', [[claude ? "Come back here. desk-q finds it within a minute, checks it isn't an account already listed, and shows its email and plan."
-      : `Come back here. desk-q finds it within a minute and lists it as ${a.label}.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w)
+      : `Come back here. desk-q finds it within a minute and shows its email and plan, or ${a.label} where its sign-in names no email.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w)
       .map((l, i) => (i ? l : segLine([['  ', null], ['2', BOLD], ['  ', null], ...l.segs.slice(1)]))),
     ...(claude && t.codex.length ? ['', ...leadLines('  ', [['A Codex login is added the same way, with ', GREY], ['a', BOLD], [' on the CODEX table, which asks for its label first.', GREY]], w)] : []),
   ];
@@ -3554,7 +3554,7 @@ export function interactive({
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (x?.login?.tool !== 'codex') return startAdding('claude');
     typed = '';
-    msg = "Type the name desk-q lists the new Codex login under, such as its account's email.";
+    msg = 'Type a label for the new Codex login. desk-q lists it by its email once it is signed in, or by this label where it has none.';
   }
   function labelKey(str, key) {
     if (key.name === 'return' || key.name === 'enter') {
