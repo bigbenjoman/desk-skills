@@ -877,8 +877,7 @@ export function claudeDesignLinks(section) {
 // branch. A named batch's state (<repo state>/batches/<name>) also reads the repo's own, where
 // /desk-admit saves.
 export function snapshotOf(state, url) {
-  const repoState = state.replace(new RegExp(`[/\\\\]${E.BATCHES_DIR}[/\\\\][^/\\\\]+[/\\\\]?$`), '');
-  for (const base of [...new Set([state, repoState])].map((s) => join(s, 'designs'))) {
+  for (const base of [...new Set([state, E.repoStateOf(state)])].map((s) => join(s, 'designs'))) {
     if (!existsSync(base)) continue;
     const d = readdirSync(base).find((x) => canonicalUrl(readJson(join(base, x, 'source.json'))?.url) === canonicalUrl(url));
     if (d) return join(base, d);
