@@ -883,11 +883,12 @@ switch (cmd) {
   case 'drop': {
     const key = args[0];
     const t = ticket(q, key);
-    if (t.state === 'running') throw new Error(`${key} is running: stop its worker first. Nothing was dropped`);
-    const removed = dropWorktree(key, t);
+    // A running ticket's worker is in its worktree, so that is left where it is.
+    const running = t.state === 'running';
+    const removed = running ? null : dropWorktree(key, t);
     delete q.tickets[key];
     save(q);
-    console.log(`dropped ${key} from the batch${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : ''}`);
+    console.log(`dropped ${key} from the batch${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : running && t.worktree ? `; its worker was running, so its worktree ${t.worktree} was left` : ''}`);
     break;
   }
 

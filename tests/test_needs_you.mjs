@@ -152,7 +152,7 @@ t('AC7 resume is refused for a lane C park', `${c2.ok} ${queueOf('alpha').ticket
 t('AC7 open names the desk-ticket session', /\/desk-ticket A-2/.test(o2.line), true);
 t('AC7 its recommendation is to open it', itemLines.some((l) => l.startsWith('alpha A-2 session') && l.includes('1. open (recommended:')), true);
 // DS-297 AC3: a lane C or D park offers open and not-now only; a bare answer would leave it counted.
-t('DS-297 AC3 a lane C park offers open and not-now only', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. not-now');
+t('DS-297 AC3 a lane C park offers open and not-now only', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. drop | 3. not-now');
 const ca2 = N.record({ word: 'alpha', ticket: 'A-2', action: 'answer', text: 'go' });
 t('DS-297 AC3 answer on a lane C park is refused', `${ca2.ok} ${/answer is not an action for a session item/.test(ca2.line)}`, 'false true');
 
@@ -516,7 +516,7 @@ t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${
 t('DS-322 AC1 a park opening "lane C" on a lane A ticket gives the lane C/D reason', firstOf('K-8'), 'open (lane C/D: a worker would only park on it)');
 const { presort } = await import('../desk/bin/decider.mjs');
 t('DS-322 AC1 the decider hands the same park to a session, never a requeue', presort([{ kind: 'parked', lane: 'A', text: 'Demoted to lane C, build it in an interactive desk-ticket session' }]).hand.length, 1);
-t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue', `${kappa['K-4']?.kind} ${firstOf('K-4')} ${offers('K-4')}`, 'stopped open (lane C/D: a worker would only park on it) open,drop,not-now');
+t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, 'stopped drop,open,not-now lane C/D: a worker would only park on it');
 t('DS-322 AC2 its need shows the park, not "requeue it"', kappa['K-4']?.need, 'worker stopped: Please take it out of the autopilot queue: lane C');
 t('DS-322 AC2 requeue is refused for it', N.record({ word: 'kappa', ticket: 'K-4', action: 'requeue' }).ok, false);
 t('DS-322 AC3 a lane D park resumes, naming the queue\'s lane', firstOf('K-3'), 'resume (lane D: a worker finishes it once it has your answer)');
@@ -772,34 +772,34 @@ t('an open PR offers no drop', N.record({ word: 'eta', ticket: 'E-2', action: 'd
 // refused naming the worktree and what it holds while that has work origin lacks. Recommended first
 // where the park says the ticket has no worker work.
 const benStep = 'This is a Ben-step, so there is no worker work: will you take it off the autopilot queue and free its clean worktree?';
-const phiRoot = join(T, 'repos', 'phi'), phiWt = (k) => join(T, 'phi-worktrees', k);
-put('phi', { port: 5000, beat: 1, supervised: true, tickets: {
-  'P-1': { ...parked('A', 40, benStep), worktree: phiWt('P-1'), branch: 'fix/P-1' },
-  'P-2': { ...parked('A', 30, 'Which copy?'), worktree: phiWt('P-2'), branch: 'fix/P-2' },
+const dpRoot = join(T, 'repos', 'dropper'), dpWt = (k) => join(T, 'dropper-worktrees', k);
+put('dropper', { port: 5010, beat: 1, supervised: true, tickets: {
+  'P-1': { ...parked('A', 40, benStep), worktree: dpWt('P-1'), branch: 'fix/P-1' },
+  'P-2': { ...parked('A', 30, 'Which copy?'), worktree: dpWt('P-2'), branch: 'fix/P-2' },
   'P-3': parked('C', 20, 'lane C: build it in an interactive desk-ticket session; no worker work is left'),
   'P-4': parked('C', 10, 'lane C: the plan needs agreeing'),
 } });
-const g = (...a) => spawnSync('git', ['-C', phiRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
-g('commit', '-q', '--allow-empty', '-m', 'base'); g('update-ref', 'refs/remotes/origin/main', 'HEAD');
-g('worktree', 'add', '-q', '-b', 'fix/P-1', phiWt('P-1')); g('worktree', 'add', '-q', '-b', 'fix/P-2', phiWt('P-2'));
-spawnSync('git', ['-C', phiWt('P-2'), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'half a fix']);
-writeFileSync(join(phiWt('P-2'), 'notes.txt'), 'x');
-const phi = Object.fromEntries(N.collect({ word: 'phi' }).items.map((i) => [i.t.key, i]));
-const acts = (k) => phi[k]?.actions.map(([a, why]) => `${a}${why ? '*' : ''}`).join();
-t('DS-556 AC3 a park saying it has no worker work recommends drop first, and resume stays on offer', `${phi['P-1']?.kind} ${acts('P-1')}`, 'parked drop*,resume,not-now');
-t('DS-556 AC3 the resume it displaced keeps its reason as a note', /^lane A: /.test(phi['P-1']?.actions[1][2] ?? ''), true);
-t('DS-556 any other park offers drop before not-now, unrecommended', acts('P-2'), 'resume*,drop,not-now');
-t('DS-556 AC3 a session park saying it has no worker work recommends drop first', `${phi['P-3']?.kind} ${acts('P-3')}`, 'session drop*,open,not-now');
-t('DS-556 any other session park offers drop too', acts('P-4'), 'open*,drop,not-now');
-const d1 = N.record({ word: 'phi', ticket: 'P-1', action: 'drop' });
+const dpGit = (...a) => spawnSync('git', ['-C', dpRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+dpGit('commit', '-q', '--allow-empty', '-m', 'base'); dpGit('update-ref', 'refs/remotes/origin/main', 'HEAD');
+dpGit('worktree', 'add', '-q', '-b', 'fix/P-1', dpWt('P-1')); dpGit('worktree', 'add', '-q', '-b', 'fix/P-2', dpWt('P-2'));
+spawnSync('git', ['-C', dpWt('P-2'), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'half a fix']);
+writeFileSync(join(dpWt('P-2'), 'notes.txt'), 'x');
+const dp = Object.fromEntries(N.collect({ word: 'dropper' }).items.map((i) => [i.t.key, i]));
+const dpActs = (k) => dp[k]?.actions.map(([a, why]) => `${a}${why ? '*' : ''}`).join();
+t('DS-556 AC3 a park saying it has no worker work recommends drop first, and resume stays on offer', `${dp['P-1']?.kind} ${dpActs('P-1')}`, 'parked drop*,resume,not-now');
+t('DS-556 AC3 the resume it displaced keeps its reason as a note', /^lane A: /.test(dp['P-1']?.actions[1][2] ?? ''), true);
+t('DS-556 any other park offers drop before not-now, unrecommended', dpActs('P-2'), 'resume*,drop,not-now');
+t('DS-556 AC3 a session park saying it has no worker work recommends drop first', `${dp['P-3']?.kind} ${dpActs('P-3')}`, 'session drop*,open,not-now');
+t('DS-556 any other session park offers drop too', dpActs('P-4'), 'open*,drop,not-now');
+const drop1 = N.record({ word: 'dropper', ticket: 'P-1', action: 'drop' });
 t('DS-556 AC1 drop takes it out of its batch and removes its clean worktree and branch',
-  `${d1.ok} ${'P-1' in queueOf('phi').tickets} ${existsSync(phiWt('P-1'))} ${g('branch', '--list', 'fix/P-1').stdout.trim()}|`, 'true false false |');
-t('DS-556 AC1 its line says the worktree went and Jira was left as it is', /worktree .*P-1, holding nothing origin lacks, was removed .*Jira is left as it is/.test(d1.line), true);
-const d2 = N.record({ word: 'phi', ticket: 'P-2', action: 'drop' });
+  `${drop1.ok} ${'P-1' in queueOf('dropper').tickets} ${existsSync(dpWt('P-1'))} ${dpGit('branch', '--list', 'fix/P-1').stdout.trim()}|`, 'true false false |');
+t('DS-556 AC1 its line says the worktree went and Jira was left as it is', /worktree .*P-1, holding nothing origin lacks, was removed .*Jira is left as it is/.test(drop1.line), true);
+const drop2 = N.record({ word: 'dropper', ticket: 'P-2', action: 'drop' });
 t('DS-556 AC2 a worktree with unpushed commits and untracked files refuses the drop',
-  `${d2.ok} ${'P-2' in queueOf('phi').tickets} ${existsSync(join(phiWt('P-2'), 'notes.txt'))}`, 'false true true');
+  `${drop2.ok} ${'P-2' in queueOf('dropper').tickets} ${existsSync(join(dpWt('P-2'), 'notes.txt'))}`, 'false true true');
 t('DS-556 AC2 the refusal names the worktree and what is in it',
-  d2.line.includes(phiWt('P-2')) && /notes\.txt/.test(d2.line) && /1 commit\(s\) not pushed: [0-9a-f]+ half a fix/.test(d2.line), true);
+  drop2.line.includes(dpWt('P-2')) && /notes\.txt/.test(drop2.line) && /1 commit\(s\) not pushed: [0-9a-f]+ half a fix/.test(drop2.line), true);
 
 // ---- A ticket the pass would not spawn because its worktree is in use (worktree_busy) needs you, in
 // desk-q and here alike, until a pass finds it clean and drops the record.
