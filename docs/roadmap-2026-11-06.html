@@ -78,7 +78,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <div class="wrap">
 
 <header style="display:flex;flex-direction:column;gap:12px">
-  <div class="eyebrow">desk-skills · as of Mon 9 Nov 2026, 12:05 · Phase 2 updated 14:00</div>
+  <div class="eyebrow">desk-skills · as of Wed 11 Nov 2026, 09:25</div>
   <h1>Desk roadmap</h1>
   <p class="lede">The goal from the 6 Nov throughput review: more tickets on the subscriptions you already pay for, at the same review quality and with less of your time. Your priorities, in order: <b>subscription rotation</b>, because batches kept stopping when one login ran out; <b>fewer tokens per ticket</b>; and <b>more autonomy</b>, meaning fewer stops that need you. Sentry intake waits. <b>Changed on 9 Nov:</b> instead of spending more on ChatGPT, desk evaluates other models one at a time on the test bench, all four candidates on one month of OpenCode Go Plus ($40), and keeps whichever gives the most accepted tickets per pound. Codex stays as a reviewer only.</p>
   <div class="legend">
@@ -89,19 +89,19 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <section aria-labelledby="where">
   <h2 id="where">Where we are</h2>
   <div class="now">
-    <div><span>Top priority</span><b>Rotation is live on main</b><span>Epic PR #519 merged at 06:42 today, and this Mac has installed it. You added <span class="k">login-2</span> as standby at 07:26. No worker has run on it yet, so rotation hasn't been seen working on two real logins.</span></div>
-    <div><span>Fewer tokens</span><b>Phase 0 built, not measured</b><span>Every <span class="k">DS-443</span> child has merged. <span class="k">preflight</span> is the only lever on, and the others stay off until it has been measured against the baseline.</span></div>
-    <div><span>Shipped since Sun 09:12</span><b>21 PRs merged</b><span>18 to <span class="k">main</span>, including rotation's epic PR, and 3 bench tickets to its feature branch before that. Both queues are empty: the standing batch has 123 done, and rotation's batch has been archived.</span></div>
-    <div><span>Waiting on you</span><b>3 items</b><span>Subscribing to OpenCode Go Plus starts the model trials. Listed at the bottom.</span></div>
+    <div><span>Top priority</span><b>Rotation built, still not seen working</b><span>The supervisor reports <span class="k">login-2</span> signed out: its folder, <span class="k">~/.claude-logins/login-2</span>, doesn't exist. Every worker runs on <span class="k">default</span>. Meanwhile epic <span class="k">DS-528</span> moves rotation from login folders to accounts, in its own feature batch: 4 merged, 2 to go.</span></div>
+    <div><span>Batch running</span><b>13 tickets in the standing batch</b><span>Started 08:37 today: 4 done, 5 running, 8 ready. All bugs and stories from 9–11 Nov. <span class="k">DS-552</span> (P1, the merge driver's two migration heads) goes first, because most of the others share files with it. The last is estimated for Thu 20:05.</span></div>
+    <div><span>Shipped since Mon 12:05</span><b>15 PRs merged</b><span>11 to <span class="k">main</span>: the bench's endpoint arm, quota guard and £ report, 2 bench-build fixes, and 6 batch fixes. 4 more to <span class="k">feat/usage-accounts</span>.</span></div>
+    <div><span>Test bench</span><b>Opus baseline: 2 of 24 accepted</b><span>The first real run. The hidden checks pin exact wording, so almost everything is rejected. Until <span class="k">DS-547</span> scores the checks a PR changed, the gate can't tell candidates apart.</span></div>
   </div>
 </section>
 
 <section aria-labelledby="priorities">
   <h2 id="priorities">Your priorities</h2>
   <ol class="next">
-    <li><div><b>Subscription rotation (<span class="k">DS-461</span>, P1).</b> Built and on <span class="k">main</span>: 13 rotation tickets, then <span class="k">DS-521</span>, <span class="k">DS-522</span> and <span class="k">DS-524</span> today. What's left is seeing it work: a batch that hits <span class="k">default</span>'s limit should carry on on <span class="k">login-2</span>. The other Mac still needs <span class="k">/desk-update</span>.</div></li>
-    <li><div><b>Fewer tokens per ticket (Phase 0, <span class="k">DS-443</span>).</b> All children have merged, including <span class="k">DS-446</span> (#496), <span class="k">DS-488</span> (#520) and <span class="k">DS-513</span> (#513). The next step is measuring the preflight lever.</div></li>
-    <li><div><b>More autonomy: fewer stops that need you.</b> <span class="k">DS-241</span> is down to 1 open ticket, <span class="k">DS-431</span>, which waits on your live check. <span class="k">DS-429</span>, <span class="k">DS-441</span>, <span class="k">DS-493</span>, <span class="k">DS-509</span>, <span class="k">DS-514</span>, <span class="k">DS-517</span> and <span class="k">DS-518</span> have merged.</div></li>
+    <li><div><b>Subscription rotation (<span class="k">DS-461</span>, P1).</b> Built and on <span class="k">main</span>, but not yet seen working, because <span class="k">login-2</span> is signed out. Signing it in is the one step left. The follow-up epic <span class="k">DS-528</span> (P2) makes desk rotate accounts rather than folders, so switching account in your own Claude Code no longer changes desk. <span class="k">DS-529</span> to <span class="k">DS-532</span> have merged to <span class="k">feat/usage-accounts</span> (#550 to #553). <span class="k">DS-533</span> is running and <span class="k">DS-534</span> waits behind it.</div></li>
+    <li><div><b>Fewer tokens per ticket (Phase 0, <span class="k">DS-443</span>).</b> Every lever has merged, and only <span class="k">preflight</span> is on. Today's 13-ticket batch is the first one big enough to measure it on.</div></li>
+    <li><div><b>More autonomy: fewer stops that need you.</b> The 9–10 Nov runs found new stops, so <span class="k">DS-241</span> now has 9 open tickets: 7 are in the batch, <span class="k">DS-550</span> isn't admitted yet, and <span class="k">DS-431</span> waits on your live check. <span class="k">DS-237</span> (false stops and failures) has 4, all in the batch. <span class="k">DS-541</span> to <span class="k">DS-545</span> have merged.</div></li>
     <li><div><b>Not now: Sentry intake (<span class="k">DS-206</span>).</b> P3 in Jira, at the bottom of the backlog.</div></li>
   </ol>
 </section>
@@ -125,7 +125,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
           <li><span class="k">DS-446</span> → <span class="k">DS-488</span> Failure class on every park, then one rerun for a runner or resource red <span class="chip c-done">merged, #496 and #520</span></li>
           <li><span class="k">DS-513</span> A requirement gap only you can settle stops spending review fix tries <span class="chip c-done">merged, #513</span></li>
         </ul>
-        <p class="gate"><b>Gate:</b> one batch about the size of last week's, compared on tokens per ticket and fix tries per ticket. Preflight is the first lever being measured. The queue is empty, so this batch has to be admitted first.</p>
+        <p class="gate"><b>Gate:</b> one batch about the size of last week's, compared on tokens per ticket and fix tries per ticket. Preflight is the first lever being measured, on the 13-ticket batch that started at 08:37 on 11 Nov.</p>
       </div>
     </div>
 
@@ -143,7 +143,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
     </div>
 
     <div class="phase">
-      <div class="phead"><h3>Phase 2 · Evaluate other models, one at a time, on cost per accepted ticket</h3><span class="when">weeks 2–5</span><span class="chip c-filed">Filed · DS-535 to DS-538</span></div>
+      <div class="phead"><h3>Phase 2 · Evaluate other models, one at a time, on cost per accepted ticket</h3><span class="when">weeks 2–5</span><span class="chip c-filed">Harness built · baseline needs DS-547</span></div>
       <div class="card">
         <p>This replaces buying ChatGPT Pro 200. <b>Changed at 14:00 on 9 Nov:</b> all four candidates now run on one month of <b>OpenCode Go Plus</b> ($40), not four separate plans. Go serves every candidate to Claude Code on its Anthropic-compatible endpoint, says none of them is used for training and keeps 0 days of data, and doesn't ban scripted use. The direct plans couldn't offer that: Kimi bans scripts without written permission, Z.ai's terms don't mention training, and Google trains on Antigravity code and lets reviewers read it unless telemetry is off. Only the winner's direct plan is bought afterwards, and the bench measures whether it gives more per £ than Go. Each candidate runs on the same frozen tasks as Opus, through the same harness, and is judged on one figure: <b>accepted tasks per pound of subscription</b>, as long as quality holds. Leaderboard scores pick the order to test them in (see <a href="#models">How the candidates compare</a>), but they don't decide anything. Codex stays as a reviewer on your current plan.</p>
         <div class="tbl"><table>
@@ -162,6 +162,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
           <li><b>Your code only.</b> The non-Anthropic arms run on frozen <span class="k">desk-skills</span> tasks only, even though Go says none of these models trains on your data. Client repos stay on Claude and Codex.</li>
         </ul>
         <p class="gate"><b>Gate for each candidate:</b> on the same tasks as Opus, at least as many accepted, a blind score no lower, and a lower £ per accepted task. About 24 tasks only shows big differences, so this is a screen. A candidate that passes then shadows a few live <span class="k">desk-skills</span> tickets, its PRs going through the full review, before it gets a worker. Go Plus is cancelled after its first month unless a candidate is still being measured.</p>
+        <p class="gate"><b>Found on 10 Nov:</b> Opus had 2 of 24 tasks accepted on its baseline run. 10 of the 21 rejected tasks failed 3 checks or fewer, and many hidden checks pin the merged PR's exact wording, which no ticket states. Comparing accepted counts near zero says nothing. <span class="k">DS-547</span> adds each arm's pass rate on the checks a PR added or changed, beside accepted. That figure, rather than accepted alone, is what the first part of the gate should compare. It's your call, once DS-547 has merged.</p>
       </div>
     </div>
     <div class="phase">
@@ -254,30 +255,33 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
       <p>Workers spread across your Claude logins, and later your Codex logins. A login at its limit is benched until it resets, and the batch holds only when every login is out.</p>
       <ul>
         <li><span class="chip c-done">on main, #519</span> <span class="k">DS-462</span> to <span class="k">DS-474</span>, all 13, plus the 9 bench tickets that were on the feature branch. It merged at 06:42 after a clean round 5 review.</li>
-        <li><span class="chip c-done">follow-ups merged today</span> <span class="k">DS-524</span> (#528) names the new account in the add-a-login panel. <span class="k">DS-521</span> (#530) lets a base worker that hits one login's limit carry on on another. <span class="k">DS-522</span> (#531) means a sole Codex login set to <span class="k">off</span> runs no codex.</li>
-        <li><span class="chip c-wait">not yet seen working</span> This Mac has <span class="k">default</span> in rotation and <span class="k">login-2</span> on standby, so <span class="k">login-2</span> runs only when <span class="k">default</span> is at its limit. All 5 tickets today ran on <span class="k">default</span>.</li>
+        <li><span class="chip c-done">follow-ups merged 9 Nov</span> <span class="k">DS-524</span> (#528) names the new account in the add-a-login panel. <span class="k">DS-521</span> (#530) lets a base worker that hits one login's limit carry on on another. <span class="k">DS-522</span> (#531) means a sole Codex login set to <span class="k">off</span> runs no codex.</li>
+        <li><span class="chip c-you">login-2 signed out</span> <span class="k">subscriptions.md</span> lists <span class="k">login-2</span> as standby, but <span class="k">~/.claude-logins/login-2</span> doesn't exist. The supervisor's health check flags this on every pass, and spawns aren't held for it. Every worker so far has run on <span class="k">default</span>, which is at 6% of its week, so standby wouldn't have been used yet anyway.</li>
+        <li><span class="chip c-filed">accounts, not folders · DS-528</span> A feature batch on <span class="k">feat/usage-accounts</span>. Merged to it: <span class="k">DS-529</span> pins a folder to its account (#550), <span class="k">DS-530</span> covers pin and migrate (#551), <span class="k">DS-532</span> names the Codex row by its account and plan (#552), and <span class="k">DS-531</span> waits for an account with room instead of falling back to <span class="k">~/.claude</span> (#553). <span class="k">DS-533</span> (one Usage row per account) is running, and <span class="k">DS-534</span> (adding an account in desk-q) waits behind it.</li>
         <li><span class="chip c-you">other Mac</span> Run <span class="k">/desk-update</span> there and add its logins in desk-q (press 6).</li>
         <li>Design: the <a href="https://claude.ai/artifact/G72NSJFg5MqFPiuVoehtkv">Usage view canvas</a>, saved at <span class="k">docs/design/DS-461/</span>.</li>
       </ul>
     </div>
 
     <div class="card">
-      <div class="phead"><h3>Test bench: the evaluation harness</h3><span class="chip c-filed">Built, never run · DS-475</span></div>
-      <p>All 12 tickets are on <span class="k">main</span>: frozen past tasks with hidden tests, blind scoring, a report and a weekly-allowance guard. It has never been run, though. No task set is built, so there's no Opus baseline to compare a candidate with. Four tickets filed on 9 Nov take it to the model trials.</p>
+      <div class="phead"><h3>Test bench: the evaluation harness</h3><span class="chip c-filed">Baseline run · DS-475</span></div>
+      <p>The Go arm, its meter and the £ figures are on <span class="k">main</span>. The task set is frozen: 24 merged <span class="k">desk-skills</span> PRs at <span class="k">~/desk-bench/ds-535</span>. Opus ran on all of it, and its result is too low to compare a candidate against until <span class="k">DS-547</span> lands.</p>
       <ul>
-        <li><span class="chip c-filed">DS-535 · P2</span> Freeze about 24 merged <span class="k">desk-skills</span> PRs with <span class="k">bench-build.mjs</span>, and run the Opus arm as the baseline.</li>
-        <li><span class="chip c-filed">DS-536 · P2</span> An arm that runs Claude Code against another provider's Anthropic-compatible endpoint, with the key kept in a chmod 600 file. It refuses to start if a run could bill your Claude login instead. The trials use OpenCode Go Plus's endpoint for all four models.</li>
-        <li><span class="chip c-filed">DS-537 · P2</span> The quota guard only reads Claude's and Codex's weekly windows. It needs Go's windows for each model (5-hour, weekly and monthly), and later the winner's direct plan. It stops on any reading it can't trust. It blocks DS-536.</li>
-        <li><span class="chip c-filed">DS-538 · P2</span> £ per accepted task and accepted tasks per 5-hour window for each arm, priced from a table of plan prices and windows.</li>
+        <li><span class="chip c-filed">DS-535 · in progress</span> The baseline ran on 10 Nov: 2 accepted, 21 rejected, and 1 failed (a timeout on #443). The run turned up 3 bench-build bugs, all fixed (#544, #545). Its blind scores (AC3) are still to do.</li>
+        <li><span class="chip c-filed">DS-547 · P2 · not in a batch</span> Each arm's pass rate on the checks a PR added or changed, beside accepted. It reuses the existing runs' logs, so Opus doesn't need a rerun.</li>
+        <li><span class="chip c-done">DS-536 · merged, #548</span> The endpoint arm. Claude Code and the model's commands never hold the provider key: a local proxy reads it and swaps in a per-run token, and an Anthropic host is refused.</li>
+        <li><span class="chip c-done">DS-537 · merged, #547</span> The quota guard keeps the bench's own Go allowance per model over the 5-hour, weekly and monthly windows, and refuses an unmetered provider that has no run limit.</li>
+        <li><span class="chip c-done">DS-538 · merged, #546</span> £ per accepted task and accepted tasks per 5-hour window for each arm, priced from a plan table.</li>
         <li><span class="chip c-done">closed</span> <span class="k">DS-539</span> and <span class="k">DS-540</span>, the OpenCode and Antigravity runners. Go serves every candidate to Claude Code, so neither is needed.</li>
       </ul>
     </div>
     <div class="card">
-      <div class="phead"><h3>Batch reliability</h3><span class="chip c-done">Today's bugs merged · DS-237</span></div>
-      <p>Rotation's archive showed up two bugs. Both are fixed.</p>
+      <div class="phead"><h3>Batch reliability</h3><span class="chip c-filed">13 in the batch · DS-237, DS-241</span></div>
+      <p>The 9–10 Nov runs turned up a new set of false stops. Every live bug is now in the standing batch.</p>
       <ul>
-        <li><span class="k">DS-523</span> (#529): a ticket admitted after a feature batch's promotion PR has merged now goes to the standing batch, and isn't archived along with the feature batch.</li>
-        <li><span class="k">DS-525</span> (#532): a finished feature batch now stops its idle merge driver and archives. DS-461's batch had been held open since 07:15.</li>
+        <li><span class="chip c-done">merged 9 Nov</span> <span class="k">DS-541</span> (#538): a ticket blocked by its own epic is no longer held. <span class="k">DS-542</span> (#537): the base syncs on every pass. <span class="k">DS-543</span> (#540): <span class="k">with-lock.sh --timeout 0</span> works under Homebrew flock. <span class="k">DS-544</span> and <span class="k">DS-545</span> (#542, #543): a <span class="k">/pullbot</span> repo's clean reviews are read, and its workers are told the right review.</li>
+        <li><span class="chip c-filed">running</span> <span class="k">DS-552</span> (P1): two PRs that each add the next migration revision both merge, which leaves two heads and every PR red. <span class="k">DS-556</span>: a ticket you've said has no worker work keeps respawning. <span class="k">DS-549</span>, <span class="k">DS-559</span> and <span class="k">DS-527</span>.</li>
+        <li><span class="chip c-filed">ready, behind DS-552 and DS-556</span> <span class="k">DS-546</span>, <span class="k">DS-548</span>, <span class="k">DS-551</span>, <span class="k">DS-553</span>, <span class="k">DS-554</span>, <span class="k">DS-555</span>, <span class="k">DS-557</span> and <span class="k">DS-558</span>.</li>
       </ul>
     </div>
 
@@ -295,38 +299,38 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 
 <section aria-labelledby="backlog">
   <h2 id="backlog">The backlog by epic</h2>
-  <p>The open DS epics in your order: rotation first, then fewer tokens and more autonomy, then the rest. Sentry intake (DS-206) is at the bottom. The status column shows each epic's Jira status and priority. Nothing is admitted at the moment.</p>
+  <p>The open DS epics in your order: rotation first, then fewer tokens and more autonomy, then the rest. Sentry intake (DS-206) is at the bottom. The status column shows each epic's Jira status and priority. DS-455 and DS-515 were closed on 11 Nov, with every child Done.</p>
   <div class="tbl">
     <table>
       <thead><tr><th>Epic</th><th>Outcome</th><th>Status</th><th class="n">Open</th><th>Notes</th></tr></thead>
       <tbody>
         <tr class="grp"><th colspan="5">Top priority: rotation, fewer tokens and more autonomy</th></tr>
-        <tr><td class="k">DS-461</td><td>A batch keeps running on another Claude or Codex subscription when one reaches its limit</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">0</td><td>On main (#519) with DS-521, 522 and 524. Ready to close once it's been seen working on two logins</td></tr>
-        <tr><td class="k">DS-443</td><td>Phase 0: fewer tokens and fewer interruptions per ticket</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>All merged; preflight still to be measured</td></tr>
-        <tr><td class="k">DS-241</td><td>A ticket parks only for a step that needs you</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">1</td><td>DS-431 waits on your live check</td></tr>
-        <tr><td class="k">DS-475</td><td>A model, brief or review change is adopted only after it holds quality on frozen tasks</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">4</td><td>All 12 on main. DS-535 to DS-538 filed on 9 Nov for the model trials</td></tr>
-        <tr><td class="k">DS-237</td><td>A batch finishes without false stops or flaky reds</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">0</td><td>DS-523 (#529) and DS-525 (#532) merged today. Ready to close</td></tr>
-        <tr><td class="k">DS-515</td><td>A repo's desk-q views show the work of every batch it has</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>DS-516 merged (#509). Ready to close</td></tr>
+        <tr><td class="k">DS-461</td><td>A batch keeps running on another Claude or Codex subscription when one reaches its limit</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">0</td><td>On main. Close it once it's been seen working on two logins, and login-2 is signed out</td></tr>
+        <tr><td class="k">DS-528</td><td>Desk lists and rotates Claude accounts, not folders</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">2</td><td>Feature batch on feat/usage-accounts: 4 merged, DS-533 running, DS-534 waiting</td></tr>
+        <tr><td class="k">DS-443</td><td>Phase 0: fewer tokens and fewer interruptions per ticket</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">1</td><td>Every lever merged, and preflight is to be measured on today's batch. DS-559 (a desk-update bug filed under it) is running</td></tr>
+        <tr><td class="k">DS-241</td><td>A ticket parks only for a step that needs you</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">9</td><td>7 in the batch. DS-550 isn't admitted yet, and DS-431 waits on your live check</td></tr>
+        <tr><td class="k">DS-475</td><td>A model, brief or review change is adopted only after it holds quality on frozen tasks</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">2</td><td>DS-536 to DS-538 merged. DS-535's baseline ran, and its blind scores are still to do. DS-547 isn't in a batch</td></tr>
+        <tr><td class="k">DS-237</td><td>A batch finishes without false stops or flaky reds</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">4</td><td>DS-546, 551, 552 and 554, all in the batch</td></tr>
         <tr class="grp"><th colspan="5">Next</th></tr>
         <tr><td class="k">DS-228</td><td>Every desk SKILL.md is 20 KB or less</td><td><span class="chip c-filed">In progress · P1</span></td><td class="n">1</td><td>DS-442 (desk-ci split), not in a batch yet</td></tr>
-        <tr><td class="k">DS-260</td><td>CI runs on short-lived EC2 runners, GitHub-hosted as fallback</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">4</td><td>DS-259, 261, 262, 263</td></tr>
-        <tr><td class="k">DS-455</td><td>Prompt-audit drift fixes for desk skills and agents</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>DS-511 merged (#493). Ready to close</td></tr>
+        <tr><td class="k">DS-260</td><td>CI runs on short-lived EC2 runners, GitHub-hosted as fallback</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">4</td><td>DS-259, 261, 262 and 263, not in a batch yet</td></tr>
         <tr><td class="k">DS-284</td><td>A README that explains desk, kept accurate by tests</td><td><span class="chip c-filed">To do · P3</span></td><td class="n">1</td><td>Waits until the backlog features ship</td></tr>
         <tr class="grp"><th colspan="5">Later: not a priority for now</th></tr>
         <tr><td class="k">DS-206</td><td>Production events raise investigated tickets that jump the queue</td><td><span class="chip c-filed">To do · P3</span></td><td class="n">6</td><td>Sentry intake, DS-207 to DS-212</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="foot">Open counts are each epic's children not in Done, read from Jira at 12:05. Outside these epics: DS-503 (To Do) has no epic, and DS-65, 66, 68 and 72 (To Do, P3) are still open under DS-236, which is Done. Batch states come from both queues at 12:05.</p>
+  <p class="foot">Open counts are each epic's children not in Done, read from Jira at 09:20 on 11 Nov. Outside these epics: DS-527 (in the batch) and DS-503 have no epic, and DS-65, 66, 68 and 72 (To Do, P3) are still open under DS-236, which is Done. DS-503 was refused at admission because its ticket lacks acceptance criteria, a Design line and a size. Batch states come from desk-q at 09:22.</p>
 </section>
 
 <section aria-labelledby="you">
   <h2 id="you">Waiting on you</h2>
   <div class="card">
     <ul>
-      <li><span class="chip c-you">Buy</span> <b>OpenCode Go Plus, $40, monthly.</b> It isn't needed until DS-536 and DS-537 have merged; the Opus baseline (DS-535) runs without it. Then switch on Global regions in Go's privacy settings so DeepSeek V4.1 Flash is available. Gemini 4 Argon's half price on Go ends 30 Nov, and so does DeepSeek's current no-retention agreement, which renews monthly.</li>
+      <li><span class="chip c-you">Sign in</span> <b><span class="k">login-2</span>.</b> In another terminal: <span class="k">CLAUDE_CONFIG_DIR=~/.claude-logins/login-2 claude</span>, then <span class="k">/login</span>. Until you do, rotation can't be seen working, and DS-461 can't close.</li>
+      <li><span class="chip c-you">Buy</span> <b>OpenCode Go Plus, $40, monthly.</b> DS-536 and DS-537 have merged, so nothing in the harness blocks it now. It's worth waiting for DS-547, though, so the first month isn't spent on a gate that can't tell candidates apart. Then switch on Global regions in Go's privacy settings so DeepSeek V4.1 Flash is available. Gemini 4 Argon's half price on Go ends 30 Nov, and so does DeepSeek's current no-retention agreement, which renews monthly.</li>
       <li><span class="chip c-you">Check</span> <b>DS-431's live worker run.</b> Run one worker on an ai-agents ticket with studia-web listed, and confirm it reads the clone without parking. Its scope is accepted, and this is all that's left.</li>
-      <li><span class="chip c-you">Check</span> <b>VPL-794.</b> Confirm that nothing outside the repo pulls <span class="k">:staging</span>.</li>
+      <li><span class="chip c-you">Check</span> <b>VPL-794.</b> Confirm that nothing outside the repo pulls <span class="k">:staging</span>. Not re-read on 11 Nov.</li>
     </ul>
   </div>
 </section>
@@ -334,16 +338,17 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <section aria-labelledby="next">
   <h2 id="next">Next, in order</h2>
   <ol class="next">
-    <li><div><b>Admit the next batch.</b> The queue is empty. DS-442 (P1) and DS-260's 4 children (P1) are next. A batch about the size of last week's also serves as Phase 0's preflight measurement, and as the first real run of rotation on two logins.</div></li>
-    <li><div><b>Phase 0 is measured:</b> preflight first, the other levers one at a time, and a measured batch decides Phase 1.</div></li>
-    <li><div><b>The harness gets built and run on Opus:</b> DS-535 freezes the task set and runs the Opus baseline, without any new subscription. DS-537, DS-536 and DS-538 build the Go arm, its meter and the £ figures.</div></li>
-    <li><div><b>All four candidates on Go Plus:</b> once you've subscribed and DS-536 has merged, Kimi K3.1 Pro first, then DeepSeek V4.1 Flash, Gemini 4 Argon and GLM‑5.3, within the cap. Only the winner's direct plan is bought, and measured against Go.</div></li>
-    <li><div><b>Claude tidies Jira:</b> closes DS-237, DS-455 and DS-515, closes DS-461 once rotation has been seen working, puts DS-503 under an epic, and moves DS-236's 4 open children to an open epic.</div></li>
+    <li><div><b>Today's batch runs to the end.</b> 13 tickets, the last estimated for Thu 20:05. DS-552 goes first because the others share files with it. The batch also gives Phase 0 its preflight measurement.</div></li>
+    <li><div><b>login-2 signed in,</b> so the next batch that reaches default's limit carries on on login-2. That's the last thing DS-461 needs before it closes.</div></li>
+    <li><div><b>DS-547 admitted, then the Opus baseline re-scored</b> from its existing logs, with no rerun. DS-535's blind scores are done at the same time.</div></li>
+    <li><div><b>All four candidates on Go Plus:</b> once you've subscribed, Kimi K3.1 Pro first, then DeepSeek V4.1 Flash, Gemini 4 Argon and GLM‑5.3, within the cap. Only the winner's direct plan is bought, and measured against Go.</div></li>
+    <li><div><b>The next batch:</b> DS-442 (P1), DS-260's 4 children (P1) and DS-550, once today's batch has room.</div></li>
+    <li><div><b>Claude tidies Jira:</b> closes DS-461 once rotation has been seen working, gets DS-503 ready for a batch, and moves DS-236's 4 open children to an open epic.</div></li>
     <li><div><b>When VPL-793 merges,</b> you restore VoicePA's §4 Check builds.</div></li>
   </ol>
 </section>
 
-<p class="foot">Sources: live Jira, queue, supervisor-log and GitHub reads at 12:00–12:05 on 9 Nov; <span class="k">~/.config/desk/subscriptions.md</span>; and your ChatGPT conversation of 7–8 Nov on subscription coding plans. Its claims were checked on 9 Nov against provider docs, Artificial Analysis and BenchLM. Its benchmark figures match Artificial Analysis. Kimi's '2 or 4 concurrent tasks' is a figure for its web agent, not for CLI sessions. This page is a snapshot; Jira is the record.</p>
+<p class="foot">Sources: live Jira, desk-q, supervisor-log and GitHub reads at 09:15–09:25 on 11 Nov, and DS-535’s baseline comment of 10 Nov; <span class="k">~/.config/desk/subscriptions.md</span>; and your ChatGPT conversation of 7–8 Nov on subscription coding plans. Its claims were checked on 9 Nov against provider docs, Artificial Analysis and BenchLM. Its benchmark figures match Artificial Analysis. Kimi's '2 or 4 concurrent tasks' is a figure for its web agent, not for CLI sessions. This page is a snapshot; Jira is the record.</p>
 </div>
 
 </html>
