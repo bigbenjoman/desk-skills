@@ -102,10 +102,13 @@ desk-env drift                                      # only when EXISTS=yes: each
                                                     # template has and this repo's config lacks
 node ~/.claude/desk/bin/repo-templates.mjs status   # only when EXISTS=yes: exit 1, a desk template this repo
                                                     # committed (pre-push hook, desk gate) is BEHIND
+node ~/.claude/desk/bin/gate.mjs hold-kind          # only when EXISTS=yes: an `agent` line is a merge hold
+                                                    # an agent can clear that names no routine
 ```
 
 **Inside a configured repo, read `references/repo-drift.md` now**: it says how the `MISSING` §3 rows
-are asked and written (each once, this run), and how a `BEHIND` template becomes one PR on this repo.
+are asked and written (each once, this run), how a merge hold an agent can clear gets its routine
+proposed, and how a `BEHIND` template becomes one PR on this repo.
 A missing row reads as `no`, so every worker is refused it until it is asked: this is how a row
 shipped after the repo was set up reaches it.
 

@@ -981,7 +981,7 @@ t('DS-378 AC1 it is listed again with that note', /^\(You said done at \d{4}-\d\
 const q1Line = cli('list', 'psi').out.split('\n').find((l) => l.startsWith('psi Q-1 pr')) ?? '';
 t('DS-378 AC1 the listed line keeps the need and the note whole', q1Line.includes(`| ${psi()['Q-1'].need} ${psi()['Q-1'].note} |`), true);
 // AC4 on the listed line: a long recorded text a need quotes never takes the next step off it.
-const longHold = withHead(psiPr(147, { merge_blocked: `merge hold: ${'touches a very long list of held paths, '.repeat(6)}` }));
+const longHold = withHead(psiPr(147, { merge_blocked: `merge hold: ${'needs a sign-off on a very long list of held paths, '.repeat(6)}` }));
 const qhl = queueOf('psi'); qhl.tickets['Q-7'] = { key: 'Q-7', ...longHold };
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 t('DS-378 AC4 a long merge hold still says what happens next on its listed line',
@@ -1005,6 +1005,18 @@ t('DS-411 AC2 a routine that failed is named with the step it failed at',
   p411['Q-9']?.need, 'PR #149 touches files under a merge hold (prisma/migrations/**, 1 file(s), e.g. prisma/migrations/2026_brand/migration.sql), and desk ran its routine, `./scripts/apply-migrations.sh`, at 575fa8c51: it failed (exit 2) at "migrate deploy on public: P3009 failed migration". Settle that step and finish the routine by hand, then merge it on GitHub; the ticket is then done.');
 t('DS-411 AC3 no hold item says only to merge it on GitHub', ['Q-7', 'Q-8', 'Q-9'].filter((k) => !/apply the migration|failed \(exit/.test(p411[k]?.need ?? '')).join(), '');
 for (const k of ['Q-7', 'Q-8', 'Q-9', 'Q-10']) delete qhl.tickets[k];
+// ---- DS-503: a hold with no routine whose step an agent can check is a gap in the config, not the person's step.
+const dry = 'merge hold: skim the Confluence Sync dry-run comment first (AGENTS.md) — frontend/e2e/**, 1 file(s), e.g. frontend/e2e/auth.spec.ts';
+qhl.tickets['Q-11'] = { key: 'Q-11', ...withHead(psiPr(151, { merge_blocked: dry })) };
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
+const p503 = psi();
+t('DS-503 AC4 a hold an agent can check with no routine reads as a config gap',
+  p503['Q-11']?.need, 'PR #151 is under a merge hold whose step an agent can check, but the hold names no routine, so desk cannot run it: "skim the Confluence Sync dry-run comment first (AGENTS.md)" (frontend/e2e/**, 1 file(s), e.g. frontend/e2e/auth.spec.ts). Give this hold a routine: /desk-update proposes one (`; desk runs: <command>` on its §4 Merge holds item, with §3 merge-hold-routine yes); desk then runs it and merges.');
+t('DS-503 AC4 it never says to merge it on GitHub, nor that only you can do the step',
+  `${/merge it on GitHub/.test(p503['Q-11']?.need ?? '')} ${p503['Q-11']?.actions.some(([, why]) => /only you/.test(why ?? ''))} ${p503['Q-11']?.actions[0][1]}`,
+  'false false the hold needs a routine in the config; say done once it has one, and the PR is checked on GitHub there and then');
+t('DS-503 AC4 negative control: a person\'s hold with no routine is still the person\'s step', /^PR #141 is under a merge hold, so desk never merges it itself: "touches billing"/.test(p503['Q-1']?.need ?? ''), true);
+delete qhl.tickets['Q-11'];
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 t('DS-378 AC1 the CLI shows it to the person', cli('record', 'psi', 'Q-1', 'done').code, 11);
 const qh = queueOf('psi'); qh.tickets['Q-1'].pr_status.head = sha(999);
