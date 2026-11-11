@@ -174,6 +174,14 @@ repo({ default: { login: 'personal', config_dir: null, type: 'seven_day', resets
   spare: { login: 'spare', config_dir: join(H, '.claude-logins', 'spare'), type: 'seven_day', resets_at: null, since: 'x', by: 'x' } });
 t('with every login out, the first back is named by its account', lines()[0].includes('first back work@example.test at'), true);
 t('and the note on Home says the same', Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 }).includes('The first back is work@example.test at'), true);
+// DS-533 AC23: with accounts pinned, each is named by its pin, whatever its folder is signed in to now.
+writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n'
+  + '| `claude` | `work` | `~/.claude-logins/work` | `pinned@example.test` | `in rotation` |\n| `claude` | `spare` | `~/.claude-logins/spare` | `spare@example.test` | `standby` |\n');
+t('DS-533 AC23 the Queue footer names the first back by its pinned email', lines()[0].includes('first back pinned@example.test at'), true);
+t('DS-533 AC23 and so does Home\'s ▲ usage note', Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 }).includes('The first back is pinned@example.test at'), true);
+repo();
+t('DS-533 AC23 the Claude line names the account new work starts on by its pin', lines()[0].startsWith('Claude  pinned@example.test  5h'), true);
+subscriptions(CLAUDE);
 rmSync(join(H, '.claude.json'));
 rmSync(WORK_JSON);
 repo();
