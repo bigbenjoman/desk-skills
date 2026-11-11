@@ -55,8 +55,10 @@ node ~/.claude/desk/bin/gate.mjs hold-kind     # <kind>\t<item>, for each §4 Me
   item as it would become, `` `<glob>: <why>; desk runs: bash <the script's absolute path>` ``, and
   offer `/desk-setup` to write it, with §3 `merge-hold-routine` `yes` where it is not. Where no
   command can perform the check, say so and offer to drop the hold instead.
-- **`person` and `routine` lines are left as they are.** A hold the user wants kept as theirs whatever
-  its wording takes `person only` in its reason, which makes `hold-kind` print `person`.
+- **`person` and `routine` lines are left as they are**, except a `person` line whose step is plainly a
+  read or check an agent can run, in none of the ask classes, that printed `person` on an incidental
+  word ("the pages it would publish"): treat it as an `agent` line. A hold the user wants kept as
+  theirs whatever its wording takes `person only` in its reason, which makes `hold-kind` print `person`.
 - No `agent` line: say `merge holds: nothing to add`.
 
 ## Templates the repo committed

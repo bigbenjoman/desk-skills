@@ -215,7 +215,10 @@ How to turn what you find into rows:
   - **`person`**: its reason names one of the five ask classes (money or billing, legal or
     compliance, production or staging and their data, credentials, cost-bearing customer copy, a fact
     only the user holds), an approval or sign-off, a deploy, publish or migration, or a change to the
-    checks. Propose it as it is, with no routine.
+    checks. Propose it as it is, with no routine. The classifier reads words, so a step that is
+    plainly a read or check an agent can run, in none of the ask classes, can print `person` on an
+    incidental word ("read the dry-run comment listing the pages it would publish"): treat that one as
+    `agent` below. Once it names a routine, `hold-kind` prints `routine` whatever its wording.
   - **`agent`**: a read or check an agent can run ("skim the Confluence Sync dry-run comment before
     merging a PR that touches an e2e spec"). Do not propose it with no routine: every PR it holds
     would go to the user. Write it a routine and propose the item as
