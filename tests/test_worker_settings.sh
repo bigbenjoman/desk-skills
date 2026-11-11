@@ -418,6 +418,46 @@ out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --
 check "DS-349 AC4 on the batch base: no rule, gh workflow denied" '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
 rm -f "$DESK_QUEUE"
 
+# ---- DS-549: §4 Evidence workflow, dispatched for the worker's own PR as the pass does it ----
+EV='| Evidence workflow | `pr-evidence.yml` |'
+EVRUN="gh workflow run pr-evidence.yml --ref main -f pr=935"
+EVRUN_REPO="gh workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=935"
+settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
+check "DS-549 AC1 dispatch yes: the evidence workflow on the default branch with a PR number, --repo as a variant" \
+  '[ $rc -eq 0 ] && ok "$EVRUN" "$EVRUN_REPO" "gh workflow run pr-evidence.yml --ref main -f pr=7" && [[ "$out" != *"no workflow is allowed"* ]] && [[ "$out" != *CONFIG_WARN*Evidence* ]]'
+check "DS-549 AC1 a pr value that is not a number is refused" \
+  'no "gh workflow run pr-evidence.yml --ref main -f pr=" "gh workflow run pr-evidence.yml --ref main -f pr=abc" "gh workflow run pr-evidence.yml --ref main -f pr=9a" \
+     "gh workflow run pr-evidence.yml --ref main -f pr=\$(id)" "gh workflow run pr-evidence.yml --ref main -f pr=1;id" "gh workflow run pr-evidence.yml --ref main -f pr=1\"x" \
+     "gh workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=1\`id\`"'
+check "DS-549 AC1 an extra argument, another ref or another workflow is refused" \
+  'no "$EVRUN -f environment=production" "$EVRUN_REPO --json" "$EVRUN	-f x=y" "gh workflow run pr-evidence.yml --ref fix/fix-thing -f pr=935" \
+     "gh workflow run pr-evidence.yml --ref feat/epic -f pr=935" "gh workflow run pr-evidence.yml" "gh workflow run deploy.yml --ref main -f pr=935" \
+     "gh workflow run pr-evidence.yml --repo other/repo --ref main -f pr=935"'
+check "DS-549 AC1 enable and disable stay refused" 'no "gh workflow enable pr-evidence.yml" "gh workflow disable pr-evidence.yml"'
+settings '`bash tests/run.sh`' "$EV
+$WF" "$(rows3 worker-workflow-dispatch=yes)"
+check "DS-549 AC1 beside §4 Worker workflows: both allowed" '[ $rc -eq 0 ] && ok "$EVRUN" "$RUN" "$RUN_REPO" && no "gh workflow run pr-evidence.yml --ref fix/fix-thing -f pr=935"'
+for v in ask no; do
+  settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=$v)"
+  check "DS-549 AC2 dispatch $v: the evidence workflow is refused, gh workflow denied" '[ $rc -eq 0 ] && no "$EVRUN" "$EVRUN_REPO" && denies "Bash(gh workflow:*)" && denied_line worker-workflow-dispatch $v'
+done
+settings '`bash tests/run.sh`' "$EV"
+check "DS-549 AC2 dispatch unset: the evidence workflow is refused" 'no "$EVRUN" && denies "Bash(gh workflow:*)"'
+settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
+check "DS-549 a dry run starts no evidence workflow" '[ $rc -eq 0 ] && no "$EVRUN" "$EVRUN_REPO"'
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch main --out "$T/ws.json" 2>&1); rc=$?
+check "DS-549 no branch of its own: no evidence workflow" '[ $rc -eq 0 ] && no "$EVRUN" && denies "Bash(gh workflow:*)"'
+for label in none unset; do
+  rows="$WF"; [ $label = none ] && rows="| Evidence workflow | \`none\` |
+$WF"
+  settings '`bash tests/run.sh`' "$rows" "$(rows3 worker-workflow-dispatch=yes)"
+  check "DS-549 AC3 evidence $label: the allowed workflows are exactly §4 Worker workflows" \
+    '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[\"Bash($RUN)\",\"Bash($RUN_REPO)\"]" ] && no "$EVRUN" "$EVRUN_REPO"'
+done
+settings '`bash tests/run.sh`' '| Evidence workflow | `pr evidence.sh` |' "$(rows3 worker-workflow-dispatch=yes)"
+check "DS-549 a malformed evidence row warns and allows nothing" '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Evidence workflow"* ]] && [ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
+
 # ---- DS-390: a force-push the person approved once, and no rebase of a pushed branch without one ----
 PUSH3="$(rows3 git-push=yes git-force-with-lease=ask)"
 SHA=$(git -C "$T/repo" rev-parse HEAD)

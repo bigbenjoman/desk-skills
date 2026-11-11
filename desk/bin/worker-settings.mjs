@@ -72,6 +72,7 @@ import { platform } from 'node:os';
 import * as E from './desk-env.mjs';
 import { grantPush } from './batch-state.mjs';
 import { wrappersFile } from './desk-lines.mjs';
+import { parseEvidenceRow } from './evidence.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
 const opt = {};
@@ -333,6 +334,21 @@ if (mode === 'triage') {
       for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) DISPATCH_RULES.push(...exact('gh', ` workflow run ${m[1]}${r} --ref ${BRANCH}${m[2]}`));
     }
   }
+  // §4 Evidence workflow, under the same row, in the form the pass starts it (evidence.mjs): on §0
+  // Default branch, whose code it runs, with the PR number as its one input. The number is a `*`, as
+  // the PR does not exist at spawn, so every value but digits is denied: a space (another argument)
+  // or any other printable character. `*`, `:`, `(`, `)` and `\` are left out, as the harness reads
+  // them in a rule's syntax; none reaches the workflow without a quote or `$`, which are denied.
+  const EVIDENCE_RULES = [];
+  const EVIDENCE_DENY = [];
+  const evidence = DISPATCH === 'yes' && dispatchRef ? parseEvidenceRow(cfgList('evidence-workflow')) : null;
+  if (evidence?.errors) warns.push(`§4 Evidence workflow ${evidence.errors.join('; ')} — not allow-listed`);
+  else if (evidence) {
+    const ref = String(cfg('default-branch') ?? '').trim() || 'main';
+    for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) EVIDENCE_RULES.push(...bash('gh', ` workflow run ${evidence.workflow}${r} --ref ${ref} -f pr=*`));
+    const NOT_DIGIT = [' ', '\t', ...Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter((c) => !/[0-9*:()\\]/.test(c))];
+    EVIDENCE_DENY.push(...bash('gh', ` workflow run ${evidence.workflow} * -f pr=`, ...NOT_DIGIT.map((c) => ` workflow run ${evidence.workflow} *-f pr=*${c}*`)));
+  }
   // This worktree as given and as its real path (a symlinked --wt, or macOS's /tmp and /var).
   const WTS = [...new Set([WT, (() => { try { return realpathSync(WT); } catch { return WT; } })()])];
   const OWN_CS = WTS.map((w) => ` -C ${w}`);
@@ -399,9 +415,10 @@ if (mode === 'triage') {
   deny.push(
     ...READ_DENY,
     ...bash('git', ...GIT_DENY_WT),
-    // `gh workflow` gives way only to the exact dispatches above; enable and disable stay denied.
-    ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !DISPATCH_RULES.length)),
-    ...(DISPATCH_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
+    // `gh workflow` gives way only to the dispatches above; enable and disable stay denied.
+    ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !(DISPATCH_RULES.length || EVIDENCE_RULES.length))),
+    ...(DISPATCH_RULES.length || EVIDENCE_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
+    ...EVIDENCE_DENY,
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
     // The desk-env subcommands that write: the machine profile, the cost sources and the login rules
     // are the user's to confirm. desk-env itself refuses them in a worker too, for the forms these miss.
@@ -576,8 +593,8 @@ if (mode === 'triage') {
   grant('pr-update-branch', bash('gh', ' pr update-branch'));
   grant('ci-rerun', bash('gh', ' run rerun'));
   if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${setting('worker-workflow-dispatch')})`);
-  else if (!DISPATCH_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
-  allow.push(...DISPATCH_RULES);
+  else if (!DISPATCH_RULES.length && !EVIDENCE_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
+  allow.push(...DISPATCH_RULES, ...EVIDENCE_RULES);
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
