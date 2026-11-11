@@ -91,7 +91,7 @@ Per repo, because the email, Jira account and even the GitHub handle can differ 
 | Jira email | `TODO` (`none` if §4 Tracker is `none`) |
 | Jira display name | `TODO` (exactly as Jira shows it; the autopilot ownership test) |
 | Jira account id | `TODO` (from `desk-jira whoami`) |
-| Git author name / email | `TODO` (must match what your commits in this repo already use) |
+| Git author name / email | `TODO` (`Name <email>`; must match what your commits in this repo already use; autopilot workers commit as it) |
 | Pronouns (optional) | `TODO` (unset means they/them) |
 
 ## 2. Paths on your machine
