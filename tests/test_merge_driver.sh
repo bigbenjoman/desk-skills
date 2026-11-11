@@ -1055,7 +1055,8 @@ check "DS-552: the throwaway checkout is gone and the repo's worktrees are as th
 check "DS-552: held at the same head and base, the next loop reads its kept result, runs no check and still does not merge" \
   '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#502 HELD: merged into main" && [ ! -s "$T/tc-runs" ] && [ "$(find "$T/state" -name "tree-502-$SHA502-$SHA501-*.json" | wc -l | tr -d " ")" = 1 ]'
 # A changed §4 row is not answered from the old row's kept result.
-TCR=${TC/"sh $T/tc-check.sh"/"sh $T/tc-check.sh again"}; printf '%s\n' "$TCR" > "$T/config-tc-row.md"
+TCR=$(cat "$T/config.md"); TCR=${TCR/"$HOLDS_ROW"/"$HOLDS_ROW"$'\n'"| Merged-tree check | \`sh $T/tc-check.sh again\` |"}
+printf '%s\n' "$TCR" > "$T/config-tc-row.md"
 TC_CONFIG="$T/config-tc-row.md" tcloop
 check "DS-552: a changed §4 Merged-tree check row runs the check again" '[ -s "$T/tc-runs" ] && echo "$out" | grep -q "#502 HELD: merged into main"'
 # A check that timed out or never started says nothing about the tree: held this loop, not kept, not on the ticket.
