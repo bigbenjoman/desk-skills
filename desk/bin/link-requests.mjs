@@ -1,7 +1,8 @@
 // A worker cannot make Jira issue links (worker contract Stage 8), so it asks the pass for one with
 //   AUTOPILOT_LINK: <KEY> <type> <OTHER>
 // one per line, the arguments `desk-jira link` takes. The pass reads them when the worker ends on DONE
-// or PARK, and makes each one config §3 jira-edit grants, or parks naming why it did not.
+// or PARK, and makes each one config §3 jira-edit grants; it keeps why it did not make any other, with
+// the command, as a follow-on step on the ticket (pass.mjs keepLinks).
 //
 // A request is made only between two tickets of the worker's own project, and never of the Blocks type
 // (Blocks, blocks, blocked-by): those change the order a batch spawns in, so they stay the person's.

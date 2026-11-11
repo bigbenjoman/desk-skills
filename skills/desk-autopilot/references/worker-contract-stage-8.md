@@ -24,10 +24,12 @@ never park for it. Print one line per link, at the start of a line, before your 
 AUTOPILOT_LINK: DS-764 relates-to DS-814
 ```
 
-When you end, the pass makes each one under `jira-edit` and reads it back. It parks the ticket,
-naming the exact command, for one it does not make: `jira-edit` not `yes`, a ticket outside your
-project, one that does not exist, or a Blocks link (`blocks`, `blocked-by`), which changes the order
-tickets spawn in and stays the person's. Leave the link out of the steps you name as not reached.
+When you end, the pass makes each one under `jira-edit` and reads it back. One it does not make
+(`jira-edit` not `yes`, a ticket outside your project, one that does not exist, or a Blocks link,
+`blocks` or `blocked-by`, which changes the order tickets spawn in and stays the person's) it keeps
+on the ticket as a follow-on step naming the exact command, listed for the person once the PR
+merges; it never holds the merge, and a park of yours carries it in its question too. Leave the link
+out of the steps you name as not reached.
 
 **A ticket with follow-ons** (the `follow_on=` steps on your DONE line, Stage 5 file) lists each in
 that comment, one line each under "Once this merges:", with the §3 row it needs. The PR still goes to
