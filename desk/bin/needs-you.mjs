@@ -63,7 +63,7 @@ import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, stuckFindings } from './fix-tries.mjs';
-import { approvalFiles } from './gate.mjs';
+import { approvalFiles, holdNeedsPerson } from './gate.mjs';
 import { repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
@@ -250,7 +250,9 @@ function holdPlain(n, w) {
   // routine stays the person's even with the row on.
   if (w.routine && /^§3 /.test(w.off ?? '')) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off}. Run it yourself, then merge it on GitHub (or set that row to yes with /desk-setup, and desk runs it and merges); the ticket is then done.`;
   if (w.routine) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off ?? 'it was not run'}. Run it and take that step yourself, then merge it on GitHub; the ticket is then done.`;
-  // With no routine, the hold's reason is the step the person takes before merging.
+  // With no routine, a step an agent can check is a gap in the config, not the person's to take.
+  if (!holdNeedsPerson(w.why)) return `${n} is under a merge hold whose step an agent can check, but the hold names no routine, so desk cannot run it: "${one(w.why)}"${files}. Give this hold a routine: /desk-update proposes one (\`; desk runs: <command>\` on its §4 Merge holds item, with §3 merge-hold-routine yes); desk then runs it and merges.`;
+  // Otherwise the hold's reason is the step the person takes before merging.
   return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
 }
 
@@ -536,6 +538,9 @@ function itemOf(r, x) {
     if (stuck?.checks.some((c) => c.error)) return openPr(['done', 'desk\'s workers could not clear what its log names; say done once it is fixed, and the PR is checked on GitHub there and then']);
     // Desk's own upload crashed on every try: the saved output says why, and the files are still there.
     if (UPLOAD_CRASHED.test(String(t.undraft?.why ?? ''))) return openPr(['done', "desk's upload crashed on every try it gets, and its saved output says why; say done once no screenshot cell is left, and the PR is checked on GitHub there and then"]);
+    // A hold with no routine whose step an agent can check waits on a config change, not on the person's step.
+    const w = prWhy(r, t);
+    if (w?.code === 'hold' && !w.routine && !w.failed && !holdNeedsPerson(w.why)) return openPr(['done', 'the hold needs a routine in the config; say done once it has one, and the PR is checked on GitHub there and then']);
     return openPr(['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then']);
   }
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in

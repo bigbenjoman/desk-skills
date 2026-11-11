@@ -42,7 +42,7 @@ import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since } from './gate.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -283,6 +283,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // the hold names one) and leaves it for a person, so the item says the hold's step.
   const hold = parseHoldNote(t.merge_blocked);
   if (hold?.failed) return needs({ code: 'hold', ...hold }, [`merge hold routine failed: ${hold.failed.step}`, WARN], [' · settle it, then merge it', null]);
+  if (hold && !hold.routine && !holdNeedsPerson(hold.why)) return needs({ code: 'hold', ...hold }, [`merge hold with no routine for its check: ${hold.why}`, WARN], [' · give the hold a routine (/desk-update)', null]);
   if (hold) return needs({ code: 'hold', ...hold }, [`only a person merges it: ${hold.why}`, WARN], [hold.routine ? ` · run ${hold.routine}, then merge it` : ' · take that step, then merge it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
   const triesLeft = triesMade(t.fix_tries) < FIX_TRIES_MAX;

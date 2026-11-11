@@ -27,6 +27,10 @@
 //   normaliseRollup(nodes)   statusCheckRollup / GraphQL context nodes -> checks
 //   parseHolds(items)        §4 Merge holds items `<glob>[#<key>]: <why>[; desk runs: <command>]`
 //                            -> [{ glob, path, key, why, routine }]
+//   holdNeedsPerson(why)     true where a hold's reason names a step only a person takes (an ask
+//                            class, an approval, a change to the checks, or `person only`)
+//   holdKind(hold)           'routine' (it names one), 'person', or 'agent' (a check with no routine)
+//   agentLast(holds)         the holds with every 'agent' one after the rest, the row's order otherwise
 //   matchHolds(files, holds, contents) -> [{ glob, why, routine, files }]
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
 //   codeOwnerHolds(held, { repo, base, merger, run }) -> { held, satisfied }: a code-owner hold whose
@@ -60,6 +64,8 @@
 //     waiver (flakyWaiver's verdict, with the failing run ids of the checks it would waive)
 //   node gate.mjs holds <file-with-paths>          print each matching hold as `<glob>\t<why>\t<n files>`
 //     (with no diff to read, a `#<key>` hold on a listed file holds)
+//   node gate.mjs hold-kind [<item>…]             print `<kind>\t<item>` (holdKind) for each item given,
+//     else for each §4 Merge holds item
 //   node gate.mjs flaky                            print each known flaky check as `<check>\t<globs>`;
 //     exit 1 naming the row when it does not parse
 //   node gate.mjs state                            print each §4 State check as `<check>\t<kind>`;
@@ -331,22 +337,55 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
 // `<why>; desk runs: <command>` names the routine that clears the hold (null when none is named):
 // the merge driver runs it before merging where §3 merge-hold-routine is yes.
 export const ROUTINE_MARK = '; desk runs: ';
+// The reasons desk writes itself, for a hold item with none and for the hold `gate.mjs pr` makes when
+// it cannot read the PR's files: neither names a check an agent could run, so both are a person's.
+export const NO_REASON = '(no reason given in §4 Merge holds)';
+export const UNREAD_FILES = 'the PR file list is unreadable, so §4 Merge holds cannot be checked';
 export function parseHolds(items) {
   if (!items) return [];
   return items.filter((x) => x && !/^none$/i.test(x.trim())).map((x) => {
     const i = x.indexOf(': ');
     const glob = (i < 0 ? x : x.slice(0, i)).trim();
-    let why = i < 0 ? '(no reason given in §4 Merge holds)' : x.slice(i + 2).trim();
+    let why = i < 0 ? NO_REASON : x.slice(i + 2).trim();
     let routine = null;
     const m = why.indexOf(ROUTINE_MARK);
     if (m >= 0) {
       routine = why.slice(m + ROUTINE_MARK.length).trim() || null;
-      why = why.slice(0, m).trim() || '(no reason given in §4 Merge holds)';
+      why = why.slice(0, m).trim() || NO_REASON;
     }
     const k = glob.indexOf('#');
     return { glob, path: k < 0 ? glob : glob.slice(0, k), key: k < 0 ? null : glob.slice(k + 1), why, routine };
   });
 }
+
+// A hold's step is a person's when its reason names one of the ask classes (money, legal, production
+// or shared environments and their data, credentials, customer copy and its wording, a fact only the
+// person holds or confirms), an approval, sign-off or someone's review, a deploy or publish, or a change
+// to what checks a merge (`changes …`, as desk-setup words those holds). `person only` (or any
+// `person`) in the reason forces it, and so does a reason desk wrote itself (NO_REASON, UNREAD_FILES).
+// Anything else is a check an agent can run, which a routine (`; desk runs: <command>`) clears.
+const PERSON_STEP = new RegExp([
+  String.raw`\bpersons?\b`, String.raw`\bpeople\b`, String.raw`\bhuman\b`, String.raw`\bmanual(ly)?\b`, String.raw`\bby hand\b`,
+  String.raw`sign[- ]?off`, String.raw`\bsigns? off\b`, String.raw`approv`, String.raw`code[- ]?owner`,
+  String.raw`\bconfirm`, String.raw`\bask(s|ed)?\b`, String.raw`\bcheck(s|ed)? with\b`, String.raw`\breview(ed)? by\b`, String.raw`\bdesign review\b`,
+  String.raw`\bcopy\b`, String.raw`\bwording\b`, String.raw`\bcontracts?\b`, String.raw`\bclients?\b`, String.raw`\bpartners?\b`, String.raw`\bbill(s|ed)?\b`,
+  String.raw`\blegal\b`, String.raw`complian`, String.raw`regulat`, String.raw`\bpolic(y|ies)\b`, String.raw`\bprivacy\b`, String.raw`\bgdpr\b`, String.raw`\blicen[cs]`,
+  String.raw`\bproduction\b`, String.raw`\bprod\b`, String.raw`\blive\b`, String.raw`\bstaging\b`, String.raw`\bcustomers?\b`,
+  String.raw`\bdeploy`, String.raw`\brelease`, String.raw`\bpublish`, String.raw`\bpush(es|ed)?\b`,
+  String.raw`migrat`, String.raw`\bdatabases?\b`, String.raw`\bschema\b`,
+  String.raw`credential`, String.raw`\bsecrets?\b`, String.raw`api[- ]?keys?\b`, String.raw`\btokens?\b`, String.raw`password`, String.raw`\biam\b`, String.raw`\boauth\b`, String.raw`\bregister`,
+  String.raw`\bmoney\b`, String.raw`billing`, String.raw`payment`, String.raw`\bpric(e|es|ing)\b`, String.raw`invoice`, String.raw`refund`, String.raw`\bcharges?\b`, String.raw`\bstripe\b`, String.raw`\bspend`, String.raw`\bbudget`, String.raw`\bcosts?\b`,
+  String.raw`^changes\b`,
+].join('|'), 'i');
+export const holdNeedsPerson = (why) => {
+  const s = String(why ?? '').trim();
+  return s.startsWith(NO_REASON) || s.startsWith(UNREAD_FILES) || PERSON_STEP.test(s);
+};
+export const holdKind = (h) => (h.routine ? 'routine' : holdNeedsPerson(h.why) ? 'person' : 'agent');
+// The merge driver's note names the first hold with no routine, so a person's step goes before an
+// agent's check: the person is never told a routine alone would merge a PR their step still holds.
+// Otherwise the row's order is kept.
+export const agentLast = (holds) => [...holds].sort((a, b) => (holdKind(a) === 'agent') - (holdKind(b) === 'agent'));
 
 // The PR's files for matchHolds, from `gh api pulls/<n>/files`: both sides of a rename, so a file
 // moved out of a held path is still held.
@@ -733,8 +772,8 @@ if (isMain) {
       const merger = mi >= 0 && pr.baseRefName === defaultBranch ? rest[mi + 1] : null;
       const owned = filesOk
         ? await codeOwnerHolds(matchHolds(files, holds, contents), { repo, base: pr.baseRefName, merger, run: gh })
-        : { held: holds.length ? [{ glob: '*', why: 'the PR file list is unreadable, so §4 Merge holds cannot be checked', files: [] }] : [], satisfied: [] };
-      const held = owned.held;
+        : { held: holds.length ? [{ glob: '*', why: UNREAD_FILES, files: [] }] : [], satisfied: [] };
+      const held = agentLast(owned.held);
       const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null });
       // The failing runs of the checks it would waive, for the ticket filed after the merge.
       if (waiver) waiver.runs = [...new Set(gate.failing.filter((f) => waiver.checks.includes(f.name)).map((f) => f.runId).filter(Boolean))];
@@ -752,12 +791,16 @@ if (isMain) {
       const { holds } = await loadConfigLists();
       const files = readFileSync(rest[0] ?? '/dev/stdin', 'utf8').split('\n').filter(Boolean);
       for (const h of matchHolds(files, holds)) console.log(`${h.glob}\t${h.why}\t${h.files.length}`);
+    } else if (cmd === 'hold-kind') {
+      let items = rest;
+      if (!items.length) { const v = (await import('./desk-env.mjs')).configValues('merge-holds'); items = v ?? []; }
+      for (const item of items) for (const h of parseHolds([item])) console.log(`${holdKind(h)}\t${item}`);
     } else if (cmd === 'flaky') {
       for (const f of loadFlaky(await import('./desk-env.mjs'))) console.log(`${f.name}\t${f.paths.join(' ')}`);
     } else if (cmd === 'state') {
       for (const s of loadStateChecks(await import('./desk-env.mjs'))) console.log(`${s.name}\t${s.kind ?? ''}`);
     } else {
-      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs holds <file> | gate.mjs flaky | gate.mjs state');
+      console.error('usage: gate.mjs pr <number> [--repo owner/name] | gate.mjs holds <file> | gate.mjs hold-kind [<item>…] | gate.mjs flaky | gate.mjs state');
       process.exit(2);
     }
   } catch (e) {

@@ -205,6 +205,38 @@ How to turn what you find into rows:
   autopilot merges one only when `merge-hold-routine` is `yes` and the hold's routine passed at that head;
   otherwise they report it with the reason and a person merges.
 
+  **Only a step a person must take stays a person's hold.** Sort each proposed item with the same
+  classifier needs-you reads:
+
+  ```bash
+  node ~/.claude/desk/bin/gate.mjs hold-kind '<glob>: <why>'   # prints <kind>\t<item>
+  ```
+
+  - **`person`**: its reason names one of the five ask classes (money or billing, legal or
+    compliance, production or staging and their data, credentials, cost-bearing customer copy, a fact
+    only the user holds), an approval or sign-off, a deploy, publish or migration, or a change to the
+    checks. Propose it as it is, with no routine. The classifier reads words, so a step that is
+    plainly a read or check an agent can run, in none of the ask classes, can print `person` on an
+    incidental word ("read the dry-run comment listing the pages it would publish"): treat that one as
+    `agent` below. Once it names a routine, `hold-kind` prints `routine` whatever its wording.
+  - **`agent`**: a read or check an agent can run ("skim the Confluence Sync dry-run comment before
+    merging a PR that touches an e2e spec"). Do not propose it with no routine: every PR it holds
+    would go to the user. Write it a routine and propose the item as
+    `` `<glob>: <why>; desk runs: <command>` `` with §3 `merge-hold-routine` `yes`, or, where no
+    command can perform the check, leave the hold out and say why. The routine is a script in this
+    repo's config directory (`desk-env where` prints it as `CREDS`), `routines/<name>.sh`, run as
+    `bash <its absolute path>`: **read-only**, it reads the PR from `DESK_PR`, `DESK_HEAD_SHA` and
+    `DESK_REPO`, prints the step it is on, and exits 0 only when the check passes. Before proposing it,
+    run it against a recent PR the hold covers, plus a negative control for each way the check can
+    fail (the comment missing, the comment reporting a problem), and show each exit code.
+  - **`routine`**: it already names one; propose it as it is.
+
+  The user can force a hold to be a person's whatever its wording: `person only` anywhere in the
+  reason makes `hold-kind` print `person`. The classifier reads words, so where an item `hold-kind`
+  prints as `agent` is in one of the ask classes all the same (a fact only the user holds, copy
+  whose length costs money), or the user says the step is theirs, add `; person only` to its reason
+  and propose it with no routine: never write a routine for it, and never leave it out.
+
   **Then propose the holds on how CI checks things**, so a PR that changes the checks is never
   merged without a person. These are defaults the user confirms or declines one by one; a
   declined one is simply left out of the row. Propose each that the scans found, with its reason:
