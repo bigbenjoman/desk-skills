@@ -436,6 +436,28 @@ t('DS-441 AC3 a conflict try runs the merged-tree check before it pushes', brief
 t('DS-441 AC3 so does a sync try', fixBrief(tk({ fix: { kind: 'sync', try: 1, of: 2, pr: 2594, head: HEAD, base: 'main', build: 'x' } })).includes(treeLine), true);
 t('DS-441 AC3 negative: a review try, which merges nothing, is not told to', fixBrief(tk({ fix: { kind: 'review', try: 1, of: 2, pr: 2594, head: HEAD, base: 'main' } })).includes(treeLine), false);
 
+// ---- DS-552: a green PR the merge driver held for failing §4 Merged-tree check goes the conflict's way.
+const held552 = { head: HEAD, base: 'main', base_sha: 'b'.repeat(40), command: 'apps/api: uv run python check_heads.py', output: 'alembic\nMultiple head revisions are present: 131' };
+const green552 = pr([ok('tests')], { mergeState: 'CLEAN', pr: 909 });
+const c552 = fixCall(tk({ tree_check: held552 }), green552, ctx());
+t('DS-552 AC2 a held green PR is requeued as conflict try 1, with the check',
+  `${c552?.call} ${c552?.fix?.try}/${c552?.fix?.of} ${c552?.fix?.kind} ${c552?.fix?.check?.command} | ${c552?.fix?.what}`,
+  `requeue 1/${FIX_TRIES_MAX} conflict apps/api: uv run python check_heads.py | fails §4 Merged-tree check merged into main`);
+t('DS-552 negative: a hold recorded at an older head is spent', fixCall(tk({ tree_check: { ...held552, head: 'c'.repeat(40) } }), green552, ctx()), null);
+t('DS-552 negative: with no hold, a green PR is nothing to fix', fixCall(tk(), green552, ctx()), null);
+t('DS-552 a DIRTY PR stays a conflict, whatever the hold says', fixCall(tk({ tree_check: held552 }), { ...dirty, head: HEAD }, ctx())?.fix?.check, undefined);
+const brief552 = fixBrief(tk({ fix: c552.fix }));
+t('DS-552 AC2 the brief quotes the check\'s output and says to merge the base and renumber',
+  [brief552.includes('`apps/api: uv run python check_heads.py` (§4 Merged-tree check) fails on the merged tree'), brief552.includes('> Multiple head revisions are present: 131'),
+    brief552.includes('Merge origin/main into your branch, then run each item `desk-env cmds merged-tree-check-cmd` prints'), brief552.includes('renumber your branch\'s own'), brief552.includes('Conflicting files')].join(' '),
+  'true true true true false');
+t('DS-552 AC2 the task merges the base and renumbers until the check passes',
+  fixTask(tk({ fix: c552.fix })).includes("merge origin/main into your branch (git merge, never a rebase or a force push) and change your branch's own side, renumbering its migration"), true);
+const spent552 = [{ try: 1, head: HEAD, kind: 'conflict' }];
+t('DS-552 a try already made at this head is spent, naming the check and its last line',
+  fixCall(tk({ tree_check: held552, fix_tries: spent552 }), green552, ctx())?.why,
+  'merged into main, still failing §4 Merged-tree check `apps/api: uv run python check_heads.py` after 1 fix try: Multiple head revisions are present: 131');
+
 // ---- DS-440: a check build that failed behind the base goes to a sync try, one of the FIX_TRIES_MAX.
 const build440 = "its check build `./scripts/ensure-flows-image.sh` exited 1 at aaaaaaaaa: main's backend/ has changed; its head is behind main";
 const s440 = syncFix(tk(), { pr: 855, head: HEAD, base: 'main', why: build440 });

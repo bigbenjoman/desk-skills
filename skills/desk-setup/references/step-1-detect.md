@@ -314,10 +314,16 @@ How to turn what you find into rows:
   push: the aim is about 90 s on this computer. Say which CI step each item came from and which
   steps you left out and why. Write an item exactly as the Typecheck or Unit tests row writes it when
   it is the same command, so it takes the test lock. `none` is a fine answer.
-- **Merged-tree check.** Only for a rule two branches can each pass and their clean merge can break:
-  in a repo with `alembic.ini` or numbered migrations, a script that fails on more than one
-  migration head or a repeated revision number. It must run in a plain checkout with no database,
-  env files or install, so propose only a command that does. `none` is a fine answer.
+- **Merged-tree check.** Only for a rule two branches can each pass and their clean merge can break.
+  **A repo with a migrations folder** (`alembic.ini`, a `migrations/` or `versions/` directory,
+  numbered migration files) **gets a migration-heads check proposed** whenever the row is empty: a
+  command that fails on more than one migration head or a repeated revision number, e.g.
+  `` `apps/api: uv run python scripts/check_migration_heads.py` `` (the repo's own script if it has
+  one; otherwise say it is a script to add in its own PR). Give the reason with it: two PRs that each
+  add the next revision are each green and merge cleanly, so without this check the merge driver
+  lands both and the default branch is left with two heads. It must run in a plain checkout with no
+  database, env files or install, so propose only a command that does. With no migrations, `none`
+  is a fine answer.
 - **PR-description checks.** A workflow step that reads `github.event.pull_request.body` (or a
   `PR_BODY`-style variable set from it) and runs a script is the candidate: propose that script's
   command, e.g. `` `node scripts/check-pr-body.mjs` ``. desk-pr runs it with the draft body's file

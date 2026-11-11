@@ -64,6 +64,14 @@
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
 #                                            is yes (once per head), else parked for a person
+#   - fails §4 Merged-tree check             last before the merge, its head merged into the base's head
+#                                            in a throwaway checkout must pass the check (base-sync.mjs
+#                                            prTreeCheck), once per head and base commit. GitHub reports
+#                                            no conflict for two PRs that each add the next migration, nor
+#                                            BEHIND where the base need not be up to date. A failure is
+#                                            recorded on the ticket as tree_check and logged with the
+#                                            command; pass.mjs sends it to a fix worker as it does DIRTY.
+#                                            With the row unset or `none` it merges, saying none is set
 #   - an approving review required           GitHub's review decision is REVIEW_REQUIRED: recorded as
 #                                            merge_blocked (`approval: …`) for the person, red or
 #                                            green; a red one is still rerun and repaired
@@ -770,6 +778,35 @@ EOF_REPAIRS
   return 1
 }
 
+# tree_checked <n> <sha> <key> -> 0 when #n merged into the base's head passes §4 Merged-tree check, or
+# none is set. A failure is recorded on the ticket as tree_check, which the pass sends to a fix worker
+# as it does a conflict; a later pass of the check clears it. A check that could not run holds the merge.
+tree_checked(){
+  local r res
+  r=$(node --input-type=module - "$DESK_BIN/base-sync.mjs" "$DESK_REPO_ROOT" "$SD" "$BASE_BRANCH" "$1" "$2" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const [mod, repo, cache, base, pr, head] = process.argv.slice(2);
+const { prTreeCheck } = await import(pathToFileURL(mod).href);
+console.log(JSON.stringify(prTreeCheck({ repo, cache, dir: `${cache}/tree-${pr}-checkout`, base, pr, head })));
+NODE
+) || r='{"result":"error","why":"the check could not be started"}'
+  res=$(printf '%s' "$r" | jq -r '.result // "error"' 2>/dev/null)
+  case "$res" in
+    none) log "#$1 no §4 Merged-tree check is configured — merging without one"; return 0 ;;
+    pass)
+      log "#$1 merged into $BASE_BRANCH at $(printf '%s' "$r" | jq -r '.base_sha[:9]'), it passes §4 Merged-tree check"
+      [ "$(jq -r --arg k "$3" '.tickets[$k].tree_check // empty | .head' "$DESK_QUEUE" 2>/dev/null)" ] && node "$Q" set "$3" tree_check=null >/dev/null 2>&1
+      return 0 ;;
+    fail)
+      log "#$1 HELD: merged into $BASE_BRANCH at $(printf '%s' "$r" | jq -r '.base_sha[:9]'), it fails the merged-tree check \`$(printf '%s' "$r" | jq -r .check.command)\`: $(printf '%s' "$r" | jq -r '.check.output | split("\n") | last') — not merging; the pass sends it to a fix worker"
+      node "$Q" set "$3" "tree_check=$(printf '%s' "$r" | jq -c --arg head "$2" --arg base "$BASE_BRANCH" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{ head: $head, base: $base, base_sha, command: .check.command, output: .check.output, at: $at }')" >/dev/null 2>&1 \
+        || log "#$1 its failed merged-tree check could not be recorded on $3"
+      return 1 ;;
+    *) log "#$1 §4 Merged-tree check could not run: $(printf '%s' "$r" | jq -r '.why // "no result"' 2>/dev/null) — not merging it this loop"; return 1 ;;
+  esac
+}
+
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
@@ -931,6 +968,8 @@ EOF_RESOLVE
   if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
   if [ -z "$EPIC_KEY" ] && repair_held "$n" "$g"; then return 1; fi
+  # The epic PR lands a base whose every sync already ran the check (base-sync.mjs).
+  if [ -z "$EPIC_KEY" ] && ! tree_checked "$n" "$sha" "$key"; then return 1; fi
 
   if ! grant=$(node "$DESK_ENV_MJS" merge-grant 2>&1); then
     log "FAIL: ${grant#*"$TAB"} — not merging #$n; stopping"; exit 1

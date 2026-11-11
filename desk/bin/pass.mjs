@@ -47,7 +47,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -3876,12 +3876,17 @@ function humanSeen(n) {
 }
 for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   const n = s.pr;
-  // A conflict goes to a fix worker only under the §3 row the base's conflict reads too.
-  if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') {
+  // A conflict goes to a fix worker only under the §3 row the base's conflict reads too, and so does a
+  // head the merge driver held for failing §4 Merged-tree check merged into the base.
+  const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
+  const tree = dirty ? null : treeHeld(t, s);
+  if (dirty || tree) {
     const row = humanSeen(n) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
     const perm = E.permission(row);
     if (perm !== 'yes') {
-      report.waiting.push(`${t.key}: CONFLICT — PR #${n} is out of draft and conflicts with ${DEFAULT_BRANCH}, and config §3 ${E.permissionKey(row)} is "${perm}", so no fix worker resolves it: resolve it on the PR's branch and push`);
+      const what = tree ? `merged into ${DEFAULT_BRANCH}, fails §4 Merged-tree check \`${tree.command}\`` : `conflicts with ${DEFAULT_BRANCH}`;
+      const fix = tree ? `merge ${DEFAULT_BRANCH} into the PR's branch, fix what the check names, and push` : "resolve it on the PR's branch and push";
+      report.waiting.push(`${t.key}: CONFLICT — PR #${n} is out of draft and ${what}, and config §3 ${E.permissionKey(row)} is "${perm}", so no fix worker ${tree ? 'fixes' : 'resolves'} it: ${fix}`);
       continue;
     }
   }

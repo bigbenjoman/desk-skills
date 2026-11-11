@@ -202,6 +202,7 @@ check "pass: held behind an open PR, nothing else left, exits 10"  '[ $rc -eq 10
 loop
 check "AC1: the second loop also exits without sleeping"            '[ $rc -eq 0 ] && [ ! -e "$T/sleeps" ]'
 check "AC2: one merge in the loop, the first PR, pinned to its head" '[ "$(merged)" = 101 ] && grep -qx "101 main $SHA1" "$T/merges.log" && grep -q -- "--match-head-commit $SHA1" "$T/gh.log"'
+check "DS-552 AC3: with §4 Merged-tree check unset it merges as before, logging that none is configured" 'echo "$out" | grep -q "#101 no §4 Merged-tree check is configured — merging without one" && echo "$out" | grep -q "#101 MERGED"'
 check "AC4: the held ticket is released to triaged"                  '[ "$(qf T-3 .state)" = triaged ] && [ "$(qf T-3 .held_by)" = null ] && echo "$out" | grep -q "RELEASED T-3"'
 check "AC4: the released ticket is at the front of the queue"        '[ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = T-3 ]'
 check "the merge is recorded on the ticket and in the eta history"   '[ "$(qf T-1 .merged_at)" != null ] && [ "$(jq -r .key "$T/state/eta-history.jsonl")" = T-1 ] && [ "$(jq -r .merged_at "$T/state/eta-history.jsonl")" = "$(qf T-1 .merged_at)" ]'
@@ -1002,5 +1003,79 @@ rp_setup true SUCCESS 7200000 "$SHARED"; hand_repair; rploop; printf '%s\t%s\n' 
 check "AC3 a hand repair's hold ends 60 minutes after it was seen" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: 60 minutes since its repair"'
 rp_setup true SUCCESS 0 "$SHARED" "$SHAR"; q set T-402 'fix_tries=[]'; pr412 "$SHAR" DIRTY; rploop; pr412 "$SHAR"; rploop; rploop
 check "out of DIRTY with no new push (the base moved): no repair, no hold" '[ "$(merged)" = 411 ]'
+
+# ---- §4 Merged-tree check: two green PRs that each add the next migration revision ------------------
+# Each adds a migration numbered 131 on top of main's 130, under its own filename: git merges both
+# cleanly and GitHub says neither is BEHIND, so only the check sees the second leaves two heads.
+git init -q --bare "$T/tc-origin.git"; git -C "$T/repo" remote add origin "$T/tc-origin.git"
+mkdir -p "$T/repo/migrations"; echo base > "$T/repo/migrations/130_base.py"
+git -C "$T/repo" add migrations; git -C "$T/repo" commit -q -m m130; git -C "$T/repo" push -q origin main
+TCMAIN=$(git -C "$T/repo" rev-parse HEAD)
+tc_branch(){ # tc_branch <branch> <file> -> its head sha
+  git -C "$T/repo" switch -q -c "$1" "$TCMAIN"; echo x > "$T/repo/migrations/$2"
+  git -C "$T/repo" add migrations; git -C "$T/repo" commit -q -m "$2"; git -C "$T/repo" push -q origin "$1"
+  git -C "$T/repo" rev-parse HEAD; git -C "$T/repo" switch -q main
+}
+SHA501=$(tc_branch fix/T-501 131_add_ai_model_data.py); SHA502=$(tc_branch fix/T-502 131_add_waitlist_invitations.py)
+cat > "$T/tc-check.sh" <<'EOF'
+d=$(ls migrations 2>/dev/null | cut -d_ -f1 | sort | uniq -d)
+[ -z "$d" ] && exit 0
+touch stray.tmp; echo "Multiple head revisions are present: $d"; exit 1
+EOF
+HOLDS_ROW='| Merge holds | `none` |'; READY_ROW='| `pr-ready` | Undraft | `yes` | `yes` |'
+conflict_rows(){ printf '%s\n| `pr-conflict-unreviewed` | Conflicts | `yes` | `%s` |\n| `pr-conflict-reviewed` | Conflicts | `yes` | `%s` |' "$READY_ROW" "$1" "$1"; }
+TC=$(cat "$T/config.md"); TC=${TC/"$HOLDS_ROW"/"$HOLDS_ROW"$'\n'"| Merged-tree check | \`sh $T/tc-check.sh\` |"}
+printf '%s\n' "$TC" > "$T/config-tc.md"
+printf '%s\n' "${TC/"$READY_ROW"/"$(conflict_rows yes)"}" > "$T/config-tc-fix.md"
+printf '%s\n' "${TC/"$READY_ROW"/"$(conflict_rows no)"}" > "$T/config-tc-no.md"
+tcloop(){ out=$(DESK_CONFIG="${TC_CONFIG:-$T/config-tc.md}" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-501 T-502" 2>&1); rc=$?; }
+: > "$T/merges.log"; q init tree-check
+cat > "$T/prs.json" <<EOF
+{
+  "501": { "head": "fix/T-501", "base": "main", "sha": "$SHA501", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "502": { "head": "fix/T-502", "base": "main", "sha": "$SHA502", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
+}
+EOF
+for k in T-501 T-502; do q add "$k" Task A; q set "$k" "branch=fix/$k" state=done "result.pr=50${k#T-50}"; done
+tcloop; tcloop
+check "DS-552: the first PR merges once its merged tree passes the check, which it says" '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#501 merged into main at ${TCMAIN:0:9}, it passes §4 Merged-tree check"'
+# GitHub's merge of #501 lands on origin's main.
+git -C "$T/repo" push -q origin "$SHA501:refs/heads/main"
+tcloop
+check "DS-552 AC1: the second PR is not merged, and the log names the failed merged-tree check" \
+  '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#502 HELD: merged into main at ${SHA501:0:9}, it fails the merged-tree check \`sh $T/tc-check.sh\`: Multiple head revisions are present: 131 — not merging"'
+check "DS-552 AC1: the hold is on the ticket for the pass, with the head and the check's output, not as merge_blocked" \
+  '[ "$(qf T-502 .tree_check.head)" = "$SHA502" ] && [ "$(qf T-502 .tree_check.output)" = "Multiple head revisions are present: 131" ] && [ "$(qf T-502 .tree_check.base_sha)" = "$SHA501" ] && [ "$(qf T-502 .merge_blocked)" = null ]'
+check "DS-552: the throwaway checkout is gone and the repo's worktrees are as they were" \
+  '[ -z "$(find "$T/state" -name "tree-502-checkout")" ] && [ "$(git -C "$T/repo" worktree list | wc -l | tr -d " ")" = 1 ] && [ -z "$(git -C "$T/repo" status --porcelain)" ]'
+tcloop
+check "DS-552: held at the same head and base, the next loop reads its kept result and still does not merge" \
+  '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#502 HELD: merged into main" && [ "$(find "$T/state" -name "tree-502-$SHA502-$SHA501.json" | wc -l | tr -d " ")" = 1 ]'
+
+# The pass: the held PR goes to a fix worker as a conflict does, with the check's output, and not to the person.
+tcpass(){ out=$(DESK_CONFIG="$1" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; }
+cp "$DESK_QUEUE" "$T/tc-queue.json"
+tcpass "$T/config-tc-fix.md"
+check "DS-552 AC2: the next pass requeues the held PR for a merged-tree fix try" \
+  'js .message | grep -q "fix try 1 of 2: T-502 requeued for PR #502 — fails §4 Merged-tree check merged into main" && [ "$(qf T-502 .fix.kind)" = conflict ] && [ "$(qf T-502 .fix.check.output)" = "Multiple head revisions are present: 131" ]'
+check "DS-552 AC2: and it is not shown to the person" '! js ".waiting[], .stuck[]?" | grep -q "T-502"'
+cp "$T/tc-queue.json" "$DESK_QUEUE"
+tcpass "$T/config-tc-no.md"
+check "DS-552: where §3 forbids a conflict worker, the person is told, naming the check" \
+  'js ".waiting[]" | grep -q "^T-502: CONFLICT — PR #502 is out of draft and merged into main, fails §4 Merged-tree check \`sh $T/tc-check.sh\`, and config §3 pr-conflict-" && [ "$(qf T-502 .fix)" = null ]'
+cp "$T/tc-queue.json" "$DESK_QUEUE"
+
+# The fix worker renumbers its migration after main's and pushes: the new head passes, merges and clears the hold.
+git -C "$T/repo" switch -q fix/T-502; git -C "$T/repo" merge -q --no-edit "$SHA501"
+git -C "$T/repo" mv migrations/131_add_waitlist_invitations.py migrations/132_add_waitlist_invitations.py
+git -C "$T/repo" commit -q -m renumber; SHA502B=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" push -q origin fix/T-502; git -C "$T/repo" switch -q main
+jq --arg s "$SHA502B" '."502".sha = $s' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+tcloop; tcloop
+check "DS-552: renumbered, the PR merges and its hold is cleared" '[ "$(merged)" = "501 502" ] && [ "$(qf T-502 .tree_check)" = null ]'
+
+# /desk-setup's row: a repo with migrations and an empty row gets a migration-heads check, with why.
+DETECT=$(tr -s ' \n' '  ' < "$SRC/skills/desk-setup/references/step-1-detect.md")
+check "DS-552 AC4: /desk-setup proposes a migration-heads check for a repo with migrations, with its reason" \
+  '[[ "$DETECT" == *"**A repo with a migrations folder**"*"**gets a migration-heads check proposed** whenever the row is empty"* ]] && [[ "$DETECT" == *"Give the reason with it: two PRs that each add the next revision are each green and merge cleanly, so without this check the merge driver lands both"* ]]'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
