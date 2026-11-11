@@ -215,8 +215,10 @@ either, merges with §4 Merge method and `--match-head-commit <sha>` when the he
 a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, skips a `DIRTY` PR,
 holds a green one that fails §4 Merged-tree check once merged into the base's head (run last before
 the merge, in a throwaway checkout; recorded on the ticket as `tree_check`, which the pass sends to a
-conflict fix worker under the same §3 conflict rows as a `DIRTY` PR, not to the person; with the row
-unset or `none` the log says none is configured and it merges), and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
+conflict fix worker under the same §3 conflict rows as a `DIRTY` PR, not to the person; an epic PR's
+is only held, for the pass's base sync to run the check and send a failure to a base fix try; a check
+that timed out holds the merge for that loop only; with the row unset or `none` the log says none is
+configured and it merges), and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
 reached `completed`. It **never arms auto-merge** (the platform's idea of green is not the
 config's) and never undrafts. Why a ticket's PR is not merging is recorded on the ticket as
 `merge_blocked=` (a hold, behind without `pr-update-branch`, a PR held for unresolved threads on

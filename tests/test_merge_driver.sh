@@ -1019,7 +1019,8 @@ tc_branch(){ # tc_branch <branch> <file> -> its head sha
   git -C "$T/repo" rev-parse HEAD; git -C "$T/repo" switch -q main
 }
 SHA501=$(tc_branch fix/T-501 131_add_ai_model_data.py); SHA502=$(tc_branch fix/T-502 131_add_waitlist_invitations.py)
-cat > "$T/tc-check.sh" <<'EOF'
+printf 'echo run >> %s\n' "$T/tc-runs" > "$T/tc-check.sh"
+cat >> "$T/tc-check.sh" <<'EOF'
 d=$(ls migrations 2>/dev/null | cut -d_ -f1 | sort | uniq -d)
 [ -z "$d" ] && exit 0
 touch stray.tmp; echo "Multiple head revisions are present: $d"; exit 1
@@ -1050,9 +1051,23 @@ check "DS-552 AC1: the hold is on the ticket for the pass, with the head and the
   '[ "$(qf T-502 .tree_check.head)" = "$SHA502" ] && [ "$(qf T-502 .tree_check.output)" = "Multiple head revisions are present: 131" ] && [ "$(qf T-502 .tree_check.base_sha)" = "$SHA501" ] && [ "$(qf T-502 .merge_blocked)" = null ]'
 check "DS-552: the throwaway checkout is gone and the repo's worktrees are as they were" \
   '[ -z "$(find "$T/state" -name "tree-502-checkout")" ] && [ "$(git -C "$T/repo" worktree list | wc -l | tr -d " ")" = "$WT_BEFORE" ] && [ -z "$(git -C "$T/repo" status --porcelain)" ]'
+: > "$T/tc-runs"; tcloop
+check "DS-552: held at the same head and base, the next loop reads its kept result, runs no check and still does not merge" \
+  '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#502 HELD: merged into main" && [ ! -s "$T/tc-runs" ] && [ "$(find "$T/state" -name "tree-502-$SHA502-$SHA501-*.json" | wc -l | tr -d " ")" = 1 ]'
+# A changed §4 row is not answered from the old row's kept result.
+TCR=${TC/"sh $T/tc-check.sh"/"sh $T/tc-check.sh again"}; printf '%s\n' "$TCR" > "$T/config-tc-row.md"
+TC_CONFIG="$T/config-tc-row.md" tcloop
+check "DS-552: a changed §4 Merged-tree check row runs the check again" '[ -s "$T/tc-runs" ] && echo "$out" | grep -q "#502 HELD: merged into main"'
+# A check that timed out or never started says nothing about the tree: held this loop, not kept, not on the ticket.
+q set T-502 tree_check=null
+KEPT=$(find "$T/state" -name "tree-502-*.json" | wc -l | tr -d ' ')
+STOP=$(DESK_CONFIG="$T/config-tc.md" node --input-type=module -e "
+import { prTreeCheck } from '$B/base-sync.mjs';
+const check = () => ({ command: 'sh slow.sh', output: 'it did not finish in 300s', stopped: true }); check.row = 'sh slow.sh';
+console.log(JSON.stringify(prTreeCheck({ repo: '$T/repo', cache: '$T/state', dir: '$T/tc-stop-checkout', base: 'main', pr: 502, head: '$SHA502', check })));")
+check "DS-552: a check that did not finish is an error, never a failure, and is not kept" \
+  '[ "$(printf "%s" "$STOP" | jq -r .result)" = error ] && printf "%s" "$STOP" | jq -r .why | grep -q "did not finish" && [ "$(find "$T/state" -name "tree-502-*.json" | wc -l | tr -d " ")" = "$KEPT" ] && [ ! -e "$T/tc-stop-checkout" ]'
 tcloop
-check "DS-552: held at the same head and base, the next loop reads its kept result and still does not merge" \
-  '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#502 HELD: merged into main" && [ "$(find "$T/state" -name "tree-502-$SHA502-$SHA501.json" | wc -l | tr -d " ")" = 1 ]'
 
 # The pass: the held PR goes to a fix worker as a conflict does, with the check's output, and not to the person.
 tcpass(){ out=$(DESK_CONFIG="$1" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; }
@@ -1075,9 +1090,20 @@ jq --arg s "$SHA502B" '."502".sha = $s' "$T/prs.json" > "$T/prs.tmp" && mv "$T/p
 tcloop; tcloop
 check "DS-552: renumbered, the PR merges and its hold is cleared" '[ "$(merged)" = "501 502" ] && [ "$(qf T-502 .tree_check)" = null ]'
 
-# /desk-setup's row: a repo with migrations and an empty row gets a migration-heads check, with why.
-DETECT=$(tr -s ' \n' '  ' < "$SRC/skills/desk-setup/references/step-1-detect.md")
-check "DS-552 AC4: /desk-setup proposes a migration-heads check for a repo with migrations, with its reason" \
-  '[[ "$DETECT" == *"**A repo with a migrations folder**"*"**gets a migration-heads check proposed** whenever the row is empty"* ]] && [[ "$DETECT" == *"Give the reason with it: two PRs that each add the next revision are each green and merge cleanly, so without this check the merge driver lands both"* ]]'
+# The epic PR too: main gained #501's migration since its base feat/TC last synced, so its merge is held.
+git -C "$T/repo" switch -q -c feat/TC "$TCMAIN"; echo x > "$T/repo/migrations/131_epic_child.py"
+git -C "$T/repo" add migrations; git -C "$T/repo" commit -q -m epic-child; git -C "$T/repo" push -q origin feat/TC
+SHAEP=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" switch -q main
+RVTC=$(cat "$T/config-rv.md"); RVTC=${RVTC/"$HOLDS_ROW"/"$HOLDS_ROW"$'\n'"| Merged-tree check | \`sh $T/tc-check.sh\` |"}
+printf '%s\n' "$RVTC" > "$T/config-rv-tc.md"
+vp 601 "$SHAEP" "$CLEAN"
+: > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-*; q init tree-check-epic
+q set-batch base=feat/TC epic=T-600 feature=false 'promotion={"pr":601}'
+q add T-61 Story A; q set T-61 branch=fix/T-61 state=done result.pr=610 merged_at=2026-11-06T10:00:00Z
+jq -n --arg s "$SHAEP" --arg pl "$T/vp-601.json" \
+  '{ "601": { head: "feat/TC", base: "main", sha: $s, state: "open", draft: false, title: "T-600: promote feat/TC to main", payload: $pl, checks: [["test", "SUCCESS"]] } }' > "$T/prs.json"
+RV_TICKETS="T-61"; RV_CONFIG="$T/config-rv-tc.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-552: an epic PR whose base lacks main's newest migration is held on the merged-tree check, for the base sync" \
+  '[ -z "$(merged)" ] && echo "$out" | grep -q "#601 HELD: merged into main at ${SHA501:0:9}, it fails the merged-tree check \`sh $T/tc-check.sh\`: Multiple head revisions are present: 131 — not merging; the pass'"'"'s next base sync sends it to a base fix try"'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

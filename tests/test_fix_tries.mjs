@@ -445,7 +445,8 @@ t('DS-552 AC2 a held green PR is requeued as conflict try 1, with the check',
   `requeue 1/${FIX_TRIES_MAX} conflict apps/api: uv run python check_heads.py | fails §4 Merged-tree check merged into main`);
 t('DS-552 negative: a hold recorded at an older head is spent', fixCall(tk({ tree_check: { ...held552, head: 'c'.repeat(40) } }), green552, ctx()), null);
 t('DS-552 negative: with no hold, a green PR is nothing to fix', fixCall(tk(), green552, ctx()), null);
-t('DS-552 a DIRTY PR stays a conflict, whatever the hold says', fixCall(tk({ tree_check: held552 }), { ...dirty, head: HEAD }, ctx())?.fix?.check, undefined);
+const d552 = fixCall(tk({ tree_check: held552 }), { ...dirty, head: HEAD }, ctx());
+t('DS-552 a DIRTY PR stays a conflict, whatever the hold says', `${d552?.call} ${d552?.fix?.kind} ${d552?.fix?.what} ${d552?.fix?.check === undefined}`, 'requeue conflict conflicts with main true');
 const brief552 = fixBrief(tk({ fix: c552.fix }));
 t('DS-552 AC2 the brief quotes the check\'s output and says to merge the base and renumber',
   [brief552.includes('`apps/api: uv run python check_heads.py` (§4 Merged-tree check) fails on the merged tree'), brief552.includes('> Multiple head revisions are present: 131'),
