@@ -386,29 +386,40 @@ const batchWord = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 const baseOf = (bq) => bq.base ?? configValue('default-branch') ?? 'main';
 const otherRunning = () => otherRunningBatches(repoSlug(), QUEUE, () => baseOf({}));
 
+// The worktree `wt`: removed with its local branch when `held` finds no work in it. `held` gets its
+// uncommitted or untracked paths (`dirty`), its `branch` (`HEAD` when detached) and a `lines` reader of
+// git output in it, and returns what it holds. -> the path removed, or null when there is none. Throws
+// `refusal(holds)`, removing nothing, when it holds work or git cannot read it.
+function removeWorktree(wt, held, refusal) {
+  if (!existsSync(wt)) return null;
+  const lines = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split('\n').filter(Boolean);
+  const holds = [];
+  let branch = 'HEAD';
+  try {
+    const dirty = lines('status', '--porcelain').map((l) => l.slice(3));
+    branch = lines('rev-parse', '--abbrev-ref', 'HEAD')[0];
+    holds.push(...held({ dirty, branch, lines }));
+  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
+  if (holds.length) throw new Error(refusal(holds));
+  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
+  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
+  return wt;
+}
+
 // The worktree a worker of `key` was given, cut from `cut`: removed with its local branch when it holds
 // no work of its own, so the next worker's is cut from its new base. -> the path removed, or null when
 // there is none. Throws, removing nothing, when it holds work.
 function dropStaleWorktree(key, cut) {
   const wt = join(worktreesDir(), key);
-  if (!existsSync(wt)) return null;
-  const git = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  const holds = [];
-  let branch = 'HEAD';
-  try {
-    const dirty = git('status', '--porcelain');
-    if (dirty) holds.push('uncommitted changes or untracked files');
-    branch = git('rev-parse', '--abbrev-ref', 'HEAD');
-    const own = Number(git('rev-list', '--count', `origin/${cut}..HEAD`));
+  return removeWorktree(wt, ({ dirty, branch, lines }) => {
+    const holds = dirty.length ? ['uncommitted changes or untracked files'] : [];
+    const own = Number(lines('rev-list', '--count', `origin/${cut}..HEAD`)[0]);
     if (own > 0) holds.push(`${own} commit(s) not on origin/${cut}`);
     if (branch !== 'HEAD') {
-      try { git('show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`); holds.push(`its branch ${branch} pushed to origin`); } catch { /* not pushed */ }
+      try { lines('show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`); holds.push(`its branch ${branch} pushed to origin`); } catch { /* not pushed */ }
     }
-  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
-  if (holds.length) throw new Error(`${key}'s worktree ${wt} holds work cut from ${cut} (${holds.join(', ')}), which a worker on another base would start from: move that work by hand or discard it, remove the worktree, then move ${key} again. Nothing was moved`);
-  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
-  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
-  return wt;
+    return holds;
+  }, (holds) => `${key}'s worktree ${wt} holds work cut from ${cut} (${holds.join(', ')}), which a worker on another base would start from: move that work by hand or discard it, remove the worktree, then move ${key} again. Nothing was moved`);
 }
 
 // The worktree a dropped ticket `t` was given: removed with its local branch when nothing in it is
@@ -416,22 +427,13 @@ function dropStaleWorktree(key, cut) {
 // naming the worktree and what it holds, when it has uncommitted files or commits no origin ref has.
 function dropWorktree(key, t) {
   const wt = t.worktree || join(worktreesDir(), key);
-  if (!existsSync(wt)) return null;
-  const lines = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split('\n').filter(Boolean);
   const listed = (ls) => `${ls.slice(0, 5).join('; ')}${ls.length > 5 ? `; and ${ls.length - 5} more` : ''}`;
-  const holds = [];
-  let branch = 'HEAD';
-  try {
-    const dirty = lines('status', '--porcelain').map((l) => l.slice(3));
-    if (dirty.length) holds.push(`uncommitted or untracked files: ${listed(dirty)}`);
-    branch = lines('rev-parse', '--abbrev-ref', 'HEAD')[0];
+  return removeWorktree(wt, ({ dirty, lines }) => {
+    const holds = dirty.length ? [`uncommitted or untracked files: ${listed(dirty)}`] : [];
     const unpushed = lines('log', '--format=%h %s', 'HEAD', '--not', '--remotes=origin');
     if (unpushed.length) holds.push(`${unpushed.length} commit(s) not pushed: ${listed(unpushed)}`);
-  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
-  if (holds.length) throw new Error(`${key}'s worktree ${wt} holds work origin does not have (${holds.join('; ')}): push or discard it, then drop ${key} again. Nothing was dropped`);
-  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
-  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
-  return wt;
+    return holds;
+  }, (holds) => `${key}'s worktree ${wt} holds work origin does not have (${holds.join('; ')}): push or discard it, then drop ${key} again. Nothing was dropped`);
 }
 
 // Move `key` from this queue `q` (whose lock is held) to the running batch `to` (`standing` for the
