@@ -970,6 +970,8 @@ export const binDir = () => join(deskHome(), 'bin');
 // them in `batches/<name>/`, so a reader that takes each top-level state folder for a repo slug never
 // meets a batch. An explicit DESK_QUEUE or DESK_AUTOPILOT_STATE wins over both.
 export const BATCHES_DIR = 'batches';
+// The repo's own state folder for a state folder that may be a named batch's (<repo state>/batches/<name>).
+export const repoStateOf = (state) => state.replace(new RegExp(`[/\\\\]${BATCHES_DIR}[/\\\\][^/\\\\]+[/\\\\]?$`), '');
 // DESK_BATCH, or null for the standing batch. It names a directory, so a value that is not a safe id
 // is refused before any path is built from it.
 export function batchName() {

@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, statSync,
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, repoStateOf, WORKTREE_FIXTURES } from '../desk/bin/live-read.mjs';
+import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES } from '../desk/bin/live-read.mjs';
+import { repoStateOf } from '../desk/bin/desk-env.mjs';
 import { waitingOnRead, batchSettled } from '../desk/bin/batch-state.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
 import { describeCond } from '../desk/bin/clears-when.mjs';
@@ -112,6 +113,25 @@ t('a second copy adds no second exclude line', excl.split('\n').filter((l) => l 
 t('a ticket with no fixtures folder copies nothing', `${copyFixtures({ state: batchState, key: 'F-2', worktree: src })} ${existsSync(join(src, WORKTREE_FIXTURES, 'F-2'))}`, 'null false');
 copyFixtures({ state: repoState, key: 'F-1', worktree: join(dir, 'wt2') });
 t('the standing batch reads its own state only', readFileSync(join(dir, 'wt2', WORKTREE_FIXTURES, 'F-1', 'reply.json'), 'utf8'), '{"from":"repo"}');
+// The worktree is the worker's: a symlink it left where the copies go is replaced, never followed.
+const outside = join(dir, 'outside');
+mkdirSync(outside);
+writeFileSync(join(outside, 'post.json'), 'host file', { mode: 0o600 });
+const wt3 = join(dir, 'wt3');
+mkdirSync(join(wt3, WORKTREE_FIXTURES, 'F-1'), { recursive: true });
+symlinkSync(join(outside, 'post.json'), join(wt3, WORKTREE_FIXTURES, 'F-1', 'post.json'));
+copyFixtures({ state: repoState, key: 'F-1', worktree: wt3 });
+t('a symlink at a copy\'s path is replaced, its target untouched', `${readFileSync(join(outside, 'post.json'), 'utf8')} ${(statSync(join(outside, 'post.json')).mode & 0o777).toString(8)} ${readFileSync(join(wt3, WORKTREE_FIXTURES, 'F-1', 'post.json'), 'utf8')}`, 'host file 600 {"post":1}');
+const wt4 = join(dir, 'wt4');
+mkdirSync(join(wt4, WORKTREE_FIXTURES), { recursive: true });
+symlinkSync(outside, join(wt4, WORKTREE_FIXTURES, 'F-1'));
+const cp4 = copyFixtures({ state: repoState, key: 'F-1', worktree: wt4 });
+t('so is a symlinked folder, and nothing lands where it pointed', `${readFileSync(join(outside, 'post.json'), 'utf8')} ${existsSync(join(outside, 'reply.json'))} ${cp4.copied.join(' ')}`, 'host file false big.json post.json reply.json');
+const wt5 = join(dir, 'wt5');
+mkdirSync(wt5);
+symlinkSync(outside, join(wt5, WORKTREE_FIXTURES));
+copyFixtures({ state: repoState, key: 'F-1', worktree: wt5 });
+t('and a symlinked .desk-fixtures', `${existsSync(join(outside, 'F-1'))} ${readFileSync(join(wt5, WORKTREE_FIXTURES, 'F-1', 'post.json'), 'utf8')}`, 'false {"post":1}');
 t('the repo state of a named batch\'s', `${repoStateOf(batchState) === repoState} ${repoStateOf(repoState) === repoState}`, 'true true');
 
 // Every place that describes §4 Live reads says where the command runs: a clean checkout of the

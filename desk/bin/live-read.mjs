@@ -16,10 +16,10 @@
 //
 // A read that exits 0 having printed at most MAX_BYTES has its stdout saved, mode 0644, to
 // <fixtures>/<KEY>/<name>.json, where the requeued worker reads it as an untrusted API response.
-import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { BATCHES_DIR } from './desk-env.mjs';
+import { repoStateOf } from './desk-env.mjs';
 import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
 import { parseOperatorChecks } from './fix-tries.mjs';
 import { parkOnlyNames } from './undraft.mjs';
@@ -125,8 +125,22 @@ export function saveFixture(fixtures, key, name, out) {
 // of git status by the worktree's info/exclude.
 export const WORKTREE_FIXTURES = '.desk-fixtures';
 
-// The repo's own state folder for a state folder that may be a named batch's (<repo state>/batches/<name>).
-export const repoStateOf = (state) => state.replace(new RegExp(`[/\\\\]${BATCHES_DIR}[/\\\\][^/\\\\]+[/\\\\]?$`), '');
+// A folder in the worktree the pass writes into: whatever the worker left at its path that is not a
+// real folder (a symlink above all, which would carry the pass's writes out of the worktree) is
+// removed, without following it, and the folder made.
+function realDir(path) {
+  let st = null;
+  try { st = lstatSync(path); } catch { st = null; }
+  if (st && !st.isDirectory()) rmSync(path, { force: true });
+  if (!st || !st.isDirectory()) mkdirSync(path);
+}
+
+// Writes `data` to `to`, mode 0644, replacing what is there without following a symlink at `to`.
+function writeNew(to, data) {
+  rmSync(to, { force: true, recursive: true });
+  const fd = openSync(to, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o644);
+  try { writeSync(fd, data); fchmodSync(fd, 0o644); } finally { closeSync(fd); }
+}
 
 // Copies ticket `key`'s fixtures into `worktree`/WORKTREE_FIXTURES/<key>/, from <state>/fixtures/<key>/
 // and, for a named batch, the repo state's, where a person saves them and which a worker cannot read.
@@ -147,9 +161,8 @@ export function copyFixtures({ state, key, worktree, max = MAX_BYTES }) {
       const st = lstatSync(join(src, name));
       if (!st.isFile()) { refused.push({ name, why: `it is ${st.isSymbolicLink() ? 'a symlink' : 'not a file'}` }); continue; }
       if (st.size > max) { refused.push({ name, why: `it is ${st.size} bytes, over the ${max}-byte copy limit` }); continue; }
-      mkdirSync(dir, { recursive: true });
-      copyFileSync(join(src, name), join(dir, name));
-      chmodSync(join(dir, name), 0o644);
+      if (!copied.length) { realDir(dirname(dir)); realDir(dir); }
+      writeNew(join(dir, name), readFileSync(join(src, name)));
       copied.push(name);
     }
   }
@@ -158,12 +171,17 @@ export function copyFixtures({ state, key, worktree, max = MAX_BYTES }) {
 }
 
 // Adds `pattern` to the worktree's info/exclude, once, so it stays out of git status without touching
-// the repo's .gitignore (setup-worktree.sh exclude_from_git).
+// the repo's .gitignore (setup-worktree.sh exclude_from_git). The worker can rewrite its worktree's
+// .git file, so the path git names is used only where it is an info/exclude that is not a symlink.
 function excludeFromGit(worktree, pattern) {
   const r = spawnSync('git', ['-C', worktree, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' });
   if (r.status !== 0) return;
   const excl = resolve(worktree, r.stdout.trim());
-  const now = existsSync(excl) ? readFileSync(excl, 'utf8') : '';
+  if (!/[/\\]info[/\\]exclude$/.test(excl)) return;
+  let st = null;
+  try { st = lstatSync(excl); } catch { st = null; }
+  if (st && !st.isFile()) return;
+  const now = st ? readFileSync(excl, 'utf8') : '';
   if (now.split('\n').includes(pattern)) return;
   mkdirSync(dirname(excl), { recursive: true });
   appendFileSync(excl, `${now && !now.endsWith('\n') ? '\n' : ''}${pattern}\n`);
