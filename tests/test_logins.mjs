@@ -137,6 +137,17 @@ t('AC8 the next check shows it', c.out.split('\n').some((l) => /^claude\s+login-
 t('AC6 the CLI check prints no token', c.out.includes(TOKEN), false);
 c = await cli('check', '--json');
 t('check --json: the usable logins', JSON.parse(c.out).usable.join(), 'claude:default,claude:login-2,claude:login-9,codex:default');
+// DS-532 AC8: a Codex auth.json with an id_token, an access token and a refresh token; the check's JSON
+// carries the id_token's email and plan, and neither other token's text.
+const ACCESS = ['access', 'fixture0token0never0shown'].join('-'), REFRESH = ['refresh', 'fixture0token0never0shown'].join('-');
+const idToken = (payload) => ['e30', Buffer.from(JSON.stringify(payload)).toString('base64url'), 'sig'].join('.');
+writeFileSync(join(H, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: null, tokens: {
+  id_token: idToken({ email: 'me@x.io', 'https://api.openai.com/auth': { chatgpt_plan_type: 'pro' } }), access_token: ACCESS, refresh_token: REFRESH, account_id: 'a' } }));
+c = await cli('check', '--json');
+const codexJson = JSON.parse(c.out).logins.find((l) => l.tool === 'codex' && l.name === 'default');
+t('DS-532 AC8 the check\'s JSON names the Codex login\'s email and plan from its id_token', `${codexJson.email} ${codexJson.plan}`, 'me@x.io Pro');
+t('DS-532 AC8 and neither the access nor the refresh token\'s text', c.out.includes(ACCESS) || c.out.includes(REFRESH), false);
+rmSync(join(H, '.codex', 'auth.json'));
 c = await cli('set', 'claude', 'login-2', 'sometimes');
 t('AC9 an unknown rule is refused, naming the three', `${c.rc} ${c.out.trim()}`, '1 logins: "sometimes" is not a rule: use one of `in rotation`, `standby`, `off`');
 c = await cli('set', 'codex', 'login-2', 'in', 'rotation');
