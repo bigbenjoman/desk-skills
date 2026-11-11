@@ -792,19 +792,20 @@ out=$(DESK_CONFIG="$T/config-state-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merg
 check "DS-422: a state row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: config §4 State checks does not parse: \`🔐 Review gate: approve\`" && ! echo "$out" | grep -q "merge driver up"'
 
 # ---- DS-561: a red approval check whose run started before the head's approval is rerun once -----
-# Timed as studia-web #2646: a clean verdict at 22:02:33, an APPROVED review at 22:02:50, and the
-# "🔐 Review gate" run that failed having started at 22:02:10, before either.
+# Each red "🔐 Review gate" run started at RAN; an approval or clean verdict newer than RAN is one it never saw.
 CLEAN_561='p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 cp "$T/config-state.md" "$T/config-stale.md"; echo "| Clean review verdict | \`$CLEAN_561\` |" >> "$T/config-stale.md"
-SHA95=c955555555555555555555555555555555555555; SHA96=c966666666666666666666666666666666666666; SHA97=c977777777777777777777777777777777777777
+cp "$T/config-state.md" "$T/config-stale-plain.md"; echo '| Clean review verdict | `no findings` |' >> "$T/config-stale-plain.md"
+SHA94=c944444444444444444444444444444444444444; SHA95=c955555555555555555555555555555555555555; SHA96=c966666666666666666666666666666666666666; SHA97=c977777777777777777777777777777777777777
 SHA98=c988888888888888888888888888888888888888; SHA99=c999999999999999999999999999999999999999
 RAN='2026-11-10T22:02:10Z'
-# ap <n> <sha> <review>...: PR #n's GraphQL read, each review `<login>|<state>|<submittedAt>|<commit>[|verdict]`.
+# ap <n> <sha> <review>...: PR #n's GraphQL read, each review `<login>|<state>|<submittedAt>|<commit>[|verdict|plain]`.
 ap(){
   node -e 'const [f, clean, ...rows] = process.argv.slice(1);
     const reviews = rows.map((x, i) => { const [login, state, at, oid, v] = x.split("|");
       return { id: "PRR_" + i, author: { login }, state, submittedAt: at, commit: { oid },
-        body: v ? ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${oid} ${clean} vendor=codex round=1 -->`].join("\n") : "LGTM" }; });
+        body: v === "plain" ? "No findings. Nothing deferred or carried."
+          : v ? ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${oid} ${clean} vendor=codex round=1 -->`].join("\n") : "LGTM" }; });
     require("fs").writeFileSync(f, JSON.stringify({ data: { repository: { pullRequest: { reviewDecision: null, reviews: { nodes: reviews }, reviewThreads: { nodes: [] } } } } }));' "$T/ap-$1.json" "$CLEAN_561" "${@:2}"
 }
 ap 195 "ben|APPROVED|2026-11-10T22:02:50Z|$SHA95"
@@ -812,13 +813,14 @@ ap 196 "ben|APPROVED|2026-11-10T22:01:30Z|$SHA96"
 ap 197 "ben|COMMENTED|2026-11-10T22:02:50Z|$SHA97" "ben|APPROVED|2026-11-10T22:02:50Z|c900000000000000000000000000000000000000"
 ap 198 "ben|APPROVED|2026-11-10T22:02:50Z|$SHA98"
 ap 199 "tester|COMMENTED|2026-11-10T22:02:33Z|$SHA99|verdict"
+ap 194 "tester|COMMENTED|2026-11-10T22:01:00Z|c900000000000000000000000000000000000000|verdict" "tester|COMMENTED|2026-11-10T22:02:33Z|$SHA94|plain"
 gate_pr(){ printf '"%s": { "head": "fix/T-%s", "base": "main", "sha": "%s", "state": "open", "draft": false, "payload": "%s", "checks": [["test", "SUCCESS", 9090], ["%s", "FAILURE", %s, %s, "%s"]] }' "$1" "${1#1}" "$2" "$T/ap-$1.json" "$3" "$4" "$5" "$RAN"; }
-printf '{ %s, %s, %s, %s, %s }\n' "$(gate_pr 195 "$SHA95" '🔐 Review gate' 9251 95001)" "$(gate_pr 196 "$SHA96" '🔐 Review gate' 9261 96101)" \
+printf '{ %s, %s, %s, %s, %s, %s }\n' "$(gate_pr 194 "$SHA94" '🔐 Review gate' 9241 94101)" "$(gate_pr 195 "$SHA95" '🔐 Review gate' 9251 95001)" "$(gate_pr 196 "$SHA96" '🔐 Review gate' 9261 96101)" \
   "$(gate_pr 197 "$SHA97" '🔐 Review gate' 9271 97101)" "$(gate_pr 198 "$SHA98" '🌿 Local Adversarial Code Review' 9281 98101)" \
   "$(gate_pr 199 "$SHA99" '🔐 Review gate' 9291 99101)" > "$T/prs.json"
 echo '{ "95001": "No PullBot review at c95555555 yet" }' > "$T/annotations.json"
 q init merge-stale
-for k in T-95 T-96 T-97 T-98 T-99; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+for k in T-94 T-95 T-96 T-97 T-98 T-99; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
 : > "$T/merges.log"; : > "$T/gh.log"
 saloop(){ out=$(DESK_CONFIG="$T/config-stale.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-95 T-96 T-97 T-98 T-99" 2>&1); rc=$?; }
 saloop
@@ -831,6 +833,9 @@ check "DS-561 AC4: a red verdict check is not rerun for an approval, as DS-422 h
 : > "$T/gh.log"
 saloop
 check "DS-561 AC2: still red at that head after its rerun, it is not rerun again and waits on a person as today" '! grep -q "run rerun" "$T/gh.log" && echo "$out" | grep -qF "#195 \"🔐 Review gate\" was rerun once at c95555555 for the approval its run started before, and is red again — not rerunning it a second time" && [ "$(qf T-95 .merge_blocked)" = "approval: \"🔐 Review gate\" needs approval from a human reviewer at c95555555: a person approves it before desk merges it" ]'
+: > "$T/gh.log"
+out=$(DESK_CONFIG="$T/config-stale-plain.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-94" 2>&1)
+check "DS-561: under a plain-text clean row, a clean plain review at the head newer than the run reruns it, not an older marker review" 'grep -q "run rerun --job 94101 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -qF "#194 \"🔐 Review gate\" failed in a run started $RAN, before a clean review verdict at c94444444 (2026-11-10T22:02:33Z)"'
 
 # ---- DS-433: every PR merges on a clean desk-review at its head, whatever its title, with no approval --
 cp "$T/config.md" "$T/config-rv.md"

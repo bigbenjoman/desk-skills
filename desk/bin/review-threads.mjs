@@ -105,15 +105,18 @@ export function approvedAt(payload, { handle, clean }) {
   const hits = reviews.filter((r) => r.state === 'APPROVED' && head && r.commit?.oid === head && r.submittedAt)
     .map((r) => ({ at: r.submittedAt, by: `an APPROVED review by ${r.author?.login ?? 'someone'}` }));
   if (rowSet(clean)) {
-    const { v, review } = verdictAtHead(reviews, handle, head, String(clean).trim());
-    const r = v.clean && review?.id ? reviews.find((x) => x.id === review.id) : null;
+    const { plain, v, review } = verdictAtHead(reviews, handle, head, String(clean).trim());
+    // Under a plain-text row the clean review is the handle's latest with a body, marker or not
+    // (plainVerdictAt); under a counts row it is the latest carrying a verdict marker.
+    const own = (x) => !!handle && String(x.author?.login ?? '').toLowerCase() === handle.toLowerCase() && !!String(x.body ?? '').trim();
+    const r = !v.clean ? null : plain ? reviews.filter(own).pop() : reviews.find((x) => x.id === review?.id);
     if (r?.submittedAt) hits.push({ at: r.submittedAt, by: 'a clean review verdict' });
   }
   const best = hits.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))[0];
   return { head, at: best?.at ?? null, by: best?.by ?? null };
 }
 
-// A thread as one line names it:`path:line "first line"`, cut to a readable length.
+// A thread as one line names it: `path:line "first line"`, cut to a readable length.
 function threadLine(t, max = 100) {
   const where = t.path ? `${t.path}${t.line ? `:${t.line}` : ''}` : 'a PR-level thread';
   const first = t.first.length > max ? `${t.first.slice(0, max - 1)}…` : t.first;
