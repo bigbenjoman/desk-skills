@@ -11,7 +11,7 @@ T="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home" "$T/bin" "$T/fakes" "$T/repo" "$T/state/triage" "$T/recs" "$T/no-skills"
 export HOME="$T/home"
-unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO \
+unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO DESK_BATCH \
   AUTOPILOT_DRY_RUN AUTOPILOT_BASE_PUSH_APPROVED AUTOPILOT_USER_APPROVED DESK_DIGEST_DIR
 export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" \
   DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_SKILLS_DIR="$T/no-skills"
@@ -815,6 +815,18 @@ rm -f "$T/link.fails"; clear_calls
 answer E-39 start; out=$(btick)
 check "DS-434 AC5: the next start finishes the link and does not file a second spine" '! grep -q "^create" "$T/jira.calls" && grep -q "^link E-11 Blocks E-38$" "$T/jira.calls" && [ "$(eget E-39 tickets.E-39)" = undefined ]'
 cleared E-39
+
+# DS-531: a start answer with no Claude account to triage its spine on is left for a later tick, not
+# asked again; once an account has room, the same answer starts the batch.
+config yes '`none`'; required; startepic E-41 E-42; drafted "Spine: the AC1 spec
+Size: M
+Priority: P2" E-42; clear_calls
+out=$(admit E-41 --by ben); q0=$(pq E-41); answer E-41 start
+out=$(DESK_SUBSCRIPTIONS="$T/subs.md" btick)
+check "DS-531 AC4: a start with no account to triage the spine on waits, and is not asked again" '[ "$(pq E-41)" = "$q0" ] && [ ! -f "$ES/E-41/triage/$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).spine)" "$ES/E-41/feature.json").json" ] && grep -qF "E-41: your start answer to its plan is not carried out yet: every Claude account is at its limit or signed out, so planning waits for one with room" "$ES/E-41/supervisor.log"'
+out=$(btick)
+check "DS-531 AC4: once an account has room, the same start answer starts the batch" '[ "$(eget E-41 tickets.E-41)" = undefined ]'
+cleared E-41
 
 # The §4 Size field is carried with no Required fields rule for it, and asked for like one.
 config yes '`none`'; printf '\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Size field | `customfield_10208` |\n' >> "$T/cfg/repos/acme__widgets/config.md"

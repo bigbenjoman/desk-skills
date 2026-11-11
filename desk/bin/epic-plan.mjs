@@ -542,7 +542,7 @@ function linkSpine({ spine, env, draft }) {
 }
 
 // Seeds the batch with `children` (and, in feature mode, the spine, filed first) and takes the epic out
-// of it: -> {lines} or {why}.
+// of it: -> {lines} or {why}, with `wait` too when no Claude account has room to triage the spine.
 function startPlan({ epic, state, env, children }) {
   let v = planOf(children, env);
   if (v.why) return v;
@@ -566,6 +566,8 @@ function startPlan({ epic, state, env, children }) {
     const unlinked = linkSpine({ spine, env, draft: plan.draft });
     if (unlinked) return { why: unlinked };
     if (!readJson(join(state, 'triage', `${spine}.json`), null)) {
+      // With no Claude account to triage it on, the answer waits for a later tick; the spine stays filed.
+      if (!headlessEnv(env)) return { why: PLAN_WAITS, wait: true };
       const t = run(join(HERE, 'triage.sh'), [spine], env);
       if (t.status !== 0 || !readJson(join(state, 'triage', `${spine}.json`), null)) return { why: `its spine ${spine} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})` };
     }
@@ -670,7 +672,7 @@ export function actOnPlan(b, { claude = 'claude', lock = { take: () => true, dro
     const r = kind === 'discard' ? discardPlan({ name: b.name, env, children })
       : kind === 'start' ? startPlan({ epic, state: b.state, env, children })
         : editPlan({ epic, state: b.state, env, children, edit: last.text, claude });
-    if (r.wait) return { ...none, lines: [`${epic}: your edit to its plan is not applied yet: ${PLAN_WAITS}`] };
+    if (r.wait) return { ...none, lines: [`${epic}: your ${kind === 'start' ? 'start' : 'edit'} answer to its plan is not carried out yet: ${PLAN_WAITS}`] };
     if (!r.why) return { acted: kind, lines: r.lines, gone: r.gone === true };
     // Parked again with why: a new needs-you item, and an answer to it is newer than this park.
     const p = queueIn(env)(['park', epic, replanQuestion(epic, r.why, planFile(b.state))]);
