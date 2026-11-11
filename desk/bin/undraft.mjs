@@ -121,13 +121,14 @@ export function leftOver(body) {
 }
 
 // What the latest of `handle`'s reviews says about this head, under a plain-text §4 row (`clean`):
-// { clean, why, settle, verdict }. A review with an empty body (GitHub records one for a reply to an
-// inline comment) says nothing and is passed over.
+// { clean, why, settle, verdict, review }, `review` the review read when it is clean or carries a marker.
+// A review with an empty body (GitHub records one for a reply to an inline comment) says nothing and is
+// passed over.
 export function plainVerdictAt(reviews, handle, head, clean) {
   const r = ownReviews(reviews, handle).filter((x) => String(x.body ?? '').trim()).pop();
   if (!r) return { clean: false, why: `no review stating "${clean}" is posted on it` };
   const v = parseVerdict(r.body);
-  if (v) return { ...verdictAt(v, head, markerClean(v)), verdict: v };
+  if (v) return { ...verdictAt(v, head, markerClean(v)), verdict: v, review: r };
   // A local review whose marker the review gate cannot read is no verdict, never a plain review.
   const opener = String(r.body).split(/\r?\n/)[0].trim();
   if (LOCAL_MARKERS.includes(opener)) return { clean: false, why: `its ${opener === LOCAL_MARKER ? 'desk-review' : 'PullBot'} verdict marker is not one the review gate reads` };
@@ -139,7 +140,7 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   const left = leftOver(r.body);
   if (left.length) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but leaves items open, deferred or carried: ${left.map((l) => `"${l}"`).join('; ')}` };
   if (!plainLines(r.body).some((l) => l.replace(NOTHING_LEFT, '') !== l)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
-  return { clean: true, why: null, verdict: stated };
+  return { clean: true, why: null, verdict: stated, review: r };
 }
 
 // The review verdict the handle has at this head, under a set §4 Clean review verdict row (`clean`), as

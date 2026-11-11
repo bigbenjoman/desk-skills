@@ -106,10 +106,10 @@ export function approvedAt(payload, { handle, clean }) {
     .map((r) => ({ at: r.submittedAt, by: `an APPROVED review by ${r.author?.login ?? 'someone'}` }));
   if (rowSet(clean)) {
     const { plain, v, review } = verdictAtHead(reviews, handle, head, String(clean).trim());
-    // Under a plain-text row the clean review is the handle's latest with a body, marker or not
-    // (plainVerdictAt); under a counts row it is the latest carrying a verdict marker.
-    const own = (x) => !!handle && String(x.author?.login ?? '').toLowerCase() === handle.toLowerCase() && !!String(x.body ?? '').trim();
-    const r = !v.clean ? null : plain ? reviews.filter(own).pop() : reviews.find((x) => x.id === review?.id);
+    // The review the verdict was read from: under a plain-text row the one plainVerdictAt judged, else
+    // the latest carrying a verdict marker.
+    const id = plain ? v.review?.id : review?.id;
+    const r = v.clean && id ? reviews.find((x) => x.id === id) : null;
     if (r?.submittedAt) hits.push({ at: r.submittedAt, by: 'a clean review verdict' });
   }
   const best = hits.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))[0];
