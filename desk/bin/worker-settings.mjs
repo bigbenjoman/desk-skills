@@ -335,17 +335,19 @@ if (mode === 'triage') {
       for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) DISPATCH_RULES.push(...exact('gh', ` workflow run ${m[1]}${r} --ref ${BRANCH}${m[2]}`));
     }
   }
-  // §4 Evidence workflow, under the same row, in the form the pass starts it (evidence.mjs): on §0
-  // Default branch, whose code it runs, with this ticket's own PR number as its one input. The rule is
-  // exact, so it is written only once the queue records that PR (a fix or capture try's, or the
-  // finished ticket's): a `pr=*` rule cannot hold the value to digits, as the shell expands an
-  // unquoted `*` against files the worker writes, and no rule can name a literal `*`.
+  // §4 Evidence workflow, under the same row, in the form the pass starts it (pass.mjs startEvidence):
+  // on §0 Default branch as the config row names it, never a batch base, whose code it runs, with this
+  // ticket's own PR number as its one input. The rule is exact, so it is written only once the queue
+  // records that PR (a fix or capture try's, or the draft a resumed or handed-off worker opened): a
+  // `pr=*` rule cannot hold the value to digits, as the shell expands an unquoted `*` against files
+  // the worker writes, and no rule can name a literal `*`.
   const EVIDENCE_RULES = [];
   const evidence = DISPATCH === 'yes' && dispatchRef ? parseEvidenceRow(cfgList('evidence-workflow')) : null;
-  const ownPr = [QUEUED?.fix?.pr, QUEUED?.result?.pr].map((n) => String(n ?? '')).find((n) => /^[1-9]\d*$/.test(n));
+  const ownPr = [QUEUED?.fix?.pr, QUEUED?.draft_pr, QUEUED?.result?.pr].map((n) => String(n ?? '')).find((n) => /^[1-9]\d*$/.test(n));
   if (evidence?.errors) warns.push(`§4 Evidence workflow ${evidence.errors.join('; ')} — not allow-listed`);
   else if (evidence && ownPr) {
-    for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) EVIDENCE_RULES.push(...exact('gh', ` workflow run ${evidence.workflow}${r} --ref ${DEFAULT} -f pr=${ownPr}`));
+    const ref = String(cfg('default-branch') ?? '').trim() || 'main';
+    for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) EVIDENCE_RULES.push(...exact('gh', ` workflow run ${evidence.workflow}${r} --ref ${ref} -f pr=${ownPr}`));
   }
   // This worktree as given and as its real path (a symlinked --wt, or macOS's /tmp and /var).
   const WTS = [...new Set([WT, (() => { try { return realpathSync(WT); } catch { return WT; } })()])];

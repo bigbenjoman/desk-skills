@@ -441,6 +441,13 @@ check "DS-549 AC1 gh workflow gives way, and enable and disable stay denied" \
 ev_q '"result":{"pr":935},"fix":{"try":1,"of":3,"pr":935,"kind":"capture"}'
 settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
 check "DS-549 AC1 a fix or capture try: its PR's evidence workflow" '[ $rc -eq 0 ] && ok "$EVRUN" "$EVRUN_REPO" && no "gh workflow run pr-evidence.yml --ref main -f pr=7"'
+ev_q '"draft_pr":935'
+settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
+check "DS-549 AC1 a resumed worker whose draft PR is recorded: its evidence workflow" '[ $rc -eq 0 ] && ok "$EVRUN" "$EVRUN_REPO"'
+printf '{"batch":"b","base":"feat/epic","tickets":{"fix-thing":{"key":"fix-thing","state":"done","draft_pr":935}}}\n' > "$DESK_QUEUE"
+settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
+check "DS-549 AC1 in a batch with its own base: on the repo's default branch, never the base" \
+  '[ $rc -eq 0 ] && ok "$EVRUN" && no "gh workflow run pr-evidence.yml --ref feat/epic -f pr=935"'
 for q in '' '"result":{"pr":"9 35"}' '"result":{"pr":null}'; do
   ev_q "$q"
   settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
