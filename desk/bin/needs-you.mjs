@@ -124,7 +124,7 @@ const prShut = (pr, state) => (state === 'MERGED' ? `PR #${pr} is merged, so no 
 // No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
 // quoted in one is kept whole, and a URL in it untouched, so the session can ask it as it stands.
 const URL_PART = /(https?:\/\/\S+)/;
-const passWords = (s) => s.replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
+const passWords = (s) => s.replace(/,\s*at [0-9a-f]{7,40}\b,/g, '').replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
   .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
 const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : passWords(p))).join(''));
 // Once the person's step is done: desk merges it where it may, else merging is theirs too.
