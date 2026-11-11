@@ -111,6 +111,7 @@ copyFixtures({ state: batchState, key: 'F-1', worktree: src, max: 20 });
 const excl = readFileSync(join(src, '.git', 'info', 'exclude'), 'utf8');
 t('a second copy adds no second exclude line', excl.split('\n').filter((l) => l === `/${WORKTREE_FIXTURES}/`).length, 1);
 t('a ticket with no fixtures folder copies nothing', `${copyFixtures({ state: batchState, key: 'F-2', worktree: src })} ${existsSync(join(src, WORKTREE_FIXTURES, 'F-2'))}`, 'null false');
+mkdirSync(join(dir, 'wt2'));
 copyFixtures({ state: repoState, key: 'F-1', worktree: join(dir, 'wt2') });
 t('the standing batch reads its own state only', readFileSync(join(dir, 'wt2', WORKTREE_FIXTURES, 'F-1', 'reply.json'), 'utf8'), '{"from":"repo"}');
 // The worktree is the worker's: a symlink it left where the copies go is replaced, never followed.
