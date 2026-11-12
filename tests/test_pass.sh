@@ -632,6 +632,30 @@ out=$(node "$B/queue.mjs" requeue K-1 2>&1)
 check "DS-145 a requeue clears a pending resume" '[ "$(field K-1 resume)" = null ] && [ "$(field K-1 resume_why)" = null ] && [ "$(field K-1 session_id)" = null ]'
 check "DS-145 the config template has the row, recommended 2" 'grep -qE "^\| Resume a killed worker \(times\) \| \`2\` \| \`TODO\`" "$SRC/desk-config.md"'
 
+# DS-551: a worker asked to stop for a planned reboot ends with AUTOPILOT_REBOOT and exits normally.
+# R-1 stopped just now: it waits for the boot, then resumes. R-2 stopped long ago with no boot since.
+q set K-1 state=done
+rebooted(){ killed "$1" "$2"; { say "AUTOPILOT_REBOOT: voicepa-83 asked at 07:31Z"; result_event; } >> "$T/state-k/logs/$1.log"; touch -t 202601010000 "$T/state-k/logs/$1.log"; }
+rebooted R-1 sess-r1; touch "$T/state-k/logs/R-1.log"
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-551 AC1 a worker stopped for a reboot is queued to resume, not parked or failed" \
+  '[ "$(field R-1 state)" = "\"triaged\"" ] && [ "$(field R-1 resume)" = "\"reboot\"" ] && [ "$(field R-1 park)" = null ] && [ "$(field R-1 session_id)" = "\"sess-r1\"" ] && ! echo "$out" | grep -q "R-1: exited with no marker"'
+check "DS-551 AC1 before the computer restarts it waits, and the pass says what for" \
+  '! spawned_for R-1 && echo "$out" | grep -qF "waiting for the reboot: R-1 (stopped for a planned reboot (voicepa-83 asked at 07:31Z), resumed after the computer restarts, or at "'
+out=$(DESK_BOOT_TIME=$(( $(date +%s) + 60 )) node "$B/pass.mjs" 2>&1)
+check "DS-551 AC2 after the restart its own session resumes, naming the reboot, uncounted" \
+  'spawned_for R-1 | grep -q "^R-1 sess-r1 .*resume=yes$" && echo "$out" | grep -q "R-1 resumed after its stop for a planned reboot — the computer restarted at .* after it stopped for a planned reboot (voicepa-83 asked at 07:31Z)" && [ "$(field R-1 resumes)" = 0 ] && grep -q "the computer restarted at" "$T/resume-prompt-R-1"'
+# The resumed session is then killed: its spent REBOOT marker does not queue it as a reboot stop again.
+say "AUTOPILOT_STAGE: 7/9 pr" >> "$T/state-k/logs/R-1.log"; touch -t 202601010000 "$T/state-k/logs/R-1.log"
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-551 a resumed session killed later is resumed as a kill, not as another reboot stop" 'echo "$out" | grep -q "R-1 resumed after it was killed (1 of 2)"'
+q set R-1 state=done
+rebooted R-2 sess-r2
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "DS-551 AC4 with no reboot within the drain limit it resumes anyway, saying no reboot was seen" \
+  'spawned_for R-2 | grep -q "^R-2 sess-r2 .*resume=yes$" && echo "$out" | grep -qF "R-2 resumed after its stop for a planned reboot — no reboot was seen within 60 min (config §3b \"Maintenance drain limit (minutes)\") of when it stopped for a planned reboot"'
+q set R-2 state=done
+
 # DS-197: a headless worker exits at the 5-hour limit rather than waiting for the reset. Its log ends
 # as VPL-443's did: the rate_limit_event at the limit, then a result with api_error_status 429.
 # usage_exit <KEY> <resetsAt> [type]
@@ -3028,6 +3052,18 @@ check "DS-388 AC3 a fix try whose own worker was killed with its worktree dirty 
   'grep -qx "W-5 sess-w5 resume=yes" "$T/wb-spawns" && [ "$(field W-5 state)" = "\"running\"" ] && [ "$(field W-5 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-5: WORKTREE IN USE" && echo "$out" | grep -q "W-5 resumed after it was killed" && ! echo "$out" | grep -q "W-5: PR #55"'
 check "DS-388 AC4 a fix try whose worktree holds changes no worker of its own is resuming is still held" \
   '[ "$(field W-6 state)" = "\"triaged\"" ] && ! grep -q "^W-6 " "$T/wb-spawns" && echo "$out" | grep -qF "W-6: WORKTREE IN USE — its worktree $T/wt/W-6 has uncommitted changes (a.txt)" && [ "$(field W-6 resume)" = null ]'
+# DS-551 AC3: a fix try stopped for a planned reboot with a verified commit not pushed resumes its own
+# session after the restart, never held as WORKTREE IN USE.
+q set W-5 state=done; q set W-6 state=done
+git clone -q "$T/wb-origin.git" "$T/wt/W-8" 2>/dev/null; git -C "$T/wt/W-8" checkout -q -b fix/W-8
+echo a > "$T/wt/W-8/a.txt"; git -C "$T/wt/W-8" add a.txt; git -C "$T/wt/W-8" commit -q -m a; git -C "$T/wt/W-8" push -q origin fix/W-8 2>/dev/null
+git -C "$T/wt/W-8" commit -q --allow-empty -m "verified, not pushed"; q add W-8
+q set W-8 state=running lane=A branch=fix/W-8 "worktree=$T/wt/W-8" session_id=sess-w8 port=47761 stage=7/9 'fix={"try":1,"of":2,"pr":58,"kind":"review","what":"a P1 review finding"}'
+{ say "AUTOPILOT_STAGE: 7/9 pr" "AUTOPILOT_REBOOT: voicepa-83 asked at 07:31Z"; result_event; } > "$T/state-wb/logs/W-8.log"
+out=$(DESK_BOOT_TIME=$(( $(date +%s) + 60 )) node "$B/pass.mjs" 2>&1)
+check "DS-551 AC3 a reboot stop with unpushed commits resumes its own session, not held as worktree in use" \
+  'grep -qx "W-8 sess-w8 resume=yes" "$T/wb-spawns" && ! echo "$out" | grep -q "W-8: WORKTREE IN USE" && [ "$(field W-8 worktree_busy)" = null ] && [ "$(field W-8 park)" = null ]'
+q set W-8 state=done
 
 # W-7 parked with a commit origin lacks, on a branch origin has never seen; the note goes once it is pushed.
 git clone -q "$T/wb-origin.git" "$T/wt/W-7" 2>/dev/null; git -C "$T/wt/W-7" checkout -q -b fix/W-7

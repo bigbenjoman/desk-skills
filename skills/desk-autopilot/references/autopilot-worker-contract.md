@@ -125,6 +125,13 @@ in §4 In-progress state (`desk-env get in-progress-state`).
 
 An answer in your briefing is **binding**. Do not re-ask it.
 
+**Asked to stop for a planned reboot, never park.** When a session or the person tells you a reboot
+is planned and asks you to stop or save your work, finish the command you are in without starting a
+new one, commit what is verified, update your resume file, then print
+`AUTOPILOT_REBOOT: <who asked, and when>` and end your turn. The pass resumes your own session after
+the computer restarts (or, if none comes, after config §3b Maintenance drain limit), uncounted as a
+kill, and you carry on from where you stopped, pushing what you committed.
+
 ## 2. Gates
 
 **Released:** `desk-ticket` gate 3 (show the diff before pushing). A draft PR is the review
@@ -188,6 +195,7 @@ AUTOPILOT_NOTE:  <a discovery a sibling ticket in this batch would want>
 AUTOPILOT_DECISION: <one JSON object per call you took (section 1)>
 AUTOPILOT_IMAGES: <the absolute screenshot directory from your briefing>
 AUTOPILOT_PARK:  <question>
+AUTOPILOT_REBOOT: <who asked you to stop for a planned reboot, and when (section 1)>
 AUTOPILOT_DONE:  pr=<number> jira=<status, or "none" with no tracker>
 ```
 
