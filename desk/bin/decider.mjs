@@ -19,7 +19,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
-import { CLEARS_WHEN_FORMS, describeCond } from './clears-when.mjs';
+import { CLEARS_WHEN_FORMS, describeCond, personClears } from './clears-when.mjs';
 import { needsSession, planPark, leftPark, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
@@ -102,6 +102,8 @@ export function presort(items, state = null) {
       hand.push({ item, why: 'left in a finished feature batch: only the person moves it to the standing batch or drops it' });
     } else if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
+    } else if (item.kind === 'parked' && item.clears && personClears(JSON.parse(item.clears))) {
+      hand.push({ item, why: 'waits on issue links only the person makes: a pass records it done again once each is on Jira' });
     } else if (item.kind === 'parked' && item.clears) {
       waits.push(item);
     } else if (item.kind === 'parked' && item.repeat && !(state && prevAt && answered(state, { ticket: item.ticket, at: prevAt }))) {

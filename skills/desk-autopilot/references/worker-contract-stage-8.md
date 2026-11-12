@@ -16,6 +16,21 @@ and do not park for it. **Check idempotency first**: read existing comments and 
 under `jira-edit`. `desk-jira link` and `unlink` are never yours, whatever `jira-edit` says: issue links are set
 interactively when an epic is written.
 
+**A link your ticket needs** (a follow-up you raised, a duplicate you found) is the pass's to make, so
+never park for it. Print one line per link, at the start of a line, before your `AUTOPILOT_DONE` or
+`AUTOPILOT_PARK`, in the arguments `desk-jira link` takes:
+
+```
+AUTOPILOT_LINK: DS-764 relates-to DS-814
+```
+
+When you end, the pass makes each one under `jira-edit` and reads it back. One it does not make
+(`jira-edit` not `yes`, a ticket outside your project, one that does not exist, or a Blocks link,
+`blocks` or `blocked-by`, which changes the order tickets spawn in and stays the person's) parks the
+ticket naming why, with the exact command: in your park's question, or, after your DONE, as a park
+of its own that returns the ticket to done on your PR once the person has made the link. Leave the
+link out of the steps you name as not reached.
+
 **A ticket with follow-ons** (the `follow_on=` steps on your DONE line, Stage 5 file) lists each in
 that comment, one line each under "Once this merges:", with the §3 row it needs. The PR still goes to
 the merge path: a follow-on never holds the merge, and never makes this comment a park.
