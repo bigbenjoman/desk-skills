@@ -72,6 +72,7 @@ import { platform } from 'node:os';
 import * as E from './desk-env.mjs';
 import { grantPush } from './batch-state.mjs';
 import { wrappersFile } from './desk-lines.mjs';
+import { parseEvidenceRow } from './evidence.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
 const opt = {};
@@ -333,6 +334,16 @@ if (mode === 'triage') {
       for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) DISPATCH_RULES.push(...exact('gh', ` workflow run ${m[1]}${r} --ref ${BRANCH}${m[2]}`));
     }
   }
+  // §4 Evidence workflow, under the same row, for this ticket's own PR from the moment it opens, so
+  // before the queue records it too: through evidence.mjs dispatch, with this ticket's branch fixed by
+  // the rule. That checks the PR number is digits and the PR is the branch's own open one, then starts
+  // the run as the pass does (pass.mjs startEvidence), on the config row's default branch. A
+  // `gh workflow run … -f pr=*` rule cannot hold the value to digits, as the shell expands an unquoted
+  // `*` against files the worker writes, so `gh workflow` itself gives the evidence workflow nothing.
+  const EVIDENCE_RULES = [];
+  const evidence = DISPATCH === 'yes' && dispatchRef ? parseEvidenceRow(cfgList('evidence-workflow')) : null;
+  if (evidence?.errors) warns.push(`§4 Evidence workflow ${evidence.errors.join('; ')} — not allow-listed`);
+  else if (evidence) EVIDENCE_RULES.push(...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch ${BRANCH} *)`));
   // This worktree as given and as its real path (a symlinked --wt, or macOS's /tmp and /var).
   const WTS = [...new Set([WT, (() => { try { return realpathSync(WT); } catch { return WT; } })()])];
   const OWN_CS = WTS.map((w) => ` -C ${w}`);
@@ -399,7 +410,7 @@ if (mode === 'triage') {
   deny.push(
     ...READ_DENY,
     ...bash('git', ...GIT_DENY_WT),
-    // `gh workflow` gives way only to the exact dispatches above; enable and disable stay denied.
+    // `gh workflow` gives way only to the §4 Worker workflows dispatches above; enable and disable stay denied.
     ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !DISPATCH_RULES.length)),
     ...(DISPATCH_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
@@ -576,8 +587,8 @@ if (mode === 'triage') {
   grant('pr-update-branch', bash('gh', ' pr update-branch'));
   grant('ci-rerun', bash('gh', ' run rerun'));
   if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${setting('worker-workflow-dispatch')})`);
-  else if (!DISPATCH_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
-  allow.push(...DISPATCH_RULES);
+  else if (!DISPATCH_RULES.length && !EVIDENCE_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
+  allow.push(...DISPATCH_RULES, ...EVIDENCE_RULES);
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
@@ -687,6 +698,7 @@ if (mode === 'triage') {
     deny.push(
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun', ' workflow'),
+      ...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch:*)`),
       ...bash('desk-jira', ' edit', ' comment', ' create', ' create-batch', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }

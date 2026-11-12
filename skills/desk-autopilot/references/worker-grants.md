@@ -34,9 +34,12 @@ a worker cannot:
   so it cannot resolve review threads (it replies with `gh pr comment` under §3 `pr-reply`) and
   opens PRs only with a command beginning `gh pr create --draft` or
   `gh pr create --repo <§0 GitHub repo> --draft`;
-- run `gh workflow` beyond the exact §4 Worker workflows dispatches on its own branch where §3
+- run `gh workflow` beyond the exact §4 Worker workflows dispatches on its own branch, where §3
   `worker-workflow-dispatch` is `yes`: no other workflow, input or ref, none in a dry run, and
-  never `gh workflow enable` or `disable`;
+  never `gh workflow enable` or `disable`. At `yes` it also starts the §4 Evidence workflow, only as
+  `node <bin>/evidence.mjs dispatch <its branch> <n>`, its branch fixed by the rule: that refuses a
+  `<n>` that is not digits or not its branch's own open PR, then runs `gh workflow run <file>.yml
+  --repo <§0 GitHub repo> --ref <§0 Default branch> -f pr=<n>` as the pass does;
 - run the package manager beyond `install` with no arguments and the configured rows (no `add`,
   no `exec`/`dlx`/`x`, no `npx`/`bunx`/`uvx`), or the §4 Command prefix on its own;
 - run `sed`, `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`; `codex` other than

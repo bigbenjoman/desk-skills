@@ -113,18 +113,17 @@ Your settings are an **allow-list**: anything not named here is refused.
   in every form**, and `gh alias` too: read reviews with `gh pr view <n> --json reviews,comments`,
   and answer a review thread with a `gh pr comment` naming it (§3 `pr-reply`); resolving threads is
   the orchestrator's. A read those do not cover (a GraphQL query, a REST GET) goes through
-  `desk-gh read <endpoint> [gh api flags]`, e.g. `desk-gh read graphql -f query='{ viewer { login } }'`:
-  it refuses a query holding the word `mutation` or `subscription` anywhere (a string included), any
-  method but GET, `--input`, a field read from a file and any unknown flag (exit 1). A REST field
+  `desk-gh read <endpoint> [gh api flags]`: it refuses the word `mutation` or `subscription` anywhere in a query, any method but GET, `--input`, a field read from a file and any unknown flag (exit 1). A REST field
   needs `-X GET`.
 - **`gh workflow run`**, only where §3 `worker-workflow-dispatch` is `yes`, and only exactly as
   §4 Worker workflows (`desk-env list worker-workflows`) lists each entry: `gh workflow run <file>.yml --ref <your branch> -f …` (or
-  with `--repo <§0 GitHub repo>` after the file), no input added or changed. Any other workflow, ref
-  or input is refused; so is `gh workflow enable`/`disable`. Once it starts, read the run's id with
-  `gh run list --workflow <file>.yml --branch <your branch> --limit 1 --json databaseId,status`,
-  then park on it with `AUTOPILOT_PARK_CLEARS_WHEN: run <id> completed`: you cannot wait, and the
-  first pass after the run finishes requeues you with its conclusion. Otherwise park naming the row.
-  Which entry you start, and the line on why in that park, follow the Stage 4 file's "A CI or
+  `--repo <§0 GitHub repo>` after the file), no input changed; all else is refused, `enable`/`disable`
+  too. With your draft PR open, §4 Evidence workflow (`desk-env list evidence-workflow`) only as
+  `node ~/.claude/desk/bin/evidence.mjs dispatch <your branch> <your PR>`. The run id is in the
+  `/actions/runs/<id>` URL printed (else `gh run list --workflow <file>.yml --branch <its --ref>
+  --limit 1 --json databaseId`); park with `AUTOPILOT_PARK_CLEARS_WHEN: run <id> completed`, and
+  the pass requeues you with its conclusion. Otherwise park naming the row.
+  Which entry, and the line on why in that park, follow the Stage 4 file's "A CI or
   end-to-end run you ask for is the narrowest one that covers your change": read it first.
 - **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
   is `yes`. With the `codex` lever on, `desk-codex …` too, and a direct call passing a model,
@@ -178,9 +177,7 @@ first call.
 
 ## Stage 4b's review tools: agents, finders and codex
 
-The Stage 4 file's self-review sends you here. These rules live in this file because every session
-reads it before Stage 4b: at Stage 3, before its first command, or at the start of a session that
-begins at Stage 4b.
+The Stage 4 file's self-review sends you here: every session reads this file before Stage 4b.
 
 **The review you run and post is the one `desk-env review-cmd` prints.** That is §4 Local review
 command, unless §4 Clean review verdict (`desk-env get clean-verdict`) is in desk-review's counts form
