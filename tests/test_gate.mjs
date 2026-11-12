@@ -1,6 +1,9 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold } from '../desk/bin/gate.mjs';
-import { readFileSync } from 'node:fs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -264,4 +267,37 @@ t('DS-422 none names none', sc(['none']), JSON.stringify({ checks: [], errors: [
 t('DS-422 an unknown kind is an error, never a guess', parseStateChecks(['Review gate: approve']).errors.join(), '`Review gate: approve`');
 t('DS-422 stateFailing keeps only the state checks, with their kinds', JSON.stringify(stateFailing([{ name: 'tests', runId: '1' }, { name: '🔐 Review gate', runId: '2' }], parseStateChecks(['🔐 Review gate: approval']).checks)),
   JSON.stringify([{ name: '🔐 Review gate', runId: '2', kind: 'approval' }]));
+// ---- DS-503: a hold whose step an agent can check is told from one only a person takes.
+const kinds = (items) => parseHolds(items).map(holdKind).join();
+const dryRun = 'frontend/e2e/**: skim the Confluence Sync dry-run comment first (AGENTS.md)';
+t('DS-503 AC1 a hold asking for a bot comment to be read is an agent\'s check', kinds([dryRun]), 'agent');
+t('DS-503 AC1 with its routine named, it is a routine hold', kinds([`${dryRun}; desk runs: bash ~/routines/confluence-dry-run.sh`]), 'routine');
+const askClass = ['content/legal/**: legal copy sign-off', 'src/billing/**: touches billing', 'prisma/migrations/**: apply the migration to staging and production first',
+  'infra/**: cdk deploy the stack', 'auth/**: rotate the OAuth client secret', 'pricing/**: pricing changes are signed off by finance', 'backend/**: build and push Lambda images first',
+  'copy/**: customer emails, whose length is what they cost', 'pnpm-lock.yaml: dependency changes are merged by a person'];
+t('DS-503 AC3 a hold in an ask class, or a sign-off, deploy or push, stays a person\'s', kinds(askClass), askClass.map(() => 'person').join());
+t('DS-503 AC3 `person only` in the reason forces a person\'s hold', kinds(['docs/**: read the docs preview; person only']), 'person');
+t('DS-503 AC3 so does a code-owner approval', holdNeedsPerson('CODEOWNERS path, needs your code-owner approval'), true);
+const factsAndCopy = ['launch/**: Ben confirms the launch date first', 'marketing/**: the client signs off the wording', 'sms/**: SMS template text, each message is billed',
+  'content/**: design review by Sam before merging', 'partners/**: ask the partner for their logo'];
+t('DS-503 AC3 a fact only the person holds, or copy that costs, stays a person\'s', kinds(factsAndCopy), factsAndCopy.map(() => 'person').join());
+t('DS-503 a reason desk wrote itself (no reason given, the PR\'s files unreadable) is a person\'s, never a config gap',
+  `${kinds(['legacy/**'])} ${holdKind({ why: UNREAD_FILES })} ${holdKind({ why: `${NO_REASON} (scripts could not be compared, so held)` })}`, 'person person person');
+const order = [{ glob: 'a', why: 'read the bot comment' }, { glob: 'b', why: 'legal sign-off' }, { glob: 'c', why: 'x', routine: './c.sh' }, { glob: 'd', why: 'read the dry-run' }, { glob: 'e', why: 'y', routine: './e.sh' }];
+t('DS-503 agentLast puts a person\'s hold before an agent\'s, so the merge driver\'s note names the person\'s step', agentLast(order).map((h) => h.glob).join(''), 'bcead');
+const ciRows = [...setup.matchAll(/\| `` `([^`]+)` `` \|/g)].map((m) => m[1]).filter((x) => /^[^:]+: changes /.test(x));
+t('DS-503 AC3 every hold on the checks desk-setup proposes stays a person\'s', `${ciRows.length > 5} ${kinds(ciRows)}`, `true ${ciRows.map(() => 'person').join()}`);
+t('DS-503 negative control: a check with no ask-class word is an agent\'s', kinds(['claude.md: house rules', 'e2e/**: read the dry-run comment the docs bot posts']), 'agent,agent');
+t('DS-503 AC1 desk-setup sorts each proposed hold with hold-kind and gives an agent\'s a routine', /gate\.mjs hold-kind/.test(setup) && /\*\*`agent`\*\*: .*Write it a routine/.test(setup), true);
+// The CLI desk-setup and desk-update run: items given, else the config's §4 Merge holds.
+const gtmp = mkdtempSync(join(tmpdir(), 'gate-503-'));
+const gconf = join(gtmp, 'config.md');
+writeFileSync(gconf, `## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Merge holds | \`${dryRun}\`, \`content/legal/**: legal copy sign-off\`, \`db/**: check the plan; desk runs: ./plan.sh\` |\n`);
+const gcli = (args) => spawnSync(process.execPath, [new URL('../desk/bin/gate.mjs', import.meta.url).pathname, 'hold-kind', ...args], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: gconf } });
+t('DS-503 AC2 hold-kind names the config\'s hold an agent can check but no routine clears', gcli([]).stdout,
+  `agent\t${dryRun}\nperson\tcontent/legal/**: legal copy sign-off\nroutine\tdb/**: check the plan; desk runs: ./plan.sh\n`);
+t('DS-503 AC1 hold-kind sorts the items it is given', gcli(['a/**: legal sign-off', 'b/**: read the bot comment']).stdout, 'person\ta/**: legal sign-off\nagent\tb/**: read the bot comment\n');
+const update = readFileSync(new URL('../skills/desk-update/references/repo-drift.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+t('DS-503 AC2 desk-update proposes a routine for each agent line hold-kind prints', /gate\.mjs hold-kind/.test(update) && /\*\*Each `agent` line gets a routine proposed\*\*/.test(update), true);
+rmSync(gtmp, { recursive: true, force: true });
 process.exit(fails ? 1 : 0);

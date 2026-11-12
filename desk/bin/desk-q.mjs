@@ -36,13 +36,13 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath } from './desk-env.mjs';
-import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead } from './batch-state.mjs';
+import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since } from './gate.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -151,7 +151,7 @@ const outsideText = (t) => {
   return o.length === 1 ? `held by ${o[0].key}, outside this batch: start anyway?` : `held by ${o.length} Jira tickets outside: start anyway?`;
 };
 // A ticket whose worker gave up: why, then what moves it.
-const stoppedText = (t) => `worker stopped${t.park?.question ? `: ${t.park.question}` : ''} · requeue it`;
+const stoppedText = (t) => `worker stopped: ${failedWhy(t)} · requeue it`;
 const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
 
 // Who moves a batch on without the user: the merge driver, which alone releases a ticket whose blockers
@@ -283,6 +283,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // the hold names one) and leaves it for a person, so the item says the hold's step.
   const hold = parseHoldNote(t.merge_blocked);
   if (hold?.failed) return needs({ code: 'hold', ...hold }, [`merge hold routine failed: ${hold.failed.step}`, WARN], [' · settle it, then merge it', null]);
+  if (hold && !hold.routine && !holdNeedsPerson(hold.why)) return needs({ code: 'hold', ...hold }, [`merge hold with no routine for its check: ${hold.why}`, WARN], [' · give the hold a routine (/desk-update)', null]);
   if (hold) return needs({ code: 'hold', ...hold }, [`only a person merges it: ${hold.why}`, WARN], [hold.routine ? ` · run ${hold.routine}, then merge it` : ' · take that step, then merge it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
   const triesLeft = triesMade(t.fix_tries) < FIX_TRIES_MAX;
@@ -2395,7 +2396,7 @@ function prSegs(r, t, now) {
 // A ticket on a fix try: its PR, what is wrong with it, and that a worker repairs it, running or next.
 // One not running that startWait holds back says what it waits for first.
 function fixSegs(f, running, wait = null) {
-  const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
+  const what = f.kind === 'conflict' && f.check ? `merged-tree check failing on ${f.base}` : f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
   const who = running ? 'a worker' : wait ? `${wait}, then a worker` : 'next free worker';
   if (personCall(f)) return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
   if (f.kind === 'capture') return [[`#${f.pr}`, PR_SGR], [' · ', null], [`${f.files?.length ?? 0} screenshot(s) never taken`, WARN], [` · ${who} takes them`, null]];
@@ -2659,7 +2660,7 @@ function moveOf(r, row, k, t, h, now) {
     return { text: q && t.state === 'parked' && !asks ? `Needs your answer: ${q}` : `Needs you: triage left ${n} question${n === 1 ? '' : 's'} open.`,
       lead: `Answer, in ${r.name}, and the orchestrator decides whether to requeue it:`, cmds: [answerCmd(t.key)] };
   }
-  if (k === 'failed') return { text: `Needs you: its worker stopped${q ? `: ${q}` : '.'}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
+  if (k === 'failed') return { text: `Needs you: its worker stopped: ${failedWhy(t)}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
   if (k === 'queued') return { text: 'Moves without you: it is being triaged.' };
   if (r.workers === 0) return { text: 'Will not start: workers are set to 0. Raise them with +.' };
   return { text: `Moves without you: it ${readyWhy(r, t)}.` };

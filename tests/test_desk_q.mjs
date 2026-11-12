@@ -118,7 +118,20 @@ const vpl3 = lines(repo.out).find((l) => /VPL-3/.test(l)) ?? '';
 t('AC7 waiting, behind the running blocker, not the merged one', /waiting\s+behind VPL-1\s/.test(vpl3) && !/VPL-0/.test(vpl3), true);
 // ---- AC8: prefix, spawn order, position, state, detail, title, done count
 const pre = W.run('--plain', 'vo');
-t('AC8 a prefix resolves', pre.code === 0 && pre.out === repo.out, true);
+// Each run reads the clock itself, so a minute can tick between two of them: compare with the
+// breadcrumb's clock ("desk-q › voicepa · 09:31") and the relative times ("4m ago", "1h 0m ago",
+// "just now") masked, and runs of spaces closed up.
+const unclocked = (s) => s.replace(/^(desk-q › .* · )\d\d:\d\d$/m, '$1HH:MM')
+  .replace(/(?:\d+[dhm] )*\d+[dhm] ago|just now/g, 'AGO').replace(/ +/g, ' ');
+t('AC8 a prefix resolves', pre.code === 0 && unclocked(pre.out) === unclocked(repo.out), true);
+// The 'vo' run as it reads when the clock has ticked a minute past the 'voicepa' run (the breadcrumb
+// clock moves on a minute and the last pass "4m ago" becomes "5m ago"; the "as of" stage times are
+// the heartbeats' own and do not move) still matches; another repo's table still does not.
+const nextMinute = (hh, mm) => { const m = (Number(hh) * 60 + Number(mm) + 1) % 1440; return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
+const preLater = pre.out.replace(/^(desk-q › .* · )(\d\d):(\d\d)$/m, (_, lead, hh, mm) => lead + nextMinute(hh, mm))
+  .replace(/\b4m ago\b/g, '5m ago');
+t('DS-527 AC1 a minute ticking between the two runs still resolves', lines(preLater)[0] !== lines(pre.out)[0] && preLater !== repo.out && unclocked(preLater) === unclocked(repo.out), true);
+t('DS-527 AC2 a prefix that lands on another repo fails the comparison', unclocked(W.run('--plain', 'desk-skills').out) === unclocked(repo.out), false);
 const tickets = lines(pre.out).filter((l) => /^\s+\*?\d+\s{2}/.test(l));
 t('AC8 unfinished tickets in spawn order with positions', tickets.map((l) => l.trim().split(/\s+/).slice(0, 2).join(' ')).join(), '1 VPL-1,2 VPL-2,3 VPL-3');
 t('AC8 state, detail and triage title', /running\s+stage 4\/9 as of \d\d:\d\d\s+—\s+—\s+Running-late sheet$/.test(tickets[0]), true);
@@ -194,7 +207,7 @@ const F = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
   'VPL-1': { state: 'triaged', open_questions: 0 }, 'VPL-2': { state: 'failed' }, 'VPL-3': { state: 'triaged', open_questions: 0 } } } } });
 const past = F.run('voicepa', 'up', 'VPL-3');
 t('up past a failed ticket reaches the place above it', `${lines(past.out)[0]} | ${unfinishedKeys(readQ(qPath(F, 'voicepa'))).join()}`, 'VPL-3 → position 1 of 2, placed by you. | VPL-3,VPL-1');
-t('a ticket whose worker stopped shows no position, and needs you', /^\s+-\s+VPL-2\s+◆ needs you\s+worker stopped · requeue it/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
+t('a ticket whose worker stopped shows no position, and needs you', /^\s+-\s+VPL-2\s+◆ needs you\s+worker stopped: no reason was recorded/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
 
 // AC5 from the shell, where the new block meets another repo's: pranicuk's cap of 2 is 3502–3504,
 // and a cap of 3 would reach desk-skills' 3500–3503. Live batches: desk-skills 2 and voicepa 3.
@@ -1264,6 +1277,7 @@ dated('holdsup', 5010, { hours: twelveHours, supervised: true, perms: { 'autopil
   'B-GREEN': prAt(177), 'W-2': heldBy('B-GREEN'), 'B-MERGED': mergedAt(171), 'W-6': heldBy('B-MERGED'),
   'B-CONF': prAt(178, { mergeable: 'CONFLICTING' }), 'W-2C': heldBy('B-CONF'),
   'B-HOLD': { ...prAt(180), merge_blocked: 'merge hold: build and push the Lambda images first — backend/**, 1 file(s), e.g. backend/handler.ts' }, 'W-2H': heldBy('B-HOLD'),
+  'B-DRY': { ...prAt(181), merge_blocked: 'merge hold: skim the Confluence Sync dry-run comment first — frontend/e2e/**, 1 file(s), e.g. frontend/e2e/auth.spec.ts' },
   'W-0': { ...heldBy(''), park: { question: 'held by orchestrator' } } } });
 dated('holdask', 5020, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
   'B-ASK': prAt(179), 'W-4A': heldBy('B-ASK'), 'B-MERGED': mergedAt(172), 'W-6A': heldBy('B-MERGED'),
@@ -1302,6 +1316,8 @@ t('DS-218 AC1 (DS-279) a PR\'s own page says whether it needs you: a draft, one 
   ['hold B-DRAFT', 'hold B-READY', 'holdsup B-CONF', 'holdsup B-HOLD'].map((s) => rail217(...s.split(' '))).join(' / '),
   'Needs you: PR #175, draft · undraft it once it is reviewed. / Needs you: PR #176, tests running, 0m · 0 of 1 done · merge it once green. / '
   + 'Moves without you: PR #178, merge conflict with main · the next pass sends it to a worker, try 1 of 2. / Needs you: PR #180, only a person merges it: build and push the Lambda images first · take that step, then merge it.');
+t('DS-503 AC4 a hold an agent can check with no routine asks for a routine, not the person\'s step', rail217('holdsup', 'B-DRY'),
+  'Needs you: PR #181, merge hold with no routine for its check: skim the Confluence Sync dry-run comment first · give the hold a routine (/desk-update).');
 t('DS-411 a merge hold note is read for its step, its routine and the step a failed routine stopped at',
   JSON.stringify(['merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql',
     'merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh --all` not run: §3 merge-hold-routine is no',
@@ -2034,6 +2050,14 @@ t('DS-280 AC9 and AC10 the header counts #698 and V-510 once each, and V-504 not
   `${q280[1].startsWith('◆ 3 tickets need you')} ${Q.needsRows(r280).map((x) => x.t.key ?? '').sort().join(',')}`, 'true N-5,V-510,V-698');
 t('DS-280 the pass\'s groups match what desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds280', stateDir: r280.stateDir, queuePath: r280.queuePath, q: r280.q, now: NOW })),
   JSON.stringify(Object.fromEntries(Object.keys(ds280).map((k) => [k, { 'N-5': 'needs', 'V-698': 'needs', 'V-510': 'needs', 'V-504': 'waiting' }[k] ?? 'merging']))));
+// DS-554: a failed ticket's page quotes the reason the pass recorded, and one with none says so.
+put(I.T, I.env, 'ds554', { port: 5654, conc: '3 / 5', beat: 1, queue: { batch: 'ds554', concurrency: 3, supervised: true, tickets: {
+  'F-1': { state: 'failed', lane: 'A', failed: { why: 'exited with no marker and no open PR on fix/F-1 (ended after its preflight with no output, exit code 1)' } },
+  'F-2': { state: 'failed', lane: 'A' } } } });
+const r554 = Q.loadRepos(NOW).find((r) => r.name === 'ds554');
+t('DS-554 AC3 a failed ticket\'s page gives the reason recorded for it, or says none was', `${rail279('F-1', r554)} | ${rail279('F-2', r554)}`,
+  'Needs you: its worker stopped: exited with no marker and no open PR on fix/F-1 (ended after its preflight with no output, exit code 1) Requeue it, in ds554, or drop it: | '
+  + 'Needs you: its worker stopped: no reason was recorded: read its worker log, logs/F-2.log Requeue it, in ds554, or drop it:');
 
 // ---- DS-421: a Merging PR's age counts from its head commit (pr_status head_at), so a driver restart
 // or a migration, which restamp `group`, leave it alone, and a new head starts it again.

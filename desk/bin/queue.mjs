@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf } from './batch-state.mjs';
+import { isHeld, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -284,7 +284,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
   const pending = String(t.held_by ?? '').split('|').filter((p) => p && (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null,
+  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
@@ -386,29 +386,54 @@ const batchWord = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 const baseOf = (bq) => bq.base ?? configValue('default-branch') ?? 'main';
 const otherRunning = () => otherRunningBatches(repoSlug(), QUEUE, () => baseOf({}));
 
+// The worktree `wt`: removed with its local branch when `held` finds no work in it. `held` gets its
+// uncommitted or untracked paths (`dirty`), its `branch` (`HEAD` when detached) and a `lines` reader of
+// git output in it, and returns what it holds. -> the path removed, or null when there is none. Throws
+// `refusal(holds)`, removing nothing, when it holds work or git cannot read it.
+function removeWorktree(wt, held, refusal) {
+  if (!existsSync(wt)) return null;
+  const lines = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split('\n').filter(Boolean);
+  const holds = [];
+  let branch = 'HEAD';
+  try {
+    const dirty = lines('status', '--porcelain').map((l) => l.slice(3));
+    branch = lines('rev-parse', '--abbrev-ref', 'HEAD')[0];
+    holds.push(...held({ dirty, branch, lines }));
+  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
+  if (holds.length) throw new Error(refusal(holds));
+  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
+  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
+  return wt;
+}
+
 // The worktree a worker of `key` was given, cut from `cut`: removed with its local branch when it holds
 // no work of its own, so the next worker's is cut from its new base. -> the path removed, or null when
 // there is none. Throws, removing nothing, when it holds work.
 function dropStaleWorktree(key, cut) {
   const wt = join(worktreesDir(), key);
-  if (!existsSync(wt)) return null;
-  const git = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  const holds = [];
-  let branch = 'HEAD';
-  try {
-    const dirty = git('status', '--porcelain');
-    if (dirty) holds.push('uncommitted changes or untracked files');
-    branch = git('rev-parse', '--abbrev-ref', 'HEAD');
-    const own = Number(git('rev-list', '--count', `origin/${cut}..HEAD`));
+  return removeWorktree(wt, ({ dirty, branch, lines }) => {
+    const holds = dirty.length ? ['uncommitted changes or untracked files'] : [];
+    const own = Number(lines('rev-list', '--count', `origin/${cut}..HEAD`)[0]);
     if (own > 0) holds.push(`${own} commit(s) not on origin/${cut}`);
     if (branch !== 'HEAD') {
-      try { git('show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`); holds.push(`its branch ${branch} pushed to origin`); } catch { /* not pushed */ }
+      try { lines('show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`); holds.push(`its branch ${branch} pushed to origin`); } catch { /* not pushed */ }
     }
-  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
-  if (holds.length) throw new Error(`${key}'s worktree ${wt} holds work cut from ${cut} (${holds.join(', ')}), which a worker on another base would start from: move that work by hand or discard it, remove the worktree, then move ${key} again. Nothing was moved`);
-  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
-  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
-  return wt;
+    return holds;
+  }, (holds) => `${key}'s worktree ${wt} holds work cut from ${cut} (${holds.join(', ')}), which a worker on another base would start from: move that work by hand or discard it, remove the worktree, then move ${key} again. Nothing was moved`);
+}
+
+// The worktree a dropped ticket `t` was given: removed with its local branch when nothing in it is
+// missing from origin. -> the path removed, or null when there is none. Throws, removing nothing,
+// naming the worktree and what it holds, when it has uncommitted files or commits no origin ref has.
+function dropWorktree(key, t) {
+  const wt = t.worktree || join(worktreesDir(), key);
+  const listed = (ls) => `${ls.slice(0, 5).join('; ')}${ls.length > 5 ? `; and ${ls.length - 5} more` : ''}`;
+  return removeWorktree(wt, ({ dirty, lines }) => {
+    const holds = dirty.length ? [`uncommitted or untracked files: ${listed(dirty)}`] : [];
+    const unpushed = lines('log', '--format=%h %s', 'HEAD', '--not', '--remotes=origin');
+    if (unpushed.length) holds.push(`${unpushed.length} commit(s) not pushed: ${listed(unpushed)}`);
+    return holds;
+  }, (holds) => `${key}'s worktree ${wt} holds work origin does not have (${holds.join('; ')}): push or discard it, then drop ${key} again. Nothing was dropped`);
 }
 
 // Move `key` from this queue `q` (whose lock is held) to the running batch `to` (`standing` for the
@@ -859,10 +884,13 @@ switch (cmd) {
 
   case 'drop': {
     const key = args[0];
-    ticket(q, key);
+    const t = ticket(q, key);
+    // A running ticket's worker is in its worktree, so that is left where it is.
+    const running = t.state === 'running';
+    const removed = running ? null : dropWorktree(key, t);
     delete q.tickets[key];
     save(q);
-    console.log(`dropped ${key} from the batch`);
+    console.log(`dropped ${key} from the batch${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : running && t.worktree ? `; its worker was running, so its worktree ${t.worktree} was left` : ''}`);
     break;
   }
 
@@ -993,6 +1021,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
       : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`
       : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
       : t.state === 'parked' ? t.park?.question ?? ''
+      : t.state === 'failed' ? failedWhy(t)
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}${t.merged_at ? ' merged' : ''}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`

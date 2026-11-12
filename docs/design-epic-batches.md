@@ -72,7 +72,8 @@ OTHER`) is there. Gate: `jira-edit`. **Never a worker's or triage's**: denied in
 dry-run list, whatever §3 says (only Bea's interactive flow links).
 
 **A3. `parent=<KEY>`** in `fields_from_args`: a bare value matching `^[A-Z][A-Z0-9]*-[0-9]+$` becomes
-`{"key":"<KEY>"}`; anything else for `parent` is refused.
+`{"key":"<KEY>"}`; on `edit`, an empty value (or `null`) becomes `"parent": null`, taking the issue out
+of its epic or story, and `create` refuses it; anything else for `parent` is refused.
 
 ## B. Expansion — `desk/bin/expand-parent.mjs <KEY> [--subtasks]`
 

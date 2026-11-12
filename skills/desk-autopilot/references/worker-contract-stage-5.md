@@ -8,6 +8,15 @@ core does.
 CI or end-to-end run you ask for is the narrowest one that covers your change": a session that
 started at Stage 7 has not read it, so read it before you write that park.
 
+**Asked to stop for a planned reboot, never park.** When a session or the person tells you a reboot
+is planned and asks you to stop or save your work, at any stage, finish the command you are in
+without starting a new one, commit what is verified, update your resume file, then print
+`AUTOPILOT_REBOOT: <who asked, and when>` at the start of a line in your reply text, never in a code
+fence, and end your turn. The pass resumes your own session after the computer restarts (or, if
+none comes, after config §3b Maintenance drain limit), uncounted as a kill, and you carry on from
+where you stopped, pushing what you committed. A base conflict fix worker parks instead: nothing
+resumes its try from this marker.
+
 ## 4. Before you push: rebase
 
 The default branch moves while you work. `git fetch origin`, and if

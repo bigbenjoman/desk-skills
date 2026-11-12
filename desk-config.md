@@ -91,7 +91,7 @@ Per repo, because the email, Jira account and even the GitHub handle can differ 
 | Jira email | `TODO` (`none` if §4 Tracker is `none`) |
 | Jira display name | `TODO` (exactly as Jira shows it; the autopilot ownership test) |
 | Jira account id | `TODO` (from `desk-jira whoami`) |
-| Git author name / email | `TODO` (must match what your commits in this repo already use) |
+| Git author name / email | `TODO` (`Name <email>`; must match what your commits in this repo already use; autopilot workers commit as it) |
 | Pronouns (optional) | `TODO` (unset means they/them) |
 
 ## 2. Paths on your machine
@@ -196,7 +196,7 @@ protection is `none`, nothing on GitHub stops a red merge, so `pr-merge-green` a
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 | `machine-reboot` | Restart this computer at the end of the §3b Maintenance window, once it has drained, updated desk-skills and the reboot check found no blocker | `ask` | `TODO` |
 | `worker-dependency-install` | Let a worker add a dependency or sync the lockfile with §4 Package manager (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`); never global, never another directory | `ask` | `TODO` |
-| `worker-screenshots` | Let a worker run a Storybook, Playwright or Python screenshot capture from its worktree, under the browser lock | `ask` | `TODO` |
+| `worker-screenshots` | Let a worker run a Storybook, Playwright, Node or Python script from its worktree that captures a screenshot or generates an image, under the browser lock | `ask` | `TODO` |
 | `worker-local-services` | Let a worker start a §4 Local services entry in the main checkout's compose project (`docker compose -f <main checkout>/compose.yaml up -d --no-recreate --no-deps <service>`); stopping, removing or recreating one stays refused | `ask` | `TODO` |
 | `worker-web-read` | Let a worker search the web and read public pages (WebSearch, WebFetch), so a public figure or a site's terms is looked up rather than parked for you | `ask` | `TODO` |
 | `worker-workflow-dispatch` | Let a worker start a §4 Worker workflows entry on its own branch (`gh workflow run <file>.yml --ref <its branch> -f …`), exactly as listed; never on the default branch or a batch base. Also the §4 Evidence workflow for its own PR, as the pass starts it (`gh workflow run <file>.yml --ref <default branch> -f pr=<n>`), through `evidence.mjs dispatch`, which runs it only for its branch's own open PR; `gh workflow enable` or `disable` stays refused | `ask` | `TODO` |
@@ -388,7 +388,7 @@ such thing.
 | Build | `TODO` |
 | Codegen | `TODO` (commands that regenerate checked-in or ignored code, one span each in the Build form, e.g. `` `pnpm prisma generate` ``; workers may run exactly these, with no lock; or `none`) |
 | Pre-push checks | `TODO` (what the committed pre-push hook runs on the pushed commit before it leaves, in order with generate steps first, one span each in the form Unit tests takes, e.g. `` `pnpm prisma generate` `pnpm lint` `pnpm typecheck` ``; an item equal to a Typecheck or Unit tests item takes the box-wide test lock and is skipped, with a warning, if the lock stays busy past the machine profile's `pre-push-lock-timeout-s` (60 with no profile); or `none` to push unchecked) |
-| Merged-tree check | `TODO` (a quick check any merged tree must pass that git cannot see, such as exactly one migration head and no repeated revision, one span each in the form Unit tests takes, e.g. `` `apps/api: uv run python scripts/check_alembic_heads.py` ``; it runs in a plain checkout with no database, env files or install, and is stopped after 5 minutes. A batch base's sync runs it after merging and before pushing, and a failure pushes nothing and goes to a base fix worker; fix tries that merge a base run it too. `none` pushes every clean merge) |
+| Merged-tree check | `TODO` (a quick check any merged tree must pass that git cannot see, such as exactly one migration head and no repeated revision, one span each in the form Unit tests takes, e.g. `` `apps/api: uv run python scripts/check_alembic_heads.py` ``; it runs in a plain checkout with no database, env files or install, and is stopped after 5 minutes. A batch base's sync runs it after merging and before pushing, and a failure pushes nothing and goes to a base fix worker; fix tries that merge a base run it too. The merge driver runs it on each PR merged into its base's head before merging it, and a failure holds the PR for a fix worker. `none` pushes every clean merge, and the driver merges without it) |
 | PR-description checks | `TODO` (the script CI runs on a PR's description, so it can run before the PR is opened or edited, e.g. `node scripts/check-pr-body.mjs`; desk-pr runs each span with the draft body's file path appended, so the script must accept one; or `none`) |
 | Env files | `TODO` (the `.env*` files a new worktree needs copied from the primary checkout, one span each, e.g. `` `frontend/.env.local` `portal/.env.local` ``; or `none`) |
 

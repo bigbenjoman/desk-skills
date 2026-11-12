@@ -76,9 +76,10 @@ one with the error its run gave and reruns only the rest, so a PR red on nothing
 and no cooldown. A red `approval` check is recorded as `merge_blocked` `approval: … needs approval
 from a human reviewer`, which desk-q and needs-you put to the person. A red `verdict` check with no
 unclean review at the head (a review missing, for an older head, or in a form the gate rejects) goes
-to a review worker that reviews the head and posts it, under the fix tries below; the person gets it
-once no try is left. A bare one (a title check, or a CI gate red because one of these is) red with
-no `verdict` or `approval` check beside it is put to the person as stuck. Where a red state check
+to a review worker that reviews the head and posts it, two review tries at each head outside the fix
+tries below; the person gets it once a head has had both, named as a review that did not post. A
+bare one (a title check, or a CI gate red because one of these is) red with no `verdict` or
+`approval` check beside it is put to the person as stuck. Where a red state check
 shares a workflow run with one red check to rerun, the driver reruns that check's job, not the run
 (with more, the run, and its log says the state check is rerun with it). A row that does not parse
 stops the driver at start.
@@ -178,7 +179,7 @@ line names go to a protected-files try: its worker drops each change the ticket'
 or changes nothing and says which criterion needs it. One goes per head, only for a file no earlier one
 judged, two at most per PR, outside the fix tries. A file still in the diff after its try is the
 person's to approve. A line saying the gate reads no verdict at the head (none, a stale one, an old
-format) gets a review try there first, under the fix tries. A file count or a title alone is the
+format) gets a review try there first, under the review tries. A file count or a title alone is the
 person's.
 
 A PR in conflict goes to a fix worker only where §3 `pr-conflict-unreviewed` (no one but the user's
@@ -213,7 +214,13 @@ verdict reads as §4 Clean review verdict at the head; anyone else's thread stay
 a PR under a §4 Merge holds glob (logging `HELD` and the reason), disarming any auto-merge armed on
 either, merges with §4 Merge method and `--match-head-commit <sha>` when the head is green, updates
 a `BEHIND` PR with `gh pr update-branch` where §3 `pr-update-branch` is `yes`, skips a `DIRTY` PR,
-and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
+holds a green one that fails §4 Merged-tree check once merged into the base's head (run last before
+the merge, in a throwaway checkout; recorded on the ticket as `tree_check`, which the pass sends to a
+conflict fix worker under the same §3 conflict rows as a `DIRTY` PR, not to the person; an epic PR's
+is noted on the queue's promotion (`merged-tree check: …`), which the pass reports to the person,
+and cleared once it passes; a check
+that timed out holds the merge for that loop only; with the row unset or `none` the log says none is
+configured and it merges), and, where `ci-rerun` is `yes`, retriggers `gh run rerun <id> --failed` only once that run has
 reached `completed`. It **never arms auto-merge** (the platform's idea of green is not the
 config's) and never undrafts. Why a ticket's PR is not merging is recorded on the ticket as
 `merge_blocked=` (a hold, behind without `pr-update-branch`, a PR held for unresolved threads on
@@ -284,10 +291,11 @@ forever) and **only one PR may be building a preview at a time** (see the previe
 - **A draft with a stale review or a red check goes to a worker before it reaches you.** A verdict
   for an older head still holds at the current one when every commit since is a clean merge of the
   base, and the ticket records it as carried from that commit. Otherwise a draft with no verdict
-  readable at its head goes to a review worker, and one with a red required check to a fix worker
-  with each check's name and run, within the same two tries as a ready PR's fixes (`fix-tries.mjs`
-  `reviewTry`, `draftChecksFix`). desk-gate's own verdict check reads only the head, so a draft red
-  on it alone goes to a review worker. Such a draft is under WAITING ON YOU only once those tries are
+  readable at its head goes to a review worker, two review tries at each head and never one of the
+  fix tries (`fix-tries.mjs` `reviewTry`), and one with a red required check to a fix worker with
+  each check's name and run, within the same two tries as a ready PR's fixes (`draftChecksFix`).
+  desk-gate's own verdict check reads only the head, so a draft red on it alone goes to a review
+  worker. Such a draft is under WAITING ON YOU only once those tries are
   spent, or when its red check is one §4 Checks workers can't fix names. With the `failure-class`
   lever on and §3 `ci-rerun` `yes`, a draft whose checks a worker would take all have error lines
   classed runner or resource is re-run once first; red again, its fix try says one rerun was tried.

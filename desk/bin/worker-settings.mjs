@@ -636,8 +636,9 @@ if (mode === 'triage') {
     if (!depSubs.length) warns.push(`§3 worker-dependency-install is yes, but §4 Package manager "${PM || 'none'}" has no known add or sync command — nothing allowed`);
   }
 
-  // Screenshot capture, only under the browser lock and only from this worktree: a script at its root
-  // or under node_modules (Playwright), a Storybook or Playwright binary, or a Python script.
+  // Screenshot and image scripts, only under the browser lock and only from this worktree: a script at
+  // its root or under node_modules (Playwright), a Storybook or Playwright binary, or a Python script.
+  // Any script there that captures a screenshot or generates an image file runs by these same rules.
   const SHOT_TOOLS = ['playwright', 'storybook', 'test-storybook', 'storycap'];
   const PYTHONS = ['python', 'python3', 'uv run python', 'uv run python3', '.venv/bin/python', `${WT}/.venv/bin/python`];
   const shots = BIN_FORMS.flatMap((b) => [

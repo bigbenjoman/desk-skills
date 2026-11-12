@@ -23,7 +23,10 @@
 //                           a worker (queue.mjs requeue)
 //       fix                 send a PR whose review findings outlasted desk's fix tries back to a worker
 //                           on the PR, for one more try at the findings its stuck reason quotes
-//       drop                take a ticket whose PR was closed unmerged out of the batch (queue.mjs drop)
+//       drop                take a parked, session or stopped-session ticket, or one whose PR was closed
+//                           unmerged, out of the batch and remove its worktree (queue.mjs drop), refused
+//                           naming the worktree and what it holds while that has unpushed work; Jira is
+//                           left as it is. Recommended first where the park says it has no worker work
 //       move "<batch>"      a parked or stopped ticket out of its batch and into another running batch of
 //                           the repo (queue.mjs transfer), its next worker on that batch's base; a batch
 //                           not running is refused, naming those that are
@@ -60,11 +63,11 @@ import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, stuckFindings } from './fix-tries.mjs';
-import { approvalFiles } from './gate.mjs';
+import { approvalFiles, holdNeedsPerson } from './gate.mjs';
 import { repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
@@ -91,6 +94,19 @@ const sessionWhy = (q) => { const s = neverStep(q); return s ? `a worker is neve
 // mid-build there, and self-review would skip the rest of its build.
 const handBack = (r, t) => (t.worktree && t.branch && !neverStep(parkText(r, t))
   ? [['resume', null, 'once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review']] : []);
+// Every parked or session item can be dropped out of its batch (queue.mjs drop, which removes its clean
+// worktree). Where its park says it has no worker work, drop comes first as the recommendation and the
+// item's own first action keeps its reason as a note; otherwise drop is offered just before not-now.
+const DROP_WHY = 'its park says it has no worker work, so a requeue would only park it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is';
+const DROP_NOTE = 'drop takes it out of the batch and removes its worktree, refused while that holds unpushed work; Jira is left as it is';
+function withDrop(r, t, actions) {
+  if (noWorkerWork(parkText(r, t))) {
+    const [[name, why, note], ...rest] = actions;
+    return [['drop', DROP_WHY], [name, null, note ?? why], ...rest];
+  }
+  const at = actions.findIndex(([a]) => a === 'not-now');
+  return at < 0 ? [...actions, ['drop', null, DROP_NOTE]] : [...actions.slice(0, at), ['drop', null, DROP_NOTE], ...actions.slice(at)];
+}
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
@@ -108,7 +124,7 @@ const prShut = (pr, state) => (state === 'MERGED' ? `PR #${pr} is merged, so no 
 // No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
 // quoted in one is kept whole, and a URL in it untouched, so the session can ask it as it stands.
 const URL_PART = /(https?:\/\/\S+)/;
-const passWords = (s) => s.replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
+const passWords = (s) => s.replace(/,\s*at [0-9a-f]{7,40}\b,/g, '').replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
   .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
 const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : passWords(p))).join(''));
 // Once the person's step is done: desk merges it where it may, else merging is theirs too.
@@ -187,8 +203,14 @@ function stuckPlain(r, n, s, t) {
   }
   const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
   if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
+  // Before the conflict test too: this reason ends with what the last review try's worker said.
+  if (/^no review verdict/.test(why)) {
+    const said = /; the last try said: (.+)$/.exec(why)?.[1];
+    const k = /after (\d+) review tr(?:y|ies) at it/.exec(why)?.[1];
+    const ran = k ? `: desk's review ran on it ${k === '1' ? 'once' : k === '2' ? 'twice' : `${k} times`} and posted none it can read${said ? `, and the last one said "${plainWords(said)}"` : ''}` : '';
+    return `${n} has no code review desk can read for its latest commit${ran}. Post one (run /desk-review on it); the next pass then takes it on.`;
+  }
   if (/conflict/.test(why)) return conflictPlain(r, t, n, r.ctx?.base, why);
-  if (/^no review verdict/.test(why)) return `${n} has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.`;
   const red = /^still red[^:]*:\s*(.+)$/.exec(why);
   if (red) return `${n} has failing checks ${REPAIRED}: ${plainWords(red[1])}. Fix them on its branch; ${thenMerge(r)}.`;
   return `${n} is stuck where desk can not move it${why ? ` (${plainWords(why)})` : ''}. Settle it on GitHub; the next pass then picks it up.`;
@@ -234,7 +256,9 @@ function holdPlain(n, w) {
   // routine stays the person's even with the row on.
   if (w.routine && /^§3 /.test(w.off ?? '')) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off}. Run it yourself, then merge it on GitHub (or set that row to yes with /desk-setup, and desk runs it and merges); the ticket is then done.`;
   if (w.routine) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off ?? 'it was not run'}. Run it and take that step yourself, then merge it on GitHub; the ticket is then done.`;
-  // With no routine, the hold's reason is the step the person takes before merging.
+  // With no routine, a step an agent can check is a gap in the config, not the person's to take.
+  if (!holdNeedsPerson(w.why)) return `${n} is under a merge hold whose step an agent can check, but the hold names no routine, so desk cannot run it: "${one(w.why)}"${files}. Give this hold a routine: /desk-update proposes one (\`; desk runs: <command>\` on its §4 Merge holds item, with §3 merge-hold-routine yes); desk then runs it and merges.`;
+  // Otherwise the hold's reason is the step the person takes before merging.
   return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
 }
 
@@ -498,7 +522,7 @@ function itemOf(r, x) {
     const stuck = stuckOf(t, r.ctx);
     const need = prPlain(r, t), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
-    if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
+    if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch and removes its clean worktree'], ['requeue'], ['not-now']] };
     const openPr = (...actions) => ({ kind: 'pr', need, note, actions: [...actions, SEND_BACK, ['not-now']] });
     // Findings left beside the gaps are still a worker's to fix, so fix stays on offer.
     if (reviewGaps(t, stuck)) return openPr(['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ...(stuck && personReviewFix(t, { why: stuck.why }) ? [['fix', 'its findings are in the code: fix sends it to a worker on the PR for one more try, and leaves the gaps for your answer']] : []), ['done']);
@@ -520,6 +544,9 @@ function itemOf(r, x) {
     if (stuck?.checks.some((c) => c.error)) return openPr(['done', 'desk\'s workers could not clear what its log names; say done once it is fixed, and the PR is checked on GitHub there and then']);
     // Desk's own upload crashed on every try: the saved output says why, and the files are still there.
     if (UPLOAD_CRASHED.test(String(t.undraft?.why ?? ''))) return openPr(['done', "desk's upload crashed on every try it gets, and its saved output says why; say done once no screenshot cell is left, and the PR is checked on GitHub there and then"]);
+    // A hold with no routine whose step an agent can check waits on a config change, not on the person's step.
+    const w = prWhy(r, t);
+    if (w?.code === 'hold' && !w.routine && !w.failed && !holdNeedsPerson(w.why)) return openPr(['done', 'the hold needs a routine in the config; say done once it has one, and the PR is checked on GitHub there and then']);
     return openPr(['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then']);
   }
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in
@@ -529,8 +556,12 @@ function itemOf(r, x) {
   // already, so a resume only records what the next worker should know.
   if (busyPark(t)) return { kind: 'worktree', need: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
-  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', sessionWhy(parkText(r, t))], ['not-now']] };
-  if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now'], ...moveAction(r)] };
+  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) };
+  if (x.k === 'failed') {
+    // A park file saying it has no worker work recommends drop over a requeue that would only park it again.
+    const actions = [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']];
+    return { kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] };
+  }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
   // blocker no batch holds is worked by nobody, so admitting it comes first; answering says whether this
   // one can start without them.
@@ -557,15 +588,15 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, note, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
-    if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), ['not-now']] };
-    if (needsSession(t)) return { kind: 'session', need, note, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), ['not-now']] };
-    if (triagePark(t)) return { kind: 'session', need, note, actions: [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']] };
+    if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), ['not-now']]) };
+    if (needsSession(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), ['not-now']]) };
+    if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']]) };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
     const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
-    return { kind: 'parked', need, note, actions: [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now'], ...moveAction(r), ...offer] };
+    return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
   const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
@@ -960,7 +991,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `sent back to a worker on PR #${pr} for one more try at its findings; the review of its new head says whether they are gone.`);
     }
     // Nothing spawns from a drop, so it is made here whoever runs the batch.
-    case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, 'dropped from the batch (queue.mjs drop).') : say(false, `drop refused: ${q.out}`); }
+    case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, `${q.out} (queue.mjs drop); Jira is left as it is.`) : say(false, `drop refused: ${q.out}`); }
     case 'open': {
       const root = repoConfigValue(r.slug, 'repo-root');
       return say(true, `not requeued (${neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
