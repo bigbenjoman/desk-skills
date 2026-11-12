@@ -420,64 +420,46 @@ rm -f "$DESK_QUEUE"
 
 # ---- DS-549: §4 Evidence workflow, dispatched for the worker's own PR as the pass does it ----
 EV='| Evidence workflow | `pr-evidence.yml` |'
-EVRUN="gh workflow run pr-evidence.yml --ref main -f pr=935"
-EVRUN_REPO="gh workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=935"
-ev_q(){ printf '{"batch":"b","tickets":{"fix-thing":{"key":"fix-thing","state":"done"%s}}}\n' "${1:+,$1}" > "$DESK_QUEUE"; }
-ev_q '"result":{"pr":935}'
+# Through evidence.mjs dispatch, which checks the PR number and that the PR is the branch's own, so the
+# rule is there from spawn, before any PR exists, and `gh workflow` itself starts no evidence run.
+EVRUN="node $B/evidence.mjs dispatch fix/fix-thing 935"
+GHEV="gh workflow run pr-evidence.yml --ref main -f pr=935"
+ev_rules(){ jq -c '[.permissions.allow[] | select(test("evidence\\.mjs"))]' "$T/ws.json"; }
+rm -f "$DESK_QUEUE"
 settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
-check "DS-549 AC1 dispatch yes: the evidence workflow on the default branch for its own PR, --repo as a variant" \
-  '[ $rc -eq 0 ] && ok "$EVRUN" "$EVRUN_REPO" && [ "$(wf_rules)" = "[\"Bash($EVRUN)\",\"Bash($EVRUN_REPO)\"]" ] && [[ "$out" != *"no workflow is allowed"* ]] && [[ "$out" != *CONFIG_WARN*Evidence* ]]'
-check "DS-549 AC1 another PR, or a pr value that is not its number, is refused" \
-  'no "gh workflow run pr-evidence.yml --ref main -f pr=7" "gh workflow run pr-evidence.yml --ref main -f pr=9350" "gh workflow run pr-evidence.yml --ref main -f pr=" \
-     "gh workflow run pr-evidence.yml --ref main -f pr=93*" "gh workflow run pr-evidence.yml --ref main -f pr=*" "gh workflow run pr-evidence.yml --ref main -f pr=935*" \
-     "gh workflow run pr-evidence.yml --ref main -f pr=9:35" "gh workflow run pr-evidence.yml --ref main -f pr=935;id" "gh workflow run pr-evidence.yml --ref main -f pr=\$(id)" \
-     "gh workflow run pr-evidence.yml --repo acme/widgets --ref main -f pr=935\`id\`"'
-check "DS-549 AC1 an extra argument, another ref or another workflow is refused" \
-  'no "$EVRUN -f environment=production" "$EVRUN_REPO --json" "$EVRUN	-f x=y" "gh workflow run pr-evidence.yml --ref fix/fix-thing -f pr=935" \
-     "gh workflow run pr-evidence.yml --ref feat/epic -f pr=935" "gh workflow run pr-evidence.yml" "gh workflow run deploy.yml --ref main -f pr=935" \
-     "gh workflow run pr-evidence.yml --repo other/repo --ref main -f pr=935"'
-check "DS-549 AC1 gh workflow gives way, and enable and disable stay denied" \
-  '! denies "Bash(gh workflow:*)" && denies "Bash(gh workflow enable:*)" && denies "Bash(gh workflow disable:*)" && no "gh workflow enable pr-evidence.yml" "gh workflow disable pr-evidence.yml"'
-ev_q '"result":{"pr":935},"fix":{"try":1,"of":3,"pr":935,"kind":"capture"}'
-settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
-check "DS-549 AC1 a fix or capture try: its PR's evidence workflow" '[ $rc -eq 0 ] && ok "$EVRUN" "$EVRUN_REPO" && no "gh workflow run pr-evidence.yml --ref main -f pr=7"'
-ev_q '"draft_pr":935'
-settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
-check "DS-549 AC1 a resumed worker whose draft PR is recorded: its evidence workflow" '[ $rc -eq 0 ] && ok "$EVRUN" "$EVRUN_REPO"'
+check "DS-549 AC1 dispatch yes, no PR recorded yet: its evidence dispatch, fixed to its own branch" \
+  '[ $rc -eq 0 ] && ok "$EVRUN" "node $B/evidence.mjs dispatch fix/fix-thing 7" && [ "$(ev_rules)" = "[\"Bash(node $B/evidence.mjs dispatch fix/fix-thing *)\"]" ] && [[ "$out" != *"no workflow is allowed"* ]] && [[ "$out" != *CONFIG_WARN*Evidence* ]]'
+check "DS-549 AC1 another branch, or another evidence.mjs subcommand, is refused" \
+  'no "node $B/evidence.mjs dispatch fix/other 935" "node $B/evidence.mjs dispatch fix/fix-thing-2 935" "node $B/evidence.mjs dispatch main 935" "node $B/evidence.mjs record 935" "node $B/evidence.mjs dispatch fix/fix-thing/../x 935"'
+check "DS-549 AC1 gh workflow starts no evidence run itself, and stays denied" \
+  '[ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)" && no "$GHEV" "gh workflow run pr-evidence.yml --ref main -f pr=93*" "gh workflow enable pr-evidence.yml"'
 printf '{"batch":"b","base":"feat/epic","tickets":{"fix-thing":{"key":"fix-thing","state":"done","draft_pr":935}}}\n' > "$DESK_QUEUE"
 settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
-check "DS-549 AC1 in a batch with its own base: on the repo's default branch, never the base" \
-  '[ $rc -eq 0 ] && ok "$EVRUN" && no "gh workflow run pr-evidence.yml --ref feat/epic -f pr=935"'
-for q in '' '"result":{"pr":"9 35"}' '"result":{"pr":null}'; do
-  ev_q "$q"
-  settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
-  check "DS-549 AC1 no PR recorded yet (${q:-none}): no evidence rule, gh workflow denied" '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[]" ] && no "$EVRUN" && denies "Bash(gh workflow:*)"'
-done
-ev_q '"result":{"pr":935}'
+check "DS-549 AC1 in a batch with its own base: the same dispatch" '[ $rc -eq 0 ] && ok "$EVRUN"'
+rm -f "$DESK_QUEUE"
 settings '`bash tests/run.sh`' "$EV
 $WF" "$(rows3 worker-workflow-dispatch=yes)"
-check "DS-549 AC1 beside §4 Worker workflows: both allowed" '[ $rc -eq 0 ] && ok "$EVRUN" "$RUN" "$RUN_REPO" && no "gh workflow run pr-evidence.yml --ref fix/fix-thing -f pr=935"'
+check "DS-549 AC1 beside §4 Worker workflows: both allowed" '[ $rc -eq 0 ] && ok "$EVRUN" "$RUN" "$RUN_REPO" && ! denies "Bash(gh workflow:*)" && no "$GHEV"'
 for v in ask no; do
   settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=$v)"
-  check "DS-549 AC2 dispatch $v: the evidence workflow is refused, gh workflow denied" '[ $rc -eq 0 ] && no "$EVRUN" "$EVRUN_REPO" && denies "Bash(gh workflow:*)" && denied_line worker-workflow-dispatch $v'
+  check "DS-549 AC2 dispatch $v: the evidence dispatch is refused" '[ $rc -eq 0 ] && no "$EVRUN" && [ "$(ev_rules)" = "[]" ] && denies "Bash(gh workflow:*)" && denied_line worker-workflow-dispatch $v'
 done
 settings '`bash tests/run.sh`' "$EV"
-check "DS-549 AC2 dispatch unset: the evidence workflow is refused" 'no "$EVRUN" && denies "Bash(gh workflow:*)"'
+check "DS-549 AC2 dispatch unset: the evidence dispatch is refused" 'no "$EVRUN" && denies "Bash(gh workflow:*)"'
 settings '`bash tests/run.sh`' "$EV" "$(rows3 worker-workflow-dispatch=yes)"
 out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
-check "DS-549 a dry run starts no evidence workflow" '[ $rc -eq 0 ] && no "$EVRUN" "$EVRUN_REPO"'
+check "DS-549 a dry run starts no evidence workflow" '[ $rc -eq 0 ] && no "$EVRUN" && denies "Bash(node $B/evidence.mjs dispatch:*)"'
 out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch main --out "$T/ws.json" 2>&1); rc=$?
-check "DS-549 no branch of its own: no evidence workflow" '[ $rc -eq 0 ] && no "$EVRUN" && denies "Bash(gh workflow:*)"'
+check "DS-549 no branch of its own: no evidence workflow" '[ $rc -eq 0 ] && no "node $B/evidence.mjs dispatch main 935" && [ "$(ev_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
 for label in none unset; do
   rows="$WF"; [ $label = none ] && rows="| Evidence workflow | \`none\` |
 $WF"
   settings '`bash tests/run.sh`' "$rows" "$(rows3 worker-workflow-dispatch=yes)"
   check "DS-549 AC3 evidence $label: the allowed workflows are exactly §4 Worker workflows" \
-    '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[\"Bash($RUN)\",\"Bash($RUN_REPO)\"]" ] && no "$EVRUN" "$EVRUN_REPO"'
+    '[ $rc -eq 0 ] && [ "$(wf_rules)" = "[\"Bash($RUN)\",\"Bash($RUN_REPO)\"]" ] && [ "$(ev_rules)" = "[]" ] && no "$EVRUN"'
 done
 settings '`bash tests/run.sh`' '| Evidence workflow | `pr evidence.sh` |' "$(rows3 worker-workflow-dispatch=yes)"
-check "DS-549 a malformed evidence row warns and allows nothing" '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Evidence workflow"* ]] && [ "$(wf_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
-rm -f "$DESK_QUEUE"
+check "DS-549 a malformed evidence row warns and allows nothing" '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Evidence workflow"* ]] && [ "$(ev_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
 
 # ---- DS-390: a force-push the person approved once, and no rebase of a pushed branch without one ----
 PUSH3="$(rows3 git-push=yes git-force-with-lease=ask)"

@@ -118,9 +118,9 @@ Your settings are an **allow-list**: anything not named here is refused.
 - **`gh workflow run`**, only where §3 `worker-workflow-dispatch` is `yes`, and only exactly as
   §4 Worker workflows (`desk-env list worker-workflows`) lists each entry: `gh workflow run <file>.yml --ref <your branch> -f …` (or
   `--repo <§0 GitHub repo>` after the file), no input changed. All else is refused,
-  `gh workflow enable`/`disable` too. Once the queue holds your PR, also §4 Evidence workflow
-  (`desk-env list evidence-workflow`):
-  `gh workflow run <file>.yml --ref <§0 Default branch> -f pr=<your PR>`; before, leave its `_drag` cells and `evidence` block, no park: the pass starts it.
+  `gh workflow enable`/`disable` too. Once your draft PR is open, §4 Evidence workflow
+  (`desk-env list evidence-workflow`) only as
+  `node ~/.claude/desk/bin/evidence.mjs dispatch <your branch> <your PR>`: it runs on §0 Default branch.
   Its run id is in the `/actions/runs/<id>` URL it prints (else `gh run list --workflow <file>.yml
   --branch <its --ref> --limit 1 --json databaseId`); park on it with `AUTOPILOT_PARK_CLEARS_WHEN:
   run <id> completed`: the pass requeues you with its conclusion. Otherwise park naming the row.

@@ -335,20 +335,16 @@ if (mode === 'triage') {
       for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) DISPATCH_RULES.push(...exact('gh', ` workflow run ${m[1]}${r} --ref ${BRANCH}${m[2]}`));
     }
   }
-  // §4 Evidence workflow, under the same row, in the form the pass starts it (pass.mjs startEvidence):
-  // on §0 Default branch as the config row names it, never a batch base, whose code it runs, with this
-  // ticket's own PR number as its one input. The rule is exact, so it is written only once the queue
-  // records that PR (a fix or capture try's, or the draft a resumed or handed-off worker opened): a
-  // `pr=*` rule cannot hold the value to digits, as the shell expands an unquoted `*` against files
-  // the worker writes, and no rule can name a literal `*`.
+  // §4 Evidence workflow, under the same row, for this ticket's own PR from the moment it opens, so
+  // before the queue records it too: through evidence.mjs dispatch, with this ticket's branch fixed by
+  // the rule. That checks the PR number is digits and the PR is the branch's own open one, then starts
+  // the run as the pass does (pass.mjs startEvidence), on the config row's default branch. A
+  // `gh workflow run … -f pr=*` rule cannot hold the value to digits, as the shell expands an unquoted
+  // `*` against files the worker writes, so `gh workflow` itself gives the evidence workflow nothing.
   const EVIDENCE_RULES = [];
   const evidence = DISPATCH === 'yes' && dispatchRef ? parseEvidenceRow(cfgList('evidence-workflow')) : null;
-  const ownPr = [QUEUED?.fix?.pr, QUEUED?.draft_pr, QUEUED?.result?.pr].map((n) => String(n ?? '')).find((n) => /^[1-9]\d*$/.test(n));
   if (evidence?.errors) warns.push(`§4 Evidence workflow ${evidence.errors.join('; ')} — not allow-listed`);
-  else if (evidence && ownPr) {
-    const ref = String(cfg('default-branch') ?? '').trim() || 'main';
-    for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) EVIDENCE_RULES.push(...exact('gh', ` workflow run ${evidence.workflow}${r} --ref ${ref} -f pr=${ownPr}`));
-  }
+  else if (evidence) EVIDENCE_RULES.push(...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch ${BRANCH} *)`));
   // This worktree as given and as its real path (a symlinked --wt, or macOS's /tmp and /var).
   const WTS = [...new Set([WT, (() => { try { return realpathSync(WT); } catch { return WT; } })()])];
   const OWN_CS = WTS.map((w) => ` -C ${w}`);
@@ -415,9 +411,9 @@ if (mode === 'triage') {
   deny.push(
     ...READ_DENY,
     ...bash('git', ...GIT_DENY_WT),
-    // `gh workflow` gives way only to the dispatches above; enable and disable stay denied.
-    ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !(DISPATCH_RULES.length || EVIDENCE_RULES.length))),
-    ...(DISPATCH_RULES.length || EVIDENCE_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
+    // `gh workflow` gives way only to the §4 Worker workflows dispatches above; enable and disable stay denied.
+    ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !DISPATCH_RULES.length)),
+    ...(DISPATCH_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
     // The desk-env subcommands that write: the machine profile, the cost sources and the login rules
     // are the user's to confirm. desk-env itself refuses them in a worker too, for the forms these miss.
@@ -702,6 +698,7 @@ if (mode === 'triage') {
     deny.push(
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun', ' workflow'),
+      ...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch:*)`),
       ...bash('desk-jira', ' edit', ' comment', ' create', ' create-batch', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }
