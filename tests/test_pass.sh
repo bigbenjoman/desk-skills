@@ -3421,4 +3421,46 @@ X8B=$(find "$T" -path '*briefings/X-8.md' | head -n 1)
 check "a failed migrate is in the worker's briefing, naming the database and the log" \
   '[ -n "$X8B" ] && grep -q "Setup could not apply migrations to widgets_x_8" "$X8B" && grep -q ".desk-migrate.log" "$X8B"'
 
+# ---- issue links a worker asks for: AUTOPILOT_LINK, made by the pass under §3 jira-edit
+# The fake desk-jira logs each call and links anything but L-404, which does not exist.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/jira-calls"
+case "\$1" in
+  link) [ "\$4" = L-404 ] && { echo "desk-jira: Issue Does Not Exist (404)" >&2; exit 1; }; echo "linked: \$2 relates to \$4 (read back)" ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$T/stub/desk-jira"
+for v in y:yes a:ask; do sed -e "s#^\(| \`pr-images\` .*\)\$#\1\\
+| \`jira-edit\` | Edit tickets | \`yes\` | \`${v#*:}\` |#" "$T/config.md" > "$T/config-l${v%%:*}.md"
+  printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `L-[0-9]+` |\n' >> "$T/config-l${v%%:*}.md"; done
+lrun(){ local k=$1; shift; q add "$k"; q set "$k" state=running "branch=fix/$k" "session_id=gone-$k"; say "$@" > "$T/state-l/logs/$k.log"; }
+export DESK_CONFIG="$T/config-ly.md" DESK_QUEUE="$T/queue-l.json" DESK_AUTOPILOT_STATE="$T/state-l"
+mkdir -p "$T/state-l/logs"; q init l
+lrun L-1 "AUTOPILOT_LINK: L-1 relates-to L-2" "AUTOPILOT_DONE: pr=41 jira=In Review"
+lrun L-3 "AUTOPILOT_LINK: L-3 relates-to OT-9" "AUTOPILOT_DONE: pr=43 jira=In Review"
+lrun L-4 "AUTOPILOT_LINK: L-4 relates-to L-404" "AUTOPILOT_DONE: pr=44 jira=In Review"
+lrun L-5 "AUTOPILOT_LINK: L-5 blocked-by L-2" "AUTOPILOT_DONE: pr=45 jira=In Review"
+lrun L-6 "AUTOPILOT_LINK: L-6 relates-to L-2" "AUTOPILOT_PARK: Which empty state copy?"
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-557 AC1 with §3 jira-edit yes, the pass makes the link, read back, and the ticket is done, not parked" \
+  'grep -qx "link L-1 relates-to L-2" "$T/jira-calls" && [ "$(field L-1 state)" = "\"done\"" ] && [ "$(field L-1 park)" = null ] && echo "$out" | grep -qF "L-1 link: linked: L-1 relates to L-2 (read back)"'
+check "DS-557 AC1 a worker that parks has its link made too, and its question is its own" \
+  'grep -qx "link L-6 relates-to L-2" "$T/jira-calls" && [ "$(field L-6 state)" = "\"parked\"" ] && [ "$(field L-6 park.question)" = "\"Which empty state copy?\"" ]'
+check "DS-557 AC3 a link to another project is not made, and the ticket parks saying why" \
+  '! grep -q "^link L-3" "$T/jira-calls" && [ "$(field L-3 state)" = "\"parked\"" ] && field L-3 park.question | grep -qF "OT-9 is not in L-3'"'"'s project L, so the pass does not link it: desk-jira link L-3 relates-to OT-9" && [ "$(field L-3 result.pr)" = 43 ]'
+check "DS-557 AC3 a link to a ticket that does not exist parks with desk-jira's reason" \
+  '[ "$(field L-4 state)" = "\"parked\"" ] && field L-4 park.question | grep -qF "desk-jira refused it (desk-jira: Issue Does Not Exist (404)): desk-jira link L-4 relates-to L-404"'
+check "DS-557 a Blocks link is never made by the pass, and parks for the person" \
+  '! grep -q "^link L-5" "$T/jira-calls" && [ "$(field L-5 state)" = "\"parked\"" ] && field L-5 park.question | grep -qF "a Blocks link changes the order tickets spawn in"'
+export DESK_CONFIG="$T/config-la.md"
+lrun L-7 "AUTOPILOT_LINK: L-7 relates-to L-2" "AUTOPILOT_DONE: pr=47 jira=In Review"
+lrun L-8 "AUTOPILOT_LINK: L-8 relates-to L-2" "AUTOPILOT_PARK: Which empty state copy?"
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-557 AC2 with §3 jira-edit ask, nothing is linked and the ticket parks with the exact command" \
+  '! grep -q "^link" "$T/jira-calls" && [ "$(field L-7 state)" = "\"parked\"" ] && field L-7 park.question | grep -qF "config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-7 relates-to L-2" && field L-7 park.question | grep -qF "PR #47 and the rest of the ticket are done"'
+check "DS-557 AC2 a worker's own park keeps its question, with the command added" \
+  'field L-8 park.question | grep -qF "Which empty state copy?. Issue links not made: config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-8 relates-to L-2"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

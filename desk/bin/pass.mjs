@@ -16,6 +16,7 @@ import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_B
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, renderMoved } from './handoff.mjs';
 import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_MAX, workerEnd } from './harvest.mjs';
+import { linkRequests, linkCall, linkCommand, linkMade } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
@@ -430,6 +431,36 @@ function afterLastPark(log, mark) {
   return raw;
 }
 
+// The issue links a worker that ended on DONE or PARK asked for (link-requests.mjs), each made with
+// desk-jira link, which reads it back, where linkCall allows it. Returns why each other one was not
+// made, for the ticket's park; [] when every one was made, or none was asked for.
+function settleLinks(t, log) {
+  let reqs;
+  try { reqs = linkRequests(workerMarkers(readFileSync(log, 'utf8'))); } catch { return []; }
+  const needs = [];
+  for (const r of reqs) {
+    const call = linkCall(r, { ticket: t.key, perm: E.permission('jira-edit'), onJira });
+    if (!call.make) { needs.push(call.why); continue; }
+    if (DRY) { report.advanced.push(`${t.key} link (dry run): would run ${linkCommand(r)}`); continue; }
+    const res = shOut('desk-jira', ['link', r.key, r.type, r.other]);
+    if (res.ok && linkMade(res.out)) report.advanced.push(`${t.key} link: ${res.out.split('\n').find((l) => linkMade(l))}`);
+    else needs.push(`desk-jira refused it (${res.out.split('\n').pop()}): ${linkCommand(r)}`);
+  }
+  return needs;
+}
+const linksLine = (needs) => `Issue links not made: ${needs.join('; ')}`;
+// A finished ticket with links settleLinks could not make parks on them, as a spine parks after its
+// done record; a park recordDone already made keeps its question, with the links added to it.
+function parkForLinks(t, needs, pr) {
+  if (!needs.length) return;
+  const cur = queue().tickets[t.key];
+  const why = cur?.state === 'parked' && cur.park?.question
+    ? `${cur.park.question}. ${linksLine(needs)}`
+    : `${linksLine(needs)}. ${pr ? `PR #${pr} and the rest of the ticket are` : 'The rest of the ticket is'} done`;
+  q('park', t.key, why);
+  report.parked.push(`${t.key}: ${linksLine(needs)}`);
+}
+
 // A worker's park against the "not now" register: the inputs the question depends on, from the
 // `AUTOPILOT_PARK_INPUTS: {json}` after its last park (none is {}), and lookup()'s verdict on them.
 // A lease push it clears on (`cond`) adds its SHA as `lease` where they name none (withLeaseInput).
@@ -706,6 +737,7 @@ function liveReadOf(t, question) {
 }
 
 // ---- advance running tickets --------------------------------------------
+const onJira = /^jira\b/i.test(String(E.configValue('tracker') ?? '').trim());
 for (const t of rows.filter((r) => r.state === 'running')) {
   if (t.location === 'cloud' && t.cloud) { advanceCloud(t); continue; }
   const log = join(STATE, 'logs', `${t.key}.log`);
@@ -872,6 +904,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       // The screenshot directory the worker printed, for the undraft step's missing-shot check (shotsOf).
       sets: logImgDir ? [`images_dir=${logImgDir}`] : [],
     });
+    parkForLinks(t, settleLinks(t, log), built.pr);
   } else if (mergeOnly) {
     // The park's own words are kept as its follow-on: the steps it named for after the merge are listed
     // for the person once the PR merges (needs-you), never a reason to hold it.
@@ -881,9 +914,12 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${E.mergeGrant(queue()).why}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
       sets: [parkFollowOn(park), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
     });
+    parkForLinks(t, settleLinks(t, log), n);
   } else if (park) {
     // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
-    const asked = merging?.call === 'ask' ? `${merging.question}. The park: ${park.trim()}` : park.trim();
+    // The links the worker asked for are made now; any not made join its question.
+    const linkNeeds = settleLinks(t, log);
+    const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${park.trim()}` : park.trim()}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
     q('park', t.key, asked);
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
@@ -921,6 +957,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
       ...(follow.steps.length ? [`follow_on=${JSON.stringify(follow.steps)}`] : []),
     ] });
+    parkForLinks(t, settleLinks(t, log), pr);
   } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
     // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
     // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,
@@ -3027,7 +3064,6 @@ const borrowLine = borrowedLine(ticketPlan, { share: concurrency, running: ticke
 // epic alone for each unfinished one (ticket-facts.mjs --epic); a record whose `epic` is null was
 // looked up and has none, and is left alone. A read that fails is tried again next pass.
 const epicLines = [];
-const onJira = /^jira\b/i.test(String(E.configValue('tracker') ?? '').trim());
 const unreadEpics = Object.values(queue().tickets).filter((t) => {
   if (!onJira || t.state === 'done') return false;
   const k = E.ticketKind(t.key);
