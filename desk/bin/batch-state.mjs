@@ -325,8 +325,9 @@ function holdLeadsTo(q, t, prState, seen) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
   if (!isHeld(t) || seen.has(t)) return null;
-  // Held until a day it can read, it starts on that day by itself.
-  if (dateHeld(t)?.until) return [];
+  // Held on its label, it starts on its day by itself, and a fixed label is only read by a pass, so
+  // the batch is not settled while either waits.
+  if (dateHeld(t)) return [];
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
   const outside = String(t.held_outside ?? '').split('|');

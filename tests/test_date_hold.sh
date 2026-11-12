@@ -131,8 +131,8 @@ import { untilDay, dateHoldOf, batchSettled } from '$B/batch-state.mjs';
 const held = { state: 'parked', held_label: 'blocked-until-2026-11-14', park: { question: 'held by orchestrator: x' } };
 console.log([untilDay('blocked-until-2026-11-14'), untilDay('Blocked-Until-2026-02-30'), untilDay('blocked-until-14-11-2026'),
   JSON.stringify(dateHoldOf(['blocked-until-2026-11-14', 'blocked-until-2026-12-01', 'x'])), JSON.stringify(dateHoldOf(['blocked-until-2026-11-14', 'blocked-until-'])),
-  dateHoldOf(['milestone']), batchSettled({ tickets: { A: held } }), batchSettled({ tickets: { A: { ...held, held_label: 'blocked-until-x' } } })].map(String).join(' '));
+  dateHoldOf(['milestone']), batchSettled({ tickets: { A: held } }), batchSettled({ tickets: { A: { ...held, held_label: 'blocked-until-x' } } }), batchSettled({ tickets: { A: { ...held, held_label: null } } })].map(String).join(' '));
 " 2>&1)
-check "DS-555 a label's day is a real YYYY-MM-DD day, the latest wins, and a bad one wins over all" '[ "$out" = "2026-11-14 null null {\"label\":\"blocked-until-2026-12-01\",\"until\":\"2026-12-01\"} {\"label\":\"blocked-until-\",\"bad\":true} null false true" ]'
+check "DS-555 a label's day is a real YYYY-MM-DD day, the latest wins, a bad one wins over all, and a batch waiting on either is not settled" '[ "$out" = "2026-11-14 null null {\"label\":\"blocked-until-2026-12-01\",\"until\":\"2026-12-01\"} {\"label\":\"blocked-until-\",\"bad\":true} null false false true" ]'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
