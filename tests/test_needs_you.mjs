@@ -323,7 +323,7 @@ const fw = Object.fromEntries(N.collect({ word: 'failwhy554' }).items.map((i) =>
 t('DS-554 AC1 a failed ticket\'s item gives its recorded reason and exit code', /^stopped worker stopped: .*ended after its preflight with no output, exit code 1\)\. Resuming is off · requeue it$/.test(fw['F-1'] ?? ''), true);
 t('DS-554 AC3 a failed ticket with no reason recorded says so, never an empty one', fw['F-2'], 'stopped worker stopped: no reason was recorded: read its worker log, logs/F-2.log · requeue it');
 onGitHub(61, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: null });
-const d61 =N.record({ word: 'eta', ticket: 'E-2', action: 'done' });
+const d61 = N.record({ word: 'eta', ticket: 'E-2', action: 'done' });
 t('DS-279 (DS-378 AC1) done on a PR only you move reads it on GitHub and says it is still unmerged', `${d61.ok} ${/GitHub still shows PR #61 unmerged, so it stays on your list/.test(d61.line)}`, 'false true');
 // DS-324 AC1, AC2: a PR put off is left out until its head moves.
 const eq = () => join(env.DESK_HOME, 'repos', 'acme__eta', 'queue.json');
