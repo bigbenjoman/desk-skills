@@ -180,7 +180,7 @@ rows).
 | Key | Recommended | Unlocks | Exposes | Other options | Rules |
 |---|---|---|---|---|---|
 | `pr-update-branch` | yes | behind-main PRs refreshed server-side before merge | a new CI run. _Reach_: any PR | ask | `Bash(gh pr update-branch *)` |
-| `pr-conflict-unreviewed` | yes | DIRTY PRs fixed and re-reviewed without a round-trip | a resolution nobody else has read yet | ask | — |
+| `pr-conflict-unreviewed` | yes | DIRTY PRs, and PRs the merge driver holds for failing §4 Merged-tree check, fixed and re-reviewed without a round-trip | a resolution nobody else has read yet | ask | — |
 | `pr-conflict-reviewed` | ask | — | a silent resolution can revert a reviewer's merged work | yes | — |
 | `ci-rerun` | yes | a cancelled run or known flake retried, completed runs only | CI minutes; a rerun on a live run cancels it. _Reach_: any run; the skill checks it completed | ask | `Bash(gh run rerun *)` |
 | `gh-close-linked-issue` | yes | a GitHub issue a ticket's web link names closes, with a comment naming its tickets and their merged PRs, once every ticket linking it is done; `no` when §4 Tracker is `none` | a closed issue and a comment under your name. _Reach_: issues in this repo only, and only one every linking ticket has finished | ask · no (closeout names the issue as ready to close) | — (`linked-issues.mjs` reads the row and runs `gh issue close` itself) |

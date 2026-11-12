@@ -2396,7 +2396,7 @@ function prSegs(r, t, now) {
 // A ticket on a fix try: its PR, what is wrong with it, and that a worker repairs it, running or next.
 // One not running that startWait holds back says what it waits for first.
 function fixSegs(f, running, wait = null) {
-  const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
+  const what = f.kind === 'conflict' && f.check ? `merged-tree check failing on ${f.base}` : f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
   const who = running ? 'a worker' : wait ? `${wait}, then a worker` : 'next free worker';
   if (personCall(f)) return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
   if (f.kind === 'capture') return [[`#${f.pr}`, PR_SGR], [' · ', null], [`${f.files?.length ?? 0} screenshot(s) never taken`, WARN], [` · ${who} takes them`, null]];
