@@ -22,7 +22,9 @@
 // ticket-done, variable-set, run-completed, push-ok (with lease: <sha> for a lease push),
 // base-contains or none.
 // The pass records one more itself, live-read {reads, head}, for a park waiting on §4 Live reads it
-// runs (live-read.mjs), and settles it in its own section.
+// runs (live-read.mjs), and settles it in its own section. And links-made {links, pr}, for a ticket that
+// ended on DONE parked on issue links the pass did not make (pass.mjs parkLinks): it holds once each
+// {key, type, other} is on Jira, and the ticket goes back to done on PR `pr`.
 
 const FORMS = [
   [/^pr\s+#?(\d+)\s+merged$/i, (m) => ({ kind: 'pr-merged', pr: Number(m[1]) })],
@@ -59,6 +61,7 @@ export function describeCond(c) {
     case 'push-ok': return `git push ${c.lease ? `--force-with-lease=${c.branch}:${c.lease} ` : ''}origin ${c.branch} succeeds`;
     case 'base-contains': return `the batch base contains ${c.branch}`;
     case 'live-read': return `live read ${(c.reads ?? []).join(', ')} finished`;
+    case 'links-made': return `issue links ${(c.links ?? []).map((l) => `${l.key} ${l.type} ${l.other}`).join(', ')} made`;
     default: return 'none';
   }
 }
@@ -69,6 +72,7 @@ export function describeCond(c) {
 //   pr(n) → {state, isDraft}   ticket(key) → the status category key   variable(name) → bool
 //   run(id) → {status, conclusion}   push(c) → {holds, note?}, having tried the push
 //   baseContains(branch) → {holds, note?}, the note saying how far behind the base is and why
+//   link({key, type, other}) → bool, the link is on Jira
 export function checkCond(c, read) {
   try {
     switch (c?.kind) {
@@ -85,6 +89,7 @@ export function checkCond(c, read) {
       }
       case 'push-ok': return read.push(c);
       case 'base-contains': return read.baseContains(c.branch);
+      case 'links-made': return { holds: (c.links ?? []).length > 0 && c.links.every((l) => read.link(l) === true) };
       default: return { holds: false };
     }
   } catch (e) { return { error: String(e?.message ?? e).trim().split('\n').pop() || 'the check failed' }; }

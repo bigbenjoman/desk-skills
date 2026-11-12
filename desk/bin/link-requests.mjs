@@ -1,15 +1,16 @@
 // A worker cannot make Jira issue links (worker contract Stage 8), so it asks the pass for one with
 //   AUTOPILOT_LINK: <KEY> <type> <OTHER>
 // one per line, the arguments `desk-jira link` takes. The pass reads them when the worker ends on DONE
-// or PARK, and makes each one config §3 jira-edit grants; it keeps why it did not make any other, with
-// the command, as a follow-on step on the ticket (pass.mjs keepLinks).
+// or PARK, and makes each one config §3 jira-edit grants. Any other parks the ticket naming why, with
+// the command (pass.mjs parkLinks); a ticket that ended on DONE goes back to done, on its PR, once each
+// such link is on Jira (the park's links-made clears-when, read with linkThere below).
 //
 // A request is made only between two tickets of the worker's own project, and never of the Blocks type
 // (Blocks, blocks, blocked-by): those change the order a batch spawns in, so they stay the person's.
 
 export const LINK_MARK = 'AUTOPILOT_LINK';
 
-const KEY = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+export const KEY = /^[A-Z][A-Z0-9]*-[0-9]+$/;
 const project = (key) => String(key).replace(/-[0-9]+$/, '');
 // A type as desk-jira link matches it: any case, hyphens or underscores for spaces, "is" optional.
 const norm = (w) => w.toLowerCase().replace(/[-_\s]+/g, ' ').trim().replace(/^is /, '');
@@ -49,6 +50,15 @@ export function linkCall(r, { ticket, perm, onJira }) {
   if (BLOCKS.has(norm(r.type))) return { make: false, why: `a Blocks link changes the order tickets spawn in, so it is yours to make: ${linkCommand(r)}` };
   if (perm !== 'yes') return { make: false, why: `config §3 jira-edit is "${perm}", so the pass did not make it: ${linkCommand(r)}` };
   return { make: true };
+}
+
+// Whether link `l` ({key, type, other}) is among `issuelinks`, l.key's links as raw Jira gives them: one
+// of that type, by its name or either wording as desk-jira link matches it, to l.other.
+export function linkThere(issuelinks, l) {
+  if (!Array.isArray(issuelinks)) throw new Error(`desk-jira get ${l.key}: no issue links read`);
+  const w = norm(l.type);
+  return issuelinks.some((x) => [x?.inwardIssue?.key, x?.outwardIssue?.key].includes(l.other)
+    && [x?.type?.name, x?.type?.inward, x?.type?.outward].some((n) => n != null && norm(String(n)) === w));
 }
 
 // Whether `desk-jira link` output says the link is there, read back.

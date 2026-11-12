@@ -3429,12 +3429,14 @@ check "a failed migrate is in the worker's briefing, naming the database and the
   '[ -n "$X8B" ] && grep -q "Setup could not apply migrations to widgets_x_8" "$X8B" && grep -q ".desk-migrate.log" "$X8B"'
 
 # ---- issue links a worker asks for: AUTOPILOT_LINK, made by the pass under §3 jira-edit
-# The fake desk-jira logs each call and links anything but L-404, which does not exist.
+# The fake desk-jira logs each call and links anything but L-404, which does not exist. Its get --json
+# reads an issue's links from jira-links-<KEY>.json, none when there is no such file.
 cat > "$T/stub/desk-jira" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/jira-calls"
 case "\$1" in
   link) [ "\$4" = L-404 ] && { echo "desk-jira: Issue Does Not Exist (404)" >&2; exit 1; }; echo "linked: \$2 relates to \$4 (read back)" ;;
+  get) printf '{"key":"%s","fields":{"issuelinks":' "\$2"; if [ -f "$T/jira-links-\$2.json" ]; then cat "$T/jira-links-\$2.json"; else printf '[]'; fi; echo '}}' ;;
   *) exit 0 ;;
 esac
 EOF
@@ -3450,20 +3452,23 @@ lrun L-3 "AUTOPILOT_LINK: L-3 relates-to OT-9" "AUTOPILOT_DONE: pr=43 jira=In Re
 lrun L-4 "AUTOPILOT_LINK: L-4 relates-to L-404" "AUTOPILOT_DONE: pr=44 jira=In Review"
 lrun L-5 "AUTOPILOT_LINK: L-5 blocked-by L-2" "AUTOPILOT_DONE: pr=45 jira=In Review"
 lrun L-6 "AUTOPILOT_LINK: L-6 relates-to L-2" "AUTOPILOT_PARK: Which empty state copy?"
+lrun L-10 "AUTOPILOT_LINK: L-10 relates-to" "AUTOPILOT_DONE: pr=50 jira=In Review"
 : > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
-# A finished ticket with a link not made stays done, so its PR goes on to the merge, and keeps the
-# link as a follow-on step under §3 jira-edit naming why and the command.
-kept(){ [ "$(field "$1" state)" = '"done"' ] && [ "$(field "$1" park)" = null ] && field "$1" follow_on | grep -qF "{\"step\":\"Issue link not made: $2\",\"row\":\"jira-edit\"}"; }
+# A finished ticket with a link not made parks naming why and the command, on its PR, and clears back
+# to done once each link is read on Jira.
+kept(){ [ "$(field "$1" state)" = '"parked"' ] && field "$1" park.question | grep -qF "Issue links not made: $2" && [ "$(field "$1" park.clears_when.kind)" = '"links-made"' ] && [ "$(field "$1" follow_on)" = null ]; }
 check "DS-557 AC1 with §3 jira-edit yes, the pass makes the link, read back, and the ticket is done, not parked" \
   'grep -qx "link L-1 relates-to L-2" "$T/jira-calls" && [ "$(field L-1 state)" = "\"done\"" ] && [ "$(field L-1 park)" = null ] && [ "$(field L-1 follow_on)" = null ] && echo "$out" | grep -qF "L-1 link: linked: L-1 relates to L-2 (read back)"'
 check "DS-557 AC1 a worker that parks has its link made too, and its question is its own" \
   'grep -qx "link L-6 relates-to L-2" "$T/jira-calls" && [ "$(field L-6 state)" = "\"parked\"" ] && [ "$(field L-6 park.question)" = "\"Which empty state copy?\"" ] && [ "$(field L-6 follow_on)" = null ]'
-check "DS-557 AC3 a link to another project is not made: the ticket stays done on its PR and keeps why, with the command" \
-  '! grep -q "^link L-3" "$T/jira-calls" && kept L-3 "OT-9 is not in L-3'"'"'s project L, so the pass does not link it: desk-jira link L-3 relates-to OT-9" && [ "$(field L-3 result.pr)" = 43 ] && echo "$out" | grep -qF "L-3: Issue links not made: OT-9" && echo "$out" | grep -qF "listed for you once PR #43 merges"'
+check "DS-557 AC3 a link to another project is not made: the ticket parks on its PR with why and the command" \
+  '! grep -q "^link L-3" "$T/jira-calls" && kept L-3 "OT-9 is not in L-3'"'"'s project L, so the pass does not link it: desk-jira link L-3 relates-to OT-9" && [ "$(field L-3 result.pr)" = 43 ] && [ "$(field L-3 park.clears_when.pr)" = 43 ] && echo "$out" | grep -qF "L-3: Issue links not made: OT-9" && echo "$out" | grep -qF "records L-3 done again on PR #43 once it reads them on Jira" && ! echo "$out" | grep -qF "L-3: AUTOPILOT_DONE"'
 check "DS-557 AC3 a link to a ticket that does not exist keeps desk-jira's reason" \
   'kept L-4 "desk-jira refused it (desk-jira: Issue Does Not Exist (404)): desk-jira link L-4 relates-to L-404"'
 check "DS-557 a Blocks link is never made by the pass, and is kept for the person" \
   '! grep -q "^link L-5" "$T/jira-calls" && kept L-5 "a Blocks link changes the order tickets spawn in, so it is yours to make: desk-jira link L-5 blocked-by L-2"'
+check "DS-557 AC3 a request that does not read parks with the reason, waiting for an answer" \
+  '[ "$(field L-10 state)" = "\"parked\"" ] && field L-10 park.question | grep -qF "Issue links not made: the request does not read" && [ "$(field L-10 park.clears_when.kind)" = "\"none\"" ]'
 export DESK_CONFIG="$T/config-la.md"
 lrun L-7 "AUTOPILOT_LINK: L-7 relates-to L-2" "AUTOPILOT_DONE: pr=47 jira=In Review"
 lrun L-8 "AUTOPILOT_LINK: L-8 relates-to L-2" "AUTOPILOT_PARK: Which empty state copy?"
@@ -3471,8 +3476,13 @@ lrun L-8 "AUTOPILOT_LINK: L-8 relates-to L-2" "AUTOPILOT_PARK: Which empty state
 lrun L-9 "AUTOPILOT_DONE: pr=49 jira=In Review follow_on=[{\"step\":\"post the note\",\"row\":\"jira-comment\"}]"
 q set L-9 'follow_on=[{"step":"Issue link not made: earlier","row":"jira-edit"}]'
 : > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-557 AC2 with §3 jira-edit ask, nothing is linked and the exact command is kept on the done ticket" \
-  '! grep -q "^link" "$T/jira-calls" && kept L-7 "config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-7 relates-to L-2"'
+check "DS-557 AC2 with §3 jira-edit ask, nothing is linked and the ticket parks with the exact command" \
+  '! grep -q "^link" "$T/jira-calls" && kept L-7 "config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-7 relates-to L-2" && [ "$(field L-7 result.pr)" = 47 ]'
+# The person runs the command: the next pass reads the link on Jira and L-7 is done again on its PR.
+echo '[{"type":{"name":"Relates","inward":"relates to","outward":"relates to"},"outwardIssue":{"key":"L-2"}}]' > "$T/jira-links-L-7.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-557 AC2 once the person has made the link, the parked ticket goes back to done on its PR" \
+  '[ "$(field L-7 state)" = "\"done\"" ] && [ "$(field L-7 park)" = null ] && [ "$(field L-7 result.pr)" = 47 ] && echo "$out" | grep -qF "L-7: issue links L-7 relates-to L-2 made, each read on Jira: recorded done again on PR #47" && [ "$(field L-3 state)" = "\"parked\"" ]'
 check "DS-557 AC2 a worker's own park carries the command in its question, and keeps it past the park" \
   '[ "$(field L-8 state)" = "\"parked\"" ] && field L-8 park.question | grep -qF "Which empty state copy?. Issue links not made: config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-8 relates-to L-2" && field L-8 follow_on | grep -qF "Issue link not made: config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-8 relates-to L-2"'
 check "DS-557 a later round's follow-ons keep the link step an earlier round left" \

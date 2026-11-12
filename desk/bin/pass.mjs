@@ -16,7 +16,7 @@ import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_B
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, renderMoved } from './handoff.mjs';
 import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_MAX, workerEnd } from './harvest.mjs';
-import { linkRequests, linkCall, linkCommand, linkMade } from './link-requests.mjs';
+import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
@@ -432,30 +432,54 @@ function afterLastPark(log, mark) {
 }
 
 // The issue links a worker that ended on DONE or PARK asked for (link-requests.mjs), each made with
-// desk-jira link, which reads it back, where linkCall allows it. Returns why each other one was not
-// made; [] when every one was made, or none was asked for.
+// desk-jira link, which reads it back, where linkCall allows it. Returns each other one as {why, link}:
+// why it was not made, and the {key, type, other} a person can make with its command (null for one
+// that does not read, or with no Jira); [] when every one was made, or none was asked for.
 function settleLinks(t, log) {
   let reqs;
   try { reqs = linkRequests(workerMarkers(readFileSync(log, 'utf8'))); } catch { return []; }
   const needs = [];
   for (const r of reqs) {
     const call = linkCall(r, { ticket: t.key, perm: E.permission('jira-edit'), onJira });
-    if (!call.make) { needs.push(call.why); continue; }
+    const link = !r.why && onJira && LINK_KEY.test(r.key) && LINK_KEY.test(r.other) ? { key: r.key, type: r.type, other: r.other } : null;
+    if (!call.make) { needs.push({ why: call.why, link }); continue; }
     if (DRY) { report.advanced.push(`${t.key} link (dry run): would run ${linkCommand(r)}`); continue; }
     const res = shOut('desk-jira', ['link', r.key, r.type, r.other]);
     if (res.ok && linkMade(res.out)) report.advanced.push(`${t.key} link: ${res.out.split('\n').find((l) => linkMade(l))}`);
-    else needs.push(`desk-jira refused it (${res.out.split('\n').pop()}): ${linkCommand(r)}`);
+    else needs.push({ why: `desk-jira refused it (${res.out.split('\n').pop()}): ${linkCommand(r)}`, link });
   }
   return needs;
 }
 const LINKS_HEAD = 'Issue links not made: ';
-const linksLine = (needs) => `${LINKS_HEAD}${needs.join('; ')}`;
+const linksLine = (needs) => `${LINKS_HEAD}${needs.map((n) => n.why ?? n).join('; ')}`;
+// A ticket recorded done (its DONE, or a park the pass records done) with links settleLinks did not make
+// parks naming why, with each command. Where each is a link a person can make with its command, the park
+// clears once all are on Jira and the ticket goes back to done on its PR (settleClear, links-made), so
+// its PR does not stay in draft for want of a way back; otherwise it waits for an answer. A ticket
+// recordDone left parked itself (a spine) keeps them as follow-on steps instead (keepLinks).
+const LINKS_MADE = 'links-made';
+function parkLinks(t, needs, pr) {
+  if (!needs.length) return;
+  if (queue().tickets[t.key]?.state !== 'done') { keepLinks(t, needs.map((n) => n.why), pr); return; }
+  const links = needs.map((n) => n.link);
+  const auto = links.every(Boolean);
+  const on = pr ? `PR #${pr}` : 'its PR';
+  const question = `${linksLine(needs)}. ${auto
+    ? `Run each command and the pass records ${t.key} done again on ${on} once it reads them on Jira, or answer to settle it another way`
+    : `Answer to settle it, and a worker finishes ${t.key} on ${on}`}`;
+  // recordDone's done line no longer holds: the ticket is parked, and its line below says why.
+  const said = report.done.findLastIndex((l) => l.startsWith(`${t.key}: `));
+  if (said >= 0) report.done.splice(said, 1);
+  q('park', t.key, question);
+  q('set', t.key, `park.clears_when=${JSON.stringify(auto ? { kind: LINKS_MADE, links, pr: pr ? Number(pr) : null } : { kind: 'none' })}`);
+  report.parked.push(`${t.key}: ${question}`);
+}
 // A park question without the links line the park path adds to it, which its link steps already hold.
 const ownWords = (question) => String(question ?? '').split(`. ${LINKS_HEAD}`)[0];
-// Each link settleLinks could not make is kept as a follow-on step under §3 jira-edit, which needs-you
-// lists with its command once the PR merges. Never a park on a ticket recorded done: nothing returns
-// one to done, so its PR would never leave draft. Kept on the ticket, so a park the pass settles
-// itself (settleClear, a requeue) does not drop it, and a later round's follow-ons keep it.
+// A worker's own park keeps each link settleLinks could not make as a follow-on step under §3
+// jira-edit too, which needs-you lists with its command once the PR merges: kept on the ticket, so a
+// park the pass settles itself (settleClear, a requeue) does not drop it, and a later round's
+// follow-ons keep it.
 const LINK_STEP = 'Issue link not made: ';
 const linkSteps = (steps) => (Array.isArray(steps) ? steps : []).filter((s) => String(s?.step ?? '').startsWith(LINK_STEP));
 function keepLinks(t, needs, pr) {
@@ -911,7 +935,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       // The screenshot directory the worker printed, for the undraft step's missing-shot check (shotsOf).
       sets: logImgDir ? [`images_dir=${logImgDir}`] : [],
     });
-    keepLinks(t, settleLinks(t, log), built.pr);
+    parkLinks(t, settleLinks(t, log), built.pr);
   } else if (mergeOnly) {
     // The park's own words are kept as its follow-on: the steps it named for after the merge are listed
     // for the person once the PR merges (needs-you), never a reason to hold it.
@@ -921,7 +945,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${E.mergeGrant(queue()).why}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
       sets: [parkFollowOn(park, t.follow_on), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
     });
-    keepLinks(t, settleLinks(t, log), n);
+    parkLinks(t, settleLinks(t, log), n);
   } else if (park) {
     // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
     // The links the worker asked for are made now; any not made join its question, and its follow-ons
@@ -942,7 +966,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     // A merge question keeps the park's words as its follow-on too, so a merge by hand still lists them.
     q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(merging?.call === 'ask' ? [parkFollowOn(park, t.follow_on)] : []));
-    keepLinks(t, linkNeeds, t.result?.pr);
+    keepLinks(t, linkNeeds.map((n) => n.why), t.result?.pr);
     // Before the requeue, which moves this round's log aside.
     logDecisions(t, log, null);
     if (!wedged && !read && !needsSession({ ...t, park: { question: park.trim() } }) && unnamedForcePush({ question: park.trim(), inputs: reg.inputs }, t.branch) && refuseUnnamedLease(t, park.trim())) continue;
@@ -966,7 +990,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
       ...(follow.steps.length ? [`follow_on=${JSON.stringify([...linkSteps(t.follow_on), ...follow.steps])}`] : []),
     ] });
-    keepLinks(t, settleLinks(t, log), pr);
+    parkLinks(t, settleLinks(t, log), pr);
   } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
     // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
     // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,
@@ -1271,6 +1295,7 @@ const clearsRead = {
     const why = branch === source && baseNotSynced ? `, and the base did not sync this pass: ${baseNotSynced}` : '';
     return { holds: false, note: `${base} is ${n} commit(s) behind ${branch}${why}` };
   },
+  link: (l) => linkThere(cached(`links:${l.key}`, () => JSON.parse(readOrThrow(`desk-jira get ${l.key}`, 'desk-jira', ['get', l.key, '--json']))?.fields?.issuelinks), l),
 };
 // The ticket's own PR, if it merged: the one it recorded, else a merged PR from its branch.
 function ownMergedPr(t) {
@@ -1366,6 +1391,12 @@ function settleClear(t) {
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
   if (!r.holds) { if (r.note) report.clears.push(`${t.key}: waiting on "${cond}" (${r.note}): left parked`); return; }
   const what = r.note ? `${cond}, ${r.note}` : cond;
+  // A done ticket parked only on links the pass did not make (parkLinks) goes back to done on its PR.
+  if (c.kind === LINKS_MADE) {
+    q('set', t.key, 'state=done', 'park=null', ...(c.pr ? [`result.pr=${c.pr}`] : []));
+    report.done.push(`${t.key}: ${what}, each read on Jira: recorded done again${c.pr ? ` on PR #${c.pr}` : ''}, no longer parked`);
+    return;
+  }
   if (needsSession(t)) {
     report.clears.push(`${t.key}: "${what}" holds, but it is lane ${t.lane}: left parked for a person, never requeued for a headless worker`);
     return;
