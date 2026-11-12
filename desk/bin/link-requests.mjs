@@ -52,13 +52,23 @@ export function linkCall(r, { ticket, perm, onJira }) {
   return { make: true };
 }
 
-// Whether link `l` ({key, type, other}) is among `issuelinks`, l.key's links as raw Jira gives them: one
-// of that type, by its name or either wording as desk-jira link matches it, to l.other.
+// Whether link `l` ({key, type, other}) is among `issuelinks`, l.key's links as raw Jira gives them, read
+// as desk-jira link reads them: a link of the type its name or outward wording names reads "KEY
+// <outward> OTHER" (OTHER the entry's outwardIssue), one its inward wording names "KEY <inward> OTHER"
+// (OTHER the inwardIssue), and a type whose two wordings are the same (Relates) reads either way. So
+// "duplicates" is not met by "is duplicated by".
 export function linkThere(issuelinks, l) {
   if (!Array.isArray(issuelinks)) throw new Error(`desk-jira get ${l.key}: no issue links read`);
   const w = norm(l.type);
-  return issuelinks.some((x) => [x?.inwardIssue?.key, x?.outwardIssue?.key].includes(l.other)
-    && [x?.type?.name, x?.type?.inward, x?.type?.outward].some((n) => n != null && norm(String(n)) === w));
+  const is = (s) => s != null && norm(String(s)) === w;
+  return issuelinks.some((x) => {
+    const t = x?.type ?? {};
+    const dir = is(t.name) || is(t.outward) ? 'outward' : is(t.inward) ? 'inward' : null;
+    if (!dir) return false;
+    const sym = t.inward != null && t.inward === t.outward;
+    return (sym || dir === 'outward' ? x?.outwardIssue?.key === l.other : false)
+      || (sym || dir === 'inward' ? x?.inwardIssue?.key === l.other : false);
+  });
 }
 
 // Whether `desk-jira link` output says the link is there, read back.
