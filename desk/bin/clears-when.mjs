@@ -24,7 +24,8 @@
 // The pass records one more itself, live-read {reads, head}, for a park waiting on §4 Live reads it
 // runs (live-read.mjs), and settles it in its own section. And links-made {links, pr}, for a ticket that
 // ended on DONE parked on issue links the pass did not make (pass.mjs parkLinks): it holds once each
-// {key, type, other} is on Jira, and the ticket goes back to done on PR `pr`.
+// {key, type, other} is on Jira, and the ticket goes back to done on PR `pr`. Only the person's step
+// makes that one hold, so its park is still put to them (personClears), not left to wait unseen.
 
 const FORMS = [
   [/^pr\s+#?(\d+)\s+merged$/i, (m) => ({ kind: 'pr-merged', pr: Number(m[1]) })],
@@ -49,6 +50,9 @@ export function parseClearsWhen(raw) {
   }
   return { ok: false, why: `"${s}" is not one of: ${CLEARS_WHEN_FORMS}` };
 }
+
+// Whether only a step of the person's makes condition `c` hold, so a park waiting on it still asks them.
+export const personClears = (c) => c?.kind === 'links-made';
 
 // The condition as it is written, for the report.
 export function describeCond(c) {
