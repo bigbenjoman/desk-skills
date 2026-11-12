@@ -606,6 +606,31 @@ q set K-5 state=done
 killed K-6 sess-k6
 out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)
 check "DS-145 AC6 with the row at 0 a killed worker is marked failed, and the report says resuming is off" '[ "$(field K-6 state)" = "\"failed\"" ] && echo "$out" | grep -q "K-6: killed before it finished .*Resuming is off (config §3b \"Resume a killed worker (times)\" is 0)" && ! spawned_for K-6'
+# DS-554: K-11's log holds only the preflight's cost line, as FW-87's did, and spawn-worker.sh recorded
+# its session's exit code. K-12's exit file is an earlier session's.
+mkdir -p "$T/state-k/workers"
+preflight_only(){ killed "$1" "$2"; printf '{"type":"desk_preflight","total_cost_usd":0.1,"num_turns":3}\n' > "$T/state-k/logs/$1.log"; touch -t 202601010000 "$T/state-k/logs/$1.log"; }
+preflight_only K-11 sess-k11; printf '{"session":"sess-k11","code":1,"at":"2026-11-04T09:10:00Z"}\n' > "$T/state-k/workers/K-11.exit.json"
+preflight_only K-12 sess-k12; printf '{"session":"sess-old","code":0,"at":"2026-11-04T09:10:00Z"}\n' > "$T/state-k/workers/K-12.exit.json"
+out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)
+check "DS-554 AC1 a worker that ended after its preflight is failed naming that and its exit code" \
+  '[ "$(field K-11 state)" = "\"failed\"" ] && field K-11 failed.why | grep -q "ended after its preflight with no output, exit code 1" && echo "$out" | grep -q "K-11: killed before it finished .*ended after its preflight with no output, exit code 1).* — check "'
+check "DS-554 AC1 the status table gives the reason" 'node "$B/queue.mjs" render | grep "K-11" | grep -q "FAILED .*ended after its preflight with no output, exit code 1"'
+check "DS-554 an exit code another session recorded is not quoted" 'field K-12 failed.why | grep -q "ended after its preflight with no output, exit code not recorded"'
+out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)
+check "DS-554 AC3 a later pass's waiting line quotes the recorded reason" 'echo "$out" | grep -q "K-11: FAILED (killed before it finished .*ended after its preflight with no output, exit code 1"'
+q set K-11 state=done; q set K-12 state=done
+# K-13's session ended with its DONE marker after other words on its result's line, as VPL-768's did.
+killed K-13 sess-k13; node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 9, total_cost_usd: 1, result: "All stages finished. AUTOPILOT_DONE: pr=93 jira=Review" }))' >> "$T/state-k/logs/K-13.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-554 AC2 a DONE marker mid-line in the last result is recorded done, not failed" '[ "$(field K-13 state)" = "\"done\"" ] && [ "$(field K-13 result.pr)" = 93 ] && [ "$(field K-13 failed)" = null ]'
+q set K-13 state=done
+# K-14 and K-15 only mention the marker, mid-sentence and quoted, so neither finished.
+killed K-14 sess-k14; node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 9, total_cost_usd: 1, result: "Tests are red, so I did not print AUTOPILOT_DONE: pr=12" }))' >> "$T/state-k/logs/K-14.log"
+killed K-15 sess-k15; node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 9, total_cost_usd: 1, result: "Tests are red. I will print `AUTOPILOT_DONE: pr=12` once they pass." }))' >> "$T/state-k/logs/K-15.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-554 AC2 a DONE marker only mentioned in the result is not read as done" '[ "$(field K-14 state)" = "\"failed\"" ] && [ "$(field K-15 state)" = "\"failed\"" ] && [ "$(field K-14 result)" = null ]'
+q set K-14 state=done; q set K-15 state=done
 # K-3 was queued to resume, then the row went to 0 before a slot freed.
 killed K-3 sess-k3; q set K-3 state=triaged resume=pending "resume_why=its process died while the computer stayed up"
 out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)
@@ -630,6 +655,9 @@ check "DS-145 AC8 the batch report lists the resumes" 'echo "$out" | grep -q "^r
 q set K-1 state=triaged resume=pending resume_why=x
 out=$(node "$B/queue.mjs" requeue K-1 2>&1)
 check "DS-145 a requeue clears a pending resume" '[ "$(field K-1 resume)" = null ] && [ "$(field K-1 resume_why)" = null ] && [ "$(field K-1 session_id)" = null ]'
+q set K-11 state=failed; out=$(node "$B/queue.mjs" requeue K-11 2>&1)
+check "DS-554 a requeue clears the recorded failure" '[ "$(field K-11 failed)" = null ]'
+q set K-11 state=done
 check "DS-145 the config template has the row, recommended 2" 'grep -qE "^\| Resume a killed worker \(times\) \| \`2\` \| \`TODO\`" "$SRC/desk-config.md"'
 
 # DS-551: a worker asked to stop for a planned reboot ends with AUTOPILOT_REBOOT and exits normally.
@@ -692,7 +720,7 @@ check "DS-344 a resume that reaches the limit again is resumed again, not failed
 q set Y-5 state=done
 killed Y-4 sess-y4; result_event >> "$T/state-k/logs/Y-4.log"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-197 AC4 an exit with no marker and no limit is marked failed as before" '[ "$(field Y-4 state)" = "\"failed\"" ] && echo "$out" | grep -q "Y-4: exited with no marker and no open PR on fix/Y-4 — check" && ! spawned_for Y-4'
+check "DS-197 AC4 an exit with no marker and no limit is marked failed as before" '[ "$(field Y-4 state)" = "\"failed\"" ] && echo "$out" | grep -q "Y-4: exited with no marker and no open PR on fix/Y-4 (.*) — check" && ! spawned_for Y-4'
 
 # The same exits with the ticket's PR open. Y-7 is killed mid-run and Y-8 ends normally with no
 # marker; then Y-6 exits at the limit, its log ending as usage_exit's does.

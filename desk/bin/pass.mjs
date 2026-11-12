@@ -10,12 +10,12 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, renderMoved } from './handoff.mjs';
-import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_MAX } from './harvest.mjs';
+import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_MAX, workerEnd } from './harvest.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
@@ -189,6 +189,20 @@ const q = (...args) => {
   return '';
 };
 const queue = () => readQueue(QUEUE_FILE);
+// A failed ticket keeps why (`failed`), which the status table, desk-q and needs-you quote: a reason in
+// this pass's report alone is gone by the next. The report gets the same reason, then `tail`.
+const markFailed = (key, why, { sets = [], tail = '' } = {}) => {
+  q('set', key, 'state=failed', `failed=${JSON.stringify({ why: String(why).replace(/\s+/g, ' ').trim().slice(0, 600), at: new Date().toISOString() })}`, ...sets);
+  report.failed.push(`${key}: ${why}${tail}`);
+};
+// The exit code spawn-worker.sh recorded when session `sid`'s process ended, or null when it recorded none.
+function exitCodeOf(key, sid) {
+  try {
+    const e = JSON.parse(readFileSync(join(STATE, 'workers', `${key}.exit.json`), 'utf8'));
+    return sid && e?.session === sid && Number.isInteger(e.code) ? e.code : null;
+  } catch { return null; }
+}
+const exitText = (code) => (code == null ? 'exit code not recorded' : `exit code ${code}`);
 
 // ---- liveness ------------------------------------------------------------
 // A failed registry read must never look like "everything finished" — that would
@@ -957,14 +971,14 @@ for (const t of rows.filter((r) => r.state === 'running')) {
         q('park', t.key, why);
         report.parked.push(`${t.key}: ${why}`);
       } else if (stop?.fail) {
-        q('set', t.key, 'state=failed');
-        report.failed.push(`${t.key}: killed before it finished (${killed}), with no marker and no open PR on ${t.branch}. ${stop.fail} — check ${log}`);
+        const code = exitCodeOf(t.key, t.session_id);
+        markFailed(t.key, `killed before it finished (${killed}), with no marker and no open PR on ${t.branch} (${workerEnd(logText)}, ${exitText(code)}). ${stop.fail}`, { tail: ` — check ${log}` });
       } else if (stop?.park) {
         q('park', t.key, stop.park);
         report.parked.push(`${t.key}: ${stop.park}`);
       } else {
-        q('set', t.key, 'state=failed');
-        report.failed.push(`${t.key}: exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} — check ${log}`);
+        const code = exitCodeOf(t.key, t.session_id);
+        markFailed(t.key, `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(logText)}, ${exitText(code)})`, { tail: ` — check ${log}` });
       }
     }
   }
@@ -2345,8 +2359,7 @@ async function resumeKilled(t) {
   const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot' : 'killed before it finished';
   // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
-    q('set', t.key, 'state=failed', 'resume=null', 'port=null', 'spawn_failed=true');
-    report.failed.push(`${t.key}: ${ended}, and could not be resumed: ${why}`);
+    markFailed(t.key, `${ended}, and could not be resumed: ${why}`, { sets: ['resume=null', 'port=null', 'spawn_failed=true'] });
   };
   // The row may have changed while it waited for a slot.
   const stop = usage || maint || boot ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
@@ -2602,8 +2615,7 @@ async function spawnHandoff(t, pick) {
   const model = stage === '7' && models.text ? models.text : models.off ? '' : models[tier];
   const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...pick.vars };
   const fail = (why) => {
-    q('set', t.key, 'state=failed', 'handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true');
-    report.failed.push(`${t.key}: handed off to Stage ${stage}, and the new session could not be spawned: ${why}`);
+    markFailed(t.key, `handed off to Stage ${stage}, and the new session could not be spawned: ${why}`, { sets: ['handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true'] });
   };
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
@@ -2925,8 +2937,7 @@ for (const t of spawnable) {
   if (pre.failure) {
     logPreflight(t.key, pre.cost);
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
-    q('set', t.key, 'state=failed', 'spawn_failed=true');
-    report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre.failure}`);
+    markFailed(t.key, `preflight failed, not spawned —\n${pre.failure}`, { sets: ['spawn_failed=true'] });
     continue;
   }
 
@@ -2970,8 +2981,7 @@ for (const t of spawnable) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) {
-    q('set', t.key, 'state=failed', 'session_id=null', 'port=null', 'spawn_failed=true');
-    report.failed.push(`${t.key}: ${refused}`);
+    markFailed(t.key, refused, { sets: ['session_id=null', 'port=null', 'spawn_failed=true'] });
     continue;
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
@@ -4199,7 +4209,7 @@ for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${pr
 // printed under `failed:` with their reason, and reach the verdict's `waiting` from there.
 const failedThisPass = new Set(report.failed.map((x) => x.split(':')[0]));
 for (const t of Object.values(qNow.tickets).filter((r) => r.state === 'failed' && !failedThisPass.has(r.key))) {
-  report.waiting.push(`${t.key}: FAILED — requeue it (queue.mjs requeue ${t.key}), finish it by hand, or drop it`);
+  report.waiting.push(`${t.key}: FAILED (${failedWhy(t)}) — requeue it (queue.mjs requeue ${t.key}), finish it by hand, or drop it`);
 }
 
 // ---- base gate -------------------------------------------------------------

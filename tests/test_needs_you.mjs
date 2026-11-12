@@ -314,6 +314,14 @@ t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts
   'E-2 pr PR #61 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done. | E-1 stopped worker stopped: tests red · requeue it | 2');
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
+// DS-554: a failed ticket's item quotes the reason the pass recorded on it, and one with none says so.
+put('failwhy554', { port: 5554, beat: 1, supervised: true, tickets: {
+  'F-1': { state: 'failed', lane: 'A', failed: { why: 'killed before it finished (its process died while the computer stayed up), with no marker and no open PR on fix/F-1 (ended after its preflight with no output, exit code 1). Resuming is off', exit: 1 } },
+  'F-2': { state: 'failed', lane: 'A' },
+} });
+const fw = Object.fromEntries(N.collect({ word: 'failwhy554' }).items.map((i) => [i.t.key, `${i.kind} ${i.need}`]));
+t('DS-554 AC1 a failed ticket\'s item gives its recorded reason and exit code', /^stopped worker stopped: .*ended after its preflight with no output, exit code 1\)\. Resuming is off · requeue it$/.test(fw['F-1'] ?? ''), true);
+t('DS-554 AC3 a failed ticket with no reason recorded says so, never an empty one', fw['F-2'], 'stopped worker stopped: no reason was recorded: read its worker log, logs/F-2.log · requeue it');
 onGitHub(61, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: null });
 const d61 = N.record({ word: 'eta', ticket: 'E-2', action: 'done' });
 t('DS-279 (DS-378 AC1) done on a PR only you move reads it on GitHub and says it is still unmerged', `${d61.ok} ${/GitHub still shows PR #61 unmerged, so it stays on your list/.test(d61.line)}`, 'false true');

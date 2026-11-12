@@ -36,7 +36,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath } from './desk-env.mjs';
-import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead } from './batch-state.mjs';
+import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
@@ -151,7 +151,7 @@ const outsideText = (t) => {
   return o.length === 1 ? `held by ${o[0].key}, outside this batch: start anyway?` : `held by ${o.length} Jira tickets outside: start anyway?`;
 };
 // A ticket whose worker gave up: why, then what moves it.
-const stoppedText = (t) => `worker stopped${t.park?.question ? `: ${t.park.question}` : ''} · requeue it`;
+const stoppedText = (t) => `worker stopped: ${failedWhy(t)} · requeue it`;
 const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
 
 // Who moves a batch on without the user: the merge driver, which alone releases a ticket whose blockers
@@ -2660,7 +2660,7 @@ function moveOf(r, row, k, t, h, now) {
     return { text: q && t.state === 'parked' && !asks ? `Needs your answer: ${q}` : `Needs you: triage left ${n} question${n === 1 ? '' : 's'} open.`,
       lead: `Answer, in ${r.name}, and the orchestrator decides whether to requeue it:`, cmds: [answerCmd(t.key)] };
   }
-  if (k === 'failed') return { text: `Needs you: its worker stopped${q ? `: ${q}` : '.'}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
+  if (k === 'failed') return { text: `Needs you: its worker stopped: ${failedWhy(t)}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
   if (k === 'queued') return { text: 'Moves without you: it is being triaged.' };
   if (r.workers === 0) return { text: 'Will not start: workers are set to 0. Raise them with +.' };
   return { text: `Moves without you: it ${readyWhy(r, t)}.` };

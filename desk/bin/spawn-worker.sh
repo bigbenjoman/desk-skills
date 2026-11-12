@@ -436,8 +436,13 @@ fi
 node "$DESK_ENV_DIR/claude-logins.mjs" login-event > "$STATE/workers/$TICKET.login.json" 2>/dev/null < /dev/null || true
 # Where desk-env lines finds what this worker may read (worker-settings.mjs writes it beside these settings).
 export DESK_WORKER_SETTINGS="$SETTINGS"
+# The session's exit code, written beside its settings once claude exits, for pass.mjs to quote when it
+# marks the ticket failed: { session, code, at }. A reboot ends the shell that writes it too, so none is.
+export DESK_EXIT_FILE="$STATE/workers/$TICKET.exit.json" DESK_EXIT_SID="$SID"
+rm -f "$DESK_EXIT_FILE"
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
-desk_detach claude -p "$PROMPT" \
+desk_detach bash -c '"$@"; rc=$?; printf "{\"session\":\"%s\",\"code\":%d,\"at\":\"%s\"}\n" "$DESK_EXIT_SID" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DESK_EXIT_FILE"; exit "$rc"' desk-worker \
+  claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
   --output-format stream-json --verbose \
   --setting-sources "" --strict-mcp-config \
