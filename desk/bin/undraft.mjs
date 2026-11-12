@@ -438,7 +438,11 @@ function stuckCall(gate, checks, cfg, n) {
 // it succeeded, `sync` when it failed at a head behind its base (cfg.behind(head) -> the base's name, or
 // null when the head has it or git cannot say), and `person` when it failed at a head up to date with its base,
 // its re-run was refused, or the checks are still red after it. Anything else is null, handled as any red check.
-function buildCall(gate, cfg, n, head, t) {
+// `person` and `sync` carry `lead`, what failed, and `each`, what a ready PR's stuck record keeps on each
+// check: a failed build's `build` and last output line (`error`), a refused re-run's `command` (a person's
+// step), and nothing for a check still red after it (a plain red check).
+// A ready PR's fix tries (fix-tries.mjs fixCall) ask it about its §4 Check builds checks alone.
+export function buildCall(gate, cfg, n, head, t) {
   const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
   const failing = gate.failing;
   if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
@@ -454,13 +458,14 @@ function buildCall(gate, cfg, n, head, t) {
   if (rec.code !== 0) {
     const exit = rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`;
     const failed = `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`;
+    const said = { lead: `its check build \`${command}\` ${exit}`, each: { build: command, ...(rec.tail ? { error: rec.tail.split(' / ').at(-1) } : {}) } };
     const base = cfg.behind?.(head) ?? null;
-    if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base };
-    return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}` };
+    if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base, ...said };
+    return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}`, ...said };
   }
-  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, checks: names, runs };
-  if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}` };
-  return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
+  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
+  if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}`, lead: `its check build \`${command}\` ran, but the re-run was refused: ${rec.reran.out}`, each: { command: `re-run ${checks} on #${n}` } };
+  return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
 }
 
 // The words a park's not-reached tail may hold after its marker: the steps the worker contract has it

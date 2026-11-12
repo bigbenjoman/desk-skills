@@ -179,10 +179,14 @@ function stuckPlain(r, n, s, t) {
   const checks = s?.checks ?? [];
   if (checks.length) {
     const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : ''}`;
-    const mine = checks.filter((c) => !c.command), theirs = checks.filter((c) => c.command);
-    const parts = [...(mine.length ? [`${andList(mine.map(label))} ${mine.length === 1 ? 'is' : 'are'} failing, and ${REPAIRED} ${mine.length === 1 ? 'it' : 'them'}`] : []),
+    // A check desk builds (§4 Check builds) whose build failed: a worker fixes the build on its branch.
+    const built = checks.filter((c) => c.build);
+    const mine = checks.filter((c) => !c.command && !c.build), theirs = checks.filter((c) => c.command);
+    const buildSaid = (c) => `"${c.name}"'s check build \`${c.build}\` failed${c.error ? `, and its last line says: "${one(c.error)}"` : ''}`;
+    const parts = [...built.map(buildSaid), ...(mine.length ? [`${andList(mine.map(label))} ${mine.length === 1 ? 'is' : 'are'} failing, and ${REPAIRED} ${mine.length === 1 ? 'it' : 'them'}`] : []),
       ...theirs.map((c) => `${label(c)} needs a step outside GitHub: ${c.command}`)];
-    const todo = mine.length ? `Fix ${mine.length === 1 ? 'it' : 'them'} on its branch${theirs.length ? ', and do that step' : ''}` : `Do ${theirs.length === 1 ? 'that step' : 'those steps'}`;
+    const fix = [...built, ...mine];
+    const todo = fix.length ? `${built.length ? 'Send it back to a worker on the PR with what to fix, or fix' : 'Fix'} ${fix.length === 1 ? 'it' : 'them'} on its branch${theirs.length ? ', and do that step' : ''}` : `Do ${theirs.length === 1 ? 'that step' : 'those steps'}`;
     const said = mine.filter((c) => c.error).map((c) => ` "${c.name}" says: "${one(c.error)}".`).join('');
     return `${n}: ${parts.join('; ')}.${said} ${todo}; ${thenMerge(r)}.`;
   }
@@ -529,8 +533,12 @@ function itemOf(r, x) {
     // Held by nothing but a person's approval: once asked for, there is nothing to do but wait for it.
     const ask = approvalAsk(t, prWhy(r, t) ?? {});
     if (ask && !ask.left.length) return { ...openPr(['waiting', 'once the approval is asked for, waiting keeps it off this list until it gets one or its head moves'], ['done']), approval: true };
-    // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
-    // and the item leaves the list once every check it is still stuck on is green.
+    // A check build desk ran that failed is the branch's to fix, so a worker on the PR is recommended.
+    if (stuck?.checks.some((c) => c.build)) {
+      return { kind: 'pr', need, note, actions: [[SEND_BACK[0], 'desk built it and the build failed, which a change on its branch fixes: resume "<instruction>" sends it to a worker on the PR with what to fix', SEND_BACK[2]], ['done'], ['not-now']] };
+    }
+    // A step off GitHub (a staging migration, a build desk does not run) has no recommendation: its need
+    // names the step, and the item leaves the list once every check it is still stuck on is green.
     const outside = stuck?.outside ?? [];
     if (outside.length) {
       const checks = `${stuck.checks.map((c) => `"${c.name}"`).join(', ')} ${stuck.checks.length === 1 ? 'is' : 'are'} green`;
