@@ -103,6 +103,10 @@ labels D-6 "blocked-until-$LATER"; labels D-7 "blocked-until-$TOMORROW"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-555 a held ticket whose label moves to a later day is held on the new one" '[ "$(field D-6 state)" = "\"parked\"" ] && [ "$(field D-6 held_label)" = "\"blocked-until-$LATER\"" ] && grep -q "^HELD: .*D-6 (until $LATER)" <<< "$out"'
 check "DS-555 AC3 a bad label fixed to a later day holds it until that day" '[ "$(field D-7 state)" = "\"parked\"" ] && [ "$(field D-7 held_label)" = "\"blocked-until-$TOMORROW\"" ] && ! grep -q "D-7: HELD — its label" <<< "$out"'
+# A triage running again has written its record without labels yet: the hold stays.
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ ticket: "x", epic: null }))' "$T/state/triage/D-6.json"
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-555 a held ticket whose triage record has no labels read yet stays held" '[ "$(field D-6 state)" = "\"parked\"" ] && [ "$(field D-6 held_label)" = "\"blocked-until-$LATER\"" ]'
 labels D-6 "blocked-until-$TOMORROW"; labels D-7 "blocked-until-$TODAY"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-555 a held ticket whose label moves to today is released" '[ "$(field D-7 state)" = "\"running\"" ] && grep -q "date hold: D-7: $TODAY has come; RELEASED" <<< "$out"'

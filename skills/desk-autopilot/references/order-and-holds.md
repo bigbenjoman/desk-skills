@@ -69,6 +69,7 @@ labels, so a label moved, fixed or removed (then `triage.sh <TICKET>` again) mov
 A label whose date cannot be read holds it too, and comes to the user under `waiting` (and in
 desk-needs-you) naming the label: they fix it or let it start. A date-held ticket that `queue.mjs
 hold` puts behind blockers waits on them first; once they release it, the pass reads its label again.
+The merge driver never releases a date hold: only its day, or the person, does.
 
 **A link to the ticket's own epic never holds it.** An epic is Done only once its children are, so a
 ticket linked "is blocked by" its Jira parent epic, or by the epic its batch runs, would wait for ever.

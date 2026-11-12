@@ -1576,8 +1576,9 @@ for (const t of Object.values(queue().tickets)) {
   const held = dateHeld(t);
   if (!held && t.state !== 'triaged') continue;
   const rec = triageRec(t.key);
-  // With no triage record to read, a held ticket keeps the label it was held on.
-  const want = rec ? dateHoldOf(rec.labels) : held;
+  // Labels not read yet (a triage running again, or its Jira read failed): a held ticket keeps the label
+  // it was held on.
+  const want = Array.isArray(rec?.labels) && !rec.facts_error ? dateHoldOf(rec.labels) : held;
   if (held && holds(want) && want.label === held.label) continue;
   if (held && !holds(want)) {
     if (DRY) { dateLines.push(`date hold (dry run): ${t.key}: would release it`); continue; }
