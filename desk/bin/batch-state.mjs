@@ -56,6 +56,11 @@ export function openQuestion(stateDir, t) {
   try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
 }
 
+// Why a failed ticket's worker stopped, never empty: the reason the pass recorded (`failed.why`), else
+// a park the ticket kept, else that none was recorded.
+export const failedWhy = (t) => String(t?.failed?.why ?? '').trim() || String(t?.park?.question ?? '').trim()
+  || `no reason was recorded: read its worker log, logs/${t?.key ?? '<KEY>'}.log`;
+
 // A crash is a refusal like any other: it exits SHOW_PERSON, never node's own 1. `report` prints it.
 export function crashShowsPerson(report = (e) => console.error(describeCrash(e))) {
   const die = (e) => { try { report(e); } finally { process.exit(EXIT.SHOW_PERSON); } };

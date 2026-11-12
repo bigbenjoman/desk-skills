@@ -207,7 +207,7 @@ const F = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
   'VPL-1': { state: 'triaged', open_questions: 0 }, 'VPL-2': { state: 'failed' }, 'VPL-3': { state: 'triaged', open_questions: 0 } } } } });
 const past = F.run('voicepa', 'up', 'VPL-3');
 t('up past a failed ticket reaches the place above it', `${lines(past.out)[0]} | ${unfinishedKeys(readQ(qPath(F, 'voicepa'))).join()}`, 'VPL-3 → position 1 of 2, placed by you. | VPL-3,VPL-1');
-t('a ticket whose worker stopped shows no position, and needs you', /^\s+-\s+VPL-2\s+◆ needs you\s+worker stopped · requeue it/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
+t('a ticket whose worker stopped shows no position, and needs you', /^\s+-\s+VPL-2\s+◆ needs you\s+worker stopped: no reason was recorded/.test(lines(past.out).find((l) => /VPL-2/.test(l)) ?? ''), true);
 
 // AC5 from the shell, where the new block meets another repo's: pranicuk's cap of 2 is 3502–3504,
 // and a cap of 3 would reach desk-skills' 3500–3503. Live batches: desk-skills 2 and voicepa 3.

@@ -304,6 +304,7 @@ rm -f "$T/preflight-text"
 check "DS-158 AC3 a preflight that gives no result says its cost is unknown, not zero" 'echo "$out" | grep "^spawned: " | grep -q "T-3 .*; preflight cost unknown, turns unknown"'
 check "both tickets reach done with the PRs their workers printed" '[ "$(state T-1)" = done ] && [ "$(field T-1 result.pr)" = 101 ] && [ "$(state T-2)" = done ] && [ "$(field T-2 result.pr)" = 102 ]'
 check "the stage a worker printed is recorded"                  '[ "$(field T-1 stage)" = "\"4/9\"" ]'
+check "DS-554 AC1 the worker's exit code is recorded for its session once it exits" 'grep -qE "^\{\"session\":\"[0-9a-f-]{36}\",\"code\":0,\"at\":\"[0-9T:-]+Z\"\}$" "$T/state/workers/T-1.exit.json"'
 check "the held ticket spawns once its blocker has finished"    '[ $rc -eq 0 ] && [ "$(state T-3)" = running ] && live T-3'
 
 finish T-3
