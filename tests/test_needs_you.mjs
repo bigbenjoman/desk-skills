@@ -670,6 +670,21 @@ t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done 
 t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
   sg['S-6']?.actions[0][2], `the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "${LINT}", "Flows image" are green`);
 t('DS-375 a reason recorded before the pass kept its checks still names them', sg['S-5']?.need, 'PR #105 has failing checks desk\'s own repairs did not fix: Lint. Fix them on its branch; desk then merges it once its checks are green.');
+// DS-548: a ready PR whose check build desk ran failed (fix-tries.mjs buildStep) goes to a worker.
+const flowsBuilt = { name: 'Flows image', build: './scripts/ensure-flows-image.sh', error: 'ECR denied the push' };
+const premergeStep = { name: LINT, step: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' };
+put('ds548', { port: 4615, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'B-1': stuckPr(301, [flowsRed[0], ...passed], { lead: 'its check build `./scripts/ensure-flows-image.sh` exited 1', checks: [flowsBuilt], why: 'as the pass wrote it' }),
+  'B-2': stuckPr(302, [flowsRed[0], lintRed, ...passed], { lead: 'its check build `./scripts/ensure-flows-image.sh` exited 1', checks: [flowsBuilt, premergeStep], why: 'as the pass wrote it' }),
+  'B-3': stuckPr(303, [lintRed, ...passed], why375([premergeStep])),
+} });
+const b548 = Object.fromEntries(N.collect({ word: 'ds548' }).items.map((i) => [i.t.key, i]));
+t('DS-548 AC4 a failed check build quotes its last line and asks for a worker, not a step outside GitHub', b548['B-1']?.need,
+  'PR #301: "Flows image"\'s check build `./scripts/ensure-flows-image.sh` failed, and its last line says: "ECR denied the push". Send it back to a worker on the PR with what to fix, or fix it on its branch; desk then merges it once its checks are green.');
+t('DS-548 AC4 a worker on the PR is recommended, not done', `${b548['B-1']?.actions.map(([a]) => a).join()} ${b548['B-1']?.actions[0][0]} ${recommends(b548['B-1'])}`, 'resume,done,not-now resume true');
+t('DS-548 AC4 beside a pre-merge step it names both, the step still the person\'s', b548['B-2']?.need,
+  `PR #302: "Flows image"'s check build \`./scripts/ensure-flows-image.sh\` failed, and its last line says: "ECR denied the push"; "${LINT}" (failed at "Check portal schema mirror") needs a step outside GitHub: apply the PR's migrations to staging first. Send it back to a worker on the PR with what to fix, or fix it on its branch, and do that step; desk then merges it once its checks are green.`);
+t('DS-548 AC5 negative control: a pre-merge step alone is the person\'s with nothing recommended, as today', `${b548['B-3']?.actions[0][0]} ${recommends(b548['B-3'])}`, 'done false');
 // ---- A review gate that wants a person's approval, from error lines recorded on studia-web PRs
 // #2555 and #2546, and the lines desk's own review-gate.mjs writes.
 const { failureLines } = await import('../desk/bin/gate.mjs');

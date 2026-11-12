@@ -118,8 +118,13 @@ none of the renamed files is left alone. A PR in conflict goes to its conflict t
 driver leaves that PR alone, red or green, until the pass closes the try, as it does for the person's
 instruction.
 
-Out of draft, a check §4 Check builds names is a person's too, with its command, and so is one that
-is, or failed at a step that is, a §4 Pre-merge steps item, with that step. A stuck reason names
+Out of draft, a check §4 Check builds names gets its build from the pass as a draft's does (below),
+where §3 `ci-rerun` is `yes`, once nothing a worker fixes is red: a fix try beside it tells its worker
+to leave it red, and a stuck reason never lists it as the person's. A build that failed at a head
+behind its base goes to a sync try, one of the two tries; one that failed otherwise, or with no try
+left, goes to the person with the build's last line, and desk-needs-you recommends a worker on the PR
+for it. Without `ci-rerun`, it is a person's, with its command. A check that is, or failed at a step
+that is, a §4 Pre-merge steps item is a person's, with that step. A stuck reason names
 each check a worker could not fix with the step its run failed at (`Lint (failed step: Run eslint)`),
 and `stuck` keeps the checks by name: desk-q and desk-needs-you drop any that has since gone green on
 the PR, and stop showing the PR as stuck once none is left. A needs-you item whose blocker is a step
@@ -321,6 +326,8 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   and never parks on it: a worker whose park asks only for that build (every clause names the check or
   its command, or lists the steps it did not reach), while its open draft is red on those checks alone, is recorded done at harvest
   (`undraft.mjs` `buildPark`), so this step builds it. A park that asks anything else stays a park.
+  A PR out of draft gets the same build from its fix tries (`fix-tries.mjs` `fixCall`, which asks
+  `undraft.mjs` `buildCall` about those checks alone), once no check a worker fixes is red.
 - **A conflicted draft goes to a fix worker, not to `DRAFT`**, where §3 `pr-conflict-unreviewed`
   (no one but the user's handle has reviewed or commented) or `pr-conflict-reviewed` (someone has)
   is `yes`: it merges `<default>` in, reviews its new head and posts that review, within two tries of
