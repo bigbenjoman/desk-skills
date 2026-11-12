@@ -43,7 +43,6 @@ park, which hands it to the person instead. With no entry, park naming the call 
 **Before you park for a person to build an image from your branch** (a Flows or Grader image),
 `git merge` origin's §0 Default branch (not your batch's base) into your branch and push it: a build
 script may refuse a branch behind it or in conflict with it. Conflicts as the Stage 5 file's §4 says.
-Stopping for a reboot: read the Stage 5 file.
 
 ## 6. Command forms that are silently denied
 
