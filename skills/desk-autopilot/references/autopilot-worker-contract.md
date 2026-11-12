@@ -130,7 +130,8 @@ is planned and asks you to stop or save your work, finish the command you are in
 new one, commit what is verified, update your resume file, then print
 `AUTOPILOT_REBOOT: <who asked, and when>` and end your turn. The pass resumes your own session after
 the computer restarts (or, if none comes, after config §3b Maintenance drain limit), uncounted as a
-kill, and you carry on from where you stopped, pushing what you committed.
+kill, and you carry on from where you stopped, pushing what you committed. A base conflict fix
+worker parks instead: nothing resumes its try from this marker.
 
 ## 2. Gates
 

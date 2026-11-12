@@ -655,6 +655,16 @@ out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
 check "DS-551 AC4 with no reboot within the drain limit it resumes anyway, saying no reboot was seen" \
   'spawned_for R-2 | grep -q "^R-2 sess-r2 .*resume=yes$" && echo "$out" | grep -qF "R-2 resumed after its stop for a planned reboot — no reboot was seen within 60 min (config §3b \"Maintenance drain limit (minutes)\") of when it stopped for a planned reboot"'
 q set R-2 state=done
+# R-3 has had every kill resume the row allows: a reboot stop is not a kill, so it still resumes, uncounted.
+rebooted R-3 sess-r3; q set R-3 resumes=2
+out=$(DESK_BOOT_TIME=$(( $(date +%s) + 60 )) node "$B/pass.mjs" 2>&1)
+check "DS-551 AC2 a reboot stop resumes past the kill-resume limit, leaving the count" \
+  'spawned_for R-3 | grep -q "^R-3 sess-r3 .*resume=yes$" && [ "$(field R-3 resumes)" = 2 ] && [ "$(field R-3 park)" = null ]'
+q set R-3 state=done
+# R-4 printed DONE, then REBOOT in a later turn of the same session: it is recorded done, not resumed.
+killed R-4 sess-r4; say "AUTOPILOT_DONE: pr=79 jira=none" "AUTOPILOT_REBOOT: voicepa-83 asked at 07:31Z" >> "$T/state-k/logs/R-4.log"; result_event >> "$T/state-k/logs/R-4.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-551 a REBOOT after DONE leaves the ticket done" '[ "$(field R-4 state)" = "\"done\"" ] && [ "$(field R-4 result.pr)" = 79 ] && ! spawned_for R-4'
 
 # DS-197: a headless worker exits at the 5-hour limit rather than waiting for the reset. Its log ends
 # as VPL-443's did: the rate_limit_event at the limit, then a result with api_error_status 429.
