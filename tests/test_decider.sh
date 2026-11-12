@@ -397,5 +397,13 @@ node --input-type=module -e "import { deciderItems } from '$B/decider.mjs'; impo
 out=$(tick)
 check "DS-397 AC1: a park waiting on its clears-when starts no session and leaves the digest" '[ "$(calls)" = 0 ] && [ -z "$(handed)" ] && grep -q "^decider: taken off the digest, each waits on its recorded clears-when: U$" "$LOG"'
 
+# ---- DS-557: a park waiting on issue links only the person makes is still put to them ---------------
+queue '{"L":{"key":"L","state":"parked","lane":"A","park":{"question":"Issue links not made: desk-jira link L relates-to M","clears_when":{"kind":"links-made","links":[{"key":"L","type":"relates-to","other":"M"}],"pr":7}}},'"$UQ"'}'
+check "DS-557: the digest asks a park waiting on links-made, and still not one waiting on its PR" '[ "$(questions | cut -d"|" -f1 | tr "\n" " ")" = "L " ]'
+# Prints the tickets presort hands on, then those it leaves waiting. A function, as bash brace-expands
+# the object literals in a check's eval.
+sorted(){ node --input-type=module -e "import { presort } from '$B/decider.mjs'; const c = (k) => JSON.stringify({ kind: k }); const r = presort([{ kind: 'parked', lane: 'A', ticket: 'L', text: 'x', clears: c('links-made') }, { kind: 'parked', lane: 'A', ticket: 'U', text: 'y', clears: c('pr-merged') }]); console.log(r.hand.map((h) => h.item.ticket).join(), r.waits.map((w) => w.ticket).join());"; }
+check "DS-557: the decider hands a links-made park on to the person rather than letting it wait" '[ "$(sorted)" = "L U" ]'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

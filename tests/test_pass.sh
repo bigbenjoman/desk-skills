@@ -2684,6 +2684,11 @@ check "DS-509 AC4 the merge question keeps the park's post-merge steps as its fo
 vwt M-4; HM4=$(git -C "$T/wt/M-4" rev-parse HEAD); fbx 874 "$HM4" tests:SUCCESS
 node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/874.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-4.json`, JSON.stringify({ number: 874, ...v }))' "$T/fb"
 q add M-4; q set M-4 state=running lane=A branch=fix/M-4 "worktree=$T/wt/M-4"; q park M-4 "${P722/87N/874}"; q clears-when M-4 'PR #874 merged'
+# M-7 is M-4 with a link the pass could not make: its follow-on holds only that link step.
+vwt M-7; HM7=$(git -C "$T/wt/M-7" rev-parse HEAD); fbx 877 "$HM7" tests:SUCCESS
+node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(`${process.argv[1]}/877.json`, "utf8")); fs.writeFileSync(`${process.argv[1]}/list-fix-M-7.json`, JSON.stringify({ number: 877, ...v }))' "$T/fb"
+q add M-7; q set M-7 state=running lane=A branch=fix/M-7 "worktree=$T/wt/M-7"; q park M-7 "${P722/87N/877}. Issue links not made: no grant: desk-jira link M-7 relates-to M-1"; q clears-when M-7 'PR #877 merged'
+q set M-7 'follow_on=[{"step":"Issue link not made: no grant: desk-jira link M-7 relates-to M-1","row":"jira-edit"}]'
 # The person sets the rows the question names: the next pass takes the parked M-3 back to the merge path.
 export DESK_CONFIG="$T/config-m.md"
 out=$(node "$B/pass.mjs" 2>&1)
@@ -2691,6 +2696,8 @@ check "DS-509 AC4 once its rows let desk merge it, the parked merge question is 
   '[ "$(field M-3 state)" = "\"done\"" ] && [ "$(field M-3 result.pr)" = 873 ] && [ "$(field M-3 park)" = null ] && echo "$out" | grep -qF "M-3: PR #873 recorded done, no longer parked: its park waited only on #873 merging"'
 check "DS-509 AC2 a park recorded done once its PR turns green keeps its words as the follow-on" \
   '[ "$(field M-4 state)" = "\"done\"" ] && [ "$(field M-4 result.pr)" = 874 ] && field M-4 follow_on | grep -qF "provision-telnyx-assistant.ts --env staging"'
+check "DS-557 a park whose follow-on holds only link steps keeps its own words after them, without the links line twice" \
+  '[ "$(field M-7 state)" = "\"done\"" ] && [ "$(field M-7 follow_on.length)" = 2 ] && [ "$(field M-7 follow_on.0.row)" = "\"jira-edit\"" ] && field M-7 follow_on.1.step | grep -qF "provision-telnyx-assistant.ts --env staging" && ! field M-7 follow_on.1.step | grep -qF "Issue links not made"'
 check "DS-509 AC2 with no tracker, a follow-on from either merge path stays on the queue entry alone" \
   '[ "$(field M-3 follow_on_comment)" = "\"none\"" ] && [ "$(field M-4 follow_on_comment)" = "\"none\"" ]'
 # A new batch in the same queue keeps a merged ticket whose follow-on is not yet run, and nothing else.
@@ -3420,5 +3427,68 @@ out=$(node "$B/pass.mjs" --batch X-2 2>&1)
 X8B=$(find "$T" -path '*briefings/X-8.md' | head -n 1)
 check "a failed migrate is in the worker's briefing, naming the database and the log" \
   '[ -n "$X8B" ] && grep -q "Setup could not apply migrations to widgets_x_8" "$X8B" && grep -q ".desk-migrate.log" "$X8B"'
+
+# ---- issue links a worker asks for: AUTOPILOT_LINK, made by the pass under §3 jira-edit
+# The fake desk-jira logs each call and links anything but L-404, which does not exist. Its get --json
+# reads an issue's links from jira-links-<KEY>.json, none when there is no such file.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/jira-calls"
+case "\$1" in
+  link) [ "\$4" = L-404 ] && { echo "desk-jira: Issue Does Not Exist (404)" >&2; exit 1; }; echo "linked: \$2 relates to \$4 (read back)" ;;
+  get) printf '{"key":"%s","fields":{"issuelinks":' "\$2"; if [ -f "$T/jira-links-\$2.json" ]; then cat "$T/jira-links-\$2.json"; else printf '[]'; fi; echo '}}' ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$T/stub/desk-jira"
+for v in y:yes a:ask; do sed -e "s#^\(| \`pr-images\` .*\)\$#\1\\
+| \`jira-edit\` | Edit tickets | \`yes\` | \`${v#*:}\` |#" "$T/config.md" > "$T/config-l${v%%:*}.md"
+  printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `L-[0-9]+` |\n' >> "$T/config-l${v%%:*}.md"; done
+lrun(){ local k=$1; shift; q add "$k"; q set "$k" state=running "branch=fix/$k" "session_id=gone-$k"; say "$@" > "$T/state-l/logs/$k.log"; }
+export DESK_CONFIG="$T/config-ly.md" DESK_QUEUE="$T/queue-l.json" DESK_AUTOPILOT_STATE="$T/state-l"
+mkdir -p "$T/state-l/logs"; q init l
+lrun L-1 "AUTOPILOT_LINK: L-1 relates-to L-2" "AUTOPILOT_DONE: pr=41 jira=In Review"
+lrun L-3 "AUTOPILOT_LINK: L-3 relates-to OT-9" "AUTOPILOT_DONE: pr=43 jira=In Review"
+lrun L-4 "AUTOPILOT_LINK: L-4 relates-to L-404" "AUTOPILOT_DONE: pr=44 jira=In Review"
+lrun L-5 "AUTOPILOT_LINK: L-5 blocked-by L-2" "AUTOPILOT_DONE: pr=45 jira=In Review"
+lrun L-6 "AUTOPILOT_LINK: L-6 relates-to L-2" "AUTOPILOT_PARK: Which empty state copy?"
+lrun L-10 "AUTOPILOT_LINK: L-10 relates-to" "AUTOPILOT_DONE: pr=50 jira=In Review"
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+# A finished ticket with a link not made parks naming why and the command, on its PR, and clears back
+# to done once each link is read on Jira.
+kept(){ [ "$(field "$1" state)" = '"parked"' ] && field "$1" park.question | grep -qF "Issue links not made: $2" && [ "$(field "$1" park.clears_when.kind)" = '"links-made"' ] && [ "$(field "$1" follow_on)" = null ]; }
+check "DS-557 AC1 with §3 jira-edit yes, the pass makes the link, read back, and the ticket is done, not parked" \
+  'grep -qx "link L-1 relates-to L-2" "$T/jira-calls" && [ "$(field L-1 state)" = "\"done\"" ] && [ "$(field L-1 park)" = null ] && [ "$(field L-1 follow_on)" = null ] && echo "$out" | grep -qF "L-1 link: linked: L-1 relates to L-2 (read back)"'
+check "DS-557 AC1 a worker that parks has its link made too, and its question is its own" \
+  'grep -qx "link L-6 relates-to L-2" "$T/jira-calls" && [ "$(field L-6 state)" = "\"parked\"" ] && [ "$(field L-6 park.question)" = "\"Which empty state copy?\"" ] && [ "$(field L-6 follow_on)" = null ]'
+check "DS-557 AC3 a link to another project is not made: the ticket parks on its PR with why and the command" \
+  '! grep -q "^link L-3" "$T/jira-calls" && kept L-3 "OT-9 is not in L-3'"'"'s project L, so the pass does not link it: desk-jira link L-3 relates-to OT-9" && [ "$(field L-3 result.pr)" = 43 ] && [ "$(field L-3 park.clears_when.pr)" = 43 ] && echo "$out" | grep -qF "L-3: Issue links not made: OT-9" && echo "$out" | grep -qF "records L-3 done again on PR #43 once it reads them on Jira" && ! echo "$out" | grep -qF "L-3: pr=43 jira=In Review"'
+check "DS-557 AC3 a link to a ticket that does not exist keeps desk-jira's reason" \
+  'kept L-4 "desk-jira refused it (desk-jira: Issue Does Not Exist (404)): desk-jira link L-4 relates-to L-404"'
+check "DS-557 a Blocks link is never made by the pass, and is kept for the person" \
+  '! grep -q "^link L-5" "$T/jira-calls" && kept L-5 "a Blocks link changes the order tickets spawn in, so it is yours to make: desk-jira link L-5 blocked-by L-2"'
+check "DS-557 AC3 a request that does not read parks with the reason, waiting for an answer" \
+  '[ "$(field L-10 state)" = "\"parked\"" ] && field L-10 park.question | grep -qF "Issue links not made: the request does not read" && [ "$(field L-10 park.clears_when.kind)" = "\"none\"" ]'
+export DESK_CONFIG="$T/config-la.md"
+lrun L-7 "AUTOPILOT_LINK: L-7 relates-to L-2" "AUTOPILOT_DONE: pr=47 jira=In Review"
+lrun L-8 "AUTOPILOT_LINK: L-8 relates-to L-2" "AUTOPILOT_PARK: Which empty state copy?"
+# A later round's DONE with follow-ons of its own keeps the link step an earlier round left.
+lrun L-9 "AUTOPILOT_DONE: pr=49 jira=In Review follow_on=[{\"step\":\"post the note\",\"row\":\"jira-comment\"}]"
+q set L-9 'follow_on=[{"step":"Issue link not made: earlier","row":"jira-edit"}]'
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-557 AC2 with §3 jira-edit ask, nothing is linked and the ticket parks with the exact command" \
+  '! grep -q "^link" "$T/jira-calls" && kept L-7 "config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-7 relates-to L-2" && [ "$(field L-7 result.pr)" = 47 ]'
+# The person runs the command: the next pass reads the link on Jira and L-7 is done again on its PR.
+echo '[{"type":{"name":"Relates","inward":"relates to","outward":"relates to"},"outwardIssue":{"key":"L-2"}}]' > "$T/jira-links-L-7.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-557 AC2 once the person has made the link, the parked ticket goes back to done on its PR" \
+  '[ "$(field L-7 state)" = "\"done\"" ] && [ "$(field L-7 park)" = null ] && [ "$(field L-7 result.pr)" = 47 ] && echo "$out" | grep -qF "L-7: issue links L-7 relates-to L-2 made, each read on Jira: recorded done again on PR #47" && [ "$(field L-3 state)" = "\"parked\"" ]'
+check "DS-557 AC2 a worker's own park carries the command in its question, and keeps it past the park" \
+  '[ "$(field L-8 state)" = "\"parked\"" ] && field L-8 park.question | grep -qF "Which empty state copy?. Issue links not made: config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-8 relates-to L-2" && field L-8 follow_on | grep -qF "Issue link not made: config §3 jira-edit is \\\"ask\\\", so the pass did not make it: desk-jira link L-8 relates-to L-2"'
+# linkThere on five links, in order. A function, as bash brace-expands the object literals in a check's eval.
+there(){ node --input-type=module -e "import { linkThere } from '$B/link-requests.mjs'; const dup = { name: 'Duplicate', inward: 'is duplicated by', outward: 'duplicates' }; const rel = { name: 'Relates', inward: 'relates to', outward: 'relates to' }; const l = (type) => ({ key: 'L-1', type, other: 'L-2' }); console.log([linkThere([{ type: dup, inwardIssue: { key: 'L-2' } }], l('duplicates')), linkThere([{ type: dup, outwardIssue: { key: 'L-2' } }], l('duplicates')), linkThere([{ type: dup, inwardIssue: { key: 'L-2' } }], l('is-duplicated-by')), linkThere([{ type: rel, inwardIssue: { key: 'L-2' } }], l('relates-to')), linkThere([{ type: rel, outwardIssue: { key: 'L-3' } }], l('relates-to'))].join());"; }
+check "DS-557 a links-made park reads direction as desk-jira link does: duplicates is not met by is duplicated by" '[ "$(there)" = "false,true,true,true,false" ]'
+check "DS-557 a later round's follow-ons keep the link step an earlier round left" \
+  '[ "$(field L-9 follow_on)" = "[{\"step\":\"Issue link not made: earlier\",\"row\":\"jira-edit\"},{\"step\":\"post the note\",\"row\":\"jira-comment\"}]" ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

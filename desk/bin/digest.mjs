@@ -26,6 +26,7 @@ import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
 import { readHanded } from './decider.mjs';
+import { personClears } from './clears-when.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
 
@@ -201,7 +202,7 @@ export function jiraLine(slug, j) {
 
 // One repo's open questions: each parked ticket's question (a hold is not one, nor a question the
 // person put off with the same inputs, nor a park waiting on a recorded clears-when, which a pass
-// settles unless only a session may take the ticket) and each triaged ticket's unanswered triage unknowns. Questions
+// settles unless only a session may take the ticket or only the person's step makes it hold) and each triaged ticket's unanswered triage unknowns. Questions
 // already answered from a digest are left out. A put-off question whose inputs changed says what changed.
 export function openQuestions(r, answered = {}, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
@@ -218,7 +219,7 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   }
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
-      if (t.park?.clears_when?.kind && t.park.clears_when.kind !== 'none' && !needsSession(t)) continue;
+      if (t.park?.clears_when?.kind && t.park.clears_when.kind !== 'none' && !personClears(t.park.clears_when) && !needsSession(t)) continue;
       const l = parkPutOff(register, t);
       if (l.status === 'put_off') continue;
       const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;

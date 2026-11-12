@@ -9,7 +9,7 @@ import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCar
 import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
-import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
+import { parseEvidenceRow, dispatchCall, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -512,6 +512,20 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('EV row: none is off', parseEvidenceRow(['none']), null);
   t('EV row: unset is off', parseEvidenceRow(null), null);
   t('EV row: not a workflow file is refused', !!parseEvidenceRow(['run the screenshots'])?.errors, true);
+  // DS-549 AC1: a worker's own dispatch, checked by evidence.mjs dispatch rather than by a `pr=*` rule.
+  const own = { headRefName: 'fix/a', state: 'OPEN', isCrossRepository: false };
+  const dc = (argv, over = {}) => dispatchCall({ argv, view: own, workflow: 'pr-evidence.yml', repo: 'o/r', ref: 'main', allowed: true, ...over });
+  t('DS-549 AC1 its own open PR: run as the pass does, on the default branch', dc(['fix/a', '935']).args?.join(' '), 'workflow run pr-evidence.yml --repo o/r --ref main -f pr=935');
+  for (const pr of ['93*', '*', '935;id', '0935', '9 35', '', '-1', '935\n'])
+    t(`DS-549 AC1 "${pr}" is not a PR number`, /not a PR number/.test(dc(['fix/a', pr]).refused ?? ''), true);
+  t('DS-549 AC1 an extra argument is refused', /usage/.test(dc(['fix/a', '935', '-f']).refused ?? ''), true);
+  t('DS-549 AC1 no PR number is refused', /usage/.test(dc(['fix/a']).refused ?? ''), true);
+  t('DS-549 AC1 another branch\'s PR is refused', /not fix\/b's own PR/.test(dc(['fix/b', '935']).refused ?? ''), true);
+  t('DS-549 AC1 a fork\'s PR on the same branch name is refused', /own PR/.test(dc(['fix/a', '935'], { view: { ...own, isCrossRepository: true } }).refused ?? ''), true);
+  t('DS-549 AC1 a merged PR is refused', dc(['fix/a', '935'], { view: { ...own, state: 'MERGED' } }).refused, 'PR #935 is merged');
+  t('DS-549 AC1 an unreadable PR is refused', dc(['fix/a', '935'], { view: null }).refused, 'PR #935 could not be read');
+  t('DS-549 AC2 dispatch not yes is refused', /worker-workflow-dispatch/.test(dc(['fix/a', '935'], { allowed: false }).refused ?? ''), true);
+  t('DS-549 AC3 no evidence workflow is refused', /names no usable workflow/.test(dc(['fix/a', '935'], { workflow: null }).refused ?? ''), true);
   t('EV run id from gh workflow run', runIdFrom('https://github.com/o/r/actions/runs/41191877067\n'), '41191877067');
   const evDir = mkdtempSync(join(tmpdir(), 'desk-evidence-'));
   t('EV nothing recorded at a head reads as none', evidenceRecord(evDir, 740, HEAD, () => null), null);
