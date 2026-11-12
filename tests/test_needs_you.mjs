@@ -1594,20 +1594,24 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
 }
 
 // ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),
-// and done on a session item reads its PR and ticket. VPL-811's shape: a curl park with a draft PR.
+// and done on a session item reads its PR and ticket.
 {
   const CURL = 'Posting the fixture needs curl, which is denied to every worker. Can you post it?';
   put('mu546', { port: 5546, beat: 1, supervised: true, pattern: 'M-[0-9]+', tickets: {
-    'M-1': { ...parked('B', 60, CURL), draft_pr: 911 },
+    // Done once with its PR open, then requeued: the last pass's PR status still reads it open.
+    'M-1': { ...parked('B', 60, CURL), draft_pr: 911, pr_status: { pr: 911, state: 'OPEN', isDraft: true } },
     'M-2': { ...parked('C', 50, 'lane C: the plan needs agreeing'), draft_pr: 912 },
     'M-3': { ...parked('A', 40, 'Which endpoint?'), draft_pr: 913 },
     'M-4': parked('C', 30, 'lane C: the plan needs agreeing'),
     'M-5': { ...parked('B', 20, CURL), draft_pr: 915 },
     'M-6': { ...parked('A', 10, 'Retry or fail?'), draft_pr: 916 },
+    // Its PR merged, then it was requeued for more work and parked again with no new PR.
+    'M-7': { ...parked('B', 5, CURL), merged_at: '2026-11-01T10:00:00Z', result: { pr: 917 } },
   } });
-  const prs = { 911: 'MERGED', 912: 'MERGED', 913: 'OPEN', 915: 'OPEN', 916: 'MERGED' };
-  const jira = { 'M-1': 'done', 'M-2': 'indeterminate', 'M-4': 'indeterminate', 'M-6': 'done' };
-  const reads = { pr: (_r, n) => (prs[n] ? { state: prs[n], mergedAt: '2026-11-09T19:40:54Z', isDraft: prs[n] === 'OPEN' } : null), ticket: (_r, k) => jira[k] ?? null, git: () => null };
+  const prs = { 911: 'MERGED', 912: 'MERGED', 913: 'OPEN', 915: 'OPEN', 916: 'MERGED', 917: 'MERGED' };
+  const jira = { 'M-1': 'done', 'M-2': 'indeterminate', 'M-4': 'indeterminate', 'M-6': 'done', 'M-7': 'done' };
+  const reads = { pr: (_r, n) => ({ v: prs[n] ? { state: prs[n], mergedAt: '2026-11-09T19:40:54Z', isDraft: prs[n] === 'OPEN' } : null, err: prs[n] ? '' : 'no such PR' }),
+    ticket: (_r, k) => jira[k] ?? null, git: () => null };
   const mu = () => Object.fromEntries(N.collect({ word: 'mu546' }).items.map((i) => [i.t.key, i]));
   t('DS-546 AC4 a session item on a step no worker is allowed offers done, and never resume', mu()['M-1']?.actions.map((a) => a[0]).join(), 'open,done,drop,not-now');
   const settled = N.refresh({ word: 'mu546', reads });
@@ -1615,7 +1619,10 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     settled.join(' | '), 'mu546 M-1: PR #911 merged at 2026-11-09 19:40 UTC, and M-1 is done in Jira, so it is recorded done and off your list. | mu546 M-6: PR #916 merged at 2026-11-09 19:40 UTC, and M-6 is done in Jira, so it is recorded done and off your list.');
   const m1 = queueOf('mu546').tickets['M-1'];
   t('DS-546 AC1 it is recorded done as the pass records a ticket shipped elsewhere', `${m1.state} ${m1.park} ${m1.result?.pr} ${/^shipped outside its worker: PR #911 merged/.test(m1.result?.summary)}`, 'done null 911 true');
-  t('DS-546 AC1 neither is listed; a merged PR on a ticket not done, an open PR and no PR stay', Object.keys(mu()).sort().join(), 'M-2,M-3,M-4,M-5');
+  t('DS-546 AC1 its PR status is marked merged too, so it is not listed as an open PR', `${m1.pr_status?.state} ${m1.pr_status?.merged_at}`, 'MERGED 2026-11-09T19:40:54Z');
+  t('DS-546 AC1 neither is listed; a merged PR on a ticket not done, an open PR, no PR and a PR merged before a requeue stay',
+    Object.keys(mu()).sort().join(), 'M-2,M-3,M-4,M-5,M-7');
+  t('DS-546 AC1 a ticket requeued after its PR merged is not closed on that PR', queueOf('mu546').tickets['M-7'].state, 'parked');
   t('DS-546 AC1 a second list closes nothing more', N.refresh({ word: 'mu546', reads }).length, 0);
   const d5 = N.record({ word: 'mu546', ticket: 'M-5', action: 'done', reads });
   t('DS-546 AC2 done on a session item whose PR is unmerged refuses, saying so, and it stays parked',
@@ -1627,6 +1634,11 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const d4 = N.record({ word: 'mu546', ticket: 'M-4', action: 'done', reads });
   t('DS-546 AC2 done on a session item with no PR records it done', `${d4.ok} ${queueOf('mu546').tickets['M-4'].state} ${queueOf('mu546').tickets['M-4'].result?.pr ?? null}`, 'true done null');
   t('DS-546 AC2 done on a parked item is still not an action', N.record({ word: 'mu546', ticket: 'M-3', action: 'done', reads }).ok, false);
+  const unread = { ...reads, pr: () => ({ v: null, err: 'HTTP 502' }) };
+  put('mu546b', { port: 5549, beat: 1, supervised: true, tickets: { 'MB-1': { ...parked('B', 60, CURL), draft_pr: 931 } } });
+  const db1 = N.record({ word: 'mu546b', ticket: 'MB-1', action: 'done', reads: unread });
+  t('DS-546 AC2 done on a session item whose PR cannot be read refuses, naming why', `${db1.ok} ${db1.line} ${queueOf('mu546b').tickets['MB-1'].state}`,
+    "false mu546b MB-1: could not read PR #931's state from GitHub (HTTP 502), so it is not recorded done and stays on your list. parked");
 
   // A repo with no tracker: a merged PR is enough, and the CLI list reads it from GitHub (the fake gh).
   put('nu546', { port: 5547, beat: 1, supervised: true, tickets: { 'NU-1': { ...parked('B', 60, CURL), draft_pr: 921 }, 'NU-2': { ...parked('B', 50, CURL), draft_pr: 922 } } });

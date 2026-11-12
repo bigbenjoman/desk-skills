@@ -67,10 +67,10 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, holdNeedsPerson } from './gate.mjs';
-import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
+import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
@@ -124,6 +124,8 @@ const SEND_BACK = ['resume', null, 'resume "<instruction>" keeps it for the next
 // Why a PR in this state takes no instruction, or null for an open one.
 const prShut = (pr, state) => (state === 'MERGED' ? `PR #${pr} is merged, so no worker can carry out an instruction on it, and nothing was recorded.`
   : state === 'CLOSED' ? `PR #${pr} was closed without merging, so no worker can carry out an instruction on it, and nothing was recorded. Drop the ticket, or requeue it for a worker that opens a new PR.` : null);
+// What GitHub shows of a PR that has not merged.
+const prShows = (v) => (v.state === 'CLOSED' ? 'closed without merging' : `unmerged${v.isDraft === true ? ', still a draft' : ''}`);
 
 // ---- Work finished outside desk. The pass looks for it only on tickets it could spawn, so a parked
 // ticket whose PR merged, or a worktree pushed since the pass held it, stays listed until list reads
@@ -131,7 +133,11 @@ const prShut = (pr, state) => (state === 'MERGED' ? `PR #${pr} is merged, so no 
 const ghRepoOf = (r) => repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
 const quiet = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] };
 export const READS = {
-  pr: (r, pr) => { try { return JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', ghRepoOf(r), '--json', 'state,mergedAt,isDraft'], quiet)); } catch { return null; } },
+  // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err }.
+  pr: (r, pr, more = '') => {
+    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', ghRepoOf(r), '--json', `state,mergedAt,isDraft,headRefOid${more}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '' }; }
+    catch (e) { return { v: null, err: one(e.stderr || e.message) }; }
+  },
   // The ticket's status category (`new`, `indeterminate`, `done`), read in the repo's own checkout so
   // its own Jira is the one asked.
   ticket: (r, key) => {
@@ -142,44 +148,37 @@ export const READS = {
   },
   git: (dir, args) => { try { return execFileSync('git', ['-C', dir, ...args], quiet).trim(); } catch { return null; } },
 };
-// The PR a parked ticket recorded: the one it opened, else its draft.
-const ownPr = (t) => t.result?.pr ?? t.draft_pr ?? null;
-// Whether a key is a ticket in the repo's tracker, by §4 Ticket key pattern as desk-env ticketKind reads it.
+// The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
+// ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
+const ownPr = (t) => { const earlier = t.merged_at ? Number(t.result?.pr) : NaN; return [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier) ?? null; };
+// Whether a key is a ticket in the repo's tracker, by its §4 Ticket key pattern.
 function trackerTicket(r, key) {
   const pattern = repoConfigValue(r.slug, 'ticket-pattern');
-  if (!pattern || isNone(pattern)) return false;
-  try { return new RegExp(`^(?:${pattern})$`).test(key); } catch { return false; }
+  return !!pattern && !isNone(pattern) && fullMatch(pattern, key);
 }
 const ticketWords = (key, status) => (status === 'done' ? `${key} is done in Jira` : status ? `${key} is not done in Jira yet` : `${key}'s Jira status could not be read`);
 const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${String(v.mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}`);
-// Recorded done as the pass records a ticket shipped outside its worker (pass.mjs shippedElsewhere).
-const recordShipped = (r, key, how, pr) => queueCmd(r, ['set', key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
-  `result.summary=shipped outside its worker: ${how}`, ...(pr != null ? [`result.pr=${pr}`] : [])]);
+const recordShipped = (r, t, how, pr, v) => queueCmd(r, shippedSet(t, how, pr, v?.mergedAt ?? null));
 // A parked or session item that shipped: its own PR merged, and its ticket done or in no tracker. -> how, or null.
 function shippedOf(r, t, reads) {
   const pr = ownPr(t);
   if (pr == null) return null;
-  const v = reads.pr(r, pr);
+  const { v } = reads.pr(r, pr);
   if (v?.state !== 'MERGED') return null;
-  if (!trackerTicket(r, t.key)) return mergedWords(pr, v);
-  return reads.ticket(r, t.key) === 'done' ? `${mergedWords(pr, v)}, and ${ticketWords(t.key, 'done')}` : null;
+  if (!trackerTicket(r, t.key)) return { how: mergedWords(pr, v), pr, v };
+  return reads.ticket(r, t.key) === 'done' ? { how: `${mergedWords(pr, v)}, and ${ticketWords(t.key, 'done')}`, pr, v } : null;
 }
-// A worktree held for uncommitted changes or unpushed commits: true once it has neither, else false,
-// or null where it cannot be read. One held because another process works in it is the pass's to read.
-const GIT_HOLD = /has uncommitted changes|ahead of origin\//;
+// A worktree held for uncommitted changes or unpushed commits (batch-state gitHold): true once it has
+// neither, else false, or null where it cannot be read. One held because another process works in it
+// is the pass's to read.
 function worktreeClean(r, t, reads) {
-  const wb = worktreeBusy(t);
-  if (!wb || !GIT_HOLD.test(wb.why)) return null;
+  const held = gitHeld(worktreeBusy(t)?.why);
+  if (!held) return null;
   const dir = expandHome(repoConfigValue(r.slug, 'worktrees-dir') ?? '');
-  const wt = [t.worktree, /^its worktree (\S+) has/.exec(wb.why)?.[1], dir && !isNone(dir) ? join(dir, t.key) : null].find((p) => p && existsSync(p));
+  const wt = [t.worktree, held.wt, dir && !isNone(dir) ? join(dir, t.key) : null].find((p) => p && existsSync(p));
   if (!wt) return null;
-  const diff = reads.git(wt, ['diff', '--name-only', 'HEAD']);
-  if (diff == null) return null;
-  if (diff) return false;
-  const branch = reads.git(wt, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  if (!branch || branch === 'HEAD') return null;
-  const ahead = reads.git(wt, ['rev-list', '--count', `origin/${branch}..HEAD`]);
-  return ahead == null ? null : ahead === '0';
+  const why = gitHold(wt, (args) => reads.git(wt, args));
+  return why === undefined ? null : why === null;
 }
 
 // What list settles before it lists, in the batches `word` names: a parked or session item that shipped
@@ -196,9 +195,10 @@ export function refresh({ word = null, now = Date.now(), repos = loadRepos(now),
         continue;
       }
       if (t.state !== 'parked' || !['parked', 'session'].includes(itemOf(r, x).kind)) continue;
-      const how = shippedOf(r, t, reads);
-      if (!how) continue;
-      const m = recordShipped(r, t.key, how, ownPr(t));
+      const shipped = shippedOf(r, t, reads);
+      if (!shipped) continue;
+      const { how } = shipped;
+      const m = recordShipped(r, t, how, shipped.pr, shipped.v);
       lines.push(`${r.word} ${t.key}: ${m.ok ? `${how}, so it is recorded done and off your list.` : `${how}, but recording it done was refused: ${m.out}`}`);
     }
   }
@@ -908,8 +908,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // fix on a ticket still done, so one left for a session to requeue would be lost.
   const gapsAnswer = () => {
     const pr = x.t.result.pr;
-    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
-    try { execFileSync('gh', ['pr', 'comment', String(pr), '--repo', repo, '--body', prComment(text)], { stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { execFileSync('gh', ['pr', 'comment', String(pr), '--repo', ghRepoOf(r), '--body', prComment(text)], { stdio: ['ignore', 'pipe', 'pipe'] }); }
     catch (e) { return say(false, `not posted on PR #${pr} (${one(e.stderr || e.message)}), so nothing was recorded.`); }
     const a = ans();
     if (!a.ok) return say(false, `posted on PR #${pr}, but not recorded: ${a.why}`);
@@ -917,12 +916,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     if (no) return say(false, `posted on PR #${pr} and in its briefing, but ${no}`);
     return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
   };
-  // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err, repo }.
-  const readPr = (pr, more = '') => {
-    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
-    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', `state,mergedAt,isDraft,headRefOid${more}`],{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '', repo }; }
-    catch (e) { return { v: null, err: one(e.stderr || e.message), repo }; }
-  };
+  const readPr = (pr, more = '') => ({ ...reads.pr(r, pr, more), repo: ghRepoOf(r) });
   // The person's instruction on an open PR: kept in the briefing and as the fix its next worker starts
   // on, then requeued whoever runs the batch, as a gaps answer is. Read from GitHub first: a worker
   // sent to a PR merged or closed since the last pass has nothing to push to.
@@ -970,7 +964,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `GitHub shows no screenshot cell left in PR #${pr}'s body, so it is off your list; ${next}.`);
     }
     const check = { at: new Date(now).toISOString(), state: v.state, draft: v.isDraft === true, head: v.headRefOid ?? null, ...(cells ? { cells } : {}) };
-    const shows = v.state === 'CLOSED' ? 'closed without merging' : `unmerged${check.draft ? ', still a draft' : ''}`;
+    const shows = prShows(v);
     const m = queueCmd(r, ['set', ticket, `done_check=${JSON.stringify(check)}`]);
     if (cells) {
       const still = `GitHub still shows ${cells} screenshot cell(s) in PR #${pr}'s body`;
@@ -984,14 +978,11 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // a merged PR, or none, is recorded done as list records one that shipped, and anything else is refused.
   const sessionDone = () => {
     const pr = ownPr(x.t);
-    const v = pr == null ? null : reads.pr(r, pr);
-    if (pr != null && !v?.state) return say(false, `could not read PR #${pr}'s state from GitHub, so it is not recorded done and stays on your list.`);
-    if (pr != null && v.state !== 'MERGED') {
-      const shows = v.state === 'CLOSED' ? 'closed without merging' : `unmerged${v.isDraft === true ? ', still a draft' : ''}`;
-      return say(false, `GitHub shows PR #${pr} ${shows}, so it is not recorded done and stays on your list. Say done once it has merged.`);
-    }
+    const { v, err } = pr == null ? { v: null, err: '' } : readPr(pr);
+    if (pr != null && !v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not recorded done and stays on your list.`);
+    if (pr != null && v.state !== 'MERGED') return say(false, `GitHub shows PR #${pr} ${prShows(v)}, so it is not recorded done and stays on your list. Say done once it has merged.`);
     const how = `you said done; ${mergedWords(pr, v)}${trackerTicket(r, ticket) ? `; ${ticketWords(ticket, reads.ticket(r, ticket))}` : ''}`;
-    const m = recordShipped(r, ticket, how, pr);
+    const m = recordShipped(r, x.t, how, pr, v);
     return m.ok ? say(true, `recorded done (${how}), so it is off your list.`) : say(false, `recording it done was refused: ${m.out}`);
   };
   switch (verb) {
