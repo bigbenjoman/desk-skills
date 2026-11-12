@@ -1592,6 +1592,17 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// ---- DS-555: a ticket held on its blocked-until label is not listed; one whose label's date cannot be read is, once.
+{
+  const until = (label) => ({ state: 'parked', lane: 'A', held_label: label, park: { question: `held by orchestrator: ${label}` } });
+  put('ds555', { port: 4640, beat: 1, supervised: true, tickets: { 'U-1': until('blocked-until-2026-11-14'), 'U-2': until('blocked-until-soon'), 'U-3': { state: 'parked', lane: 'A', held_by: 'U-1', park: { question: 'held by orchestrator: blocked by U-1 — starts once their PRs merge' } } } });
+  const items = N.collect({ word: 'ds555' }).items;
+  t('DS-555 AC4 a ticket held until a date is not listed, nor one held behind it', items.filter((i) => ['U-1', 'U-3'].includes(i.t.key)).length, 0);
+  const bad = items.filter((i) => i.t.key === 'U-2');
+  t('DS-555 AC3 a label whose date cannot be read is one held item naming the label, offering start',
+    `${bad.length} ${bad[0]?.kind} ${/blocked-until-soon/.test(bad[0]?.need ?? '')} ${bad[0]?.actions.map((a) => a[0]).join()}`, '1 held true start,not-now');
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

@@ -36,7 +36,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath } from './desk-env.mjs';
-import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy } from './batch-state.mjs';
+import { isHeld, dateHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy } from './batch-state.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
@@ -185,6 +185,9 @@ function holdContext(r) {
 // when nothing moves until they act, which `text` names; `act` is the command to run, where one is.
 // Behind several blockers, the first that needs the user speaks for the ticket.
 export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
+  const day = dateHeld(t);
+  if (day?.bad) return { k: 'needs', text: `held by its label ${day.label}, which names no date desk can read (blocked-until-YYYY-MM-DD): fix the label, or let it start`, act: releaseCmd(t.key) };
+  if (day) return { k: 'waiting', text: `held until ${day.until}, by its label ${day.label}` };
   // Neither the pass nor the merge driver lets a ticket start whose hold names no blocker.
   if (!keysOf(t.held_by).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
