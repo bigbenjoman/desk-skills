@@ -884,7 +884,7 @@ put('psi', { port: 5100, beat: 1, supervised: true, merge: 'yes', tickets: {
   'Q-1': withHead(psiPr(141)),
   'Q-2': withHead(psiPr(142)),
   'Q-3': withHead(psiPr(143)),
-  'Q-4': withHead(stuckPr(144, passed, { why: `no review verdict readable at its head after 2 fix tries: the verdict is at ${sha(1)}, not ${sha(144)}` })),
+  'Q-4': withHead(stuckPr(144, passed, { why: `no review verdict readable at its head after 2 review tries at it: the verdict is at ${sha(1)}, not ${sha(144)}; the last try said: pr=144 jira=In Review review=NOT POSTED at ${sha(144)}` })),
   'Q-5': withHead(draftPr(145, passed, { call: 'findings', why: `its review verdict at ${sha(145)} is not clean (p1=2)`, action: 'settle the findings on #145' })),
   'Q-6': withHead({ ...stuckPr(146, passed, { why: 'still in conflict after 2 fix tries; the last try parked: which side wins?' }), fix_tries: [{ try: 1, head: 'b1', kind: 'conflict' }, { try: 2, head: 'b2', kind: 'conflict' }] }),
   'Q-7': withHead(stuckPr(147, passed, { why: 'review not clean after 3 fix tries (1 conflict, 1 rereview, 1 review): 1 P0 — P0: desk/bin/evidence.mjs:40 a code span splits the cell' })),
@@ -917,7 +917,10 @@ t('DS-406 AC3 its line says what follows', q7.line, 'psi Q-7: sent back to a wor
 t('DS-378 AC4 a merge hold says what holds it and what happens once it is merged', p0['Q-1']?.need,
   'PR #141 is under a merge hold, so desk never merges it itself: "touches billing" (src/billing/**). Do what it asks first, then merge it on GitHub; the ticket is then done.');
 t('DS-378 AC4 a PR with no readable review says what to do and what follows', p0['Q-4']?.need,
-  'PR #144 has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.');
+  'PR #144 has no code review desk can read for its latest commit: desk\'s review ran on it twice and posted none it can read, and the last one said "pr=144 jira=In Review review=NOT POSTED". Post one (run /desk-review on it); the next pass then takes it on.');
+t('DS-558 AC3 a last review try that said "conflict" is still named as a review that did not post', (() => { const q = queueOf('psi'); const was = q.tickets['Q-4'].stuck.why; q.tickets['Q-4'].stuck.why = 'no review verdict readable at its head after 2 review tries at it: x; the last try said: pr=144 review=NOT POSTED, desk-review saw a conflict with main';
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); const need = psi()['Q-4']?.need; q.tickets['Q-4'].stuck.why = was;
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); return /^PR #144 has no code review desk can read for its latest commit: desk's review ran on it twice/.test(need ?? ''); })(), true);
 t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
   'PR #145 is a draft, and its code review found 2 P1 findings, which it does not list with a file:line a worker can fix, so desk sends no worker to them. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
 t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,

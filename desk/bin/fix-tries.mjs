@@ -7,12 +7,12 @@
 // whose review gaps the person
 // ruled on through desk-needs-you (gapsFix), or that the person sent back with an instruction
 // (instructionFix), outside them. A draft whose required check is red
-// (draftChecksFix) goes to a fix worker, and one with no review verdict readable at its head
-// (reviewTry), or a ready PR whose §4 State check reading its verdict is red, or that the merge driver
-// holds for want of a clean verdict at its head (verdictTry), to a review
-// worker, both within the same tries, and so does a draft in conflict with
+// (draftChecksFix) goes to a fix worker within the same tries, and so does a draft in conflict with
 // its base that §3 lets a worker resolve (conflictFix), or whose §4 Check builds build failed at a
-// head behind its base (syncFix). A draft whose screenshots were never taken goes
+// head behind its base (syncFix). One with no review verdict readable at its head (reviewTry), or a
+// ready PR whose §4 State check reading its verdict is red, or that the merge driver holds for want of
+// a clean verdict at its head (verdictTry), goes to a review worker, under REVIEW_TRIES_PER_HEAD tries
+// at each head outside them. A draft whose screenshots were never taken goes
 // to a capture worker, once (captureTry). A ready PR whose red check asks an approval for protected files,
 // or reads no verdict it accepts at the head, goes to a worker that may clear it first (gateTry).
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
@@ -159,10 +159,10 @@ function spentOnRed(done, { pr, head, draft }, mine, notMine, ctx, checks, base 
   const others = base ? notMine.filter((n) => !base.red.some((r) => r.name === n.name)) : notMine;
   return withRecord({ call: 'requeue', fix: { try: triesMade(done), of: FIX_TRIES_MAX, extra: true, pr, head, ...checksFix(mine, others, ctx.repo, base), lines, ...(draft ? { draft: true } : {}) } }, base?.record);
 }
-// The tries that count against FIX_TRIES_MAX: all but the review tries a merge from the base earned,
-// the capture try (captureTry), which is the PR's own one, and the protected-files tries (gateTry), which
-// have their own.
-const ownCount = (x) => x.extra || x.kind === 'capture' || x.kind === 'protected';
+// The tries that count against FIX_TRIES_MAX: all but the extra tries, the review tries (reviewTry),
+// which have REVIEW_TRIES_PER_HEAD at each head, the capture try (captureTry), which is the PR's own one,
+// and the protected-files tries (gateTry), which have their own.
+const ownCount = (x) => x.extra || x.kind === 'rereview' || x.kind === 'capture' || x.kind === 'protected';
 export const triesMade = (done) => (done ?? []).filter((x) => !ownCount(x)).length;
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => triesMade(done) >= FIX_TRIES_MAX || triedHere;
@@ -171,7 +171,7 @@ const nextTry = (done, pr, head, fix) => ({ call: 'requeue', fix: { try: triesMa
 // without moving it. Base conflict fix tries (base-fix.mjs) count the same way.
 export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // A review fix has FIX_TRIES_MAX of its own, counted over review fix tries only, so the conflict,
-// red-check and re-review tries before it leave it its own, within FIX_TRIES_TOTAL tries of every kind
+// red-check and other tries before it leave it its own, within FIX_TRIES_TOTAL tries of every kind
 // that count but conflict. Every other kind stops at FIX_TRIES_MAX tries in all, so a review fix always
 // has one; a conflict has its own FIX_TRIES_MAX on top (conflictTriesMade), so its tries are not counted.
 // A review fix try that recorded what it quoted (`findings`, `gaps`) and whose findings all cleared,
@@ -531,25 +531,25 @@ export const feedbackReply = (f, head) => `Worked by desk's fix try ${f.try} of 
 
 // A draft with no review verdict the pass can read at its head (undraft.mjs `review`: none posted, one
 // it cannot read, or one for an older head) goes to a review worker, which reviews the head and posts
-// it. Its try is one of the FIX_TRIES_MAX, once per head: still unread after one, it is the person's,
-// with `why` saying what the pass read last. A head a merge from the base last moved, since the last
-// try's head (baseMerge(lastHead), asked only when no review try was made at this head), changed with
-// no worker behind it, so its try is an extra one (`extra`), outside FIX_TRIES_MAX. `targeted`
-// (undraft.mjs reviewScope) narrows the try to what an older clean review that did not carry still
-// needs read at the head; the review posted says what it carried from that one.
+// it. A review is owed, not a fix that failed, so its tries are outside FIX_TRIES_MAX:
+// REVIEW_TRIES_PER_HEAD at each head, as many heads as the fixes and base merges make. Still unread after
+// them, it is the person's, with `why` saying what the pass read last and the last review try what it
+// said. `base` and baseMerge(lastHead) name a head a merge from the base moved since the last try's.
+// `targeted` (undraft.mjs reviewScope) narrows the try to what an older clean review that did not carry
+// still needs read at the head; the review posted says what it carried from that one.
+export const REVIEW_TRIES_PER_HEAD = 2;
+const reviewTries = (n) => `${n} review ${n === 1 ? 'try' : 'tries'}`;
 export function reviewTry(t, { pr, head, why, base = null, baseMerge = null, targeted = null }) {
   if (!head) return null;
   const done = t.fix_tries ?? [];
-  const triedHere = done.some((x) => x.head === head && x.kind === 'rereview');
+  const here = done.filter((x) => x.head === head && x.kind === 'rereview').length;
+  if (here >= REVIEW_TRIES_PER_HEAD) {
+    return { call: 'stuck', why: `no review verdict readable at its head after ${reviewTries(here)} at it: ${why}${t.fix?.head === head ? lastSaid(t, 'rereview') : ''}` };
+  }
   const last = done.at(-1)?.head;
-  const narrow = targeted ? { targeted } : {};
-  if (!triedHere && last && last !== head && baseMerge?.(last)) {
-    return { call: 'requeue', fix: { try: triesMade(done), of: FIX_TRIES_MAX, extra: true, pr, head, kind: 'rereview', what: `review its head, moved by a merge from ${base ?? 'its base'}: ${why}`, ...narrow } };
-  }
-  if (spent(done, triedHere)) {
-    return { call: 'stuck', why: `no review verdict readable at its head after ${tries(done.length)}: ${why}` };
-  }
-  return nextTry(done, pr, head, { kind: 'rereview', what: `review its head: ${why}`, ...narrow });
+  const moved = !here && last && last !== head && baseMerge?.(last);
+  return { call: 'requeue', fix: { try: here + 1, of: REVIEW_TRIES_PER_HEAD, pr, head, kind: 'rereview',
+    what: `review its head${moved ? `, moved by a merge from ${base ?? 'its base'}` : ''}: ${why}`, ...(targeted ? { targeted } : {}) } };
 }
 
 // A ready PR whose §4 State check of kind `verdict` is red, with no review at its head that reads as
@@ -589,7 +589,8 @@ export function verdictTry(t, s, ctx) {
 // ticket's criteria do not need, or reports it needed, which leaves the approval to the person. One goes
 // per head, only for a file no earlier one judged, and at most FIX_TRIES_MAX per PR, outside the fix
 // tries' count. A review verdict the check cannot read at the head (none, a stale one, an old format)
-// goes to a review try under reviewTry's tries, unless a §4 State check of kind verdict is the one red
+// goes to a review try under reviewTry's tries, and to the person, named as a review that did not post,
+// once they are spent at the head, unless a §4 State check of kind verdict is the one red
 // (verdictTry takes that) or another red check a worker can fix is (fixCall takes that). null where
 // neither applies, so fixCall decides as before.
 // s: its pr_status; ctx: fixCall's, with base and baseMerge.
@@ -622,7 +623,7 @@ export function gateTry(t, s, ctx) {
   const rest = gate.failing.filter((f) => !staleNames.has(f.name) && !state.some((x) => x.name === f.name));
   if (splitFailing(rest, ctx).mine.length) return null;
   const c = reviewTry(t, { pr: s.pr, head: s.head, why: `its "${stale[0].name}" check says: ${stale[0].line}`, base: ctx.base, baseMerge: ctx.baseMerge });
-  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : null;
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c;
 }
 
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
@@ -785,7 +786,7 @@ export function fixBrief(t, review = null) {
       'If you dropped nothing, change nothing and push nothing: the approval goes to the person, with your reasons. Each file is judged once: one still in the diff after this try is the person\'s to approve.', ''].join('\n');
   }
   if (f.kind === 'rereview') {
-    return [f.extra ? `## Review try for a merge from the base: PR #${f.pr}` : `## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
+    return [`## Review try ${f.try} of ${f.of}: PR #${f.pr}`, '',
       f.held
         ? `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it without a clean review at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`
         : f.ready
@@ -793,8 +794,7 @@ export function fixBrief(t, review = null) {
         : `Your PR #${f.pr} is a draft on this branch, and the pass reads no review verdict at its head ${String(f.head).slice(0, 12)}: ${f.what.replace(/^review its head[^:]*: /, '')}.`,
       `${ownReview(review) ? cap(reviewStep(review, 'that head')) : 'Review that head with desk-review and post the review on the PR (desk-review Phase 7)'}, so its verdict marker is on the head. Change no code in this try: a P0, a P1, a listed P2 or a gap the review finds goes to a fix worker at the next pass.`, '',
       ...targetedBrief(ownReview(review) ? null : f.targeted),
-      f.extra ? `A merge from the base moved this head, so this try is not one of the ${f.of} fix tries. A PR with no verdict readable at its head after it goes to the person.`
-        : `This is try ${f.try} of ${f.of}. A PR with no verdict readable at its head after this try goes to the person.`, ''].join('\n');
+      `This is review try ${f.try} of ${f.of} at this head, and not one of the fix tries. ${f.try < f.of ? 'A PR with no verdict readable at its head after it gets one more review try there.' : 'A PR with no verdict readable at its head after it goes to the person, with what you said in your AUTOPILOT_DONE line: if the review could not be posted, say why there.'}`, ''].join('\n');
   }
   const lines = [f.person ? `## Fix try the person sent: PR #${f.pr}` : f.extra ? `## Extra fix try, for what the failing log names: PR #${f.pr}` : `## Fix try ${f.try} of ${f.of}: PR #${f.pr}`, ''];
   if (f.kind === 'conflict' && f.check) {
@@ -901,7 +901,7 @@ export function fixTask(t, review = null) {
   }
   if (f.kind === 'rereview') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
-      `Your task is ${f.extra ? 'a review try after a merge from the base' : `review try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
+      `Your task is review try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Review try" section of your briefing says why. ` +
       `${cap(reviewStep(review, 'its head', f.targeted && !ownReview(review) ?', in its targeted round on only what the briefing\'s "Targeted" section names,' : ''))}, and change no code. ` +
       `Open no new PR, leave the PR ${f.ready ? 'out of' : 'in'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>.`;
   }
