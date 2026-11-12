@@ -190,9 +190,11 @@ const q = (...args) => {
 };
 const queue = () => readQueue(QUEUE_FILE);
 // A failed ticket keeps why (`failed`), which the status table, desk-q and needs-you quote: a reason in
-// this pass's report alone is gone by the next. `exit` is the worker's exit code, where it was read.
-const markFailed = (key, why, { exit, sets = [] } = {}) => q('set', key, 'state=failed',
-  `failed=${JSON.stringify({ why: String(why).replace(/\s+/g, ' ').trim().slice(0, 600), ...(exit !== undefined ? { exit } : {}), at: new Date().toISOString() })}`, ...sets);
+// this pass's report alone is gone by the next. The report gets the same reason, then `tail`.
+const markFailed = (key, why, { sets = [], tail = '' } = {}) => {
+  q('set', key, 'state=failed', `failed=${JSON.stringify({ why: String(why).replace(/\s+/g, ' ').trim().slice(0, 600), at: new Date().toISOString() })}`, ...sets);
+  report.failed.push(`${key}: ${why}${tail}`);
+};
 // The exit code spawn-worker.sh recorded when session `sid`'s process ended, or null when it recorded none.
 function exitCodeOf(key, sid) {
   try {
@@ -970,17 +972,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
         report.parked.push(`${t.key}: ${why}`);
       } else if (stop?.fail) {
         const code = exitCodeOf(t.key, t.session_id);
-        const why = `killed before it finished (${killed}), with no marker and no open PR on ${t.branch} (${workerEnd(logText)}, ${exitText(code)}). ${stop.fail}`;
-        markFailed(t.key, why, { exit: code });
-        report.failed.push(`${t.key}: ${why} — check ${log}`);
+        markFailed(t.key, `killed before it finished (${killed}), with no marker and no open PR on ${t.branch} (${workerEnd(logText)}, ${exitText(code)}). ${stop.fail}`, { tail: ` — check ${log}` });
       } else if (stop?.park) {
         q('park', t.key, stop.park);
         report.parked.push(`${t.key}: ${stop.park}`);
       } else {
         const code = exitCodeOf(t.key, t.session_id);
-        const why = `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(logText)}, ${exitText(code)})`;
-        markFailed(t.key, why, { exit: code });
-        report.failed.push(`${t.key}: ${why} — check ${log}`);
+        markFailed(t.key, `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(logText)}, ${exitText(code)})`, { tail: ` — check ${log}` });
       }
     }
   }
@@ -2362,7 +2360,6 @@ async function resumeKilled(t) {
   // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
     markFailed(t.key, `${ended}, and could not be resumed: ${why}`, { sets: ['resume=null', 'port=null', 'spawn_failed=true'] });
-    report.failed.push(`${t.key}: ${ended}, and could not be resumed: ${why}`);
   };
   // The row may have changed while it waited for a slot.
   const stop = usage || maint || boot ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
@@ -2619,7 +2616,6 @@ async function spawnHandoff(t, pick) {
   const workerEnv = { AUTOPILOT_BRANCH: t.branch, AUTOPILOT_DATABASE: t.database ?? 'none', AUTOPILOT_MODEL: model, ...pick.vars };
   const fail = (why) => {
     markFailed(t.key, `handed off to Stage ${stage}, and the new session could not be spawned: ${why}`, { sets: ['handoff=null', 'session_id=null', 'port=null', 'spawn_failed=true'] });
-    report.failed.push(`${t.key}: handed off to Stage ${stage}, and the new session could not be spawned: ${why}`);
   };
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
@@ -2941,8 +2937,7 @@ for (const t of spawnable) {
   if (pre.failure) {
     logPreflight(t.key, pre.cost);
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
-    markFailed(t.key, `preflight failed, not spawned — ${pre.failure}`, { sets: ['spawn_failed=true'] });
-    report.failed.push(`${t.key}: preflight failed, not spawned —\n${pre.failure}`);
+    markFailed(t.key, `preflight failed, not spawned —\n${pre.failure}`, { sets: ['spawn_failed=true'] });
     continue;
   }
 
@@ -2987,7 +2982,6 @@ for (const t of spawnable) {
   const refused = spawnRefusal(spawned.out);
   if (refused) {
     markFailed(t.key, refused, { sets: ['session_id=null', 'port=null', 'spawn_failed=true'] });
-    report.failed.push(`${t.key}: ${refused}`);
     continue;
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.

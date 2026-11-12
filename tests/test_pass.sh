@@ -614,9 +614,9 @@ preflight_only K-11 sess-k11; printf '{"session":"sess-k11","code":1,"at":"2026-
 preflight_only K-12 sess-k12; printf '{"session":"sess-old","code":0,"at":"2026-11-04T09:10:00Z"}\n' > "$T/state-k/workers/K-12.exit.json"
 out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)
 check "DS-554 AC1 a worker that ended after its preflight is failed naming that and its exit code" \
-  '[ "$(field K-11 state)" = "\"failed\"" ] && field K-11 failed.why | grep -q "ended after its preflight with no output, exit code 1" && [ "$(field K-11 failed.exit)" = 1 ]'
+  '[ "$(field K-11 state)" = "\"failed\"" ] && field K-11 failed.why | grep -q "ended after its preflight with no output, exit code 1" && echo "$out" | grep -q "K-11: killed before it finished .*ended after its preflight with no output, exit code 1).* — check "'
 check "DS-554 AC1 the status table gives the reason" 'node "$B/queue.mjs" render | grep "K-11" | grep -q "FAILED .*ended after its preflight with no output, exit code 1"'
-check "DS-554 an exit code another session recorded is not quoted" 'field K-12 failed.why | grep -q "ended after its preflight with no output, exit code not recorded" && [ "$(field K-12 failed.exit)" = null ]'
+check "DS-554 an exit code another session recorded is not quoted" 'field K-12 failed.why | grep -q "ended after its preflight with no output, exit code not recorded"'
 out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)
 check "DS-554 AC3 a later pass's waiting line quotes the recorded reason" 'echo "$out" | grep -q "K-11: FAILED (killed before it finished .*ended after its preflight with no output, exit code 1"'
 q set K-11 state=done; q set K-12 state=done
@@ -625,6 +625,12 @@ killed K-13 sess-k13; node -e 'console.log(JSON.stringify({ type: "result", is_e
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-554 AC2 a DONE marker mid-line in the last result is recorded done, not failed" '[ "$(field K-13 state)" = "\"done\"" ] && [ "$(field K-13 result.pr)" = 93 ] && [ "$(field K-13 failed)" = null ]'
 q set K-13 state=done
+# K-14 and K-15 only mention the marker, mid-sentence and quoted, so neither finished.
+killed K-14 sess-k14; node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 9, total_cost_usd: 1, result: "Tests are red, so I did not print AUTOPILOT_DONE: pr=12" }))' >> "$T/state-k/logs/K-14.log"
+killed K-15 sess-k15; node -e 'console.log(JSON.stringify({ type: "result", is_error: false, num_turns: 9, total_cost_usd: 1, result: "Tests are red. I will print `AUTOPILOT_DONE: pr=12` once they pass." }))' >> "$T/state-k/logs/K-15.log"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-554 AC2 a DONE marker only mentioned in the result is not read as done" '[ "$(field K-14 state)" = "\"failed\"" ] && [ "$(field K-15 state)" = "\"failed\"" ] && [ "$(field K-14 result)" = null ]'
+q set K-14 state=done; q set K-15 state=done
 # K-3 was queued to resume, then the row went to 0 before a slot freed.
 killed K-3 sess-k3; q set K-3 state=triaged resume=pending "resume_why=its process died while the computer stayed up"
 out=$(DESK_CONFIG="$T/config-k0.md" node "$B/pass.mjs" 2>&1)

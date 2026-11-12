@@ -27,9 +27,10 @@ export function saidIn(c) {
   return m ? `AUTOPILOT_STAGE: ${m[2]}` : null;
 }
 
-// A session's final result text with any DONE marker written mid-line moved to a line of its own: its
-// last word is that it finished, even where the line holds other words before it.
-const resultSaid = (s) => s.replace(/([^\n])[ \t]*(?=AUTOPILOT_DONE:)/g, '$1\n');
+// A session's final result text with a DONE marker that ends it, as a sentence of its own after other
+// words on its line, moved to a line of its own: its last word is that it finished. A marker that is
+// quoted, mentioned mid-sentence or followed by more text is left where it is, and is not read.
+const resultSaid = (s) => s.trimEnd().replace(/([.!?])[ \t]+(?=AUTOPILOT_DONE:[^\n`]*$)/, '$1\n');
 
 // What one parsed log event said: an assistant message's blocks through saidIn, or a result's text.
 const saidBy = (d) => (d?.type === 'assistant' ? (d.message?.content ?? []).map(saidIn).filter((s) => s != null)

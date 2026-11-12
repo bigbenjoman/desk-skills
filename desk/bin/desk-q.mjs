@@ -2660,7 +2660,7 @@ function moveOf(r, row, k, t, h, now) {
     return { text: q && t.state === 'parked' && !asks ? `Needs your answer: ${q}` : `Needs you: triage left ${n} question${n === 1 ? '' : 's'} open.`,
       lead: `Answer, in ${r.name}, and the orchestrator decides whether to requeue it:`, cmds: [answerCmd(t.key)] };
   }
-  if (k === 'failed') return { text: `Needs you: its worker stopped${q ? `: ${q}` : '.'}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
+  if (k === 'failed') return { text: `Needs you: its worker stopped: ${failedWhy(t)}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
   if (k === 'queued') return { text: 'Moves without you: it is being triaged.' };
   if (r.workers === 0) return { text: 'Will not start: workers are set to 0. Raise them with +.' };
   return { text: `Moves without you: it ${readyWhy(r, t)}.` };

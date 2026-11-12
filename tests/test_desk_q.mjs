@@ -2050,6 +2050,14 @@ t('DS-280 AC9 and AC10 the header counts #698 and V-510 once each, and V-504 not
   `${q280[1].startsWith('◆ 3 tickets need you')} ${Q.needsRows(r280).map((x) => x.t.key ?? '').sort().join(',')}`, 'true N-5,V-510,V-698');
 t('DS-280 the pass\'s groups match what desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds280', stateDir: r280.stateDir, queuePath: r280.queuePath, q: r280.q, now: NOW })),
   JSON.stringify(Object.fromEntries(Object.keys(ds280).map((k) => [k, { 'N-5': 'needs', 'V-698': 'needs', 'V-510': 'needs', 'V-504': 'waiting' }[k] ?? 'merging']))));
+// DS-554: a failed ticket's page quotes the reason the pass recorded, and one with none says so.
+put(I.T, I.env, 'ds554', { port: 5654, conc: '3 / 5', beat: 1, queue: { batch: 'ds554', concurrency: 3, supervised: true, tickets: {
+  'F-1': { state: 'failed', lane: 'A', failed: { why: 'exited with no marker and no open PR on fix/F-1 (ended after its preflight with no output, exit code 1)' } },
+  'F-2': { state: 'failed', lane: 'A' } } } });
+const r554 = Q.loadRepos(NOW).find((r) => r.name === 'ds554');
+t('DS-554 AC3 a failed ticket\'s page gives the reason recorded for it, or says none was', `${rail279('F-1', r554)} | ${rail279('F-2', r554)}`,
+  'Needs you: its worker stopped: exited with no marker and no open PR on fix/F-1 (ended after its preflight with no output, exit code 1) Requeue it, in ds554, or drop it: | '
+  + 'Needs you: its worker stopped: no reason was recorded: read its worker log, logs/F-2.log Requeue it, in ds554, or drop it:');
 
 // ---- DS-421: a Merging PR's age counts from its head commit (pr_status head_at), so a driver restart
 // or a migration, which restamp `group`, leave it alone, and a new head starts it again.
