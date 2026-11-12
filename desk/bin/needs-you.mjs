@@ -69,6 +69,7 @@ import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, 
 import { approvalFiles, holdNeedsPerson } from './gate.mjs';
 import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
+import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
@@ -159,10 +160,13 @@ function trackerTicket(r, key) {
 const ticketWords = (key, status) => (status === 'done' ? `${key} is done in Jira` : status ? `${key} is not done in Jira yet` : `${key}'s Jira status could not be read`);
 const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${String(v.mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}`);
 const recordShipped = (r, t, how, pr, v) => queueCmd(r, shippedSet(t, how, pr, v?.mergedAt ?? null));
+// A park waiting on issue links only the person makes (clears-when personClears) holds them in its
+// clears_when alone: the pass records it done once each reads on Jira, so it is never closed here.
+const linksPending = (t) => (personClears(t.park?.clears_when) ? describeCond(t.park.clears_when) : null);
 // A parked or session item that shipped: its own PR merged, and its ticket done or in no tracker. -> how, or null.
 function shippedOf(r, t, reads) {
   const pr = ownPr(t);
-  if (pr == null) return null;
+  if (pr == null || linksPending(t)) return null;
   const { v } = reads.pr(r, pr);
   if (v?.state !== 'MERGED') return null;
   if (!trackerTicket(r, t.key)) return { how: mergedWords(pr, v), pr, v };
@@ -977,6 +981,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // Done on a session item: the person finished the ticket outside desk. Its PR and ticket are read now;
   // a merged PR, or none, is recorded done as list records one that shipped, and anything else is refused.
   const sessionDone = () => {
+    const links = linksPending(x.t);
+    if (links) return say(false, `it waits on ${links}, so it is not recorded done and stays on your list: the next pass records it done once each is on Jira.`);
     const pr = ownPr(x.t);
     const { v, err } = pr == null ? { v: null, err: '' } : readPr(pr);
     if (pr != null && !v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not recorded done and stays on your list.`);

@@ -1640,6 +1640,22 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-546 AC2 done on a session item whose PR cannot be read refuses, naming why', `${db1.ok} ${db1.line} ${queueOf('mu546b').tickets['MB-1'].state}`,
     "false mu546b MB-1: could not read PR #931's state from GitHub (HTTP 502), so it is not recorded done and stays on your list. parked");
 
+  // A park waiting on issue links only the person makes keeps them in clears_when alone: its PR merging
+  // and its ticket going done close neither it nor its links, which the pass reads on Jira.
+  const linked = (lane, m, question, pr) => { const p = parked(lane, m, question);
+    return { ...p, result: { pr }, park: { ...p.park, clears_when: { kind: 'links-made', links: [{ key: `ML-${pr - 940}`, type: 'Relates', other: 'ML-9' }], pr } } }; };
+  put('mu546c', { port: 5550, beat: 1, supervised: true, pattern: 'ML-[0-9]+', tickets: {
+    'ML-1': linked('A', 60, 'Issue links not made: ML-1 Relates ML-9', 941),
+    'ML-2': linked('B', 50, CURL, 942),
+  } });
+  const mergedDone = { pr: () => ({ v: { state: 'MERGED', mergedAt: '2026-11-09T19:40:54Z', isDraft: false }, err: '' }), ticket: () => 'done', git: () => null };
+  t('DS-546 AC1 list leaves a park waiting on issue links open, its PR merged and its ticket done',
+    `${N.refresh({ word: 'mu546c', reads: mergedDone }).length} ${queueOf('mu546c').tickets['ML-1'].park?.clears_when?.links?.length}`, '0 1');
+  const dl2 = N.record({ word: 'mu546c', ticket: 'ML-2', action: 'done', reads: mergedDone });
+  t('DS-546 AC2 done on a session item waiting on issue links refuses, naming them, and keeps them',
+    `${dl2.ok} ${dl2.line} ${queueOf('mu546c').tickets['ML-2'].park?.clears_when?.links?.length}`,
+    'false mu546c ML-2: it waits on issue links ML-2 Relates ML-9 made, so it is not recorded done and stays on your list: the next pass records it done once each is on Jira. 1');
+
   // A repo with no tracker: a merged PR is enough, and the CLI list reads it from GitHub (the fake gh).
   put('nu546', { port: 5547, beat: 1, supervised: true, tickets: { 'NU-1': { ...parked('B', 60, CURL), draft_pr: 921 }, 'NU-2': { ...parked('B', 50, CURL), draft_pr: 922 } } });
   onGitHub(921, { state: 'MERGED', mergedAt: '2026-11-09T19:40:54Z', isDraft: false });
