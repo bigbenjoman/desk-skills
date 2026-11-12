@@ -78,7 +78,7 @@ check "DS-555 the batch table shows it HELD until its date, and the bad label as
 
 # The day comes: the held label now names today.
 q set D-2 state=done; q set D-3 state=done
-labels D-1 Flagged "blocked-until-$TODAY"; q set D-1 "held_label=blocked-until-$TODAY"
+labels D-1 Flagged "blocked-until-$TODAY"
 # The person lets D-4 start, as desk-q's release command does.
 q set D-4 state=triaged park=null held_by=null
 out=$(node "$B/pass.mjs" 2>&1)
@@ -92,6 +92,34 @@ node "$B/pass.mjs" >/dev/null 2>&1
 labels D-5
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-555 a held ticket whose label is gone is released" '[ "$(field D-5 state)" = "\"running\"" ] && grep -q "date hold: D-5: no longer labelled blocked-until; RELEASED" <<< "$out"'
+
+# A label moved to a later day, or a bad label fixed, moves the hold with it.
+LATER=$(day 2)
+q set D-5 state=done
+q add D-6; q set D-6 state=triaged lane=A; labels D-6 "blocked-until-$TOMORROW"
+q add D-7; q set D-7 state=triaged lane=A; labels D-7 blocked-until-soon
+node "$B/pass.mjs" >/dev/null 2>&1
+labels D-6 "blocked-until-$LATER"; labels D-7 "blocked-until-$TOMORROW"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-555 a held ticket whose label moves to a later day is held on the new one" '[ "$(field D-6 state)" = "\"parked\"" ] && [ "$(field D-6 held_label)" = "\"blocked-until-$LATER\"" ] && grep -q "^HELD: .*D-6 (until $LATER)" <<< "$out"'
+check "DS-555 AC3 a bad label fixed to a later day holds it until that day" '[ "$(field D-7 state)" = "\"parked\"" ] && [ "$(field D-7 held_label)" = "\"blocked-until-$TOMORROW\"" ] && ! grep -q "D-7: HELD — its label" <<< "$out"'
+labels D-6 "blocked-until-$TOMORROW"; labels D-7 "blocked-until-$TODAY"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-555 a held ticket whose label moves to today is released" '[ "$(field D-7 state)" = "\"running\"" ] && grep -q "date hold: D-7: $TODAY has come; RELEASED" <<< "$out"'
+
+# A date-held ticket put behind a blocker waits on the blocker first, then on its date.
+q set D-7 state=done
+q add D-8; q set D-8 state=triaged lane=A
+q hold D-6 D-8
+check "DS-555 a blocker added to a date-held ticket holds it behind the blocker" '[ "$(field D-6 state)" = "\"parked\"" ] && [ "$(field D-6 held_by)" = "\"D-8\"" ] && [ "$(field D-6 held_label)" = null ]'
+labels D-6 "blocked-until-$TODAY"
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-555 its date coming does not release it while the blocker is unmerged" '[ "$(field D-6 state)" = "\"parked\"" ] && [ "$(field D-6 held_by)" = "\"D-8\"" ]'
+labels D-6 "blocked-until-$TOMORROW"
+# The blocker merges and the merge driver releases it, as release_chain does.
+q set D-6 state=triaged park=null held_by=null
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-555 released by its blocker before its date, it is held on its date again" '[ "$(field D-6 state)" = "\"parked\"" ] && [ "$(field D-6 held_label)" = "\"blocked-until-$TOMORROW\"" ] && [ "$(field D-6 session_id)" = null ]'
 
 # The label's reading, and a batch that waits on a date is not settled.
 out=$(node --input-type=module -e "

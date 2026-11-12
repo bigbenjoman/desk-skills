@@ -93,8 +93,12 @@ export function dateHoldOf(labels) {
   if (bad) return { label: bad, bad: true };
   return own.map((l) => ({ label: l, until: untilDay(l) })).sort((a, b) => b.until.localeCompare(a.until))[0] ?? null;
 }
-// A ticket pass.mjs holds on its blocked-until label (held_label), as dateHoldOf reads it, or null.
-export const dateHeld = (t) => (isHeld(t) && t.held_label ? dateHoldOf([t.held_label]) : null);
+// A ticket pass.mjs holds on its blocked-until label (held_label), as dateHoldOf reads it, or null. A
+// ticket held behind blockers too waits on them first (queue.mjs hold clears held_label), and the pass
+// reads its label again once they release it.
+export const dateHeld = (t) => (isHeld(t) && t.held_label && !String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
+// What the person is told about a blocked-until label whose date cannot be read.
+export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
 
 // A feature spine pass.mjs parked once its worker finished: 'approval' when its specs passed the check
 // (the person approves or rejects them), 'specs' when they did not (the person sends it back with a

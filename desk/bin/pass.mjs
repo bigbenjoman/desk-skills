@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1564,31 +1564,35 @@ const MAINT = await maintenance({
 // ---- date holds ----------------------------------------------------------
 // A triaged ticket whose triage record carries a blocked-until-YYYY-MM-DD label is held until that day
 // on this machine's local date, then goes back to triaged in its place in the queue. One whose label's
-// date cannot be read is held for the person, who lets it start. held_label keeps the label a hold was
-// for, and survives a release, so a ticket the person let start is not held on that label again.
+// date cannot be read is held for the person, who fixes the label or lets it start. A held ticket is
+// read against its labels on every pass, so a label fixed, moved or taken away moves its hold with it.
+// held_label keeps the label a hold was for, and survives a release, so a ticket the person let start
+// is not held on that label again.
 const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
 const TODAY = localDay();
 const dateLines = [];
+const holds = (h) => h && (h.bad || h.until > TODAY);
 for (const t of Object.values(queue().tickets)) {
   const held = dateHeld(t);
   if (!held && t.state !== 'triaged') continue;
   const rec = triageRec(t.key);
-  const want = dateHoldOf(rec?.labels);
-  if (held) {
-    const gone = rec && !want;
-    if (!gone && (held.bad || held.until > TODAY)) continue;
+  // With no triage record to read, a held ticket keeps the label it was held on.
+  const want = rec ? dateHoldOf(rec.labels) : held;
+  if (held && holds(want) && want.label === held.label) continue;
+  if (held && !holds(want)) {
     if (DRY) { dateLines.push(`date hold (dry run): ${t.key}: would release it`); continue; }
     q('set', t.key, 'state=triaged', 'park=null', 'held_label=null');
-    dateLines.push(`date hold: ${t.key}: ${gone ? 'no longer labelled blocked-until' : `${held.until} has come`}; RELEASED`);
+    dateLines.push(`date hold: ${t.key}: ${want ? `${want.until} has come` : 'no longer labelled blocked-until'}; RELEASED`);
     continue;
   }
-  if (!want || t.held_label === want.label || (!want.bad && want.until <= TODAY)) continue;
+  if (!holds(want) || (!held && t.held_label === want.label)) continue;
   const why = want.bad
-    ? `${HELD_PREFIX}: its label ${want.label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label, or let it start`
+    ? `${HELD_PREFIX}: ${badLabelText(want.label)}`
     : `${HELD_PREFIX}: blocked until ${want.until} (label ${want.label}) — starts on that date by itself`;
   if (DRY) { dateLines.push(`date hold (dry run): ${t.key}: would hold it: ${why}`); continue; }
   q('park', t.key, why);
   q('set', t.key, `held_label=${want.label}`);
+  if (held) dateLines.push(`date hold: ${t.key}: now held on its label ${want.label}`);
 }
 
 // ---- spawn ---------------------------------------------------------------
@@ -4168,7 +4172,7 @@ const parksOf = new Map(heldNow.map((t) => [t, waitingOnPark(qNow, t, prState)])
 const onPark = [...parksOf.keys()];
 const stuck = heldNow.filter((t) => !dateHeld(t) && !waitingOnMerge(qNow, t, prState) && !parksOf.has(t));
 if (onDate.length) out.push(`HELD: ${onDate.map((t) => `${t.key} (until ${dateHeld(t).until})`).join(', ')}`);
-for (const t of onBadLabel) report.waiting.push(`${t.key}: HELD — its label ${dateHeld(t).label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label, or let it start (${E.releaseCommand(t.key)})`);
+for (const t of onBadLabel) report.waiting.push(`${t.key}: HELD — ${badLabelText(dateHeld(t).label)} (${E.releaseCommand(t.key)})`);
 if (onPark.length) out.push(`WAITING ON A PARK: ${onPark.map((t) => `${t.key} (${parksOf.get(t).join(', ')})`).join(', ')}: answered there, not asked again`);
 if (onApproval.length) out.push(`WAITING ON APPROVAL: ${onApproval.map((t) => `${t.key} (spine ${spinesOf(t).join(', ')})`).join(', ')}`);
 if (onMerge.length) out.push(`WAITING ON MERGE: ${onMerge.map((t) => `${t.key} (${predsOf(t).join(', ')})`).join(', ')}`);

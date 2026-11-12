@@ -64,8 +64,11 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
 **A `blocked-until-YYYY-MM-DD` label holds a ticket until that day**, read on this machine's local
 date from its triage record. The pass parks it `held by orchestrator: blocked until <date>`, shows
 it under `HELD: <TICKET> (until <date>)`, and releases it on the first pass on or after that day, in
-its usual order. Nothing goes to the user. A label whose date cannot be read holds it too, and comes
-to the user under `waiting` (and in desk-needs-you) naming the label: they fix it or let it start.
+its usual order. Nothing goes to the user. Each pass reads the hold against the triage record's
+labels, so a label moved, fixed or removed (then `triage.sh <TICKET>` again) moves the hold with it.
+A label whose date cannot be read holds it too, and comes to the user under `waiting` (and in
+desk-needs-you) naming the label: they fix it or let it start. A date-held ticket that `queue.mjs
+hold` puts behind blockers waits on them first; once they release it, the pass reads its label again.
 
 **A link to the ticket's own epic never holds it.** An epic is Done only once its children are, so a
 ticket linked "is blocked by" its Jira parent epic, or by the epic its batch runs, would wait for ever.

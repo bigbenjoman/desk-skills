@@ -19,7 +19,7 @@ import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { isHeld, needsSession } from './batch-state.mjs';
+import { isHeld, needsSession, localDay } from './batch-state.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
@@ -47,9 +47,6 @@ export function checkinTimes(raw) {
   }
   return { ok: true, times: [...new Set(parts)].sort() };
 }
-
-const pad = (n) => String(n).padStart(2, '0');
-const localDay = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 // The latest check-in slot at or before `now`, as {id: 'YYYY-MM-DDTHH:MM', at: Date}, local time.
 export function latestSlot(times, now = new Date()) {

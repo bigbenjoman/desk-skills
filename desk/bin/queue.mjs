@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, dateHeld, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -595,6 +595,8 @@ switch (cmd) {
     if (['running', 'done', 'failed'].includes(t.state)) throw new Error(`${key} is ${t.state}: too late to hold it`);
     // A release sets state=triaged, so only a ticket that is triaged (or already held) may be held.
     if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it before holding it`);
+    // A date hold waits behind its blockers: once they release it, the pass reads its label again.
+    if (dateHeld(t)) t.held_label = null;
     const all = [...new Set([...String(t.held_by ?? '').split('|').filter(Boolean), ...preds])];
     t.held_by = all.join('|');
     t.state = 'parked';
@@ -1017,7 +1019,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
     const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
     const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : t.state.toUpperCase();
     const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
-    const tail = day?.bad ? `its label ${day.label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label, or let it start`
+    const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
       : stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
       : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${String(t.held_by).split('|').join(', ')} merge`

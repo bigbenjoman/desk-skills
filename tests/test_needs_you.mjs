@@ -1592,7 +1592,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
-// ---- DS-555: a ticket held on its blocked-until label is not listed; one whose label's date cannot be read is, once.
+// ---- A ticket held on its blocked-until label is not listed; one whose label's date cannot be read is, once.
 {
   const until = (label) => ({ state: 'parked', lane: 'A', held_label: label, park: { question: `held by orchestrator: ${label}` } });
   put('ds555', { port: 4640, beat: 1, supervised: true, tickets: { 'U-1': until('blocked-until-2026-11-14'), 'U-2': until('blocked-until-soon'), 'U-3': { state: 'parked', lane: 'A', held_by: 'U-1', park: { question: 'held by orchestrator: blocked by U-1 — starts once their PRs merge' } } } });
