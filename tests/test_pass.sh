@@ -2158,7 +2158,9 @@ frx 752 "$CC" "$CA" 'p0=0 p1=0 p2=0'
 frx 753 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 753 953
 q set C-4 'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"checks","what":"red: tests"}]'; frx 754 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 754 954
 frx 755 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 755
-q set C-6 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"checks"},{"try":2,"head":"'"$H1"'","kind":"rereview"}]'; frx 756 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 756
+q set C-6 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"checks"},{"try":1,"head":"'"$H1"'","kind":"rereview"},{"try":2,"head":"'"$H1"'","kind":"rereview"}]'; frx 756 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 756
+# DS-558: C-9 spent both fix tries, and its last fix pushed a head its clean verdict is older than.
+q add C-9; q set C-9 state=done lane=A branch=fix/C-9 result.pr=759 'fix_tries=[{"try":1,"head":"'"$CA"'","kind":"checks"},{"try":2,"head":"'"$CB"'","kind":"checks"}]'; frx 759 "$H1" "$H0" 'p0=0 p1=0 p2=0'
 # DS-314: held drafts a review or fix worker would otherwise get. C-7 a person put back to draft (its
 # events say so) with a red check; C-8 the pass undrafted before, now draft again with no verdict line.
 for k in 7 8; do q add "C-$k"; q set "C-$k" state=done lane=A "branch=fix/C-$k" "result.pr=75$k"; done
@@ -2184,8 +2186,12 @@ check "DS-314 a red draft a person put back to draft is held, not sent to a fix 
   '[ "$(field C-7 state)" = "\"done\"" ] && [ "$(field C-7 fix)" = null ] && [ "$(field C-7 undraft.call)" = "\"held\"" ] && echo "$out" | grep -q "C-7: HELD — PR #757 stays draft: it was put back to draft by ben at 2026-10-29T09:00:00Z"'
 check "DS-314 a draft the pass undrafted before, with no verdict at its head, is held, not sent to a review worker" \
   '[ "$(field C-8 state)" = "\"done\"" ] && [ "$(field C-8 fix)" = null ] && [ "$(field C-8 undraft.call)" = "\"held\"" ] && ! grep -q "^pr ready 758" "$T/gh-calls"'
-check "DS-316 AC5 with its tries spent it reaches the person, with what the pass read last" \
-  '[ "$(field C-6 state)" = "\"done\"" ] && [ "$(field C-6 stuck.why)" = "\"no review verdict readable at its head after 2 fix tries: no desk-review verdict is posted on it\"" ] && echo "$out" | grep -q "C-6: STUCK — PR #756: no review verdict readable"'
+check "DS-558 AC3 with two review tries at its head it reaches the person, naming the review failure" \
+  '[ "$(field C-6 state)" = "\"done\"" ] && [ "$(field C-6 stuck.why)" = "\"no review verdict readable at its head after 2 review tries at it: no desk-review verdict is posted on it\"" ] && echo "$out" | grep -q "C-6: STUCK — PR #756: no review verdict readable"'
+check "DS-558 AC1 AC2 with both fix tries spent, a verdict for an older head sends the head to a review worker, not the person" \
+  '[ "$(field C-9 state)" = "\"triaged\"" ] && [ "$(field C-9 fix | jq -c "[.kind, .head, .try, .of]")" = "[\"rereview\",\"$H1\",1,2]" ] && [ "$(field C-9 stuck)" = null ] && ! echo "$out" | grep -q "C-9: STUCK" && echo "$out" | grep -qF "review try 1 of 2: C-9 requeued for PR #759"'
+# C-9 took the worker slot C-2's review try had; out of the batch, the next pass spawns C-2.
+q drop C-9 >/dev/null
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-316 AC2 the review worker's task is to review the head and post it, changing no code" \
   'grep -q "^C-2 .*Your task is review try 1 of 2 on PR #752.*Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code" "$T/spawns"'
@@ -2286,7 +2292,7 @@ check "DS-318 AC1 its briefing says the draft conflicts with main" 'grep -q "is 
 q set C-1 state=done session_id=null result.pr=741; frx 741 "$H2" "$H1" 'p0=0 p1=0 p2=0'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-318 AC4 a resolved head reviewed only at the old head is not undrafted: its stale review goes to a review worker (DS-316)" \
-  '! grep -q "^pr ready 741" "$T/gh-calls" && [ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(field C-1 fix.kind)" = "\"rereview\"" ] && [ "$(field C-1 fix_tries | jq length)" = 2 ] && field C-1 undraft.why | grep -q "not the head 222222222" && echo "$out" | grep -q "review try 2 of 2: C-1 requeued for PR #741"'
+  '! grep -q "^pr ready 741" "$T/gh-calls" && [ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(field C-1 fix.kind)" = "\"rereview\"" ] && [ "$(field C-1 fix_tries | jq length)" = 2 ] && field C-1 undraft.why | grep -q "not the head 222222222" && echo "$out" | grep -q "review try 1 of 2: C-1 requeued for PR #741"'
 check "DS-318 AC4 and it is not put to the person" '! echo "$out" | grep -q "C-1: DRAFT"'
 # A person resolved C-3's conflict: it is no longer stuck on it.
 frx 743 "$H1" "$H1" 'p0=0 p1=0 p2=0'
