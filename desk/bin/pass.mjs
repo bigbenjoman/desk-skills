@@ -48,7 +48,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, stuckWhy } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -4094,10 +4094,13 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   const b = c.call === 'build' || c.call === 'rebuilt' ? c : c.build;
   if (b) {
     const r = b.call === 'build' ? startCheckBuild(t, n, s.head, b, null, true) : rerunBuilt(t, n, s.head, b, null, true);
-    const failed = r?.call === 'person' ? b.checks.map((name) => ({ name, build: b.command })) : [];
-    if (b === c && !failed.length) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
-    if (b === c) c = { call: 'stuck', why: stuckWhy({ lead: r.lead, checks: failed }), lead: r.lead, checks: failed };
-    else if (failed.length) c = { ...c, checks: [...failed, ...c.checks], why: stuckWhy({ lead: r.lead, checks: [...failed, ...c.checks] }), lead: r.lead };
+    // One that could not start or whose re-run was refused is the person's step, with what to run.
+    const person = r?.call === 'person';
+    if (b === c && !person) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
+    if (person) {
+      const beside = b === c ? null : c;
+      c = { ...beside, ...builtStuck(beside?.lead ?? r.lead, b.checks, { command: r.action }, beside?.checks ?? []) };
+    }
   }
   applyFix(t, n, s.head, c);
 }

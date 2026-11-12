@@ -29,7 +29,7 @@
 // steps names, is never sent to a worker: on its own it is stuck with what clears it, and beside a
 // check a worker can fix it is named in the brief as not theirs. Out of draft, where the pass builds a
 // §4 Check builds check (ctx.build), it goes the draft's way instead (buildStep): built once nothing a
-// worker fixes is red, synced by a fix worker when its build failed behind the base.
+// worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, PENDING_LIMIT_MS } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 
@@ -303,8 +303,9 @@ export function fixCall(t, s, ctx) {
     if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
   if (conflict) return conflictSpent(done, s.head, now) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base, undefined, now, fix.files, fix.check) } : nextConflictTry(done, s.pr, s.head, fix, now);
-  // A try beside a check the pass builds tells its worker to leave that check red.
-  const withBuilds = (c) => (built && c.call === 'requeue' ? { ...c, fix: { ...c.fix, builds: built.names } } : c);
+  // A try beside a check the pass builds tells its worker to leave that check red. With no try left the
+  // head is final, so its build runs beside the stuck answer (besideStuck).
+  const withBuilds = (c) => (built && c.call === 'requeue' ? { ...c, fix: { ...c.fix, builds: built.names } } : besideStuck(c, built));
   if (spent(done, fixedAt(done, s.head))) return withBuilds(spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base));
   return withBuilds(withRecord(nextTry(done, s.pr, s.head, fix), split.record));
 }
@@ -320,10 +321,12 @@ function buildRead(failing, ctx) {
   const call = names.length && ctx.build ? ctx.build(failing.filter((f) => rows.has(f.name))) : null;
   return call ? { names, call } : null;
 }
-// A stuck answer for checks a build left red: each named with its build's command and last output line,
-// beside those a person clears (notMine), so needs-you sends it to a worker with that line.
-function buildStuck(lead, built, error, notMine, ctx) {
-  const checks = [...built.names.map((name) => ({ name, build: built.call.command, ...(error ? { error } : {}) })), ...operatorStuck(notMine, ctx).checks];
+// A stuck answer for the checks a ready PR's build left red (`names`), each kept with `each`: a failed
+// build's `build` and last line (needs-you sends it to a worker with that line), the `command` of a step
+// a person takes (a refused re-run, a build that could not start), or nothing (still red after it). The
+// checks already stuck beside them (`others`) follow. pass.mjs records a build that could not start here too.
+export function builtStuck(lead, names, each, others = []) {
+  const checks = [...names.map((name) => ({ name, ...each })), ...others];
   return { call: 'stuck', why: stuckWhy({ lead, checks }), lead, checks };
 }
 // A ready PR whose only red checks a worker would take are ones the pass builds: the draft's path out
@@ -333,13 +336,22 @@ function buildStuck(lead, built, error, notMine, ctx) {
 // a build to start rides on that answer as `build`.
 function buildStep(t, s, built, notMine, ctx) {
   const b = built.call;
-  if (b.call === 'build' || b.call === 'rebuilt') return notMine.length ? { ...operatorStuck(notMine, ctx), build: b } : b;
-  if (b.call === 'wait') return notMine.length ? operatorStuck(notMine, ctx) : b;
   if (b.call === 'sync') {
     const c = syncFix(t, { pr: s.pr, head: s.head, base: b.base, why: b.why, draft: false });
-    return c.call === 'stuck' ? buildStuck(c.lead, built, b.error, notMine, ctx) : c;
+    if (c.call !== 'stuck') return c;
+    return builtStuck(c.lead, built.names, b.each, operatorStuck(notMine, ctx).checks);
   }
-  return buildStuck(b.lead ?? 'its check build failed', built, b.error, notMine, ctx);
+  if (!notMine.length && (b.call === 'build' || b.call === 'rebuilt' || b.call === 'wait')) return b;
+  return besideStuck(operatorStuck(notMine, ctx), built);
+}
+// A stuck answer with a ready PR's built checks beside it: their build to start rides on it as `build`,
+// one still running leaves it as it is, and one that failed (no try left to sync it) joins its checks.
+function besideStuck(c, built) {
+  if (!built || c.call !== 'stuck') return c;
+  const b = built.call;
+  if (b.call === 'build' || b.call === 'rebuilt') return { ...c, build: b };
+  if (b.call === 'wait') return c;
+  return { ...c, ...builtStuck(c.lead ?? b.lead ?? 'its check build failed', built.names, b.each ?? {}, c.checks) };
 }
 
 // A line of a posted desk-review body that opens a section: a `###` heading, an all-caps one as the

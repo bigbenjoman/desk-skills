@@ -885,7 +885,10 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-548 AC3 beside a check a worker fixes, that one goes to the worker and the build is no one\'s to clear by hand', `${a3?.call} | ${a3?.fix.what} | ${a3?.fix.not_mine.length} | ${a3?.fix.builds}`, 'requeue | red: Lint | 0 | Flows image');
   t('DS-548 AC3 its brief tells the worker to leave the built check red', fixBrief(tk({ fix: a3.fix })).includes('- Flows image is red too, and it is not yours to fix: §4 Check builds names it, so the pass builds your head once the rest are green.'), true);
   const a3s = fixCall(tk({ fix_tries: two }), mixed, bctx(null));
-  t('DS-548 AC3 its tries spent, the stuck reason lists only the worker\'s check', `${a3s?.call} | ${a3s?.why} | ${a3s?.checks.map((c) => c.name)}`, 'stuck | still red after 2 fix tries: Lint | Lint');
+  t('DS-548 AC3 its tries spent, the stuck reason lists only the worker\'s check, and the build starts beside it', `${a3s?.call} | ${a3s?.why} | ${a3s?.checks.map((c) => c.name)} | ${a3s?.build?.call}`, 'stuck | still red after 2 fix tries: Lint | Lint | build');
+  t('DS-548 AC3 negative control: with a try left, no build starts under the worker', a3?.build, undefined);
+  const a3f = fixCall(tk({ fix_tries: two }), mixed, bctx(failed));
+  t('DS-548 AC3 its tries spent and its build already failed, that build joins the stuck checks with its line', JSON.stringify(a3f?.checks), '[{"name":"Flows image","build":"./scripts/ensure-flows-image.sh","error":"ECR denied the push"},{"name":"Lint"}]');
   t('DS-548 AC3 once the rest are green, its build runs, tries spent or not', fixCall(tk({ fix_tries: two }), only, bctx(null))?.call, 'build');
   t('DS-548 AC3 negative control: with ci-rerun not yes the built check is the person\'s beside it, as before', fixCall(tk({ fix_tries: two }), mixed, bctx(null, { rerun: 'no' }))?.why, 'still red after 2 fix tries: Lint; Flows image · ./scripts/ensure-flows-image.sh');
   const a4 = fixCall(tk(), only, bctx(failed));
@@ -894,7 +897,9 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   const a4s = fixCall(tk({ fix_tries: two }), only, bctx(failed, { behind: () => 'main' }));
   t('DS-548 AC4 behind its base with no try left, stuck the same way', `${a4s?.call} | ${a4s?.why}`, 'stuck | still behind main with its check build failing after 2 fix tries: Flows image says "ECR denied the push"');
   const still = fixCall(tk(), only, bctx({ ...built, reran: { ok: true, out: '' } }));
-  t('DS-548 AC4 still red after the build and its re-run, stuck naming the build', `${still?.call} | ${still?.checks[0].build}`, 'stuck | ./scripts/ensure-flows-image.sh');
+  t('DS-548 AC4 negative control: still red after a build that passed and its re-run, a plain red check, not a failed build', `${still?.call} | ${JSON.stringify(still?.checks)}`, 'stuck | [{"name":"Flows image"}]');
+  const refused = fixCall(tk(), only, bctx({ ...built, reran: { ok: false, out: 'HTTP 403' } }));
+  t('DS-548 AC4 negative control: a refused re-run is the person\'s step, not a failed build', `${refused?.call} | ${JSON.stringify(refused?.checks)}`, 'stuck | [{"name":"Flows image","command":"re-run \\"Flows image\\" on #697"}]');
   const steps = { premerge: [{ name: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' }], steps: () => [] };
   const both = pr([ok('tests'), red('Flows image', '903'), red('Check portal schema mirror', '905')]);
   const a5 = fixCall(tk(), both, bctx(null, steps));
