@@ -589,7 +589,8 @@ export function verdictTry(t, s, ctx) {
 // ticket's criteria do not need, or reports it needed, which leaves the approval to the person. One goes
 // per head, only for a file no earlier one judged, and at most FIX_TRIES_MAX per PR, outside the fix
 // tries' count. A review verdict the check cannot read at the head (none, a stale one, an old format)
-// goes to a review try under reviewTry's tries, unless a §4 State check of kind verdict is the one red
+// goes to a review try under reviewTry's tries, and to the person, named as a review that did not post,
+// once they are spent at the head, unless a §4 State check of kind verdict is the one red
 // (verdictTry takes that) or another red check a worker can fix is (fixCall takes that). null where
 // neither applies, so fixCall decides as before.
 // s: its pr_status; ctx: fixCall's, with base and baseMerge.
@@ -622,7 +623,7 @@ export function gateTry(t, s, ctx) {
   const rest = gate.failing.filter((f) => !staleNames.has(f.name) && !state.some((x) => x.name === f.name));
   if (splitFailing(rest, ctx).mine.length) return null;
   const c = reviewTry(t, { pr: s.pr, head: s.head, why: `its "${stale[0].name}" check says: ${stale[0].line}`, base: ctx.base, baseMerge: ctx.baseMerge });
-  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : null;
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c;
 }
 
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing

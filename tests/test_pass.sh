@@ -2159,7 +2159,7 @@ frx 753 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 753 953
 q set C-4 'fix_tries=[{"try":1,"head":"'"$H1"'","kind":"checks","what":"red: tests"}]'; frx 754 "$H1" "$H1" 'p0=0 p1=0 p2=0'; redcheck 754 954
 frx 755 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 755
 q set C-6 'fix_tries=[{"try":1,"head":"'"$H0"'","kind":"checks"},{"try":1,"head":"'"$H1"'","kind":"rereview"},{"try":2,"head":"'"$H1"'","kind":"rereview"}]'; frx 756 "$H1" "$H1" 'p0=0 p1=0 p2=0'; plainrev 756
-# DS-558: C-9 spent both fix tries, and its last fix pushed a head its clean verdict is older than.
+# C-9 spent both fix tries, and its last fix pushed a head its clean verdict is older than.
 q add C-9; q set C-9 state=done lane=A branch=fix/C-9 result.pr=759 'fix_tries=[{"try":1,"head":"'"$CA"'","kind":"checks"},{"try":2,"head":"'"$CB"'","kind":"checks"}]'; frx 759 "$H1" "$H0" 'p0=0 p1=0 p2=0'
 # DS-314: held drafts a review or fix worker would otherwise get. C-7 a person put back to draft (its
 # events say so) with a red check; C-8 the pass undrafted before, now draft again with no verdict line.

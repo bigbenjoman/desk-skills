@@ -160,8 +160,8 @@ t('DS-384 AC2 once its review fix tries are spent, findings at the head go to th
 const a3 = reviewFix(tk({ fix_tries: [...twoChecks, ...reviewTries(1)] }), p0At(HEAD));
 t('DS-384 AC3 with a review try of its own left but the overall cap reached, it goes to the person, naming the tries by kind', `${a3?.call} | ${a3?.why.split(':')[0]}`, 'stuck | review not clean after 3 fix tries (2 checks, 1 review)');
 t('DS-558 AC2 a rereview try does not count toward the overall cap', reviewFix(tk({ fix_tries: [...capped379, ...reviewTries(1)] }), p0At(HEAD))?.fix?.try, 2);
-const ex = reviewFix(tk({ fix_tries: [ds379[0], { try: 1, head: 'e'.repeat(40), kind: 'rereview', extra: true }, ...reviewTries(1)] }), p0At(HEAD));
-t('DS-384 AC3 an extra review try a base merge earned counts toward neither cap', `${ex?.call} ${ex?.fix?.try}/${ex?.fix?.of}`, 'requeue 2/2');
+const ex = reviewFix(tk({ fix_tries: [ds379[0], { try: 1, head: 'e'.repeat(40), kind: 'checks', extra: true }, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 AC3 an extra fix try counts toward neither cap', `${ex?.call} ${ex?.fix?.try}/${ex?.fix?.of}`, 'requeue 2/2');
 const cap = reviewFix(tk({ fix_tries: [{ try: 1, head: 'f'.repeat(40), kind: 'capture' }, ...twoChecks, ...reviewTries(1)] }), p0At(HEAD));
 t('DS-384 a capture try is not counted or named among the tries by kind', cap?.why.split(':')[0], 'review not clean after 3 fix tries (2 checks, 1 review)');
 
@@ -342,7 +342,7 @@ t('DS-558 a head no base merge moved gets a review try too, and the merge is not
 const afterX = [...tried, { try: 2, head: HEAD, kind: 'rereview', extra: true }];
 t('DS-558 an extra review try recorded at the head is one of its two', reviewTry(tk({ fix_tries: afterX }), { pr: 871, head: HEAD, why: unread, baseMerge: () => true })?.fix.try, 2);
 const oneX = [{ try: 0, head: OLD, kind: 'rereview', extra: true }];
-t('DS-377 the extra try is not counted: a fix try after it is try 1 of 2', reviewTry(tk({ fix_tries: oneX }), { pr: 871, head: HEAD, why: unread })?.fix.try, 1);
+t('DS-558 a review try at an older head leaves the current head its first review try', reviewTry(tk({ fix_tries: oneX }), { pr: 871, head: HEAD, why: unread })?.fix.try, 1);
 // A fake git: `chain` is rev-list's first-parent lines from OLD to HEAD, and `onBase` the ancestry answer.
 const MID = 'e'.repeat(40), THEIRS = 'd'.repeat(40);
 const git = ({ chain, onBase = true }) => (args) => (args[0] === 'rev-parse' ? { ok: true, out: OLD }
@@ -774,7 +774,8 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-500 AC2 its brief quotes the gate', fixBrief(tk({ fix: v2.fix })).includes(oldFormatLine), true);
   t('DS-500 AC2 so does a stale one', gateTry(tk(), pr([ok('tests'), gateRed(staleLine)]), gctx())?.fix.kind, 'rereview');
   t('DS-558 reviewed at this head once: a second review try', gateTry(tk({ fix_tries: [v2.fix] }), pr([ok('tests'), gateRed(limitLine, oldFormatLine)]), gctx())?.fix.try, 2);
-  t('DS-500 AC2 reviewed at this head twice already: left to fixCall and the person', gateTry(tk({ fix_tries: [v2.fix, v2.fix] }), pr([ok('tests'), gateRed(limitLine, oldFormatLine)]), gctx()), null);
+  const g2 = gateTry(tk({ fix_tries: [v2.fix, v2.fix] }), pr([ok('tests'), gateRed(limitLine, oldFormatLine)]), gctx());
+  t('DS-558 AC3 reviewed at this head twice already: the person\'s, named as a review that did not post, and no fix try is sent', `${g2?.call} ${/^no review verdict readable at its head after 2 review tries at it: /.test(g2?.why ?? '')}`, 'stuck true');
   const pv = gateTry(tk(), pr([ok('tests'), gateRed(pkgLine, staleLine)]), gctx());
   t('DS-500 AC2 beside a protected file, the protected try goes first', pv?.fix.kind, 'protected');
   t('DS-500 AC2 and the review try once it reported the file needed', gateTry(tk({ fix_tries: [pv.fix] }), pr([ok('tests'), gateRed(pkgLine, staleLine)]), gctx())?.fix.kind, 'rereview');
