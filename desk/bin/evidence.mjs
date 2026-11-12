@@ -227,12 +227,16 @@ No UI.
   return { summary, body };
 }
 
+// `gh`'s arguments to start the evidence workflow for PR n: on `ref`, the default branch whose code it
+// runs, with the PR number its one input. The pass (pass.mjs startEvidence) and dispatchCall both use it.
+export const evidenceRunArgs = (workflow, repo, ref, n) => ['workflow', 'run', workflow, '--repo', repo, '--ref', ref, '-f', `pr=${n}`];
+
 // A worker's own dispatch of §4 Evidence workflow, which it may start from the moment its draft PR
-// opens, before the queue records the PR (DS-549 AC1). Its settings allow only
+// opens, before the queue records the PR. Its settings allow only
 // `node <bin>/evidence.mjs dispatch <its branch> <n>`, the branch fixed by the rule. A `pr=*` rule
 // could not hold the number to digits, as the shell expands an unquoted `*` against files the worker
-// writes, so this checks the arguments instead and starts the run exactly as the pass does
-// (pass.mjs startEvidence): on the config row's default branch, never a batch base, with `-f pr=<n>`.
+// writes, so this checks the arguments instead and starts the run with evidenceRunArgs, on the config
+// row's default branch, never a batch base.
 //
 //   node evidence.mjs dispatch <branch> <pr>
 //
@@ -248,7 +252,7 @@ export function dispatchCall({ argv, view, workflow, repo, ref, allowed }) {
   if (!view) return { refused: `PR #${pr} could not be read` };
   if (view.headRefName !== branch || view.isCrossRepository) return { refused: `PR #${pr} is not ${branch}'s own PR` };
   if (view.state !== 'OPEN') return { refused: `PR #${pr} is ${String(view.state).toLowerCase()}` };
-  return { args: ['workflow', 'run', workflow, '--repo', repo, '--ref', ref, '-f', `pr=${pr}`] };
+  return { args: evidenceRunArgs(workflow, repo, ref, pr) };
 }
 
 const isMain = (() => {

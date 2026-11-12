@@ -313,8 +313,7 @@ if (mode === 'triage') {
   })();
   // The person's one-off grant on this ticket (answer.mjs, batch-state.mjs grantFor): one exact force-push of this
   // branch over the SHA they approved, while origin still holds that SHA.
-  const QUEUED = (() => { try { return JSON.parse(readFileSync(E.queueFile(), 'utf8')).tickets?.[T] ?? null; } catch { return null; } })();
-  const ticketGrant = QUEUED?.grant ?? null;
+  const ticketGrant = (() => { try { return JSON.parse(readFileSync(E.queueFile(), 'utf8')).tickets?.[T]?.grant ?? null; } catch { return null; } })();
   const ONE_PUSH = baseFix ? null : grantPush(ticketGrant, { branch: BRANCH, remote: REMOTE_SHA });
   // A rebased branch that is already on origin can only go back by force-push, so it is rebased only
   // where §3 allows that; otherwise it takes `git merge origin/<base>`. A one-off grant adds no rebase:
