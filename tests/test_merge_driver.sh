@@ -235,6 +235,15 @@ q add T-13 Task A; q set T-13 state=triaged branch=fix/T-13; q hold T-13 T-14
 loop
 check "a blocker GitHub does not list but the queue records as merged releases its successor" '[ "$(qf T-12 .state)" = triaged ] && [ "$(qf T-12 .held_by)" = null ] && echo "$out" | grep -q "merged: T-11#426 -> RELEASED T-12"'
 check "a blocker with no recorded merge and no merged PR still holds its successor" '[ "$(qf T-13 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-13"'
+# A ticket the pass holds on its blocked-until date waits on that date, even where --deps names merged blockers.
+q add T-15 Task A; q set T-15 state=triaged branch=fix/T-15
+q park T-15 "held by orchestrator: blocked until 2099-01-01 (label blocked-until-2099-01-01) — starts on that date by itself"; q set T-15 held_label=blocked-until-2099-01-01
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-15:T-11" 2>&1)
+check "DS-555 a ticket held on its blocked-until date is not released by merged --deps blockers" '[ "$(qf T-15 .state)" = parked ] && [ "$(qf T-15 .held_label)" = blocked-until-2099-01-01 ] && ! echo "$out" | grep -q "RELEASED T-15"'
+q set T-15 held_label=null
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-15:T-11" 2>&1)
+check "DS-555 the same hold with no blocked-until label is released by those blockers" '[ "$(qf T-15 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-15"'
+q set T-15 state=done
 q drop T-11; q drop T-12; q drop T-13; q drop T-14
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'

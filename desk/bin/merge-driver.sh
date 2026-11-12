@@ -419,7 +419,9 @@ for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(
 // No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
 const unapproved = (p) => p === spine && q[p]?.approved !== true;
 // A blocker in no batch (held_outside) waits on Jira as well as a merge: pass.mjs lifts it, not this.
-for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
+// So does a ticket held on its blocked-until label (held_label with no held_by, batch-state.mjs dateHeld).
+const onDate = (t) => !!t.held_label && !String(t.held_by ?? '').split('|').some(Boolean);
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0

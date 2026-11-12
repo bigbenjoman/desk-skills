@@ -74,6 +74,32 @@ export const HELD_PREFIX = 'held by orchestrator';
 // the one sanctioned manual release once every predecessor's PR has merged).
 export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
 
+// A label that holds a ticket until a calendar day, read on this machine's local date.
+const UNTIL_LABEL = /^blocked-until-(.*)$/i;
+export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// The YYYY-MM-DD day a blocked-until label names, or null when that is not a real day.
+export function untilDay(label) {
+  const m = UNTIL_LABEL.exec(String(label ?? '').trim());
+  const d = m && /^(\d{4})-(\d{2})-(\d{2})$/.exec(m[1]);
+  if (!d) return null;
+  const at = new Date(Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3])));
+  return at.getUTCMonth() === Number(d[2]) - 1 && at.getUTCDate() === Number(d[3]) ? m[1] : null;
+}
+// The hold a ticket's labels ask for: { label, bad: true } for a blocked-until label whose date cannot
+// be read (it wins), else { label, until } for the latest day one names, else null.
+export function dateHoldOf(labels) {
+  const own = (Array.isArray(labels) ? labels : []).map(String).filter((l) => UNTIL_LABEL.test(l.trim()));
+  const bad = own.find((l) => !untilDay(l));
+  if (bad) return { label: bad, bad: true };
+  return own.map((l) => ({ label: l, until: untilDay(l) })).sort((a, b) => b.until.localeCompare(a.until))[0] ?? null;
+}
+// A ticket pass.mjs holds on its blocked-until label (held_label), as dateHoldOf reads it, or null. A
+// ticket held behind blockers too waits on them first (queue.mjs hold clears held_label), and the pass
+// reads its label again once they release it.
+export const dateHeld = (t) => (isHeld(t) && t.held_label && !String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
+// What the person is told about a blocked-until label whose date cannot be read.
+export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
+
 // A feature spine pass.mjs parked once its worker finished: 'approval' when its specs passed the check
 // (the person approves or rejects them), 'specs' when they did not (the person sends it back with a
 // note). Either way the person is deciding about the spine, so what is held behind it is waiting on
@@ -299,6 +325,9 @@ function holdLeadsTo(q, t, prState, seen) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
   if (!isHeld(t) || seen.has(t)) return null;
+  // Held on its label, it starts on its day by itself, and a fixed label is only read by a pass, so
+  // the batch is not settled while either waits.
+  if (dateHeld(t)) return [];
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
   const outside = String(t.held_outside ?? '').split('|');
