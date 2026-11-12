@@ -40,7 +40,7 @@ import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
-import { maintenance, stopForWindow, runningWorkers } from './maintenance.mjs';
+import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
 import { undraftCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
@@ -570,6 +570,20 @@ const bootMs = (() => {
 })();
 const REBOOT = 'the computer restarted after its last log write';
 const killedBy = (log) => (statSync(log).mtimeMs < bootMs ? REBOOT : 'its process died while the computer stayed up');
+// A worker stopped for a planned reboot (resume=reboot) waits for the computer to restart after its
+// stop, or, when none comes, for config §3b "Maintenance drain limit (minutes)" from the stop, then
+// resumes anyway. -> {why} once it may resume, else {wait}.
+const rebootReady = (t) => {
+  const at = Date.parse(t.reboot_stop_at ?? '');
+  const stop = (t.resume_why ?? 'stopped for a planned reboot').replace(/^stopped/, 'it stopped');
+  if (!Number.isFinite(at) || bootMs > at) {
+    return { why: `the computer restarted at ${new Date(bootMs).toISOString().replace(/\.\d+Z$/, 'Z')} after ${stop}` };
+  }
+  const mins = drainLimit(E.configValue('maintenance-drain')).minutes;
+  const until = at + mins * 60000;
+  if (Date.now() >= until) return { why: `no reboot was seen within ${mins} min (config §3b "${DRAIN_ROW}") of when ${stop}` };
+  return { wait: `${stop.replace(/^it /, '')}, resumed after the computer restarts, or at ${new Date(until).toISOString().replace(/\.\d+Z$/, 'Z')} if it does not` };
+};
 // Where a killed worker's resume stops: off, or this ticket has had as many as the row allows.
 const resumeRefusal = (t, why) => {
   const n = t.resumes ?? 0;
@@ -704,14 +718,21 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   const lastDone = [...h.matchAll(/AUTOPILOT_DONE:\s*(.+)/g)].pop();
   const parkSupersededByDone = lastPark && lastDone && lastDone.index > lastPark.index;
   // A handoff (AUTOPILOT_HANDOFF: 4b or 7) ends this session so the next stage starts in a fresh one.
-  // It counts only as the last of the three: a session that hands off has neither parked nor finished.
+  // It counts only as the last marker: a session that hands off has neither parked nor finished.
   const lastHandoff = [...h.matchAll(/AUTOPILOT_HANDOFF:\s*(.+)/g)].pop();
-  const handoffLast = !!lastHandoff && [lastPark, lastDone].every((m) => !m || lastHandoff.index > m.index);
+  // A stop for a planned reboot (AUTOPILOT_REBOOT) is resumed by the pass after the boot, never parked.
+  // It counts only as the last of the four, and only once: a resumed session keeps this log, so the
+  // stops already acted on (reboot_stops) are spent. A session that already printed DONE has finished.
+  const reboots = [...h.matchAll(/AUTOPILOT_REBOOT:[ \t]*(.*)/g)];
+  const lastReboot = reboots.length > (t.reboot_stops ?? 0) && !lastDone ? reboots.at(-1) : null;
+  const reboot = lastReboot && [lastPark, lastHandoff].every((m) => !m || lastReboot.index > m.index)
+    ? (lastReboot[1].trim() || 'no reason given') : undefined;
+  const handoffLast = !reboot && !!lastHandoff && [lastPark, lastDone].every((m) => !m || lastHandoff.index > m.index);
   const handoff = handoffLast ? lastHandoff[1].trim() : undefined;
-  const park = handoff || parkSupersededByDone ? undefined : lastPark?.[1];
+  const park = handoff || reboot || parkSupersededByDone ? undefined : lastPark?.[1];
   // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
   // hangs after printing it must be recorded done, never left running and then parked as wedged.
-  const done = park || handoff ? undefined : lastDone?.[1];
+  const done = park || handoff || reboot ? undefined : lastDone?.[1];
   for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
 
   // A worker at a usage limit (usage-limit.mjs decides; nothing here reads the event). Only a worker
@@ -719,7 +740,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   const logRaw = readFileSync(log);
   const logText = logRaw.toString();
   const usage = usageLimit(logText);
-  const limit = !park && !done && !handoff && usage.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
+  const limit = !park && !done && !handoff && !reboot && usage.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
   if (usage.unrecognised.length > (t.usage_unrecognised ?? 0)) {
     q('set', t.key, `usage_unrecognised=${usage.unrecognised.length}`);
     report.unrecognised.push(`${t.key}: ${usage.unrecognised.at(-1)}`);
@@ -747,7 +768,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     if (t.idle_passes) q('set', t.key, 'idle_passes=0');
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
-    const stall = idle >= WEDGE_PASSES && !done && !handoff;
+    const stall = idle >= WEDGE_PASSES && !done && !handoff && !reboot;
     // Held since the first pass that found it so; the ceiling counts from then.
     const waitOn = stall ? suiteWait(t.worktree ?? join(WORKTREES, t.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir()) }) : null;
     const since = waitOn ? (t.suite_wait_since ?? Date.now()) : null;
@@ -807,11 +828,11 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 
   const stillLive = registryOk && t.session_id && liveSids.has(t.session_id);
   let stopped = '';
-  if (stillLive && (done || handoff)) {
-    // Finished (or handed off) but hung: stop the session (it has nothing left to do) and record it below.
+  if (stillLive && (done || handoff || reboot)) {
+    // Finished (or handed off, or stopped for a reboot) but hung: stop the session (it has nothing left to do) and record it below.
     const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
     if (pid) sh('kill', [String(pid)], { tolerant: true });
-    const said = done ? 'DONE' : 'HANDOFF';
+    const said = done ? 'DONE' : handoff ? 'HANDOFF' : 'REBOOT';
     stopped = pid ? ` (session still live after ${said} — stopped pid ${pid})` : ` (session still live after ${said}, no pid to stop: session ${t.session_id})`;
   } else if (stillLive) {
     // A worker sitting on an unanswered question is waiting, not working.
@@ -823,7 +844,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 
   // Exited, or finished and stopped above. Decide what it was, from the markers read above.
   // A park waiting only on a check §4 Check builds names (built, read above) is done: the undraft step builds it.
-  if (built) {
+  if (reboot) {
+    // Its session, branch, worktree and unpushed commits are kept, and it is not counted as a kill:
+    // the spawn resumes it once the computer has restarted, or once no restart came in time (rebootReady).
+    q('set', t.key, 'state=triaged', 'resume=reboot', `resume_why=stopped for a planned reboot (${reboot})`,
+      `reboot_stops=${reboots.length}`, `reboot_stop_at=${statSync(log).mtime.toISOString()}`);
+    report.advanced.push(`${t.key} stopped for a planned reboot (${reboot}): queued to resume in its own session after the restart${stopped}`);
+  } else if (built) {
     const checks = built.checks.map((x) => `"${x}"`).join(', ');
     recordDone(t, {
       log, h, pr: String(built.pr), summary: `parked only on ${checks}, which §4 Check builds clears: recorded done`,
@@ -1639,10 +1666,12 @@ const eligibleBase = all.filter((r) =>
 const blockedByDone = eligibleBase.filter(alreadyFinished);
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every
 // new ticket. So does a worker moving off a login at its usage limit.
-const toResume = (r) => ['pending', 'usage', 'maintenance'].includes(r.resume);
+const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot'].includes(r.resume);
 const toHandoff = (r) => r.handoff === 'pending';
 const goesFirst = (r) => toResume(r) || toHandoff(r) || !!r.login_move;
-const eligible = eligibleBase.filter((r) => !alreadyFinished(r)).sort((a, b) => goesFirst(b) - goesFirst(a));
+// A worker stopped for a planned reboot is held until rebootReady lets it go.
+const rebootWaits = eligibleBase.filter((r) => r.resume === 'reboot' && rebootReady(r).wait);
+const eligible = eligibleBase.filter((r) => !alreadyFinished(r) && !rebootWaits.includes(r)).sort((a, b) => goesFirst(b) - goesFirst(a));
 if (!maySpawn && eligible.length) {
   personStall(`not spawning ${eligible.length} ticket(s): config §3 ${HEADLESS_KEY} is "${headlessPerm}"` +
     (headlessPerm === 'ask' ? ' — confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1' : ' — run /desk-setup to grant it'));
@@ -2305,19 +2334,22 @@ const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn ref
 // so inside the worker sandbox, with AUTOPILOT_RESUME as its next prompt. Its briefing is the one it
 // was spawned with. A worker that exited at the usage limit (resume=usage) resumes the same way, but
 // was not killed: it is not counted against config §3b "Resume a killed worker (times)". Nor is one the
-// maintenance window stopped at its drain limit (resume=maintenance).
+// maintenance window stopped at its drain limit (resume=maintenance), or one asked to stop for a
+// planned reboot (resume=reboot), which names the restart, or that none came, as its reason.
 async function resumeKilled(t) {
   const usage = t.resume === 'usage';
   const maint = t.resume === 'maintenance';
-  const n = (t.resumes ?? 0) + (usage || maint ? 0 : 1);
-  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : 'killed before it finished';
+  const boot = t.resume === 'reboot' ? rebootReady(t).why : null;
+  if (boot) t = { ...t, resume_why: boot };
+  const n = (t.resumes ?? 0) + (usage || maint || boot ? 0 : 1);
+  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot' : 'killed before it finished';
   // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
     q('set', t.key, 'state=failed', 'resume=null', 'port=null', 'spawn_failed=true');
     report.failed.push(`${t.key}: ${ended}, and could not be resumed: ${why}`);
   };
   // The row may have changed while it waited for a slot.
-  const stop = usage || maint ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
+  const stop = usage || maint || boot ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
   if (stop?.fail) return fail(stop.fail);
   if (stop?.park) {
     q('set', t.key, 'resume=null');
@@ -2344,7 +2376,7 @@ async function resumeKilled(t) {
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
-  const prompt = `Your previous run of this session ${usage ? 'ended' : maint ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
+  const prompt = `Your previous run of this session ${usage ? 'ended' : maint || boot ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
     `Carry on with ticket ${t.key} from where you stopped, in your worktree ${t.worktree} on branch ${t.branch}. ` +
     'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ' +
     `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.` +
@@ -2352,7 +2384,7 @@ async function resumeKilled(t) {
     `${fixtures ? ` ${fixtures.trimEnd()}` : ''}`;
   const log = join(STATE, 'logs', `${t.key}.log`);
   logPreflight(t.key, pre.cost);
-  q('set', t.key, 'state=running', 'resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0',
+  q('set', t.key, 'state=running', 'resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []),
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
@@ -2360,7 +2392,7 @@ async function resumeKilled(t) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${rotating ? ` login=${login.name}` : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${rotating ? ` login=${login.name}` : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 
@@ -2581,7 +2613,7 @@ async function spawnHandoff(t, pick) {
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null');
+    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null');
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -2922,7 +2954,7 @@ for (const t of spawnable) {
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff. One that
     // moved logins keeps its resume tries as they were: the move is not one.
-    'resume=null', 'resume_why=null', ...(t.login_move ? [] : ['resumes=null']), 'resume_limits=null', 'usage_paused=null', 'login_move=null',
+    'resume=null', 'resume_why=null', ...(t.login_move ? [] : ['resumes=null']), 'resume_limits=null', 'usage_paused=null', 'login_move=null', 'reboot_stops=null', 'reboot_stop_at=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
@@ -4474,8 +4506,10 @@ const blocked = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 
 if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(BIN, 'answer.mjs')} <TICKET> "<answer>"`);
 const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
-const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r));
+const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r) && !(r.resume === 'reboot' && rebootReady(r).wait));
 if (resumeWaits.length) out.push(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`);
+const bootWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && r.resume === 'reboot' && rebootReady(r).wait);
+if (bootWaits.length) out.push(`waiting for the reboot: ${bootWaits.map((r) => `${r.key} (${rebootReady(r).wait})`).join(', ')}`);
 // A put-off park whose `pr-head` or `config:<id>` input has changed since is asked again, saying what
 // changed: the refreshed inputs go on the park, where the verdict below and the digest read them.
 for (const t of Object.values(queue().tickets)) {

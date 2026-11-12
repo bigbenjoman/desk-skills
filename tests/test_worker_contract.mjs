@@ -41,6 +41,8 @@ t('AC5 and never a carry-on', /never a skip/.test(core), true);
 
 // AC2: the Stage 4 section is read before any suite runs, whatever the stage.
 t('AC2 the core sends the worker to the Stage 4 section before any suite', /about to run any suite, typecheck, lint or build, at any stage[^\n]*\n[^\n]*read the Stage 4 file first/.test(core), true);
+t('DS-551 a worker asked to stop for a reboot, at any stage, is sent to the Stage 5 section, which holds the rule',
+  /asked to stop for a reboot[^\n]*\n[^\n]*read the Stage 5 file first/.test(core) && read('worker-contract-stage-5.md').includes('`AUTOPILOT_REBOOT: <who asked, and when>`'), true);
 t('AC2 the Stage 4 section holds verification and self-review', read('worker-contract-stage-4.md').includes('## 3. Verification must cover what CI covers') && read('worker-contract-stage-4.md').includes('### Self-review'), true);
 
 // A lane D ticket admitted with its canvas saved builds without stopping, and only one with no saved
