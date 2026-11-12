@@ -419,6 +419,17 @@ cd "$WT"
 export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
+# The commit author and committer, from config §1 Git author name / email. A worker is refused
+# `git config` and `git -c`, so without these its commits carry the name and hostname email git
+# guesses. A row that is unset or `none` sets nothing; one desk cannot read is warned about and sets nothing.
+if GIT_AUTHOR_ROW="$(node "$DESK_ENV_MJS" git-author 2>/dev/null </dev/null)"; then
+  IFS="$(printf '\t')" read -r GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL <<EOF
+$GIT_AUTHOR_ROW
+EOF
+  export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+elif [ $? -eq 4 ]; then
+  echo "[spawn] config §1 Git author name / email is not \`Name <email>\` or \`Name\` / \`email\`; $TICKET commits with git's default author" >&2
+fi
 # The login this worker runs on (its CLAUDE_CONFIG_DIR, or the default), read back by the pass and
 # desk-q (claude-logins.mjs) to probe that login's usage. Beside its settings, never in its log, whose
 # growth is the worker's own output.

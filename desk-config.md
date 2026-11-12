@@ -91,7 +91,7 @@ Per repo, because the email, Jira account and even the GitHub handle can differ 
 | Jira email | `TODO` (`none` if §4 Tracker is `none`) |
 | Jira display name | `TODO` (exactly as Jira shows it; the autopilot ownership test) |
 | Jira account id | `TODO` (from `desk-jira whoami`) |
-| Git author name / email | `TODO` (must match what your commits in this repo already use) |
+| Git author name / email | `TODO` (`Name <email>`; must match what your commits in this repo already use; autopilot workers commit as it) |
 | Pronouns (optional) | `TODO` (unset means they/them) |
 
 ## 2. Paths on your machine
@@ -196,7 +196,7 @@ protection is `none`, nothing on GitHub stops a red merge, so `pr-merge-green` a
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 | `machine-reboot` | Restart this computer at the end of the §3b Maintenance window, once it has drained, updated desk-skills and the reboot check found no blocker | `ask` | `TODO` |
 | `worker-dependency-install` | Let a worker add a dependency or sync the lockfile with §4 Package manager (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`); never global, never another directory | `ask` | `TODO` |
-| `worker-screenshots` | Let a worker run a Storybook, Playwright or Python screenshot capture from its worktree, under the browser lock | `ask` | `TODO` |
+| `worker-screenshots` | Let a worker run a Storybook, Playwright, Node or Python script from its worktree that captures a screenshot or generates an image, under the browser lock | `ask` | `TODO` |
 | `worker-local-services` | Let a worker start a §4 Local services entry in the main checkout's compose project (`docker compose -f <main checkout>/compose.yaml up -d --no-recreate --no-deps <service>`); stopping, removing or recreating one stays refused | `ask` | `TODO` |
 | `worker-web-read` | Let a worker search the web and read public pages (WebSearch, WebFetch), so a public figure or a site's terms is looked up rather than parked for you | `ask` | `TODO` |
 | `worker-workflow-dispatch` | Let a worker start a §4 Worker workflows entry on its own branch (`gh workflow run <file>.yml --ref <its branch> -f …`), exactly as listed; never on the default branch or a batch base, and `gh workflow enable` or `disable` stays refused | `ask` | `TODO` |

@@ -243,6 +243,23 @@ t('their Recommended values agree', shared.filter((k) => fromRows[k] !== fromTpl
 for (const k of ['git-force-with-lease', 'worktree-remove', 'pr-ready', 'pr-merge-green', 'autopilot-merge', 'jira-close']) {
   t(`AC1 ${k} is recommended yes`, `${fromRows[k]}/${fromTpl[k]}`, 'yes/yes');
 }
+
+// §1 Git author name / email, which spawn-worker.sh exports as GIT_AUTHOR_* and GIT_COMMITTER_*:
+// `Name <email>` or `Name` / `email` prints NAME<TAB>EMAIL; unset or `none` exits 3; anything else 4.
+const gitAuthor = (cell) => {
+  const f = join(T, 'author.md');
+  writeFileSync(f, `## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Git author name / email | ${cell} |\n`);
+  try { return execFileSync('node', [BIN, 'git-author'], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, DESK_CONFIG: f, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).replace(/\t/g, ' | ').trim(); }
+  catch (e) { return `exit ${e.status}`; }
+};
+t('git-author reads Name <email>, past its note', gitAuthor('`Ben Lavender <ben@example.com>` (50 of 50 recent commits)'), 'Ben Lavender | ben@example.com');
+t('git-author reads Name / email as two spans', gitAuthor('`Ben Lavender` / `ben@example.com`'), 'Ben Lavender | ben@example.com');
+t('git-author keeps an apostrophe in the name', gitAuthor("`Pat O'Neil <pat@example.com>`"), "Pat O'Neil | pat@example.com");
+t('git-author TODO is unset', gitAuthor('`TODO` (must match what your commits in this repo already use)'), 'exit 3');
+t('git-author blank is unset', gitAuthor(''), 'exit 3');
+t('git-author none is unset', gitAuthor('`none`'), 'exit 3');
+t('git-author with no email is refused', gitAuthor('`Ben Lavender`'), 'exit 4');
+t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 4');
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');

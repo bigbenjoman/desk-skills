@@ -46,6 +46,8 @@
 //   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
 //                                             the args named one, then DESK_ARGS=( the args without it )
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
+//   node desk-env.mjs git-author              print §1 Git author name / email as NAME<TAB>EMAIL (gitAuthor);
+//                                             exit 3 if unset or `none`, 4 if it is neither form
 //   node desk-env.mjs mem <avail|used|rss|status>
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
 //                                             reason=, changed=, workspace= per uncovered workspace, then
@@ -265,6 +267,7 @@ export const CONFIG_ROWS = Object.freeze({
   'jira-email': { section: '1', row: 'Jira email' },
   'jira-display-name': { section: '1', row: 'Jira display name' },
   'jira-account-id': { section: '1', row: 'Jira account id' },
+  'git-author': { section: '1', row: 'Git author name / email' },
   name: { section: '1', row: 'Name' },
   'repo-root': { section: '2', row: 'Primary repo root' },
   'worktrees-dir': { section: '2', row: 'Worktrees directory' },
@@ -937,6 +940,20 @@ export const jiraName = () => {
   try { return resolve({ env: 'DESK_JIRA_NAME', id: 'jira-display-name', identity: true }); }
   catch { return resolve({ env: 'DESK_JIRA_NAME', id: 'name', identity: true }); }
 };
+// §1 Git author name / email as { name, email }, or null when the row is unset or `none`. It takes
+// `Name <email>` or two spans, `Name` / `email`. Anything else throws: an author desk guessed is worse
+// than git's own default, and the row is the one place a worker's commit author comes from.
+export function gitAuthor() {
+  const items = configValues('git-author');
+  if (items == null || isNone(items)) return null;
+  const one = items.length === 1 ? /^(.+?)\s*<([^<>]*)>$/.exec(items[0].trim()) : null;
+  const [name, email] = (one ? one.slice(1) : items.length === 2 ? items : []).map((x) => String(x).trim());
+  if (!name || !email || !/^[^\s@<>]+@[^\s@<>]+$/.test(email) || /[<>\u0000-\u001f\u007f]/.test(name)) {
+    const r = CONFIG_ROWS['git-author'];
+    throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not \`Name <email>\` or \`Name\` / \`email\` in ${configPathHint()}. Refusing to guess.`);
+  }
+  return { name, email };
+}
 export const repoRoot = () => resolve({ env: 'DESK_REPO_ROOT', id: 'repo-root', identity: true }).replace(/\/+$/, '');
 // reviewPlan on this repo's rows.
 export const reviewRows = () => reviewPlan(configValues('local-review'), configValue('clean-verdict'), repoRoot());
@@ -1715,6 +1732,12 @@ if (isMain) {
       case 'identity':
         for (const [k, f] of Object.entries(IDENTITY)) console.log(`${k}=${shellQuote(f())}`);
         break;
+      case 'git-author': {
+        const a = gitAuthor();
+        if (!a) process.exit(3);
+        console.log(`${a.name}\t${a.email}`);
+        break;
+      }
       case 'mem': {
         const what = args[0] ?? 'status';
         if (what === 'avail') console.log(availableGiB().toFixed(1));
@@ -2018,7 +2041,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|review-cmd|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
+        console.error('usage: desk-env.mjs where|get|review-cmd|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
         process.exit(2);
     }
   } catch (e) {

@@ -23,7 +23,8 @@ mkdir -p "$T/home/.claude/agents"; cp "$SRC"/agents/*.md "$T/home/.claude/agents
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   DESK_BIN DESK_QUEUE DESK_SKILLS_DIR DESK_MEMORY_DIR DESK_GH_REPO DESK_CONFIG_ROOT DESK_ENV_MJS DESK_ENV_DIR \
   DESK_AUTOPILOT_WORKER CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_TASK AUTOPILOT_RESUME \
-  AUTOPILOT_PREFLIGHT AUTOPILOT_BATCH_BUDGET_USD AUTOPILOT_USER_APPROVED DESK_UPLOAD_APPROVED GH_TOKEN GITHUB_TOKEN
+  AUTOPILOT_PREFLIGHT AUTOPILOT_BATCH_BUDGET_USD AUTOPILOT_USER_APPROVED DESK_UPLOAD_APPROVED GH_TOKEN GITHUB_TOKEN \
+  GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 cleanup(){ for f in "$T"/live/*.json; do [ -f "$f" ] && kill "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f")" 2>/dev/null; done; rm -rf "$T"; }
@@ -34,7 +35,8 @@ git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
 git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q origin main
 # config [<Worker models row value>]: no value leaves the row out, which reads as `default`. $SLICE, when
-# set, is the Promotion slice size row.
+# set, is the Promotion slice size row. $AUTHOR is the §1 Git author name / email cell.
+AUTHOR='`Pat Tester <pat@example.com>` (from recent commits)'
 config(){ local models="" slice=""; [ -n "${1:-}" ] && models="| Worker models | \`default\` | \`$1\` |"
   [ -n "${SLICE:-}" ] && slice="| Promotion slice size (children) | \`8\` | \`$SLICE\` |"
   [ -n "$slice" ] && models="${models:+$models
@@ -50,6 +52,7 @@ cat > "$T/config.md" <<EOF
 | Field | Value |
 |---|---|
 | GitHub handle | \`tester\` |
+| Git author name / email | $AUTHOR |
 
 ## 2. Paths
 | Field | Value |
@@ -174,7 +177,8 @@ const sid = at('--session-id');
 fs.appendFileSync(T + '/calls.log', 'claude worker ' + ticket + '\n');
 onLogin('worker');
 const round = fs.readdirSync(T + '/runs').filter((f) => f.startsWith(ticket + '.')).length + 1;
-fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model, partial: a.includes('--include-partial-messages'), agents: a.includes('--agents') ? Object.keys(JSON.parse(fs.readFileSync(at('--agents'), 'utf8'))) : null, sources: a.includes('--setting-sources') ? at('--setting-sources') : null, settings: a.filter((x) => x === '--settings').length }));
+const gitEnv = ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'].map((k) => process.env[k] ?? '-').join('|');
+fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, git: gitEnv, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model, partial: a.includes('--include-partial-messages'), agents: a.includes('--agents') ? Object.keys(JSON.parse(fs.readFileSync(at('--agents'), 'utf8'))) : null, sources: a.includes('--setting-sources') ? at('--setting-sources') : null, settings: a.filter((x) => x === '--settings').length }));
 const reg = T + '/live/' + sid + '.json';
 fs.writeFileSync(reg, JSON.stringify({ sessionId: sid, pid: process.pid }));
 const script = fs.readFileSync(T + '/scripts/' + ticket + '.' + round, 'utf8').split('\n').filter(Boolean);
@@ -285,6 +289,7 @@ check "DS-158 AC1 and the ticket's log holds them, ahead of the worker" 'head -1
 REVIEW_SEATS='["lena-code-reviewer","nadia-security-auditor","theo-api-designer","mira-playwright-expert","jim-solution-architect","suki-frontend-architect","bea-business-analyst","ada-devils-advocate"]'
 check "DS-367 AC1 each worker is started with every named review seat as an agent" 'grep -qF "\"agents\":$REVIEW_SEATS" "$T/runs/T-1.1" && grep -qF "\"agents\":$REVIEW_SEATS" "$T/runs/T-2.1"'
 check "DS-367 AC4 and still with no user setting sources and the one generated settings file" 'grep -qF "\"sources\":\"\",\"settings\":1" "$T/runs/T-1.1" && grep -qF "\"sources\":\"\",\"settings\":1" "$T/runs/T-2.1"'
+check "a worker commits as config §1 Git author name / email, author and committer both" 'grep -qF "\"git\":\"Pat Tester|pat@example.com|Pat Tester|pat@example.com\"" "$T/runs/T-1.1"'
 check "DS-158 AC4 a worker is started with no partial messages" 'grep -q "\"partial\":false" "$T/runs/T-1.1" && grep -q "\"partial\":false" "$T/runs/T-2.1"'
 REFS="$SRC/skills/desk-autopilot/references"
 # run_has <run file> <prompt|system> <text>: the round's recorded prompt or system prompt holds the text.
@@ -344,7 +349,8 @@ check "the requeued ticket reaches done with the second worker's PR" '[ "$(state
 # ---- DS-155: a worker hands off at the end of Stage 4, and a fresh session takes Stage 4b ---------
 # Its 4b session fails, the requeue raises it to the high model, and the next 4b session hands off to 7.
 # The row names a text model, which only the Stage 7 session runs on.
-config "standard=sonnet high=opus text=haiku"
+# Its §1 Git author name / email is TODO, so its worker is given no GIT_AUTHOR_* or GIT_COMMITTER_*.
+AUTHOR='`TODO`' config "standard=sonnet high=opus text=haiku"
 record T-80 src/h.txt
 printf 'WAIT\nAUTOPILOT_STAGE: 4/9 verify\nAUTOPILOT_HANDOFF: 4b\n' > "$T/scripts/T-80.1"
 printf 'WAIT\nAUTOPILOT_STAGE: 4b/9 self-review\n' > "$T/scripts/T-80.2"
@@ -357,6 +363,7 @@ printf '{"ticket": "T-80", "stage": "4b", "criteria": ["AC1: h saves"], "lane": 
 finish T-80
 pass
 check "DS-155 AC2 after a handoff the real spawn-worker starts a new session in the same worktree, told to start at Stage 4b" '[ "$(state T-80)" = running ] && [ -e "$T/runs/T-80.2" ] && grep -q "This session starts at Stage 4b" "$T/runs/T-80.2" && grep -q "\"cwd\":\"$T/wt/T-80\"" "$T/runs/T-80.2" && [ "$(node -e "const r = (n) => JSON.parse(require(\"fs\").readFileSync(process.argv[1] + n, \"utf8\")).sid; console.log(r(1) !== r(2))" "$T/runs/T-80.")" = true ]'
+check "a worker whose §1 Git author name / email is TODO is given no git author or committer" 'grep -qF "\"git\":\"-|-|-|-\"" "$T/runs/T-80.1"'
 check "DS-155 AC2 with the handoff briefing in its first message" 'run_has "$T/runs/T-80.2" prompt "# Briefing for this ticket" && run_has "$T/runs/T-80.2" prompt "## Handoff: this session starts at Stage 4b" && grep -q "AC1: h saves" "$T/runs/T-80.2" && grep -q "fix/T-80" "$T/runs/T-80.2" && [ "$(ran_on T-80 2)" = sonnet ]'
 finish T-80
 pass
