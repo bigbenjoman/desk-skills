@@ -459,6 +459,57 @@ finish() {
   if [ -n "$MIGRATE_FAILED" ]; then say "migrate=failed"; fi
 }
 
+# A branch can be checked out in only one worktree. Another worktree holding it is detached at the same
+# commit, which keeps its folder and files, only when nothing there can be lost or disturbed: no
+# changes, no untracked files, no stash on the branch, HEAD equal to origin's, and no process working
+# in it. Anything else fails, naming the folder and what it holds.
+free_branch() {
+  local line path="" holder="" why st tracked untracked stashed head up ahead users
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "branch refs/heads/$BRANCH") holder="$path" ;;
+    esac
+  done < <(git -C "$MAIN" worktree list --porcelain)
+  [ -n "$holder" ] || return 0
+  why="branch $BRANCH is checked out in another worktree, $holder,"
+  [ -d "$holder" ] || fail "$why which no longer exists — run git worktree prune"
+  st="$(git -C "$holder" status --porcelain 2>&1)" || fail "$why and git cannot read it: $st"
+  tracked="$(printf '%s\n' "$st" | grep -v '^??' || true)"
+  untracked="$(printf '%s\n' "$st" | grep '^??' || true)"
+  [ -z "$tracked" ] || fail "$why which has uncommitted changes:
+$tracked"
+  [ -z "$untracked" ] || fail "$why which has untracked files:
+$untracked"
+  stashed="$(git -C "$MAIN" stash list --format=%gs | grep -F -e "WIP on $BRANCH: " -e "On $BRANCH: " || true)"
+  [ -z "$stashed" ] || fail "$why and the branch has stashed work:
+$stashed"
+  git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH" \
+    || fail "$why and $BRANCH is not on origin, so its commits are not pushed"
+  head="$(git -C "$holder" rev-parse HEAD)"; up="$(git -C "$MAIN" rev-parse "refs/remotes/origin/$BRANCH")"
+  if [ "$head" != "$up" ]; then
+    ahead="$(git -C "$MAIN" rev-list --count "$up..$head")"
+    [ "$ahead" = 0 ] || fail "$why which has $ahead commit(s) not pushed to origin/$BRANCH"
+    fail "$why which is behind origin/$BRANCH"
+  fi
+  users="$(node --input-type=module -e '
+    import { realpathSync } from "node:fs";
+    import { pathToFileURL } from "node:url";
+    const { processCwds } = await import(pathToFileURL(process.argv[1]).href);
+    const dirs = [process.argv[2]];
+    try { dirs.push(realpathSync(process.argv[2])); } catch { /* as listed */ }
+    const cwds = processCwds();
+    if (!cwds) { console.log("?"); process.exit(0); }
+    const own = new Set([process.pid, process.ppid, Number(process.argv[3])]);
+    console.log(cwds.filter((p) => !own.has(p.pid) && dirs.some((d) => p.cwd === d || p.cwd.startsWith(`${d}/`)))
+      .map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ""}`).join(", "));
+  ' "$DESK_ENV_DIR/suite-wait.mjs" "$holder" "$$")" || fail "$why and its processes could not be read"
+  [ "$users" != "?" ] || fail "$why and no process working directories could be read to tell whether it is in use"
+  [ -z "$users" ] || fail "$why which is the working directory of $users"
+  git -C "$holder" checkout --quiet --detach || fail "$why and detaching it failed"
+  say "branch $BRANCH was checked out in $holder, clean and level with origin — detached that worktree at ${head:0:12} to free the branch"
+}
+
 mkdir -p "$DESK_WORKTREES_DIR"
 
 if [ -d "$WT" ] && [ ! -f "$MARKER" ]; then
@@ -492,6 +543,7 @@ else
   git -C "$MAIN" fetch origin --quiet
   if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
     say "branch $BRANCH already exists — checking it out into the worktree"
+    free_branch
     git -C "$MAIN" worktree add "$WT" "$BRANCH" --quiet
   else
     say "creating $BRANCH off $BASE"
