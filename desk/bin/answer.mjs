@@ -45,6 +45,7 @@ if (taken && approveFlag) {
 // The answer goes to the batch holding the ticket, and the queue.mjs it runs follows (DESK_BATCH).
 useTicketBatch(ticket);
 const STATE = stateDir();
+let takenQuestion = null;
 if (taken) {
   let t = null;
   try { t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null; } catch { /* no queue */ }
@@ -56,6 +57,7 @@ if (taken) {
     console.error(`${ticket} parked on a refused step, which only the person approves: nothing recorded`);
     process.exit(EXIT.SHOW_PERSON);
   }
+  takenQuestion = String(t.park?.question ?? '');
 }
 
 mkdirSync(join(STATE, 'answers'), { recursive: true });
@@ -114,6 +116,18 @@ const brief = join(STATE, 'briefings', `${ticket}.md`);
 const entry = `\n## Answer from the user (${stamp})\n\n${text}\n`;
 if (existsSync(brief)) appendFileSync(brief, entry);
 else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
+
+// A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same
+// park asked again goes to the person, not to another take.
+if (taken) {
+  const chose = text.split(/\. This was the option /)[0].trim();
+  try {
+    execFileSync('node', [QUEUE, 'set', ticket, `auto_answered=${JSON.stringify({ question: takenQuestion, chose, at: stamp, by: 'decider' })}`], { stdio: 'ignore' });
+  } catch (e) {
+    console.error(`${ticket}: answer recorded in the briefing, but not as taken once: ${e.message}`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+}
 
 // A "not now" answer to a park puts its question off: it goes in the register with the inputs it
 // depends on, and is not asked again until they change (not-now.mjs). Any other answer to it ends an

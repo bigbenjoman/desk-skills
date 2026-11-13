@@ -79,9 +79,9 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   is taken once: the same park asked again after that answer goes to the person. Each outcome is one
   line under `recovered:` in the report. A park with no such line whose question still marks one
   option recommended on a take call is the decider's to take where `autopilot-judgement` is `yes`:
-  it logs the call (`decisions.mjs log --source decider`), answers with that option
-  (`answer.mjs --taken`, which never records a grant) and requeues, and hands on an ask category or a
-  park with no recommendation.
+  it answers with that option (`answer.mjs --taken`, which never records a grant), requeues and logs
+  the call (`decisions.mjs log --source decider`), once, as the pass does, and hands on an ask
+  category or a park with no recommendation.
 - **You and interactive sessions** check before asking, and record a "not now" the user gives in
   the conversation (an answer through `answer.mjs` or the digest is recorded for you):
 

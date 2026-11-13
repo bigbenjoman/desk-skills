@@ -77,6 +77,7 @@ export function deciderItems(v, q = {}) {
       id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: String(p.question ?? ''), lane: tickets[p.key]?.lane ?? null,
       since: tickets[p.key]?.park?.since ?? null, clears: condKey(tickets[p.key]?.park?.clears_when),
       round: (prev?.round ?? 0) + 1, prev, repeat: !!prev && samePark(prev.question, p.question, p.key),
+      takenOnce: !!tickets[p.key]?.auto_answered && samePark(tickets[p.key].auto_answered.question, p.question, p.key),
     };
   });
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
@@ -111,6 +112,8 @@ export function presort(items, state = null) {
       waits.push(item);
     } else if (item.kind === 'parked' && item.repeat && !(state && prevAt && answered(state, { ticket: item.ticket, at: prevAt }))) {
       hand.push({ item, why: `park ${item.round} asks what park ${item.round - 1} asked, with no answer since: a requeue would park again (last park: "${short(item.prev.question)}")` });
+    } else if (item.kind === 'parked' && item.takenOnce && !(state && item.since && answered(state, { ticket: item.ticket, at: item.since }))) {
+      hand.push({ item, why: 'its recommended option was taken once already (auto_answered) and it parked on the same call again: a call is taken once, so it is the person\'s' });
     } else if (row && row[2] !== 'yes') {
       hand.push({ item, why: `needs config §3 ${row[1]}, which is "${row[2]}"` });
     } else if (item.kind === 'waiting' && item.state === 'done') {
@@ -245,9 +248,10 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
   // repo reads as it always has. The ask categories are decisions.mjs ASK_CATEGORIES, worded as ask-or-take.md asks them.
   const takes = judgement === 'yes' && items.some((i) => i.kind === 'parked');
   const onTake = takes ? [
-    `- take a call a worker could have taken itself (config §3 \`autopilot-judgement\` is \`yes\`): a park on lane A, B, D or E whose question marks one option as recommended (or as the worker's pick), on a ${TAKE_CATEGORIES.join(', ')} call, that touches no money, legal or regulatory matter, production data or credentials, customer copy where length means cost, or fact only the person holds. Log the call, record the option as the answer, then requeue it as above, in that order, and settle the item:`,
-    `  \`node ${join(bin, 'decisions.mjs')} log --source decider <TICKET> '{"question": "<the question parked on, one line>","options": ["<the recommended option>", "<each other option>"], "chose": "<the recommended option>", "category": "<one of ${TAKE_CATEGORIES.join(', ')}>"}'\``,
+    `- take a call a worker could have taken itself (config §3 \`autopilot-judgement\` is \`yes\`): a park on lane A, B, D or E whose question marks one option as recommended (or as the worker's pick), on a ${TAKE_CATEGORIES.join(', ')} call, that touches no money, legal or regulatory matter, production data or credentials, customer copy where length means cost, or fact only the person holds. Record the option as the answer, requeue it as above, then log the call, in that order, each only once the one before it succeeded, and settle the item:`,
     `  \`node ${join(bin, 'answer.mjs')} --taken <TICKET> "${recommendedAnswer({ chose: '<the recommended option>', category: '<category>' }, 'the decider')}"\``,
+    `  \`node ${join(bin, 'decisions.mjs')} log --source decider <TICKET> '{"question": "<the question parked on, one line>", "options": ["<the recommended option>", "<each other option>"], "chose": "<the recommended option>", "category": "<one of ${TAKE_CATEGORIES.join(', ')}>"}'\``,
+    '  Keep the shell quoting whole: inside the single-quoted JSON write an apostrophe as `\'\\\'\'`, and leave `"`, `` ` `` and `$` out of the answer text',
     '  A park with no option marked recommended, one in an ask category, one naming a config §3 row that is not `yes`, one asking what its last requeue\'s park asked, or one either command refuses: hand it on',
   ] : [];
   return [

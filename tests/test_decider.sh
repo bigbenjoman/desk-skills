@@ -63,8 +63,8 @@ read -r mode key < "$T/claude.mode"
 # (the real decisions.mjs and answer.mjs), then requeue; otherwise hand on
 if [ "\$mode" = take ]; then
   if grep -q 'take a call a worker could have taken itself' <<< "\$2" \\
-    && node "$B/decisions.mjs" log --source decider "\$key" '{"question":"Merge as foundation, or split?","options":["Merge as foundation","Split"],"chose":"Merge as foundation","category":"scope"}' >> "$T/take.out" 2>&1 \\
-    && node "$B/answer.mjs" --taken "\$key" "Merge as foundation. The decider took it, not the person." >> "$T/take.out" 2>&1; then mode=requeue; else mode=hand; fi
+    && node "$B/answer.mjs" --taken "\$key" "Merge as foundation. The decider took it, not the person." >> "$T/take.out" 2>&1 \\
+    && node "$B/decisions.mjs" log --source decider "\$key" '{"question":"Merge as foundation, or split?","options":["Merge as foundation","Split"],"chose":"Merge as foundation","category":"scope"}' >> "$T/take.out" 2>&1; then mode=requeue; else mode=hand; fi
 fi
 ids=\$(grep -oE 'id \`[a-z]+-[0-9a-f]+\`' <<< "\$2" | grep -oE '[a-z]+-[0-9a-f]+')
 case "\$mode" in
@@ -305,6 +305,18 @@ check "DS-565 AC3/AC4: the prompt hands on an ask category and a park with no re
 check "DS-565 AC1: the call is logged with source decider" 'grep -q "\"ticket\":\"J2\".*\"chose\":\"Merge as foundation\".*\"source\":\"decider\"" "$T/state/decisions.jsonl"'
 check "DS-565 AC1: the option is the answer in its briefing" 'grep -q "^Merge as foundation. The decider took it, not the person.$" "$T/state/briefings/J2.md"'
 check "DS-565 AC1: the ticket is requeued and settled, not handed on" '[ "$(stateof J2)" = triaged ] && ! handed | grep -q "^J2|"'
+takenof(){ node -e 'const a=JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]?.auto_answered; console.log(a ? [a.by, a.chose, a.question].join("|") : "none")' "$DESK_QUEUE" "$1"; }
+check "DS-565: the take is recorded once, as the pass records its own" '[ "$(takenof J2)" = "decider|Merge as foundation. The decider took it, not the person.|$REC (J2)" ]'
+# The same park after that take, unanswered, is handed on without a session; answered since, it is not.
+oncesort(){ node --input-type=module -e "
+import { deciderItems, presort } from '$B/decider.mjs';
+const q = (since) => ({ tickets: { J2: { lane: 'A', state: 'parked', park: { question: process.argv[1], since }, auto_answered: { question: process.argv[1], by: 'decider' } } } });
+const items = (since) => deciderItems({ parked: [{ key: 'J2', question: process.argv[1] }] }, q(since));
+const a = presort(items('2999-01-01T00:00:00Z'), '$T/state');
+const b = presort(items('2000-01-01T00:00:00Z'), '$T/state');
+console.log(a.hand.length, a.hand[0]?.why.startsWith('its recommended option was taken once already'), b.ask.length);
+" "$REC (J2)"; }
+check "DS-565: a park taken once already goes to the person unless answered since" '[ "$(oncesort)" = "1 true 1" ]'
 queue '{"J3":{"key":"J3","state":"parked","lane":"A","branch":"b","park":{"question":"git push --force-with-lease was refused: approve the force-push?"}}}'
 out=$(node "$B/answer.mjs" --taken J3 "yes, force-push it" 2>&1); code=$?
 check "DS-565: answer.mjs --taken refuses a park on a refused step, so no grant comes from the decider" '[ "$code" = 11 ] && [ ! -e "$T/state/briefings/J3.md" ] && ! grep -q "\"grant\"" "$DESK_QUEUE"'
