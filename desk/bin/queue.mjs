@@ -17,7 +17,7 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
 import { followOnPending } from './harvest.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
@@ -51,8 +51,8 @@ const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback'
   if (TICKET_CMDS.includes(c)) useTicketBatch(a.filter((_, i) => at < 0 || (i !== at && i !== at + 1))[0]);
 }
 const QUEUE = queueFile();
-// A new park, with its failure class (failure-class.mjs parkClass) while the failure-class lever is on.
-const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...(leverOn('failure-class') ? parkClass(question) : {}) });
+// A new park, with its failure class (failure-class.mjs parkClass) whether or not the lever is on.
+const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...parkClass(question) });
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
 const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`);
 const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];

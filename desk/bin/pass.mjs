@@ -4171,11 +4171,11 @@ function settleWorked(t, n, head, worked) {
   return now.map((x) => x.id);
 }
 // A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
-// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`. With the
-// failure-class lever on, `held` (base red) waits with no try, a requeue records its try's class
-// (failure-class.mjs fixClass) before the worker spawns, one classed missing decision or dependency
-// wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed
-// runner or resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
+// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`, with its class
+// (failure-class.mjs fixClass) recorded before the worker spawns. With the failure-class lever on,
+// `held` (base red) waits with no try, one classed missing decision or dependency wait is not
+// requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed runner or
+// resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
 function applyFix(t, n, head, c) {
   if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(c.base_red ?? null)) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(c.base_red ?? null)}`);
@@ -4195,12 +4195,9 @@ function applyFix(t, n, head, c) {
     if (!DRY && (t.stuck?.why !== c.why || t.stuck?.head !== head)) q('set', t.key, `stuck=${JSON.stringify({ why: c.why, pr: n, head, at: PASS_AT, ...checks })}`);
     return;
   }
-  let f = c.fix;
-  if (FAILURE_CLASS) {
-    const fc = fixClass(f, t);
-    if (WAITING_CLASSES.includes(fc.class)) { report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${f.what}, classed ${fc.class}: ${fc.waiting}`); return; }
-    f = { ...f, class: fc.class, class_rule: fc.class_rule };
-  }
+  const fc = fixClass(c.fix, t);
+  if (FAILURE_CLASS && WAITING_CLASSES.includes(fc.class)) { report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${c.fix.what}, classed ${fc.class}: ${fc.waiting}`); return; }
+  const f = { ...c.fix, class: fc.class, class_rule: fc.class_rule };
   if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? `an extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
   q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
@@ -4215,7 +4212,7 @@ function applyFix(t, n, head, c) {
   const quoted = f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) }
     : f.kind === 'protected' ? { paths: f.paths } : f.kind === 'renames' ? { renames: f.renames }
     : f.kind === 'conflict' && f.base_sha ? { base_sha: f.base_sha, merge_base: f.merge_base } : {};
-  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), ...(f.class ? { class: f.class } : {}), at: PASS_AT }])}`, 'stuck=null');
+  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), class: f.class, at: PASS_AT }])}`, 'stuck=null');
   out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? `extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.

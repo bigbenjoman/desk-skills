@@ -1805,7 +1805,9 @@ q init fb; q set-batch concurrency=5
 q add FB-4; q set FB-4 state=done lane=A branch=fix/FB-4 result.pr=813 held_by=X-9; fx 813 "$H4" MERGEABLE tests:SUCCESS Lint:FAILURE:914; fbran 813 "$H4" Lint
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-446 AC7 with the lever off, a red check red on the base too and held behind a blocker is requeued as today" \
-  '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = null ] && [ "$(field FB-4 fix_tries | jq -c ".[0] | has(\"class\")")" = false ] && [ "$(field FB-4 base_red)" = null ]'
+  '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 base_red)" = null ]'
+check "DS-633 AC2 AC3 with the lever off, a try classed dependency wait still spawns, recorded with its class" \
+  '[ "$(field FB-4 fix | jq -c "[.class, (.class_rule | length > 0)]")" = "[\"dependency wait\",true]" ] && [ "$(field FB-4 fix_tries | jq -r ".[0].class")" = "dependency wait" ]'
 check "DS-446 AC7 and the base's check runs are not read" '! grep -qF "check-runs?check_name=Lint" "$T/gh-calls" &&! grep -qF "compare/main...$H4" "$T/gh-calls"'
 H9=8888888888888888888888888888888888888888; TIP9=9999999999999999999999999999999999999999
 api "repos/acme/widgets/compare/main...$H9" "$TIP9"$'\t'"$MB"
@@ -1814,7 +1816,11 @@ out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "a conflict try records the base tip and merge base its head stood at" '[ "$(field FB-9 fix_tries | jq -r ".[0].base_sha")" = "$TIP9" ] && [ "$(field FB-9 fix_tries | jq -r ".[0].merge_base")" = "$MB" ]'
 q set FB-9 state=done session_id=null fix=null stuck=null; fx 819 "$H9" MERGEABLE tests:SUCCESS
 q park FB-4 "which reviewer handle goes in the PR body?"
-check "DS-446 AC7 with the lever off, a park records no class" '[ "$(field FB-4 park.class)" = null ] && [ "$(field FB-4 park.question)" = "\"which reviewer handle goes in the PR body?\"" ]'
+check "DS-633 AC1 with the lever off, a park records its class and the rule that gave it" \
+  '[ "$(field FB-4 park | jq -c "[.class, (.class_rule | length > 0), .question]")" = "[\"missing decision\",true,\"which reviewer handle goes in the PR body?\"]" ]'
+q add FB-8; q park FB-8 "waiting on the weather"
+check "DS-633 AC5 with the lever off, a park no rule matches is unclassified and otherwise recorded as today" \
+  '[ "$(field FB-8 park | jq -c "[.class, .evidence, .question, (.since | length > 0)]")" = "[\"unclassified\",\"waiting on the weather\",\"waiting on the weather\",true]" ]'
 # FB-1 is red on Lint, and Lint is red at its merge base. FB-2 is red on Lint, with no run of Lint at its
 # merge base. FB-3 is FB-2's case, held behind a blocker.
 for k in 1 2 3; do q add "FB-$k"; q set "FB-$k" state=done lane=A "branch=fix/FB-$k"; done

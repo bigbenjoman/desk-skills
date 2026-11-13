@@ -1,5 +1,5 @@
-// With the failure-class lever on (config §3b Phase 0 levers), every park and every fix try records one
-// failure class before anything retries it, so a retry is spent only where one can help. A class is
+// Every park and every fix try records one failure class, whether or not the failure-class lever
+// (config §3b Phase 0 levers) is on; with it on, a retry is spent only where one can help. A class is
 // read by rule from what the pass already holds: a park's text (its question, which names its source:
 // a hold, a check build, a usage limit, a triage size, a worker's own question), or a fix try's kind
 // and what it quotes. The first rule that matches wins; a park no rule matches is unclassified, with
