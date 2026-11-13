@@ -251,6 +251,7 @@ function exitedOnPark(t) {
     if (!reg.ok || reg.live.some((a) => a.sessionId === t.session_id)) return null;
   }
   const log = join(stateDir(), 'logs', `${t.key}.log`);
+  const stamp = logStamp(log);
   let text;
   try { text = readFileSync(log, 'utf8'); } catch { return null; }
   const lines = text.split('\n');
@@ -262,7 +263,7 @@ function exitedOnPark(t) {
   if (end?.[0] !== 'AUTOPILOT_PARK' || !end[1].trim() || markers.some(([k]) => k === 'AUTOPILOT_LINK')) return null;
   if (passRunning()) return null;
   const notes = workerMarkers(text).filter(([k, v]) => k === 'AUTOPILOT_NOTE' && v.trim()).map(([, v]) => `- [${t.key}] ${v.trim()}`);
-  return { question: end[1].trim(), since: statSync(log).mtime.toISOString(), stage: lastStage(round)?.stage ?? t.stage ?? null, markers, notes, log, logStamp: logStamp(log) };
+  return { question: end[1].trim(), since: statSync(log).mtime.toISOString(), stage: lastStage(round)?.stage ?? t.stage ?? null, markers, notes, log, logStamp: stamp };
 }
 
 const logStamp = (log) => { try { const s = statSync(log); return `${s.size}:${s.mtimeMs}`; } catch { return null; } };
