@@ -3,6 +3,7 @@
 // place they read the queue and triage records, so a corrupt file refuses the same way in all four.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { personClears } from './clears-when.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
 // on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
@@ -283,6 +284,14 @@ export const noWorkerWork = (question) => NO_WORKER_WORK.test(String(question ??
 // A queue ticket only an interactive session takes on: lane C, one parked at triage on its lane, or
 // one whose worker parked it in lane C or a canvas-less lane D. Any other lane D park is requeued.
 export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? ''));
+
+// A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
+// the person's makes it hold, and a worker rather than a session takes the ticket on once it does. The
+// digest and needs-you leave it out, and desk-q shows it as waiting.
+export const settlesByScript = (t) => {
+  const c = t?.park?.clears_when;
+  return t?.state === 'parked' && !isHeld(t) && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
+};
 
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.

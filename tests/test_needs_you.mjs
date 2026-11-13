@@ -1618,6 +1618,23 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     `${bad.length} ${bad[0]?.kind} ${/blocked-until-soon/.test(bad[0]?.need ?? '')} ${bad[0]?.actions.map((a) => a[0]).join()}`, '1 held true start,not-now');
 }
 
+// ---- A park a script settles waits on it, not on the person; one only the person settles is still listed.
+{
+  const waits = (question, cw) => ({ ...parked('A', 30, question), park: { question, since: minsAgo(30), clears_when: cw } });
+  put('ds562', { port: 4650, beat: 1, supervised: true, tickets: {
+    'W-1': waits('Should W-1 be held until PR #991 merges, then requeued?', { kind: 'pr-merged', pr: 991 }),
+    'W-2': waits('Which price?', { kind: 'none' }),
+    'W-3': waits('Make the issue links', { kind: 'links-made', links: [{ key: 'W-3', type: 'Relates', other: 'W-9' }], pr: 12 }),
+  } });
+  const keys = N.collect({ word: 'ds562' }).items.map((i) => i.t.key).join();
+  t('DS-562 AC1, AC3, AC4 a park waiting on a PR merging is not listed; one on none or on links only the person makes is', keys, 'W-2,W-3');
+  const r562 = () => loadRepos().find((r) => r.name === 'ds562');
+  t('DS-562 AC2 desk-q shows it waiting, not needing you', r562().rows.find((x) => x.t.key === 'W-1').k, 'waiting');
+  t('DS-562 AC2 its row says it waits on PR #991', repoScreen(r562(), { width: 200 }).includes('waiting on PR #991 merged'), true);
+  t('DS-562 AC2 its page says it moves without you, on PR #991', ticketScreen(r562(), 'W-1', { width: 200 }).includes('Moves without you: Waiting on PR #991 merged: a pass requeues it then.'), true);
+  t('DS-562 AC2 desk-q counts only the two the person settles', N.needsCount(r562()).shown, 2);
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
