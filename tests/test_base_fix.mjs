@@ -54,7 +54,7 @@ t('the briefing has its section', baseFixBrief(ctx).startsWith('## Base conflict
 t('the briefing with no files listed says so', baseFixBrief({ ...ctx, fix: { ...first.fix, files: null } }).includes('Conflicting files: not listed.'), true);
 const task = baseFixTask(ctx);
 t('the task merges, never rebases', task.includes('merge origin/main into feat/x (git merge, never a rebase or a force push)'), true);
-t('the task pushes only the base', task.includes('Push with git push origin feat/x.'), true);
+t('DS-594 the task pushes only the base, by HEAD from its detached worktree', task.includes('Push with git push origin HEAD:refs/heads/feat/x.') && task.includes('on a detached HEAD at origin/feat/x: never check feat/x out'), true);
 t('the task opens no PR', task.includes('Open no PR'), true);
 
 // A merge the merged-tree check failed goes the conflict's way, with the check's output.
@@ -70,8 +70,8 @@ t('AC2 the briefing renumbers the base\'s own after the source\'s head', treeBri
 t('AC2 negative: a conflict briefing does not', baseFixBrief(ctx).includes('renumber'), false);
 t('AC2 the ticket makes the check an acceptance criterion', baseFixTicket(treeCtx).includes('`desk-env cmds merged-tree-check-cmd` prints passes on the merged feat/x'), true);
 const treeTask = baseFixTask(treeCtx);
-t('AC2 the task runs the check before the push', treeTask.indexOf('Before you push, run those items again') > 0 && treeTask.indexOf('Before you push, run those items again') < treeTask.indexOf('Otherwise push with git push origin feat/x'), true);
-t('AC1 a conflict task runs the check before its push', task.indexOf('merged-tree-check-cmd') > 0 && task.indexOf('merged-tree-check-cmd') < task.indexOf('Push with git push origin feat/x'), true);
+t('AC2 the task runs the check before the push', treeTask.indexOf('Before you push, run those items again') > 0 && treeTask.indexOf('Before you push, run those items again') < treeTask.indexOf('Otherwise push with git push origin HEAD:refs/heads/feat/x'), true);
+t('AC1 a conflict task runs the check before its push', task.indexOf('merged-tree-check-cmd') > 0 && task.indexOf('merged-tree-check-cmd') < task.indexOf('Push with git push origin HEAD:refs/heads/feat/x'), true);
 t('AC1 a conflict ticket makes the check a criterion', baseFixTicket(ctx).includes('merged-tree-check-cmd'), true);
 t('AC5 the task pushes nothing while it fails',treeTask.includes('If the check still fails, push nothing and park quoting its output'), true);
 
@@ -94,6 +94,9 @@ t('DS-508 the review ticket names the PR and the clean review it needs', epicRev
 t('DS-508 the review briefing has its section', epicReviewBrief(ectx).startsWith('## Epic PR review try 1 of 2: #300'), true);
 const etask = epicReviewTask(ectx);
 t('DS-508 the review task names its ticket the way every task does', /Your ticket is \$TICKET\. /.test(etask), true);
+t('DS-594 the review task pushes HEAD to the base from its detached worktree', etask.includes('push with git push origin HEAD:refs/heads/feat/x,') && etask.includes('on a detached HEAD at origin/feat/x'), true);
+t('DS-594 both tasks name the push-retry form of that push, in place of the contract\'s branch forms', [task, etask].every((s) => s.includes('run as node ~/.claude/desk/bin/push-retry.mjs origin HEAD:refs/heads/feat/x: it takes the place of the worker contract\'s origin <branch> push forms')), true);
+t('DS-594 the review task\'s sentences are spaced', etask.includes('(Stage 4b). Fix every'), true);
 // DS-508 AC1, AC6: an epic batch's epic PR is due once every child merged into the base, a ticket held
 // behind the epic itself aside, and again only once a child merges after it.
 const kid = (key, at) => ({ key, state: 'done', result: { pr: 1 }, merged_at: at });

@@ -49,7 +49,13 @@ export function baseFixOutcome(markers) {
 const quoted = (check) => check.output.split('\n').map((l) => `> ${l}`);
 const treeCheckCmds = '`desk-env cmds merged-tree-check-cmd`';
 const renumberOwn = (base, source) => `Where two files claim one place in a sequence (two migrations with one revision number), renumber ${base}'s own so they come after the head of origin/${source}, and leave ${source}'s as they are.`;
-const taskWorktree = (base) => `Your worktree is $WT, the base's own worktree, on ${base}. Your dev-server port is $PORT. `;
+// The base worktree sits on a detached HEAD at origin's base (base-sync.mjs ensureBaseWorktree), since
+// another worktree may hold the branch, so a push names HEAD and never the local branch. The worker's
+// settings grant exactly this refspec (worker-settings.mjs).
+export const baseRefspec = (base) => `HEAD:refs/heads/${base}`;
+const basePush = (base) => `git push origin ${baseRefspec(base)}`;
+const taskWorktree = (base) => `Your worktree is $WT, the base's own worktree for ${base}, on a detached HEAD at origin/${base}: never check ${base} out, since another worktree may hold it. ` +
+  `Your one push is ${basePush(base)}, run as node ~/.claude/desk/bin/push-retry.mjs origin ${baseRefspec(base)}: it takes the place of the worker contract's origin <branch> push forms, which your settings refuse, since your worktree holds no branch. Your dev-server port is $PORT. `;
 const pushGuard = (base, source) => `git log --oneline origin/${base}..HEAD --not origin/${source} must list only your merge commit and any commit that finishes it; anything else parks. `;
 const taskClose = 'Open no PR, and leave the promotion PR and every ticket\'s Jira as they are. End with AUTOPILOT_DONE: pr=none jira=none.';
 
@@ -106,7 +112,7 @@ export function baseFixTask({ base, source, fix }) {
       `Your task is merged-tree fix try ${fix.try} of ${fix.of} on ${base}: the "Base merged-tree fix" section of your briefing quotes the failure. ` +
       `Fix only that: git fetch origin, merge origin/${source} into ${base} (git merge, never a rebase or a force push), and change ${base}'s own side until every item ${treeCheckCmds} prints passes on the merged tree: this task is your authority to change it. ` +
       `Then verify the merged tree (desk-ticket Stage 4) and self-review the change (Stage 4b). Before you push, run those items again, and ${pushGuard(base, source)}` +
-      `If the check still fails, push nothing and park quoting its output. Otherwise push with git push origin ${base}. ${taskClose}`;
+      `If the check still fails, push nothing and park quoting its output. Otherwise push with ${basePush(base)}. ${taskClose}`;
   }
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET, this batch's base ${base}, which conflicts with ${source}. ` +
     taskWorktree(base) +
@@ -115,7 +121,7 @@ export function baseFixTask({ base, source, fix }) {
     `Then verify the merged tree (desk-ticket Stage 4) and self-review the resolution (Stage 4b). ` +
     `Where §4 Merged-tree check is set, run each item ${treeCheckCmds} prints on the merged tree before you push. ${renumberOwn(base, source)} If one still fails, push nothing and park quoting its output. ` +
     `Before you push, ${pushGuard(base, source)}` +
-    `Push with git push origin ${base}. ${taskClose}`;
+    `Push with ${basePush(base)}. ${taskClose}`;
 }
 
 // An epic batch not in feature mode lands its base through one epic PR, which leaves draft only once a
@@ -154,8 +160,8 @@ export function epicReviewBrief({ base, source, epic, fix }) {
 
 export function epicReviewTask({ base, source, fix }) {
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. It is epic PR #${fix.pr}, which merges this batch's base ${base} into ${source}. ` +
-    `Your worktree is $WT, the base's own worktree, on ${base}. Your dev-server port is $PORT. ` +
-    `Your task is review try ${fix.try} of ${fix.of}: the "Epic PR review" section of your briefing says what it covers. Start at desk-ticket Stage 4: git fetch origin and bring ${base} to origin/${base}, verify it (Stage 4), then run the review desk-env review-cmd prints over origin/${source}..${base} (Stage 4b). ` +
-    `Fix every P0 to P2 finding it confirms on ${base}, commit, push with git push origin ${base}, and review the new head. Post the final review on PR #${fix.pr} at its head (§3 pr-self-review-comment). ` +
+    taskWorktree(base) +
+    `Your task is review try ${fix.try} of ${fix.of}: the "Epic PR review" section of your briefing says what it covers. Start at desk-ticket Stage 4: git fetch origin and bring HEAD to origin/${base} (git merge --ff-only origin/${base}), verify it (Stage 4), then run the review desk-env review-cmd prints over origin/${source}..HEAD (Stage 4b). ` +
+    `Fix every P0 to P2 finding it confirms on ${base}, commit, push with ${basePush(base)}, and review the new head. Post the final review on PR #${fix.pr} at its head (§3 pr-self-review-comment). ` +
     `Never mark the PR ready, merge it, rebase or force-push ${base}, or touch any ticket's Jira. End with AUTOPILOT_DONE: pr=${fix.pr} jira=none.`;
 }
