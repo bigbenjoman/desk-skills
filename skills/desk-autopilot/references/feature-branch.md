@@ -32,7 +32,8 @@ reported" and nothing ever merges.
 
 **`pass.mjs` keeps the base current; do not merge into it by hand.** Every pass makes sure the base
 has its own worktree, `<§2 Worktrees directory>/base-<branch>` (a plain `git worktree add`, no
-database or env files). Before a pass that will spawn, and on every pass that finds the base behind
+database or env files), on a detached HEAD at origin's base, so the primary checkout or another
+worktree having the branch checked out is left as it is and blocks nothing. Before a pass that will spawn, and on every pass that finds the base behind
 §0 Default branch whether it spawns or not, it merges §0 Default branch into the base there as a merge
 commit (never a rebase, so running workers' bases stay valid) and pushes it, and the report says how
 many commits came in. A park recorded as `base contains <§0 Default branch>` is checked after that
@@ -41,9 +42,9 @@ not run stays parked, its line under `clears-when:` saying why. A push refused a
 driver just merged into the base) is fetched, merged again and retried once. Pushing is config §3
 `batch-base-push`: unset or `ask` is one approval per batch, so ask it at Stage 3 and run passes with
 `AUTOPILOT_BASE_PUSH_APPROVED=1`. A sync that cannot run pushes nothing and goes under `WAITING ON
-YOU` with its reason: a conflict (its files listed; resolve it in the base worktree and push), a
-refused push, the row, or the primary checkout having the base checked out (switch it off that
-branch; no base worktree is made until then). In feature mode that pass spawns nothing; otherwise
+YOU` with its reason: a conflict (its files listed; resolve it in the base worktree and push with
+`git push origin HEAD:refs/heads/<branch>`), a refused push, the row, or a base worktree that could
+not be made (its path holds something else). In feature mode that pass spawns nothing; otherwise
 spawning carries on from the base as it stands. Feature mode here is the decision `plan-batch`
 recorded on the queue when it seeded (`feature`), not whatever `feature.json` names.
 
