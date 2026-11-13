@@ -2,10 +2,11 @@
 // minimum benefit an adopt needs, the guardrail margins, the hard trips that revert it at once, the
 // code files its fingerprint covers, its exposure ramp and the repo preconditions it needs. A lever
 // this file does not declare is never trialled. Loading checks every entry and throws, naming the
-// lever and the key, rather than letting a half-declared lever reach a trial.
+// lever and the key, rather than letting a half-declared lever reach a trial. The lever names are
+// desk-env's LEVERS: the registry declares an entry for each of them and no other.
 //
 //   import { REGISTRY, trialable, preconditions, repoValues } from './lever-registry.mjs'
-import { workerLocation } from './desk-env.mjs';
+import { workerLocation, LEVERS, parseLevers } from './desk-env.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
 
@@ -103,8 +104,14 @@ export const ENTRIES = Object.freeze({
 export class LeverRegistryError extends Error {}
 
 // Every entry, checked and frozen, with its layer's ramp and the shared guardrails filled in. Throws
-// LeverRegistryError naming the first lever and key that is missing or malformed.
-export function loadRegistry(entries = ENTRIES) {
+// LeverRegistryError naming the first lever and key that is missing or malformed, and naming every
+// lever in `names` with no entry or every entry not in `names`.
+export function loadRegistry(entries = ENTRIES, names = LEVERS) {
+  const declared = Object.keys(entries ?? {});
+  const undeclared = names.filter((n) => !declared.includes(n));
+  if (undeclared.length) throw new LeverRegistryError(`lever-registry: no entry for ${undeclared.map((n) => `"${n}"`).join(', ')}, which desk-env knows as a lever`);
+  const unknown = declared.filter((n) => !names.includes(n));
+  if (unknown.length) throw new LeverRegistryError(`lever-registry: entry ${unknown.map((n) => `"${n}"`).join(', ')} is not a lever desk-env knows (add it to LEVERS in desk-env.mjs)`);
   const out = {};
   for (const [name, e] of Object.entries(entries ?? {})) {
     const missing = (key) => new LeverRegistryError(`lever-registry: lever "${name}" is missing "${key}"`);
@@ -128,11 +135,13 @@ export function loadRegistry(entries = ENTRIES) {
 export const REGISTRY = loadRegistry();
 export const lever = (name, registry = REGISTRY) => registry[name] ?? null;
 
-// Which of `names` (a repo's levers row) may be trialled: the ones the registry declares. Every other
-// name is refused, and `message` names each one; it is null when nothing is refused.
+// Which levers in a repo's levers row (its items, read as desk-env's parseLevers reads them) may be
+// trialled: the ones the registry declares. Every other name is refused, and `message` names each
+// one; it is null when nothing is refused.
 //   -> { ok: [name], refused: [name], message }
-export function trialable(names, registry = REGISTRY) {
-  const all = [...new Set((names ?? []).map(String))];
+export function trialable(items, registry = REGISTRY) {
+  const { on, unknown } = parseLevers(items);
+  const all = [...on, ...unknown];
   const ok = all.filter((n) => Object.hasOwn(registry, n));
   const refused = all.filter((n) => !Object.hasOwn(registry, n));
   const message = refused.length ? `lever-registry: refusing to trial ${refused.map((n) => `"${n}"`).join(', ')}: not declared in the lever registry (declared: ${Object.keys(registry).join(', ')})` : null;

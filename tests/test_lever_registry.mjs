@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions } from '../desk/bin/lever-registry.mjs';
-import { LEVERS } from '../desk/bin/desk-env.mjs';
+import { LEVERS, parseLevers } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,7 +14,9 @@ const without = (name, drop) => ({ ...ENTRIES, [name]: drop({ ...ENTRIES[name], 
 const byLayer = (layer) => Object.values(REGISTRY).filter((l) => l.layer === layer).map((l) => l.name).sort().join(' ');
 t('AC1 low-risk layer', byLayer('low-risk'), 'failure-class memory preflight wrappers');
 t('AC1 quality-risk layer', byLayer('quality-risk'), 'codex effort review-reuse');
-t('AC1 the registry declares exactly the levers desk-env parses', Object.keys(REGISTRY).sort().join(' '), [...LEVERS].sort().join(' '));
+const dropCodex = Object.fromEntries(Object.entries(ENTRIES).filter(([n]) => n !== 'codex'));
+t('AC1 a lever desk-env knows with no entry fails loading, by name', loadError(dropCodex), 'lever-registry: no entry for "codex", which desk-env knows as a lever');
+t('AC1 an entry desk-env does not know fails loading, by name', loadError({ ...ENTRIES, turbo: ENTRIES.memory }), 'lever-registry: entry "turbo" is not a lever desk-env knows (add it to LEVERS in desk-env.mjs)');
 t('AC1 the quality-risk layer is declared but not yet trialled', Object.values(REGISTRY).filter((l) => l.layer === 'quality-risk').every((l) => l.trialled === false), true);
 t('AC1 the low-risk layer is trialled', Object.values(REGISTRY).filter((l) => l.layer === 'low-risk').every((l) => l.trialled === true), true);
 t('AC1 the loaded registry is frozen', Object.isFrozen(REGISTRY) && Object.isFrozen(REGISTRY.preflight) && Object.isFrozen(REGISTRY.preflight.code), true);
@@ -26,7 +28,10 @@ t('AC2 undeclared levers are refused', row.refused.join(' '), 'turbo warp-drive'
 t('AC2 the message names each refused lever', /"turbo"/.test(row.message) && /"warp-drive"/.test(row.message), true);
 t('AC2 the message does not name a declared lever as refused', /"preflight"/.test(row.message), false);
 t('AC2 nothing refused, no message', trialable(['wrappers', 'effort']).message, null);
-t('AC2 a lever removed from the registry is refused', trialable(['codex'], loadRegistry(Object.fromEntries(Object.entries(ENTRIES).filter(([n]) => n !== 'codex')))).refused.join(' '), 'codex');
+t('AC2 a lever removed from the registry is refused', trialable(['codex'], loadRegistry(dropCodex, LEVERS.filter((n) => n !== 'codex'))).refused.join(' '), 'codex');
+const raw = trialable(['Preflight, turbo', 'MEMORY', 'none']);
+t('AC2 the row is read as desk-env reads it: case and comma-separated items', `${raw.ok.join(' ')} | ${raw.refused.join(' ')}`, 'preflight memory | turbo');
+t('AC2 and agrees with desk-env on which are on', raw.ok.join(' '), parseLevers(['Preflight, turbo', 'MEMORY']).on.join(' '));
 
 // AC3: loading fails naming the lever and the missing key.
 t('AC3 the shipped registry loads', loadError(ENTRIES), 'loaded');
