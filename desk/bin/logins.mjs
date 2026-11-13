@@ -45,17 +45,23 @@ export const signInParts = (login) => TOOL[login.tool].signIn(login);
 export const signInCommand = (login) => { const p = signInParts(login); return p.then ? `${p.shell}, then ${p.then}` : p.shell; };
 
 // `in rotation`, `In-Rotation` and `in  rotation` are one rule; anything else is null.
+const ruleWords = (v) => String(v ?? '').trim().toLowerCase().replace(/[\s-]+/g, ' ');
 export function normRule(v) {
-  const s = String(v ?? '').trim().toLowerCase().replace(/[\s-]+/g, ' ');
+  const s = ruleWords(v);
   return RULES.includes(s) ? s : null;
 }
+// What the file may say in place of a rule, and the rule every reader gets for it: a tool's one
+// `default` login reads as in rotation and each `unused` one as standby. A login read from one keeps
+// the word as `stored`, so writing the file back keeps it.
+export const STORED_RULES = Object.freeze({ default: 'in rotation', unused: 'standby' });
+const storedRule = (v) => { const s = ruleWords(v); return Object.hasOwn(STORED_RULES, s) ? s : null; };
 export const ruleError = (v) => `"${v}" is not a rule: use one of ${RULES.map((r) => `\`${r}\``).join(', ')}`;
 
 // A login as every reader gets it. configDir is the folder to point the tool at, or null for the
 // tool's own default folder (no override).
-export function login({ tool, name, folder, rule, source }) {
+export function login({ tool, name, folder, rule, source, stored }) {
   const dir = resolve(expand(folder));
-  return { tool, name, folder: tilde(dir), dir, configDir: dir === TOOL[tool].dir() ? null : dir, rule, source };
+  return { tool, name, folder: tilde(dir), dir, configDir: dir === TOOL[tool].dir() ? null : dir, rule, source, ...(stored ? { stored } : {}) };
 }
 export const defaultLogin = (tool) => login({ tool, name: 'default', folder: TOOL[tool].dir(), rule: 'in rotation', source: 'default' });
 
@@ -93,14 +99,15 @@ export function parseSubscriptions(text, { exists = true } = {}) {
     }
     if (header.join('|') !== 'tool|name|folder|rule') return;
     const [tool, name, folder, ruleText] = c;
-    const rule = normRule(ruleText);
+    const stored = storedRule(ruleText);
+    const rule = stored ? STORED_RULES[stored] : normRule(ruleText);
     if (c.length !== 4) errors.push(`${at}: want 4 cells (Tool, Name, Folder, Rule), got ${c.length}`);
     else if (!TOOLS.includes(tool)) errors.push(`${at}: tool "${tool}" is neither claude nor codex`);
     else if (!NAME.test(name)) errors.push(`${at}: name "${name}" wants letters, digits, dots, dashes or underscores`);
     else if (!folder) errors.push(`${at}: ${tool} ${name} has no folder`);
     else if (!rule) errors.push(`${at}: ${tool} ${name}: ${ruleError(ruleText)}`);
     else {
-      const l = login({ tool, name, folder, rule, source: 'file' });
+      const l = login({ tool, name, folder, rule, source: 'file', stored });
       const same = logins.find((o) => o.tool === tool && (o.name === name || o.dir === l.dir));
       if (same) errors.push(`${at}: ${tool} ${name} repeats ${same.name === name ? 'the name' : `the folder of ${same.name}`}`);
       else logins.push(l);
@@ -130,7 +137,7 @@ export function renderSubscriptions(logins, removed = []) {
     '',
     '| Tool | Name | Folder | Rule |',
     '|---|---|---|---|',
-    ...sortLogins(logins).map((l) => `| ${cell(l.tool)} | ${cell(l.name)} | ${cell(l.folder)} | ${cell(l.rule)} |`),
+    ...sortLogins(logins).map((l) => `| ${cell(l.tool)} | ${cell(l.name)} | ${cell(l.folder)} | ${cell(l.stored ?? l.rule)} |`),
     '',
     ...(removed.length ? [
       '## Removed',
@@ -296,10 +303,17 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
   }
   if (rule === 'off') lastUsable(tool, name, target, check, 'turning this one off');
   // In place, so the order (which name keeps a shared account) stays; an added login goes last, and
-  // leaves the Removed table.
-  const changed = { ...target, rule, source: 'file' };
+  // leaves the Removed table. Where the tool's rows say default and unused, the rule is written in
+  // those words: in rotation makes this login the tool's one default and its old default unused.
+  const words = subs.logins.some((l) => l.tool === tool && l.stored);
+  const stored = words ? Object.keys(STORED_RULES).find((k) => STORED_RULES[k] === rule) : undefined;
+  const { stored: _was, ...rest } = target;
+  const changed = { ...rest, rule, source: 'file', ...(stored ? { stored } : {}) };
+  const demoted = (l) => (stored === 'default' && l.stored === 'default' ? { ...l, rule: STORED_RULES.unused, stored: 'unused' } : l);
   const listed = subs.logins.some((l) => l.tool === tool && l.name === target.name);
-  const logins = listed ? subs.logins.map((l) => (l.tool === tool && l.name === target.name ? changed : l)) : [...subs.logins, changed];
+  const logins = listed
+    ? subs.logins.map((l) => (l.tool !== tool ? l : l.name === target.name ? changed : demoted(l)))
+    : [...subs.logins.map((l) => (l.tool === tool ? demoted(l) : l)), changed];
   return { text: renderSubscriptions(logins, subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir))), login: changed };
 }
 

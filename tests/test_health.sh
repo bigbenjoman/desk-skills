@@ -282,6 +282,11 @@ before=$(calls claude)
 pj
 check "DS-463 AC7 a listed login with no folder is told signed out, unasked" '[ "$(calls claude)" = $((before + 1)) ] && grep -qF "health: Claude login b (~/.claude-logins/b) is signed out (~/.claude-logins/b does not exist)" <<< "$out"'
 mv "$HOME/.claude-logins/b.gone" "$HOME/.claude-logins/b"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$DESK_SUBSCRIPTIONS"
+: > "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
+pj
+check "a file saying default and unused: login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
+rm -f "$HOME/.claude-logins/b/signed-out" "$T/state/health.json"
 unset DESK_SUBSCRIPTIONS
 
 echo "$PASS checks passed, $FAIL failed"

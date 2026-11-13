@@ -152,6 +152,33 @@ t('AC10 and the file is unchanged', readFileSync(SUBS, 'utf8'), lastFile);
 c = await cli('set', 'claude', 'login-3', 'off');
 t('a login that is not usable can be turned off', `${c.rc} ${readSubscriptions(SUBS).logins.find((l) => l.name === 'login-3').rule}`, '0 off');
 
+// default and unused: read as in rotation and standby, and written back in their own words.
+const NEW = ROWS([
+  '| `claude` | `default` | `~/.claude` | `off` |',
+  '| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |',
+  '| `claude` | `login-3` | `~/.claude-logins/login-3` | `unused` |',
+]);
+writeFileSync(join(H, '.claude-logins', 'login-2', 'status.json'), JSON.stringify({ loggedIn: true, email: 'work@example.com' }));
+claudeIn(join(H, '.claude-logins', 'login-3'), 'three@example.com', 'Pro');
+const nw = checkLogins(parseSubscriptions(NEW), { ...fakes, tools: ['claude'] });
+const nwOut = checkLines(nw, SUBS);
+t('default and unused: both signed in and usable', nw.usable.filter((l) => l.source === 'file').map((l) => l.name).join(), 'login-2,login-3');
+t('default and unused: login-2 checked as in rotation', nwOut.some((l) => /^claude\s+login-2\s.*signed in.*in rotation$/.test(l)), true);
+t('default and unused: login-3 checked as standby', nwOut.some((l) => /^claude\s+login-3\s.*signed in.*standby$/.test(l)), true);
+t('default and unused: the file round-trips in its own words', renderSubscriptions(parseSubscriptions(NEW).logins), renderSubscriptions(parseSubscriptions(renderSubscriptions(parseSubscriptions(NEW).logins)).logins));
+t('default and unused: rendered as written', /\| `login-2` \| `~\/\.claude-logins\/login-2` \| `default` \|[\s\S]*\| `login-3` \| `~\/\.claude-logins\/login-3` \| `unused` \|/.test(renderSubscriptions(parseSubscriptions(NEW).logins)), true);
+const ruleOf = (name) => (/\| `([^`]+)` \|$/m.exec(readFileSync(SUBS, 'utf8').split('\n').find((l) => l.includes(`\`${name}\``)) ?? '') ?? [])[1];
+writeFileSync(SUBS, NEW);
+c = await cli('set', 'claude', 'login-3', 'standby');
+t('default and unused: set standby writes unused', `${c.rc} ${ruleOf('login-3')} ${ruleOf('login-2')}`, '0 unused default');
+c = await cli('set', 'claude', 'login-3', 'in', 'rotation');
+t('default and unused: set in rotation makes it the default, the old default unused', `${c.rc} ${ruleOf('login-3')} ${ruleOf('login-2')}`, '0 default unused');
+c = await cli('set', 'claude', 'login-2', 'off');
+t('default and unused: set off writes off', `${c.rc} ${ruleOf('login-2')} ${ruleOf('login-3')}`, '0 off default');
+const legacy = setRule(parseSubscriptions(FILE), { tool: 'claude', name: 'login-3', rule: 'in rotation', check: () => null });
+t('today\'s rules alone: set in rotation still writes in rotation and leaves the others', parseSubscriptions(legacy.text).logins.filter((l) => l.tool === 'claude').map((l) => `${l.name}:${l.rule}`).join(), 'default:in rotation,login-2:in rotation,login-3:in rotation,login-4:in rotation');
+t('today\'s rules alone: nothing written as default or unused', /`(default|unused)` \|$/m.test(legacy.text), false);
+
 // No file: setting the default login writes the file with the defaults.
 const fresh = join(T, 'fresh');
 mkdirSync(fresh);

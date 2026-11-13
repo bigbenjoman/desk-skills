@@ -285,6 +285,9 @@ subscriptions([['default', '~/.claude', 'off'], ['b', '~/.claude-logins/b', 'off
 t('a desk-q on a default set off never probes it, with no other login in use', Q.probesDue([], { now: nowU + 86400000 }).length, 0);
 subscriptions([['default', '~/.claude', 'in rotation'], ['b', '~/.claude-logins/b', 'off']]);
 t('and with the default in rotation, its one probe is due a day on', Q.probesDue([], { now: nowU + 86400000 }).map((x) => x.login.name).join(), 'default');
+subscriptions([['default', '~/.claude', 'unused'], ['b', '~/.claude-logins/b', 'default']]);
+t('a file saying default and unused: both logins are in use', L.probeLogins().map((l) => `${l.name}:${l.rule}`).join(), 'default:standby,b:in rotation');
+t('and with no worker running, desk-q probes both', Q.probesDue([], { now: nowU }).map((x) => x.login.name).sort().join(), 'b,default');
 
 // AC6: one login. Every worker log is its, with no login file, and the line is the one it always was.
 rmSync(join(H, '.claude-logins'), { recursive: true });

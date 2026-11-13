@@ -150,6 +150,9 @@ r = codex('refuter', 'x');
 t('AC4 every login in rotation benched: the call runs on standby', [r.status, r.home, r.on], [0, dir('spare'), 'spare']);
 reading('login-2', five(30), week(5));
 t('AC4 standby is not used while a login in rotation has room', codex('refuter', 'x').on, 'login-2');
+subs(['login-2', 'unused'], ['spare', 'default']);
+r = codex('refuter', 'x');
+t('a file saying default and unused: the call runs on the default, though the unused one has more room', [r.status, r.home, r.on], [0, dir('spare'), 'spare']);
 
 // AC5: every login benched: no call, and the earliest reset named for the dead seat.
 reading('login-2', five(100, 3), week(5));
