@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
 import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
-import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
+import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet } from '../desk/bin/review-threads.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
 import { errorLinesIn } from '../desk/bin/evidence.mjs';
@@ -854,6 +854,58 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-545 AC1 and it asks for a whole review, with no Targeted section', `${tT.includes('targeted')} ${bT.includes('Targeted')}`, 'false false');
   t('DS-545 AC5 a narrowed try under /desk-review reads as today', fixTask(tk({ fix: rvT.fix }), '/desk-review') === fixTask(tk({ fix: rvT.fix })) && fixBrief(tk({ fix: rvT.fix }), '/desk-review') === briefT, true);
   t('DS-545 AC5 and today\'s names desk-review Phase 7', fixTask(tk({ fix: tries.rereview })).includes('Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code.'), true);
+}
+
+// DS-548: a ready PR red on a §4 Check builds check gets the draft's host build and sync try, and
+// only a build that failed goes to the person, with its last line.
+{
+  const rows = [{ name: 'Flows image', command: './scripts/ensure-flows-image.sh' }];
+  const built = { state: 'done', command: rows[0].command, code: 0, tail: 'pushed', reran: null };
+  const failed = { ...built, code: 1, tail: 'step 7 / ECR denied the push' };
+  // ctx.build as pass.mjs gives it: buildCall on the red build checks alone, with the record at HEAD.
+  const bctx = (rec, { behind = () => null, rerun = 'yes', ...o } = {}) => ctx({ operator: [], builds: rows,
+    build: (failing) => buildCall({ pending: [], failing }, { builds: rows, rerun, built: (h) => (h === HEAD ? rec : null), behind }, 697, HEAD, tk()), ...o });
+  const only = pr([ok('tests'), red('Flows image', '903')]);
+  const a1 = fixCall(tk(), only, bctx(null));
+  t('DS-548 AC1 ready and red only on a check build not run at its head: the build runs', `${a1?.call} | ${a1?.command} | ${a1?.checks} | ${a1?.runs}`, 'build | ./scripts/ensure-flows-image.sh | Flows image | 903');
+  t('DS-548 AC1 while it runs, nothing goes to anyone', fixCall(tk(), only, bctx({ state: 'running', command: built.command }))?.call, 'wait');
+  t('DS-548 AC1 once it succeeded, the check is re-run', fixCall(tk(), only, bctx(built))?.call, 'rebuilt');
+  t('DS-548 AC1 negative control: with §3 ci-rerun not yes it is the person\'s, with its command, as before', fixCall(tk(), only, bctx(null, { rerun: 'ask' }))?.why, 'Flows image · ./scripts/ensure-flows-image.sh');
+  const a2 = fixCall(tk(), only, bctx(failed, { behind: () => 'main' }));
+  t('DS-548 AC2 a build that failed behind the base goes to a sync try, out of draft', `${a2?.call} | ${a2?.fix.kind} | ${a2?.fix.draft} | ${a2?.fix.try}/${a2?.fix.of} | ${a2?.fix.base} | ${a2?.fix.what}`,
+    `requeue | sync | undefined | 1/${FIX_TRIES_MAX} | main | ready PR behind main, its check build failed`);
+  const brief2 = fixBrief(tk({ fix: a2.fix }));
+  t('DS-548 AC2 its brief says the PR is out of draft and leaves the build to the pass', brief2.includes(`Your PR #697 is open and out of draft on this branch, and its head ${HEAD.slice(0, 12)} is behind main.`) && brief2.includes('Do not run the check build yourself'), true);
+  t('DS-548 AC2 its task merges the base and leaves the PR out of draft', fixTask(tk({ fix: a2.fix })).includes('merge origin/main into your branch') && fixTask(tk({ fix: a2.fix })).includes('leave the PR out of draft'), true);
+  t('DS-548 AC2 the sync try shares FIX_TRIES_MAX with the red-check tries', fixCall(tk({ fix_tries: one }), only, bctx(failed, { behind: () => 'main' }))?.fix.try, 2);
+  t('DS-548 AC2 negative control: up to date with its base, no sync try', fixCall(tk(), only, bctx(failed))?.call, 'stuck');
+  t('DS-548 AC2 the draft\'s sync try is unchanged', syncFix(tk(), { pr: 855, head: HEAD, base: 'main', why: 'x' })?.fix.what, 'draft behind main, its check build failed');
+  const mixed = pr([ok('tests'), red('Flows image', '903'), red('Lint', '902')]);
+  const a3 = fixCall(tk(), mixed, bctx(null));
+  t('DS-548 AC3 beside a check a worker fixes, that one goes to the worker and the build is no one\'s to clear by hand', `${a3?.call} | ${a3?.fix.what} | ${a3?.fix.not_mine.length} | ${a3?.fix.builds}`, 'requeue | red: Lint | 0 | Flows image');
+  t('DS-548 AC3 its brief tells the worker to leave the built check red', fixBrief(tk({ fix: a3.fix })).includes('- Flows image is red too, and it is not yours to fix: §4 Check builds names it, so the pass builds your head once the rest are green.'), true);
+  const a3s = fixCall(tk({ fix_tries: two }), mixed, bctx(null));
+  t('DS-548 AC3 its tries spent, the stuck reason lists only the worker\'s check, and the build starts beside it', `${a3s?.call} | ${a3s?.why} | ${a3s?.checks.map((c) => c.name)} | ${a3s?.build?.call}`, 'stuck | still red after 2 fix tries: Lint | Lint | build');
+  t('DS-548 AC3 negative control: with a try left, no build starts under the worker', a3?.build, undefined);
+  const a3f = fixCall(tk({ fix_tries: two }), mixed, bctx(failed));
+  t('DS-548 AC3 its tries spent and its build already failed, that build joins the stuck checks with its line', JSON.stringify(a3f?.checks), '[{"name":"Flows image","build":"./scripts/ensure-flows-image.sh","error":"ECR denied the push"},{"name":"Lint"}]');
+  t('DS-548 AC3 once the rest are green, its build runs, tries spent or not', fixCall(tk({ fix_tries: two }), only, bctx(null))?.call, 'build');
+  t('DS-548 AC3 negative control: with ci-rerun not yes the built check is the person\'s beside it, as before', fixCall(tk({ fix_tries: two }), mixed, bctx(null, { rerun: 'no' }))?.why, 'still red after 2 fix tries: Lint; Flows image · ./scripts/ensure-flows-image.sh');
+  const a4 = fixCall(tk(), only, bctx(failed));
+  t('DS-548 AC4 a build that failed up to date with its base is stuck, quoting its last line', `${a4?.call} | ${a4?.why}`, 'stuck | its check build `./scripts/ensure-flows-image.sh` exited 1: Flows image says "ECR denied the push"');
+  t('DS-548 AC4 its check carries the build and the line, and no command a person runs', JSON.stringify(a4?.checks), '[{"name":"Flows image","build":"./scripts/ensure-flows-image.sh","error":"ECR denied the push"}]');
+  const a4s = fixCall(tk({ fix_tries: two }), only, bctx(failed, { behind: () => 'main' }));
+  t('DS-548 AC4 behind its base with no try left, stuck the same way', `${a4s?.call} | ${a4s?.why}`, 'stuck | still behind main with its check build failing after 2 fix tries: Flows image says "ECR denied the push"');
+  const still = fixCall(tk(), only, bctx({ ...built, reran: { ok: true, out: '' } }));
+  t('DS-548 AC4 negative control: still red after a build that passed and its re-run, a plain red check, not a failed build', `${still?.call} | ${JSON.stringify(still?.checks)}`, 'stuck | [{"name":"Flows image"}]');
+  const refused = fixCall(tk(), only, bctx({ ...built, reran: { ok: false, out: 'HTTP 403' } }));
+  t('DS-548 AC4 negative control: a refused re-run is the person\'s step, not a failed build', `${refused?.call} | ${JSON.stringify(refused?.checks)}`, 'stuck | [{"name":"Flows image","command":"re-run \\"Flows image\\" on #697"}]');
+  const steps = { premerge: [{ name: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' }], steps: () => [] };
+  const both = pr([ok('tests'), red('Flows image', '903'), red('Check portal schema mirror', '905')]);
+  const a5 = fixCall(tk(), both, bctx(null, steps));
+  t('DS-548 AC5 a pre-merge step beside it is the person\'s alone, and the build starts with it', `${a5?.call} | ${a5?.why} | ${a5?.build?.call}`, 'stuck | Check portal schema mirror · apply the PR\'s migrations to staging first | build');
+  t('DS-548 AC5 while the build runs, that step alone is stuck', fixCall(tk(), both, bctx({ state: 'running', command: built.command }, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
+  t('DS-548 AC5 negative control: a pre-merge step alone is the person\'s, as today', fixCall(tk(), pr([ok('tests'), red('Check portal schema mirror', '905')]), bctx(null, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
 }
 
 process.exit(fails ? 1 : 0);

@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -43,12 +43,12 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
-import { undraftCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
+import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -1639,6 +1639,41 @@ const MAINT = await maintenance({
   }),
 });
 
+// ---- date holds ----------------------------------------------------------
+// A triaged ticket whose triage record carries a blocked-until-YYYY-MM-DD label is held until that day
+// on this machine's local date, then goes back to triaged in its place in the queue. One whose label's
+// date cannot be read is held for the person, who fixes the label or lets it start. A held ticket is
+// read against its labels on every pass, so a label fixed, moved or taken away moves its hold with it.
+// held_label keeps the label a hold was for, and survives a release, so a ticket the person let start
+// is not held on that label again.
+const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
+const TODAY = localDay();
+const dateLines = [];
+const holds = (h) => h && (h.bad || h.until > TODAY);
+for (const t of Object.values(queue().tickets)) {
+  const held = dateHeld(t);
+  if (!held && t.state !== 'triaged') continue;
+  const rec = triageRec(t.key);
+  // Labels not read yet (a triage running again, or its Jira read failed): a held ticket keeps the label
+  // it was held on.
+  const want = Array.isArray(rec?.labels) && !rec.facts_error ? dateHoldOf(rec.labels) : held;
+  if (held && holds(want) && want.label === held.label) continue;
+  if (held && !holds(want)) {
+    if (DRY) { dateLines.push(`date hold (dry run): ${t.key}: would release it`); continue; }
+    q('set', t.key, 'state=triaged', 'park=null', 'held_label=null');
+    dateLines.push(`date hold: ${t.key}: ${want ? `${want.until} has come` : 'no longer labelled blocked-until'}; RELEASED`);
+    continue;
+  }
+  if (!holds(want) || (!held && t.held_label === want.label)) continue;
+  const why = want.bad
+    ? `${HELD_PREFIX}: ${badLabelText(want.label)}`
+    : `${HELD_PREFIX}: blocked until ${want.until} (label ${want.label}) — starts on that date by itself`;
+  if (DRY) { dateLines.push(`date hold (dry run): ${t.key}: would hold it: ${why}`); continue; }
+  q('park', t.key, why);
+  q('set', t.key, `held_label=${want.label}`);
+  if (held) dateLines.push(`date hold: ${t.key}: now held on its label ${want.label}`);
+}
+
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
 const all = Object.values(fresh.tickets);
@@ -3154,7 +3189,6 @@ for (const t of Object.values(queue().tickets)) {
 // recorded blockers, as they were. A ticket waiting to merge on the person's steps (merge_after) is
 // read while it waits, done or not and whether or not a step has since joined this queue.
 const qB = queue();
-const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
 // A link to the ticket's own epic, its parent epic or this batch's, never holds it: ticket-facts.mjs
 // leaves it out of `blockers` (own_epic_blockers), and a record written before that is split here.
 const ownEpicSplit = (rec) => splitOwnEpic(rec?.blockers, rec?.epic?.key, qB.epic);
@@ -3287,6 +3321,7 @@ const out = [];
 if (!registryOk) out.push(`! could not read the session registry — no ticket was advanced this pass: ${REGISTRY.why}`);
 out.push(...baseLines);
 out.push(...MAINT.lines);
+out.push(...dateLines);
 for (const [label, items] of [['spawned', report.spawned], ['advanced', report.advanced], ['done', report.done], ['failed', report.failed]]) {
   if (items.length) out.push(`${label}: ${items.join(' | ')}`);
 }
@@ -3730,11 +3765,16 @@ for (const { t, s } of undrafted) {
 // run from the pass's clean checkout of origin's default branch, READ_CHECKOUT, never the ticket's
 // worktree, with the PR's head given only as DESK_CHECK_HEAD and DESK_CHECK_TREE, the pass's clean
 // checkout of it under TREE_DIR. Where either cannot be made, nothing runs and the draft is the person's.
-// A checkout something still runs in is not moved: the build starts at a later pass.
-function startCheckBuild(t, n, head, c, rec) {
-  if (DRY) { out.push(`undraft (dry run): would run \`${c.command}\` for PR #${n} (${t.key}) at ${String(head).slice(0, 12)}: ${c.why}`); return rec; }
+// A checkout something still runs in is not moved: the build starts at a later pass. A ready PR's
+// (`ready`, from its fix tries) is built the same way, and one that cannot start is the caller's to
+// record stuck.
+function buildSays(t, n, ready) {
+  return ready ? `fix tries: PR #${n} (${t.key}) is out of draft` : `undraft: PR #${n} (${t.key}) stays draft`;
+}
+function startCheckBuild(t, n, head, c, rec, ready = false) {
+  if (DRY) { out.push(`${ready ? 'fix tries' : 'undraft'} (dry run): would run \`${c.command}\` for PR #${n} (${t.key}) at ${String(head).slice(0, 12)}: ${c.why}`); return rec; }
   const busy = buildBusy(n);
-  if (busy) { out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}; it starts once ${busy}`); return rec; }
+  if (busy) { out.push(`${buildSays(t, n, ready)}: ${c.why}; it starts once ${busy}`); return rec; }
   const dir = buildDir(t, n, head);
   let pid = null;
   let failed = dir.why ?? null;
@@ -3742,13 +3782,13 @@ function startCheckBuild(t, n, head, c, rec) {
     try { pid = startBuild(BUILD_DIR, { n, head, command: c.command, checks: c.checks, cwd: READ_CHECKOUT, tree: dir.tree, base: dir.base }); } catch (e) { failed = e.message; }
   }
   if (!failed) {
-    out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why} (started from the pass's clean checkout of origin/${READ_BRANCH} at ${dir.base.slice(0, 9)}, ${READ_CHECKOUT}, with DESK_CHECK_TREE ${dir.tree}; pid ${pid})`);
+    out.push(`${buildSays(t, n, ready)}: ${c.why} (started from the pass's clean checkout of origin/${READ_BRANCH} at ${dir.base.slice(0, 9)}, ${READ_CHECKOUT}, with DESK_CHECK_TREE ${dir.tree}; pid ${pid})`);
     return rec;
   }
   const why = `its check build \`${c.command}\` could not start: ${failed}`;
   const action = `run \`${c.command}\` at the head of #${n}, then re-run ${c.checks.map((x) => `"${x}"`).join(', ')}`;
-  report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
-  return { ...rec, call: 'person', why, action };
+  if (!ready) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
+  return { ...rec, call: 'person', why, action, lead: `its check build \`${c.command}\` could not start: ${failed}` };
 }
 // A draft whose screenshot cells §4 Evidence workflow fills gets that workflow, on the default branch,
 // once per head (evidence.mjs). Where it cannot start, the cells are the person's.
@@ -3918,8 +3958,8 @@ function buildDir(t, n, head) {
 }
 // A check build that succeeded: its checks' runs re-run with --failed, once per head. Not rerun.sh,
 // whose cap and cooldown are for flaky runs: these were red for want of the build.
-function rerunBuilt(t, n, head, c, rec) {
-  if (DRY) { out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ') || '(none)'} on PR #${n} (${t.key}): ${c.why}`); return rec; }
+function rerunBuilt(t, n, head, c, rec, ready = false) {
+  if (DRY) { out.push(`${ready ? 'fix tries' : 'undraft'} (dry run): would re-run run(s) ${c.runs.join(', ') || '(none)'} on PR #${n} (${t.key}): ${c.why}`); return rec; }
   const refused = c.runs.length ? [] : ['no run id was reported for it'];
   for (const id of c.runs) {
     const r = shOut('gh', ['run', 'rerun', id, '--repo', GH_REPO, '--failed']);
@@ -3927,14 +3967,14 @@ function rerunBuilt(t, n, head, c, rec) {
   }
   markReran(BUILD_DIR, n, head, { ok: !refused.length, out: refused.join('; ') });
   if (!refused.length) {
-    out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why} (run(s) ${c.runs.join(', ')})`);
+    out.push(`${buildSays(t, n, ready)}: ${c.why} (run(s) ${c.runs.join(', ')})`);
     return rec;
   }
   const checks = c.checks.map((x) => `"${x}"`).join(', ');
   const why = `its check build ran at ${String(head).slice(0, 9)}, but the re-run of ${checks} was refused: ${refused.join('; ')}`;
   const action = `re-run ${checks} on #${n}`;
-  report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
-  return { ...rec, call: 'person', why, action };
+  if (!ready) report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
+  return { ...rec, call: 'person', why, action, lead: `its check build ran, but the re-run was refused: ${refused.join('; ')}` };
 }
 
 // A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
@@ -3979,8 +4019,10 @@ function reviewComments(id) {
 // the same branch, at most twice (fix-tries.mjs); one whose §4 State check reading its verdict is red,
 // which the driver never reruns, or that it holds for want of a clean verdict at its head, to a review
 // worker (verdictTry). What no worker can
-// fix, a check a person clears (§4 Checks workers can't fix, Check builds or Pre-merge steps) or a third failure, is recorded on the ticket as `stuck`
-// and put to the person. The driver's per-head rerun record is read from its state directory.
+// fix, a check a person clears (§4 Checks workers can't fix or Pre-merge steps, or Check builds where
+// the pass builds none) or a third failure, is recorded on the ticket as `stuck`
+// and put to the person. A §4 Check builds check gets its build here as a draft's does (startCheckBuild),
+// once nothing a worker fixes is red. The driver's per-head rerun record is read from its state directory.
 if (fixRowErrors.length && undrafted.length) {
   out.push(`fix tries: none this pass, since config ${fixRowErrors.join('; ')}. Run /desk-setup`);
 }
@@ -4020,9 +4062,11 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
       continue;
     }
   }
+  const { baseMerge, behind } = baseMoves(t, s.head);
   const ctx = {
-    // Out of draft, a §4 Check builds check is the person's too: the pass builds only a draft's.
+    // Out of draft, a §4 Check builds check is built as a draft's is, where §3 ci-rerun lets the pass.
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows, stateChecks: stateRow.checks,
+    build: (failing) => buildCall({ pending: [], failing }, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), built: (head) => buildRecord(BUILD_DIR, n, head), behind }, n, s.head, t),
     ...driverReruns(n, s.head),
     // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
     waived: (names) => {
@@ -4036,8 +4080,21 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   };
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
-  const c = gateTry(t, s, { ...ctx, baseMerge: baseMoves(t, s.head).baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
+  let c = gateTry(t, s, { ...ctx, baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
   if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
+  if (c.call === 'wait') { out.push(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`); continue; }
+  // A §4 Check builds build to start or re-run: on its own, or beside a check a person clears.
+  const b = c.call === 'build' || c.call === 'rebuilt' ? c : c.build;
+  if (b) {
+    const r = b.call === 'build' ? startCheckBuild(t, n, s.head, b, null, true) : rerunBuilt(t, n, s.head, b, null, true);
+    // One that could not start or whose re-run was refused is the person's step, with what to run.
+    const person = r?.call === 'person';
+    if (b === c && !person) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
+    if (person) {
+      const beside = b === c ? null : c;
+      c = { ...beside, ...builtStuck(beside?.lead ?? r.lead, b.checks, { command: r.action }, beside?.checks ?? []) };
+    }
+  }
   applyFix(t, n, s.head, c);
 }
 // A ready PR's review, read as the merge driver reads it (review-threads.mjs): a desk-review at its
@@ -4200,11 +4257,15 @@ const epicQueue = (p) => {
 const isEpic = (p) => p === EPIC || epicQueue(p) != null;
 const epicsOf = (t) => predsOf(t).filter(isEpic);
 const onEpic = heldNow.filter((t) => epicsOf(t).length && predsOf(t).every((p) => isEpic(p) || mergedHere(p)));
-const onMerge = heldNow.filter((t) => waitingOnMerge(qNow, t, prState) && !releaseDue.includes(t) && !onApproval.includes(t) && !onEpic.includes(t));
+const onMerge = heldNow.filter((t) => !dateHeld(t) && waitingOnMerge(qNow, t, prState) && !releaseDue.includes(t) && !onApproval.includes(t) && !onEpic.includes(t));
+const onDate = heldNow.filter((t) => dateHeld(t)?.until);
+const onBadLabel = heldNow.filter((t) => dateHeld(t)?.bad);
 // Held behind a failed or parked ticket waits on the person's answer there, which is asked once.
 const parksOf = new Map(heldNow.map((t) => [t, waitingOnPark(qNow, t, prState)]).filter(([, p]) => p));
 const onPark = [...parksOf.keys()];
-const stuck = heldNow.filter((t) => !waitingOnMerge(qNow, t, prState) && !parksOf.has(t));
+const stuck = heldNow.filter((t) => !dateHeld(t) && !waitingOnMerge(qNow, t, prState) && !parksOf.has(t));
+if (onDate.length) out.push(`HELD: ${onDate.map((t) => `${t.key} (until ${dateHeld(t).until})`).join(', ')}`);
+for (const t of onBadLabel) report.waiting.push(`${t.key}: HELD — ${badLabelText(dateHeld(t).label)} (${E.releaseCommand(t.key)})`);
 if (onPark.length) out.push(`WAITING ON A PARK: ${onPark.map((t) => `${t.key} (${parksOf.get(t).join(', ')})`).join(', ')}: answered there, not asked again`);
 if (onApproval.length) out.push(`WAITING ON APPROVAL: ${onApproval.map((t) => `${t.key} (spine ${spinesOf(t).join(', ')})`).join(', ')}`);
 if (onMerge.length) out.push(`WAITING ON MERGE: ${onMerge.map((t) => `${t.key} (${predsOf(t).join(', ')})`).join(', ')}`);

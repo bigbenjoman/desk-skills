@@ -8,7 +8,8 @@ another phase's file. Paths such as `references/gotchas.md` are from the skill's
 ## Phase 5: requirements
 
 `bea-business-analyst` (else `general-purpose`), dispatched **alongside** the Phase 3 finders. She
-reads the ticket and the diff, not their output. **She never writes to the tracker**: no comment,
+reads the ticket, the calls already taken on it (*Settled calls*, below) and the diff, not their
+output. **She never writes to the tracker**: no comment,
 transition or field edit.
 
 **Find the ticket**, case-insensitively, then in the tracker's case, from the branch name and the PR
@@ -61,11 +62,29 @@ code_claim: yes | no
 settled_by: code | person
 ```
 
-`settled_by` is `person` when no change the ticket allows can close the gap, so all that is left is
-the person accepting it on the PR or amending the criterion. A gap a worker could close by changing
-code, or by an engineering call of its own, is `code`, and doubt is `code`. Post a `person` gap as one
-list item holding the literal tag `PERSON'S CALL`, its detail indented under it, on every round it
-stays open: `- PERSON'S CALL · AC2: "<criterion>" — <what is open, and how the person can settle it>`.
+**Settled calls amend the criteria.** Bea's prompt carries, beside the ticket, every call already
+taken on it: each line of the PR body's `### Decisions taken` section (`desk-pr`), and each entry of
+the triage record's `decided` list (`$DESK_STATE/triage/<KEY>.json`, where one exists). She measures
+each criterion as those calls amend it, so a diff that meets the amended criterion has no gap there.
+
+`settled_by` is `person` only when no change the ticket allows can close the gap, so all that is
+left is the person accepting it on the PR or amending the criterion: a criterion that can pass only
+on a deployed build, say, or a value only the person holds. Doubt is `code`, and so is each of these,
+whatever the criterion's wording:
+
+- a gap a worker could close by changing code, or by an engineering call of its own;
+- a gap whose own `gap:` text names the code change that closes it;
+- a gap a settled call covers;
+- a gap that exists only because of the fix for a P0 or P1 found in this same review;
+- a gap that exists only because the diff keeps behaviour a ticket merged after this one's triage
+  added. Its `gap:` names that ticket, and its posted line carries an indented
+  `Engineering decision: keep <TICKET>'s <behaviour>; <TICKET> merged after this ticket's triage`,
+  which the fix worker logs (`decisions.mjs log`) and lists under `Decisions taken`, so the next
+  round reads it as a settled call.
+
+Post a `person` gap as one list item holding the literal tag `PERSON'S CALL`, its detail indented
+under it, on every round it stays open, ending with the seat's pick whenever it has one:
+`- PERSON'S CALL · AC2: "<criterion>" — <what is open, and how the person can settle it>. Recommended: <option>`.
 The autopilot pass reads the tag (`desk/bin/fix-tries.mjs` `reviewFix`): a tagged gap earns no fix try,
 and it still counts in `gaps`.
 

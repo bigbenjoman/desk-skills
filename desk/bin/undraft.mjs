@@ -121,13 +121,14 @@ export function leftOver(body) {
 }
 
 // What the latest of `handle`'s reviews says about this head, under a plain-text §4 row (`clean`):
-// { clean, why, settle, verdict }. A review with an empty body (GitHub records one for a reply to an
-// inline comment) says nothing and is passed over.
+// { clean, why, settle, verdict, review }, `review` the review read when it is clean or carries a marker.
+// A review with an empty body (GitHub records one for a reply to an inline comment) says nothing and is
+// passed over.
 export function plainVerdictAt(reviews, handle, head, clean) {
   const r = ownReviews(reviews, handle).filter((x) => String(x.body ?? '').trim()).pop();
   if (!r) return { clean: false, why: `no review stating "${clean}" is posted on it` };
   const v = parseVerdict(r.body);
-  if (v) return { ...verdictAt(v, head, markerClean(v)), verdict: v };
+  if (v) return { ...verdictAt(v, head, markerClean(v)), verdict: v, review: r };
   // A local review whose marker the review gate cannot read is no verdict, never a plain review.
   const opener = String(r.body).split(/\r?\n/)[0].trim();
   if (LOCAL_MARKERS.includes(opener)) return { clean: false, why: `its ${opener === LOCAL_MARKER ? 'desk-review' : 'PullBot'} verdict marker is not one the review gate reads` };
@@ -139,7 +140,7 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   const left = leftOver(r.body);
   if (left.length) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but leaves items open, deferred or carried: ${left.map((l) => `"${l}"`).join('; ')}` };
   if (!plainLines(r.body).some((l) => l.replace(NOTHING_LEFT, '') !== l)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
-  return { clean: true, why: null, verdict: stated };
+  return { clean: true, why: null, verdict: stated, review: r };
 }
 
 // The review verdict the handle has at this head, under a set §4 Clean review verdict row (`clean`), as
@@ -437,7 +438,11 @@ function stuckCall(gate, checks, cfg, n) {
 // it succeeded, `sync` when it failed at a head behind its base (cfg.behind(head) -> the base's name, or
 // null when the head has it or git cannot say), and `person` when it failed at a head up to date with its base,
 // its re-run was refused, or the checks are still red after it. Anything else is null, handled as any red check.
-function buildCall(gate, cfg, n, head, t) {
+// `person` and `sync` carry `lead`, what failed, and `each`, what a ready PR's stuck record keeps on each
+// check: a failed build's `build` and last output line (`error`), a refused re-run's `command` (a person's
+// step), and nothing for a check still red after it (a plain red check).
+// A ready PR's fix tries (fix-tries.mjs fixCall) ask it about its §4 Check builds checks alone.
+export function buildCall(gate, cfg, n, head, t) {
   const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
   const failing = gate.failing;
   if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
@@ -453,13 +458,14 @@ function buildCall(gate, cfg, n, head, t) {
   if (rec.code !== 0) {
     const exit = rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`;
     const failed = `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`;
+    const said = { lead: `its check build \`${command}\` ${exit}`, each: { build: command, ...(rec.tail ? { error: rec.tail.split(' / ').at(-1) } : {}) } };
     const base = cfg.behind?.(head) ?? null;
-    if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base };
-    return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}` };
+    if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base, ...said };
+    return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}`, ...said };
   }
-  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, checks: names, runs };
-  if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}` };
-  return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
+  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
+  if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}`, lead: `its check build \`${command}\` ran, but the re-run was refused: ${rec.reran.out}`, each: { command: `re-run ${checks} on #${n}` } };
+  return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
 }
 
 // The words a park's not-reached tail may hold after its marker: the steps the worker contract has it

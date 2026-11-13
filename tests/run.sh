@@ -6,6 +6,14 @@
 #   tests/run.sh test_jira.sh test_ci.mjs only those suites (file names or paths under tests/), plus
 #                                         the attribution hook self-test; an unknown name is an error
 set -u
+# A desk worker runs these suites with its own DESK_* environment (DESK_GH_REPO, DESK_BATCH, ...), and
+# some suites read those, so every suite starts with none: each sets what it needs itself. keep_env is
+# the exception: DESK_REQUIRE_SHELLCHECK is CI's switch that makes test_lint.sh fail without shellcheck.
+keep_env=" DESK_REQUIRE_SHELLCHECK "
+for v in $(compgen -e); do
+  case "$v" in DESK_*) case "$keep_env" in *" $v "*) ;; *) unset "$v" ;; esac ;; esac
+done
+unset DATABASE_URL DIRECT_DATABASE_URL
 T="$(cd "$(dirname "$0")" && pwd)"
 OUT="$(mktemp "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
 trap 'rm -f "$OUT"' EXIT

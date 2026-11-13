@@ -78,8 +78,10 @@
 #                                            merge_blocked (`approval: …`) for the person, red or
 #                                            green; a red one is still rerun and repaired
 #   - a red approval state check             a §4 State check of kind approval is red: recorded as
-#                                            merge_blocked (`approval: …`) for the person, and never
-#                                            rerun, so no cooldown is scheduled for it
+#                                            merge_blocked (`approval: …`) for the person, and not
+#                                            rerun, so no cooldown is scheduled for it; one whose run
+#                                            started before the head's newest approval is rerun
+#                                            once per head instead (approval-rerun-<n>-<sha>)
 #   - not green                             "green" is desk-config.md's one definition, evaluated by
 #                                            gate.mjs (shared with desk-clearance); a head must stay
 #                                            green across two loops before it merges, so a check that
@@ -118,7 +120,9 @@
 # cooldown-<n> in <state>/merge-driver for that, so their names and contents are shared with it.
 # A red §4 State check reads the PR's state, not its code, so it is never rerun: each is logged with
 # the error its run gave. One of kind `approval` is recorded as merge_blocked (`approval: …`) for the
-# person; one of kind `verdict` the pass sends to a review worker (fix-tries.mjs verdictTry).
+# person, unless its run started before an APPROVED review of the head or a clean verdict at it,
+# whichever is newer: that run read the PR before the approval, so its job is rerun once per head.
+# One of kind `verdict` the pass sends to a review worker (fix-tries.mjs verdictTry).
 # It NEVER undrafts, and never arms auto-merge (the platform's idea of green is not this one); an
 # armed auto-merge on a held PR, or one with feedback outstanding, is disarmed.
 #
@@ -415,7 +419,9 @@ for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(
 // No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
 const unapproved = (p) => p === spine && q[p]?.approved !== true;
 // A blocker in no batch (held_outside) waits on Jira as well as a merge: pass.mjs lifts it, not this.
-for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
+// So does a ticket held on its blocked-until label (held_label with no held_by, batch-state.mjs dateHeld).
+const onDate = (t) => !!t.held_label && !String(t.held_by ?? '').split('|').some(Boolean);
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0
@@ -471,6 +477,41 @@ behind(){ # behind <n> <sha> <key>
 # Reruns per check per head (RERUNS_MAX, RERUN_COOLDOWN, reruns_at, rerun), shared with pass.mjs.
 # shellcheck source=rerun.sh
 . "$DESK_ENV_DIR/rerun.sh"
+
+# stale_approval <n> <sha> <gate json> -> STALE set to the red approval state checks rerun this loop,
+# one per line. A run that started before the head's newest approval (an APPROVED review of the head,
+# or a clean verdict at it) read the PR before that approval: its job is rerun once per head, where §3
+# ci-rerun is yes. Red again after that, the check waits on a person as any other.
+STALE=""
+stale_approval(){
+  local reds ap at by name rid jid started newer ok f="$SD/approval-rerun-$1-$2"
+  STALE=""
+  reds=$(printf '%s' "$3" | jq -r '.gate.stateFailing[]? | select(.kind == "approval" and .startedAt != null) | "\(.name)\t\(.runId // "")\t\(.jobId // "")\t\(.startedAt)"')
+  [ -n "$reds" ] || return 0
+  ap=$(gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
+    | node "$THREADS" approved --handle "$AUTHOR" --clean "$CLEAN_ROW" 2>/dev/null) \
+    || { log "#$1 could not read its approvals, so its red approval check is not weighed for a rerun"; return 0; }
+  [ "$(printf '%s' "$ap" | jq -r .head)" = "$2" ] || return 0
+  at=$(printf '%s' "$ap" | jq -r '.at // empty'); by=$(printf '%s' "$ap" | jq -r '.by // empty')
+  [ -n "$at" ] || return 0
+  while IFS="$TAB" read -r name rid jid started; do
+    [ -n "$name" ] || continue
+    newer=$(jq -nr --arg a "$at" --arg s "$started" 'def t: sub("\\.[0-9]+"; "") | fromdateiso8601; ($a | t) > ($s | t)' 2>/dev/null)
+    [ "$newer" = true ] || continue
+    if grep -qxF "$name" "$f" 2>/dev/null; then
+      log "#$1 \"$name\" was rerun once at ${2:0:9} for the approval its run started before, and is red again — not rerunning it a second time"; continue
+    fi
+    [ "$RERUN_PERM" = yes ] || { log "#$1 \"$name\" ran before $by at ${2:0:9}, but §3 ci-rerun is $RERUN_PERM, so it is not rerun"; continue; }
+    log "#$1 \"$name\" failed in a run started $started, before $by at ${2:0:9} ($at): rerunning it once at this head"
+    printf '%s\n' "$name" >> "$f"
+    ok=""
+    if [ -n "$jid" ]; then gh run rerun --job "$jid" --repo "$REPO" >/dev/null 2>&1 && ok=1
+    elif [ -n "$rid" ]; then gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1 && ok=1; fi
+    if [ -n "$ok" ]; then STALE="$STALE$name"$'\n'; else log "#$1 rerun of \"$name\" refused"; fi
+  done <<EOF_STALE
+$reds
+EOF_STALE
+}
 
 # waivable <n> <sha> <gate json> <key> -> 0 when the red head may merge on the written waiver (header),
 # with WAIVED set to its check names, quoted and comma-joined. Otherwise says why and returns 1.
@@ -917,11 +958,17 @@ EOF_RESOLVE
     fail)
       log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"
       # A red §4 State check of kind approval reads a person's approval at the head: only a person
-      # clears it, so the queue asks them, and rerun leaves it alone.
-      awaiting=$(printf '%s' "$g" | jq -r '[.gate.stateFailing[]? | select(.kind == "approval") | "\"\(.name)\""] | join(", ")')
+      # clears it, so the queue asks them, and rerun leaves it alone. One whose run started before the
+      # head's newest approval is rerun once instead (stale_approval).
+      STALE=""; [ -n "$review_required" ] || stale_approval "$n" "$sha" "$g"
+      awaiting=$(printf '%s' "$g" | jq -r --arg s "$STALE" '[.gate.stateFailing[]? | select(.kind == "approval" and (.name as $x | $s | split("\n") | index($x) | not)) | "\"\(.name)\""] | join(", ")')
       if [ -n "$awaiting" ] && [ -z "$review_required" ]; then
         log "#$n at ${sha:0:9} waits on an approval: $awaiting — a person approves it; no rerun"
         queue_note "$key" "approval: $awaiting needs approval from a human reviewer at ${sha:0:9}: a person approves it before desk merges it"
+      fi
+      if [ -n "$STALE" ]; then
+        [ -n "$awaiting" ] || approval_clear "$key"
+        log "#$n at ${sha:0:9} reran its approval check for an approval it had not seen — read again once it finishes"; return 1
       fi
       # A waiver only lets a head merge, which one awaiting an approval may not, and its note would replace the approval's.
       if [ -z "$review_required" ] && [ -z "$awaiting" ] && waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"

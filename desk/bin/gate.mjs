@@ -57,7 +57,8 @@
 //     head, mergeState, reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory
 //     checks that are not §4 State checks, failedJobs: [{ runId, jobId, name }] for the one in a run that
 //     also holds a failing state check, rerun by job instead, and stateFailing: the failing state checks,
-//     each { name, kind, runId, why, rerunWith? } with why the first error its run annotated, or null),
+//     each { name, kind, runId, jobId, startedAt, why, rerunWith? } with why the first error its run
+//     annotated, or null),
 //     holds (each { glob, why, routine, files, count }), holdsMet (the code-owner holds `merger` alone
 //     owns, so not holding it),
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
@@ -735,8 +736,10 @@ if (isMain) {
       // A failing §4 State check is never rerun: it reads the PR's state, which a rerun reads again.
       // Each carries the error its run gave, for the driver's log.
       const stateChecks = loadStateChecks(E);
-      const jobOf = (f) => checks.filter((x) => x.name === f.name && (!f.runId || x.runId === f.runId)).map((x) => x.jobId).filter(Boolean).pop() ?? null;
-      const state = stateFailing(gate.failing, stateChecks).map((f) => ({ ...f, why: failureMessage(repo, jobOf(f))?.slice(0, 300) ?? null }));
+      const runOf = (f) => checks.filter((x) => x.name === f.name && (!f.runId || x.runId === f.runId));
+      const jobOf = (f) => runOf(f).map((x) => x.jobId).filter(Boolean).pop() ?? null;
+      const state = stateFailing(gate.failing, stateChecks).map((f) => ({ ...f, jobId: jobOf(f), startedAt: runOf(f).map((x) => x.startedAt).filter(Boolean).pop() ?? null,
+        why: failureMessage(repo, jobOf(f))?.slice(0, 300) ?? null }));
       const toRerun = gate.failing.filter((f) => !state.some((s) => s.name === f.name));
       // A run holding a red state check as well as one red check to rerun: `--failed` would rerun the state
       // check too, so that check's job is rerun alone. With more than one (a job rerun puts the run in
