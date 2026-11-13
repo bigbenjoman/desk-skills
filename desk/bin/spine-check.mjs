@@ -8,7 +8,8 @@
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { changedFiles } from './scope-report.mjs';
-import { mergeGrant } from './desk-env.mjs';
+import { mergeGrant, parseCommandItem } from './desk-env.mjs';
+import { runItem } from './baseline.mjs';
 
 export const EXPECTED_FAIL = 'strict expected-fail (test.fail, it.fails, test.failing, or @pytest.mark.xfail(strict=True))';
 // The modifiers a titled JS declaration may carry; `describe`, `step` and the hooks are not tests.
@@ -191,6 +192,22 @@ export const ownedIds = (owners, key) => Object.keys(owners ?? {}).filter((id) =
 // The §4 Acceptance specs command for one id, in place of {ids}. One id per run: runners join several
 // differently (a regex alternation for `-t` and `--grep`, `or` for pytest's `-k`).
 export const specsCommand = (cmd, id) => cmd.split('{ids}').join(id);
+
+// The row's command item for one id, read as every §4 command item is (`packages/app: <cmd>` runs in
+// packages/app): { dir, cmd } with {ids} replaced, and `label`, the item as the config writes it.
+export function specsRun(item, id) {
+  const { dir, cmd } = parseCommandItem(item);
+  const c = specsCommand(cmd, id);
+  return { dir, cmd: c, label: dir === '.' ? c : `${dir}: ${c}` };
+}
+
+// One id's specs, under the test lock, in the item's directory of the worktree at `root`.
+// -> runItem's { out, code, stopped }, plus ok and the command run.
+export function runSpecs({ bin, root, item, id, timeout }) {
+  const { dir, cmd, label } = specsRun(item, id);
+  const r = runItem({ bin, root, dir, cmd, lock: 'test', timeout });
+  return { ...r, ok: r.code === 0, command: label };
+}
 
 // Every spec file under specDir at rev: [{path, text}].
 export function specFilesAt(worktree, rev, specDir) {

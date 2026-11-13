@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash } from './batch-state.mjs';
 import { ensureBaseWorktree, syncBase, mergedTreeCheck } from './base-sync.mjs';
-import { declarations, ownedSpecs, specFilesAt, specsCommand } from './spine-check.mjs';
+import { declarations, ownedSpecs, specFilesAt, runSpecs } from './spine-check.mjs';
 import { runItem } from './baseline.mjs';
 import { takesFiles } from './test-scope.mjs';
 
@@ -145,9 +145,8 @@ function gate() {
     const ids = [...new Set([...(Q.spine_ids ?? []), ...titled])];
     for (const { id, specs } of ownedSpecs(files, ids)) {
       if (!specs.length) { failures.push(`${id}: no spec titled with it on ${BASE}`); continue; }
-      const command = specsCommand(cmd, id);
-      const r = runItem({ bin: BIN, root: path, dir: '.', cmd: command, lock: 'test', prefix: '' });
-      if (r.code !== 0) failures.push(`${id}: ${specs.map((x) => `"${x.title}" in ${x.path}`).join(', ')} fails when run (${command}): ${tail(r.out)}`);
+      const r = runSpecs({ bin: BIN, root: path, item: cmd, id });
+      if (!r.ok) failures.push(`${id}: ${specs.map((x) => `"${x.title}" in ${x.path}`).join(', ')} fails when run (${r.command}): ${tail(r.out)}`);
     }
   }
 
