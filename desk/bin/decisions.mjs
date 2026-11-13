@@ -108,6 +108,21 @@ export function decisionEntry({ decision, ticket, run, repo, pr, at = new Date()
   return { id, at, repo, ticket, ...decision, pr: prLink(pr, repo), source, run: run ?? null };
 }
 
+// The calls and checks a worker printed (`AUTOPILOT_DECISION`, `AUTOPILOT_CHECKED`), from its
+// [name, value] markers: `entries` to append, and `unreadable` [{what, why, raw}], once per raw value.
+export function workerCalls(markers, { ticket, run, repo, pr }) {
+  const entries = [];
+  const unreadable = [];
+  for (const [k, v] of markers) {
+    if (k !== 'AUTOPILOT_DECISION' && k !== 'AUTOPILOT_CHECKED') continue;
+    const d = k === 'AUTOPILOT_CHECKED' ? parseCheck(v) : parseDecision(v);
+    const what = k === 'AUTOPILOT_CHECKED' ? 'check' : 'decision';
+    if (d.ok) entries.push(decisionEntry({ decision: d.check ?? d.decision, ticket, run, repo, pr, source: 'worker' }));
+    else if (!unreadable.some((u) => u.raw === v)) unreadable.push({ what, why: d.why, raw: v });
+  }
+  return { entries, unreadable };
+}
+
 const loggedIds = (path) => {
   if (!existsSync(path)) return new Set();
   const ids = new Set();

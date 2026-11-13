@@ -19,7 +19,7 @@ import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
-import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
+import { parseDecision, decisionEntry, appendDecisions, workerCalls, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
@@ -405,15 +405,8 @@ function ownedBrief(t, wt) {
 function logDecisions(t, log, pr) {
   let markers;
   try { markers = workerMarkers(readFileSync(log, 'utf8')); } catch { return; }
-  const entries = [];
-  const unreadable = new Set();
-  for (const [k, v] of markers) {
-    if (k !== 'AUTOPILOT_DECISION' && k !== 'AUTOPILOT_CHECKED') continue;
-    const d = k === 'AUTOPILOT_CHECKED' ? parseCheck(v) : parseDecision(v);
-    const what = k === 'AUTOPILOT_CHECKED' ? 'check' : 'decision';
-    if (d.ok) entries.push(decisionEntry({ decision: d.check ?? d.decision, ticket: t.key, run: t.session_id, repo: GH_REPO, pr, source: 'worker' }));
-    else if (!unreadable.has(v)) { unreadable.add(v); report.waiting.push(`${t.key}: unreadable ${what} (${d.why}), nothing logged: ${v}`); }
-  }
+  const { entries, unreadable } = workerCalls(markers, { ticket: t.key, run: t.session_id, repo: GH_REPO, pr });
+  for (const u of unreadable) report.waiting.push(`${t.key}: unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`);
   if (entries.length) appendDecisions(entries, STATE);
 }
 

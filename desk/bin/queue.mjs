@@ -19,9 +19,10 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
-import { followOnPending } from './harvest.mjs';
+import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
+import { workerCalls, appendDecisions } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
-import { projectsDirs } from './claude-logins.mjs';
+import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
@@ -234,9 +235,49 @@ function refuseLeft(t, key, what) {
   throw new Error(`${key} was left in finished batch ${name} (${t.park.question}), so it is not ${what} there: move it (node queue.mjs --batch ${name} transfer ${key} standing) or drop it`);
 }
 
+// A ticket still recorded running whose worker has exited on a park, before a pass harvested it:
+// { question, since, stage, markers } from its log, or null. Its worker is gone when a recorded pid is
+// dead and the agent registry, read across every login, lacks its session; a registry that cannot be
+// read, or a ticket with neither, is never taken as gone. Its park is the last ending marker the
+// worker said after the log's last `desk_spawn` line, so a park an earlier session answered is not it.
+// A pass running now harvests it itself, and would park it again behind this requeue.
+function exitedOnPark(t) {
+  if (t.pid == null && !t.session_id) return null;
+  try {
+    const { pid } = JSON.parse(readFileSync(join(stateDir(), 'orchestrator.lock'), 'utf8'));
+    if (pid !== process.ppid && alive(pid)) return null;
+  } catch { /* no pass running */ }
+  if (t.pid != null && alive(Number(t.pid))) return null;
+  if (t.session_id) {
+    const reg = readRegistry();
+    if (!reg.ok || reg.live.some((a) => a.sessionId === t.session_id)) return null;
+  }
+  const log = join(stateDir(), 'logs', `${t.key}.log`);
+  let text;
+  try { text = readFileSync(log, 'utf8'); } catch { return null; }
+  const lines = text.split('\n');
+  const spawned = lines.findLastIndex((l) => l.startsWith('{"type":"desk_spawn"'));
+  const round = lines.slice(spawned + 1).join('\n');
+  const markers = workerMarkers(round);
+  const end = markers.findLast(([k]) => ['AUTOPILOT_PARK', 'AUTOPILOT_DONE', 'AUTOPILOT_HANDOFF', 'AUTOPILOT_REBOOT'].includes(k));
+  if (end?.[0] !== 'AUTOPILOT_PARK' || !end[1].trim()) return null;
+  return { question: end[1].trim(), since: statSync(log).mtime.toISOString(), stage: lastStage(round)?.stage ?? t.stage ?? null, markers };
+}
+
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
-  if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+  // Recorded parked as a pass's harvest records it, with the round a fresh spawn may resume and the
+  // calls the worker logged, before the requeue moves its log aside.
+  let harvested = '';
+  let calls = null;
+  if (t.state === 'running') {
+    const p = exitedOnPark(t);
+    if (!p) throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+    calls = workerCalls(p.markers, { ticket: key, run: t.session_id, repo: ghRepo(), pr: null });
+    Object.assign(t, { state: 'parked', park: newPark(p.question, p.since), last_round: { stage: p.stage, question: p.question, at: p.since } });
+    harvested = `; its worker had exited on a park no pass had recorded yet, kept as prev_park: ${p.question}`
+      + `${calls.unreadable.map((u) => `; unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`).join('')}`;
+  }
   if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
   refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
@@ -289,8 +330,9 @@ function requeue(q, key, { handedBack = false } = {}) {
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
+  if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   save(q);
-  return `${key} requeued: ${placed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+  return `${key} requeued: ${placed}${harvested}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 // A lane C or D park whose step the person has done (desk-needs-you's resume on a session item), handed
