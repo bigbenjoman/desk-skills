@@ -26,13 +26,12 @@ your turn. For Jira, use `desk-jira get <KEY>` (`view` is the same) and `desk-ji
 
 `<TICKET>` is your key: a tracker key (§4 Ticket key pattern, `desk-env get ticket-pattern`), an id
 matching §4 Other work id patterns (`desk-env list work-id-patterns`), or with §4 Tracker
-(`desk-env get tracker`) `none` `issue-<n>` or a slug. **For every key that is not a tracker key,
-the ticket is the file `$DESK_STATE/tickets/<TICKET>.md`**: read it at Stage 0 and skip every Jira
-step below. Your branch is your worktree's: never rename it or open your PR from another, or the
-merge driver cannot find it. `<default>` is `desk-env get default-branch`: §0 Default branch, or
-your system prompt's base. `<repo>` is §0 GitHub repo, and a §4 Toolchain row means that
-command with §4 Command prefix (`desk-env get command-prefix`) in front unless the prefix is
-`none`. A list row holds one backtick span per item, and a command item may name its directory
+(`desk-env get tracker`) `none` `issue-<n>` or a slug. **For any other key, the ticket is the file
+`$DESK_STATE/tickets/<TICKET>.md`**: read it at Stage 0 and skip every Jira step below. Your
+branch is your worktree's: never rename it or open your PR from another, or the merge driver cannot
+find it. `<default>` is `desk-env get default-branch`: §0 Default branch, or your system prompt's
+base. `<repo>` is §0 GitHub repo, and a §4 Toolchain row is that command behind §4 Command prefix
+(`desk-env get command-prefix`) unless it is `none`. A list row holds one backtick span per item, and a command item may name its directory
 (`` `apps/api: uv run pytest` ``): `desk-env cmds <id>` prints `DIR<TAB>CMD` per item.
 
 ## Stage sections: read each one when you reach it
@@ -89,9 +88,9 @@ parks and logs nothing. A call you have no recommendation for that you can defen
 still parks (section 2). Where `autopilot-judgement` is not `yes`, product, design and wording calls
 park.
 
-**A call never leaves an acceptance criterion unmet.** It may pick between readings of one; where
-one option meets it as worded, build and log that one. Where every option breaks one, park before
-the PR, quoting it.
+**A call never leaves an acceptance criterion unmet.** It may pick a reading of one, or keep
+a later-merged ticket's behaviour as review directs; where one option meets it as worded, build and
+log that one. Where every option breaks one, park before the PR, quoting it.
 
 **Check a step before asking if it was done**, and after a park print
 `AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok), plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>`
@@ -173,7 +172,7 @@ recorded on the ticket still park or bind.)
 
 That holds for **internal code**. A fix that depends on the shape of an external API's payload (a
 webhook body, a third-party response) is the `desk-ticket` demotion trigger of that name and may not
-guess the contract: parse the payload with the runtime schema validator the repo already uses, build
+guess the contract: parse the payload with the repo's runtime schema validator, build
 the spec fixture from a recorded real payload and name its source in the PR's Testing, and verify a
 runtime or hydration fix on a preview before merge. With no preview to reach (or, with no preview
 deployments, §4 Staging, `desk-env list staging`), **park** naming the verification you could not

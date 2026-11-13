@@ -145,7 +145,7 @@ t(`AC4 the citations by path were read (${byPath})`, byPath >= 25, true);
 const contract = norm(read('autopilot-worker-contract.md'));
 const section1 = contract.split('## 1. ')[1]?.split(' ## 2. ')[0] ?? '';
 t('DS-596 the rule is in the contract\'s section 1', section1.includes('**A call never leaves an acceptance criterion unmet.**'), true);
-t('DS-596 AC2 a call picks a reading, and builds the option that meets the criterion as worded', section1.includes('It may pick between readings of one; where one option meets it as worded, build and log that one.'), true);
+t('DS-596 AC2 a call picks a reading, and builds the option that meets the criterion as worded', section1.includes('It may pick a reading of one, or keep a later-merged ticket\'s behaviour as review directs; where one option meets it as worded, build and log that one.'), true);
 t('DS-596 AC1 every option breaking a criterion parks before the PR, quoting it', section1.includes('Where every option breaks one, park before the PR, quoting it.'), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');

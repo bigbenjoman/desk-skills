@@ -66,8 +66,9 @@ settled_by: code | person
 taken on it: each line of the PR body's `### Decisions taken` section (`desk-pr`), and each entry of
 the triage record's `decided` list (`$DESK_STATE/triage/<KEY>.json`, where one exists). She measures
 each criterion as those calls amend it, so a diff that meets the amended criterion has no gap there.
-A call this ticket's worker logged amends a criterion only by choosing between its readings: one that
-leaves a criterion unmet as worded amends nothing, and the gap is the worker's to close.
+A call this ticket's worker logged amends a criterion only by choosing between its readings, or by
+keeping a later-merged ticket's behaviour (below): any other that leaves a criterion unmet as worded
+amends nothing, and the gap is the worker's to close.
 
 `settled_by` is `person` only when no change the ticket allows can close the gap, so all that is
 left is the person accepting it on the PR or amending the criterion: a criterion that can pass only
@@ -77,7 +78,8 @@ whatever the criterion's wording:
 - a gap a worker could close by changing code, or by an engineering call of its own;
 - a gap whose own `gap:` text names the code change that closes it;
 - a gap a settled call covers;
-- a gap whose cause is a decision this ticket's worker logged, which reversing that decision closes;
+- a gap whose cause is a decision this ticket's worker logged, which reversing that decision closes,
+  unless the decision keeps a later-merged ticket's behaviour (next);
 - a gap that exists only because of the fix for a P0 or P1 found in this same review;
 - a gap that exists only because the diff keeps behaviour a ticket merged after this one's triage
   added. Its `gap:` names that ticket, and its posted line carries an indented
