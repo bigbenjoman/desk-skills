@@ -280,6 +280,8 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
   const reasons = [];
   const failing = [];
   const pending = [];
+  // Each pending entry's run, where the check names one: a build's re-run waits only on its own run's.
+  const running = [];
   let succeeded = 0;
   for (const c of checks) {
     if (c.status === 'completed' && c.conclusion === 'success') succeeded++;
@@ -297,7 +299,7 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
       continue;
     }
     for (const h of hits) {
-      if (h.status !== 'completed') { pending.push(n); reasons.push(`required check "${n}" is ${h.status}`); }
+      if (h.status !== 'completed') { pending.push(n); running.push({ name: n, runId: h.runId ?? null }); reasons.push(`required check "${n}" is ${h.status}`); }
       else if (!REQUIRED_PASS.has(h.conclusion)) {
         if (FAILED.has(h.conclusion)) failing.push({ name: n, conclusion: h.conclusion, runId: h.runId });
         reasons.push(`required check "${n}" is ${h.conclusion ?? 'unknown'}`);
@@ -308,12 +310,13 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
   const req = new Set(required);
   for (const c of checks) {
     if (req.has(c.name) || adv.has(c.name)) continue;
-    if (c.status !== 'completed') { pending.push(c.name); reasons.push(`"${c.name}" is ${c.status}`); }
+    if (c.status !== 'completed') { pending.push(c.name); running.push({ name: c.name, runId: c.runId ?? null }); reasons.push(`"${c.name}" is ${c.status}`); }
     else if (FAILED.has(c.conclusion)) { failing.push({ name: c.name, conclusion: c.conclusion, runId: c.runId }); reasons.push(`"${c.name}" ${c.conclusion}`); }
   }
   for (const r of runs) {
     if (lc(r.status) !== 'completed' && !adv.has(r.name) && !adv.has(r.workflowName)) {
       pending.push(`run ${r.name || r.workflowName || r.databaseId}`);
+      running.push({ name: `run ${r.name || r.workflowName || r.databaseId}`, runId: r.databaseId ?? null });
       reasons.push(`workflow run "${r.name || r.workflowName || r.databaseId}" is ${lc(r.status)}`);
     }
   }
@@ -328,7 +331,7 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
     : absent || !checks.length ? 'absent'
     : reasons.length ? 'fail'
     : 'pass';
-  return { state, reasons, failing, pending, succeeded, untriggered: never };
+  return { state, reasons, failing, pending, running, succeeded, untriggered: never };
 }
 
 // §4 Merge holds items: `<glob>: <why>`, split on the first `: `. A bare glob holds with no reason given.

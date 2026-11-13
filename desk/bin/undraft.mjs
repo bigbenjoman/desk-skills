@@ -434,7 +434,9 @@ function stuckCall(gate, checks, cfg, n) {
 
 // A red gate whose every failing check §4 Check builds names (cfg.builds, [{ name, command }]), while
 // §3 ci-rerun is yes: the build that clears it, once per head (cfg.built(head), check-build.mjs
-// buildRecord). `build` starts it, `wait` while it or another check runs, `rebuilt` re-runs the checks with --failed once
+// buildRecord). `build` starts it at once, whatever else is still running (DS-647), `wait` while it runs, or
+// while a check in a failing check's own run does once it succeeded (gate.running; a pending check whose run
+// is unknown counts as one), `rebuilt` re-runs the checks with --failed once
 // it succeeded, `sync` when it failed at a head behind its base (cfg.behind(head) -> the base's name, or
 // null when the head has it or git cannot say), and `person` when it failed at a head up to date with its base,
 // its re-run was refused, or the checks are still red after it. Anything else is null, handled as any red check.
@@ -448,13 +450,22 @@ export function buildCall(gate, cfg, n, head, t) {
   if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
   const names = [...new Set(failing.map((f) => f.name))];
   const checks = names.map((x) => `"${x}"`).join(', ');
-  if (gate.pending.length) return { call: 'wait', why: `checks still running (${gate.pending.join(', ')}) beside ${checks}, which §4 Check builds clears once they finish` };
   const at = String(head ?? '?').slice(0, 9);
   const rec = cfg.built?.(head) ?? null;
   const command = rec?.command ?? [...new Set(names.map((x) => builds.get(x)))].join(' && ');
   const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
+  // The build needs nothing else to finish: it starts on the first pass that sees the check red.
   if (!rec) return { call: 'build', why: `${checks} red at ${at}, which §4 Check builds clears: \`${command}\` runs at the head, then the check is re-run`, command, checks: names, runs };
   if (rec.state === 'running') return { call: 'wait', why: `its check build \`${command}\` is running at ${at}, then ${checks} is re-run` };
+  // GitHub refuses `gh run rerun --failed` on a run still in progress, so the re-run waits on the failing
+  // checks' own runs alone; a pending check in another workflow's run does not hold it.
+  const toRerun = rec.code === 0 && !rec.reran;
+  if (toRerun) {
+    const own = new Set(runs);
+    const busy = (gate.running ?? gate.pending.map((name) => ({ name, runId: null })))
+      .filter((p) => !own.size || p.runId == null || own.has(String(p.runId))).map((p) => p.name);
+    if (busy.length) return { call: 'wait', why: `its check build \`${command}\` ran at ${at}; ${checks} is re-run once ${busy.join(', ')} finishes, as GitHub re-runs no run still in progress` };
+  } else if (gate.pending.length) return { call: 'wait', why: `checks still running (${gate.pending.join(', ')}) beside ${checks}, which §4 Check builds clears once they finish` };
   if (rec.code !== 0) {
     const exit = rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`;
     const failed = `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`;
@@ -463,7 +474,7 @@ export function buildCall(gate, cfg, n, head, t) {
     if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base, ...said };
     return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}`, ...said };
   }
-  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
+  if (toRerun) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
   if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}`, lead: `its check build \`${command}\` ran, but the re-run was refused: ${rec.reran.out}`, each: { command: `re-run ${checks} on #${n}` } };
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
 }

@@ -310,7 +310,22 @@ t('DS-327 AC3 a build at another head is not this head\'s', buildPr([FLOWS], nul
 t('DS-327 AC4 a red check the row does not name beside it is handled as before', buildPr([FLOWS, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.why,
   'its checks are not green: "Flows image" failure; "lint" failure');
 t('DS-327 AC4 so is any red check with no row', buildPr([FLOWS], null, { builds: [] })?.call, 'checks');
-t('DS-327 a named check still pending beside another waits', buildPr([FLOWS, { name: 'lint', status: 'in_progress', conclusion: null }])?.call, 'wait');
+// DS-647: the build starts whatever else is running; only its re-run waits, and only on its own run.
+const LINT_OTHER = { name: 'Lint, Type Check & Build', status: 'in_progress', conclusion: null, runId: 31 };
+const LINT_SAME = { ...LINT_OTHER, runId: 21 };
+const LINT_UNKNOWN = { ...LINT_OTHER, runId: undefined };
+const c647 = buildPr([FLOWS, LINT_OTHER]);
+t('DS-647 AC1 a check build red beside a check running in another run is built at once', `${c647?.call} | ${c647?.runs}`, 'build | 21');
+t('DS-647 AC1 so is one beside a check running in its own run', buildPr([FLOWS, LINT_SAME])?.call, 'build');
+const w647 = buildPr([FLOWS, LINT_SAME], ok);
+t('DS-647 AC2 built, with a check still running in its own run, the re-run waits', `${w647?.call} | ${w647?.why}`,
+  `wait | its check build \`./scripts/ensure-flows-image.sh\` ran at ${HEAD.slice(0, 9)}; "Flows image" is re-run once Lint, Type Check & Build finishes, as GitHub re-runs no run still in progress`);
+const r647 = buildPr([FLOWS, LINT_OTHER], ok);
+t('DS-647 AC3 built, with only another run\'s check running, it is re-run', `${r647?.call} | ${r647?.runs}`, 'rebuilt | 21');
+t('DS-647 AC5 built, beside a running check whose run is unknown, the re-run waits as before', buildPr([FLOWS, LINT_UNKNOWN], ok)?.call, 'wait');
+t('DS-647 a failed build beside a running check waits for it, as before', buildPr([FLOWS, LINT_OTHER], { ...ok, code: 3, tail: 'x' })?.call, 'wait');
+t('DS-647 a build still running beside one waits on itself', buildPr([FLOWS, LINT_OTHER], { state: 'running', command: b0.command })?.why, `its check build \`./scripts/ensure-flows-image.sh\` is running at ${HEAD.slice(0, 9)}, then "Flows image" is re-run`);
+t('DS-647 negative control: a red check the row does not name beside a running one is not built', buildPr([FLOWS, LINT_OTHER, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.call === 'build', false);
 for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'checks');
 
 // DS-440: a check build that failed at a head behind its base goes to a worker that merges the base.
