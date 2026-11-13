@@ -862,6 +862,8 @@ those suites, and `bash tests/related.sh` only the ones your branch's change rea
 when that cannot be decided). `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
+`run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
+or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cannot reach a suite.
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
