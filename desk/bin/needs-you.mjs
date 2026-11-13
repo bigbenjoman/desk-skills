@@ -744,6 +744,11 @@ export function heldBehind(r, key) {
   return behind.size;
 }
 const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
+// What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
+function stillListed(r, key) {
+  const n = heldBehind(r, key);
+  return n >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${n} do now).` : '';
+}
 function judged(r, x, register) {
   const item = itemOf(r, x);
   const l = lookup(register, putOffKey(r, x.t, item));
@@ -1078,8 +1083,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'not-now': {
       // A park is put off by answer.mjs, keyed to its inputs, and its entry then records the actions it
       // offers; anything else here, as putOffKey keys it.
-      const behind = heldBehind(r, ticket);
-      const still = behind >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${behind} do now).` : '';
+      const still = stillListed(r, ticket);
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
         if (!a.ok) return say(false, a.why);
@@ -1091,7 +1095,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     }
     case 'waiting': {
       putOff();
-      return say(true, `waiting on its approval (${notNowPath(r.stateDir)}): not listed again until it gets one or its head moves.`);
+      return say(true, `waiting on its approval (${notNowPath(r.stateDir)}): not listed again until it gets one or its head moves.${stillListed(r, ticket)}`);
     }
     // Into another running batch of the repo, by its name, `<repo>:<name>`, or `standing`. Made here
     // whoever runs either batch: the move holds both queue locks, and the next pass there spawns it.

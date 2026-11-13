@@ -1770,6 +1770,11 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   N.record({ word: 'ds600c', ticket: 'P-1', action: 'not-now' });
   const c = N.collect({ word: 'ds600c' }).items.find((i) => i.t.key === 'P-1');
   t('DS-600 AC3 one held ticket holding 2 more counts 3 behind it, and it is listed', `${c?.behind} ${/3 tickets wait behind it/.test(c?.need ?? '')}`, '3 true');
+
+  put('ds600d', { port: 4653, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)' },
+    tickets: { 'V-1': gateStuck(121, protectedLine), 'H-1': behind('H-1', 'V-1'), 'H-2': behind('H-2', 'V-1'), 'H-3': behind('H-3', 'V-1') } });
+  const wait = N.record({ word: 'ds600d', ticket: 'V-1', action: 'waiting' });
+  t('DS-600 AC4 waiting on a PR with 3 held behind it says it stays listed, and it is', `${wait.ok} ${wait.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')} ${keysIn('ds600d')[0]}`, 'true true V-1');
 }
 
 // Refusals.
