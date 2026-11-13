@@ -1222,7 +1222,7 @@ export function takeBatchArg(argv = process.argv, env = process.env) {
 // Every desk script loads this module first, so a bad --batch or DESK_BATCH stops it before it touches a file.
 let batchArg = null;
 try { batchArg = takeBatchArg(); batchName(); } catch (e) { console.error(e.message); process.exit(4); }
-const fullMatch = (pattern, s) => { try { return new RegExp(`^(?:${pattern})$`).test(s); } catch { return false; } };
+export const fullMatch = (pattern, s) => { try { return new RegExp(`^(?:${pattern})$`).test(s); } catch { return false; } };
 export function ticketKind(key) {
   const k = String(key ?? '');
   if (!SAFE_ID.test(k) || k.includes('..')) return { ok: false, error: `'${k}' is not usable as a ticket id (letters, digits, . _ - only; no ..)` };
