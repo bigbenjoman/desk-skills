@@ -629,4 +629,22 @@ check "DS-470 AC7 a codex call with a CODEX_HOME of the worker's own choosing is
 settings '`bash tests/run.sh`' '' "$(rows3 codex-review=yes)"
 check "DS-470 AC7 with the codex lever off too" 'codexHome "CODEX_HOME=/x codex exec --sandbox read-only '"'x'"'"'
 
+# DS-576: the self-review posts through review-post.mjs, under §3 pr-self-review-comment, and a
+# gh login variable in front of anything is refused by its own deny rule.
+RP="42 --repo acme/widgets --body-file desk-review.md"
+settings '`bash tests/run.sh`' '' "$(rows3 pr-self-review-comment=yes)"
+check "DS-576 AC8 review-post.mjs is allowed by module and by node, granted" 'ok "node $B/review-post.mjs $RP" "$B/review-post.mjs $RP" "gh pr review $RP --comment"'
+ghLogin(){ local c w="$T/ws-wide.json" o="$T/ws-wide-nodeny.json"
+  jq '.permissions.allow += ["Bash(*gh pr review*)", "Bash(*review-post.mjs*)", "Bash(export *)"]' "$T/ws.json" > "$w"
+  jq '.permissions.deny -= [.permissions.deny[] | select(test("^Bash\\(\\*(GH|GITHUB)_[A-Z_]*=\\*\\)$"))]' "$w" > "$o"
+  no "$@" || return 1
+  for c in "$@"; do
+    [ "$(node "$T/match.mjs" "$w" bash "$c")" = refused ] && [ "$(node "$T/match.mjs" "$o" bash "$c")" = allow ] || { out="not refused by a gh login rule: $c"; return 1; }
+  done; }
+check "DS-576 AC8 a GH_CONFIG_DIR or gh token prefix is still refused" \
+  'ghLogin "GH_CONFIG_DIR=/x gh pr review $RP --comment" "GH_TOKEN=x gh pr review $RP --comment" "env GITHUB_TOKEN=x gh pr review $RP --comment" \
+      "GH_CONFIG_DIR=/x node $B/review-post.mjs $RP" "export GH_CONFIG_DIR=/x"'
+settings '`bash tests/run.sh`' '' "$(rows3 pr-self-review-comment=no)"
+check "DS-576 AC8 review-post.mjs is refused where §3 pr-self-review-comment is not yes" 'no "node $B/review-post.mjs $RP" "$B/review-post.mjs $RP"'
+
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

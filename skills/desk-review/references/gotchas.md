@@ -190,6 +190,6 @@ gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input <scratchpa
 - **`commit_id` pins the review to the reviewed SHA.** If the head moved during the run, the
   comments land on the old commit, which is correct: the verdict attests that SHA.
 
-Worker, or when `gh api` is not allowed: `gh pr review <n> --repo <owner>/<repo> --comment
---body-file <file>`, with every finding in the body. `--repo` is required, or the PR resolves from
+Worker, or when `gh api` is not allowed: `node ~/.claude/desk/bin/review-post.mjs <n> --repo
+<owner>/<repo> --body-file <file>` (it posts from §4 Review account, `desk-env get review-account`, where set), with every finding in the body. `--repo` is required, or the PR resolves from
 the current directory's remote. An empty `<n>` does not fail; it posts to the current branch's PR.

@@ -711,8 +711,9 @@ function buildParkOf(t, question) {
   return b ? { ...b, pr: pr.number, head: pr.headRefOid } : null;
 }
 
-// §1 GitHub handle, whose desk-review verdicts and reviews count as the user's own, or null unread.
-const conflictHandle = (() => { try { return E.githubHandle(); } catch { return null; } })();
+// §1 GitHub handle, with the §4 Review account desk posts verdicts from, whose desk-review verdicts
+// and reviews count as the user's own (E.verdictLogins), or null unread.
+const conflictHandle = E.verdictLogins();
 // A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when `cond` is
 // its own open PR merging, and that PR is green with a clean review at its head. Null when it is not,
 // or unread. `grantedOnly` reads nothing from GitHub unless desk may undraft and merge it.
@@ -3648,7 +3649,7 @@ if (drafts.length) {
     perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
     localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
     conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
-    handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
+    handle: conflictHandle,
     ...gateLists(), builds: buildRow.checks, evidence: evidenceRow?.workflow ? evidenceRow : null,
   };
   cfg.untriggered = untriggeredOf;
