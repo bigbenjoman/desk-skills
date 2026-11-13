@@ -63,7 +63,7 @@ read -r mode key < "$T/claude.mode"
 # (the real decisions.mjs and answer.mjs), then requeue; otherwise hand on
 if [ "\$mode" = take ]; then
   if grep -q 'take a call a worker could have taken itself' <<< "\$2" \\
-    && node "$B/answer.mjs" --taken "\$key" "Merge as foundation. The decider took it, not the person." >> "$T/take.out" 2>&1 \\
+    && DESK_HOME="$S/../desk" node "$B/answer.mjs" --taken "\$key" "Merge as foundation. The decider took it, not the person." >> "$T/take.out" 2>&1 \\
     && node "$B/decisions.mjs" log --source decider "\$key" '{"question":"Merge as foundation, or split?","options":["Merge as foundation","Split"],"chose":"Merge as foundation","category":"scope"}' >> "$T/take.out" 2>&1; then mode=requeue; else mode=hand; fi
 fi
 ids=\$(grep -oE 'id \`[a-z]+-[0-9a-f]+\`' <<< "\$2" | grep -oE '[a-z]+-[0-9a-f]+')
