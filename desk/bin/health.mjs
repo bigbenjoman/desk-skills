@@ -7,7 +7,10 @@
 //   jira     `desk-jira whoami`                   where §4 Tracker is jira
 //   claude   `claude auth status`                 always; and in the folder of each other Claude login the
 //                                                 subscriptions file puts in rotation or on standby,
-//                                                 told with its sign-in command but never holding a spawn
+//                                                 told with its sign-in command but never holding a spawn.
+//                                                 A listed login whose folder does not exist is a row
+//                                                 with nothing behind it, not a sign-out: named in the
+//                                                 health line's notes and pushed once per machine
 //   codex    `codex login status`                 unless config §3 codex-review is no (it catches a
 //                                                 sign-out, not a seat out of usage: only a real call does)
 //   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no
@@ -32,7 +35,7 @@
 // free-disk figure, DESK_HEALTH_TIMEOUT_MS for the 20 seconds and DESK_HEALTH_RETRY_MS for the 5,
 // in tests.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { loginState } from './find-playwright.mjs';
@@ -63,6 +66,37 @@ const NETWORK = /timed? ?out|timeout|could not resolve|couldn't resolve|no such 
 const failureKind = (out) => (NETWORK.test(out ?? '') ? 'network' : 'auth');
 
 export const healthFile = (state) => join(state, 'health.json');
+// One marker file per listed Claude login whose folder is missing, shared by every repo and batch on
+// the machine. It holds the state folder of the slot that pushes the login, and goes once the folder
+// exists.
+const missingLoginsDir = () => join(E.HOME, '.desk-autopilot', 'health-missing-logins');
+
+// Whether the slot at `state` is the one on the machine that pushes `l`: the first to find it missing,
+// or the one taking over from a slot whose state folder is gone. The owner lists the push on every
+// pass, so the supervisor's own once-per-key record sends it once and retries a failed send; no other
+// slot lists it. A marker it cannot read or write is told anyway, as a push repeated beats one never sent.
+function pushesMissing(dir, l, state) {
+  const file = join(dir, loginKey(l));
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, `${state}\n`, { flag: 'wx' });
+    return true;
+  } catch (e) { if (e.code !== 'EEXIST') return true; }
+  let owner;
+  try { owner = readFileSync(file, 'utf8').trim(); } catch { return true; }
+  if (owner === state) return true;
+  if (owner && existsSync(owner)) return false;
+  try { writeFileSync(file, `${state}\n`); } catch { /* told anyway */ }
+  return true;
+}
+
+// Drops the marker of every login no longer missing, so a folder that goes missing again is pushed again.
+function clearFound(dir, missing) {
+  const keep = new Set(missing.map(loginKey));
+  let names = [];
+  try { names = readdirSync(dir); } catch { return; }
+  for (const n of names) if (!keep.has(n)) { try { unlinkSync(join(dir, n)); } catch { /* another pass took it */ } }
+}
 
 // Why a check is not required here, or null when it is.
 export function notRequired(id) {
@@ -177,9 +211,12 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const prev = readRecord(state);
   const age = prev ? now - Date.parse(prev.at) : Infinity;
   // Each other Claude login the file puts in rotation or on standby, checked as the default is, in its
-  // own folder, and signed out when that folder is missing (logins.mjs). A folder the file does not
-  // list counts only once signed in, so it is not told as signed out.
-  const others = (() => { try { return readSubscriptions(E.subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.configDir && inUse(l)); } catch { return []; } })();
+  // own folder (logins.mjs). One whose folder does not exist is not checked: it is a row to remove or
+  // sign in, told apart from the sign-outs. A folder the file does not list counts only once signed
+  // in, so it is not told as signed out.
+  const listed = (() => { try { return readSubscriptions(E.subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.configDir && inUse(l)); } catch { return []; } })();
+  const missing = listed.filter((l) => !isDir(l.dir));
+  const others = listed.filter((l) => isDir(l.dir));
   const reusedLogins = others.every((l) => prev?.logins?.[loginKey(l)]?.ok);
   const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins;
   let results;
@@ -191,7 +228,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     const retryMs = env.DESK_HEALTH_RETRY_MS != null && Number(env.DESK_HEALTH_RETRY_MS) >= 0 ? Number(env.DESK_HEALTH_RETRY_MS) : RETRY_DELAY_MS;
     const [ran, ranLogins] = await Promise.all([
       Promise.all(wanted.map((id) => runCheck(id, env, timeoutMs, retryMs))),
-      Promise.all(others.map((l) => (isDir(l.dir) ? runCommand(byId.claude.cmd, timeoutMs, loginEnv(l, env)) : { ok: false, why: `${l.folder} does not exist` }))),
+      Promise.all(others.map((l) => runCommand(byId.claude.cmd, timeoutMs, loginEnv(l, env)))),
     ]);
     results = Object.fromEntries(wanted.map((id, i) => [id, ran[i]]));
     loginResults = Object.fromEntries(others.map((l, i) => [loginKey(l), ranLogins[i]]));
@@ -228,6 +265,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const skipped = Object.entries(skip).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
   if (loginsOut.length) notes.push(`claude login${loginsOut.length > 1 ? 's' : ''} ${loginsOut.map((l) => l.name).join(', ')} failing, not holding spawns`);
+  const missingFix = (l) => `remove its row (desk-env logins remove claude ${l.name}) or sign it in (${signInCommand(l)})`;
+  for (const l of missing) notes.push(`claude login ${l.name} listed at ${l.folder}, which does not exist: ${missingFix(l)}`);
   const line = failing.length
     ? `health: ${failing.length} check(s) failing — ${failing.join(', ')}${network ? ', every remote check: the network' : ''} — holding new spawns (${notes.join('; ')})`
     : `health: all checks pass (${notes.join('; ')})`;
@@ -244,6 +283,11 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     const fix = r.kind === 'network' ? "check this machine's connection to Claude" : `sign it in, in another terminal: ${signInCommand(l)}`;
     stalls.push(`health: Claude login ${l.name} (${l.folder}) ${out} — ${fix}; spawns are not held for it`);
     push.push({ key: `health:${slug}:claude:${loginKey(l)}`, text: `desk ${slug}: Claude login ${l.name} ${out}. Fix: ${fix}` });
+  }
+  const missingDir = missingLoginsDir();
+  clearFound(missingDir, missing);
+  for (const l of missing.filter((m) => pushesMissing(missingDir, m, state))) {
+    push.push({ key: `health:claude-missing:${loginKey(l)}`, text: `desk: Claude login ${l.name} is listed at ${l.folder}, which does not exist, so no worker uses it. Fix: ${missingFix(l)}` });
   }
   return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push };
 }
