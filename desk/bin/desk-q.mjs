@@ -2649,8 +2649,9 @@ function moveOf(r, row, k, t, h, now) {
     return { text: `Moves without you: ${segText(fixSegs(f, false, startWait(r, t)))}.` };
   }
   // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
-  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting')) {
-    const text = `Will not move until passes resume${h ? `: ${h.text}` : ''}.`;
+  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t))) {
+    const why = h ? h.text : clearsPark(t) ? clearsText(t) : '';
+    const text = `Will not move until passes resume${why ? `: ${why}` : ''}.`;
     return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
   }
   if (h) {
@@ -2659,11 +2660,7 @@ function moveOf(r, row, k, t, h, now) {
   }
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
-  if (clearsPark(t)) {
-    const text = `${capital(clearsText(t))}.`;
-    if (r.live) return { text: `Moves without you: ${text}` };
-    return supervisorOff(r) ? { text: `Will not move until passes resume. ${text}`, lead: 'Run:', cmds: [resumeOf(r)] } : { text: `Will not move until passes resume. ${text}`, lead: `${capital(resumeOf(r))}.` };
-  }
+  if (clearsPark(t)) return { text: `Moves without you: ${capital(clearsText(t))}.` };
   if (k === 'needs' && claimOf(t)) {
     if (needsSession(t)) return { text: `Claimed by session ${claimOf(t).session}, which works it. It is lane ${t.lane}, so it stays with a person however long that session is idle${q ? `: ${q}` : '.'}` };
     return { text: `Claimed by session ${claimOf(t).session}, which works it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };

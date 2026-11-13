@@ -286,11 +286,12 @@ export const noWorkerWork = (question) => NO_WORKER_WORK.test(String(question ??
 export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? ''));
 
 // A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
-// the person's makes it hold, and a worker rather than a session takes the ticket on once it does. The
-// digest and needs-you leave it out, and desk-q shows it as waiting.
+// the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A
+// claimed park is its session's (pass.mjs clearable never settles one), so it is not one. The digest
+// and needs-you leave it out, and desk-q shows it as waiting.
 export const settlesByScript = (t) => {
   const c = t?.park?.clears_when;
-  return t?.state === 'parked' && !isHeld(t) && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
+  return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
 };
 
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
