@@ -55,7 +55,9 @@ cd "$T/repo" || exit 1
 # rec <KEY> <blockers json> [blocker_needs json]
 rec(){ printf '{"ticket": "%s", "type": "Task", "lane": "A", "size": "S", "summary": "s", "branch": "feat/%s", "change_kind": "surface", "files_in_scope": ["src/%s"], "unknowns": [], "blockers": %s%s}\n' \
   "$1" "$1" "$1" "$2" "${3:+, \"blocker_needs\": $3}" > "$T/state/triage/$1.json"; }
-plan(){ rm -f "$DESK_QUEUE" "$T/state/decisions.jsonl"; node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" "$@" 2>&1); rc=$?; }
+# seed plans a fresh queue and keeps the decision log; plan starts the log empty too.
+seed(){ rm -f "$DESK_QUEUE"; node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" "$@" 2>&1); rc=$?; }
+plan(){ rm -f "$T/state/decisions.jsonl"; seed "$@"; }
 qg(){ jq -r ".tickets[\"$1\"]$2" "$DESK_QUEUE"; }
 decisions(){ jq -sc "$1" "$T/state/decisions.jsonl" 2>/dev/null; }
 
@@ -74,8 +76,8 @@ check "AC1: the plan notes it starts without each, with triage's reason" \
   'printf "%s\n" "$out" | grep -qF "  ~ starts without blocker SV-2295 (not started, not in this batch): triage found it is not needed (holds the ticket but touches none of its files)" && printf "%s\n" "$out" | grep -qF "  ~ starts without blocker SV-3655 (in progress, not in this batch)"'
 check "AC1: an engineering decision \"start without <KEY>\" is logged for each blocker" \
   '[ "$(decisions "[.[] | select(.ticket == \"SV-3988\") | [.chose, .category, .source]]")" = "[[\"start without SV-2295\",\"engineering\",\"triage\"],[\"start without SV-3655\",\"engineering\",\"triage\"]]" ]'
-plan SV-3988
-check "AC1: planning the batch again logs each decision once" '[ "$(decisions length)" = 2 ]'
+seed SV-3988
+check "AC1: planning the batch again logs each decision once" '[ $rc -eq 0 ] && [ "$(decisions length)" = 2 ]'
 rm -f "$T/state/decisions.jsonl"; out=$(node "$B/plan-batch.mjs" SV-3988 2>&1); rc=$?
 check "AC1: a plan that does not seed the queue logs nothing" '[ $rc -eq 0 ] && [ ! -f "$T/state/decisions.jsonl" ]'
 
@@ -104,6 +106,16 @@ config yes
 plan SV-4000 SV-4001
 check "AC3: held behind a blocker in the batch and a needed one outside it, each recorded where its release reads it" \
   '[ "$(qg SV-4000 .held_by)" = "SV-4001|SV-3629" ] && [ "$(qg SV-4000 .held_outside)" = SV-3629 ] && printf "%s\n" "$out" | grep -qx -- "--deps \"SV-4000:SV-4001\"" && [[ "$(qg SV-4000 .park.question)" == *"— starts once their PRs merge, and SV-3629 is Done and on the base" ]]'
+
+# A needed blocker the subtask inherits from the container story it replaced is asked, never held:
+# the pass checks a held_outside key against the ticket's own links, so it would release that hold at once.
+rec SV-4100 '[]' '{"SV-3629": {"needs": true, "why": "needs its runners"}}'
+printf '%s\n' '{"parent": "EP-1", "containers": {"ST-1": {"subtasks": ["SV-4100"], "blocked_by": [{"key": "SV-3629", "category": "indeterminate"}]}}}' > "$T/state/expansion.json"
+rm -f "$DESK_QUEUE"; node "$B/queue.mjs" init "t$RANDOM" >/dev/null; node "$B/queue.mjs" set-batch epic=EP-1 >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" SV-4100 2>&1); rc=$?
+rm -f "$T/state/expansion.json"
+check "AC3: a needed blocker inherited from its container story is a question, not an outside hold" \
+  '[ $rc -eq 11 ] && [ "$(qg SV-4100 .held_outside)" = null ] && [ "$(qg SV-4100 .open_questions)" = 1 ] && printf "%s\n" "$out" | grep -qF "[SV-4100] SV-4100 is blocked by SV-3629 (in progress), which is not in this batch"'
 
 # ---- AC4: no judgement recorded for the blocker: asked as today ------------------------------------
 plan SV-3990 SV-3991

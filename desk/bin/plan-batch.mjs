@@ -144,11 +144,14 @@ let otherLinks = 0;
 // An open blocker in no batch, as triage judged it in `blocker_needs`: one the ticket needs holds it
 // as intake does (held_outside, lifted by pass.mjs once the blocker is Done and on the base); one it
 // does not need starts without it, a call taken where §3 autopilot-judgement is yes. With no
-// judgement recorded, it is asked.
+// judgement recorded, it is asked. So is a blocker inherited from a container story: the pass checks a
+// held_outside key against the ticket's own links, and would read an inherited one as unlinked and
+// release it while it is still open.
 const outsideHolds = {};  // ticket -> blockers in no batch it is held behind
 const taken = [];         // {ticket, decision}: calls plan-batch takes on triage's judgement
 const judgement = permission('autopilot-judgement') === 'yes';
 const blockerNeed = (r, k) => {
+  if (!r.blockers.some((b) => b?.key === k)) return null;
   const n = r.blocker_needs?.[k];
   return n && typeof n === 'object' && typeof n.needs === 'boolean' ? { needs: n.needs, why: String(n.why ?? '').trim() || 'no reason given' } : null;
 };
