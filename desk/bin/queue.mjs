@@ -20,7 +20,7 @@ import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
-import { workerCalls, appendDecisions } from './decisions.mjs';
+import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
@@ -240,9 +240,11 @@ function refuseLeft(t, key, what) {
 // pid is dead and the agent registry, read across every login, lacks its session; a registry that
 // cannot be read, or a ticket with neither, is never taken as gone. Its park is the last ending marker
 // the worker said after the log's last `desk_spawn` line, so a park an earlier session answered is not
-// it; a log with no such line is never read as one. A round that asked for issue links, or a pass
-// running now (its lock unreadable included), is left to the pass, which makes the links and would
-// otherwise park it again behind this requeue.
+// it; a log with no such line is never read as one. Its calls, notes and link requests are read from
+// the whole log, as the pass reads them: a session resumed after a kill or a usage limit appends to
+// the same log, and nothing harvested what it printed before. A log that asked for issue links, or a
+// pass running now (its lock unreadable included), is left to the pass, which makes the links and
+// would otherwise park it again behind this requeue.
 function exitedOnPark(t) {
   if (t.pid == null && !t.session_id) return null;
   if (t.pid != null && alive(Number(t.pid))) return null;
@@ -258,11 +260,11 @@ function exitedOnPark(t) {
   const spawned = lines.findLastIndex((l) => l.startsWith('{"type":"desk_spawn"'));
   if (spawned < 0) return null;
   const round = lines.slice(spawned + 1).join('\n');
-  const markers = workerMarkers(round);
-  const end = markers.findLast(([k]) => ['AUTOPILOT_PARK', 'AUTOPILOT_DONE', 'AUTOPILOT_HANDOFF', 'AUTOPILOT_REBOOT'].includes(k));
+  const end = workerMarkers(round).findLast(([k]) => ['AUTOPILOT_PARK', 'AUTOPILOT_DONE', 'AUTOPILOT_HANDOFF', 'AUTOPILOT_REBOOT'].includes(k));
+  const markers = workerMarkers(text);
   if (end?.[0] !== 'AUTOPILOT_PARK' || !end[1].trim() || markers.some(([k]) => k === 'AUTOPILOT_LINK')) return null;
   if (passRunning()) return null;
-  const notes = workerMarkers(text).filter(([k, v]) => k === 'AUTOPILOT_NOTE' && v.trim()).map(([, v]) => `- [${t.key}] ${v.trim()}`);
+  const notes = markers.filter(([k, v]) => k === 'AUTOPILOT_NOTE' && v.trim()).map(([, v]) => noteLine(t.key, v));
   return { question: end[1].trim(), since: statSync(log).mtime.toISOString(), stage: lastStage(round)?.stage ?? t.stage ?? null, markers, notes, log, logStamp: stamp };
 }
 
@@ -274,16 +276,6 @@ function passRunning() {
     const { pid } = JSON.parse(readFileSync(passLock, 'utf8'));
     return pid !== process.ppid && alive(pid);
   } catch { return true; }
-}
-
-// The notes a worker printed, appended to the batch notes as a pass appends them: each once.
-function keepNotes(notes) {
-  const path = join(stateDir(), 'batch-notes.md');
-  const seen = new Set(existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []);
-  const fresh = notes.filter((n) => !seen.has(n) && seen.add(n));
-  if (!fresh.length) return;
-  if (!existsSync(path)) writeFileSync(path, '# Batch notes\n\n');
-  appendFileSync(path, `${fresh.join('\n')}\n`);
 }
 
 // Read before the queue lock (the registry read can outlast another writer's wait for it), for the
@@ -361,7 +353,7 @@ function requeue(q, key, { handedBack = false } = {}) {
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
-  if (p?.notes.length) keepNotes(p.notes);
+  if (p?.notes.length) appendNotes(p.notes, stateDir());
   save(q);
   return `${key} requeued: ${placed}${harvested}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }

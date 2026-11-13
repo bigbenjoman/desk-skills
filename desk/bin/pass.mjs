@@ -19,7 +19,7 @@ import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
-import { parseDecision, decisionEntry, appendDecisions, workerCalls, triageCalls, ticketCalls } from './decisions.mjs';
+import { parseDecision, decisionEntry, appendDecisions, workerCalls, noteLine, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
@@ -803,7 +803,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
   // hangs after printing it must be recorded done, never left running and then parked as wedged.
   const done = park || handoff || reboot ? undefined : lastDone?.[1];
-  for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
+  for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(noteLine(t.key, m[1]));
 
   // A worker at a usage limit (usage-limit.mjs decides; nothing here reads the event). Only a worker
   // that has neither parked nor finished, and has not answered since the limit, is acted on.
@@ -1152,17 +1152,7 @@ let USAGE_HOLD = null;
 }
 
 // ---- batch notes ---------------------------------------------------------
-if (notes.length) {
-  const path = join(STATE, 'batch-notes.md');
-  const existing = existsSync(path) ? readFileSync(path, 'utf8') : '# Batch notes\n\n';
-  // Dedup against the file AND within this pass: harvest sees a note twice (once in the
-  // assistant text, once echoed in the result), so filtering only against the file
-  // appends every note in duplicate.
-  const seen = new Set(existing.split('\n'));
-  const freshNotes = [];
-  for (const n of notes) { if (!seen.has(n)) { seen.add(n); freshNotes.push(n); } }
-  if (freshNotes.length) appendFileSync(path, `${freshNotes.join('\n')}\n`);
-}
+if (notes.length) appendNotes(notes, STATE);
 
 // ---- interactive close-outs --------------------------------------------------
 // A ticket an interactive session merged or moved to Done (closeout.mjs) is done here too, rather than

@@ -110,6 +110,19 @@ rm -f "$T/state/orchestrator.lock"
 q requeue R-6
 check "once the pass is gone the same ticket requeues"                     '[ $rc -eq 0 ] && [ "$(f R-6 prev_park.question)" = "\"a question\"" ]'
 
+# A session resumed after a kill appends to the same log: what it printed before the resume is the
+# pass's to harvest too, so requeue reads it from the whole log.
+running R-7 session_id=s-gone7
+{ spawn s-gone7; says 'AUTOPILOT_DECISION: {"question": "Before the resume?", "options": ["a", "b"], "chose": "a", "category": "engineering"}'; says "AUTOPILOT_NOTE: said before the resume"
+  spawn s-gone7; says "AUTOPILOT_PARK: after the resume"; } > "$T/state/logs/R-7.log"
+q requeue R-7
+check "a decision printed before a resume reaches the decision log"       '[ $rc -eq 0 ] && grep -q "\"question\":\"Before the resume?\"" "$T/state/decisions.jsonl"'
+check "a note printed before a resume reaches the batch notes once"       '[ "$(grep -c "^- \[R-7\] said before the resume$" "$T/state/batch-notes.md")" = 1 ]'
+running R-8 session_id=s-gone8
+{ spawn s-gone8; says "AUTOPILOT_LINK: R-8 relates R-9"; spawn s-gone8; says "AUTOPILOT_PARK: after the resume"; } > "$T/state/logs/R-8.log"
+before=$(sum); q requeue R-8
+check "a link asked for before a resume is left to the pass"              '[ $rc -ne 0 ] && [[ "$out" == *"R-8 is running"* ]] && [ "$(sum)" = "$before" ]'
+
 rm -rf "$T"
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

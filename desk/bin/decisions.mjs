@@ -123,6 +123,18 @@ export function workerCalls(markers, { ticket, run, repo, pr }) {
   return { entries, unreadable };
 }
 
+// A worker's `AUTOPILOT_NOTE` as its line in the batch notes.
+export const noteLine = (ticket, note) => `- [${ticket}] ${note.trim()}`;
+
+// Appends to <dir>/batch-notes.md the note lines it does not already hold, each once: a harvest can
+// see one note twice (in the assistant text and echoed in the result).
+export function appendNotes(lines, dir = stateDir()) {
+  const path = join(dir, 'batch-notes.md');
+  const seen = new Set(existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []);
+  const fresh = lines.filter((n) => !seen.has(n) && seen.add(n));
+  if (fresh.length) appendFileSync(path, `${fresh.join('\n')}\n`);
+}
+
 const loggedIds = (path) => {
   if (!existsSync(path)) return new Set();
   const ids = new Set();
