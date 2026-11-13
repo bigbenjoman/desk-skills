@@ -3,8 +3,8 @@
 # pass.mjs with a batch base: every pass makes the base its own worktree, and a pass that will spawn,
 # or finds the base behind main, first merges main into the base and pushes it. A conflict, a refused push or the §3 batch-base-push
 # row pushes nothing and is reported; in feature mode it also holds the spawns. A non-fast-forward
-# push is fetched, merged and retried once. A primary checkout on the base gets no worktree and no
-# sync. Each case has its own throwaway origin; the real pass.mjs runs with stub claude, gh,
+# push is fetched, merged and retried once. The base worktree is detached at origin's base, so a
+# primary checkout or another worktree on the base is left as it is. Each case has its own throwaway origin; the real pass.mjs runs with stub claude, gh,
 # setup-worktree and spawn-worker. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -107,12 +107,12 @@ check "no base: no sync is attempted"                '[[ "$out" != *"base sync"*
 # AC1, AC3: the first pass makes the base worktree. DS-542 AC1: a pass that spawns nothing still syncs a
 # base behind main, and a later one, with the base current, says nothing about it.
 fresh idle; node "$B/queue.mjs" set T-1 state=done >/dev/null; pass
-check "the first pass makes the base worktree"       "[ \"\$(git -C $BWT symbolic-ref --short HEAD)\" = feat/x ]"
-check "it is a worktree of the primary checkout"     'git -C "$C/repo" worktree list | grep -q "base-feat-x .*\[feat/x\]"'
+check "DS-594 the first pass makes the base worktree on a detached HEAD at origin's base" "! git -C $BWT symbolic-ref -q HEAD && [ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$(origin_tip)\" ]"
+check "it is a worktree of the primary checkout"     'git -C "$C/repo" worktree list | grep -q "base-feat-x .*(detached HEAD)"'
 check "the report says it was made"                  '[[ "$out" == *"base worktree for feat/x made at $C/wt/base-feat-x"* ]]'
 check "DS-542 AC1 a pass that spawns nothing syncs a base behind main" 'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"spawned:"* ]]'
 tip=$(origin_tip); pass
-check "a second pass keeps the worktree, quietly"    '[[ "$out" != *"base worktree"* ]] && [ -d "$C/wt/base-feat-x" ]'
+check "DS-594 AC4 a second pass reuses the detached worktree, quietly" '[[ "$out" != *"base worktree"* ]] && [ -d "$C/wt/base-feat-x" ] && [ "$(git -C "$C/repo" worktree list | grep -c base-feat-x)" = 1 ]'
 check "DS-542 a current base on a pass that spawns nothing is left, quietly" '[ "$(origin_tip)" = "$tip" ] && [[ "$out" != *"base sync"* ]]'
 
 # AC2: a base behind main that merges cleanly is merged, pushed and counted before the spawn.
@@ -152,7 +152,7 @@ rm -f "$T/agents.json"; : > "$T/spawns"
 fresh bfix; feature; fixrow yes; conflict; tip=$(origin_tip); pass
 check "DS-320 AC1 a pass that would spawn starts a conflict fix worker for the base" \
   '[[ "$out" == *"base-feat-x port="*"(conflict fix try 1 of 2 on feat/x)"* ]] && grep -q "^base-feat-x $C/wt/base-feat-x feat/x .*Your task is conflict fix try 1 of 2 on feat/x" "$T/spawns"'
-check "DS-320 AC1 it is told to merge, never rebase, and to push the base" 'grep -q "merge origin/main into feat/x (git merge, never a rebase or a force push)" "$T/spawns" && grep -q "git push origin feat/x" "$T/spawns"'
+check "DS-320 AC1 it is told to merge, never rebase, and to push the base" 'grep -q "merge origin/main into feat/x (git merge, never a rebase or a force push)" "$T/spawns" && grep -q "git push origin HEAD:refs/heads/feat/x" "$T/spawns" && grep -q "on a detached HEAD at origin/feat/x: never check feat/x out" "$T/spawns"'
 check "DS-320 AC1 and the conflict is not put to the person" '[[ "$out" != *"by hand"* ]] && [ $rc -ne 11 ]'
 check "DS-320 AC1 feature mode: nothing else spawns until the base is synced" '[ "$(grep -c "^T-1 " "$T/spawns")" = 0 ] && [[ "$out" == *"Conflict fix try 1 of 2 starts this pass"* ]]'
 check "DS-320 AC1 the try is kept on the queue, with its files" \
@@ -499,13 +499,31 @@ fresh race; git clone -q "$C/origin.git" "$C/other"; git -C "$C/other" switch -q
 check "a non-fast-forward push is retried and lands" 'origin_has_main && git -C "$C/origin.git" log --format=%s feat/x | grep -qx "merged by the driver"'
 check "the report says it retried"                   '[[ "$out" == *"fetched, merged again, retried once"* ]] && [[ "$out" == *"spawned: T-1"* ]]'
 
-# AC8: a primary checkout on the base gets no worktree and no sync.
-fresh primary; git -C "$C/repo" switch -q feat/x; tip=$(origin_tip); pass
-check "primary on the base: no base worktree"        '[ ! -e "$C/wt/base-feat-x" ]'
-check "and no sync"                                   '[ "$(origin_tip)" = "$tip" ]'
-check "and the report says to switch it off"         '[[ "$out" == *"switch the primary checkout off feat/x"* ]]'
-node "$B/queue.mjs" set T-1 state=done >/dev/null; pass
-check "it is reported even on a pass that spawns nothing" '[[ "$out" == *"switch the primary checkout off feat/x"* ]]'
+# DS-594 AC3: a primary checkout on the base gets a detached base worktree and a sync, and is left as it was.
+fresh primary; git -C "$C/repo" switch -q feat/x; echo mine > "$C/repo/local.txt"; head=$(git -C "$C/repo" rev-parse HEAD); pass
+check "DS-594 AC3 primary on the base: a detached base worktree is made" "[ -d $BWT ] && ! git -C $BWT symbolic-ref -q HEAD"
+check "DS-594 AC3 and the base is synced"             'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"switch the primary checkout off"* ]]'
+check "DS-594 AC3 the primary checkout's branch and files are unchanged" \
+  '[ "$(git -C "$C/repo" symbolic-ref --short HEAD)" = feat/x ] && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$head" ] && [ "$(cat "$C/repo/local.txt")" = mine ] && [ "$(git -C "$C/repo" status --porcelain)" = "?? local.txt" ]'
+
+# DS-594 AC1: another worktree holding the base leaves it as it is, and a detached base worktree syncs.
+fresh holder; git -C "$C/repo" fetch -q origin; git -C "$C/repo" worktree add -q --track -b feat/x "$C/wt/T-9" origin/feat/x
+head=$(git -C "$C/wt/T-9" rev-parse HEAD); pass
+check "DS-594 AC1 another worktree on the base: a detached base worktree is made at origin's base" \
+  "[ -d $BWT ] && ! git -C $BWT symbolic-ref -q HEAD && [[ \"\$out\" == *\"base worktree for feat/x made at \$C/wt/base-feat-x\"* ]]"
+check "DS-594 AC1 and the pass reports the base synced" 'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"is checked out in"* ]]'
+check "DS-594 AC1 the other worktree is left on the base, where it was" '[ "$(git -C "$C/wt/T-9" symbolic-ref --short HEAD)" = feat/x ] && [ "$(git -C "$C/wt/T-9" rev-parse HEAD)" = "$head" ]'
+
+# DS-594 AC5: a detached base worktree with uncommitted changes pushes nothing and says so.
+fresh dirty; node "$B/queue.mjs" set T-1 state=done >/dev/null; pass; tip=$(origin_tip)
+git -C "$C/repo" commit -q --allow-empty -m three; git -C "$C/repo" push -q origin main; echo stray > "$C/wt/base-feat-x/stray.txt"; pass
+check "DS-594 AC5 uncommitted changes in a detached base worktree: nothing is pushed" '[ "$(origin_tip)" = "$tip" ]'
+check "DS-594 AC5 and the report names them" '[[ "$out" == *"the base worktree $C/wt/base-feat-x has uncommitted changes"* ]]'
+
+# A base worktree an earlier pass made on the branch itself is still reused.
+fresh legacy; git -C "$C/repo" fetch -q origin; git -C "$C/repo" worktree add -q --track -b feat/x "$C/wt/base-feat-x" origin/feat/x; pass
+check "DS-594 a base worktree on the branch from an earlier pass is reused and synced" \
+  '[[ "$out" != *"base worktree for feat/x made"* ]] && [ "$(git -C "$C/wt/base-feat-x" symbolic-ref --short HEAD)" = feat/x ] && origin_has_main'
 
 # Baseline checks: tc.sh stands in for §4 Typecheck, printing errors.txt as tsc would and failing when it
 # holds any error. baseline <case> [on|off] [base]: fresh, with that row and the toolchain rows set.
@@ -823,5 +841,15 @@ check "DS-542 AC4 a conflicting sync leaves the park" '[ "$(jq -r ".tickets[\"W-
 check "DS-542 AC4 the merge is aborted: nothing pushed, the base worktree clean" "[ \"\$(origin_tip)\" = \"\$tip\" ] && [ -z \"\$(git -C $BWT status --porcelain)\" ]"
 check "DS-542 AC4 the pass says why the base did not sync, on the base and on the park" \
   '[[ "$out" == *"base sync: merging main into feat/x conflicts, nothing pushed. Conflicting files: a.txt"* ]] && [[ "$out" == *"W-3: waiting on \"the batch base contains main\" (feat/x is 3 commit(s) behind main, and the base did not sync this pass: merging main into feat/x conflicts"*"): left parked"* ]]'
+
+# DS-594 AC2: an epic batch whose base another worktree holds still opens its epic PR once every child
+# has merged (the DS-508 gh stub above serves it).
+fresh epic594; epicrows; rm -f "$T/ep"/*; : > "$T/ghlog"
+git -C "$C/repo" fetch -q origin; git -C "$C/repo" worktree add -q --track -b feat/x "$C/wt/T-9" origin/feat/x
+node "$B/queue.mjs" set-batch epic=E-8 feature=false >/dev/null
+node "$B/queue.mjs" set T-1 state=done result.pr=801 merged_at=2026-11-06T10:00:00Z >/dev/null
+echo '{"state":"MERGED","mergedAt":"2026-11-06T10:00:00Z"}' > "$T/ep/801.json"; pass
+check "DS-594 AC2 with the base held in another worktree, the PR from the base to main is opened" \
+  'grep -q "^pr create --repo acme/widgets --draft --base main --head feat/x --title E-8: promote feat/x to main" "$T/ghlog" && [ "$(jq -r .promotion.pr "$DESK_QUEUE")" = 300 ] && [[ "$out" != *"is checked out in"* ]]'
 
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]
