@@ -3,7 +3,8 @@
 // order by blast radius, and the one batch of questions to put to the user before any code is written. Offline: it reads only the
 // triage records (with the facts ticket-facts.mjs merged into them) and, for an epic batch,
 // $DESK_STATE/expansion.json from expand-parent.mjs and the feature plan the orchestrator drafts into
-// $DESK_STATE/feature.json.
+// $DESK_STATE/feature.json. Seeding the queue (AUTOPILOT_WRITE_QUEUE), it logs each call it took on
+// triage's judgement to the decision log (decisions.mjs).
 // Exits 0 when every ticket can start with nothing to put to the person first, or 11 (show the
 // person) when one needs them before Stage 3 (`needs_person`) and on any refusal or error: EXIT in
 // batch-state.mjs. With --json, stdout is one object: status (go_on | show_person | error), code,
@@ -13,7 +14,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn } from './desk-env.mjs';
+import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo } from './desk-env.mjs';
+import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { placement } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
@@ -111,8 +113,9 @@ const mergesFirst = (a, b) => radius(a) - radius(b) || sizeRank(a) - sizeRank(b)
 // successor until the blocker's PR merges (merge-driver.sh release_chain releases anything parked
 // "held by orchestrator" once every --deps predecessor has merged). Anything the batch cannot settle
 // by itself is a question, never a silent "no blockers": a blocker outside the batch that is not
-// done, a blocker the batch will not build (parked, or someone else's), and a link list that was
-// never read. An epic's container stories hand their links to the subtasks that replaced them.
+// done and that triage did not judge (outsideHolds, below), a blocker the batch will not build
+// (parked, or someone else's), and a link list that was never read. An epic's container stories
+// hand their links to the subtasks that replaced them.
 const expansionPath = join(STATE, 'expansion.json');
 // Only the expansion of this batch's own epic (queue.mjs set-batch epic=<KEY>): a file left by an
 // earlier epic must not reshape an unrelated batch.
@@ -138,6 +141,17 @@ const holdBehind = (t, p, why) => {
 const ask = (t, q) => (added[t] ??= []).push(q);
 const note = (t, n) => (notes[t] ??= []).push(n);
 let otherLinks = 0;
+// An open blocker in no batch, as triage judged it in `blocker_needs`: one the ticket needs holds it
+// as intake does (held_outside, lifted by pass.mjs once the blocker is Done and on the base); one it
+// does not need starts without it, a call taken where §3 autopilot-judgement is yes. With no
+// judgement recorded, it is asked.
+const outsideHolds = {};  // ticket -> blockers in no batch it is held behind
+const taken = [];         // {ticket, decision}: calls plan-batch takes on triage's judgement
+const judgement = permission('autopilot-judgement') === 'yes';
+const blockerNeed = (r, k) => {
+  const n = r.blocker_needs?.[k];
+  return n && typeof n === 'object' && typeof n.needs === 'boolean' ? { needs: n.needs, why: String(n.why ?? '').trim() || 'no reason given' } : null;
+};
 
 for (const r of admitted) {
   const t = r.ticket;
@@ -159,7 +173,18 @@ for (const r of admitted) {
         const why = !ours.includes(br) ? `assigned to ${br.assignee}` : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
         ask(t, `${t} is blocked by ${k}, which this batch will not build (${why}): finish ${k} first, or confirm ${t} can start without it`);
       } else if (b.category === 'done') note(t, `blocker ${k} is done`);
-      else ask(t, `${t} is blocked by ${k} (${b.category === 'indeterminate' ? 'in progress' : 'not started'}), which is not in this batch: add ${k} to the batch, or confirm ${t} can start without it`);
+      else {
+        const status = b.category === 'indeterminate' ? 'in progress' : 'not started';
+        const need = blockerNeed(r, k);
+        if (need?.needs) {
+          (outsideHolds[t] ??= []).push(k);
+          (holdWhy[t] ??= {})[k] = `${status}, not in this batch; triage: ${need.why}`;
+        } else if (need && judgement) {
+          note(t, `starts without blocker ${k} (${status}, not in this batch): triage found it is not needed (${need.why})`);
+          taken.push({ ticket: t, decision: { question: `${t} is blocked by ${k} (${status}), which is not in this batch: start without it? Triage: ${need.why}`,
+            options: [`start without ${k}`, `wait for ${k}`], chose: `start without ${k}`, category: 'engineering' } });
+        } else ask(t, `${t} is blocked by ${k} (${status}), which is not in this batch: add ${k} to the batch, or confirm ${t} can start without it`);
+      }
     }
   }
 }
@@ -314,8 +339,13 @@ for (const c of collisions) {
       : `both ${kindLabel(first)}, ${first.ticket} named first`;
   holdBehind(then.ticket, first.ticket, `${files}; ${why}`);
 }
-const held = (t) => !!preds[t]?.length;
-const heldBy = (t) => preds[t].map((p) => `${p} (${holdWhy[t][p]})`).join(', ');
+const holdsOf = (t) => [...(preds[t] ?? []), ...(outsideHolds[t] ?? [])];
+const held = (t) => holdsOf(t).length > 0;
+const heldBy = (t) => holdsOf(t).map((p) => `${p} (${holdWhy[t][p]})`).join(', ');
+// What a hold waits for: the in-batch blockers' PRs to merge, and each one in no batch to be Done and
+// on the base.
+const heldUntil = (t) => [preds[t]?.length && 'their PRs merge', outsideHolds[t]?.length && `${outsideHolds[t].join(', ')} ${outsideHolds[t].length === 1 ? 'is' : 'are'} Done and on the base`]
+  .filter(Boolean).join(', and ');
 const depsArg = Object.entries(preds).map(([t, ps]) => `${t}:${ps.join(',')}`).join(' ');
 
 // Blockers before what they block; otherwise the order given.
@@ -377,7 +407,7 @@ const ticketVerdict = (r) => (laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKE
   : sizeParked(r) ? `PARK (size ${String(r.size).toUpperCase()} — split it before batching)`
   : designParked(r) ? `PARK (${designPark(r)})`
   : onCycle.has(r.ticket) ? `PARK (dependency cycle: ${onCycle.get(r.ticket)})`
-  : held(r.ticket) ? `HELD (blocked by ${preds[r.ticket].join(', ')} — starts once their PRs merge)`
+  : held(r.ticket) ? `HELD (blocked by ${holdsOf(r.ticket).join(', ')} — starts once ${heldUntil(r.ticket)})`
   : 'ADMIT');
 for (const r of order) {
   const co = collidesWith(r.ticket);
@@ -524,7 +554,8 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `state=${runnable ? 'triaged' : 'parked'}`,
       `collides_with=${collidesWith(t).join('|') || 'null'}`,
       `open_questions=${laneOk(r) ? qsOf(r).length : (r.unknowns ?? []).length}`,
-      `held_by=${held(t) ? preds[t].join('|') : 'null'}`,
+      `held_by=${held(t) ? holdsOf(t).join('|') : 'null'}`,
+      `held_outside=${outsideHolds[t]?.length ? outsideHolds[t].join('|') : 'null'}`,
       `location=${placed[t].where === 'cloud' ? 'cloud' : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
@@ -532,9 +563,16 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       ?? (sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
       : designParked(r) ? designPark(r)
       : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — ${cycleFix(onCycle.get(t))}`
-      : held(t) ? `held by orchestrator: blocked by ${heldBy(t)} — starts once their PRs merge`
+      : held(t) ? `held by orchestrator: blocked by ${heldBy(t)} — starts once ${heldUntil(t)}`
       : null);
     if (park) execFileSync('node', [QUEUE, 'park', t, park], { stdio: 'ignore' });
+  }
+  // Seeding admits the batch, so the calls taken on triage's judgement are logged now, as intake logs
+  // a record's calls when it admits the ticket.
+  if (taken.length) {
+    let repo = null;
+    try { repo = ghRepo(); } catch { /* outside a repo: logged without one */ }
+    appendDecisions(taken.map(({ ticket, decision }) => decisionEntry({ decision, ticket, run: 'plan-batch', repo, source: 'triage' })), STATE);
   }
   say('\nqueue seeded.');
 }
