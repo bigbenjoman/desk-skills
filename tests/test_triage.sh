@@ -409,7 +409,7 @@ rm -rf "$T/state/briefings" "$T/state/decisions.jsonl"
 # DS-468: both passes run on a login that is not benched; with every login benched, or one login, as the
 # shell does. Login a is the default (~/.claude), benched in the queue; b has room.
 mkdir -p "$T/home/.claude" "$T/home/.claude-logins/b"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `in rotation` |\n' > "$T/subs.md"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$T/subs.md"
 bench(){ printf '{"version":1,"tickets":{},"benched":{%s}}\n' "$1" > "$T/queue.json"; }
 A_BENCH='"default":{"login":"a","config_dir":null,"type":"five_hour","resets_at":null}'
 B_BENCH="\"b\":{\"login\":\"b\",\"config_dir\":\"$T/home/.claude-logins/b\",\"type\":\"five_hour\",\"resets_at\":null}"

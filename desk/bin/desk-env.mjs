@@ -98,7 +98,12 @@
 //                                             --actions-budget <usd>, --credit <profile>=<usd>@<YYYY-MM-DD>
 //   node desk-env.mjs costs show [--json]     print the saved cost sources; a missing file is "no cost sources"
 //   node desk-env.mjs logins list [--json]    print the Claude and Codex logins in ~/.config/desk/subscriptions.md,
-//                                             each with its folder and rule; a missing file is ~/.claude and ~/.codex
+//                                             each with its folder and default or unused; a missing file is
+//                                             ~/.claude and ~/.codex. A file in the older rules (in rotation,
+//                                             standby, off) is rewritten once as each tool's default and unused
+//   node desk-env.mjs logins default <claude|codex> <name|account>
+//                                             make one login its tool's default and its old default unused,
+//                                             keeping the previous file as .bak
 //   node desk-env.mjs logins check [--json]   as list, with each login's sign-in, account and plan, the signed-in
 //                                             folders under ~/.claude-logins and ~/.codex-logins it does not list,
 //                                             and the usable ones (logins.mjs)
@@ -1659,7 +1664,7 @@ const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DI
 // The subcommands that write the machine profile, the cost sources or the login rules: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
 // command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
-export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins remove'];
+export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins default', 'logins remove'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
@@ -2126,9 +2131,16 @@ if (isMain) {
         const [sub, ...rest] = args;
         const L = await import('./logins.mjs');
         const path = subscriptionsPath();
-        const subs = L.readSubscriptions(path);
+        let subs = L.readSubscriptions(path);
         const json = rest.includes('--json');
         if (sub === 'list') {
+          // A file still in the older rules is written once as one default per tool and the rest unused.
+          const was = subs;
+          subs = L.migrateSubscriptions(was);
+          if (L.needsMigration(was) && !was.errors.length && process.env.DESK_AUTOPILOT_WORKER !== '1') {
+            writeWithBackup(path, L.renderSubscriptions(subs.logins, subs.removed));
+            console.error(`${path}: now records one default per tool and every other login as unused; the previous copy is ${path}.bak`);
+          }
           if (json) console.log(JSON.stringify({ file: path, exists: subs.exists, errors: subs.errors, logins: subs.logins.map(L.loginJson) }, null, 2));
           else for (const l of L.listLines(subs, path)) console.log(l);
           break;
@@ -2146,6 +2158,13 @@ if (isMain) {
           console.log(`${tool} ${name}: ${r.login.rule}`);
           break;
         }
+        if (sub === 'default' && rest.length === 2) {
+          const [tool, who] = rest;
+          const r = L.setDefault(L.migrateSubscriptions(subs), { tool, who });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`${tool} ${r.login.name}: default${r.was ? `; ${r.was.name}: unused` : ''}`);
+          break;
+        }
         if (sub === 'remove' && rest.length === 2) {
           const [tool, name] = rest;
           const r = L.removeLogin(subs, { tool, name, check: () => L.checkLogins(subs) });
@@ -2153,7 +2172,7 @@ if (isMain) {
           console.log(`${tool} ${name}: removed; ${r.login.folder} and its sign-in are left as they are`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | set <claude|codex> <name> <${L.RULES.join('|')}> | remove <claude|codex> <name>`);
+        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${L.RULES.join('|')}> | remove <claude|codex> <name>`);
         process.exit(2);
         break;
       }

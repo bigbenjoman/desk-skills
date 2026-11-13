@@ -282,7 +282,7 @@ q set-batch supervised=false
 mode gh ok; rm -f "$T/state/health.json"
 mkdir -p "$HOME/.claude-logins/b"; : > "$HOME/.claude-logins/b/signed-out"
 export DESK_SUBSCRIPTIONS="$T/subscriptions.md"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `standby` |\n' > "$DESK_SUBSCRIPTIONS"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$DESK_SUBSCRIPTIONS"
 before=$(calls claude)
 pj
 check "DS-463 AC7 login b is checked in its own folder"     '[ "$(calls claude)" = $((before + 2)) ]'

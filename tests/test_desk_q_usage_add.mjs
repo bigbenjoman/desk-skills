@@ -46,7 +46,7 @@ writeFileSync(q, JSON.stringify({ version: 1, batch: 'solo', concurrency: 2, tic
 const subscriptions = (rows) => writeFileSync(env.DESK_SUBSCRIPTIONS,
   `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n${rows.map((r) => `| ${r.map((c) => `\`${c}\``).join(' | ')} |`).join('\n')}\n`);
 const subsText = () => (existsSync(env.DESK_SUBSCRIPTIONS) ? readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8') : '');
-subscriptions([['claude', 'personal', '~/.claude', 'in rotation'], ['codex', 'codexmain', '~/.codex', 'in rotation']]);
+subscriptions([['claude', 'personal', '~/.claude', 'default'], ['codex', 'codexmain', '~/.codex', 'default']]);
 
 const Q = await import(join(BIN, 'desk-q.mjs'));
 const { PassThrough } = await import('node:stream');
