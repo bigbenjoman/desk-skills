@@ -309,12 +309,20 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
   const stored = words ? Object.keys(STORED_RULES).find((k) => STORED_RULES[k] === rule) : undefined;
   const { stored: _was, ...rest } = target;
   const changed = { ...rest, rule, source: 'file', ...(stored ? { stored } : {}) };
-  const demoted = (l) => (stored === 'default' && l.stored === 'default' ? { ...l, rule: STORED_RULES.unused, stored: 'unused' } : l);
+  const down = demotedBy(subs.logins, { tool, name: target.name, rule });
+  const demoted = (l) => (down.includes(l) ? { ...l, rule: STORED_RULES.unused, stored: 'unused' } : l);
   const listed = subs.logins.some((l) => l.tool === tool && l.name === target.name);
   const logins = listed
     ? subs.logins.map((l) => (l.tool !== tool ? l : l.name === target.name ? changed : demoted(l)))
     : [...subs.logins.map((l) => (l.tool === tool ? demoted(l) : l)), changed];
   return { text: renderSubscriptions(logins, subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir))), login: changed };
+}
+// The tool's logins that setting `name` to `rule` turns from default to unused: setting one in
+// rotation, where the tool's rows say default and unused, makes it the tool's one default. An undo
+// puts each back in rotation once the login itself is back.   -> [login]
+export function demotedBy(logins, { tool, name, rule }) {
+  if (normRule(rule) !== 'in rotation' || !logins.some((l) => l.tool === tool && l.stored)) return [];
+  return logins.filter((l) => l.tool === tool && l.name !== name && l.stored === 'default');
 }
 
 // Refuses to take away the last Claude login desk can use. Asked whatever the target's rule: a found
