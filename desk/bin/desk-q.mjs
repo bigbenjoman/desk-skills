@@ -36,7 +36,8 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath } from './desk-env.mjs';
-import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript } from './batch-state.mjs';
+import { describeCond } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
@@ -120,7 +121,7 @@ function stateOf(q, t, ctx, seen) {
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
   if (worktreeBusy(t)) return 'needs';
-  if (answeredPark(t, ctx) || readPark(t, ctx)) return 'waiting';
+  if (answeredPark(t, ctx) || readPark(t, ctx) || clearsPark(t)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
@@ -132,6 +133,10 @@ const NOBODY = { releases: false, merges: false, reruns: false, live: false, sta
 const answeredPark = (t, ctx) => t?.state === 'parked' && !!t.park?.answered && ctx?.live === true;
 // A park waiting on the §4 Live reads a pass runs on this computer: with passes stopped, nothing runs them.
 const readPark = (t, ctx) => waitingOnRead(t) && ctx?.live === true;
+// A park a pass settles once its clears-when holds (a PR merging, a ticket done): it waits on that,
+// not on the person. A live read is readPark's.
+const clearsPark = (t) => settlesByScript(t) && !waitingOnRead(t);
+const clearsText = (t) => `waiting on ${describeCond(t.park.clears_when)}: a pass requeues it then`;
 const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.batch}` : 'the batch session'} to requeue it`;
 // A triaged ticket the last pass would not spawn because its worktree is in use (pass.mjs busyWorktree,
 // recorded as `worktree_busy`): uncommitted changes, unpushed commits or another process working in it.
@@ -2454,6 +2459,7 @@ function needSegs(r, x, now = Date.now()) {
   if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t));
   if (k === 'running') return [[runningStage(r, x), null]];
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
+  if (clearsPark(t)) return [[clearsText(t), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (k === 'needs' && claimOf(t)) return [[`claimed by session ${claimOf(t).session}`, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open: answer them`, null]];
@@ -2643,8 +2649,9 @@ function moveOf(r, row, k, t, h, now) {
     return { text: `Moves without you: ${segText(fixSegs(f, false, startWait(r, t)))}.` };
   }
   // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
-  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting')) {
-    const text = `Will not move until passes resume${h ? `: ${h.text}` : ''}.`;
+  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t))) {
+    const why = h ? h.text : clearsPark(t) ? clearsText(t) : '';
+    const text = `Will not move until passes resume${why ? `: ${why}` : ''}.`;
     return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
   }
   if (h) {
@@ -2653,6 +2660,7 @@ function moveOf(r, row, k, t, h, now) {
   }
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
+  if (clearsPark(t)) return { text: `Moves without you: ${capital(clearsText(t))}.` };
   if (k === 'needs' && claimOf(t)) {
     if (needsSession(t)) return { text: `Claimed by session ${claimOf(t).session}, which works it. It is lane ${t.lane}, so it stays with a person however long that session is idle${q ? `: ${q}` : '.'}` };
     return { text: `Claimed by session ${claimOf(t).session}, which works it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
@@ -2955,6 +2963,7 @@ function moveTicket(r, key, verb, to) {
   if (n < 1 || n > last || n === i) throw new Usage(`${key} is already at position ${i}. Nothing moved.`);
   queueCmd(r, ['move', key, String(n)]);
   const why = answeredPark(x.t, r.ctx) ? ` It is ${answeredText(r.q)}, then starts from here.`
+    : clearsPark(x.t) ? ` It is ${clearsText(x.t)}, and starts from here.`
     : x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
     : x.k === 'stuck' ? ` It is still held outside this batch: moving it does not start it.`
       : x.k === 'needs' ? ' It still needs you first.' : x.k === 'queued' ? ' It still waits for triage.' : '';
