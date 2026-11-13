@@ -113,7 +113,7 @@ export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json
 cd "$T/repo" || exit 1
 
 t0=$SECONDS
-out=$(DESK_PSQL_TIMEOUT=2 bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?; took=$((SECONDS - t0))
+out=$(DESK_PSQL_TIMEOUT=2 DESK_PSQL_RETRY_S=0 bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?; took=$((SECONDS - t0))
 check "hung psql: setup fails"                                  '[ $rc -ne 0 ]'
 check "hung psql: within the limit (2s) plus the kill grace"    '[ $took -le 10 ]'
 check "hung psql: the failure names the container and limit"   '[[ "$out" == *"FAIL: cannot reach Postgres in container pg-hung"*"did not answer within 2s"* ]]'
