@@ -53,7 +53,7 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } f
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, nextLoginFolder, readSubscriptions,
+import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, demotedBy, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, nextLoginFolder, readSubscriptions,
   signInParts } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
@@ -3575,12 +3575,14 @@ export function interactive({
     else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ' && typed.length < LABEL_MAX) typed += str;
     return frame();
   }
-  // A login's rule set, or the login removed, then the footer says what changed and u puts back `then`.
-  function saveLogin(args, said, then) {
+  // A login's rule set, or the login removed, then the footer says what changed and u puts back `then`:
+  // the rules to set again, in order. `next` runs once this one is saved.
+  function saveLogin(args, said, then, next) {
     saving = true;
     msg = 'Saving…';
     loginsWith(args, (r) => {
       saving = false;
+      if (r.code === 0 && next) return next();
       if (r.code === 0) { undo = then; msg = `${said}${then ? ' · u undo' : ''}`; }
       else msg = `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^logins: /, '') ?? `desk-env exited ${r.code}`}`;
       if (!done) draw();
@@ -3591,8 +3593,9 @@ export function interactive({
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (k === 'u') {
       if (!undo) { msg = 'Nothing to undo.'; return; }
-      const u = undo;
-      return saveLogin(['set', u.login.tool, u.login.name, u.rule], savedText(loginLabel(u.login), u.rule), null);
+      const [u] = undo, said = savedText(loginLabel(u.login), u.rule);
+      const step = ([s, ...more]) => saveLogin(['set', s.login.tool, s.login.name, s.rule], said, null, more.length ? () => step(more) : null);
+      return step(undo);
     }
     if (k === 'y' && adding) {
       const { shell } = signInParts(adding.login);
@@ -3609,10 +3612,14 @@ export function interactive({
       catch (e) { msg = `Could not copy the sign-in command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
       return;
     }
-    const was = l.rule ? { login: l, rule: l.rule } : null;
+    const was = l.rule ? [{ login: l, rule: l.rule }] : null;
     if (k === ' ') {
       const rule = LOGIN_RULES[(LOGIN_RULES.indexOf(l.rule) + 1) % LOGIN_RULES.length];
-      return saveLogin(['set', l.tool, l.name, rule], savedText(label, rule), was);
+      // A login set in rotation in a file saying default and unused takes over as the default, so u
+      // puts the old default back too.
+      let down = [];
+      try { down = demotedBy(readSubscriptions(subscriptionsPath()).logins, { tool: l.tool, name: l.name, rule }); } catch { /* none */ }
+      return saveLogin(['set', l.tool, l.name, rule], savedText(label, rule), was && [...was, ...down.map((d) => ({ login: d, rule: 'in rotation' }))]);
     }
     if (k === 'x') saveLogin(['remove', l.tool, l.name], `${label} is removed from the rules for this computer. Its folder and sign-in are left as they are.`, was);
   }

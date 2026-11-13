@@ -232,6 +232,18 @@ t('AC2 with no subscriptions file the new login is saved on standby', /^\| `clau
 t('AC2 and its row shows it on standby', rowOf(f, 'other@example.test')?.slice(0, 50), row(1, 'other@example.test', 'Max 5x', '○ standby', '', null, '').slice(0, 50));
 N.done();
 
+// ---- a file saying default and unused: view 6 shows them as in rotation and standby. The default is
+// the folder under the logins folder, and ~/.claude the unused one: read any other way, ~/.claude
+// would be in rotation and login-2 found on standby.
+subscriptions([['claude', 'personal', '~/.claude', 'unused'], ['claude', 'login-2', '~/.claude-logins/login-2', 'default'], ['codex', 'codexmain', '~/.codex', 'default']]);
+const D = open();
+await sleep(20);
+await D.press('6');
+f = await D.until((x) => rowOf(x, 'other@example.test') && rowOf(x, 'me@example.test'));
+t('a file saying default: its row reads in rotation', rowOf(f, 'other@example.test')?.includes('● in rotation'), true);
+t('a file saying unused: its row reads standby', rowOf(f, 'me@example.test')?.includes('○ standby'), true);
+D.done();
+
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all desk-q Usage add-a-login checks passed');
 process.exit(fails ? 1 : 0);

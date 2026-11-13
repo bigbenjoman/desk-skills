@@ -228,6 +228,24 @@ deskEnv('set', 'claude', 'default', 'standby');
 t('AC8 u after x on a login named default in another folder puts back that folder, not ~/.claude',
   `${/^\| `claude` \| `default` \| `~\/.claude-logins\/spare` \| `standby` \|$/m.test(subsText())} ${/`~\/.claude` \|/.test(subsText())}`, 'true false');
 
+// A file saying default and unused: space that makes a login the default demotes the old one, and u
+// puts both back.
+subscriptions([['claude', 'personal', '~/.claude', 'default'], ['claude', 'work', '~/.claude-logins/work', 'off'], ROWS[2]]);
+const ruleIn = (name) => (new RegExp(`^\\| \`claude\` \\| \`${name}\` \\| [^|]+ \\| \`([^\`]+)\` \\|$`, 'm').exec(subsText()) ?? [])[1];
+const Dft = open();
+await sleep(20);
+await Dft.press('6');
+await Dft.until((x) => rowOf(x, 'work@example.test'));
+for (let i = 0; i < 6 && !Dft.frame().find((l) => l.startsWith('›'))?.includes('work@example.test'); i++) await Dft.press(DOWN);
+await Dft.press(' ');
+await Dft.until(checked);
+t('space on an off login in a file saying default: it becomes the default, the old one unused', `${ruleIn('work')} ${ruleIn('personal')}`, 'default unused');
+await Dft.press('u');
+f = await Dft.until((x) => checked(x) && x.some((l) => l.includes('Saved for this computer.')));
+t('u puts back both: the login off, the old default the default again', `${ruleIn('work')} ${ruleIn('personal')}`, 'off default');
+t('and the footer names the login undone, with no further undo', footer(f, 'work@example.test'), "work@example.test is off: desk won't start workers on it. Saved for this computer.");
+Dft.done();
+
 // ---- AC13: a login benched at its limit
 subscriptions(ROWS);
 repo({ default: { login: 'personal', config_dir: null, type: 'five_hour', resets_at: at(24, 14, 5), since: FIXED - 20 * MIN, by: 'S-1' } });
