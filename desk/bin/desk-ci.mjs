@@ -1082,6 +1082,63 @@ export function checkIsJob(check, name) {
     : c === name || c.startsWith(`${name} (`) || c.startsWith(`${name} / `)));
 }
 
+// ---- §4 Pre-merge steps and the steps of a job ---------------------------------------------------
+// The words that say what a step does: four letters or more, singular, none any CI step could use.
+const STEP_STOPWORDS = new Set(['apply', 'applied', 'first', 'then', 'before', 'after', 'with', 'from', 'into', 'onto', 'this', 'that',
+  'them', 'each', 'every', 'check', 'step', 'make', 'sure', 'have', 'been', 'will', 'your', 'must', 'only', 'also', 'when', 'where']);
+const stepWords = (s) => String(s ?? '').toLowerCase().split(/[^a-z0-9]+/).map((w) => w.replace(/([^s])s$/, '$1'))
+  .filter((w) => w.length >= 4 && !STEP_STOPWORDS.has(w));
+// Whether a step is the one a §4 Pre-merge steps item ({ name, command }) is for: named as the item
+// is, or sharing a word with what the item says to do (`Migration Staging Ack` for `apply the PR's
+// migrations to staging first`).
+export function stepFits(step, item) {
+  if (step === item.name) return true;
+  const want = new Set(stepWords(item.command));
+  return stepWords(step).some((w) => want.has(w));
+}
+
+// A job's steps in order, each by its `name:`, or null for a step with none.
+function stepNames(job) {
+  const block = job.keys.steps?.block ?? [];
+  const at = block.find((l) => !l.scalar && !l.blank && /^-(\s|$)/.test(l.text))?.indent;
+  const names = [];
+  for (const l of block) {
+    if (l.scalar || l.blank || at === undefined) continue;
+    const item = l.indent === at && /^-(\s|$)/.test(l.text);
+    if (item) names.push(null);
+    if (!item && l.indent !== at + 2) continue;
+    const kv = keyOf(l);
+    if (kv?.key === 'name' && names.length && kv.value) names[names.length - 1] = unquote(kv.value);
+  }
+  return names;
+}
+
+// Each job in a repo's workflows, by the check name it reports under, with its steps (stepNames).
+export function workflowJobs(root) {
+  const dir = join(root, '.github', 'workflows');
+  let files;
+  try { files = readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)).sort(); } catch { return []; }
+  return files.flatMap((f) => {
+    try { return parseWorkflow(readFileSync(join(dir, f), 'utf8')).jobs.map((job) => ({ name: checkNameOf(job), steps: stepNames(job) })); } catch { return []; }
+  });
+}
+
+// §4 Pre-merge steps items (`<check or step>: <the step>`) named after a job of the repo's workflows
+// that runs more than one step, where a failure at any step would be put to the person as that item's.
+// Each with the job's named steps and those that fit the item (stepFits).
+export function jobKeyedPremerge(items, root) {
+  const jobs = workflowJobs(root);
+  return (items ?? []).flatMap((x) => {
+    const i = String(x).indexOf(': ');
+    if (i < 0) return [];
+    const item = { name: x.slice(0, i).trim(), command: x.slice(i + 2).trim() };
+    const job = jobs.find((j) => j.name === item.name && j.steps.length > 1);
+    if (!job) return [];
+    const named = job.steps.filter(Boolean);
+    return [{ ...item, steps: job.steps.length, named, fits: named.filter((s) => stepFits(s, item)) }];
+  });
+}
+
 // The branch events an `on:` names (pull_request, pull_request_target, push), each with its
 // `branches` and `branches-ignore` filters (null where unset), or null with no `on:` at all. `unread`
 // marks a filter whose patterns hold a `[…]` class, which tokens() cannot keep whole. `called`: a

@@ -32,6 +32,7 @@
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, PENDING_LIMIT_MS } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
+import { stepFits } from './desk-ci.mjs';
 
 export const FIX_TRIES_MAX = 2;
 // merge-driver.sh's own cap and gap: reruns per check per head, and the seconds between them.
@@ -79,12 +80,35 @@ export function failedSteps(view, check) {
   if (!Array.isArray(job?.steps)) return [];
   return job.steps.filter((s) => typeof s?.name === 'string' && stepFailed(s)).map((s) => s.name);
 }
-// A failing check's failed steps, by ctx.steps(check) where the pass reads them from its run.
-const stepsOf = (f, ctx) => (f.runId && ctx.steps ? ctx.steps(f) ?? [] : []);
+// As failedSteps, but null where the run names no such job or the job has no steps to read.
+export function runSteps(view, check) {
+  const job = (Array.isArray(view?.jobs) ? view.jobs : []).find((j) => j?.name === check);
+  return Array.isArray(job?.steps) ? failedSteps(view, check) : null;
+}
+// A failing check's failed steps, by ctx.steps(check) where the pass reads them from its run; null
+// (stepsRead) where they cannot be read.
+const stepsRead = (f, ctx) => (f.runId && ctx.steps ? ctx.steps(f) ?? null : null);
+const stepsOf = (f, ctx) => stepsRead(f, ctx) ?? [];
+
+// The §4 Pre-merge steps item a failing check is the person's by: one named after a step it failed
+// at, else one named after the check's job where the step it is for failed (stepFits), where no step
+// failed by name, or where its steps cannot be read (`unread`). -> { item, step?, unread? } | null
+function premergeFor(f, pre, ctx) {
+  if (!pre.length) return null;
+  const read = stepsRead(f, ctx), steps = read ?? [];
+  const at = pre.find((x) => x.name !== f.name && steps.includes(x.name));
+  if (at) return { item: at, step: at.name };
+  const job = pre.find((x) => x.name === f.name);
+  if (!job) return null;
+  if (read === null) return { item: job, unread: true };
+  if (!read.length) return { item: job };
+  const step = read.find((s) => stepFits(s, job));
+  return step ? { item: job, ...(step !== f.name ? { step } : {}) } : null;
+}
 
 // A gate's failing checks, one per name, split into those a worker fixes and those a person clears
-// ({ name, command }): one §4 Checks workers can't fix or ctx.builds (§4 Check builds) names, or one
-// that is, or failed at a step that is, a §4 Pre-merge steps item.
+// ({ name, command }): one §4 Checks workers can't fix or ctx.builds (§4 Check builds) names, or one a
+// §4 Pre-merge steps item is for (premergeFor).
 function splitFailing(failing, ctx) {
   const all = [...new Map(failing.map((f) => [f.name, f])).values()];
   const op = new Map([...(ctx.builds ?? []), ...(ctx.operator ?? [])].map((o) => [o.name, o.command]));
@@ -92,18 +116,18 @@ function splitFailing(failing, ctx) {
   const mine = [], notMine = [];
   for (const f of all) {
     if (op.has(f.name)) { notMine.push({ name: f.name, runId: f.runId, command: op.get(f.name) }); continue; }
-    const steps = pre.length && !pre.some((p) => p.name === f.name) ? stepsOf(f, ctx) : [];
-    const p = pre.find((x) => x.name === f.name || steps.includes(x.name));
-    if (p) notMine.push({ name: f.name, runId: f.runId, ...(p.name !== f.name ? { step: p.name } : {}), command: p.command });
+    const p = premergeFor(f, pre, ctx);
+    if (p) notMine.push({ name: f.name, runId: f.runId, ...(p.step ? { step: p.step } : {}), ...(p.unread ? { unread: true } : {}), command: p.item.command });
     else mine.push(f);
   }
   return { mine, notMine };
 }
 
 // A stuck reason's text: `lead` and the checks a worker could not fix, each with the step it failed at
-// where its run reports one, then each check a person clears with what clears it.
+// where its run reports one (or that it could not be read, for a check a person clears by its job),
+// then each check a person clears with what clears it.
 export function stuckWhy({ lead = null, checks }) {
-  const label = (c) => `${c.name}${c.step ? ` (failed step: ${c.step})` : ''}${c.error ? ` says "${c.error}"` : ''}`;
+  const label = (c) => `${c.name}${c.step ? ` (failed step: ${c.step})` : c.unread ? ' (failed step not readable)' : ''}${c.error ? ` says "${c.error}"` : ''}`;
   const mine = checks.filter((c) => !c.command), theirs = checks.filter((c) => c.command);
   return [mine.length ? `${lead ?? 'red'}: ${mine.map(label).join(', ')}` : '', ...theirs.map((c) => `${label(c)} · ${c.command}`)].filter(Boolean).join('; ');
 }
@@ -111,7 +135,7 @@ export function stuckWhy({ lead = null, checks }) {
 function checksStuck(lead, mine, notMine, ctx) {
   const checks = [...mine, ...notMine].map((f) => {
     const step = f.step ?? stepsOf(f, ctx)[0];
-    return { name: f.name, ...(step ? { step } : {}), ...(f.lines?.length ? { error: f.lines[0] } : {}), ...(f.command ? { command: f.command } : {}) };
+    return { name: f.name, ...(step ? { step } : f.unread ? { unread: true } : {}), ...(f.lines?.length ? { error: f.lines[0] } : {}), ...(f.command ? { command: f.command } : {}) };
   });
   return { call: 'stuck', why: stuckWhy({ lead, checks }), lead, checks };
 }
