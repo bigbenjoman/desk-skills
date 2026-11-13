@@ -144,6 +144,12 @@ t('AC1 spawn-worker.sh is given that folder', calls('Y-1').at(-1).split('|')[2],
 t('AC2 the preflight runs on it too', calls('Y-1')[0], `Y-1|preflight|${dirOf('b')}|`);
 t('AC1 the report names the login', /Y-1 port=.* login=b;/.test(out), true);
 
+// DS-617: a file written with `default` and `unused` reads them as in rotation and standby, so the
+// worker starts on the default login though the unused one has more room.
+env = world([['login-2', 'default', 70, 70], ['login-3', 'unused', 10, 10]], fresh);
+pass(env);
+t('DS-617 a login marked default takes the worker over a roomier unused one', `${on('Y-1')} ${calls('Y-1').at(-1).split('|')[2]}`, `login-2 ${dirOf('login-2')}`);
+
 // The default login wins: the pass's own, so nothing needs changing.
 env = world([['default', 'in rotation', 10, 20], ['b', 'in rotation', 70, 30]], fresh);
 pass(env);
