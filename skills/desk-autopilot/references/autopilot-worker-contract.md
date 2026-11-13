@@ -24,18 +24,16 @@ are your config: the config file sits beside the credentials, so reading it is r
 your turn. For Jira, use `desk-jira get <KEY>` (`view` is the same) and `desk-jira comments <KEY>`;
 `desk-jira --help` lists the rest.
 
-`<TICKET>` is your ticket's key as the briefing gives
-it: a tracker key (§4 Ticket key pattern, `desk-env get ticket-pattern`), an id matching §4 Other
-work id patterns (`desk-env list work-id-patterns`), or with §4 Tracker (`desk-env get tracker`)
-`none` `issue-<n>` or a slug. **For every key that is not a tracker key, the ticket is the
-file `$DESK_STATE/tickets/<TICKET>.md`** the orchestrator wrote before triage; read it at Stage 0 and skip
-every Jira step below. Your branch is the one your worktree was created on, recorded in the queue:
-never rename it and never open your PR from another branch, or the merge driver cannot find it.
-`<default>` is what `desk-env get default-branch` prints: §0 Default branch, or the base your
-system prompt names. `<repo>` is §0 GitHub repo, and a §4 Toolchain row means that command
-with §4 Command prefix (`desk-env get command-prefix`) in front unless the prefix is `none`. List rows hold one backtick span per
-item, and a command item may name its directory (`` `apps/api: uv run pytest` ``): read them with
-`desk-env cmds <id>`, which prints `DIR<TAB>CMD` per item.
+`<TICKET>` is your key: a tracker key (§4 Ticket key pattern, `desk-env get ticket-pattern`), an id
+matching §4 Other work id patterns (`desk-env list work-id-patterns`), or with §4 Tracker
+(`desk-env get tracker`) `none` `issue-<n>` or a slug. **For every key that is not a tracker key,
+the ticket is the file `$DESK_STATE/tickets/<TICKET>.md`**: read it at Stage 0 and skip every Jira
+step below. Your branch is your worktree's: never rename it or open your PR from another, or the
+merge driver cannot find it. `<default>` is `desk-env get default-branch`: §0 Default branch, or
+your system prompt's base. `<repo>` is §0 GitHub repo, and a §4 Toolchain row means that
+command with §4 Command prefix (`desk-env get command-prefix`) in front unless the prefix is
+`none`. A list row holds one backtick span per item, and a command item may name its directory
+(`` `apps/api: uv run pytest` ``): `desk-env cmds <id>` prints `DIR<TAB>CMD` per item.
 
 ## Stage sections: read each one when you reach it
 
@@ -90,6 +88,10 @@ parks and logs nothing. A call you have no recommendation for that you can defen
 "no recommendation" in the question. Taking a call never widens §3: a step your config does not grant
 still parks (section 2). Where `autopilot-judgement` is not `yes`, product, design and wording calls
 park.
+
+**A call never leaves an acceptance criterion unmet.** It may pick between readings of one; where
+one option meets it as worded, build and log that one. Where every option breaks one, park before
+the PR, quoting it.
 
 **Check a step before asking if it was done**, and after a park print
 `AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok), plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>`
@@ -170,12 +172,12 @@ design and wording included, that you take on its recommendation and log with `A
 recorded on the ticket still park or bind.)
 
 That holds for **internal code**. A fix that depends on the shape of an external API's payload (a
-webhook body, a third-party response) is the `desk-ticket` demotion trigger of the same name, and
-it may not guess the contract: parse the payload with the runtime schema validator the repo already
-uses, build the spec fixture from a recorded real payload and name its source in the PR's Testing,
-and verify a runtime or hydration fix on a preview before merge. If you cannot reach a preview (or,
-with no preview deployments, §4 Staging, `desk-env list staging`) for an external-shape fix, **park** naming the verification
-you could not run.
+webhook body, a third-party response) is the `desk-ticket` demotion trigger of that name and may not
+guess the contract: parse the payload with the runtime schema validator the repo already uses, build
+the spec fixture from a recorded real payload and name its source in the PR's Testing, and verify a
+runtime or hydration fix on a preview before merge. With no preview to reach (or, with no preview
+deployments, §4 Staging, `desk-env list staging`), **park** naming the verification you could not
+run.
 
 ## 7. Reporting
 

@@ -141,5 +141,12 @@ let byPath = 0;
 for (const f of files) for (const m of norm(read(f)).matchAll(/(?<![\w-]`?'s )`references\/([\w.-]+\.md)`/g)) { byPath++; t(`AC4 ${f} names references/${m[1]}: it exists`, existsSync(join(refs, m[1])), true); }
 t(`AC4 the citations by path were read (${byPath})`, byPath >= 25, true);
 
+// DS-596: a worker's call may pick a reading of a criterion but never leave one unmet.
+const contract = norm(read('autopilot-worker-contract.md'));
+const section1 = contract.split('## 1. ')[1]?.split(' ## 2. ')[0] ?? '';
+t('DS-596 the rule is in the contract\'s section 1', section1.includes('**A call never leaves an acceptance criterion unmet.**'), true);
+t('DS-596 AC2 a call picks a reading, and builds the option that meets the criterion as worded', section1.includes('It may pick between readings of one; where one option meets it as worded, build and log that one.'), true);
+t('DS-596 AC1 every option breaking a criterion parks before the PR, quoting it', section1.includes('Where every option breaks one, park before the PR, quoting it.'), true);
+
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
