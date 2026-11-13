@@ -290,6 +290,8 @@ case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" 
 esac
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
+# The logins whose review verdicts are desk's own: the handle, and the §4 Review account it posts from.
+VERDICT_BY="$(node "$DESK_ENV_MJS" verdict-logins 2>/dev/null || printf '%s' "$AUTHOR")"
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
 SD="$DESK_STATE/merge-driver"; mkdir -p "$SD"
 GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
@@ -337,13 +339,13 @@ prs(){
 # when GitHub could not be read. An empty reviewDecision is not an approval.
 feedback(){
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" read --handle "$AUTHOR" --clean "$CLEAN_ROW" 2>/dev/null
+    | node "$THREADS" read --handle "$VERDICT_BY" --clean "$CLEAN_ROW" 2>/dev/null
 }
 # Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
 # Nothing when GitHub could not be read.
 head_verdict(){ # head_verdict <n> [<base>]
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" verdict --handle "$AUTHOR" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" 2>/dev/null
+    | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" 2>/dev/null
 }
 # Prints true once GitHub has resolved the thread.
 resolve_thread(){
@@ -489,7 +491,7 @@ stale_approval(){
   reds=$(printf '%s' "$3" | jq -r '.gate.stateFailing[]? | select(.kind == "approval" and .startedAt != null) | "\(.name)\t\(.runId // "")\t\(.jobId // "")\t\(.startedAt)"')
   [ -n "$reds" ] || return 0
   ap=$(gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" approved --handle "$AUTHOR" --clean "$CLEAN_ROW" 2>/dev/null) \
+    | node "$THREADS" approved --handle "$VERDICT_BY" --clean "$CLEAN_ROW" 2>/dev/null) \
     || { log "#$1 could not read its approvals, so its red approval check is not weighed for a rerun"; return 0; }
   [ "$(printf '%s' "$ap" | jq -r .head)" = "$2" ] || return 0
   at=$(printf '%s' "$ap" | jq -r '.at // empty'); by=$(printf '%s' "$ap" | jq -r '.by // empty')

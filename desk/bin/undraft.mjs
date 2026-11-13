@@ -54,7 +54,7 @@
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
 // review-reuse lever on restsOnCarries, whose base range checked is `range`).
-import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
+import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, loginIn, PENDING_LIMIT_MS, since } from './gate.mjs';
 import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { isLockfile, isConfig } from './test-scope.mjs';
@@ -75,9 +75,10 @@ export function parseVerdict(body) {
 }
 
 // The reviews among `reviews` (gh pr view --json reviews: oldest first) that `handle` posted: on a
-// public repo anyone can post a review, and only the person's own attests it.
+// public repo anyone can post a review, and only the person's own attests it. `handle` may list
+// logins (loginIn), as verdictLogins gives the §1 handle with the §4 Review account.
 function ownReviews(reviews, handle) {
-  return (reviews ?? []).filter((r) => handle && r.author?.login?.toLowerCase() === handle.toLowerCase());
+  return (reviews ?? []).filter((r) => loginIn(r.author?.login, handle));
 }
 
 // The latest review carrying a verdict among the reviews `handle` posted, as { verdict, body, id }, or

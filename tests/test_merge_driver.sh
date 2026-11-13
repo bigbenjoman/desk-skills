@@ -935,6 +935,21 @@ rv_prs plain "201|fix/T-201|$SHA201|fix: T-201 a bug|"
 RV_CONFIG="$T/config-rv-plain.md"; rvloop; rvloop; RV_CONFIG=""
 check "DS-433: under a plain-text row, a review stating it at the head reads as clean, so it merges" '[ "$(merged)" = 201 ]'
 
+# DS-576: a clean verdict posted by §4 Review account is read as desk's own; one by another login is not.
+cp "$T/config-rv.md" "$T/config-rv-acct.md"; mkdir -p "$T/gh-agent-pullbot"
+echo "| Review account | \`agent-pullbot: $T/gh-agent-pullbot\` |" >> "$T/config-rv-acct.md"
+vp_by(){ node -e 'const [f, sha, counts, login] = process.argv.slice(1);
+  const reviews = [{ id: "PRR_1", author: { login }, commit: { oid: sha }, body: ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts} vendor=codex round=1 -->`].join("\n") }];
+  require("fs").writeFileSync(f, JSON.stringify({ data: { repository: { pullRequest: { reviewDecision: null, reviews: { nodes: reviews }, reviewThreads: { nodes: [] } } } } }));' "$T/vp-$1.json" "$2" "$3" "$4"; }
+vp_by 201 "$SHA201" "$CLEAN" agent-pullbot
+rv_prs acct "201|fix/T-201|$SHA201|fix: T-201 a bug|"
+RV_CONFIG="$T/config-rv-acct.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-576 AC6: a ready PR whose only clean verdict at its head is the review account's merges" '[ "$(merged)" = 201 ] && grep -qx "201 main $SHA201" "$T/merges.log"'
+vp_by 201 "$SHA201" "$CLEAN" mallory
+rv_prs acct7 "201|fix/T-201|$SHA201|fix: T-201 a bug|"
+RV_CONFIG="$T/config-rv-acct.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-576 AC7: a clean verdict by neither the handle nor the review account holds it" '[ -z "$(merged)" ] && echo "$out" | grep -q "#201 green at d20111111, HELD with no clean review at its head"'
+
 # A verdict carried across a clean merge of the base holds at the head; commits of its own do not. Real commits, fetched.
 git init -q --bare -b main "$T/origin.git"; git -C "$T/repo" remote add origin "file://$T/origin.git"
 cmt(){ echo "$1" > "$T/repo/$1"; git -C "$T/repo" add "$1"; git -C "$T/repo" commit -q -m "$1"; }

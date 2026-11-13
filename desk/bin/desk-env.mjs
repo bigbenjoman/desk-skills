@@ -299,6 +299,7 @@ export const CONFIG_ROWS = Object.freeze({
   'merge-method': { section: '4', row: 'Merge method' },
   'local-review': { section: '4', row: 'Local review command' },
   'clean-verdict': { section: '4', row: 'Clean review verdict' },
+  'review-account': { section: '4', row: 'Review account' },
   'review-bar': { section: '4', row: 'Review bar' },
   'review-experts': { section: '4', row: 'Review domain experts' },
   'agents-sync': { section: '4', row: 'Project subagents sync' },
@@ -953,6 +954,29 @@ export function gitAuthor() {
     throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not \`Name <email>\` or \`Name\` / \`email\` in ${configPathHint()}. Refusing to guess.`);
   }
   return { name, email };
+}
+// §4 Review account, the login desk posts its review verdicts from and that login's gh config
+// directory: { login, dir }, or null where the row is unset, a TODO or `none` (verdicts post from the
+// §1 GitHub handle). A value in another shape throws rather than posting from a guessed account.
+export function reviewAccount() {
+  const v = String(configValue('review-account') ?? '').trim();
+  if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
+  const m = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:\s*(\S.*)$/.exec(v);
+  if (!m) {
+    const r = CONFIG_ROWS['review-account'];
+    throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${v}) is not \`<login>: <gh config directory>\` or \`none\` in ${configPathHint()}. Refusing to guess.`);
+  }
+  return { login: m[1], dir: expandHome(m[2].trim()) };
+}
+// The logins whose review verdicts are desk's own, comma-separated as loginIn reads them: the §1
+// GitHub handle, and the §4 Review account's login where it is set (a malformed row adds none: the
+// review-post command refuses it). null with no handle.
+export function verdictLogins() {
+  let handle = null, acct = null;
+  try { handle = githubHandle(); } catch { return null; }
+  if (!handle) return null;
+  try { acct = reviewAccount(); } catch { /* malformed: the handle alone */ }
+  return acct && acct.login.toLowerCase() !== handle.toLowerCase() ? `${handle},${acct.login}` : handle;
 }
 export const repoRoot = () => resolve({ env: 'DESK_REPO_ROOT', id: 'repo-root', identity: true }).replace(/\/+$/, '');
 // reviewPlan on this repo's rows.
@@ -1625,6 +1649,13 @@ if (isMain) {
         console.log(run);
         break;
       }
+      case 'verdict-logins': {
+        // The logins a verdict is read as desk's own from, comma-separated (merge-driver.sh's --handle).
+        const l = verdictLogins();
+        if (!l) process.exit(3);
+        console.log(l);
+        break;
+      }
       case 'levers': {
         // `levers <name>` prints on or off; bare, every lever on and every name desk does not know.
         const l = levers();
@@ -2041,7 +2072,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|review-cmd|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
+        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
         process.exit(2);
     }
   } catch (e) {
