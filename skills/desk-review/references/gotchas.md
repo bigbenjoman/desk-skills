@@ -4,7 +4,7 @@ Read this when a command in `SKILL.md` or a phase file misbehaves. Each entry ex
 rather than loud: it produces a plausible report, not an error.
 
 Every block below may run in its own shell and inherits nothing. Substitute `<owner>`, `<repo>`,
-`<me>`, `<n>` and SHAs **literally**; never `$N` or `$REPO`.
+`<me>`, `<poster>`, `<n>` and SHAs **literally**; never `$N` or `$REPO`.
 
 ## The sweep query
 
@@ -23,13 +23,13 @@ query($owner:String!, $name:String!) {
         reviews(last:50) { nodes { author { login } commit { oid } submittedAt body } } }
     }
   }
-}' | jq --arg me '<me>' '
+}' | jq --arg me '<me>' --arg by '<poster>' '
   .data.repository.pullRequests.pageInfo.hasNextPage                as $pr_page_truncated
   | .data.repository.pullRequests.nodes
   | map(select(.isDraft | not))                                    as $nd
   | ($nd | map(. as $pr
       | ([$pr.reviews.nodes[]
-          | select(.author.login == $me
+          | select(.author.login == $by
                    and (.body // "" | startswith("<!-- desk-review:local -->")))]) as $mine
       | . + {
           reviewedAt:      ([$mine[] | select(.commit.oid == $pr.headRefOid) | .commit.oid] | last),

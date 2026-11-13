@@ -24,11 +24,12 @@ chmodSync(join(T, 'gh'), 0o755);
 writeFileSync(join(T, 'report.md'), '<!-- desk-review:local -->\nclean\n');
 const config = join(T, 'config.md');
 const run = (row, args = ['42', '--repo', 'acme/web', '--body-file', join(T, 'report.md')]) => {
-  writeFileSync(config, `## 4. Tracker\n\n| Field | Value |\n|---|---|\n${row == null ? '' : `| Review account | ${row} |\n`}`);
+  writeFileSync(config, `## 0. Repo\n\n| Field | Value |\n|---|---|\n| GitHub repo | \`acme/web\` |\n\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n${row == null ? '' : `| Review account | ${row} |\n`}`);
   rmSync(log, { force: true });
   const env = { ...process.env, PATH: `${T}:${process.env.PATH}`, DESK_CONFIG: config, DESK_MACHINE: join(T, 'none.md'), HOME: T, GH_TOKEN: 'person-token' };
-  delete env.GH_CONFIG_DIR;
-  const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env });
+  for (const k of ['GH_CONFIG_DIR', 'DESK_GH_REPO', 'DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_REPO_DIR', 'DESK_REPO_ROOT']) delete env[k];
+  // Outside any git repo, so §0 GitHub repo is the config's, not this checkout's origin.
+  const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env, cwd: T });
   const lines = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : null;
   return { status: r.status, env: lines?.slice(0, 2) ?? null, ran: lines?.slice(2) ?? null, err: r.stderr };
 };
@@ -60,6 +61,13 @@ t('AC3 with the row none too', [r.status, r.ran], [1, null]);
 r = run('`none`', ['42', '--repo', 'acme/web', '--body-file', join(T, 'report.md'), '--body', 'x']);
 t('an unknown flag is refused and posts nothing', [r.status, r.ran], [1, null]);
 t('usage: no --repo is exit 2', run('`none`', ['42', '--body-file', join(T, 'report.md')]).status, 2);
+for (const pr of ['', '0', 'main', '12abc']) {
+  r = run('`none`', [pr, '--repo', 'acme/web', '--body-file', join(T, 'report.md')]);
+  t(`a PR "${pr}" that is not a number is refused and posts nothing (gh reads "" as the branch's PR)`, [r.status, r.ran], [2, null]);
+}
+r = run(`\`agent-pullbot: ${ghDir}\``, ['42', '--repo', 'acme/other', '--body-file', join(T, 'report.md')]);
+t('a --repo other than §0 GitHub repo is refused and posts nothing', [r.status, r.ran, r.err.includes('not this repo (acme/web)')], [1, null, true]);
+t('§0 GitHub repo matches in any case', run('`none`', ['42', '--repo', 'Acme/Web', '--body-file', join(T, 'report.md')]).status, 0);
 
 // AC4: a config directory that does not exist is refused, naming the row and the directory.
 r = run(`\`agent-pullbot: ${join(T, 'missing')}\``);
