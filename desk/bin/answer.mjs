@@ -63,6 +63,12 @@ if (taken) {
     console.error(`${ticket} is not parked, so there is no recommended call to take: nothing recorded`);
     process.exit(EXIT.SHOW_PERSON);
   }
+  // A park a session has claimed is that session's, as the pass's own take leaves it (pass.mjs
+  // takeRecommended): a take would requeue a worker beside the session that owns the ticket.
+  if (t.park?.claim?.session) {
+    console.error(`${ticket} is claimed by session ${t.park.claim.session}, so its call is that session's: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
   if (refusedStep(t.park?.question)) {
     console.error(`${ticket} parked on a refused step, which only the person approves: nothing recorded`);
     process.exit(EXIT.SHOW_PERSON);

@@ -324,6 +324,11 @@ check "DS-565: answer.mjs --taken refuses a park on a refused step, so no grant 
 queue '{"J4":{"key":"J4","state":"parked","lane":"A","park":{"question":"Refund the customer (recommended), or not?"}}}'
 out=$(node "$B/answer.mjs" --taken J4 '{"question":"Refund the customer?","options":["Refund","Do not refund"],"chose":"Refund","category":"money"}' 2>&1); code=$?
 check "DS-565 AC3: answer.mjs --taken refuses an ask category before it writes the answer or marks the take" '[ "$code" = 11 ] && grep -q "ask category" <<< "$out" && [ ! -e "$T/state/briefings/J4.md" ] && [ "$(takenof J4)" = none ] && [ "$(stateof J4)" = parked ]'
+# A park a session has claimed is the session's: the decider's take never requeues a worker beside it.
+queue '{"J5":{"key":"J5","state":"parked","lane":"A","park":{"question":"Merge as foundation (recommended), or split?","claim":{"session":"s1","at":"2026-10-28T08:00:00Z"}}}}'
+out=$(node "$B/answer.mjs" --taken J5 '{"question":"Merge as foundation, or split?","options":["Merge as foundation","Split"],"chose":"Merge as foundation","category":"scope"}' 2>&1); code=$?
+check "DS-565: answer.mjs --taken refuses a park a session has claimed before it writes anything" '[ "$code" = 11 ] && grep -q "claimed by session s1" <<< "$out" && [ ! -e "$T/state/briefings/J5.md" ] && [ "$(takenof J5)" = none ] && [ "$(stateof J5)" = parked ]'
+check "DS-565: the decider prompt hands on a claimed park" 'grep -q "one a session has claimed" "$P"'
 
 # ---- DS-331: a done ticket's line is handed on without a session, and a reworded line keeps its id ---
 mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
