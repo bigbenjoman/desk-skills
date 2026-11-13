@@ -56,9 +56,12 @@ cat > "$T/stub/uv" <<EOF
 echo "uv \$* in \$PWD" >> "$T/tools.log"
 mkdir -p .venv/bin && printf '*\n' > .venv/.gitignore && : > .venv/bin/python
 EOF
+# pnpm.fails: how many more runs fail, as a registry dropping a request does.
 cat > "$T/stub/pnpm" <<EOF
 #!/bin/sh
 echo "pnpm \$* in \$PWD" >> "$T/tools.log"
+n=\$(cat "$T/pnpm.fails" 2>/dev/null || echo 0)
+if [ "\$n" -gt 0 ]; then echo \$((n - 1)) > "$T/pnpm.fails"; echo "ERR_PNPM_FETCH failed, \$n left" >&2; exit 1; fi
 EOF
 chmod +x "$T/stub/uv" "$T/stub/pnpm"
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json"
@@ -82,5 +85,17 @@ done
 git -C "$T/repo" worktree add -q -b 'fix/T-3-<slug>' "$T/wt/T-3" main
 out=$(bash "$B/setup-worktree.sh" --for-worker T-3 'fix/T-3-<slug>' 2>&1); rc=$?
 check "DS-346 a finished worktree on a placeholder branch is handed back" '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-3"* ]]'
+
+# DS-590: a §4 Install that fails once runs again and setup goes on; failing twice fails setup.
+echo 1 > "$T/pnpm.fails"; : > "$T/tools.log"
+out=$(DESK_INSTALL_RETRY_DELAY_S=0 bash "$B/setup-worktree.sh" --for-worker T-4 fix/T-4 2>&1); rc=$?
+check "AC3 Install failing once: setup succeeds"                  '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-4"* ]]'
+check "AC3 Install failing once: it says the second run passed"   '[[ "$out" == *"failed on its first run (ERR_PNPM_FETCH failed, 1 left)"* ]] && [[ "$out" == *"Install passed on its second run"* ]]'
+check "AC3 Install failing once: pnpm ran twice"                  '[ "$(grep -c "^pnpm install" "$T/tools.log")" -eq 2 ]'
+
+echo 2 > "$T/pnpm.fails"
+out=$(DESK_INSTALL_RETRY_DELAY_S=0 bash "$B/setup-worktree.sh" --for-worker T-5 fix/T-5 2>&1); rc=$?
+check "AC4 Install failing twice: setup fails quoting both runs"  '[ $rc -ne 0 ] && [[ "$out" == *"FAIL: config §4 Install failed twice"*"first run: ERR_PNPM_FETCH failed, 2 left; second run: ERR_PNPM_FETCH failed, 1 left"* ]]'
+check "AC4 Install failing twice: the half-made worktree is gone" '[ ! -d "$T/wt/T-5" ] && ! git -C "$T/repo" show-ref --verify --quiet refs/heads/fix/T-5'
 
 echo "setup-worktree install: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
