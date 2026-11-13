@@ -434,7 +434,7 @@ function stuckCall(gate, checks, cfg, n) {
 
 // A red gate whose every failing check §4 Check builds names (cfg.builds, [{ name, command }]), while
 // §3 ci-rerun is yes: the build that clears it, once per head (cfg.built(head), check-build.mjs
-// buildRecord). `build` starts it at once, whatever else is still running (DS-647), `wait` while it runs, or
+// buildRecord). `build` starts it at once, whatever else is still running, `wait` while it runs, or
 // while a check in a failing check's own run does once it succeeded (gate.running; a pending check whose run
 // is unknown counts as one), `rebuilt` re-runs the checks with --failed once
 // it succeeded, `sync` when it failed at a head behind its base (cfg.behind(head) -> the base's name, or

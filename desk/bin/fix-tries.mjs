@@ -283,7 +283,7 @@ export function fixCall(t, s, ctx) {
     const rest = gate.failing.filter((f) => !state.some((x) => x.name === f.name));
     // A §4 Check builds check the pass builds (ctx.build) is neither a worker's nor the person's.
     built = buildRead(rest, ctx, gate);
-    // With checks still running, only the build of a PR red on nothing else goes ahead (DS-647): it needs
+    // With checks still running, only the build of a PR red on nothing else goes ahead: it needs
     // none of them, and buildCall holds its re-run while a check in its own run is still running.
     if (gate.pending.length) {
       const only = built && rest.every((f) => built.names.includes(f.name));

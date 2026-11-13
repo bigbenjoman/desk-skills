@@ -323,6 +323,7 @@ t('DS-647 AC2 built, with a check still running in its own run, the re-run waits
 const r647 = buildPr([FLOWS, LINT_OTHER], ok);
 t('DS-647 AC3 built, with only another run\'s check running, it is re-run', `${r647?.call} | ${r647?.runs}`, 'rebuilt | 21');
 t('DS-647 AC5 built, beside a running check whose run is unknown, the re-run waits as before', buildPr([FLOWS, LINT_UNKNOWN], ok)?.call, 'wait');
+t('DS-647 built, with no run id on the failing check, every running check holds the re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'success' }, { ...FLOWS, runId: undefined }, LINT_OTHER], { builds, built: (h) => (h === HEAD ? ok : null) })?.call, 'wait');
 t('DS-647 a failed build beside a running check waits for it, as before', buildPr([FLOWS, LINT_OTHER], { ...ok, code: 3, tail: 'x' })?.call, 'wait');
 t('DS-647 a build still running beside one waits on itself', buildPr([FLOWS, LINT_OTHER], { state: 'running', command: b0.command })?.why, `its check build \`./scripts/ensure-flows-image.sh\` is running at ${HEAD.slice(0, 9)}, then "Flows image" is re-run`);
 t('DS-647 negative control: a red check the row does not name beside a running one is not built', buildPr([FLOWS, LINT_OTHER, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.call === 'build', false);
