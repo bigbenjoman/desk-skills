@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1326,7 +1326,7 @@ function shippedElsewhere(t) {
         && (since === -Infinity || Date.parse(p.mergedAt) >= since)
         && (Number.isNaN(own) || (Date.parse(p.mergedAt) > own && Number(p.number) !== Number(t.result?.pr))))
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
-    if (hit) return { pr: Number(hit.number), branch: hit.headRefName };
+    if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null };
   } catch { /* unread: spawn as before */ }
   if (t.result?.pr != null || t.draft_pr != null) return null;
   const k = E.ticketKind(t.key);
@@ -2912,15 +2912,8 @@ function busyWorktree(t) {
     return `its worktree ${wt} is the working directory of ${users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ')}, which the pass did not start`;
   }
   if (!(t.fix && !t.fix.finished) || resumed) return null;
-  // Tracked paths changed against HEAD, staged or not. A worktree git cannot read: setup-worktree.sh says so.
-  const diff = shOut('git', ['-C', wt, 'diff', '--name-only', 'HEAD']);
-  const dirty = diff.ok ? diff.out.split('\n').filter(Boolean) : [];
-  if (dirty.length) return `its worktree ${wt} has uncommitted changes (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''})`;
-  const branch = shOut('git', ['-C', wt, 'rev-parse', '--abbrev-ref', 'HEAD']);
-  if (!branch.ok || branch.out === 'HEAD') return null;
-  const ahead = shOut('git', ['-C', wt, 'rev-list', '--count', `origin/${branch.out}..HEAD`]);
-  if (ahead.ok && Number(ahead.out) > 0) return `its branch ${branch.out} is ${ahead.out} commit(s) ahead of origin/${branch.out}, not pushed`;
-  return null;
+  // A worktree git cannot read is not held: setup-worktree.sh says so.
+  return gitHold(wt, (args) => { const o = shOut('git', ['-C', wt, ...args]); return o.ok ? o.out : null; }) ?? null;
 }
 
 // A worktree held is kept on the ticket (`worktree_busy`), so desk-q and desk-needs-you show it as
@@ -2939,7 +2932,7 @@ for (const t of spawnable) {
   if (shipped) {
     const how = shipped.pr != null ? `PR #${shipped.pr} merged from ${shipped.branch}` : 'done in Jira with no PR';
     const before = report.failed.length;
-    if (!DRY) q('set', t.key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', `result.summary=shipped outside its worker: ${how}`, ...(shipped.pr != null ? [`result.pr=${shipped.pr}`] : []));
+    if (!DRY) q(...shippedSet(t, how, shipped.pr ?? null, shipped.mergedAt ?? null));
     if (report.failed.length === before) report.done.push(`${t.key}: ${how}, outside its worker: recorded done, no worker spawned`);
     continue;
   }
