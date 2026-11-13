@@ -56,8 +56,9 @@
 // checks them again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
-// first, then the longest waiting, less any put off with not-now whose inputs are unchanged and, where
-// its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
+// first, then any put off with three or more held tickets behind it, then the longest waiting, less any
+// other put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
+// offered, that offers none it did not offer then. Exits 0, or 11
 // (show the person) on anything it refuses.
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -729,13 +730,29 @@ function putOffKey(r, t, item) {
 // since without them is an item no batch listed when it was put off: it stays put off on its inputs.
 const ACTIONS_SINCE = Date.parse('2026-11-01T15:00:00Z');
 const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
+// A put-off item is listed anyway, first, while this many tickets of its batch are held behind it.
+export const HOLDS_BACK = 3;
+// How many held tickets of r's batch wait behind `key`: held by it, or by a ticket held behind it.
+export function heldBehind(r, key) {
+  const held = Object.values(r.q?.tickets ?? {}).filter((o) => o.key !== key && isHeld(o));
+  const behind = new Set();
+  for (let edge = new Set([key]); edge.size;) {
+    const next = held.filter((o) => !behind.has(o.key) && keysOf(o.held_by).some((k) => edge.has(k))).map((o) => o.key);
+    next.forEach((k) => behind.add(k));
+    edge = new Set(next);
+  }
+  return behind.size;
+}
+const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
 function judged(r, x, register) {
   const item = itemOf(r, x);
   const l = lookup(register, putOffKey(r, x.t, item));
   if (l.status !== 'put_off') return { item, l };
+  const behind = heldBehind(r, x.t.key);
+  const shown = behind >= HOLDS_BACK ? { ...item, need: `${item.need} (${holdingWords(behind)})`, behind } : item;
   const was = Array.isArray(l.entry.actions) ? l.entry.actions : null, now = verbsOf(item);
-  if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return { item, l };
-  return { item, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
+  if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return shown === item ? { item, l } : { item: shown, l: { status: 'holding', entry: l.entry } };
+  return { item: shown, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
 }
 
 // Records on a ticket's put-off entry the actions its item offers now, so one it gains later brings it
@@ -834,7 +851,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
     const item = r && !r.error ? templatesItem(r, templatesRecord(slug)) : null;
     if (item) repoItem(r, { key: TEMPLATES }, item, item.since);
   }
-  items.sort((a, b) => (b.broken - a.broken) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
+  items.sort((a, b) => (b.broken - a.broken) || ((b.behind ?? 0) - (a.behind ?? 0)) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   return { repos, scope, items, named, putOff };
 }
 
@@ -1061,14 +1078,16 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'not-now': {
       // A park is put off by answer.mjs, keyed to its inputs, and its entry then records the actions it
       // offers; anything else here, as putOffKey keys it.
+      const behind = heldBehind(r, ticket);
+      const still = behind >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${behind} do now).` : '';
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
         if (!a.ok) return say(false, a.why);
         stampItem(r, x, item);
-        return say(true, 'put off (not-now register).');
+        return say(true, `put off (not-now register).${still}`);
       }
       putOff();
-      return say(true, `put off (${notNowPath(r.stateDir)}).`);
+      return say(true, `put off (${notNowPath(r.stateDir)}).${still}`);
     }
     case 'waiting': {
       putOff();

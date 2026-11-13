@@ -90,7 +90,8 @@ line on what it recorded.
 - **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the
   `/desk-ticket` or `/desk-admit` to run.
 - **`not-now`**: puts it in the not-now register; `list` and `left` hide it until its
-  question, blocker or PR head changes or it gains an action.
+  question, blocker or PR head changes or it gains an action. One with 3 or more held tickets
+  behind it is listed anyway, first, saying how many; `not-now` on it says it stays listed.
 - **`waiting`**: as `not-now`, until the PR gets an approval or its head moves.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 

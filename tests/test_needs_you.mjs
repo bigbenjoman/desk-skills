@@ -1745,6 +1745,33 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-562 passes stopped: its page says it will not move until they resume, waiting on PR #994', off.includes('Will not move until passes resume: waiting on PR #994 merged: a pass requeues it then.'), true);
 }
 
+// ---- A put-off item with 3 or more held tickets behind it, directly or through another, is listed first.
+{
+  const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
+  const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
+  put('ds600a', { port: 4650, beat: 1, supervised: true, tickets: { 'O-1': parked('A', 300, 'Older question?'), 'P-1': parked('A', 60, 'Which price?'),
+    'H-1': behind('H-1', 'P-1'), 'H-2': behind('H-2', 'P-1'), 'H-3': behind('H-3', 'P-1') } });
+  const off1 = N.record({ word: 'ds600a', ticket: 'P-1', action: 'not-now' });
+  t('DS-600 AC4 not-now on it says it stays listed while 3 or more wait behind it', `${off1.ok} ${off1.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')}`, 'true true');
+  const a = N.collect({ word: 'ds600a' });
+  t('DS-600 AC1 a put-off park with 3 held behind it is listed first, saying so',
+    `${a.items[0]?.t.key} ${a.items[0]?.need} ${a.putOff}`, 'P-1 Which price? (3 tickets wait behind it, so it is listed though you put it off) 0');
+  t('DS-600 AC1 desk-q counts it as needing you', N.needsCount(loadRepos().find((r) => r.slug === 'acme__ds600a')).putOff, 0);
+  const off2 = N.record({ word: 'ds600a', ticket: 'P-1', action: 'not-now' });
+  t('DS-600 AC4 put off again, it is still listed on the next run, and the answer says so', `${off2.ok} ${/still listed/.test(off2.line)} ${keysIn('ds600a')[0]}`, 'true true P-1');
+
+  put('ds600b', { port: 4651, beat: 1, supervised: true, tickets: { 'P-1': parked('A', 60, 'Which price?'), 'H-1': behind('H-1', 'P-1'), 'H-2': behind('H-2', 'P-1') } });
+  const off3 = N.record({ word: 'ds600b', ticket: 'P-1', action: 'not-now' });
+  const b = N.collect({ word: 'ds600b' });
+  t('DS-600 AC2 with 2 held behind it, it stays left out and counted put off, as today',
+    `${off3.line.includes('still listed')} ${b.items.some((i) => i.t.key === 'P-1')} ${b.putOff}`, 'false false 1');
+
+  put('ds600c', { port: 4652, beat: 1, supervised: true, tickets: { 'P-1': parked('A', 60, 'Which price?'), 'H-1': behind('H-1', 'P-1'), 'H-2': behind('H-2', 'H-1'), 'H-3': behind('H-3', 'H-1') } });
+  N.record({ word: 'ds600c', ticket: 'P-1', action: 'not-now' });
+  const c = N.collect({ word: 'ds600c' }).items.find((i) => i.t.key === 'P-1');
+  t('DS-600 AC3 one held ticket holding 2 more counts 3 behind it, and it is listed', `${c?.behind} ${/3 tickets wait behind it/.test(c?.need ?? '')}`, '3 true');
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
