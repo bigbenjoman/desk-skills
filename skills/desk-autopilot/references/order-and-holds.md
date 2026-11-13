@@ -33,7 +33,9 @@ mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs ho
 |---|---|
 | in the batch, admitted | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
 | outside the batch and done | nothing (noted) |
-| outside the batch and not done; in the batch but parked or someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
+| outside the batch, not done, and triage's `blocker_needs` says the successor needs it | holds the successor, `held_outside` set, with no question: the pass lifts the hold once the blocker is Done and on the base |
+| outside the batch, not done, and `blocker_needs` says it is not needed, under §3 `autopilot-judgement` `yes` | nothing held: a plan note, and an engineering decision "start without it" logged when the queue is seeded |
+| outside the batch and not done otherwise; in the batch but parked or someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
 | on a cycle | parks every ticket on it: the links need fixing |
 
 A ticket parked for its lane (C, D) or its size (L, XL) is **never held and never in `--deps`**:

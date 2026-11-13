@@ -246,6 +246,17 @@ for bad in '"ben_steps":"a cdk deploy"' '"ben_steps":[{"step":"a cdk deploy"}]' 
   out=$(STUB_LANE=A STUB_EXTRA=",$bad" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
   check "DS-242 AC4: ben_steps $bad is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
 done
+check "DS-598: the first pass asks for blocker_needs on each open blocker" \
+  'P0 | grep -qF "\"blocker_needs\": {\"<KEY of an open blocker>\": {\"needs\"" && P0 | grep -qF "Judge each open \"is blocked by\" link in \`blocker_needs\`"'
+for bad in '"blocker_needs":[]' '"blocker_needs":{"X-1":true}' '"blocker_needs":{"X-1":{"needs":"yes","why":"w"}}' '"blocker_needs":{"X-1":{"why":"w"}}'; do
+  rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+  out=$(STUB_LANE=A STUB_EXTRA=",$bad" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+  check "DS-598 AC6: blocker_needs $bad is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
+done
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_EXTRA=',"blocker_needs":{"X-1":{"needs":false,"why":"touches none of its files"},"X-2":{"needs":true,"why":"builds the runner it calls"}}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-598 AC6: a blocker_needs of objects with a boolean needs is kept" \
+  '[ $rc -eq 0 ] && [ "$(lc -c "[.blocker_needs[].needs]")" = "[false,true]" ]'
 
 # The challenge (AC5) on a lane C fixture: its prompt carries AC1 to AC3, a DOWNGRADE moves the ticket
 # to A or B and keeps its ben_steps, and a CONFIRM on an L-sized ticket keeps C (AC3).
