@@ -135,7 +135,7 @@ sed -i.bak 's/localhost:5433/localhost:5432/' "$T/wt/T-1/.env"; echo 12 > "$T/ta
 out=$(bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?
 check "kept, URL on the old port: repointed"                      '[ $rc -eq 0 ] && [[ "$(url T-1 DATABASE_URL)" == *"@localhost:5433/widgets_t_1"* ]]'
 
-# DS-590: a Postgres that does not answer at first is tried again, within DESK_PSQL_RETRY_S.
+# A Postgres that does not answer at first is tried again, within DESK_PSQL_RETRY_S.
 echo 1 > "$T/pg.fails"
 out=$(DESK_PSQL_RETRY_S=4 bash "$B/setup-worktree.sh" T-5 fix/T-5 2>&1); rc=$?
 check "AC1 slow Postgres: setup succeeds after a retry"           '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-5"* ]] && [[ "$out" == *"database=widgets_t_5"* ]]'

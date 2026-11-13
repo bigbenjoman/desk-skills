@@ -86,7 +86,7 @@ git -C "$T/repo" worktree add -q -b 'fix/T-3-<slug>' "$T/wt/T-3" main
 out=$(bash "$B/setup-worktree.sh" --for-worker T-3 'fix/T-3-<slug>' 2>&1); rc=$?
 check "DS-346 a finished worktree on a placeholder branch is handed back" '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-3"* ]]'
 
-# DS-590: a §4 Install that fails once runs again and setup goes on; failing twice fails setup.
+# A §4 Install that fails once runs again and setup goes on; failing twice fails setup.
 echo 1 > "$T/pnpm.fails"; : > "$T/tools.log"
 out=$(DESK_INSTALL_RETRY_DELAY_S=0 bash "$B/setup-worktree.sh" --for-worker T-4 fix/T-4 2>&1); rc=$?
 check "AC3 Install failing once: setup succeeds"                  '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-4"* ]]'
