@@ -26,12 +26,12 @@ your turn. For Jira, use `desk-jira get <KEY>` (`view` is the same) and `desk-ji
 
 `<TICKET>` is your key: a tracker key (§4 Ticket key pattern, `desk-env get ticket-pattern`), an id
 matching §4 Other work id patterns (`desk-env list work-id-patterns`), or with §4 Tracker
-(`desk-env get tracker`) `none` `issue-<n>` or a slug. **For any other key, the ticket is the file
+(`desk-env get tracker`) `none` `issue-<n>` or a slug. **For a non-tracker key, the ticket is the file
 `$DESK_STATE/tickets/<TICKET>.md`**: read it at Stage 0 and skip every Jira step below. Your
 branch is your worktree's: never rename it or open your PR from another, or the merge driver cannot
 find it. `<default>` is `desk-env get default-branch`: §0 Default branch, or your system prompt's
 base. `<repo>` is §0 GitHub repo, and a §4 Toolchain row is that command behind §4 Command prefix
-(`desk-env get command-prefix`) unless it is `none`. A list row holds one backtick span per item, and a command item may name its directory
+(`desk-env get command-prefix`) unless it is `none`. A list row holds one backtick span per item; a command item may name its directory
 (`` `apps/api: uv run pytest` ``): `desk-env cmds <id>` prints `DIR<TAB>CMD` per item.
 
 ## Stage sections: read each one when you reach it

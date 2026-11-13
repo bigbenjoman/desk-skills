@@ -78,9 +78,9 @@ whatever the criterion's wording:
 - a gap a worker could close by changing code, or by an engineering call of its own;
 - a gap whose own `gap:` text names the code change that closes it;
 - a gap a settled call covers;
+- a gap that exists only because of the fix for a P0 or P1 found in this same review;
 - a gap whose cause is a decision this ticket's worker logged, which reversing that decision closes,
   unless the decision keeps a later-merged ticket's behaviour (next);
-- a gap that exists only because of the fix for a P0 or P1 found in this same review;
 - a gap that exists only because the diff keeps behaviour a ticket merged after this one's triage
   added. Its `gap:` names that ticket, and its posted line carries an indented
   `Engineering decision: keep <TICKET>'s <behaviour>; <TICKET> merged after this ticket's triage`,
