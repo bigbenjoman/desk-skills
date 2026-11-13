@@ -8,6 +8,13 @@
 // choose and the call keeps the caller's environment. With every usable login benched it keeps it too,
 // and `all` says so: the decider then starts nothing, and triage and epic planning start as they would
 // with one login, on the caller's own.
+//
+// With accounts pinned (logins.mjs multiAccount) there is no caller's own to fall back on: ~/.claude is
+// the person's own Claude Code. With no usable login, or every one benched, the call waits (`wait`, and
+// `all`): the decider starts nothing, and triage and epic planning are put off to a pass with room.
+//
+// Starting nothing on ~/.claude does not stop a worker already running there: claude-logins.mjs still reads
+// its registry.
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +22,7 @@ import { queueFile, stateDir, subscriptionsPath } from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 import { listBatches } from './batches.mjs';
 import { loginOf, loginKey, probeLogins, workerLoginDir } from './claude-logins.mjs';
-import { checkLogins, loginEnv, readSubscriptions } from './logins.mjs';
+import { checkLogins, loginEnv, multiAccount, readSubscriptions } from './logins.mjs';
 import { chooseLogin } from './login-choice.mjs';
 import { newestReading, WEEK_MS } from './usage-pace.mjs';
 import { loginProbeLog, usageDir } from './usage-probe.mjs';
@@ -73,25 +80,31 @@ function batchesNow(now) {
   return { benched: liveBenches(maps, now), running };
 }
 
-// -> { login, env, all }: the login chosen (null when the caller's own is kept), the environment the
-// call runs in, and whether every usable login is benched.
+// Why a pinned-accounts call starts nothing: the start of each reason given for it.
+export const NO_ROOM = 'every Claude account is at its limit or signed out';
+
+// -> { login, env, all, wait }: the login chosen (null when the caller's own is kept), the environment
+// the call runs in (null when it waits), whether every usable login is benched, and whether the call
+// waits for one with room rather than run.
 export function callLogin({ env = process.env, now = Date.now() } = {}) {
-  const keep = { login: null, env, all: false };
+  const keep = { login: null, env, all: false, wait: false };
   const subs = readSubscriptions(subscriptionsPath());
+  const pinned = multiAccount(subs);
   const own = loginOf(env.CLAUDE_CONFIG_DIR);
-  const inUse = probeLogins();
-  if (nothingToChoose(subs, own, inUse)) return keep;
+  if (!pinned && nothingToChoose(subs, own, probeLogins())) return keep;
   const { benched, running } = batchesNow(now);
   const { usable } = checkLogins(subs, { tools: ['claude'], env });
   const { login, out } = claudeChoice(usable, { benched, running: (l) => running.filter((d) => d === l.configDir).length, now });
+  if (pinned && (!login || out.length === usable.length)) return { login: null, env: null, all: true, wait: true };
   if (out.length === usable.length) return { ...keep, all: usable.length > 0 };
-  if (!login || login.dir === own.dir) return keep;
-  return { login, env: loginEnv(login, env), all: false };
+  if (!login || (!pinned && login.dir === own.dir)) return keep;
+  return { login, env: loginEnv(login, env), all: false, wait: false };
 }
 
 // ---- CLI ---------------------------------------------------------------------------------------
 //   dir    for a shell caller: `keep` (run as the caller is), `all` (every usable login benched, so run
-//          as the caller is), `default` (unset CLAUDE_CONFIG_DIR) or the config folder to point it at
+//          as the caller is), `default` (unset CLAUDE_CONFIG_DIR) or the config folder to point it at.
+//          With accounts pinned and none with room it prints `all` and exits 3: start nothing
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
@@ -103,4 +116,5 @@ if (isMain) {
   }
   const c = callLogin();
   console.log(c.all ? 'all' : !c.login ? 'keep' : c.login.configDir ?? 'default');
+  if (c.wait) process.exit(3);
 }
