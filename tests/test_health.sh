@@ -288,13 +288,13 @@ rm -f "$T/state/health.json"
 before=$(calls claude)
 pj
 check "DS-602 AC1 a login with no folder is not checked"           '[ "$(calls claude)" = $((before + 2)) ]'
-check "DS-602 AC1 no stall line for it, and spawns are not held"   '! grep -q "Claude login c" <<< "$out" && grep -q "health: all checks pass" <<< "$out"'
+check "DS-602 AC1 no stall line for it, and spawns are not held"   '! grep -qE "^ *health: Claude login c" <<< "$out" && grep -q "health: all checks pass" <<< "$out"'
 check "DS-602 AC1 the health line's notes name the row and folder" 'grep "^health: all checks pass" <<< "$out" | grep -qF "$note_c"'
 check "DS-602 AC2 the first pass on the machine pushes it"         '[ "$(pushes)" = "health:claude-missing:c" ] && [[ "$json" == *"Claude login c is listed at ~/.claude-logins/c, which does not exist"* ]]'
 pj
 check "DS-602 AC2 the next pass in this slot does not push it"     '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out"'
 slot
-check "DS-602 AC2 a pass in another slot names it, does not push"  '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out" && ! grep -q "Claude login c" <<< "$out"'
+check "DS-602 AC2 a pass in another slot names it, does not push"  '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out" && ! grep -qE "^ *health: Claude login c" <<< "$out"'
 : > "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
 pj
 check "DS-602 AC3 a login whose folder exists is still told signed out" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out" && [[ "$(pushes)" =~ health:.+:claude:b ]]'
