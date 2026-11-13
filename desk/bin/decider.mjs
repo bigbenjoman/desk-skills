@@ -1,6 +1,7 @@
 // The decider: a fresh, small headless session the supervisor starts when a pass exits needing the
 // person. It is given that pass's report and the recovery rules, settles what the rules let the
-// orchestrator settle without asking (a requeue or a move to another batch, mostly), and hands
+// orchestrator settle without asking (a requeue or a move to another batch, mostly, and under config
+// §3 autopilot-judgement yes a recommended take call answered and logged), and hands
 // everything else to the check-in digest. One runs at a time per repo, at low effort, and is stopped after DECIDER_TIMEOUT_MS.
 //
 // What a pass lists becomes items, each with an id that stays the same while the item does:
@@ -24,6 +25,8 @@ import { needsSession, planPark, leftPark, LEFT_PREFIX, moveTargetsOf, targetsTe
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 import { callLogin } from './call-login.mjs';
+import { TAKE_CATEGORIES } from './decisions.mjs';
+import { recommendedAnswer } from './recoveries.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -194,7 +197,9 @@ const BASE_ASK = /\b(base|batch)\b/i;
 
 // ---- the session ---------------------------------------------------------------------------------
 // Only what settling needs: requeue, move and record, read the ticket and the PR, read the state directory.
-export function deciderSettings({ bin, state }) {
+// Under config §3 autopilot-judgement yes (`judgement`), also take a call a worker parked on with a
+// recommended option: answer it (answer.mjs --taken, which records no grant) and log it as the decider's.
+export function deciderSettings({ bin, state, judgement = null }) {
   return {
     permissions: {
       allow: [
@@ -202,6 +207,10 @@ export function deciderSettings({ bin, state }) {
         `Bash(node ${join(bin, 'needs-you.mjs')} move:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} clears-when:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} render)`,
+        ...(judgement === 'yes' ? [
+          `Bash(node ${join(bin, 'answer.mjs')} --taken:*)`,
+          `Bash(node ${join(bin, 'decisions.mjs')} log --source decider:*)`,
+        ] : []),
         'Bash(desk-jira get:*)',
         'Bash(gh pr view:*)',
         `Read(/${state}/**)`,
@@ -212,7 +221,7 @@ export function deciderSettings({ bin, state }) {
   };
 }
 
-export function deciderPrompt({ slug, report, items, rules, bin, webRead = false, targets = [] }) {
+export function deciderPrompt({ slug, report, items, rules, bin, webRead = false, targets = [], judgement = null }) {
   const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
   const prevLines = (i) => (i.prev?.question ? [`  - park ${i.round}; the last requeue cleared park ${i.round - 1}: ${i.prev.question.replace(/\n/g, ' ')}`] : []);
   const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...prevLines(i), ...answerLines(i)]).join('\n');
@@ -232,6 +241,15 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
   const onWeb = webRead ? [
     '- a park asking only for a public fact (a published figure, or a page, robots.txt or terms anyone can read on the web) is not a fact only the person holds: this repo\'s workers can search and read the web (config §3 `worker-web-read` is `yes`). On lane A, B, D or E, requeue it for its worker to look the fact up, and settle the item',
   ] : [];
+  // Only where config §3 autopilot-judgement is yes and an item is parked, so a prompt for any other
+  // repo reads as it always has. The ask categories are decisions.mjs ASK_CATEGORIES, worded as ask-or-take.md asks them.
+  const takes = judgement === 'yes' && items.some((i) => i.kind === 'parked');
+  const onTake = takes ? [
+    `- take a call a worker could have taken itself (config §3 \`autopilot-judgement\` is \`yes\`): a park on lane A, B, D or E whose question marks one option as recommended (or as the worker's pick), on a ${TAKE_CATEGORIES.join(', ')} call, that touches no money, legal or regulatory matter, production data or credentials, customer copy where length means cost, or fact only the person holds. Log the call, record the option as the answer, then requeue it as above, in that order, and settle the item:`,
+    `  \`node ${join(bin, 'decisions.mjs')} log --source decider <TICKET> '{"question": "<the question parked on, one line>","options": ["<the recommended option>", "<each other option>"], "chose": "<the recommended option>", "category": "<one of ${TAKE_CATEGORIES.join(', ')}>"}'\``,
+    `  \`node ${join(bin, 'answer.mjs')} --taken <TICKET> "${recommendedAnswer({ chose: '<the recommended option>', category: '<category>' }, 'the decider')}"\``,
+    '  A park with no option marked recommended, one in an ask category, one naming a config §3 row that is not `yes`, one asking what its last requeue\'s park asked, or one either command refuses: hand it on',
+  ] : [];
   return [
     `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
     '',
@@ -239,9 +257,10 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
     `- requeue a ticket whose worker parked asking for more agent work, on lane A, B, D or E:\`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
     ...onMove,
     `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory`,
-    `- never requeue a lane C ticket or a park that starts \`lane C\` or \`lane D\` (parked at triage on its lane), never requeue or record a clears-when for a park that starts \`${LEFT_PREFIX}\` (left in a finished feature batch), never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not \`yes\`: hand those on`,
+    `- never requeue a lane C ticket or a park that starts \`lane C\` or \`lane D\` (parked at triage on its lane), never requeue or record a clears-when for a park that starts \`${LEFT_PREFIX}\` (left in a finished feature batch), never answer a ${takes ? 'product, design or copy question other than by taking its recommended option as below' : 'product, design or copy question'}, and never act on anything that needs a config §3 row that is not \`yes\`: hand those on`,
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
+    ...onTake,
     ...onWeb,
     ...onRepeats,
     '',
@@ -266,15 +285,15 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
 // Starts the session detached, on a Claude login that is not benched (call-login.mjs), its JSON result
 // written to <state>/decider/<id>.json. Returns the record the supervisor keeps until the session
 // ends, or null, starting nothing, when every usable login is benched.
-export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
+export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
   const { login, env, all } = callLogin({ env: callerEnv, now: now.getTime() });
   if (all) return null;
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
   const settings = join(dir, `${id}.settings.json`);
-  writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state }), null, 2)}\n`);
-  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead, targets });
+  writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state, judgement }), null, 2)}\n`);
+  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead, targets, judgement });
   writeFileSync(join(dir, `${id}.prompt.md`), prompt);
   const out = join(dir, `${id}.json`);
   const fd = openSync(out, 'w');

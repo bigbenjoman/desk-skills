@@ -20,22 +20,43 @@ import { readRegistry } from './claude-logins.mjs';
 crashShowsPerson();
 const QUEUE = join(binDir(), 'queue.mjs');
 
-const [ticket, ...args] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+// --taken, before the ticket, is the decider taking the option a worker's park recommended
+// (decider.mjs may run answer.mjs only in this form). Such an answer approves no step, so it never
+// records a grant, and a park on a refused step is refused outright.
+const taken = argv[0] === '--taken';
+const [ticket, ...args] = taken ? argv.slice(1) : argv;
 // --approve says outright that the answer approves the step its park asks for (batch-state.mjs grantFor).
 const approveFlag = args[0] === '--approve';
 const rest = approveFlag ? args.slice(1) : args;
 const text = rest.join(' ').trim();
 if (!ticket || !text) {
-  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"');
+  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"\n       answer.mjs --taken <TICKET> "<the recommended option, taken>"');
   process.exit(EXIT.SHOW_PERSON);
 }
 if (!SAFE_ID.test(ticket) || ticket.includes('..')) {
   console.error(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
   process.exit(EXIT.SHOW_PERSON);
 }
+if (taken && approveFlag) {
+  console.error('--taken takes a recommended call and approves no step, so it never goes with --approve');
+  process.exit(EXIT.SHOW_PERSON);
+}
 // The answer goes to the batch holding the ticket, and the queue.mjs it runs follows (DESK_BATCH).
 useTicketBatch(ticket);
 const STATE = stateDir();
+if (taken) {
+  let t = null;
+  try { t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null; } catch { /* no queue */ }
+  if (t?.state !== 'parked' || isHeld(t)) {
+    console.error(`${ticket} is not parked, so there is no recommended call to take: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+  if (refusedStep(t.park?.question)) {
+    console.error(`${ticket} parked on a refused step, which only the person approves: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+}
 
 mkdirSync(join(STATE, 'answers'), { recursive: true });
 mkdirSync(join(STATE, 'briefings'), { recursive: true });
