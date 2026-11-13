@@ -67,7 +67,7 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, holdNeedsPerson } from './gate.mjs';
-import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
+import { expandHome, repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
@@ -904,11 +904,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
   // reads it, and taken back if the requeue is refused. null once both are made, else what refused.
-  // With the failure-class lever on in its repo, the fix records its class first (failure-class.mjs);
-  // the person sent it, so a class that waits does not hold it.
+  // The fix records its class first (failure-class.mjs); the person sent it, so a class that waits
+  // does not hold it.
   const sendFix = (fix) => {
-    const lever = (() => { try { return parseLevers(repoConfigValues(r.slug, 'levers')).on.includes('failure-class'); } catch { return false; } })();
-    const classed = lever ? (({ class: c, class_rule }) => ({ class: c, class_rule }))(fixClass(fix, x.t)) : {};
+    const classed = (({ class: c, class_rule }) => ({ class: c, class_rule }))(fixClass(fix, x.t));
     const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify({ ...fix, ...classed, at: new Date(now).toISOString() })}`]);
     if (!f.ok) return `its fix was refused: ${f.out}`;
     const q = queueCmd(r, ['requeue', ticket]);
