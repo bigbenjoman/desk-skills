@@ -63,6 +63,7 @@ function put(name, r) {
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
+    (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
@@ -152,7 +153,7 @@ t('AC7 resume is refused for a lane C park', `${c2.ok} ${queueOf('alpha').ticket
 t('AC7 open names the desk-ticket session', /\/desk-ticket A-2/.test(o2.line), true);
 t('AC7 its recommendation is to open it', itemLines.some((l) => l.startsWith('alpha A-2 session') && l.includes('1. open (recommended:')), true);
 // DS-297 AC3: a lane C or D park offers open and not-now only; a bare answer would leave it counted.
-t('DS-297 AC3 a lane C park offers open and not-now only', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. drop | 3. not-now');
+t('DS-297 AC3 a lane C park offers open, done, drop and not-now, never resume', itemLines.find((l) => l.startsWith('alpha A-2 session'))?.split(' | ').slice(2).join(' | ').replace(/ \([^)]*\)/g, ''), '1. open | 2. done | 3. drop | 4. not-now');
 const ca2 = N.record({ word: 'alpha', ticket: 'A-2', action: 'answer', text: 'go' });
 t('DS-297 AC3 answer on a lane C park is refused', `${ca2.ok} ${/answer is not an action for a session item/.test(ca2.line)}`, 'false true');
 
@@ -521,8 +522,8 @@ writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-9.jso
 const kappa = Object.fromEntries(N.collect({ word: 'kappa' }).items.map((i) => [i.t.key, i]));
 const firstOf = (k) => `${kappa[k]?.actions[0][0]} (${kappa[k]?.actions[0][1]})`;
 const offers = (k) => kappa[k]?.actions.map((a) => a[0]).join();
-t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} ${offers('K-1')}`, 'open (lane C/D: a worker would only park on it) open,drop,not-now');
-t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, 'open (lane C/D: a worker would only park on it) open,drop,not-now');
+t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} ${offers('K-1')}`, 'open (lane C/D: a worker would only park on it) open,done,drop,not-now');
+t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, 'open (lane C/D: a worker would only park on it) open,done,drop,not-now');
 t('DS-322 AC1 a park opening "lane C" on a lane A ticket gives the lane C/D reason', firstOf('K-8'), 'open (lane C/D: a worker would only park on it)');
 const { presort } = await import('../desk/bin/decider.mjs');
 t('DS-322 AC1 the decider hands the same park to a session, never a requeue', presort([{ kind: 'parked', lane: 'A', text: 'Demoted to lane C, build it in an interactive desk-ticket session' }]).hand.length, 1);
@@ -816,8 +817,8 @@ const dpActs = (k) => dp[k]?.actions.map(([a, why]) => `${a}${why ? '*' : ''}`).
 t('DS-556 AC3 a park saying it has no worker work recommends drop first, and resume stays on offer', `${dp['P-1']?.kind} ${dpActs('P-1')}`, 'parked drop*,resume,not-now');
 t('DS-556 AC3 the resume it displaced keeps its reason as a note', /^lane A: /.test(dp['P-1']?.actions[1][2] ?? ''), true);
 t('DS-556 any other park offers drop before not-now, unrecommended', dpActs('P-2'), 'resume*,drop,not-now');
-t('DS-556 AC3 a session park saying it has no worker work recommends drop first', `${dp['P-3']?.kind} ${dpActs('P-3')}`, 'session drop*,open,not-now');
-t('DS-556 any other session park offers drop too', dpActs('P-4'), 'open*,drop,not-now');
+t('DS-556 AC3 a session park saying it has no worker work recommends drop first', `${dp['P-3']?.kind} ${dpActs('P-3')}`, 'session drop*,open,done,not-now');
+t('DS-556 any other session park offers drop too', dpActs('P-4'), 'open*,done,drop,not-now');
 const drop1 = N.record({ word: 'dropper', ticket: 'P-1', action: 'drop' });
 t('DS-556 AC1 drop takes it out of its batch and removes its clean worktree and branch',
   `${drop1.ok} ${'P-1' in queueOf('dropper').tickets} ${existsSync(dpWt('P-1'))} ${dpGit('branch', '--list', 'fix/P-1').stdout.trim()}|`, 'true false false |');
@@ -1366,8 +1367,8 @@ const gr2 = N.record({ word: 'grantee', ticket: 'GR-2', action: 'resume', text: 
 const grT2 = queueOf('grantee').tickets['GR-2'];
 t('DS-390 AC5 an answer that approves nothing records no grant', `${gr2.ok} ${grT2.state} ${grT2.grant ?? null}`, 'true triaged null');
 const grI3 = N.collect({ word: 'grantee' }).items.find((i) => i.t.key === 'GR-3');
-t('DS-390 AC3 a park on a step no worker is allowed is a session item, offering open and not-now only',
-  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${/never allowed aws/.test(grI3?.actions[0][1] ?? '')}`, 'session open,drop,not-now true');
+t('DS-390 AC3 a park on a step no worker is allowed is a session item, offering open, done, drop and not-now, never resume',
+  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${/never allowed aws/.test(grI3?.actions[0][1] ?? '')}`, 'session open,done,drop,not-now true');
 const gr3 = N.record({ word: 'grantee', ticket: 'GR-3', action: 'resume', text: 'Yes, read it yourself' });
 t('DS-390 AC3 an answer approving it is not requeued to a worker', `${gr3.ok} ${queueOf('grantee').tickets['GR-3'].state} ${queueOf('grantee').tickets['GR-3'].grant ?? null}`, 'false parked null');
 t('DS-390 AC3 open names the session and says why', /not requeued \(a step no worker is allowed\).*\/desk-ticket GR-3/.test(N.record({ word: 'grantee', ticket: 'GR-3', action: 'open' }).line), true);
@@ -1484,10 +1485,10 @@ const sigmaState = join(env.HOME, '.desk-autopilot', 'acme__sigma');
 const sigmaQ = () => readFileSync(join(env.DESK_HOME, 'repos', 'acme__sigma', 'queue.json'), 'utf8');
 const sgItems = () => N.collect({ word: 'sigma' }).items;
 const verbs = (k) => sgItems().find((i) => i.t.key === k)?.actions.map((a) => a[0]).join();
-t('DS-399 AC1 a lane D session item with its worktree offers resume beside open and not-now', `${sgItems().find((i) => i.t.key === 'S-1')?.kind} ${verbs('S-1')}`, 'session open,resume,drop,not-now');
+t('DS-399 AC1 a lane D session item with its worktree offers resume beside open and not-now', `${sgItems().find((i) => i.t.key === 'S-1')?.kind} ${verbs('S-1')}`, 'session open,resume,done,drop,not-now');
 t('DS-399 AC1 the list line says what resume does', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-1 session') && l.includes('2. resume (once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review)')), true);
-t('DS-399 a lane C park no worker ever worked has no worktree to start in, so no resume', verbs('S-2'), 'open,drop,not-now');
-t('DS-399 a park on a step no worker is allowed is not offered resume, worktree or not', verbs('S-4'), 'open,drop,not-now');
+t('DS-399 a lane C park no worker ever worked has no worktree to start in, so no resume', verbs('S-2'), 'open,done,drop,not-now');
+t('DS-399 a park on a step no worker is allowed is not offered resume, worktree or not', verbs('S-4'), 'open,done,drop,not-now');
 const sgBefore = sigmaQ();
 const sgOpen = N.record({ word: 'sigma', ticket: 'S-1', action: 'open' });
 t('DS-399 AC4 open still only names the session, and the queue is unchanged', `${sgOpen.ok} ${/\/desk-ticket S-1/.test(sgOpen.line)} ${sigmaQ() === sgBefore}`, 'true true true');
@@ -1607,6 +1608,105 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),
+// and done on a session item reads its PR and ticket.
+{
+  const CURL = 'Posting the fixture needs curl, which is denied to every worker. Can you post it?';
+  put('mu546', { port: 5546, beat: 1, supervised: true, pattern: 'M-[0-9]+', tickets: {
+    // Done once with its PR open, then requeued: the last pass's PR status still reads it open.
+    'M-1': { ...parked('B', 60, CURL), draft_pr: 911, pr_status: { pr: 911, state: 'OPEN', isDraft: true } },
+    'M-2': { ...parked('C', 50, 'lane C: the plan needs agreeing'), draft_pr: 912 },
+    'M-3': { ...parked('A', 40, 'Which endpoint?'), draft_pr: 913 },
+    'M-4': parked('C', 30, 'lane C: the plan needs agreeing'),
+    'M-5': { ...parked('B', 20, CURL), draft_pr: 915 },
+    'M-6': { ...parked('A', 10, 'Retry or fail?'), draft_pr: 916 },
+    // Its PR merged, then it was requeued for more work and parked again with no new PR.
+    'M-7': { ...parked('B', 5, CURL), merged_at: '2026-11-01T10:00:00Z', result: { pr: 917 } },
+  } });
+  const prs = { 911: 'MERGED', 912: 'MERGED', 913: 'OPEN', 915: 'OPEN', 916: 'MERGED', 917: 'MERGED' };
+  const jira = { 'M-1': 'done', 'M-2': 'indeterminate', 'M-4': 'indeterminate', 'M-6': 'done', 'M-7': 'done' };
+  const reads = { pr: (_r, n) => ({ v: prs[n] ? { state: prs[n], mergedAt: '2026-11-09T19:40:54Z', isDraft: prs[n] === 'OPEN' } : null, err: prs[n] ? '' : 'no such PR' }),
+    ticket: (_r, k) => jira[k] ?? null, git: () => null };
+  const mu = () => Object.fromEntries(N.collect({ word: 'mu546' }).items.map((i) => [i.t.key, i]));
+  t('DS-546 AC4 a session item on a step no worker is allowed offers done, and never resume', mu()['M-1']?.actions.map((a) => a[0]).join(), 'open,done,drop,not-now');
+  const settled = N.refresh({ word: 'mu546', reads });
+  t('DS-546 AC1 list closes a session item and a parked item whose PR merged and whose ticket is done, and says so',
+    settled.join(' | '), 'mu546 M-1: PR #911 merged at 2026-11-09 19:40 UTC, and M-1 is done in Jira, so it is recorded done and off your list. | mu546 M-6: PR #916 merged at 2026-11-09 19:40 UTC, and M-6 is done in Jira, so it is recorded done and off your list.');
+  const m1 = queueOf('mu546').tickets['M-1'];
+  t('DS-546 AC1 it is recorded done as the pass records a ticket shipped elsewhere', `${m1.state} ${m1.park} ${m1.result?.pr} ${/^shipped outside its worker: PR #911 merged/.test(m1.result?.summary)}`, 'done null 911 true');
+  t('DS-546 AC1 its PR status is marked merged too, so it is not listed as an open PR', `${m1.pr_status?.state} ${m1.pr_status?.merged_at}`, 'MERGED 2026-11-09T19:40:54Z');
+  t('DS-546 AC1 neither is listed; a merged PR on a ticket not done, an open PR, no PR and a PR merged before a requeue stay',
+    Object.keys(mu()).sort().join(), 'M-2,M-3,M-4,M-5,M-7');
+  t('DS-546 AC1 a ticket requeued after its PR merged is not closed on that PR', queueOf('mu546').tickets['M-7'].state, 'parked');
+  t('DS-546 AC1 a second list closes nothing more', N.refresh({ word: 'mu546', reads }).length, 0);
+  const d5 = N.record({ word: 'mu546', ticket: 'M-5', action: 'done', reads });
+  t('DS-546 AC2 done on a session item whose PR is unmerged refuses, saying so, and it stays parked',
+    `${d5.ok} ${d5.line} ${queueOf('mu546').tickets['M-5'].state}`, 'false mu546 M-5: GitHub shows PR #915 unmerged, still a draft, so it is not recorded done and stays on your list. Say done once it has merged. parked');
+  const d2 = N.record({ word: 'mu546', ticket: 'M-2', action: 'done', reads });
+  t('DS-546 AC2 done on a session item whose PR merged records it done with the reason, and it leaves the list',
+    `${d2.ok} ${d2.line} ${queueOf('mu546').tickets['M-2'].state} ${'M-2' in mu()}`,
+    'true mu546 M-2: recorded done (you said done; PR #912 merged at 2026-11-09 19:40 UTC; M-2 is not done in Jira yet), so it is off your list. done false');
+  const d4 = N.record({ word: 'mu546', ticket: 'M-4', action: 'done', reads });
+  t('DS-546 AC2 done on a session item with no PR records it done', `${d4.ok} ${queueOf('mu546').tickets['M-4'].state} ${queueOf('mu546').tickets['M-4'].result?.pr ?? null}`, 'true done null');
+  t('DS-546 AC2 done on a parked item is still not an action', N.record({ word: 'mu546', ticket: 'M-3', action: 'done', reads }).ok, false);
+  const unread = { ...reads, pr: () => ({ v: null, err: 'HTTP 502' }) };
+  put('mu546b', { port: 5549, beat: 1, supervised: true, tickets: { 'MB-1': { ...parked('B', 60, CURL), draft_pr: 931 } } });
+  const db1 = N.record({ word: 'mu546b', ticket: 'MB-1', action: 'done', reads: unread });
+  t('DS-546 AC2 done on a session item whose PR cannot be read refuses, naming why', `${db1.ok} ${db1.line} ${queueOf('mu546b').tickets['MB-1'].state}`,
+    "false mu546b MB-1: could not read PR #931's state from GitHub (HTTP 502), so it is not recorded done and stays on your list. parked");
+
+  // A park waiting on issue links only the person makes keeps them in clears_when alone: its PR merging
+  // and its ticket going done close neither it nor its links, which the pass reads on Jira.
+  const linked = (lane, m, question, pr) => { const p = parked(lane, m, question);
+    return { ...p, result: { pr }, park: { ...p.park, clears_when: { kind: 'links-made', links: [{ key: `ML-${pr - 940}`, type: 'Relates', other: 'ML-9' }], pr } } }; };
+  put('mu546c', { port: 5550, beat: 1, supervised: true, pattern: 'ML-[0-9]+', tickets: {
+    'ML-1': linked('A', 60, 'Issue links not made: ML-1 Relates ML-9', 941),
+    'ML-2': linked('B', 50, CURL, 942),
+  } });
+  const mergedDone = { pr: () => ({ v: { state: 'MERGED', mergedAt: '2026-11-09T19:40:54Z', isDraft: false }, err: '' }), ticket: () => 'done', git: () => null };
+  t('DS-546 AC1 list leaves a park waiting on issue links open, its PR merged and its ticket done',
+    `${N.refresh({ word: 'mu546c', reads: mergedDone }).length} ${queueOf('mu546c').tickets['ML-1'].park?.clears_when?.links?.length}`, '0 1');
+  const dl2 = N.record({ word: 'mu546c', ticket: 'ML-2', action: 'done', reads: mergedDone });
+  t('DS-546 AC2 done on a session item waiting on issue links refuses, naming them, and keeps them',
+    `${dl2.ok} ${dl2.line} ${queueOf('mu546c').tickets['ML-2'].park?.clears_when?.links?.length}`,
+    'false mu546c ML-2: it waits on issue links ML-2 Relates ML-9 made, so it is not recorded done and stays on your list: the next pass records it done once each is on Jira. 1');
+
+  // A repo with no tracker: a merged PR is enough, and the CLI list reads it from GitHub (the fake gh).
+  put('nu546', { port: 5547, beat: 1, supervised: true, tickets: { 'NU-1': { ...parked('B', 60, CURL), draft_pr: 921 }, 'NU-2': { ...parked('B', 50, CURL), draft_pr: 922 } } });
+  onGitHub(921, { state: 'MERGED', mergedAt: '2026-11-09T19:40:54Z', isDraft: false });
+  onGitHub(922, { state: 'OPEN', mergedAt: null, isDraft: true });
+  const nuList = cli('list', 'nu546');
+  t('DS-546 AC1 the CLI list closes it with no tracker, says so first, and lists only what is left',
+    `${nuList.code} ${nuList.out.split('\n')[0]} ${nuList.out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join()} ${queueOf('nu546').tickets['NU-1'].state}`,
+    '0 nu546 NU-1: PR #921 merged at 2026-11-09 19:40 UTC, so it is recorded done and off your list. NU-2 done');
+
+  // AC3: a worktree held for uncommitted changes is read again, and released once committed and pushed.
+  const origin = join(T, 'xi546-origin.git'), wt = join(T, 'xi546-wt');
+  spawnSync('git', ['init', '-q', '--bare', '-b', 'fix/X-1', origin]);
+  spawnSync('git', ['clone', '-q', origin, wt]);
+  const g = (...a) => spawnSync('git', ['-C', wt, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+  g('checkout', '-q', '-b', 'fix/X-1');
+  writeFileSync(join(wt, 'a.txt'), 'one\n');
+  g('add', 'a.txt'); g('commit', '-q', '-m', 'one'); g('push', '-q', 'origin', 'fix/X-1');
+  writeFileSync(join(wt, 'a.txt'), 'two\n');
+  const procWhy = `its worktree ${wt} is the working directory of pid 4242 (claude), which the pass did not start`;
+  put('xi546', { port: 5548, beat: 1, supervised: true, tickets: {
+    'X-1': { state: 'triaged', lane: 'A', worktree: wt, worktree_busy: { why: `its worktree ${wt} has uncommitted changes (a.txt)`, at: minsAgo(30) } },
+    'X-2': { state: 'triaged', lane: 'A', worktree: wt, worktree_busy: { why: procWhy, at: minsAgo(30) } },
+  } });
+  const xi = () => N.collect({ word: 'xi546' }).items.map((i) => i.t.key).join();
+  const live = { ...reads, git: N.READS.git };
+  t('DS-546 AC3 a worktree still dirty stays held and listed', `${N.refresh({ word: 'xi546', reads: live }).length} ${xi()}`, '0 X-1,X-2');
+  g('commit', '-q', '-am', 'two');
+  t('DS-546 AC3 committed but not pushed: still held', `${N.refresh({ word: 'xi546', reads: live }).length} ${xi()}`, '0 X-1,X-2');
+  g('push', '-q', 'origin', 'fix/X-1');
+  const xs = N.refresh({ word: 'xi546', reads: live });
+  t('DS-546 AC3 clean and matching origin: its hold is dropped, it says so, and it is not listed',
+    `${xs.join()} ${queueOf('xi546').tickets['X-1'].worktree_busy ?? null} ${xi()}`,
+    'xi546 X-1: its worktree is clean and its branch matches origin, so it is off your list; the next pass can start it. null X-2');
+  t('DS-546 a worktree held by another process is left to the pass', queueOf('xi546').tickets['X-2'].worktree_busy?.why, procWhy);
+}
+
 // ---- A ticket held on its blocked-until label is not listed; one whose label's date cannot be read is, once.
 {
   const until = (label) => ({ state: 'parked', lane: 'A', held_label: label, park: { question: `held by orchestrator: ${label}` } });
@@ -1616,6 +1716,33 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const bad = items.filter((i) => i.t.key === 'U-2');
   t('DS-555 AC3 a label whose date cannot be read is one held item naming the label, offering start',
     `${bad.length} ${bad[0]?.kind} ${/blocked-until-soon/.test(bad[0]?.need ?? '')} ${bad[0]?.actions.map((a) => a[0]).join()}`, '1 held true start,not-now');
+}
+
+// ---- A park a script settles waits on it, not on the person; one only the person settles is still listed.
+{
+  const waits = (question, cw) => ({ ...parked('A', 30, question), park: { question, since: minsAgo(30), clears_when: cw } });
+  const claimed = (t, claim) => ({ ...t, park: { ...t.park, claim } });
+  put('ds562', { port: 4650, beat: 1, supervised: true, tickets: {
+    'W-1': waits('Should W-1 be held until PR #991 merges, then requeued?', { kind: 'pr-merged', pr: 991 }),
+    'W-2': waits('Which price?', { kind: 'none' }),
+    'W-3': waits('Make the issue links', { kind: 'links-made', links: [{ key: 'W-3', type: 'Relates', other: 'W-9' }], pr: 12 }),
+    // A claimed park keeps its clears-when, but no pass settles it: it stays the session's, clean or dirty.
+    'W-4': claimed(waits('Should W-4 wait for PR #992?', { kind: 'pr-merged', pr: 992 }), { session: 'sess-562', at: minsAgo(30) }),
+    'W-5': claimed(waits('its worktree has uncommitted changes (a.txt)', { kind: 'pr-merged', pr: 993 }), { session: 'sess-562', at: minsAgo(60), dirty_at: minsAgo(30) }),
+  } });
+  const keys = N.collect({ word: 'ds562' }).items.map((i) => i.t.key).sort().join();
+  t('DS-562 AC1, AC3, AC4 a park waiting on a PR merging is not listed; one on none, on links only the person makes, or claimed by a session is', keys, 'W-2,W-3,W-4,W-5');
+  const r562 = () => loadRepos().find((r) => r.name === 'ds562');
+  t('DS-562 AC2 desk-q shows it waiting, not needing you', r562().rows.find((x) => x.t.key === 'W-1').k, 'waiting');
+  t('DS-562 AC2 its row says it waits on PR #991', repoScreen(r562(), { width: 200 }).includes('waiting on PR #991 merged'), true);
+  t('DS-562 AC2 its page says it moves without you, on PR #991', ticketScreen(r562(), 'W-1', { width: 200 }).includes('Moves without you: Waiting on PR #991 merged: a pass requeues it then.'), true);
+  t('DS-562 AC2 desk-q counts only the ones the person settles', N.needsCount(r562()).shown, 4);
+  t('DS-562 a claimed park with a clears-when still needs its session, clean or dirty', ['W-4', 'W-5'].map((k) => r562().rows.find((x) => x.t.key === k).k).join(), 'needs,needs');
+  t('DS-562 a claimed park reads as claimed, not as moving without you', ticketScreen(r562(), 'W-4', { width: 200 }).includes('Claimed by session sess-562'), true);
+  // With passes stopped nothing settles it: its page says so and gives the resume step.
+  put('ds562off', { port: 4651, beat: 120, tickets: { 'W-6': waits('Hold W-6 for PR #994?', { kind: 'pr-merged', pr: 994 }) } });
+  const off = ticketScreen(loadRepos().find((r) => r.name === 'ds562off'), 'W-6', { width: 200 });
+  t('DS-562 passes stopped: its page says it will not move until they resume, waiting on PR #994', off.includes('Will not move until passes resume: waiting on PR #994 merged: a pass requeues it then.'), true);
 }
 
 // Refusals.

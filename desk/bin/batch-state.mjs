@@ -3,6 +3,7 @@
 // place they read the queue and triage records, so a corrupt file refuses the same way in all four.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { personClears } from './clears-when.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
 // on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
@@ -38,6 +39,34 @@ export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'tria
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
+
+// A ticket shipped outside its worker, recorded done: the `queue.mjs` arguments pass.mjs and
+// needs-you.mjs both write. Where the queue's PR status is that PR's, it is marked merged as well, or the
+// done ticket would read as an unmerged PR until the next pass reads GitHub.
+export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
+  `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
+  ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
+
+// Why a worktree holds work origin lacks, read with `git` (its arguments -> stdout, or null when the read
+// fails): uncommitted tracked changes, or commits its branch has not pushed. -> the reason; null when it
+// has neither; undefined when git cannot say. pass.mjs holds a worktree on it, and needs-you.mjs list
+// drops that hold once it reads null.
+export function gitHold(wt, git) {
+  const diff = git(['diff', '--name-only', 'HEAD']);
+  if (diff == null) return undefined;
+  const dirty = diff.split('\n').filter(Boolean);
+  if (dirty.length) return `its worktree ${wt} has uncommitted changes (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''})`;
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  if (!branch || branch === 'HEAD') return undefined;
+  const ahead = git(['rev-list', '--count', `origin/${branch}..HEAD`]);
+  if (ahead == null) return undefined;
+  return Number(ahead) > 0 ? `its branch ${branch} is ${ahead} commit(s) ahead of origin/${branch}, not pushed` : null;
+}
+// A hold gitHold wrote: { wt } with the worktree its reason names (null where it names none), else null
+// for a hold of another kind, such as another process working in the worktree.
+const DIRTY_HOLD = /^its worktree (\S+) has uncommitted changes/;
+const AHEAD_HOLD = /^its branch \S+ is \d+ commit\(s\) ahead of origin\//;
+export const gitHeld = (why) => { const s = String(why ?? ''); return DIRTY_HOLD.test(s) ? { wt: DIRTY_HOLD.exec(s)[1] } : AHEAD_HOLD.test(s) ? { wt: null } : null; };
 
 // A running batch as a ticket can be moved into it (queue.mjs transfer), and the batches `queue.mjs
 // running` printed as those: { name, base, word }, the standing batch's name null and its word
@@ -283,6 +312,15 @@ export const noWorkerWork = (question) => NO_WORKER_WORK.test(String(question ??
 // A queue ticket only an interactive session takes on: lane C, one parked at triage on its lane, or
 // one whose worker parked it in lane C or a canvas-less lane D. Any other lane D park is requeued.
 export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? ''));
+
+// A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
+// the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A
+// claimed park is its session's (pass.mjs clearable never settles one), so it is not one. The digest
+// and needs-you leave it out, and desk-q shows it as waiting.
+export const settlesByScript = (t) => {
+  const c = t?.park?.clears_when;
+  return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
+};
 
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.

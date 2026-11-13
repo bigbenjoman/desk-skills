@@ -548,6 +548,11 @@ settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |'
 printf '{"base":"feat/x","tickets":{}}\n' > "$DESK_QUEUE"
 out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket base-feat-x --wt "$T/repo" --branch feat/x --out "$T/ws.json" 2>&1)
 check "DS-431 a base conflict fix worker is granted no clone by name" '! readable "$CLONE" && [[ "$out" != *CONFIG_READ_REPO* ]]'
+# DS-594: its worktree is on a detached HEAD, so its one push names HEAD, never the local branch.
+settings '`bash tests/run.sh`' "$(rows3 batch-base-push=yes git-push=yes)"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket base-feat-x --wt "$T/repo" --branch feat/x --out "$T/ws.json" 2>&1)
+check "DS-594 a base fix worker may push HEAD to the base, and nothing else" \
+  'ok "git push origin HEAD:refs/heads/feat/x" && no "git push origin feat/x" "git push origin HEAD:refs/heads/main" "git push origin HEAD" "git push --force origin HEAD:refs/heads/feat/x"'
 rm -f "$DESK_QUEUE"
 settings '`bash tests/run.sh`' '| Worker measuring commands | `npm exec measure` |'
 check "DS-431 a measuring command in a runner form is allowed, and the runner stays closed to anything else" 'ok "npm exec measure" && no "npm exec other" "npm exec measure --more"'

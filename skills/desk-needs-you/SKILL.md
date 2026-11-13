@@ -21,8 +21,9 @@ node ~/.claude/desk/bin/needs-you.mjs list
 node ~/.claude/desk/bin/needs-you.mjs list <repo>
 ```
 
-Use the second form when the user named a repo. If it prints `Nothing needs you…`, say that line
-and stop.
+Use the second form when the user named a repo. `list` first settles what finished outside desk (a
+merged PR, a pushed worktree), a line each: show them. If it then prints `Nothing needs you…`, say
+that line and stop.
 
 Otherwise it prints:
 
@@ -35,10 +36,10 @@ Otherwise it prints:
 <repo> <TICKET> <kind> <waited> | <what is needed> | 1. <action> (recommended: <why>) | 2. <action> | …
 ```
 
-`<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch). Pass it to
-`record` as it is printed.
+`<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch): pass it to
+`record` as printed.
 
-`<kind>` is `parked` (lane A, B or E), `session` (lane C or D; both offer `drop`), `spine` (feature specs), `plan` (an
+`<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `plan` (an
 epic admitted with `/desk-admit` or by intake: its drafted plan, in the file the need names, waits
 for start, discard or an edit, and its children wait behind it. The supervisor acts on the answer
 at its next tick: start starts the feature batch, an edit is applied as it stands and the batch
@@ -62,8 +63,8 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
 - For `resume`, `answer` and `reject`, the answer text is recorded. Where the question
   offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Otherwise
   the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
-  resume, so it never stays parked once answered. A `session` item has none either: once its step
-  is done, `resume` takes what was done and hands it to a worker. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
+  resume, so it never stays parked once answered. A `session` item has none either: offer
+  only the actions its line lists. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
   `record` posts on the PR and sends to a worker on it. An open PR's `resume` sends a worker an instruction, unposted.
 - `override <id>` takes the user's choice as its text.
 - A `move` takes the batch's name (`standing` for the standing batch). Moving a ticket to another
@@ -82,7 +83,7 @@ Leave `"<text>"` off for `start`, `requeue`, `fix`, `drop`, `approve`, `not-now`
 line on what it recorded.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
-  answered but not requeued, and desk-q shows it waiting on that session. `SendMessage` that text to the session named `<name>`. If that name is
+  answered but not requeued. `SendMessage` that text to the session named `<name>`. If that name is
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
 - **`drop`**: out of its batch, its clean worktree removed (`queue.mjs drop`).
