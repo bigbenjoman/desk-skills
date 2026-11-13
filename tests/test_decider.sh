@@ -63,7 +63,7 @@ read -r mode key < "$T/claude.mode"
 # (the real decisions.mjs and answer.mjs), then requeue; otherwise hand on
 if [ "\$mode" = take ]; then
   if grep -q 'take a call a worker could have taken itself' <<< "\$2" \\
-    && DESK_HOME="$S/../desk" node "$B/answer.mjs" --taken "\$key" "Merge as foundation. The decider took it, not the person." >> "$T/take.out" 2>&1 \\
+    && DESK_HOME="$S/../desk" node "$B/answer.mjs" --taken "\$key" '{"question":"Merge as foundation, or split?","options":["Merge as foundation","Split"],"chose":"Merge as foundation","category":"scope"}' >> "$T/take.out" 2>&1 \\
     && node "$B/decisions.mjs" log --source decider "\$key" '{"question":"Merge as foundation, or split?","options":["Merge as foundation","Split"],"chose":"Merge as foundation","category":"scope"}' >> "$T/take.out" 2>&1; then mode=requeue; else mode=hand; fi
 fi
 ids=\$(grep -oE 'id \`[a-z]+-[0-9a-f]+\`' <<< "\$2" | grep -oE '[a-z]+-[0-9a-f]+')
@@ -301,12 +301,12 @@ out=$(tick)
 P=$(lastargs)
 check "DS-565 AC1: judgement yes, the prompt says to take a recommended option, log it as the decider's and answer it" '[ "$(calls)" = 1 ] && grep -q "take a call a worker could have taken itself" "$P" && grep -q "decisions.mjs log --source decider <TICKET>" "$P" && grep -q "answer.mjs --taken <TICKET>" "$P" && grep -q "the decider took it, not the person" "$P"'
 check "DS-565 AC1: judgement yes, the decider may run answer.mjs --taken and decisions.mjs log --source decider only" '[ "$(grep -oE "answer.mjs[^\"]*|decisions.mjs[^\"]*" "$(lastsettings)" | tr "\n" " ")" = "answer.mjs --taken:*) decisions.mjs log --source decider:*) " ]'
-check "DS-565 AC3/AC4: the prompt hands on an ask category and a park with no recommended option" 'grep -q "that touches no money, legal or regulatory matter, production data or credentials, customer copy where length means cost, or fact only the person holds" "$P" && grep -q "A park with no option marked recommended, one in an ask category" "$P"'
+check "DS-565 AC3/AC4: the prompt hands on an ask category and a park with no recommended option" 'grep -q "that touches no money, legal or regulatory matter, production data or credentials, new customer-facing copy or customer copy where length means cost, or fact only the person holds" "$P" && grep -q "A park with no option marked recommended, one in an ask category" "$P"'
 check "DS-565 AC1: the call is logged with source decider" 'grep -q "\"ticket\":\"J2\".*\"chose\":\"Merge as foundation\".*\"source\":\"decider\"" "$T/state/decisions.jsonl"'
-check "DS-565 AC1: the option is the answer in its briefing" 'grep -q "^Merge as foundation. The decider took it, not the person.$" "$T/state/briefings/J2.md"'
+check "DS-565 AC1: the option is the answer in its briefing" 'grep -q "^Merge as foundation. This was the option the last worker recommended when it parked on this scope call, .*the decider took it, not the person" "$T/state/briefings/J2.md"'
 check "DS-565 AC1: the ticket is requeued and settled, not handed on" '[ "$(stateof J2)" = triaged ] && ! handed | grep -q "^J2|"'
 takenof(){ node -e 'const a=JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]?.auto_answered; console.log(a ? [a.by, a.chose, a.question].join("|") : "none")' "$DESK_QUEUE" "$1"; }
-check "DS-565: the take is recorded once, as the pass records its own" '[ "$(takenof J2)" = "decider|Merge as foundation. The decider took it, not the person.|$REC (J2)" ]'
+check "DS-565: the take is recorded once, as the pass records its own" '[ "$(takenof J2)" = "decider|Merge as foundation|$REC (J2)" ]'
 # The same park after that take, unanswered, is handed on without a session; answered since, it is not.
 oncesort(){ node --input-type=module -e "
 import { deciderItems, presort } from '$B/decider.mjs';
@@ -318,8 +318,12 @@ console.log(a.hand.length, a.hand[0]?.why.startsWith('its recommended option was
 " "$REC (J2)"; }
 check "DS-565: a park taken once already goes to the person unless answered since" '[ "$(oncesort)" = "1 true 1" ]'
 queue '{"J3":{"key":"J3","state":"parked","lane":"A","branch":"b","park":{"question":"git push --force-with-lease was refused: approve the force-push?"}}}'
-out=$(node "$B/answer.mjs" --taken J3 "yes, force-push it" 2>&1); code=$?
-check "DS-565: answer.mjs --taken refuses a park on a refused step, so no grant comes from the decider" '[ "$code" = 11 ] && [ ! -e "$T/state/briefings/J3.md" ] && ! grep -q "\"grant\"" "$DESK_QUEUE"'
+out=$(node "$B/answer.mjs" --taken J3 '{"question":"Force-push?","options":["Force-push","Merge instead"],"chose":"Force-push","category":"engineering"}' 2>&1); code=$?
+check "DS-565: answer.mjs --taken refuses a park on a refused step, so no grant comes from the decider" '[ "$code" = 11 ] && grep -q "refused step" <<< "$out" && [ ! -e "$T/state/briefings/J3.md" ] && ! grep -q "\"grant\"" "$DESK_QUEUE"'
+# An ask category is refused at the answer, before anything is written: not left to the log after it.
+queue '{"J4":{"key":"J4","state":"parked","lane":"A","park":{"question":"Refund the customer (recommended), or not?"}}}'
+out=$(node "$B/answer.mjs" --taken J4 '{"question":"Refund the customer?","options":["Refund","Do not refund"],"chose":"Refund","category":"money"}' 2>&1); code=$?
+check "DS-565 AC3: answer.mjs --taken refuses an ask category before it writes the answer or marks the take" '[ "$code" = 11 ] && grep -q "ask category" <<< "$out" && [ ! -e "$T/state/briefings/J4.md" ] && [ "$(takenof J4)" = none ] && [ "$(stateof J4)" = parked ]'
 
 # ---- DS-331: a done ticket's line is handed on without a session, and a reworded line keeps its id ---
 mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"

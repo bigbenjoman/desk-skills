@@ -16,24 +16,34 @@ import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, ne
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
 import { readRegistry } from './claude-logins.mjs';
+import { parseDecision } from './decisions.mjs';
+import { recommendedAnswer } from './recoveries.mjs';
 
 crashShowsPerson();
 const QUEUE = join(binDir(), 'queue.mjs');
 
 const argv = process.argv.slice(2);
 // --taken, before the ticket, is the decider taking the option a worker's park recommended
-// (decider.mjs may run answer.mjs only in this form). Such an answer approves no step, so it never
-// records a grant, and a park on a refused step is refused outright.
+// (decider.mjs may run answer.mjs only in this form). It takes the call as decisions.mjs log does,
+// '{"question","options","chose","category"}', and refuses an ask category before writing anything,
+// so the category is checked at the write and not only by the log that follows it. Such an answer
+// approves no step, so it never records a grant, and a park on a refused step is refused outright.
 const taken = argv[0] === '--taken';
 const [ticket, ...args] = taken ? argv.slice(1) : argv;
 // --approve says outright that the answer approves the step its park asks for (batch-state.mjs grantFor).
 const approveFlag = args[0] === '--approve';
 const rest = approveFlag ? args.slice(1) : args;
-const text = rest.join(' ').trim();
-if (!ticket || !text) {
-  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"\n       answer.mjs --taken <TICKET> "<the recommended option, taken>"');
+const given = rest.join(' ').trim();
+if (!ticket || !given) {
+  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"\n       answer.mjs --taken <TICKET> \'{"question","options":[…],"chose","category"}\'');
   process.exit(EXIT.SHOW_PERSON);
 }
+const call = taken ? parseDecision(given) : null;
+if (call && !call.ok) {
+  console.error(`not taken: ${call.why}. Nothing recorded`);
+  process.exit(EXIT.SHOW_PERSON);
+}
+const text = call ? recommendedAnswer(call.decision, 'the decider') : given;
 if (!SAFE_ID.test(ticket) || ticket.includes('..')) {
   console.error(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
   process.exit(EXIT.SHOW_PERSON);
@@ -120,9 +130,8 @@ else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
 // A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same
 // park asked again goes to the person, not to another take.
 if (taken) {
-  const chose = text.split(/\. This was the option /)[0].trim();
   try {
-    execFileSync('node', [QUEUE, 'set', ticket, `auto_answered=${JSON.stringify({ question: takenQuestion, chose, at: stamp, by: 'decider' })}`], { stdio: 'ignore' });
+    execFileSync('node', [QUEUE, 'set', ticket, `auto_answered=${JSON.stringify({ question: takenQuestion, chose: call.decision.chose, at: stamp, by: 'decider' })}`], { stdio: 'ignore' });
   } catch (e) {
     console.error(`${ticket}: answer recorded in the briefing, but not as taken once: ${e.message}`);
     process.exit(EXIT.SHOW_PERSON);
