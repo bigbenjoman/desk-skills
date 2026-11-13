@@ -95,6 +95,8 @@ t('DS-508 the review briefing has its section', epicReviewBrief(ectx).startsWith
 const etask = epicReviewTask(ectx);
 t('DS-508 the review task names its ticket the way every task does', /Your ticket is \$TICKET\. /.test(etask), true);
 t('DS-594 the review task pushes HEAD to the base from its detached worktree', etask.includes('push with git push origin HEAD:refs/heads/feat/x,') && etask.includes('on a detached HEAD at origin/feat/x'), true);
+t('DS-594 both tasks name the push-retry form of that push, in place of the contract\'s branch forms', [task, etask].every((s) => s.includes('run as node ~/.claude/desk/bin/push-retry.mjs origin HEAD:refs/heads/feat/x: it takes the place of the worker contract\'s origin <branch> push forms')), true);
+t('DS-594 the review task\'s sentences are spaced', etask.includes('(Stage 4b). Fix every'), true);
 // DS-508 AC1, AC6: an epic batch's epic PR is due once every child merged into the base, a ticket held
 // behind the epic itself aside, and again only once a child merges after it.
 const kid = (key, at) => ({ key, state: 'done', result: { pr: 1 }, merged_at: at });

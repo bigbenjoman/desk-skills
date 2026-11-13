@@ -71,6 +71,7 @@ import { dirname, join, resolve } from 'node:path';
 import { platform } from 'node:os';
 import * as E from './desk-env.mjs';
 import { grantPush } from './batch-state.mjs';
+import { baseRefspec } from './base-fix.mjs';
 import { wrappersFile } from './desk-lines.mjs';
 import { parseEvidenceRow } from './evidence.mjs';
 
@@ -550,7 +551,7 @@ if (mode === 'triage') {
   // git push: only this ticket's branch, only as exact commands, never the default branch. The one
   // exception is the batch base's conflict fix worker (base-fix.mjs), whose branch is the base: one
   // exact push of it, under the grant every base sync needs (§3 batch-base-push). Its worktree is on a
-  // detached HEAD (base-sync.mjs ensureBaseWorktree), so the push names HEAD (base-fix.mjs basePush).
+  // detached HEAD (base-sync.mjs ensureBaseWorktree), so the push names HEAD, the refspec its task gives.
   const FORCE = [...[' push *--force', ' push *--force *', ' push *--force-if-includes*', ' push *--mirror*', ' push *--all*', ' push *--delete*',
     ' push +*', ' push * +*'], ...shortFlag(' push', '-f'), ...shortFlag(' push', '-d')];
   // push-retry.mjs runs the same push, so it is allowed exactly where that push is. A dry run's
@@ -558,7 +559,7 @@ if (mode === 'triage') {
   const retried = (tail) => (opt.dry ? [] : BIN_FORMS.flatMap((b) => ['', ' --more'].map((more) => `Bash(node ${b}/push-retry.mjs${more}${tail})`)));
   if (baseFix) {
     const push = E.basePushGrant();
-    if (push.ok) allow.push(...exact('git', ` push origin HEAD:refs/heads/${BRANCH}`), ...retried(` origin HEAD:refs/heads/${BRANCH}`));
+    if (push.ok) allow.push(...exact('git', ` push origin ${baseRefspec(BRANCH)}`), ...retried(` origin ${baseRefspec(BRANCH)}`));
     else { deny.push(...bash('git', ' push')); denied.push(`${push.key} (${push.perm})`); }
   } else if (!branchOk) {
     deny.push(...bash('git', ' push'));
