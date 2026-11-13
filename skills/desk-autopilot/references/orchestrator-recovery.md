@@ -87,8 +87,9 @@ It moves `<state>/logs/<TICKET>.log`, `<state>/parks/<TICKET>.json` and
 you", and a kept mailbox answers the next park instantly), sets `state=triaged open_questions=0
 park=null session_id=null pid=null idle_passes=0 log_bytes=0`, and moves the ticket to the front of
 the spawn order (`.tickets` key order). It refuses a running ticket, unless its worker has
-exited (its session is not in the agent registry, and no pass is running) and its log ends on a
-park: that park is recorded as the pass would and kept as `prev_park`. It refuses a held one (release it
+exited (its session is not in the agent registry, and no pass is running) and its log, after its
+last spawn, ends on a park and asks for no issue link: that park, with the worker's decisions and
+notes, is recorded and kept as `prev_park`. It refuses a held one (release it
 instead), one never triaged, one with triage questions still open (answer them instead), one
 parked at triage for its size or a dependency cycle, and any lane but A, B or E, because `pass.mjs`
 spawns whatever is triaged without reading the lane.

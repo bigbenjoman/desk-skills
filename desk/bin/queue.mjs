@@ -236,17 +236,15 @@ function refuseLeft(t, key, what) {
 }
 
 // A ticket still recorded running whose worker has exited on a park, before a pass harvested it:
-// { question, since, stage, markers } from its log, or null. Its worker is gone when a recorded pid is
-// dead and the agent registry, read across every login, lacks its session; a registry that cannot be
-// read, or a ticket with neither, is never taken as gone. Its park is the last ending marker the
-// worker said after the log's last `desk_spawn` line, so a park an earlier session answered is not it.
-// A pass running now harvests it itself, and would park it again behind this requeue.
+// { question, since, stage, markers, notes } from its log, or null. Its worker is gone when a recorded
+// pid is dead and the agent registry, read across every login, lacks its session; a registry that
+// cannot be read, or a ticket with neither, is never taken as gone. Its park is the last ending marker
+// the worker said after the log's last `desk_spawn` line, so a park an earlier session answered is not
+// it; a log with no such line is never read as one. A round that asked for issue links, or a pass
+// running now (its lock unreadable included), is left to the pass, which makes the links and would
+// otherwise park it again behind this requeue.
 function exitedOnPark(t) {
   if (t.pid == null && !t.session_id) return null;
-  try {
-    const { pid } = JSON.parse(readFileSync(join(stateDir(), 'orchestrator.lock'), 'utf8'));
-    if (pid !== process.ppid && alive(pid)) return null;
-  } catch { /* no pass running */ }
   if (t.pid != null && alive(Number(t.pid))) return null;
   if (t.session_id) {
     const reg = readRegistry();
@@ -257,21 +255,52 @@ function exitedOnPark(t) {
   try { text = readFileSync(log, 'utf8'); } catch { return null; }
   const lines = text.split('\n');
   const spawned = lines.findLastIndex((l) => l.startsWith('{"type":"desk_spawn"'));
+  if (spawned < 0) return null;
   const round = lines.slice(spawned + 1).join('\n');
   const markers = workerMarkers(round);
   const end = markers.findLast(([k]) => ['AUTOPILOT_PARK', 'AUTOPILOT_DONE', 'AUTOPILOT_HANDOFF', 'AUTOPILOT_REBOOT'].includes(k));
-  if (end?.[0] !== 'AUTOPILOT_PARK' || !end[1].trim()) return null;
-  return { question: end[1].trim(), since: statSync(log).mtime.toISOString(), stage: lastStage(round)?.stage ?? t.stage ?? null, markers };
+  if (end?.[0] !== 'AUTOPILOT_PARK' || !end[1].trim() || markers.some(([k]) => k === 'AUTOPILOT_LINK')) return null;
+  if (passRunning()) return null;
+  const notes = workerMarkers(text).filter(([k, v]) => k === 'AUTOPILOT_NOTE' && v.trim()).map(([, v]) => `- [${t.key}] ${v.trim()}`);
+  return { question: end[1].trim(), since: statSync(log).mtime.toISOString(), stage: lastStage(round)?.stage ?? t.stage ?? null, markers, notes, log, logStamp: logStamp(log) };
 }
+
+const logStamp = (log) => { try { const s = statSync(log); return `${s.size}:${s.mtimeMs}`; } catch { return null; } };
+function passRunning() {
+  const passLock = join(stateDir(), 'orchestrator.lock');
+  if (!existsSync(passLock)) return false;
+  try {
+    const { pid } = JSON.parse(readFileSync(passLock, 'utf8'));
+    return pid !== process.ppid && alive(pid);
+  } catch { return true; }
+}
+
+// The notes a worker printed, appended to the batch notes as a pass appends them: each once.
+function keepNotes(notes) {
+  const path = join(stateDir(), 'batch-notes.md');
+  const seen = new Set(existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []);
+  const fresh = notes.filter((n) => !seen.has(n) && seen.add(n));
+  if (!fresh.length) return;
+  if (!existsSync(path)) writeFileSync(path, '# Batch notes\n\n');
+  appendFileSync(path, `${fresh.join('\n')}\n`);
+}
+
+// Read before the queue lock (the registry read can outlast another writer's wait for it), for the
+// ticket `requeue` names on the command line, as { key, session, park }.
+let exitedPark = null;
 
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
   // Recorded parked as a pass's harvest records it, with the round a fresh spawn may resume and the
-  // calls the worker logged, before the requeue moves its log aside.
+  // calls and notes the worker logged, before the requeue moves its log aside.
   let harvested = '';
   let calls = null;
+  let p = null;
   if (t.state === 'running') {
-    const p = exitedOnPark(t);
+    // Read again under the lock: a resume of the same session since appends to the log, and a pass
+    // started since would harvest it too.
+    p = exitedPark?.key === key && exitedPark.session === (t.session_id ?? null) ? exitedPark.park : null;
+    if (p && (logStamp(p.log) !== p.logStamp || passRunning())) p = null;
     if (!p) throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
     calls = workerCalls(p.markers, { ticket: key, run: t.session_id, repo: ghRepo(), pr: null });
     Object.assign(t, { state: 'parked', park: newPark(p.question, p.since), last_round: { stage: p.stage, question: p.question, at: p.since } });
@@ -331,6 +360,7 @@ function requeue(q, key, { handedBack = false } = {}) {
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
+  if (p?.notes.length) keepNotes(p.notes);
   save(q);
   return `${key} requeued: ${placed}${harvested}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
@@ -549,6 +579,10 @@ const [, , cmd, ...args] = process.argv;
 const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
+if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
+  const t = readQueue(QUEUE).tickets?.[args[0]];
+  if (t?.state === 'running') exitedPark = { key: args[0], session: t.session_id ?? null, park: exitedOnPark(t) };
+}
 if (WRITES.includes(cmd)) lock();
 const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
 
