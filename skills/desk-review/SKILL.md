@@ -33,8 +33,7 @@ means stop: say which slug was looked up and offer `/desk-setup`. A `TODO` in a 
 so it makes the run report-only, never stops it. A `TODO` in any other row this skill needs is not a gap to guess: stop, ask, offer
 `/desk-setup`. Then take:
 
-- §0 GitHub repo (`<owner>/<repo>` below) and Default branch (`<default>`); §1 GitHub handle (`<me>`); the login a review is
-  posted from (`<poster>`): §4 Review account's (`desk-env get review-account`, before the colon), or `<me>` where it is `none`.
+- §0 GitHub repo (`<owner>/<repo>` below) and Default branch (`<default>`); §1 GitHub handle (`<me>`).
 - §3 `read-others`, `pr-self-review-comment`, `pr-review-others`, `codex-review`, `ci-rerun`.
 - §4 Tracker (`desk-env get tracker`), Ticket key pattern, Other work id patterns, Required checks,
   Merge holds, Project subagents sync, the **Infra and security owner** paths, **What review here

@@ -4,7 +4,8 @@ Read this when a command in `SKILL.md` or a phase file misbehaves. Each entry ex
 rather than loud: it produces a plausible report, not an error.
 
 Every block below may run in its own shell and inherits nothing. Substitute `<owner>`, `<repo>`,
-`<me>`, `<poster>`, `<n>` and SHAs **literally**; never `$N` or `$REPO`.
+`<me>`, `<poster>`, `<n>` and SHAs **literally**; never `$N` or `$REPO`. `<poster>` is §4 Review
+account's login (`desk-env get review-account`, before the colon), or `<me>` where it is `none`.
 
 ## The sweep query
 

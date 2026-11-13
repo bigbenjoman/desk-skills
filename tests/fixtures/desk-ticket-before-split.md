@@ -290,12 +290,13 @@ starts again at one.
 report goes onto the PR as one `COMMENTED` review, immediately after `gh pr create --draft`:
 
 ```bash
-gh pr review <n> --repo <repo> --comment --body-file <report>
+node ~/.claude/desk/bin/review-post.mjs <n> --repo <repo> --body-file <report>
 ```
 
-Plain `gh`, authenticated as §1 GitHub handle (`gh auth status` shows the active account; switch
-with `gh auth switch` if it is another). Never a `GH_TOKEN=…` prefix: no harness rule matches a
-`VAR=value` form, and autopilot workers are refused it outright.
+It posts from §4 Review account (`desk-env get review-account`, the login a repo's review gate may
+count alone), setting its gh config directory itself, or with plain `gh` as §1 GitHub handle where
+that row is `none` (`gh auth status` shows the active account). Never a `GH_TOKEN=…` prefix: no
+harness rule matches a `VAR=value` form, and autopilot workers are refused it outright.
 
 Where the review command defines markers, use them exactly. Open the body with its **local-review
 marker**: that is what lets a later sweep tell a real review from the empty `COMMENTED` artefact

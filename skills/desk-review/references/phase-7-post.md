@@ -52,8 +52,8 @@ after the finders are done, and removed afterwards with `git clean -f desk-revie
 node ~/.claude/desk/bin/review-post.mjs <n> --repo <owner>/<repo> --body-file desk-review.md
 ```
 
-It posts from §4 Review account (`desk-env get review-account`), or §1 GitHub handle where that is
-`none`. Interactive, with that row set, run the `gh api` call with `GH_CONFIG_DIR=<its directory>` so
+It posts from §4 Review account (`desk-env get review-account`, its login before the colon), or §1
+GitHub handle where that is `none`: that login is `<poster>` below. Interactive, with that row set, run the `gh api` call with `GH_CONFIG_DIR=<its directory>` so
 the review is that login's: a repo gate may count only it.
 
 Every placeholder is substituted **literally**, never a shell variable: `gh pr review ""` does not
