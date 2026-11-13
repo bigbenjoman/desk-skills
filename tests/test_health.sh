@@ -292,7 +292,7 @@ check "DS-602 AC1 no stall line for it, and spawns are not held"   '! grep -qE "
 check "DS-602 AC1 the health line's notes name the row and folder" 'grep "^health: all checks pass" <<< "$out" | grep -qF "$note_c"'
 check "DS-602 AC2 the first pass on the machine pushes it"         '[ "$(pushes)" = "health:claude-missing:c" ] && [[ "$json" == *"Claude login c is listed at ~/.claude-logins/c, which does not exist"* ]]'
 pj
-check "DS-602 AC2 the next pass in this slot does not push it"     '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out"'
+check "DS-602 AC2 the next pass in this slot lists the same key, which the supervisor sends once" '[ "$(pushes)" = "health:claude-missing:c" ] && grep -qF "$note_c" <<< "$out"'
 slot
 check "DS-602 AC2 a pass in another slot names it, does not push"  '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out" && ! grep -qE "^ *health: Claude login c" <<< "$out"'
 : > "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
@@ -307,6 +307,11 @@ check "DS-602 AC4 in the other slot too"                            '! grep -q "
 rm -rf "$HOME/.claude-logins/c"
 pj
 check "DS-602 a folder that goes missing again is pushed again"    '[ "$(pushes)" = "health:claude-missing:c" ]'
+printf '%s\n' "$T/a-slot-since-removed" > "$HOME/.desk-autopilot/health-missing-logins/c"
+slot
+check "DS-602 a slot whose owner's state folder is gone takes the push over" '[ "$(pushes)" = "health:claude-missing:c" ]'
+pj
+check "DS-602 and the slot it took it from no longer lists it"     '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out"'
 unset DESK_SUBSCRIPTIONS
 
 echo "$PASS checks passed, $FAIL failed"

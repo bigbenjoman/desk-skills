@@ -67,17 +67,27 @@ const failureKind = (out) => (NETWORK.test(out ?? '') ? 'network' : 'auth');
 
 export const healthFile = (state) => join(state, 'health.json');
 // One marker file per listed Claude login whose folder is missing, shared by every repo and batch on
-// the machine: whichever pass creates it pushes the login, and it goes once the folder exists.
-export const missingLoginsDir = (root = join(E.HOME, '.desk-autopilot')) => join(root, 'health-missing-logins');
+// the machine. It holds the state folder of the slot that pushes the login, and goes once the folder
+// exists.
+const missingLoginsDir = () => join(E.HOME, '.desk-autopilot', 'health-missing-logins');
 
-// Whether this pass is the first on the machine to find `l` missing; it claims the marker if so. A
-// marker it cannot write is told anyway, as a push repeated beats one never sent.
-function firstToFind(dir, l) {
+// Whether the slot at `state` is the one on the machine that pushes `l`: the first to find it missing,
+// or the one taking over from a slot whose state folder is gone. The owner lists the push on every
+// pass, so the supervisor's own once-per-key record sends it once and retries a failed send; no other
+// slot lists it. A marker it cannot read or write is told anyway, as a push repeated beats one never sent.
+function pushesMissing(dir, l, state) {
+  const file = join(dir, loginKey(l));
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, loginKey(l)), `${l.folder}\n`, { flag: 'wx' });
+    writeFileSync(file, `${state}\n`, { flag: 'wx' });
     return true;
-  } catch (e) { return e.code !== 'EEXIST'; }
+  } catch (e) { if (e.code !== 'EEXIST') return true; }
+  let owner;
+  try { owner = readFileSync(file, 'utf8').trim(); } catch { return true; }
+  if (owner === state) return true;
+  if (owner && existsSync(owner)) return false;
+  try { writeFileSync(file, `${state}\n`); } catch { /* told anyway */ }
+  return true;
 }
 
 // Drops the marker of every login no longer missing, so a folder that goes missing again is pushed again.
@@ -192,7 +202,7 @@ function nextStreak(prev, units) {
 // say what a pass does with them: `failing` holds spawns, `line` is the report's one health line,
 // `stalls` the lines naming each failure told to the person and its fix, `push` one entry for each,
 // and `unconfirmed` the remote failures rechecked before they are told.
-export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = Date.now(), env = process.env, missingDir = missingLoginsDir() } = {}) {
+export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = Date.now(), env = process.env } = {}) {
   if (/^off$/i.test(env.AUTOPILOT_HEALTH_CHECKS ?? '')) {
     return { off: true, failing: [], recovered: [], unconfirmed: [], stalls: [], push: [], line: 'health: checks off (AUTOPILOT_HEALTH_CHECKS=off)' };
   }
@@ -274,8 +284,9 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     stalls.push(`health: Claude login ${l.name} (${l.folder}) ${out} — ${fix}; spawns are not held for it`);
     push.push({ key: `health:${slug}:claude:${loginKey(l)}`, text: `desk ${slug}: Claude login ${l.name} ${out}. Fix: ${fix}` });
   }
+  const missingDir = missingLoginsDir();
   clearFound(missingDir, missing);
-  for (const l of missing.filter((m) => firstToFind(missingDir, m))) {
+  for (const l of missing.filter((m) => pushesMissing(missingDir, m, state))) {
     push.push({ key: `health:claude-missing:${loginKey(l)}`, text: `desk: Claude login ${l.name} is listed at ${l.folder}, which does not exist, so no worker uses it. Fix: ${missingFix(l)}` });
   }
   return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push };
