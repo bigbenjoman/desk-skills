@@ -160,6 +160,8 @@ const REWRITTEN = [
   ['DS-458', 'Nobody is reading live, so drop the running commentary.', 1], // print a stage line, suppress nothing
   ['DS-511', 'check headroom, keep the cap, proceed', 1], // a refused with-lock.sh drops to the lower cap
   ['AA-184', '**Screenshot capture**, only where §3', 1], // the route covers any screenshot or image script
+  ['DS-576', '```bash gh pr review <n> --repo <repo> --comment --body-file <report> ```', 1], // review-post.mjs posts it
+  ['DS-576', '**Use the plain form above: never a `GH_TOKEN=… gh pr review …` prefix.**', 1], // as §4 Review account
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

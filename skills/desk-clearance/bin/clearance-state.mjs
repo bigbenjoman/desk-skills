@@ -405,8 +405,17 @@ function checkState(checks, name) {
 }
 const GATE_WORD = { pass: 'SUCCESS', pending: 'PENDING', absent: 'ABSENT', fail: 'FAILURE' }
 
+// The author with §4 Review account's login: desk posts its review verdicts from that account, so
+// neither is a person's feedback.
+function selfLogins(AUTHOR) {
+  let acct = null
+  try { acct = E.reviewAccount?.()?.login ?? null } catch { /* malformed row: the author alone */ }
+  return [AUTHOR, acct].filter(Boolean)
+}
+
 function classify(p, byHead, { AUTHOR, required, advisory, mergeBar, base, runsByHead = {} }) {
-  const isHuman = (a) => G.isHuman(a, AUTHOR)
+  const self = selfLogins(AUTHOR)
+  const isHuman = (a) => G.isHuman(a, self)
   const head = p.commits?.nodes?.[0]?.commit
   if (!head) die(`#${p.number}: no head commit in response`)
 
@@ -851,7 +860,8 @@ async function capacity(prs) {
 // Deliberately not automated further: grouping these is a judgement call.
 async function corpus() {
   const AUTHOR = await resolveAuthor()
-  const isHuman = (a) => G.isHuman(a, AUTHOR)
+  const self = selfLogins(AUTHOR)
+  const isHuman = (a) => G.isHuman(a, self)
   const data = await gh(['api', 'graphql',
     '-F', `q=repo:${GH.full} is:pr is:open author:${AUTHOR}`,
     '-f', `query=${QUERY}`])
