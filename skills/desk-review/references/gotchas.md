@@ -6,6 +6,7 @@ rather than loud: it produces a plausible report, not an error.
 Every block below may run in its own shell and inherits nothing. Substitute `<owner>`, `<repo>`,
 `<me>`, `<poster>`, `<n>` and SHAs **literally**; never `$N` or `$REPO`. `<poster>` is §4 Review
 account's login (`desk-env get review-account`, before the colon), or `<me>` where it is `none`.
+A worker posts as `<poster>` and an interactive run as `<me>`, so the sweep counts both.
 
 ## The sweep query
 
@@ -30,7 +31,7 @@ query($owner:String!, $name:String!) {
   | map(select(.isDraft | not))                                    as $nd
   | ($nd | map(. as $pr
       | ([$pr.reviews.nodes[]
-          | select(.author.login == $by
+          | select((.author.login == $me or .author.login == $by)
                    and (.body // "" | startswith("<!-- desk-review:local -->")))]) as $mine
       | . + {
           reviewedAt:      ([$mine[] | select(.commit.oid == $pr.headRefOid) | .commit.oid] | last),

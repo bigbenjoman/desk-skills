@@ -53,8 +53,8 @@ node ~/.claude/desk/bin/review-post.mjs <n> --repo <owner>/<repo> --body-file de
 ```
 
 It posts from §4 Review account (`desk-env get review-account`, its login before the colon), or §1
-GitHub handle where that is `none`: that login is `<poster>` below. Interactive, with that row set, run the `gh api` call with `GH_CONFIG_DIR=<its directory>` so
-the review is that login's: a repo gate may count only it.
+GitHub handle where that is `none`: that login is `<poster>` below. The interactive `gh api` call
+posts as §1 GitHub handle, so there `<poster>` is `<me>`.
 
 Every placeholder is substituted **literally**, never a shell variable: `gh pr review ""` does not
 fail, it resolves the PR for the current branch and posts the review on an unrelated PR, publicly.
