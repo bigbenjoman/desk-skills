@@ -123,20 +123,26 @@ for workers: where that row is not `yes`, a worker parks on it.
 
 Two scope calls are always taken where it is `yes`:
 
-- **A gap a sibling ticket in the epic owns is not a question.** Cite the sibling's key where the
-  gap is reported (the PR body, the review) and carry on.
+- **A gap a sibling ticket in the epic owns is not a question.** Cite the sibling's key in an
+  `AUTOPILOT_DECISION` with category `scope`, list it under `Decisions taken`, and carry on: the
+  review reads it as a settled call, so the gap leaves its count (desk-review's
+  `phase-5-requirements.md`, *Settled calls*; at Stage 4b, before a PR, give it the decision).
 - **A self-review fix that grows** (`worker-contract-stage-4.md`, *A fix that grows*) is printed as
   an `AUTOPILOT_DECISION` with category `scope`, and is widened or split:
-  - **Widen** when the grown diff stays within the ticket's size (its Size field; M with none) and
-    adds no file under a §4 Merge holds glob (`desk-env list merge-holds`). A confirmed P0 or P1 in
-    the ticket's own feature path that needs at most one more file and about 20 lines always does.
+  - **Widen** when the grown diff stays within the ticket's size (its Size field, else the
+    description's first-line `Size:`; M with neither) and adds no file under a §4 Merge holds glob
+    (`desk-env list merge-holds`). A confirmed P0 or P1 in the ticket's own feature path that needs
+    at most one more file and about 20 lines, none under a Merge holds glob, widens past the size.
   - **Split** otherwise: file one follow-up ticket for the finding with `desk-jira create`
     (desk-jira's ticket template, the finding's `file:line` in it), print
     `AUTOPILOT_LINK: <follow-up> relates-to <TICKET>` (`worker-contract-stage-8.md`), and carry the
-    finding with the follow-up's key in its title. Only a P2 from round 2 can be carried, so a P0 or
-    P1, or a P2 on round 1, too big to widen still parks, naming the finding and the follow-up.
-  - **A §3 row the growth needs that is not `yes`** (`jira-create` for the follow-up, a production
-    or staging write for the fix) parks naming that row, whatever `autopilot-judgement` says.
+    finding with the follow-up's key in its title. A P2 is carried only from round 2, so a round-1
+    P2 stays open into round 2, which carries it. A P0 or P1 is never carried: it is handed on as a
+    round-3 P0 or P1 is (*Round 3, a P0 or P1*), the follow-up named in the posted review.
+  - **Still parks**, whatever `autopilot-judgement` says: **a §3 row the growth needs that is not
+    `yes`** (`jira-create` for the follow-up, a production or staging write for the fix), naming
+    that row; a round-1 split P2 with no other fix, so no round 2 to carry it; and a hand-on where
+    §3 `pr-self-review-comment` is not `yes`.
 
 Each taken call is one entry in `<state>/decisions.jsonl` (time, repo, ticket, question, options,
 the option chosen, category, PR link):

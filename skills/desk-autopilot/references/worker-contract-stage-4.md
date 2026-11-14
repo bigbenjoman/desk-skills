@@ -196,13 +196,13 @@ finders read-only, and when and how to call `codex`. Read that section before th
   deferred count fails on any non-zero value, so a deferred finding is a PR that can never merge.
   Carrying is not deferring: it exists only from round 2, only for a P2, and leaves the counts.
   Cost the fix before calling it out of scope: a "restructuring" is often ~30 lines. Fix it where it
-  stands. **A fix that grows** (a new file other than its own spec, or one your diff does not touch)
+  stands. **A fix that grows** (into a file, not its own spec, your diff does not touch)
   is a scope call: take it per `ask-or-take.md` where §3 `autopilot-judgement` is `yes`, else park
-  naming it. So does a fix needing someone else's decision.
-  Moving equivalent sites onto a helper this PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR
+  naming it. A fix needing someone else's decision parks. Moving equivalent sites onto a helper this
+  PR creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR
   body. Growth means new behaviour, not new call sites.
-- **Requirement gaps**: report in `AUTOPILOT_DONE` and in the verdict's gap count, do not act. A gap
-  keeps the PR in draft until the user decides; the orchestrator routes it.
+- **Requirement gaps**: report in `AUTOPILOT_DONE` and the verdict's gap count, do not act (one a
+  sibling ticket owns: `ask-or-take.md`). A gap keeps the PR in draft until the user decides.
 - **Nothing found**: say so with the count of files reviewed. It goes in the PR's Testing bullet
   per `desk-pr`, carrying the SHA and any `(same-vendor)` tag.
 
