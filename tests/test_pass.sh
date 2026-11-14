@@ -2182,6 +2182,35 @@ check "DS-429 a round that names its screenshots is uploaded though earlier trie
   'grep -qx "774 $T/state-s/images/P-4/" "$T/uploads" && [ "$(field P-4 upload_crash)" = null ] && grep -q "^pr ready 774" "$T/gh-calls"'
 rm -f "$T/upload-fills" "$T/upload-busy-775"
 
+# ---- KAN-629: screenshots saved in the ticket's briefed directory by a worker that never printed
+# AUTOPILOT_IMAGES are uploaded from that directory, not left to the person as files desk holds.
+# K-1: a finished round with no marker; its body has the cell. K-2: the same, but its cells were filled
+# by an earlier round's upload. K-3: a running worker with no marker yet. K-4: done before this fix, its
+# draft's cells still left. K-5: done, its earlier upload partial (assets already on GitHub).
+for k in 1 2 3 4 5; do mkdir -p "$T/state-s/images/K-$k"; : > "$T/state-s/images/K-$k/k-$k.png"; frx "78$k" "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody "78$k" "_drag k-$k.png_"; done
+dragbody 782 '<img alt="k-2" src="https://github.com/user-attachments/assets/2">'
+for k in 1 2; do q add "K-$k"; q set "K-$k" state=running session_id=gone lane=A "branch=fix/K-$k"; say "AUTOPILOT_DONE: pr=78$k jira=Done" > "$T/state-s/logs/K-$k.log"; done
+q add K-3; q set K-3 state=running session_id=live-1 lane=A branch=fix/K-3 result.pr=783 log_bytes=0; say "working" > "$T/state-s/logs/K-3.log"
+q add K-4; q set K-4 state=done lane=A branch=fix/K-4 result.pr=784
+q add K-5; q set K-5 state=done lane=A branch=fix/K-5 result.pr=785 images_uploaded=partial
+: > "$T/upload-fills"; : > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "KAN-629 a finished round with no AUTOPILOT_IMAGES uploads the briefed screenshot directory" \
+  'grep -qx "781 $T/state-s/images/K-1" "$T/uploads" && [ "$(field K-1 images_uploaded)" = true ] && ! echo "$out" | grep -q "K-1: DRAFT"'
+check "KAN-629 negative control: a body with no cell left is not uploaded again from that directory" \
+  '! grep -q "^782 " "$T/uploads" && [ "$(field K-2 images_uploaded)" = null ]'
+check "KAN-629 negative control: a running worker with no marker may still be capturing, so nothing is uploaded" \
+  '! grep -q "^783 " "$T/uploads" && [ "$(field K-3 images_uploaded)" = null ]'
+check "KAN-629 a done draft whose cells desk holds the files for goes to the pass's upload, not the person" \
+  'grep -qx "784 $T/state-s/images/K-4" "$T/uploads" && [ "$(field K-4 undraft.call)" = "\"upload\"" ] && [ "$(field K-4 images_uploaded)" = true ] && ! echo "$out" | grep -q "K-4: DRAFT"'
+check "KAN-629 a partial upload is never sent again, and its cells stay with the person as before" \
+  '! grep -q "^785 " "$T/uploads" && [ "$(field K-5 undraft.call)" = "\"person\"" ] && echo "$out" | grep -qF "K-5: DRAFT — PR #785 stays draft: 1 screenshot cell(s) left: k-5.png, whose files desk holds but could not put in the body"'
+check "KAN-629 one upload a pass: the undraft step does not send K-1 again" '[ "$(grep -c "^781 " "$T/uploads")" = 1 ]'
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "KAN-629 its cells filled, the next pass takes it out of draft with no second upload" \
+  'grep -q "^pr ready 784" "$T/gh-calls" && ! grep -q "^784 " "$T/uploads"'
+rm -f "$T/upload-fills"
+for k in 1 2 3 4 5; do q set "K-$k" state=done session_id=null; dragbody "78$k" "no cell"; done
+
 # ---- DS-493: a base that renumbers a migration sends the child naming it to a worker, before any other
 # fix try, and leaves a child naming none of it. A real clone, since the pass asks git.
 git init -q --bare -b main "$T/mig-origin.git"
