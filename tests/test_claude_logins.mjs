@@ -144,7 +144,17 @@ t('AC14 the default probe runs as before, into probe.log', `${calls().join()} ${
 rmSync(process.env.DESK_USAGE_DIR, { recursive: true, force: true });
 
 // ---- AC11, AC12: desk-q's scheduled probe, per login
-const repos = (running) => [{ rows: running.map((key) => ({ k: 'running', t: { key } })), prs: [], stateDir: S, q: {} }];
+// Login B is one a repo is pinned to: its folder signed in to b@example.com, and acme__pin's
+// Subscription row naming that account.
+const account = (dir, email, json = join(dir, '.claude.json')) => { mkdirSync(dir, { recursive: true }); writeFileSync(json, JSON.stringify({ oauthAccount: { emailAddress: email } })); };
+const pin = (slug, value) => {
+  const d = join(process.env.DESK_CONFIG_ROOT, 'repos', slug);
+  mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, 'config.md'), `## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Subscription | \`default\` | \`${value}\` |\n`);
+};
+account(B, 'b@example.com');
+pin('acme__pin', 'b@example.com');
+const repos =(running) => [{ rows: running.map((key) => ({ k: 'running', t: { key } })), prs: [], stateDir: S, q: {} }];
 const now = Date.now();
 const due = (r) => Q.probesDue(r, { now }).map((x) => x.login.name).join() || 'none';
 t('AC11 no worker running: the default and login B are each due', due(repos([])), 'default,b');
@@ -286,8 +296,20 @@ t('a desk-q on a default set off never probes it, with no other login in use', Q
 subscriptions([['default', '~/.claude', 'in rotation'], ['b', '~/.claude-logins/b', 'off']]);
 t('and with the default in rotation, its one probe is due a day on', Q.probesDue([], { now: nowU + 86400000 }).map((x) => x.login.name).join(), 'default');
 subscriptions([['default', '~/.claude', 'unused'], ['b', '~/.claude-logins/b', 'default']]);
-t('a file saying default and unused: both logins are in use', L.probeLogins().map((l) => `${l.name}:${l.rule}`).join(), 'default:standby,b:in rotation');
-t('and with no worker running, desk-q probes both, on the rules the file gives them', Q.probesDue([], { now: nowU }).map((x) => `${x.login.name}:${x.login.rule}`).sort().join(), 'b:in rotation,default:standby');
+t('a file saying default and unused: both logins are ones desk may use', L.probeLogins().map((l) => `${l.name}:${l.rule}`).join(), 'default:standby,b:in rotation');
+t('and with no worker running, desk-q probes the default, not the unused login no repo is pinned to', Q.probesDue([], { now: nowU }).map((x) => `${x.login.name}:${x.login.rule}`).sort().join(), 'b:in rotation');
+
+// AC1, AC2: the default, a login a repo is pinned to and an unused one, none with a worker running or a
+// fresh reading: only the default and the pinned login are probed, until a repo is pinned to the third.
+const day = (r) => Q.probesDue(r, { now: nowU + 86400000 }).map((x) => x.login.name).sort().join() || 'none';
+account(join(H, '.claude-logins', 'c'), 'c@example.com');
+subscriptions([['default', '~/.claude', 'default'], ['b', '~/.claude-logins/b', 'unused'], ['c', '~/.claude-logins/c', 'unused']]);
+t('AC1 the scheduled probe covers the default and the pinned login, not the unused one', day([]), 'b,default');
+pin('acme__pin2', 'C@example.com');
+t('AC2 a repo just pinned to the unused login: the next probe covers it', day([]), 'b,c,default');
+rmSync(join(process.env.DESK_CONFIG_ROOT, 'repos', 'acme__pin2'), { recursive: true });
+pin('acme__pin', 'default');
+t('a login no repo is pinned to any longer is not probed', day([]), 'default');
 
 // AC6: one login. Every worker log is its, with no login file, and the line is the one it always was.
 rmSync(join(H, '.claude-logins'), { recursive: true });

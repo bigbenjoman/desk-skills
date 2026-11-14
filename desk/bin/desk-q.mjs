@@ -49,7 +49,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
+import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, workLogins } from './claude-logins.mjs';
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
@@ -686,31 +686,33 @@ export function runningOn(repos, login) {
 // This desk-q's login, its CLAUDE_CONFIG_DIR's, as a pass's is. Null when the subscriptions file cannot
 // be read, which reads and probes as no login was named.
 const ownLogin = () => { try { return loginOf(process.env.CLAUDE_CONFIG_DIR); } catch { return null; } };
-// The logins in rotation or on standby besides desk-q's own. The default no file lists counts only
-// beside a folder under the logins folder: alone, it is the fallback for one login kept elsewhere under
-// CLAUDE_CONFIG_DIR. None when the subscriptions file cannot be read, so desk-q then treats its own
-// login as the only one.
+// The logins work runs on (the default and each a repo is pinned to) besides desk-q's own. The default
+// no file lists counts only beside a folder under the logins folder: alone, it is the fallback for one
+// login kept elsewhere under CLAUDE_CONFIG_DIR. None when the subscriptions file cannot be read, so
+// desk-q then treats its own login as the only one.
 const otherLogins = (own) => {
   try {
     const folders = claudeLogins().some((l) => l.source === 'found');
-    return probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file' || folders));
+    return workLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file' || folders));
   } catch { return []; }
 };
+// desk-q's own login is probed when no file rule names it, or when work runs on it.
+const ownProbed = (own) => { try { return own.rule == null || workLogins().some((l) => l.dir === own.dir); } catch { return false; } };
 // The login the usage line shows: the default, named by null, whichever login this desk-q started on
 // while there are others. With none, its own: one login under CLAUDE_CONFIG_DIR still shows its probe's
 // reading, and so does the one login a subscriptions file leaves in use.
 const lineLogin = () => { const own = ownLogin(); return own?.configDir && otherLogins(own).length ? null : own; };
 // The probes an open desk-q makes now. With one login, its probe while no worker anywhere keeps the
-// reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
-// worker runs on it, judged on that login's own probe reading. desk-q's own login is never probed when
-// its rule is one desk may not start work on (off); with no rule, as one login no file names, it is.
+// reading fresh. With more, the default and each login a repo is pinned to, desk-q's own among them,
+// while no worker runs on it, judged on that login's own probe reading. A subscription no repo runs on
+// is never probed, desk-q's own included; with no rule, as one login no file names, desk-q's own is.
 //   -> [{ login }]
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
-  const ownProbed = own?.rule == null || inUse(own);
-  if (!own || !others.length) return ownProbed && probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
-  return [...(ownProbed ? [own] : []), ...others].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
+  const probeOwn = !own || ownProbed(own);
+  if (!own || !others.length) return probeOwn && probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
+  return [...(probeOwn ? [own] : []), ...others].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
 }
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
