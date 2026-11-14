@@ -126,7 +126,9 @@ t('DS-382 AC4 matchStories: a title match takes the Default story', `${matched[0
 t('DS-382 AC4 matchStories: title and name pick the story', `${matched[1].story.id} ${matched[1].by}`, 'checkout-ordersummary--empty story');
 t('DS-382 AC4 matchStories: the title\'s last segment and the name', matched[2].story?.id, 'press-kit-hero--wide');
 t('DS-382 AC5 matchStories: a board no story matches', `${matched[3].story} ${matched[3].by}`, 'null null');
-t('v3 save: README lists every board', read(join(rv3, DIR, 'PM-2/README.md')).includes('| Landscape | 390px | Landscape.dc.html |'), true);
+t('v3 save: README lists every board', read(join(rv3, DIR, 'PM-2/README.md')).includes('| Landscape | 390px | project/Landscape.dc.html |'), true);
+// Nothing loads from another host, so the boards render offline.
+t('DS-658 AC3 save: README says a canvas loading nothing remote renders offline', read(join(rv3, DIR, 'PM-2/README.md')).includes('Open any board\'s HTML from `project/`: it renders offline with the files saved beside it.'), true);
 t('v3 save: source.json records the saved paths', JSON.stringify(sv3.files), JSON.stringify(cv3.files));
 t('v3 save: the saved folder reads back with nothing missing', collect(join(rv3, DIR, 'PM-2')).missing.length, 0);
 const rv3m = repo('rv3m');
@@ -157,6 +159,29 @@ t('save: support.js is on disk', existsSync(join(r1, DIR, 'DS-50/project/support
 t('save: an unreferenced file is not copied', existsSync(join(r1, DIR, 'DS-50/project/unrelated.txt')), false);
 t('save: source.json records the files', json(join(r1, DIR, 'DS-50/source.json')).files.length, 6);
 t('save: README written', read(join(r1, DIR, 'DS-50/README.md')).includes('| DS-51 |'), true);
+
+// The README names the boards' folder, and what they load from the network.
+const r658 = repo('r658');
+const s658 = snapshot(join(T, 's658'));
+put(join(s658, 'project/support.js'), [
+  'var NS="http://www.w3.org/2000/svg",E="https://reactjs.org/docs/error-decoder.html?invariant=";',
+  'load("https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js");',
+  "load('https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.0/babel.min.js');",
+].join('\n'));
+save(s658, { root: r658, dir: DIR, tickets: [{ key: 'DS-658', boards: [] }], url: URL1, version: '1' });
+const rm658 = read(join(r658, DIR, 'DS-658/README.md'));
+const src658 = json(join(r658, DIR, 'DS-658/source.json'));
+t('DS-658 AC1 save: README sends the reader to project/', rm658.includes('Open any board\'s HTML from `project/`'), true);
+t('DS-658 AC1 save: each board\'s path is relative to the README', rm658.includes('| Admin 390 | 390px | project/admin-390.dc.html |') && rm658.includes('| Admin 1280 | 1280px | project/admin-1280.dc.html |'), true);
+t('DS-658 AC1 save: and the path is there', existsSync(join(r658, DIR, 'DS-658/project/admin-390.dc.html')), true);
+t('DS-658 AC2 save: README says the boards need the network, naming each host', rm658.includes('The boards need the network: they load files from `fonts.googleapis.com`, `cdn.jsdelivr.net`.'), true);
+t('DS-658 AC2 save: and not that they render offline', rm658.includes('offline'), false);
+t('DS-658 AC2 save: source.json records the boards\' folder and the remote loads', `${src658.home} ${src658.remote.join(' ')}`,
+  'project https://fonts.googleapis.com/css2?family=Inter https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.0/babel.min.js');
+snapshotV3(join(T, 'v3-cdn'));
+put(join(T, 'v3-cdn/artifact-type/dc-runtime.js'), 'x("https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js")');
+t('DS-658 AC2 collect: a CDN load in dc-runtime.js is remote', collect(join(T, 'v3-cdn')).remote.join(' '), 'https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js');
+t('DS-658 readme: a record with no remote list makes no offline claim', readme({ url: URL1, version: '1', fetched_at: 'x', tickets: [], boards: [] }).includes('Open any board\'s HTML from this folder.\n'), true);
 
 // One canvas, several tickets: the second is added to the folder that already holds the artifact.
 const b = save(s1, { root: r1, dir: DIR, tickets: [{ key: 'DS-53', boards: ['Admin 390'] }], url: `${URL1}/`, version: '7' });
@@ -386,6 +411,40 @@ const nofile = runNone('check', 'no-such-ticket');
 t('cli check: a slug with no ticket file says so', nofile.status === 2 && nofile.stderr.includes('no ticket file'), true);
 t('cli save: a key with .. is refused', run('save', s1, '--key', 'a..b').status, 2);
 t('cli save: --boards before --key is a usage error', run('save', s1, '--boards', 'x', '--key', 'DS-82').status, 2);
+
+// --boards names a board by its title, commas and all, or its file name, and refuses a name
+// matching no board.
+const LEVERS = 'Opening Levers, home-screen line';
+const commaSnap = (name, titles) => {
+  const d = join(T, name);
+  put(join(d, 'project/canvas.json'), JSON.stringify({ boards: titles.map((title, i) => ({ title, width: 390 + i, file: `b${i}.dc.html` })) }));
+  titles.forEach((_, i) => put(join(d, `project/b${i}.dc.html`), `<main>${i}</main>`));
+  return d;
+};
+const COMMA_URL = 'https://claude.ai/design/p/comma1';
+const writeBoards = (d, boards) => spawnSync('node', [BIN, 'write', d, '--url', COMMA_URL, '--version', '1', '--key', 'DS-1', '--boards', boards], { encoding: 'utf8' });
+const boardsOf = (d) => JSON.stringify(json(join(d, 'source.json')).tickets.find((x) => x.key === 'DS-1').boards);
+const cw1 = commaSnap('comma-1', [LEVERS, 'Main', 'Other']);
+t('DS-659 AC1 write: a title with a comma is recorded whole', `${writeBoards(cw1, LEVERS).status} ${boardsOf(cw1)}`, `0 ${JSON.stringify([LEVERS])}`);
+t('DS-659 AC1 write: beside another board', `${writeBoards(cw1, `${LEVERS},Main`).status} ${boardsOf(cw1)}`, `0 ${JSON.stringify([LEVERS, 'Main'])}`);
+t('DS-659 AC1 write: the README lists it with its width', read(join(cw1, 'README.md')).includes(`| DS-1 | ${LEVERS} (390px), Main (391px) |`), true);
+t('DS-659 AC2 write: a file name records its board\'s title', `${writeBoards(cw1, 'b0.dc.html, b2.dc.html').status} ${boardsOf(cw1)}`, `0 ${JSON.stringify([LEVERS, 'Other'])}`);
+const cw3 = commaSnap('comma-3', [LEVERS, 'Main']);
+const cw3r = writeBoards(cw3, 'Opening Levers');
+t('DS-659 AC3 write: a name matching no board exits 2, writing nothing', `${cw3r.status} ${existsSync(join(cw3, 'source.json'))}`, '2 false');
+t('DS-659 AC3 write: lists the canvas\'s boards', cw3r.stderr.includes('no board named "Opening Levers"') && cw3r.stderr.includes(`board: ${LEVERS} (b0.dc.html)`) && cw3r.stderr.includes('board: Main (b1.dc.html)'), true);
+const cs = commaSnap('comma-save', [LEVERS, 'Main']);
+const csr = run('save', cs, '--key', 'DS-2', '--url', COMMA_URL, '--version', '1', '--boards', 'b1.dc.html');
+t('DS-659 AC2 save: a file name records its board\'s title', `${csr.status} ${JSON.stringify(json(join(r6, 'design/canvases/DS-2/source.json')).tickets[0].boards)}`, '0 ["Main"]');
+const r659 = repo('r659');
+const csBad = spawnSync('node', [BIN, 'save', cs, '--key', 'DS-3', '--url', COMMA_URL, '--version', '1', '--boards', 'Nope'], { cwd: r659, env, encoding: 'utf8' });
+t('DS-659 AC3 save: a name matching no board exits 2, saving nothing', `${csBad.status} ${csBad.stderr.includes('board: Main (b1.dc.html)')} ${existsSync(join(r659, 'design'))}`, '2 true false');
+const cmpBad = await compare(join(r6, 'design/canvases/DS-2'), { chromium: null, storybook: join(T, 'nothing'), out: join(T, 'shots-659'), boards: 'Nope' }).then(() => 'no error', (e) => `${e.code} ${e.message.includes(`board: ${LEVERS} (b0.dc.html)`)}`);
+t('DS-659 AC3 compare: a name matching no board exits 2, writing nothing', `${cmpBad} ${existsSync(join(T, 'shots-659'))}`, '2 true false');
+const cmpCliBad = spawnSync('node', [BIN, 'compare', join(r6, 'design/canvases/DS-2'), '--storybook', join(T, 'nothing'), '--out', join(T, 'shots-659-cli'), '--boards', 'Nope'], { env: { ...env, DESK_HOME: join(T, 'no-desk-home'), DESK_PLAYWRIGHT: '' }, encoding: 'utf8' });
+t('DS-659 AC3 compare cli: refuses the name before loading Playwright, so exits 2 with none installed', `${cmpCliBad.status} ${cmpCliBad.stderr.includes(`board: ${LEVERS} (b0.dc.html)`)} ${existsSync(join(T, 'shots-659-cli'))}`, '2 true false');
+const cw4 = commaSnap('comma-4', ['A', 'B']);
+t('DS-659 AC4 write: titles with no commas still split on them', `${writeBoards(cw4, 'A,B').status} ${boardsOf(cw4)}`, '0 ["A","B"]');
 const runState = (...args) => spawnSync('node', [BIN, ...args], { cwd: r6, env: { ...env, DESK_AUTOPILOT_STATE: join(T, 'cli-import-state') }, encoding: 'utf8' });
 put(join(T, 'downloads', 'cli.html'), '<h1>cli</h1>');
 const cliImp = runState('import', join(T, 'downloads', 'cli.html'), '--url', 'https://claude.ai/artifact/CLI1', '--epic', 'KAN-1', '--key', 'KAN-2');
@@ -474,6 +533,7 @@ t('AC1 deck save: source.json records the kind and the slides', `${dsrc.kind} ${
 const drm = read(join(dd, 'README.md'));
 t('AC1 deck save: README names the source URL and version', drm.includes(`<${DECK_URL}>, version 1792850658-97df`), true);
 t('AC1 deck save: README says how to read it and lists the slides', `${drm.startsWith('# Slides deck PM-2')} ${drm.includes('Open index.html')} ${drm.includes('## Slides\n\n1. short\n2. who\n3. gaps')}`, 'true true true');
+t('DS-658 AC4 deck save: its opening line is unchanged', drm.includes('\nOpen index.html from this folder: every slide in order at 1920×1080, offline, with its speaker notes hidden.\n'), true);
 const viewer = read(join(dd, 'index.html'));
 t('AC2 deck viewer: every slide in deck.json order', [...viewer.matchAll(/data-slide="([^"]+)"/g)].map((m) => m[1]).join(','), 'short,who,gaps');
 t('AC2 deck viewer: each frame is 1920×1080', viewer.includes('.frame{width:1920px;height:1080px'), true);

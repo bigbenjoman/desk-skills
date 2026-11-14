@@ -9,8 +9,8 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, dateHeld, badLabelText, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
-import { ANSWER_HEAD } from './briefing.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
@@ -383,7 +383,7 @@ function handback(q, key, note) {
   try { msg = requeue(q, key, { handedBack: true }); } catch (e) { Object.assign(t, was); throw e; }
   // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
-  appendBriefing(key, `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`);
+  saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
   return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
 }
 
@@ -396,17 +396,8 @@ function stepDone(q, key) {
   delete t.park.session_step;
   let msg;
   try { msg = requeue(q, key); } catch (e) { t.park.session_step = s; throw e; }
-  appendBriefing(key, `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.\n`);
+  saveAnswer(stateDir(), key, `The person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.`, new Date().toISOString());
   return `${key}: the approved step is recorded done (${s.step}); ${msg}`;
-}
-
-// A binding answer for a ticket's next worker, appended to its briefing (pass.mjs writeBrief keeps it).
-function appendBriefing(key, entry) {
-  const dir = join(stateDir(), 'briefings');
-  mkdirSync(dir, { recursive: true });
-  const brief = join(dir, `${key}.md`);
-  if (existsSync(brief)) appendFileSync(brief, entry);
-  else writeFileSync(brief, `# Briefing for ${key}\n${entry}`);
 }
 
 // What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
@@ -519,10 +510,32 @@ function dropWorktree(key, t) {
   }, (holds) => `${key}'s worktree ${wt} holds work origin does not have (${holds.join('; ')}): push or discard it, then drop ${key} again. Nothing was dropped`);
 }
 
+// The answers `key` was given here, carried to the batch whose state directory is `to`: its briefing
+// (that batch's pass keeps only the answer sections when it writes its own) and an answer file no
+// worker has read yet. A briefing already there gains the answers it lacks.
+function carryAnswers(key, to) {
+  const brief = join(stateDir(), 'briefings', `${key}.md`);
+  if (existsSync(brief)) {
+    const there = join(to, 'briefings', `${key}.md`);
+    mkdirSync(dirname(there), { recursive: true });
+    if (!existsSync(there)) copyFileSync(brief, there);
+    else {
+      const answers = collectAnswers(readFileSync(brief, 'utf8'));
+      if (answers && !readFileSync(there, 'utf8').includes(answers)) appendFileSync(there, `\n${answers}\n`);
+    }
+  }
+  const file = join(stateDir(), 'answers', `${key}.txt`);
+  const fileThere = join(to, 'answers', `${key}.txt`);
+  if (existsSync(file) && !existsSync(fileThere)) {
+    mkdirSync(dirname(fileThere), { recursive: true });
+    copyFileSync(file, fileThere);
+  }
+}
+
 // Move `key` from this queue `q` (whose lock is held) to the running batch `to` (`standing` for the
-// standing batch), under that batch's queue lock too. It joins from this batch's triage record, held
-// behind its blockers there and the unfinished tickets it collides with, and its next worker is cut
-// from that batch's base.
+// standing batch), under that batch's queue lock too. It joins from this batch's triage record with its
+// answers, held behind its blockers there, the unfinished tickets it collides with and the holds it had
+// here, and its next worker is cut from that batch's base.
 function transfer(q, key, to) {
   const t = ticket(q, key);
   if (t.state === 'running') throw new Error(`${key} is running: stop its worker first. Nothing was moved`);
@@ -555,11 +568,37 @@ function transfer(q, key, to) {
   const there = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
   const holds = there.filter((k) => !stepThere(k));
   const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p))), ...there.filter(stepThere)])];
-  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, mergeAfter, holdSpine: true, holdCollisions: true });
+  // Its holds go with it. One on a ticket in that batch is held behind there until it merges (or, on the
+  // person's step there, merges after it, as above). A blocker
+  // left in this batch, or one in no batch, is held outside it, lifted by that batch's pass once Done in
+  // Jira and on its base (a key its triage record does not list as a blocker, Done or not, is lifted at
+  // once, so only those go). A hold on this batch's own files or spine means nothing there and stays
+  // behind, as does one on a ticket here already finished. Any other hold is the person's, a key no
+  // longer in any batch included, and refuses the move. Only held_by holds: a release clears it and
+  // leaves held_outside behind, so held_outside only says which of its keys were outside.
+  const blocking = new Set((Array.isArray(r.blockers) ? r.blockers : []).map((b) => b.key));
+  const local = new Set([...String(t.collides_with ?? '').split('|'), q.spine, q.batch, q.epic].filter(Boolean));
+  const wasOutside = String(t.held_outside ?? '').split('|').filter(Boolean);
+  const outside = [];
+  const stays = [];
+  const theirs = [];
+  for (const p of String(t.held_by ?? '').split('|')) {
+    if (!p || p === key || [holds, outside, stays, theirs, mergeAfter].some((l) => l.includes(p))) continue;
+    if (tq.tickets[p]) {
+      if (stepThere(p)) mergeAfter.push(p);
+      else if (!childDone(tq.tickets[p])) holds.push(p);
+    }
+    else if (wasOutside.includes(p) || blocking.has(p)) outside.push(p);
+    else if (q.tickets[p] && childDone(q.tickets[p])) continue;
+    else (local.has(p) ? stays : theirs).push(p);
+  }
+  if (theirs.length) throw new Error(`${key} is held behind ${theirs.join(', ')}, which ${theirs.length === 1 ? 'is not a blocker' : 'are not blockers'} of it in Jira, so ${batchWord(dest)} could not keep the hold: release it first. Nothing was moved`);
+  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, outside, mergeAfter, holdSpine: true, holdCollisions: true });
   const removed = dropStaleWorktree(key, baseOf(q));
   // Its triage record goes with it: admit and every pass read a ticket's record from their own batch.
   mkdirSync(join(dest.state, 'triage'), { recursive: true });
   copyFileSync(recFile, join(dest.state, 'triage', `${key}.json`));
+  carryAnswers(key, dest.state);
   const from = listBatches(repoSlug()).find((b) => resolve(b.queue) === resolve(QUEUE)) ?? { name: q.batch };
   tq.tickets[key].moved_from = { batch: from.name ?? null, base: baseOf(q), at: new Date().toISOString() };
   // In both queues for an instant rather than in neither: a crash between the writes leaves it in two,
@@ -571,7 +610,7 @@ function transfer(q, key, to) {
     if (o.collides_with) o.collides_with = left.join('|') || null;
   }
   save(q);
-  return `${key} moved from ${batchWord(from)} to ${batchWord(dest)}: ${said}; its next worker starts on ${dest.base}${removed ? `. Its worktree ${removed}, cut from ${baseOf(q)} with no work of its own, was removed` : ''}`;
+  return `${key} moved from ${batchWord(from)} to ${batchWord(dest)}: ${said}${stays.length ? ` (its hold on ${stays.join(', ')}, for this batch's files, spine or epic, stays here)` : ''}; its next worker starts on ${dest.base}${removed ? `. Its worktree ${removed}, cut from ${baseOf(q)} with no work of its own, was removed` : ''}`;
 }
 
 const [, , cmd, ...args] = process.argv;
@@ -891,10 +930,10 @@ switch (cmd) {
     const t = ticket(q, key);
     if (!spinePark(t)) throw new Error(`${key} is not a feature spine parked for approval (state ${t.state})`);
     const pr = t.result?.pr;
-    const entry = `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person sent this spine's acceptance specs back: ${note}\n` +
-      (pr != null ? `Your PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.\n` : '');
+    const text = `The person sent this spine's acceptance specs back: ${note}` +
+      (pr != null ? `\nYour PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.` : '');
     const msg = requeue(q, key);
-    appendBriefing(key, entry);
+    saveAnswer(stateDir(), key, text, new Date().toISOString());
     console.log(`${key} sent back with the note in its briefing; ${msg}`);
     break;
   }
