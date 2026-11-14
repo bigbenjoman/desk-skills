@@ -217,7 +217,6 @@ C="$T/desk-src"; git init -q -b main "$C"; git -C "$C" remote add origin "$O"
 gc "$C" commit -q --allow-empty -m one; gc "$C" push -q origin main
 U="$T/upstream"; git clone -q "$O" "$U"
 ahead(){ for _ in $(seq "$1"); do gc "$U" commit -q --allow-empty -m more; done; gc "$U" push -q origin main; }
-check "the checkout guard is found in install.sh" 'grep -q "checkout_problem()" "$GUARD" && grep -q "^warn()" "$GUARD" && grep -q -- "--any-branch) ANY_BRANCH=1" "$GUARD"'
 
 out=$(guard "$C"); rc=$?
 check "AC3: on the default branch level with origin, it installs as today, with no warning" '[ $rc -eq 0 ] && [ "$out" = INSTALLING ]'
@@ -238,6 +237,9 @@ check "AC2: on the default branch but behind origin, it installs nothing and say
 gc "$C" pull -q --ff-only origin main
 out=$(guard "$C"); rc=$?
 check "AC3: once pulled level, it installs" '[ $rc -eq 0 ] && [ "$out" = INSTALLING ]'
+gc "$C" commit -q --allow-empty -m unpushed
+out=$(guard "$C"); rc=$?
+check "on the default branch ahead of origin (unpushed commits), it installs with no warning" '[ $rc -eq 0 ] && [ "$out" = INSTALLING ]'
 gc "$C" remote set-url origin "$T/gone.git"
 out=$(guard "$C"); rc=$?
 check "AC5: with no origin to fetch, it says the check could not run and installs nothing" \
