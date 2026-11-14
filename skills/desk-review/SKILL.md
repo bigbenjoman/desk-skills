@@ -106,7 +106,7 @@ three at Phase 3.
 | 3 | Find | `references/phase-3-find.md`, with `references/phase-5-requirements.md` and `references/phase-4-refute.md` |
 | 4 | Refute | `references/phase-4-refute.md` |
 | 5 | Requirements | `references/phase-5-requirements.md` (dispatched at Phase 3) |
-| 6 | Report | `references/phase-6-report.md` |
+| 6 | Report | `references/phase-6-report.md`; also each round's end, for its findings line |
 | 7 | Post | `references/phase-7-post.md`, after *The verdict* below |
 
 **A phase file you cannot read stops the review.** If the file for the phase you are starting is

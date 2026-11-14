@@ -20,6 +20,7 @@ import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_K
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, decisionEntry, appendDecisions, workerCalls, noteLine, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
+import { recordFindings, recordCarry } from './findings.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
@@ -409,6 +410,7 @@ function logDecisions(t, log, pr) {
   const { entries, unreadable } = workerCalls(markers, { ticket: t.key, run: t.session_id, repo: GH_REPO, pr });
   for (const u of unreadable) report.waiting.push(`${t.key}: unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`);
   if (entries.length) appendDecisions(entries, STATE);
+  recordFindings(STATE, t.key, log, t.session_id ?? null);
 }
 
 // The value of marker `mark` printed after a worker's last park, read quietly, or null: none since that
@@ -1929,13 +1931,22 @@ const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.check ? 'me
 // A merge try that parks or dies can leave its merge in the base worktree, and the next sync, which
 // refuses a worktree holding anything, must reach the merge again to report it.
 const dropTryMerge = (path, last) => { if (last.kind !== 'review') dropUnpushed({ path, base: BASE }); };
-// Ends base_fix's last try with `outcome`: the record drops its session and port, and the try's merge
-// is dropped from base worktree `path`, where there is one.
+// Ends base_fix's last try with `outcome`: its review rounds are recorded, the record drops its session
+// and port, and the try's merge is dropped from base worktree `path`, where there is one.
 function endTry(outcome, path) {
+  recordEpicFindings(join(STATE, 'logs', `${BASE_FIX_KEY}.log`));
   bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
   if (DRY) return;
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   if (path) dropTryMerge(path, bf.tries[bf.tries.length - 1]);
+}
+// An epic PR review try runs Stage 4b and posts the epic PR's review, so its log's review rounds go to
+// the findings file as a ticket worker's do (findings.mjs), keyed by the epic: read as its try ends, and
+// before a move to another login sets its log aside. Recorded once each however often it is read.
+function recordEpicFindings(log) {
+  const last = bf?.tries?.[bf.tries.length - 1];
+  if (DRY || last?.kind !== 'review' || !fresh.epic) return;
+  recordFindings(STATE, fresh.epic, log, bf.running ?? null);
 }
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
@@ -2875,6 +2886,8 @@ async function moveBaseFix({ wt, from, limit }) {
   const briefPath = writeBrief({ key }, wt, `${moved}\n${(review ? epicReviewBrief : baseFixBrief)(ctx)}`, { notes: true });
   const sid = E.uuid();
   const port = await freePort();
+  // The stopped session's rounds, before its log is moved aside.
+  recordEpicFindings(join(STATE, 'logs', `${key}.log`));
   E.rotateRound(key);
   const logBytes = logPreflight(key, pre.cost);
   // A task starts again: the stopped session's handoff briefing or resume file must not stand in for it.
@@ -3701,6 +3714,7 @@ if (drafts.length) {
     const { carry, scope, baseMerge, behind } = baseMoves(t, v.headRefOid);
     const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), behind, evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, ticketShots(t, STATE)), shotDir: ticketShotDir(t, STATE) });
     if (!c) continue;
+    if (c.carried && !DRY) recordCarry(STATE, t.key, { head: v.headRefOid, from: c.carried, reviews: v.reviews, handle: conflictHandle });
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
     // and the call would act.

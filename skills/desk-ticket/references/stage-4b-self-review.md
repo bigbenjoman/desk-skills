@@ -80,6 +80,12 @@ since round 2. After the third round there is no fourth without the user. From r
 The count belongs to one loop; a later loop, for reviewer feedback or after merging `<default>`,
 starts again at one.
 
+**Every round ends with its findings line**: once its fixes are committed (or at once, with none, or
+before you stop on a round-3 P0 or P1 or any park, with what is fixed so far), mark each fixed finding
+`"fixed": true` in the round's results and print what
+`node <desk-review>/bin/verdict.mjs --findings <results> --reviewer self` prints, verbatim, in your
+reply (desk-review Phase 6, *The round's findings line*).
+
 **Declining a confirmed finding is a deferral, and a deferral does not read as clean.** It keeps the
 verdict off §4 Clean review verdict (`desk-env get clean-verdict`), and where a required check reads the verdict, the gate blocks
 the merge. Cost the fix before deferring: "beyond scope" is usually a guess made without opening the
@@ -112,7 +118,9 @@ re-review : <result at the new head, or "not needed — nothing was changed">
 ```
 
 With §4 Local review command `none`, the block is one line: `SELF-REVIEW skipped: §4 Local review
-command is none`.
+command is none`. An empty diff is the same one line, `SELF-REVIEW skipped: empty diff`. A stated
+skip runs no round, so it prints no findings line, and the pass reads those words as a skip rather
+than a missing one.
 
 **Every finding gets an outcome line, including the ones you fixed.** The block is a record rather
 than a request, so it is the only place a reader can see that a P0 existed at all: a finding that
