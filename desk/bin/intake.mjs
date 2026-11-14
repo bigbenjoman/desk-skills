@@ -162,7 +162,8 @@ function holdsFor(rec, tickets, base) {
   if (labelPark(rec, stepLabels)) return out;
   for (const b of Array.isArray(rec.blockers) ? rec.blockers : []) {
     const t = tickets[b.key];
-    if (t && b.category !== 'done' && personStepPark(t)) out.merge.push(b.key);
+    // A step has no code to land, so once Done it holds nothing, though it is still in the batch.
+    if (t && personStepPark(t)) { if (b.category !== 'done') out.merge.push(b.key); }
     else if (t) {
       if (b.category !== 'done') out[t.state === 'failed' ? 'failed' : 'held'].push(b.key);
       else if (t.state !== 'failed' && !t.merged_at && !(t.state === 'done' && t.result?.pr == null)) out.held.push(b.key);

@@ -549,11 +549,12 @@ function transfer(q, key, to) {
   if (tq.tickets?.[key]) throw new Error(`${key} is already in ${batchWord(dest)} (${tq.tickets[key].state}). Nothing was moved`);
   tq.tickets ??= {};
   // Admitted in memory first, so a refusal from either step leaves the worktree and both queues as they were.
-  // Its merge holds on the person's steps go with it; a step in that batch is held behind there instead,
-  // unless it is parked there as the person's step (labelPark), which nothing builds.
+  // Its merge holds on the person's steps go with it; a blocker in that batch is held behind there instead,
+  // unless it is parked there as the person's step (labelPark), which nothing builds: it merges after that.
   const stepThere = (k) => personStepPark(tq.tickets[k]);
-  const holds = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key] && !stepThere(b.key)).map((b) => b.key);
-  const mergeAfter = String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p)));
+  const there = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
+  const holds = there.filter((k) => !stepThere(k));
+  const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p))), ...there.filter(stepThere)])];
   const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, mergeAfter, holdSpine: true, holdCollisions: true });
   const removed = dropStaleWorktree(key, baseOf(q));
   // Its triage record goes with it: admit and every pass read a ticket's record from their own batch.

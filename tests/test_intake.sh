@@ -247,6 +247,10 @@ check "DS-568 AC2: sharing a file with the step holds nothing, since no worker e
   '[ "$(qget tickets.S-2.collides_with)" = null ] && [ "$(qget tickets.S-1.collides_with)" = null ]'
 check "DS-568 AC2: a blocker in no batch carrying the label is the person'\''s step whatever its summary" \
   '[ "$(qget tickets.S-3.state)" = triaged ] && [ "$(qget tickets.S-3.merge_after)" = OPS-9 ]'
+rec S-7 A '"blockers":[{"key":"S-1","category":"done","type":"Story","summary":"Rebuild the images"}]'
+search S-7; out=$(intake)
+check "DS-568 AC2: once the step is Done, though still in the batch, a ticket it blocks is held by nothing" \
+  '[ "$(qget tickets.S-7.state)" = triaged ] && [ "$(qget tickets.S-7.held_by)" = null ] && [ "$(qget tickets.S-7.merge_after)" = undefined ]'
 rec S-6 C '"labels":["ben-step"],"unknowns":["which region?"]'
 search S-6; out=$(intake)
 check "DS-568 AC1: whatever its lane or open questions, it is admitted parked as the person'\''s step, not handed on" \

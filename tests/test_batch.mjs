@@ -317,6 +317,20 @@ t('DS-523 AC3 a ticket left after the last promotion: the batch is archived', a.
 t('DS-523 AC3 the ticket is in the standing batch', JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-11']?.state, 'triaged');
 t('DS-523 AC3 and not in the archived queue', JSON.parse(readFileSync(doneQ('X-9'), 'utf8')).tickets['X-11'], undefined);
 t('DS-523 AC3 the archive line names it', (a.log ?? []).join(' ').includes('moved X-11 to the standing batch'), true);
+// DS-568: moved into a batch where its open blocker is parked as the person's step, a ticket merges after
+// that step rather than losing the hold: nothing builds the step, so it is no build hold either.
+const withStep = JSON.parse(readFileSync(standingQ, 'utf8'));
+withStep.tickets['S-20'] = { key: 'S-20', state: 'parked', park: { question: "the person's step: labelled ben-step (config §4 Person-step labels), so no worker can do it" } };
+writeFileSync(standingQ, JSON.stringify(withStep));
+writeQ('X-30', { epic: 'X-30', base: 'feat/x-30', promotion: lastRecorded, tickets: {
+  'X-31': { key: 'X-31', state: 'done', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z' },
+  'X-32': { key: 'X-32', state: 'triaged' },
+} });
+mkdirSync(join(namedS('X-30'), 'triage'), { recursive: true });
+writeFileSync(join(namedS('X-30'), 'triage', 'X-32.json'), JSON.stringify({ ticket: 'X-32', type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: 'fix/X-32', files_in_scope: ['f/X-32'], unknowns: [], blockers: [{ key: 'S-20', category: 'new' }] }));
+a = res(archive('X-30', { 9: 'MERGED', 10: 'MERGED' }));
+const moved32 = JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-32'];
+t('DS-568 a ticket moved to a batch where its blocker is the person\'s step merges after it, held by nothing', `${a.archived} ${moved32?.state} ${moved32?.held_by} ${moved32?.merge_after}`, 'true triaged null S-20');
 // With no record, a merged slice and a ticket still to come is not the last: nothing moves.
 writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': { key: 'X-13', state: 'queued' } } });
 mkdirSync(namedS('X-12'), { recursive: true });
