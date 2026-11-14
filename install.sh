@@ -5,6 +5,10 @@
 #   ./install.sh           asks before settings.json, plugins, a foreign desk-jira, the Playwright patch
 #   ./install.sh --yes     accepts those prompts too, except large downloads (scripted re-install)
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
+#   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
+#
+# Installs nothing from a checkout off the default branch or behind origin's (fetched first), or
+# when that cannot be checked, unless given --any-branch.
 #
 # Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env, desk-q and desk-jira in
 # ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
@@ -35,11 +39,13 @@ PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official fron
 
 YES=0
 CHECK_ONLY=0
+ANY_BRANCH=0
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) YES=1 ;;
     --check) CHECK_ONLY=1 ;;
-    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --any-branch) ANY_BRANCH=1 ;;
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -219,6 +225,39 @@ install_dir() {
 
 echo "desk-skills installer  ($SRC)"
 echo "platform: $OS"
+
+# checkout_problem — why this checkout is not desk's release (empty when it is): the install copies
+# whatever SRC holds, so another branch, or a default branch behind origin, puts old or unmerged
+# files live. Fetches the default branch first; a check that cannot run is a problem too.
+checkout_problem() {
+  local def branch behind
+  if ! has git || ! git -C "$SRC" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "$SRC is not a git checkout, so the branch check could not run"; return
+  fi
+  def="$(git -C "$SRC" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  def="${def#origin/}"; def="${def:-main}"
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$SRC" -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 \
+    fetch -q origin "$def" </dev/null >/dev/null 2>&1 ||
+    ! behind="$(git -C "$SRC" rev-list --count "HEAD..refs/remotes/origin/$def" 2>/dev/null)"; then
+    echo "could not fetch origin/$def, so the branch check could not run"; return
+  fi
+  branch="$(git -C "$SRC" branch --show-current 2>/dev/null || true)"
+  if [ "$branch" != "$def" ]; then
+    echo "$SRC is on ${branch:-a detached HEAD}, not $def, and is $behind commit(s) behind origin/$def"
+  elif [ "$behind" != 0 ]; then
+    echo "$SRC is on $def but $behind commit(s) behind origin/$def"
+  fi
+}
+if [ "$CHECK_ONLY" = 0 ]; then
+  problem="$(checkout_problem)"
+  if [ -n "$problem" ] && [ "$ANY_BRANCH" = 0 ]; then
+    printf '\nNothing installed: %s.\n' "$problem" >&2
+    printf 'Install desk from its default branch, up to date with origin (git -C "%s" switch <branch> && git -C "%s" pull --ff-only),\nor install this checkout anyway: ./install.sh --any-branch\n' "$SRC" "$SRC" >&2
+    exit 3
+  fi
+  [ -n "$problem" ] && warn "installing anyway (--any-branch): $problem"
+fi
+# end checkout guard
 
 # ---------------------------------------------------------------------------------------------
 section "Dependencies"
