@@ -1931,13 +1931,22 @@ const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.check ? 'me
 // A merge try that parks or dies can leave its merge in the base worktree, and the next sync, which
 // refuses a worktree holding anything, must reach the merge again to report it.
 const dropTryMerge = (path, last) => { if (last.kind !== 'review') dropUnpushed({ path, base: BASE }); };
-// Ends base_fix's last try with `outcome`: the record drops its session and port, and the try's merge
-// is dropped from base worktree `path`, where there is one.
+// Ends base_fix's last try with `outcome`: its review rounds are recorded, the record drops its session
+// and port, and the try's merge is dropped from base worktree `path`, where there is one.
 function endTry(outcome, path) {
+  recordEpicFindings(join(STATE, 'logs', `${BASE_FIX_KEY}.log`));
   bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
   if (DRY) return;
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   if (path) dropTryMerge(path, bf.tries[bf.tries.length - 1]);
+}
+// An epic PR review try runs Stage 4b and posts the epic PR's review, so its log's review rounds go to
+// the findings file as a ticket worker's do (findings.mjs), keyed by the epic: read as its try ends, and
+// before a move to another login sets its log aside. Recorded once each however often it is read.
+function recordEpicFindings(log) {
+  const last = bf?.tries?.[bf.tries.length - 1];
+  if (DRY || last?.kind !== 'review' || !fresh.epic) return;
+  recordFindings(STATE, fresh.epic, log, bf.running ?? null);
 }
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
@@ -2877,6 +2886,8 @@ async function moveBaseFix({ wt, from, limit }) {
   const briefPath = writeBrief({ key }, wt, `${moved}\n${(review ? epicReviewBrief : baseFixBrief)(ctx)}`, { notes: true });
   const sid = E.uuid();
   const port = await freePort();
+  // The stopped session's rounds, before its log is moved aside.
+  recordEpicFindings(join(STATE, 'logs', `${key}.log`));
   E.rotateRound(key);
   const logBytes = logPreflight(key, pre.cost);
   // A task starts again: the stopped session's handoff briefing or resume file must not stand in for it.

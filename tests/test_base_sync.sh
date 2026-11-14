@@ -710,7 +710,14 @@ check "DS-508 AC2 a draft epic PR with no clean review gets a review try in the 
 check "DS-508 AC5 and the held ticket says it waits on the epic PR by number" '[[ "$out" == *"WAITING ON EPIC PR: T-2 (E-8: epic PR #300, in draft until a clean review stands at its head)"* ]]'
 live; pass
 check "DS-508 AC2 a live review try is waited on, not doubled" '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [[ "$out" == *"epic PR #300: review try 1 of 2 is at it"* ]]'
-ended "AUTOPILOT_DONE: pr=300 jira=none"; rm -f "$T/agents.json"; pass
+EH=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+ended "AUTOPILOT_FINDINGS: {\"round\":1,\"reviewer\":\"self\",\"head\":\"$EH\",\"p0\":0,\"p1\":1,\"p2\":2,\"fixed\":3,\"carried\":false,\"refuter_vendor\":\"codex\"}
+<!-- desk-review:verdict v=1 sha=$EH p0=0 p1=0 p2=0 round=2 -->
+AUTOPILOT_DONE: pr=300 jira=none"; rm -f "$T/agents.json"; pass
+check "DS-634 the epic PR review try's rounds are recorded in the findings file, keyed by the epic" \
+  '[ "$(jq -sc "map([.ticket, .reviewer, .round, .p1, .p2, .fixed])" "$C/state/workers/E-8.findings.jsonl")" = "[[\"E-8\",\"self\",1,1,2,3]]" ]'
+check "DS-634 and a verdict it posted with no findings line is noted missing in the epic's run record" \
+  '[ "$(jq -sc "map(select(.findings_missing) | .findings_missing.round)" "$C/state/workers/E-8.runs.jsonl")" = "[2]" ]'
 check "DS-508 AC2 a try that ended with no clean review at the same head goes to the person, exit 11" \
   '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"EPIC PR: #300 stays draft: no clean review at eeeeeeeeeeee after 1 review try; the last try finished: pr=300 jira=none"* ]] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
 review "p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0"; pass
