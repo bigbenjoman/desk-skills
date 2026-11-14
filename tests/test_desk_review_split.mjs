@@ -185,6 +185,11 @@ t('DS-584 AC5 a deployed-build check stays the person\'s call', req.includes('`s
 const personLine = /`- PERSON'S CALL · AC\d: "<criterion>" — [^`]+\. Recommended: <option>`/;
 t('DS-584 AC5 the PERSON\'S CALL line format ends with the seat\'s Recommended pick', personLine.test(req), true);
 t('DS-584 AC5 the report example carries a Recommended pick', /PERSON'S CALL · AC4: .*\. Recommended: \S/.test(read('phase-6-report.md')), true);
+// DS-596: a gap a worker's own logged decision caused is code; reversing the decision closes it.
+t('DS-596 AC3 a worker\'s logged call amends a criterion only by picking a reading', req.includes('A call this ticket\'s worker logged amends a criterion only by choosing between its readings, or by keeping a later-merged ticket\'s behaviour (below): any other that leaves a criterion unmet as worded amends nothing, and the gap is the worker\'s to close.'), true);
+t('DS-596 AC3 a gap a decision this ticket\'s worker logged caused is code, unless the decision keeps a later-merged ticket\'s behaviour', req.includes('- a gap whose cause is a decision this ticket\'s worker logged, which reversing that decision closes, unless the decision keeps a later-merged ticket\'s behaviour (next);'), true);
+t('DS-596 the later-merged-ticket decision still settles its gap on the next round', req.includes('so the next round reads it as a settled call'), true);
+t('DS-596 AC4 a gap only the person can close is still person', req.includes('`settled_by` is `person` only when no change the ticket allows can close the gap'), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
