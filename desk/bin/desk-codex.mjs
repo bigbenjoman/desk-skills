@@ -14,9 +14,9 @@
 // `desk-codex: timed out after <n>s` on stderr, exit 124: the review records that seat as died.
 // A worker can pass no codex flag through this: only a role, --cd and the prompt.
 //
-// With more than one Codex login, each call and probe runs on this computer's Codex default
+// With a subscriptions file, each call and probe runs on this computer's Codex default
 // (codex-login.mjs), with CODEX_HOME set for it, and says `desk-codex: on Codex login <name>` on
-// stderr for the review record. A default at its limit is not swapped for another login: codex fails
+// stderr for the review record; a default of ~/.codex with no other Codex folder runs as it always has. A default at its limit is not swapped for another login: codex fails
 // there as a sole login's call does. With the default off or not signed in no call runs: it says why,
 // exit 75, and the review records the seat as died.
 //

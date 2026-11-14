@@ -48,7 +48,7 @@ workers deny it, and it is the pattern that posts to the wrong PR when a placeho
   default and name it on stderr (`desk-codex: on Codex login <name>`); a default at its limit fails
   as a sole login does, and no call moves to another login. Where its calls printed that line, add `"login": "<name>"` to the results file's
   `codex`, or every name the run's calls printed, comma-separated (`"default, login-2"`). Exit 75 means no Codex login can take the call (the
-  default is off or not signed in, or the only login is off): codex is unusable for this run (below).
+  default is off or not signed in): codex is unusable for this run (below).
   Off, everything here and in Phases 3 and 4 runs exactly as written.
 
 **If codex is unusable, or §3 says `no`, stop and ask** (a worker does not ask; it falls back and

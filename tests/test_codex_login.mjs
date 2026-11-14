@@ -99,9 +99,9 @@ t('one login at its limit: codex runs and fails with its own error', [sole.statu
 // on the caller's environment as before.
 subs(['default', 'off']);
 r = codex('refuter', 'x');
-t('sole login off: exit 75, codex is not run, and the reason says none is usable', [r.status, r.calls, /no Codex login is signed in with a rule of in rotation or standby/.test(r.err)], [75, 0, true]);
+t('sole login off: exit 75, codex is not run, and the reason says the default is off', [r.status, r.calls, /the Codex default, default, is off/.test(r.err)], [75, 0, true]);
 r = codex('probe');
-t('sole login off: the probe refuses with the same reason rather than standing on its last pass', [r.status, r.calls, /no Codex login is signed in/.test(r.err)], [75, 0, true]);
+t('sole login off: the probe refuses with the same reason rather than standing on its last pass', [r.status, r.calls, /the Codex default, default, is off/.test(r.err)], [75, 0, true]);
 for (const rule of ['default', 'unused']) {
   subs(['default', rule]);
   r = codex('refuter', 'x');
@@ -113,7 +113,7 @@ r = codex('refuter', 'x');
 t('sole login off, its folder gone: exit 75 and codex is not run', [r.status, r.calls], [75, 0]);
 subs(['gone', 'default']);
 r = codex('refuter', 'x');
-t('sole login the default, its folder gone: the call runs on the caller\'s environment as before', [r.status, r.calls, r.home], [0, 1, 'unset']);
+t('the default\'s folder gone: exit 75, and the call does not move to ~/.codex', [r.status, r.calls, /the Codex default, gone, is not signed in/.test(r.err)], [75, 0, true]);
 subs(['default', 'off'], ['gone', 'in rotation']);
 r = codex('refuter', 'x');
 t('the one login found is off, another row in rotation has no folder: exit 75 and codex is not run', [r.status, r.calls], [75, 0]);
