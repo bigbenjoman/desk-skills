@@ -151,7 +151,7 @@ touch "$T/busy"; driver --tickets "A" --log; rm -f "$T/busy"
 busy="$(held)"; n=$(count "$T/driver.calls")
 out=$(restart)
 check "AC2: a driver mid-loop is left running" 'kill -0 "$busy" && [ "$(held)" = "$busy" ] && [ "$(count "$T/driver.calls")" = "$n" ]'
-check "AC2: the line names it and says when it moves to the new code" 'grep -q "^merge driver for acme__widgets (pid $busy): left running on the old code, it is mid-loop and may be merging; it moves to the new code when the supervisor next starts it$" <<< "$out"'
+check "AC2: the line names it and says when it moves to the new code" 'grep -q "^merge driver for acme__widgets (pid $busy): left running on the old code, it is mid-loop and may be merging; a supervisor tick moves it to the new code once it waits between loops$" <<< "$out"'
 kill "$busy" 2>/dev/null; pkill -P "$busy"
 i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 rm -rf "$ST/merge-driver.lock.d"
