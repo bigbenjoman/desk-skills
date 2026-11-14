@@ -563,11 +563,12 @@ function transfer(q, key, to) {
   const mergeAfter = String(t.merge_after ?? '').split('|').filter((p) => p && !tq.tickets[p]);
   // Its holds go with it. One on a ticket in that batch is held behind there until it merges. A blocker
   // left in this batch, or one in no batch, is held outside it, lifted by that batch's pass once Done in
-  // Jira and on its base (a key its triage record does not list as a blocker is lifted at once, so only
-  // those go). A hold on this batch's own files or spine means nothing there and stays behind; any
-  // other hold here is the person's, and refuses the move.
-  const blocking = new Set((Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done').map((b) => b.key));
-  const local = new Set([...String(t.collides_with ?? '').split('|'), q.spine, q.batch].filter(Boolean));
+  // Jira and on its base (a key its triage record does not list as a blocker, Done or not, is lifted at
+  // once, so only those go). A hold on this batch's own files or spine means nothing there and stays
+  // behind, as does one on a ticket here already finished. Any other hold is the person's, a key no
+  // longer in any batch included, and refuses the move.
+  const blocking = new Set((Array.isArray(r.blockers) ? r.blockers : []).map((b) => b.key));
+  const local = new Set([...String(t.collides_with ?? '').split('|'), q.spine, q.batch, q.epic].filter(Boolean));
   const wasOutside = String(t.held_outside ?? '').split('|').filter(Boolean);
   const outside = [];
   const stays = [];
@@ -576,9 +577,10 @@ function transfer(q, key, to) {
     if (!p || p === key || [holds, outside, stays, theirs].some((l) => l.includes(p))) continue;
     if (tq.tickets[p]) { if (!childDone(tq.tickets[p])) holds.push(p); }
     else if (wasOutside.includes(p) || blocking.has(p)) outside.push(p);
-    else if (q.tickets[p]) (local.has(p) ? stays : theirs).push(p);
+    else if (q.tickets[p] && childDone(q.tickets[p])) continue;
+    else (local.has(p) ? stays : theirs).push(p);
   }
-  if (theirs.length) throw new Error(`${key} is held behind ${theirs.join(', ')} in this batch, which ${theirs.length === 1 ? 'is not a blocker' : 'are not blockers'} of it in Jira, so ${batchWord(dest)} could not keep the hold: release it first. Nothing was moved`);
+  if (theirs.length) throw new Error(`${key} is held behind ${theirs.join(', ')}, which ${theirs.length === 1 ? 'is not a blocker' : 'are not blockers'} of it in Jira, so ${batchWord(dest)} could not keep the hold: release it first. Nothing was moved`);
   const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, outside, mergeAfter, holdSpine: true, holdCollisions: true });
   const removed = dropStaleWorktree(key, baseOf(q));
   // Its triage record goes with it: admit and every pass read a ticket's record from their own batch.
@@ -596,7 +598,7 @@ function transfer(q, key, to) {
     if (o.collides_with) o.collides_with = left.join('|') || null;
   }
   save(q);
-  return `${key} moved from ${batchWord(from)} to ${batchWord(dest)}: ${said}${stays.length ? ` (its hold on ${stays.join(', ')}, for this batch's files or spine, stays here)` : ''}; its next worker starts on ${dest.base}${removed ? `. Its worktree ${removed}, cut from ${baseOf(q)} with no work of its own, was removed` : ''}`;
+  return `${key} moved from ${batchWord(from)} to ${batchWord(dest)}: ${said}${stays.length ? ` (its hold on ${stays.join(', ')}, for this batch's files, spine or epic, stays here)` : ''}; its next worker starts on ${dest.base}${removed ? `. Its worktree ${removed}, cut from ${baseOf(q)} with no work of its own, was removed` : ''}`;
 }
 
 const [, , cmd, ...args] = process.argv;

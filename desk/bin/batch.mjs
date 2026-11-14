@@ -197,8 +197,9 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   if (busy) return { ...none, lines: [...lines, `archive: batch ${b.name} is ready to archive, but ${busy} holds it; the next tick tries again`] };
   // A left-behind ticket must not run here again. After the last promotion merged, one ready to run moves
   // to the standing batch. Any other is the person's: after a closed promotion (the epic abandoned), a
-  // park or a hold the move would not carry over (queue.mjs transfer re-admits from the triage record),
-  // or a refused move. Each is parked under the archive's own question as it is handed, its earlier park
+  // park the move would not carry over (queue.mjs transfer re-admits from the triage record), a hold
+  // (transfer carries its Jira blockers but leaves this batch's own holds behind and refuses the
+  // person's, so whether it moves is theirs to say), or a refused move. Each is parked under the archive's own question as it is handed, its earlier park
   // kept in the text: a pass releases a hold, a clears-when or a recommended take with no person, and
   // would start it in the finished batch.
   const moved = [];
@@ -206,7 +207,7 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   for (const t of left) {
     const ready = ['triaged', 'queued'].includes(t.state) && !t.held_by && !t.held_outside;
     const why = ps === 'CLOSED' ? `batch ${b.name}'s promotion PR #${p} was closed, so its epic may be abandoned`
-      : !ready ? `it is ${t.state}${t.held_outside ? `, held behind ${String(t.held_outside).split('|').join(', ')} outside every batch` : t.held_by ? `, held behind ${String(t.held_by).split('|').join(', ')}` : ''}, which a move would not carry over`
+      : !ready ? `it is ${t.state}${t.held_outside ? `, held behind ${String(t.held_outside).split('|').join(', ')} outside every batch, so whether it moves with its hold is the person's call` : t.held_by ? `, held behind ${String(t.held_by).split('|').join(', ')}, so whether it moves with its hold is the person's call` : ', which a move would not carry over'}`
         : move(b, t.key);
     if (why) stay.push({ t, why }); else moved.push(t.key);
   }
