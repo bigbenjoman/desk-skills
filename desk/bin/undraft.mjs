@@ -672,7 +672,7 @@ export function personHold(t, n, redrafts = []) {
 // (checks as pr_status keeps them; carry(sha), when given, says whether a verdict posted on sha holds at
 // the head, as verdictCarries does, and scope(sha, body) what a head it does not hold at still needs
 // read, as reviewScope does). cfg: { spine, perm, approved, localReview, clean, handle, required,
-// advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
+// advisory, stateChecks (§4 State checks, gate.mjs parseStateChecks's checks), permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
 // cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
 // check build recorded at that head, behind(head) -> the base's name when the head is behind it, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
 // evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
@@ -746,7 +746,10 @@ export function undraftCall(t, pr, cfg) {
     const bc = buildCall(gate, cfg, n, pr.head, t);
     if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
-  const codeRed = gate.failing.filter((f) => f.name !== VERDICT_CHECK);
+  // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
+  const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
+  const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
+  const stateRed = gate.failing.filter((f) => stateNames.has(f.name)).map((f) => f.name);
   // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.
   if (red && gate.untriggered?.length && !codeRed.length) {
     return person(`its checks are not green: ${gate.reasons.join('; ')}`,
@@ -761,7 +764,9 @@ export function undraftCall(t, pr, cfg) {
   }
   if (!v.clean && !v.settle) return { ...person(v.why, `review #${n} at its head`), call: 'review', ...(targeted ? { targeted } : {}) };
   if (!v.clean) return person(v.why, `settle the findings or gaps on #${n}`);
-  if (red) {
+  // Red on any other state check alone, a clean draft leaves draft as a green one does: the reviewer
+  // that turns it green reads only ready PRs, and the merge driver holds a ready PR until it is green.
+  if (red && stateRed.includes(VERDICT_CHECK)) {
     const why = `its ${VERDICT_CHECK} check reads only a verdict posted on the head${carried ? `, and its verdict is carried from ${carried.slice(0, 9)}` : ''}`;
     return withCarried({ ...person(why, `review #${n} at its head`), call: 'review' });
   }
@@ -773,5 +778,6 @@ export function undraftCall(t, pr, cfg) {
   if (cfg.perm === 'ask' && cfg.approved) {
     return withCarried({ call: 'ready', why: null, verdict: read, note: `- [${t.key}] undrafted #${n} at ${pr.head}: §3 ${cfg.permKey} is ask, batch approval given at Stage 3` });
   }
-  return withCarried(person(`it is clean and green, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`));
+  const state = red ? `clean, red only on §4 State checks (${stateRed.join(', ')})` : 'clean and green';
+  return withCarried(person(`it is ${state}, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`));
 }
