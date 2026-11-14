@@ -1948,7 +1948,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-601 AC2 a resume with text is saved the same way, and its queue entry is unchanged, grant included',
     `${m2.ok} ${brief('M-2').includes('## Answer from the user') && brief('M-2').includes('use the short copy')} ${queueText() === q0} ${answers().length - before}`, 'true true true 0');
   const b1 = brief('M-1');
-  const m3 = N.record({ word: 'moved', ticket: 'M-1', action: 'requeue' });
+  const m3 = N.record({ word: 'moved', ticket: 'M-1', action: 'requeue', text: 'try again' });
   t('DS-601 AC3 requeue is refused as today and writes nothing',
     `${m3.ok} ${m3.line} ${brief('M-1') === b1} ${queueText() === q0}`, 'false moved M-1: desk-q does not count it as needing you, so nothing was recorded. true true');
   const m4 = N.record({ word: 'moved', ticket: 'M-9', action: 'answer', text: 'x' });
@@ -1959,7 +1959,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
 }
 
 // Refusals.
-t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue' }).ok, false);
+t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
