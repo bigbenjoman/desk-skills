@@ -1946,7 +1946,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-601 AC1 a running worker gets no mailbox answer for a park it has not made', existsSync(join(dir, 'answers', 'M-1.txt')), false);
   const m2 = N.record({ word: 'moved', ticket: 'M-2', action: 'resume', text: 'use the short copy' });
   t('DS-601 AC2 a resume with text is saved the same way, and its queue entry is unchanged, grant included',
-    `${m2.ok}${brief('M-2').includes('## Answer from the user') && brief('M-2').includes('use the short copy')} ${queueText() === q0} ${answers().length - before}`, 'true true true 0');
+    `${m2.ok} ${brief('M-2').includes('## Answer from the user') && brief('M-2').includes('use the short copy')} ${queueText() === q0} ${answers().length - before}`, 'true true true 0');
   const b1 = brief('M-1');
   const m3 = N.record({ word: 'moved', ticket: 'M-1', action: 'requeue' });
   t('DS-601 AC3 requeue is refused as today and writes nothing',
