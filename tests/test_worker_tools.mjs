@@ -117,7 +117,7 @@ writeFileSync(join(T, 'config.md'), `## 0. Repo
 `);
 const SID = '11111111-2222-3333-4444-555555555555';
 // `claude agents --json` reports the session, so spawn-worker finds its pid at once; `claude --version`
-// (each start's spawn line, DS-637) answers without being counted as a call; any other call
+// (each start's spawn line) answers without being counted as a call; any other call
 // writes its argv, NUL-separated, to the next free $STUB_LOG.<n>, moved into place whole: a large
 // system prompt takes more than one write, and argv() below reads the file as soon as it is there.
 const stub = join(T, 'stub', 'claude');

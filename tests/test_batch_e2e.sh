@@ -122,7 +122,7 @@ if (a[0] === 'agents') {
   console.log(JSON.stringify(live));
   process.exit(0);
 }
-// The version spawn-worker.sh records on each start's spawn line (DS-637): not a call, so not logged.
+// The version spawn-worker.sh records on each start's spawn line: not a call, so not logged.
 if (a[0] === '--version') {
   console.log('2.1.0 (Claude Code)');
   process.exit(0);
