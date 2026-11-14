@@ -750,9 +750,10 @@ export function undraftCall(t, pr, cfg) {
   const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
   const stateRed = gate.failing.filter((f) => stateNames.has(f.name)).map((f) => f.name);
-  // Red on state checks alone: the gate passes once they are set aside, with nothing else missing or failing.
-  const stateOnly = stateRed.length > 0 && evaluateGate((pr.checks ?? []).filter((c) => !stateNames.has(c.name)),
-    { required: (cfg.required ?? []).filter((c) => !stateNames.has(c)), advisory: cfg.advisory ?? [] }).state === 'pass';
+  // Red on state checks alone: the gate passes once they are set aside as advisory, with nothing else
+  // missing or failing. Kept in the list, a green one still counts as the gate's one success.
+  const stateOnly = stateRed.length > 0 && evaluateGate(pr.checks ?? [],
+    { required: (cfg.required ?? []).filter((c) => !stateNames.has(c)), advisory: [...(cfg.advisory ?? []), ...stateNames] }).state === 'pass';
   // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.
   if (red && gate.untriggered?.length && !codeRed.length) {
     return person(`its checks are not green: ${gate.reasons.join('; ')}`,

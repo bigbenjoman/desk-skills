@@ -701,6 +701,10 @@ t('DS-316 beside a red code check, only the code check goes to the fix worker', 
   t('DS-578 AC6 beside another red state check too', st('approval', { checks: [...green, gateCheck, gateRed] })?.call, 'review');
   t('DS-578 a check §4 State checks does not name is still a checks call', st('approval', { stateChecks: DEFAULT_STATE_CHECKS })?.call, 'checks');
   t('DS-578 a required check that never reported keeps it draft beside a red state check', st('approval', { checks: [gateCheck] })?.call, 'checks');
+  const onlyState = undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))],
+    checks: [{ name: VERDICT_CHECK, status: 'completed', conclusion: 'success' }, { name: 'protected-path approval', status: 'completed', conclusion: 'failure', runId: '80' }] },
+  { perm: 'yes', permKey: 'pr-ready', approved: false, localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: [], stateChecks: DEFAULT_STATE_CHECKS });
+  t('DS-578 with no check but state checks, a green verdict check is the success the gate needs: ready', onlyState?.call, 'ready');
 }
 
 // verdictCarries, against a real repository: the reviewed commit A, the base merged in to make B.
