@@ -746,7 +746,8 @@ async function byHand(keys, { state, by, front, now, onLine }) {
       return;
     }
     // A design no worker can read is snapshotted by the person's session before the admit, never after.
-    const unread = needsPersonLane(t.rec) ? [] : unreadCanvases(t.rec);
+    // The person's own step (labelPark) is admitted parked on that instead: no worker reads its design.
+    const unread = needsPersonLane(t.rec) || labelPark(t.rec, E.personStepLabels()) ? [] : unreadCanvases(t.rec);
     if (unread.length) return refuse(key, `design not snapshotted: ${unread.join(', ')}: snapshot it into ${join(state, 'designs', key)}/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared with this subscription, then run /desk-admit ${key} again`);
     recs[key] = t.rec;
     seen[key] = t.rec;

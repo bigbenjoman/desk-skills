@@ -406,6 +406,11 @@ rec H-9 A "$(design https://claude.ai/artifact/H9 null)"; rec H-10 A "$(design h
 out=$(admit H-9 H-10 --by ben); rc=$?
 check "DS-358 AC4: /desk-admit refuses a ticket whose canvas has no snapshot, naming the artifact" '[ $rc -eq 11 ] && grep -q "^not admitted H-9: design not snapshotted: https://claude.ai/artifact/H9: snapshot it into $T/state/designs/H-9/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared" <<< "$out" && [ "$(qget tickets.H-9)" = undefined ]'
 check "DS-358 AC1: a snapshotted canvas is admitted runnable" '[ "$(qget tickets.H-10.state)" = triaged ]'
+steprow '`ben-step`'
+rec H-11 A "$(design https://claude.ai/artifact/H11 null),\"labels\":[\"ben-step\"]"
+out=$(admit H-11 --by ben); rc=$?
+check "DS-568 AC1: /desk-admit admits the person's step parked on it, though its canvas has no snapshot: no worker reads it" \
+  '! grep -q "not admitted H-11" <<< "$out" && [ "$(qget tickets.H-11.state)" = parked ] && [[ "$(qget tickets.H-11.park.question)" == "the person'\''s step: "* ]]'
 # Without autopilot-workers yes, a session plans an epic with the person.
 config ask '`none`'
 rec H-6 A '"type":"Epic"'
