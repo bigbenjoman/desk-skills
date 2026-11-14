@@ -134,12 +134,12 @@
         "path": "skills/competitors"
       },
       "pin": {
-        "commit": "087b1714a",
-        "date": "2026-10-01"
+        "commit": "6d123b4fa",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (6018975d); current upstream HEAD version (metadata.version 2.0.1). Installed 2026-09-27.",
-      "tree_sha256": "3bea457555c438e71680a8eaf2feedc19d81cffaa99dbf63d912627008cdcb06"
+      "tree_sha256": "dea777bef9fad3e33373220af74063e7f45622aa1c05e8efcc9b445edfb96d35"
     },
     "context7-mcp": {
       "source": {
@@ -372,12 +372,12 @@
         "path": "skills/content-strategy"
       },
       "pin": {
-        "commit": "15b38b538",
-        "date": "2026-10-27"
+        "commit": "6d123b4fa",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 14 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx sk",
-      "tree_sha256": "d0ead437dce01958e9a963c0474e6b6082d1b7b92dfe2adb68e39be375d480dc"
+      "tree_sha256": "c60708a3a626b24c87fadde157908d6a77fd2668f0bb3a191c59bde78b764759"
     },
     "data-engineer": {
       "source": {
@@ -498,12 +498,12 @@
         "path": "skills/product-marketing"
       },
       "pin": {
-        "commit": "0e59abb7f",
-        "date": "2026-10-15"
+        "commit": "6d123b4fa",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 2 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx ski",
-      "tree_sha256": "382f60ee6c56f4dbe4e753eae35c9ad8038fbe3c73abc0009af462446abd7854"
+      "tree_sha256": "da993fa90d6e6a65ebaf695fc1bbc1b3cbda4e0bd234050ab0a65894373c9df0"
     },
     "python-configuration": {
       "source": {
@@ -554,12 +554,12 @@
         "path": "skills/seo-audit"
       },
       "pin": {
-        "commit": "435cde424",
-        "date": "2026-10-15"
+        "commit": "c01f0843c",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 18 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx sk",
-      "tree_sha256": "dc5d5f6cee68675b5e56b581a48c4a9554bd8a420916e5d57843e650d18308a7"
+      "tree_sha256": "856c776b2f001bf18e747f839568b9dc41d20db8662ff1843b749db08a575de7"
     },
     "stripe-integration": {
       "source": {
@@ -610,12 +610,12 @@
         "path": "skills/ai-seo/"
       },
       "pin": {
-        "commit": "fa81e05ad",
-        "date": "2026-10-29"
+        "commit": "c01f0843c",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit is the one that introduced this blob; it is also upstream HEAD.",
-      "tree_sha256": "5199292e5e901053887017ab4ef6b5e6da8c6d8815d065abdf573367d3a82d12"
+      "tree_sha256": "f8527c33e3b53cad915b3c625664244c8aa17ad69e22958c0c87a4fd7d047d1a"
     },
     "async-python-patterns": {
       "source": {
@@ -750,12 +750,12 @@
         "path": "skills/programmatic-seo/"
       },
       "pin": {
-        "commit": "15b38b538",
-        "date": "2026-10-27"
+        "commit": "2018d6087",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit shown is when this exact SKILL.md was introduced; unchanged through HEAD.",
-      "tree_sha256": "0f24ae992b856417d7ab5434ca0edd2b8191704dcd8731e67749208f4ff70139"
+      "tree_sha256": "f054153d3edcf8fae8258a8b3ae07c432f3760c95eb6a6b06d4dcc525e39e82e"
     },
     "python-observability": {
       "source": {
@@ -792,12 +792,12 @@
         "path": "skills/schema/"
       },
       "pin": {
-        "commit": "7716acefd",
-        "date": "2026-10-08"
+        "commit": "a6df23b66",
+        "date": "2026-11-11"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Upstream renamed skills/schema-markup -> skills/schema in 30f9b9a. Commit shown is when this exact SKILL.md was introduced; un",
-      "tree_sha256": "e50bc4bb09efbfab52b6fe5ba34f8980032a2046be9760e4ac87bdaa4085dfbc"
+      "tree_sha256": "bc7da667bb5c4d27f9747febf9616c8ac145fe7296f499565e561263325b3697"
     },
     "site-architecture": {
       "source": {
@@ -806,12 +806,12 @@
         "path": "skills/site-architecture/"
       },
       "pin": {
-        "commit": "759933ed7",
-        "date": "2026-10-02"
+        "commit": "6d123b4fa",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit shown is when this exact SKILL.md was introduced; unchanged through HEAD.",
-      "tree_sha256": "ffedde0f08e8661ea7ca38842373c6d57b4c871b7c2cb1af0df319dd296a1748"
+      "tree_sha256": "a76272b2b4d3cb8fd7b7a24a1dc404ed22a82c5ee927923adc86c9b4b8633b18"
     },
     "supabase-postgres-best-practices": {
       "source": {
