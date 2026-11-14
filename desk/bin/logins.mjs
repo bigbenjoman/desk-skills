@@ -365,7 +365,7 @@ export function setDefault(subs, { tool, who }) {
   const key = String(who ?? '').trim();
   let name = key;
   if (tool === 'claude' && key.includes('@') && !moved.logins.some((l) => l.tool === tool && l.name === key)) {
-    const on = toolLogins(tool, moved).filter((l) => isDir(l.dir) && claudeAccount(l).email?.toLowerCase() === key.toLowerCase());
+    const on = signedInTo(moved, key);
     if (on.length > 1) throw new Error(`logins: ${on.map((l) => l.name).join(' and ')} are all signed in to ${key}: name the login instead`);
     if (!on.length) throw new Error(`logins: no claude login is signed in to ${key}: the logins are ${moved.logins.filter((l) => l.tool === tool).map((l) => l.name).join(', ')}`);
     // setRule finds a login by name, a listed or removed one before a folder, so a name another
@@ -380,12 +380,15 @@ export function setDefault(subs, { tool, who }) {
 }
 
 // ---- a repo's subscription -------------------------------------------------------------------
-// The Claude login whose folder is signed in to `email`, any case, as its .claude.json records it, from
-// the logins setDefault picks from; the first where two share an account. null for none.
-export function subscriptionLogin(subs, email) {
+// The Claude logins whose folder is signed in to `email`, any case, as each .claude.json records it.
+function signedInTo(subs, email) {
   const key = String(email ?? '').trim().toLowerCase();
-  if (!key) return null;
-  return toolLogins('claude', subs).find((l) => isDir(l.dir) && claudeAccount(l).email?.toLowerCase() === key) ?? null;
+  return key ? toolLogins('claude', subs).filter((l) => isDir(l.dir) && claudeAccount(l).email?.toLowerCase() === key) : [];
+}
+// The Claude login signed in to `email`: the first where two share an account (setDefault refuses
+// those instead). null for none.
+export function subscriptionLogin(subs, email) {
+  return signedInTo(subs, email)[0] ?? null;
 }
 // What a repo's subscription resolves to. `value` is `default` or an account email, read from `source`
 // (DESK_SUBSCRIPTION or the repo's row); unset or `default` is this computer's Claude default. An email
