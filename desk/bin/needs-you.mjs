@@ -960,6 +960,18 @@ function queueCmd(r, args) {
   return { ok: false, out: one(q.why) };
 }
 
+// A ticket a pass moved on since it was listed: an answer or resume with text is kept in its briefing
+// for its next worker, leaving its queue state as it is, while it can still spawn one (not merged, and
+// not done without a PR). Anything else records nothing.
+function movedOn(r, ticket, verb, text, now) {
+  const t = r.q?.tickets?.[ticket];
+  const spent = !t || !!t.merged_at || prStatusOf(t)?.state === 'MERGED' || (t.state === 'done' && t.result?.pr == null);
+  if (spent || !['answer', 'resume'].includes(verb) || !text.trim()) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
+  const a = answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
+  return a.ok ? { ok: true, line: `${r.name} ${ticket}: no longer waiting on you; your answer is saved in its briefing for its next worker.` }
+    : { ok: false, line: `${r.name} ${ticket}: no longer waiting on you, and your answer was not saved: ${a.why}` };
+}
+
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
   if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
@@ -972,7 +984,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const shut = verb === 'resume' && status ? prShut(status.pr, queued.merged_at ? 'MERGED' : status.state) : null;
   if (shut) return { ok: false, line: `${r.name} ${ticket}: ${shut}` };
   const x = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
-  if (!x) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
+  if (!x) return movedOn(r, ticket, verb, text, now);
   const item = itemOf(r, x);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
   // refused naming those that are.

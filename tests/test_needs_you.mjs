@@ -1925,8 +1925,35 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
       'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?', 'Only you can decide whether I can push this change. Should I proceed?'].map(personOnlyStep).join(), ',,,,,');
 }
 
+// DS-601: an answer for a ticket a pass moved on since it was listed is kept for its next worker.
+{
+  put('moved', { port: 3601, beat: 1, supervised: true, tickets: {
+    'M-1': { state: 'running', lane: 'A', stage: '3/9' },
+    'M-2': { state: 'queued', lane: 'A' },
+    'M-3': { state: 'done', lane: 'A', merged_at: minsAgo(5), result: { pr: 70 }, pr_status: { pr: 70, state: 'MERGED' } },
+  } });
+  const brief = (k) => { const f = join(env.HOME, '.desk-autopilot', 'acme__moved', 'briefings', `${k}.md`); return existsSync(f) ? readFileSync(f, 'utf8') : ''; };
+  const before = answers().length;
+  const m1 = N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: 'keep the gap as it is' });
+  t('DS-601 AC1 an answer for a ticket no longer listed is saved in its briefing, and the reply says so',
+    `${m1.ok} ${m1.line} ${brief('M-1').includes('## Answer from the user') && brief('M-1').includes('keep the gap as it is')}`,
+    'true moved M-1: no longer waiting on you; your answer is saved in its briefing for its next worker. true');
+  const m2 = N.record({ word: 'moved', ticket: 'M-2', action: 'resume', text: 'use the short copy' });
+  t('DS-601 AC2 a resume with text is saved the same way, and its queue state is unchanged',
+    `${m2.ok} ${brief('M-2').includes('use the short copy')} ${queueOf('moved').tickets['M-2'].state} ${queueOf('moved').tickets['M-1'].state}`, 'true true queued running');
+  const n = answers().length;
+  const m3 = N.record({ word: 'moved', ticket: 'M-1', action: 'requeue' });
+  t('DS-601 AC3 requeue is refused as today and writes nothing',
+    `${m3.ok} ${m3.line} ${answers().length - n} ${queueOf('moved').tickets['M-1'].state}`, 'false moved M-1: desk-q does not count it as needing you, so nothing was recorded. 0 running');
+  const m4 = N.record({ word: 'moved', ticket: 'M-9', action: 'answer', text: 'x' });
+  t('DS-601 AC4 a ticket in no queue of the repo is refused as today and writes nothing', `${m4.ok} ${answers().length - n} ${brief('M-9')}`, 'false 0 ');
+  const m5 = N.record({ word: 'moved', ticket: 'M-3', action: 'answer', text: 'x' });
+  t('DS-601 a ticket whose PR merged can spawn no worker, so it is refused and writes nothing', `${m5.ok} ${answers().length - n} ${brief('M-3')}`, 'false 0 ');
+  t('DS-601 an answer with no text is refused', `${N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: ' ' }).ok} ${answers().length - before}`, 'false 2');
+}
+
 // Refusals.
-t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
+t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
