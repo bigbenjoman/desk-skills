@@ -412,7 +412,7 @@ t('cli check: a slug with no ticket file says so', nofile.status === 2 && nofile
 t('cli save: a key with .. is refused', run('save', s1, '--key', 'a..b').status, 2);
 t('cli save: --boards before --key is a usage error', run('save', s1, '--boards', 'x', '--key', 'DS-82').status, 2);
 
-// DS-659: --boards names a board by its title, commas and all, or its file name, and refuses a name
+// --boards names a board by its title, commas and all, or its file name, and refuses a name
 // matching no board.
 const LEVERS = 'Opening Levers, home-screen line';
 const commaSnap = (name, titles) => {
@@ -441,6 +441,8 @@ const csBad = spawnSync('node', [BIN, 'save', cs, '--key', 'DS-3', '--url', COMM
 t('DS-659 AC3 save: a name matching no board exits 2, saving nothing', `${csBad.status} ${csBad.stderr.includes('board: Main (b1.dc.html)')} ${existsSync(join(r659, 'design'))}`, '2 true false');
 const cmpBad = await compare(join(r6, 'design/canvases/DS-2'), { chromium: null, storybook: join(T, 'nothing'), out: join(T, 'shots-659'), boards: 'Nope' }).then(() => 'no error', (e) => `${e.code} ${e.message.includes(`board: ${LEVERS} (b0.dc.html)`)}`);
 t('DS-659 AC3 compare: a name matching no board exits 2, writing nothing', `${cmpBad} ${existsSync(join(T, 'shots-659'))}`, '2 true false');
+const cmpCliBad = spawnSync('node', [BIN, 'compare', join(r6, 'design/canvases/DS-2'), '--storybook', join(T, 'nothing'), '--out', join(T, 'shots-659-cli'), '--boards', 'Nope'], { env: { ...env, DESK_HOME: join(T, 'no-desk-home'), DESK_PLAYWRIGHT: '' }, encoding: 'utf8' });
+t('DS-659 AC3 compare cli: refuses the name before loading Playwright, so exits 2 with none installed', `${cmpCliBad.status} ${cmpCliBad.stderr.includes(`board: ${LEVERS} (b0.dc.html)`)} ${existsSync(join(T, 'shots-659-cli'))}`, '2 true false');
 const cw4 = commaSnap('comma-4', ['A', 'B']);
 t('DS-659 AC4 write: titles with no commas still split on them', `${writeBoards(cw4, 'A,B').status} ${boardsOf(cw4)}`, '0 ["A","B"]');
 const runState = (...args) => spawnSync('node', [BIN, ...args], { cwd: r6, env: { ...env, DESK_AUTOPILOT_STATE: join(T, 'cli-import-state') }, encoding: 'utf8' });

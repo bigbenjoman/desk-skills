@@ -1174,7 +1174,9 @@ if (isMain) {
     } else if (cmd === 'compare') {
       const storybook = opt(rest, '--storybook'); const out = opt(rest, '--out');
       if (!target || !storybook || !out) fail('usage: desk-design compare <saved dir> --storybook <built folder> --out <dir> [--boards <a,b>]');
-      const r = await compare(resolve(target), { chromium: await playwrightChromium(), storybook: resolve(storybook), out: resolve(out), boards: opt(rest, '--boards') ?? [] });
+      // Playwright loads at launch, so a --boards name matching no board exits 2 even with none installed.
+      const chromium = { launch: async (...a) => (await playwrightChromium()).launch(...a) };
+      const r = await compare(resolve(target), { chromium, storybook: resolve(storybook), out: resolve(out), boards: opt(rest, '--boards') ?? [] });
       for (const p of r.pairs) {
         console.log(`pair: ${p.board} = story ${p.story.id} (${p.by === 'story' ? 'its id or title and name' : 'its title'} matches the board)`);
         for (const s of p.shots) console.log(`  ${s.width}px${s.drawn ? ' (drawn)' : ''}: ${s.canvas} ${s.built}`);
