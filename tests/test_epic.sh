@@ -92,9 +92,9 @@ cat > "$T/fixture.json" <<'EOF'
                  {"id": "25", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
                   "inwardIssue": {"key": "KAN-59", "fields": {"summary": "Rebuild the images on production", "issuetype": {"name": "Story"}, "status": {"name": "To Do", "statusCategory": {"key": "new"}}}}},
                  {"id": "26", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
-                  "inwardIssue": {"key": "KAN-569", "fields": {"summary": "Apply the migration", "issuetype": {"name": "Task"}, "status": {"name": "Done", "statusCategory": {"key": "done"}}}}}]},
+                  "inwardIssue": {"key": "KAN-1569", "fields": {"summary": "Apply the migration", "issuetype": {"name": "Task"}, "status": {"name": "Done", "statusCategory": {"key": "done"}}}}}]},
     "KAN-59": {"labels": ["ben-step", "operator-task"]},
-    "KAN-569": {"labels": ["ben-step"]},
+    "KAN-1569": {"labels": ["ben-step"]},
     "KAN-1100": {"summary": "epic with a definition of done", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
                  "description": "h2. Outcome\nA feature.\n\nh2. Definition of done\n# DoD1: Given a, then b.\n# DoD2: Given c, then d.\n# DoD1: named twice\n\nh2. Acceptance criteria\n# AC1: not read while a DoD exists"},
     "KAN-1110": {"summary": "epic with acceptance criteria only", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
@@ -338,7 +338,7 @@ printf '| Person-step labels | `ben-step` |\n' >> "$CD/config.md"
 rec KAN-58 '{"ticket":"KAN-58","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" KAN-58 >/dev/null 2>&1
 check "DS-568 AC2: facts record an open blocker's labels, read from the blocker itself, and not a Done one's" \
-  '[ "$(jq -c "[.blockers[] | [.key, .labels]]" "$T/state/triage/KAN-58.json")" = "[[\"KAN-59\",[\"ben-step\",\"operator-task\"]],[\"KAN-569\",null]]" ]'
+  '[ "$(jq -c "[.blockers[] | [.key, .labels]]" "$T/state/triage/KAN-58.json")" = "[[\"KAN-59\",[\"ben-step\",\"operator-task\"]],[\"KAN-1569\",null]]" ]'
 node "$B/ticket-facts.mjs" --blockers KAN-58 >/dev/null 2>&1
 check "DS-568 AC2: a blockers refresh reads them again" '[ "$(jq -c ".blockers[0].labels" "$T/state/triage/KAN-58.json")" = "[\"ben-step\",\"operator-task\"]" ]'
 mkcfg "http://127.0.0.1:$PORT" yes
