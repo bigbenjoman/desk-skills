@@ -179,11 +179,13 @@ for (const r of admitted) {
       seen.add(k);
       const br = byKey[k];
       if (br && admittedKeys.has(k)) holdBehind(t, k, 'Jira link');
-      else if (b.category !== 'done' && (br ? stepParked(br) : stepLabel(b.labels, STEP_LABELS))) {
+      // Only on the ticket's own link: the pass lifts merge_after once its own links no longer list the
+      // step, so one inherited from a container would be lifted at once, and is asked below instead.
+      else if (b.category !== 'done' && r.blockers.some((x) => x?.key === k) && (br ? stepParked(br) : stepLabel(b.labels, STEP_LABELS))) {
         (mergeAfter[t] ??= []).push(k);
         note(t, `built now, merged only once ${k} (your step) is Done`);
       } else if (br) {
-        const why = !ours.includes(br) ? `assigned to ${br.assignee}` : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
+        const why = !ours.includes(br) ? `assigned to ${br.assignee}` : stepParked(br) ? 'your step' : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
         ask(t, `${t} is blocked by ${k}, which this batch will not build (${why}): finish ${k} first, or confirm ${t} can start without it`);
       } else if (b.category === 'done') note(t, `blocker ${k} is done`);
       else {

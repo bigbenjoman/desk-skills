@@ -232,8 +232,8 @@ check "DS-407 AC4: an ordinary dev ticket in no batch still holds the build, as 
 # worker spawns, and a ticket it blocks, in the batch or out of it, is built now and merged after it.
 steprow(){ printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Person-step labels | %s |\n' "$1" >> "$T/cfg/repos/acme__widgets/config.md"; }
 steprow '`ben-step` `operator-task`'
-rec S-1 A '"labels":["ben-step"],"blockers":[{"key":"OUT-6","category":"new"}]'
-rec S-2 A '"blockers":[{"key":"S-1","category":"new","type":"Story","summary":"Rebuild the images"}]'
+rec S-1 A '"labels":["ben-step"],"files_in_scope":["infra/images.sh"],"blockers":[{"key":"OUT-6","category":"new"}]'
+rec S-2 A '"files_in_scope":["infra/images.sh"],"blockers":[{"key":"S-1","category":"new","type":"Story","summary":"Rebuild the images"}]'
 rec S-3 A '"blockers":[{"key":"OPS-9","category":"new","type":"Story","summary":"Create the Vercel project","labels":["Operator-Task"]}]'
 search S-2 S-1 S-3; out=$(intake)
 check "DS-568 AC1: a ticket labelled as the person's step is admitted parked on it, held by nothing" \
@@ -243,6 +243,8 @@ out=$(cd "$T/repo" && node "$T/bin/queue.mjs" requeue S-1 2>&1); rc=$?
 check "DS-568 AC1: requeue refuses it, so no worker spawns" '[ $rc -ne 0 ] && grep -q "S-1 is the person.s own step" <<< "$out" && [ "$(qget tickets.S-1.state)" = parked ]'
 check "DS-568 AC2: a ticket blocked by it in the batch is built now and merged after it" \
   '[ "$(qget tickets.S-2.state)" = triaged ] && [ "$(qget tickets.S-2.held_by)" = null ] && [ "$(qget tickets.S-2.merge_after)" = S-1 ]'
+check "DS-568 AC2: sharing a file with the step holds nothing, since no worker ever merges the step" \
+  '[ "$(qget tickets.S-2.collides_with)" = null ] && [ "$(qget tickets.S-1.collides_with)" = null ]'
 check "DS-568 AC2: a blocker in no batch carrying the label is the person'\''s step whatever its summary" \
   '[ "$(qget tickets.S-3.state)" = triaged ] && [ "$(qget tickets.S-3.merge_after)" = OPS-9 ]'
 rec S-6 C '"labels":["ben-step"],"unknowns":["which region?"]'

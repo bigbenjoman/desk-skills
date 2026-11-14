@@ -430,11 +430,12 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   const park = stepPark ?? lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
   // The collision check plan-batch makes, against every ticket still to finish: two tickets that
-  // touch one file never run at once.
-  const mine = new Set(r.files_in_scope ?? []);
+  // touch one file never run at once. The person's step runs on no worker, so it collides with nothing:
+  // a hold behind it would wait on a merge that never comes.
+  const mine = new Set(stepPark ? [] : r.files_in_scope ?? []);
   const collides = [];
   for (const [k, other] of Object.entries(q.tickets)) {
-    if (['done', 'failed'].includes(other.state)) continue;
+    if (['done', 'failed'].includes(other.state) || personStepPark(other)) continue;
     if (!existsSync(join(state, 'triage', `${k}.json`))) continue;
     const files = readTriage(state, k).files_in_scope ?? [];
     if (files.some((f) => mine.has(f))) {

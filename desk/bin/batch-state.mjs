@@ -384,7 +384,7 @@ export function stepLabel(labels, stepLabels = []) {
 // The park for a ticket labelled as the person's own step (its triage record's `labels`), or null. It is
 // admitted parked on it, beside lanePark and designPark, so no worker spawns and Needs you lists it; a
 // ticket it blocks merges after it (merge_after) rather than waiting to build.
-export const PERSON_STEP_PREFIX = "the person's step: ";
+const PERSON_STEP_PREFIX ="the person's step: ";
 export function labelPark(r, stepLabels = []) {
   const l = stepLabel(r?.labels, stepLabels);
   return l ? `${PERSON_STEP_PREFIX}labelled ${l} (config §4 Person-step labels), so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;

@@ -455,6 +455,19 @@ check "DS-568 AC2: plan-batch builds a ticket blocked by it now, merging it afte
 check "DS-568 AC2: a blocker in no batch carrying the label is a person'\''s step too" \
   '[ "$(qg KAN-453 .state)" = triaged ] && [ "$(qg KAN-453 .merge_after)" = KAN-990 ] && [ "$(qg KAN-453 .open_questions)" = 0 ]'
 check "DS-568 AC3: a ticket with another label is planned as before" '[ "$(qg KAN-454 .state)" = triaged ] && [ "$(qg KAN-454 .merge_after)" = null ]'
+# A step in lane A parks on its label alone. A blocker inherited from a container story is asked about,
+# not merged after: the pass lifts a merge_after key the subtask's own links do not list.
+r KAN-455 A '[]' '"labels":["operator-task"]'
+r KAN-456 A "[$(nb KAN-455)]"
+r KAN-457 A '[]'
+printf '{"parent":"KAN-100","containers":{"KAN-460":{"subtasks":["KAN-457"],"blocked_by":[{"key":"KAN-455","category":"new"}]}}}' > "$T/state/expansion.json"
+node "$B/queue.mjs" init s568c >/dev/null; node "$B/queue.mjs" set-batch epic=KAN-100 >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-455 KAN-456 KAN-457 2>&1); rc=$?
+check "DS-568 AC1: a lane A ticket labelled as the person's step parks on the label, and the one it blocks merges after it" \
+  '[[ "$(qg KAN-455 .park.question)" == "the person'\''s step: labelled operator-task"* ]] && [ "$(qg KAN-456 .held_by)" = null ] && [ "$(qg KAN-456 .merge_after)" = KAN-455 ]'
+check "DS-568 AC2: a step inherited from a container story is asked about, never a merge hold the pass would lift" \
+  '[ "$(qg KAN-457 .merge_after)" = null ] && [ "$(qg KAN-457 .open_questions)" = 1 ] && printf "%s" "$out" | grep -q "\[KAN-457\] KAN-457 is blocked by KAN-455, which this batch will not build (your step)"'
+rm -f "$T/state/expansion.json"
 mkcfg "http://127.0.0.1:$PORT" yes
 node "$B/queue.mjs" init s568b >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-451 KAN-452 2>&1); rc=$?
