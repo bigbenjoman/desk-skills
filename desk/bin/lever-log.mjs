@@ -6,10 +6,11 @@
 //   import { append, read } from './lever-log.mjs'
 //   append(slug, { lever, kind, actor, reason_code, reason, ... })  -> the event as written
 //   read(slug, { kinds, since })                                    -> { events, bad: [{ line, error }] }
-import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { batchPaths, SAFE_ID } from './desk-env.mjs';
+import { withDirLock } from './dir-lock.mjs';
 import { REGISTRY, REASON_CODES } from './lever-registry.mjs';
 
 export const VERSION = 1;
@@ -50,41 +51,7 @@ function check(event) {
   if (event.at != null && Number.isNaN(Date.parse(event.at))) throw new LeverLogError(`lever-log: at "${event.at}" is not a date`);
 }
 
-// The lock is a directory holding its holder's pid (the pattern of queue.mjs's lock()). A holder that
-// has exited never lets go; one with no pid yet is between its mkdir and its write unless it has sat
-// that way for a minute. Clearing takes its own lock and looks again, so two writers that saw the
-// same stale lock cannot remove a fresh one between them.
 const LOCK_WAIT_MS = 10_000;
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
-function stale(dir) {
-  const pid = lockPid(dir);
-  try { return pid ? !alive(pid) : Date.now() - statSync(dir).mtimeMs > 60_000; } catch { return false; }
-}
-function clearStale(dir) {
-  const clearing = `${dir}.clearing`;
-  try { mkdirSync(clearing); } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    try { if (Date.now() - statSync(clearing).mtimeMs > 5_000) rmSync(clearing, { recursive: true, force: true }); } catch { /* gone */ }
-    return false;
-  }
-  try { if (stale(dir)) rmSync(dir, { recursive: true, force: true }); }
-  finally { rmSync(clearing, { recursive: true, force: true }); }
-  return true;
-}
-function withLock(dir, fn) {
-  const until = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try { mkdirSync(dir); writeFileSync(join(dir, 'pid'), `${process.pid}\n`); break; }
-    catch (e) { if (e.code !== 'EEXIST') throw e; }
-    if (stale(dir) && clearStale(dir)) continue;
-    if (Date.now() >= until) throw new LeverLogError(`lever-log: ${dir} is held by pid ${lockPid(dir) ?? '?'} past the ${LOCK_WAIT_MS / 1000}s wait: nothing was written`);
-    sleep(20);
-  }
-  try { return fn(); }
-  finally { if (lockPid(dir) === process.pid) rmSync(dir, { recursive: true, force: true }); }
-}
 
 // Checks the event and appends it as one line, with `v`, `id`, `repo` and (unless given) `at` filled
 // in. Throws LeverLogError, writing nothing, on an event that fails the check.
@@ -94,7 +61,12 @@ export function append(slug, event) {
   const { v, id, repo, at, ...rest } = event;
   const line = { v: VERSION, id: randomUUID(), at: at ?? new Date().toISOString(), repo: slug, ...rest };
   mkdirSync(dirname(file), { recursive: true });
-  withLock(`${file}.lock`, () => appendFileSync(file, `${JSON.stringify(line)}\n`));
+  const lock = `${file}.lock`;
+  withDirLock(lock, () => appendFileSync(file, `${JSON.stringify(line)}\n`), {
+    waitMs: LOCK_WAIT_MS,
+    pollMs: 20,
+    timeoutError: (pid) => new LeverLogError(`lever-log: ${lock} is held by pid ${pid ?? '?'} past the ${LOCK_WAIT_MS / 1000}s wait: nothing was written`),
+  });
   return line;
 }
 
