@@ -582,7 +582,8 @@ export const crashOf = (t, n) => (t.upload_crash && Number(t.upload_crash.pr) ==
 // The call for a draft's `_drag <file>_` cells, or null with none left: only the cells hold it here,
 // however its upload ended. Each goes to what can fill it: §4 Evidence workflow, then for any it left
 // with no file a capture worker (fix-tries.mjs captureTry), then for files desk holds the §3 pr-images
-// upload, and the person only once none can. cfg as undraftCall's (evidence, evidenceRun, missingShots).
+// upload, and the person only once none can. cfg as undraftCall's (evidence, evidenceRun, missingShots,
+// upload, shotDir).
 export function cellCall(t, pr, cfg) {
   const cells = dragCells(pr.body);
   if (!cells) return null;
@@ -609,6 +610,18 @@ export function cellCall(t, pr, cfg) {
   if (t.images_reported === true && t.images_uploaded !== true) {
     return { ...person(`${left}, whose files are saved, but config §3 pr-images leaves their upload to you`, `approve it with \`DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs ${n} <its screenshot directory>\``), unapproved: true };
   }
+  // Files desk holds for every cell (cfg.missingShots found none missing) that no upload was tried for:
+  // the pass's own upload puts them in (KAN-629: a worker that captured but never printed
+  // AUTOPILOT_IMAGES left its cells to the person while desk held every file). cfg.upload is §3
+  // pr-images as the pass reads it, cfg.shotDir the ticket's screenshot directory (evidence.mjs
+  // ticketShotDir). Only `none` of the recorded outcomes allows it: `none` is recorded where the
+  // directory held no screenshot, so no asset of these files exists on GitHub and one upload duplicates
+  // nothing. `true` and `partial` mean the uploader already put assets on GitHub, which it cannot list
+  // or reuse, so uploading the directory again would duplicate them (uploadShots); those cells stay
+  // the person's, as before. A spawn clears the flag, so a later round's own screenshots are not held back.
+  if (cfg.upload === 'yes' && cfg.shotDir && cfg.missingShots && (t.images_uploaded == null || t.images_uploaded === 'none')) {
+    return { call: 'upload', why: `${left}, whose files desk holds in ${cfg.shotDir}, and the pass uploads them`, action: null, dir: cfg.shotDir };
+  }
   if (evidence) return evidence;
   return person(`${left}, whose files desk holds but could not put in the body`, noCellsLeft(n));
 }
@@ -627,6 +640,7 @@ export function cellPlan(t, pr, cfg) {
     if (c.call === 'evidence-failed') return `${wf} ${c.conclusion === 'failure' ? 'failed' : 'filled none of its cells'}, so desk fixes the workflow for the repo and runs it again`;
     if (c.call === 'capture' && c.files.includes(file)) return spent ? "desk's capture try could not take it" : 'a capture worker takes it at the next pass';
     if (c.unapproved) return 'its file is saved, and config §3 pr-images leaves its upload to you';
+    if (c.call === 'upload') return 'desk holds its file and uploads it at the next pass';
     if (/^its evidence workflow/.test(c.why ?? '')) return `${wf} ran and could not take it`;
     return 'desk holds its file but could not put it in the body';
   };
@@ -662,7 +676,8 @@ export function personHold(t, n, redrafts = []) {
 // cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
 // check build recorded at that head, behind(head) -> the base's name when the head is behind it, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
 // evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
-// the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
+// the ticket's screenshot directory does not hold, upload (§3 pr-images, `yes` where the pass may
+// upload) and shotDir (that directory) for cellCall's `upload` call, conflictUnreviewed, conflictReviewed (§3
 // pr-conflict-unreviewed and -reviewed), untriggered(base, head, branch) -> gate.mjs untriggeredChecks's map
 // for a required check that never reported, stale(base, head, branch, baseHead) -> staleTriggers's
 // { behind, reopen } for one the pass's base sync or reopen starts, runOf(runId), cancels(name) and now
