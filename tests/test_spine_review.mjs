@@ -27,7 +27,10 @@ const brief = reviewBrief(specs, { worktree: '/w/SP-1', command: 'npx playwright
 t('the brief names every spec by key', specs.every((s) => brief.includes(`key: ${s.key}`)), true);
 t('the brief asks for all four kinds', ['unasserted', 'contradiction', 'coupled', 'wrong_failure'].every((k) => brief.includes(`- ${k}:`)), true);
 t('the brief is read-only', /READ-ONLY: no Edit or Write/.test(brief), true);
-t('the brief gives the criterion and file', brief.includes(`criterion AC2: Totals include tax.\nfile: e2e/acceptance/checkout.spec.ts`), true);
+t('the brief runs a root command in the worktree', brief.includes(`'cd /w/SP-1 && npx playwright test e2e/acceptance -g "<ID>"'`), true);
+t('AC3: the brief changes into a command\'s directory before running it',
+  reviewBrief(specs, { worktree: '/w/SP-1', command: 'packages/app: bunx vitest run specs -t "{ids}"' }).includes(`'cd /w/SP-1/packages/app && bunx vitest run specs -t "<ID>"'`), true);
+t('the brief gives the criterion and file',brief.includes(`criterion AC2: Totals include tax.\nfile: e2e/acceptance/checkout.spec.ts`), true);
 
 // AC2: one question per spec, with its criterion, file and findings.
 const reply = `Here is the review:\n\`\`\`json\n${S({
