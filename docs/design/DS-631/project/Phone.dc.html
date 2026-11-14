@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Levers · phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F9FAFB}
+a{color:#111827}a:hover{color:#374151}
+.num{font-variant-numeric:tabular-nums}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.card{background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px}
+.muted{color:#6B7280}
+.badge{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:500;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+</style>
+</helmet>
+<div style="font-family:Inter,system-ui,sans-serif;color:#111827;background:#F9FAFB;min-height:100%;box-sizing:border-box;padding:24px 16px 48px">
+<div style="max-width:100%;display:flex;flex-direction:column;gap:24px">
+
+<header style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
+<h1 style="margin:0;font-size:28px;font-weight:700;letter-spacing:-.01em">Levers</h1>
+<span class="muted num" style="font-size:12px">Updated 14:32 · 2 min ago</span>
+</div>
+<p class="muted" style="margin:0;font-size:14px;line-height:1.45">desk tests ways to make tickets cheaper, keeps the ones that work, and turns off the rest.</p>
+</header>
+
+<section aria-label="Summary" class="card" style="padding:16px">
+<p style="margin:0;font-size:16px;line-height:1.5"><b style="font-weight:600">Not started yet.</b> desk has recorded what a ticket costs with no levers on. Testing starts once the trial tickets (DS-631) are built. Nothing needs you.</p>
+</section>
+
+<section aria-label="Headline numbers" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+<sc-for list="{{tiles}}" as="t" hint-placeholder-count="4">
+<article class="card" style="padding:14px 12px;display:flex;flex-direction:column;gap:8px;box-sizing:border-box">
+<h3 class="muted" style="margin:0;font-size:13px;font-weight:500">{{t.label}}</h3>
+<span class="num" style="font-size:26px;font-weight:600;letter-spacing:-.02em;line-height:1">{{t.value}}</span>
+<span style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:#374151"><span class="dot" style="background:#9CA3AF"></span>{{t.status}}</span>
+<span class="muted num" style="font-size:12px;line-height:1.4">{{t.sub}}</span>
+</article>
+</sc-for>
+</section>
+
+<section aria-labelledby="tr-h" style="display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;flex-direction:column;gap:4px"><h2 id="tr-h" style="margin:0;font-size:17px;font-weight:600">Trends</h2><p class="muted" style="margin:0;font-size:13px;line-height:1.45">Black is now, grey is before levers. Left: the last 6 weeks. Right: the last 12 months.</p></div>
+<div role="group" aria-label="Chart view" style="display:grid;grid-template-columns:1fr 1fr;border:1px solid #D1D5DB;border-radius:6px;overflow:hidden"><button type="button" aria-pressed="true" style="height:44px;padding:0 12px;border:0;background:#111827;color:#F9FAFB;font:500 13px Inter,system-ui,sans-serif;cursor:pointer">6 weeks &amp; 12 months</button><button type="button" aria-pressed="false" style="height:44px;padding:0 12px;border:0;border-left:1px solid #D1D5DB;background:#FFFFFF;color:#374151;font:500 13px Inter,system-ui,sans-serif;cursor:pointer">Last 30 days</button></div>
+<sc-for list="{{awaiting}}" as="w" hint-placeholder-count="4">
+<article class="card" style="padding:14px 16px;display:flex;flex-direction:column">
+<div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0;font-size:15px;font-weight:500">{{w}}</h3><span role="img" aria-label="Grey: no data yet" style="width:12px;height:12px;border-radius:50%;background:#9CA3AF"></span></div>
+<div style="height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center"><span class="muted" style="font-size:14px">Awaiting data</span><span class="muted" style="font-size:12px">Testing starts once the DS-631 tickets are built.</span></div>
+</article>
+</sc-for>
+</section>
+
+<section aria-labelledby="lev-h" class="card" style="overflow:hidden">
+<div style="padding:16px 16px 12px;border-bottom:1px solid #E5E7EB;display:flex;flex-direction:column;gap:4px"><h2 id="lev-h" style="margin:0;font-size:17px;font-weight:600">Is each lever working?</h2><p class="muted" style="margin:0;font-size:13px;line-height:1.45">No lever is being tested yet, so there are no results. Here's where each one stands.</p></div>
+<ul style="list-style:none;margin:0;padding:0">
+<sc-for list="{{levers}}" as="l" hint-placeholder-count="7">
+<li style="padding:14px 16px;border-top:1px solid #F0F1F3;display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><span style="font-size:15px;font-weight:600">{{l.name}}</span><span class="badge" style="{{l.badge}}"><span class="dot" style="background:{{l.dotc}}"></span>{{l.status}}</span></div>
+<span class="muted" style="font-size:13px;line-height:1.4">{{l.what}}</span>
+<span style="font-size:13px;line-height:1.45;color:#374151">{{l.next}}</span>
+</li>
+</sc-for>
+</ul>
+</section>
+
+<section aria-labelledby="ch-h" class="card" style="padding:16px;display:flex;flex-direction:column;gap:4px">
+<h2 id="ch-h" style="margin:0 0 6px;font-size:17px;font-weight:600">What changed this week</h2>
+<div style="display:flex;flex-direction:column;gap:3px;padding:12px 0 0;border-top:1px solid #F0F1F3">
+<span class="muted num" style="font-size:12px">13 Nov, 15:23</span>
+<span style="font-size:14px;font-weight:600">You turned on preflight in desk-skills</span>
+<span class="muted" style="font-size:13px;line-height:1.45">Set by hand in the config, so this is a before-and-after, not a test. desk hasn't changed anything yet.</span>
+</div>
+</section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":375,"height":2680}}'>
+class Component extends DCLogic {
+renderVals() {
+var on = { dotc: '#16A34A', badge: 'background:#DCFCE7;color:#166534' };
+var off = { dotc: '#9CA3AF', badge: 'background:#F3F4F6;color:#374151' };
+var L = function (name, what, s, status, next) { return { name: name, what: what, dotc: s.dotc, badge: s.badge, status: status, next: next }; };
+return {
+awaiting: ['Cost per Ticket', 'Tokens per Ticket', 'Permission Prompts per Start', 'Fix Tries per Ticket'],
+tiles: [
+{ label: 'Cost per ticket', value: '$17.52', status: 'Starting point', sub: 'Before levers · 24 tickets' },
+{ label: 'Tokens per ticket', value: '38.9M', status: 'Starting point', sub: 'Input · 175k output' },
+{ label: 'Fix tries per ticket', value: '0.13', status: 'Starting point', sub: 'Must not rise' },
+{ label: 'Permission prompts', value: '374', status: 'Starting point', sub: 'Across 24 tickets' }
+],
+levers: [
+L('preflight', 'Skips the start-up check when nothing has changed', on, 'On by hand', 'In desk-skills only. Saves at most 1.4% of spend. desk takes it over after DS-640 and DS-642.'),
+L('wrappers', 'Runs often-blocked commands through approved scripts', off, 'Off', 'Testing starts when a repo is set to auto.'),
+L('memory', 'Starts workers with a short summary instead of full memory', off, 'Off', 'Testing starts when a repo is set to auto.'),
+L('failure-class', 'Reruns a ticket once when CI failed for a machine reason', off, 'Off', 'Testing starts when a repo is set to auto.'),
+L('review-reuse', 'Keeps review notes after a rebase instead of reviewing it all again', off, 'Off', 'Tested one at a time with blind reviews, after DS-643 and DS-644.'),
+L('codex', 'Has Codex review pull requests instead of Claude', off, 'Off', 'Tested one at a time with blind reviews, after DS-643 and DS-644.'),
+L('effort', 'Uses less thinking on simple steps', off, 'Off', 'Tested one at a time with blind reviews, after DS-643 and DS-644.')
+]
+};
+}
+}
+</script>
+</body>
+</html>
