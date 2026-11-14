@@ -75,7 +75,7 @@ cat > "$T/fixture.json" <<'EOF'
                                "outwardIssue": {"key": "KAN-43"}}]},
     "KAN-43": {"issuelinks": [{"id": "9", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
                                "inwardIssue": {"key": "KAN-42"}}]},
-    "KAN-50": {"_names": {"customfield_10500": "Size"}, "customfield_10500": {"value": "L"},
+    "KAN-50": {"_names": {"customfield_10500": "Size", "customfield_10600": "Repository"}, "customfield_10500": {"value": "L"}, "customfield_10600": {"value": "studia-web"},
                "issuelinks": [
                  {"id": "21", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
                   "inwardIssue": {"key": "KAN-51", "fields": {"summary": "Apply the migration", "issuetype": {"name": "Task"}, "status": {"name": "Done", "statusCategory": {"key": "done"}}}}},
@@ -311,6 +311,7 @@ check "facts: Blocks blockers from the inward side only, with category, summary 
   '[ $rc -eq 0 ] && [ "$(jq -c .blockers "$T/state/triage/KAN-50.json")" = "[{\"key\":\"KAN-51\",\"category\":\"done\",\"summary\":\"Apply the migration\",\"type\":\"Task\"}]" ]'
 check "facts: other link types counted, Relates not" '[ "$(jq .other_links "$T/state/triage/KAN-50.json")" = 1 ]'
 check "facts: size from the field named Size" '[ "$(jq -r .size "$T/state/triage/KAN-50.json")" = L ]'
+check "facts: repository from the field named Repository" '[ "$(jq -r .repository "$T/state/triage/KAN-50.json")" = studia-web ]'
 check "facts: the model-written fields survive" '[ "$(jq -r .lane "$T/state/triage/KAN-50.json")" = A ]'
 check "facts: desk-jira lint's findings are recorded, blocking ones included" \
   '[ "$(jq -r "[.lint[] | select(.severity == \"blocking\") | .rule] | index(\"criteria\") != null" "$T/state/triage/KAN-50.json")" = true ] && printf "%s" "$out" | grep -q "lint [1-9][0-9]* blocking"'
@@ -318,6 +319,7 @@ rec KAN-53 '{"ticket":"KAN-53","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" KAN-53 >/dev/null 2>&1
 check "facts: size from the body's first line" '[ "$(jq -r .size "$T/state/triage/KAN-53.json")" = M ] && [ "$(jq -c .blockers "$T/state/triage/KAN-53.json")" = "[]" ]'
 check "facts: a ticket with no parent records no epic" '[ "$(jq -c .epic "$T/state/triage/KAN-53.json")" = null ]'
+check "facts: a ticket with no Repository field records repository null" '[ "$(jq -c "has(\"repository\"), .repository" "$T/state/triage/KAN-53.json" | tr -d "\n")" = truenull ]'
 rec KAN-56 '{"ticket":"KAN-56","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" KAN-56 >/dev/null 2>&1
 check "facts: a parent epic is recorded with its key, summary and this repo's children (not OTH-1)" \

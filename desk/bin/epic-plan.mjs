@@ -585,9 +585,16 @@ function startPlan({ epic, state, env, children }) {
   // triaged; it is cleared so the queue says what the ticket waits on.
   const after = readQueue(env.DESK_QUEUE);
   const stale = Object.values(after.tickets ?? {}).filter((t) => t.key !== epic && t.state === 'triaged' && t.park);
-  const why = stale.reduce((w, t) => w ?? q(['set', t.key, 'park=null']), null) ?? q(['drop', epic]);
+  // A child the seed took out of this queue while still asking the person about it (one its own repo
+  // refused to admit, say) has no park of its own for needs-you or the digest to read, so the epic stays,
+  // parked on those asks, rather than leaving the queue with them unread. No worker takes an epic.
+  const away = (sv.needs_person ?? []).filter((n) => n.ticket !== epic && children.includes(n.ticket) && !after.tickets?.[n.ticket]);
+  const keys = [...new Set(away.map((n) => n.ticket))];
+  const ask = keys.length ? `${epic}'s feature batch started without ${keys.join(', ')}, which ${keys.length === 1 ? 'needs' : 'need'} you: ${away.map((n) => n.detail).join('; ')}. Once settled, take ${epic} out of this queue: no worker has work on it` : null;
+  const why = stale.reduce((w, t) => w ?? q(['set', t.key, 'park=null']), null) ?? (ask ? q(['park', epic, ask]) : q(['drop', epic]));
   if (why) return { why: `its queue could not be written (${why})` };
-  return { lines: [`${epic}'s feature batch started on ${after.base ?? 'its feature branch'}${spine ? `, with its spine ${spine} first` : ''}: ${children.length} ${children.length === 1 ? 'child' : 'children'} seeded by plan-batch`] };
+  return { lines: [`${epic}'s feature batch started on ${after.base ?? 'its feature branch'}${spine ? `, with its spine ${spine} first` : ''}: ${children.length} ${children.length === 1 ? 'child' : 'children'} seeded by plan-batch`,
+    ...(ask ? [`${epic} stays parked for you in /desk-needs-you: ${ask}`] : [])] };
 }
 
 // Applies an edit to the plan, then starts the batch: -> {lines} or {why} (asked again), or {wait} when

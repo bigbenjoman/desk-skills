@@ -523,11 +523,17 @@ const plan = existsSync(s + '/feature.json') ? JSON.parse(readFileSync(s + '/fea
 const owner = plan?.owners?.AC1;
 const qs = owner && !keys.includes(owner) ? ["AC1's owner " + owner + ' is not a child this batch builds: name another owner'] : [];
 const message = ['FEATURE MODE — on', plan ? '  AC1 owner ' + plan.owners.AC1 : '  no feature plan yet'];
-const needs = [...(plan?.spine && keys.includes(plan.spine) ? [] : [{ ticket: epic, why: 'feature_plan', detail: 'the plan' }]), ...qs.map((q) => ({ ticket: epic, why: 'question', detail: q }))];
+// A key with a $T/refused.<key> file runs in another repo that refuses it: seeding takes it out of this
+// queue and asks the person, as plan-batch's hand-over does.
+const refused = keys.filter((k) => existsSync('$T/refused.' + k));
+const needs = [...(plan?.spine && keys.includes(plan.spine) ? [] : [{ ticket: epic, why: 'feature_plan', detail: 'the plan' }]), ...qs.map((q) => ({ ticket: epic, why: 'question', detail: q })),
+  ...(seed ? refused.map((k) => ({ ticket: k, why: 'question', detail: k + ' was not admitted in acme/web (the queue is locked): admit it there with node intake.mjs admit ' + k })) : [])];
 if (seed) {
   const q = (...a) => execFileSync(process.execPath, ['$T/bin/queue.mjs', ...a], { stdio: 'ignore' });
-  for (const k of keys) { q('add', k, 'Story', 'A'); q('set', k, 'state=triaged', 'held_by=null'); }
-  for (const k of keys) if (plan?.spine && k !== plan.spine) q('hold', k, plan.spine);
+  for (const k of refused) q('drop', k);
+  const here = keys.filter((x) => !refused.includes(x));
+  for (const k of here) { q('add', k, 'Story', 'A'); q('set', k, 'state=triaged', 'held_by=null'); }
+  for (const k of here) if (plan?.spine && k !== plan.spine) q('hold', k, plan.spine);
 }
 console.log(JSON.stringify({ status: needs.length ? 'show_person' : 'go_on', code: needs.length ? 11 : 0, message, needs_person: needs }));
 process.exitCode = needs.length ? 11 : 0;
@@ -700,6 +706,22 @@ out=$(admit E-15 --by ben); n=$(count "$T/claude.calls")
 answer E-15 start; out=$(btick)
 check "DS-354 AC1: an approved plan starts the feature batch on its feature branch" '[ "$(eget E-15 base)" = feat/E-15-approved ] && [ "$(eget E-15 tickets.E-15)" = undefined ] && [ "$(eget E-15 tickets.E-11.state)" = triaged ] && [ "$(eget E-15 tickets.E-16.held_by)" = E-11 ] && grep -q "^E-15 --json E-11 E-16 (seed)$" "$T/plan.calls"'
 check "DS-354 AC1: no editor runs on a plain start" '[ "$(count "$T/claude.calls")" = "$n" ] && grep -q "^E-15.s feature batch started on feat/E-15-approved, with its spine E-11 first: 1 child seeded by plan-batch$" "$ES/E-15/supervisor.log"'
+
+# DS-591: a child the seed takes out because its own repo refused it still reaches the person: the epic
+# stays, parked on the refusal, where needs-you and the digest read it, and the rest of the batch starts.
+rm -rf "$EB/E-15" "$ES/E-15"
+rec E-92 A '"summary":"the child here"'; rec E-93 A '"summary":"the child in another repo"'; printf 'E-92\nE-93\n' > "$T/children/E-91"; rec E-91 A '"type":"Epic","branch":"feat/E-91-split"'
+cat > "$T/claude.out" <<'EOF'
+{"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: the AC1 spec\", \"owners\": {\"AC1\": \"E-92\"}}"}
+EOF
+out=$(admit E-91 --by ben); touch "$T/refused.E-93"
+answer E-91 start; out=$(btick); rm -f "$T/refused.E-93"
+check "DS-591: a start whose seed refused a child starts the rest, and the refused child is out of the queue" '[ "$(eget E-91 base)" = feat/E-91-split ] && [ "$(eget E-91 tickets.E-11.state)" = triaged ] && [ "$(eget E-91 tickets.E-92.held_by)" = E-11 ] && [ "$(eget E-91 tickets.E-93)" = undefined ]'
+check "DS-591: the epic stays parked on the refusal, with the command, for needs-you and the digest" '[ "$(eget E-91 tickets.E-91.state)" = parked ] && [ "$(pq E-91)" = "E-91'"'"'s feature batch started without E-93, which needs you: E-93 was not admitted in acme/web (the queue is locked): admit it there with node intake.mjs admit E-93. Once settled, take E-91 out of this queue: no worker has work on it" ]'
+kind=$(node --input-type=module -e "import * as s from '$B/batch-state.mjs'; const t = JSON.parse(process.argv[1]); console.log(!s.planPark(t) && s.noWorkerWork(t.park.question) ? 'no-worker-work' : 'other')" "$(eget E-91 tickets.E-91)")
+check "DS-591: that park is no plan answer to act on again, and reads as no worker work" '[ "$kind" = no-worker-work ]'
+check "DS-591: the batch's log names it" 'grep -q "^E-91 stays parked for you in /desk-needs-you: E-91.s feature batch started without E-93" "$ES/E-91/supervisor.log"'
+rm -rf "$EB/E-91" "$ES/E-91"
 filed=$(node --input-type=module -e "import { readEdit } from '$B/epic-plan.mjs'; const out = (plan) => JSON.stringify({ type: 'result', result: 'PLAN_EDIT: ' + JSON.stringify({ plan, drop: [] }) }); const plan = { spine: 'E-11', draft: 'Spine: AC1', owners: { AC1: 'E-6' } }; console.log(readEdit(out({ draft: 'Spine: AC1 and AC2', owners: { AC1: 'E-6' } }), { children: ['E-6'], plan }).cannot ?? 'applied'); console.log(readEdit(out({ draft: 'Spine: AC1', owners: { AC1: 'E-7' } }), { children: ['E-6', 'E-7'], plan }).plan?.owners.AC1)")
 check "DS-354: an edit to a spine already filed cannot be applied, and one to its owner table can" '[ "$filed" = "$(printf "it changes the spine, which is already filed as E-11: edit E-11 in Jira, then answer start\nE-7")" ]'
 
