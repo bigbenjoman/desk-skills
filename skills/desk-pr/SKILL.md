@@ -162,7 +162,12 @@ time on the push that follows. A new commit runs them again.
 - **An item skipped on the lock** (the box-wide test lock stayed busy) is not a failure: CI runs it.
   Name it in the `pre-push` slot.
 - **The row is set but `scripts/desk/pre-push.sh` is not in the tree**: the templates were never
-  committed here. Say so, push as before, and offer `/desk-setup` to add them.
+  committed here. Never push unchecked: run each item `desk-env cmds pre-push-checks` prints
+  yourself, in order, in its `DIR`, under the lock the script would take
+  (`~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD>`, where `<lock>` is `tsc` for a
+  §4 Typecheck item or any item naming `typecheck`, `test` for a §4 Unit tests item, and `nolock`
+  otherwise), and push only when every item passes, as above. Say the script is missing, and offer
+  `/desk-setup` to add it.
 - **Unset or `TODO`**: push as before, and say once that `/desk-setup` can set it. **`none`**: push.
 
 Fill the `pre-push` slot of the §1 block from the run.

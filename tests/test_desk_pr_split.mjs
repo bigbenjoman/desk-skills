@@ -131,5 +131,13 @@ t(`AC4 the citations of desk-pr's canvas table were read (${count.alias})`, coun
 t(`AC4 the citations by path were read (${count.path})`, count.path >= 5, true);
 t(`AC4 desk-pr's own citations of its sections were read (${count.inner})`, count.inner >= 1, true);
 
+// With §4 Pre-push checks set and no committed script, the items run under their locks rather than
+// the push going out unchecked; where the script is in the tree it is still what runs.
+const pushing = norm(core);
+t('DS-611 AC2 with no script, each item runs under the lock the script would take', pushing.includes('Never push unchecked: run each item `desk-env cmds pre-push-checks` prints yourself, in order, in its `DIR`, under the lock the script would take'), true);
+t('DS-611 AC2 and the push waits for every item to pass', pushing.includes('and push only when every item passes, as above. Say the script is missing'), true);
+t('DS-611 AC2 the missing script no longer means pushing as before', pushing.includes('Say so, push as before, and offer `/desk-setup`'), false);
+t('DS-611 AC3 the committed script is still run first where it is in the tree', pushing.includes("run the repo's committed script on HEAD **yourself before every push of the branch**"), true);
+
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

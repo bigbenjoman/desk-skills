@@ -67,7 +67,7 @@ kill a server you did not start, it is likely another session's.
 
 **Before you push, run the pre-push checks and the tests related to your change, not the full
 suites.** CI runs the full suites on every push regardless. The pre-push checks are `desk-pr`'s
-"Before every push" (`bash scripts/desk/pre-push.sh --head` where §4 Pre-push checks, `desk-env list pre-push-checks`, is set). Which
+"Before every push": `bash scripts/desk/pre-push.sh --head`, or where your tree lacks it, each item `desk-env cmds pre-push-checks` prints, under its lock; push only once all pass. Which
 tests to run, `desk-env test-scope` decides from your branch's changes against the merge base with
 `origin/<default>`, untracked files included:
 
