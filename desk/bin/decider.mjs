@@ -78,6 +78,7 @@ export function deciderItems(v, q = {}) {
       since: tickets[p.key]?.park?.since ?? null, clears: condKey(tickets[p.key]?.park?.clears_when),
       round: (prev?.round ?? 0) + 1, prev, repeat: !!prev && samePark(prev.question, p.question, p.key),
       takenOnce: !!tickets[p.key]?.auto_answered && samePark(tickets[p.key].auto_answered.question, p.question, p.key),
+      ...(tickets[p.key]?.park?.session_step ? { step: tickets[p.key].park.session_step } : {}),
     };
   });
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
@@ -104,6 +105,8 @@ export function presort(items, state = null) {
       hand.push({ item, why: 'an epic\'s drafted plan: only the person starts, edits or discards it' });
     } else if (item.kind === 'parked' && leftPark({ state: 'parked', park: { question: item.text } })) {
       hand.push({ item, why: 'left in a finished feature batch: only the person moves it to the standing batch or drops it' });
+    } else if (item.kind === 'parked' && item.step) {
+      hand.push({ item, why: `the person approved a step no worker can run (${short(String(item.step.step))}): it goes to an interactive desk-ticket session` });
     } else if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (item.kind === 'parked' && item.clears && personClears(JSON.parse(item.clears))) {
