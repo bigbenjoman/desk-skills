@@ -286,6 +286,22 @@ With these markers §4 Clean review verdict for this skill is
 `deferred` earns its place: prose that opens "no findings" and defers one further down reads as clean
 to a human skimming and to any regex over the summary.
 
+### The round's findings line
+
+**When a round ends, print its findings line.** A round ends once its fixes are committed, or at once
+with none to make. Mark each finding you fixed `"fixed": true` in that round's results file, then:
+
+```bash
+node ~/.agents/skills/desk-review/bin/verdict.mjs --findings <results> --reviewer <self|pr>
+```
+
+`self` for desk-ticket's Stage 4b, `pr` for a review of an open PR (desk-review-response's fix loop
+included). It prints one `AUTOPILOT_FINDINGS: {…}` line: the round, the reviewer, the head, the
+counts the verdict attests, how many were fixed, whether it was a targeted round carried past a base
+move, and who refuted. Copy it into your reply verbatim, at the start of a line and never in a code
+fence: an autopilot pass harvests it into the ticket's findings file, and records a round whose
+verdict it saw with no line as missing. Never write the line by hand.
+
 ## Guardrails
 
 - **Never flag** style, naming, formatting, import order, coverage opinions, "consider extracting",

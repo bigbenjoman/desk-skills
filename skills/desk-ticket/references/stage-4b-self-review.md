@@ -80,6 +80,11 @@ since round 2. After the third round there is no fourth without the user. From r
 The count belongs to one loop; a later loop, for reviewer feedback or after merging `<default>`,
 starts again at one.
 
+**Every round ends with its findings line**: once its fixes are committed (or at once, with none),
+mark each fixed finding `"fixed": true` in the round's results and print what
+`node <desk-review>/bin/verdict.mjs --findings <results> --reviewer self` prints, verbatim, in your
+reply (desk-review, *The round's findings line*).
+
 **Declining a confirmed finding is a deferral, and a deferral does not read as clean.** It keeps the
 verdict off §4 Clean review verdict (`desk-env get clean-verdict`), and where a required check reads the verdict, the gate blocks
 the merge. Cost the fix before deferring: "beyond scope" is usually a guess made without opening the

@@ -20,6 +20,7 @@ import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_K
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, decisionEntry, appendDecisions, workerCalls, noteLine, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
+import { recordFindings } from './findings.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
@@ -409,6 +410,7 @@ function logDecisions(t, log, pr) {
   const { entries, unreadable } = workerCalls(markers, { ticket: t.key, run: t.session_id, repo: GH_REPO, pr });
   for (const u of unreadable) report.waiting.push(`${t.key}: unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`);
   if (entries.length) appendDecisions(entries, STATE);
+  recordFindings(STATE, t.key, log, t.session_id ?? null);
 }
 
 // The value of marker `mark` printed after a worker's last park, read quietly, or null: none since that
