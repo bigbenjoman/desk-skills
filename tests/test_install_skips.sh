@@ -81,8 +81,8 @@ printf '#!/bin/sh\necho "$@" >> "%s/runner.calls"\n' "$T" > "$HOME/.claude/desk/
 left(){ for f in "${OLD[@]}"; do [ -e "$f" ] && echo "$f"; done; }
 
 # --any-branch: this checkout is a feature branch, or CI's detached merge commit (the guard: test_installed.sh).
-# File-only git keeps the guard's fetch off the network and off this checkout's origin refs.
-out="$(GIT_ALLOW_PROTOCOL=file "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+# No git protocol allowed: the guard's fetch never reaches the network or this checkout's origin refs.
+out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
 # shellcheck disable=SC2034  # rc and summary are read inside check's eval strings
 rc=$?
 # shellcheck disable=SC2034

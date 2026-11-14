@@ -207,9 +207,8 @@ check "driverArgs reads comma or space separated tickets, keeps each deps entry,
 SRCSH="$S/../install.sh"
 gc(){ git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
 GUARD="$T/guard.sh"
-{ echo 'set -euo pipefail; SRC="$1"; shift; CHECK_ONLY=0; ANY_BRANCH=0; WARNINGS=0'
-  echo 'for a in "$@"; do [ "$a" = --any-branch ] && ANY_BRANCH=1; done'
-  sed -n '/^has()  /p; /^warn()  /p' "$SRCSH"
+{ echo 'set -euo pipefail; SRC="$1"; shift; WARNINGS=0'
+  sed -n '/^YES=0$/,/^done$/p; /^has()  /p; /^warn()  /p' "$SRCSH"
   sed -n '/^# checkout_problem —/,/^# end checkout guard$/p' "$SRCSH"
   echo 'echo INSTALLING'; } > "$GUARD"
 guard(){ "${BASH:-bash}" "$GUARD" "$@" 2>&1; }
@@ -218,7 +217,7 @@ C="$T/desk-src"; git init -q -b main "$C"; git -C "$C" remote add origin "$O"
 gc "$C" commit -q --allow-empty -m one; gc "$C" push -q origin main
 U="$T/upstream"; git clone -q "$O" "$U"
 ahead(){ for _ in $(seq "$1"); do gc "$U" commit -q --allow-empty -m more; done; gc "$U" push -q origin main; }
-check "the checkout guard is found in install.sh" 'grep -q "checkout_problem()" "$GUARD" && grep -q "^warn()" "$GUARD"'
+check "the checkout guard is found in install.sh" 'grep -q "checkout_problem()" "$GUARD" && grep -q "^warn()" "$GUARD" && grep -q -- "--any-branch) ANY_BRANCH=1" "$GUARD"'
 
 out=$(guard "$C"); rc=$?
 check "AC3: on the default branch level with origin, it installs as today, with no warning" '[ $rc -eq 0 ] && [ "$out" = INSTALLING ]'
