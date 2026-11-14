@@ -134,12 +134,12 @@
         "path": "skills/competitors"
       },
       "pin": {
-        "commit": "087b1714a",
-        "date": "2026-10-01"
+        "commit": "6d123b4fa",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (6018975d); current upstream HEAD version (metadata.version 2.0.1). Installed 2026-09-27.",
-      "tree_sha256": "3bea457555c438e71680a8eaf2feedc19d81cffaa99dbf63d912627008cdcb06"
+      "tree_sha256": "dea777bef9fad3e33373220af74063e7f45622aa1c05e8efcc9b445edfb96d35"
     },
     "context7-mcp": {
       "source": {
