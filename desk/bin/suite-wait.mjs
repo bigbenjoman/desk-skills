@@ -4,6 +4,7 @@
 import { readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { psRows } from './desk-env.mjs';
 
 // Every process's working directory, as [{pid, cmd, cwd}], read once: lsof, else Linux's /proc.
 // Null when neither can be read.
@@ -56,11 +57,7 @@ export const usersText = (users) => users.map((p) => `pid ${p.pid}${p.cmd ? ` ($
 let PROCS;
 export function processList() {
   if (PROCS !== undefined) return PROCS;
-  const r = spawnSync('ps', ['-ww', '-axo', 'pid=,ppid=,args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  PROCS = r.error || r.status !== 0 ? null : r.stdout.split('\n').flatMap((l) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l);
-    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), args: m[3] }] : [];
-  });
+  try { PROCS = psRows('pid=,ppid=,args=').filter((p) => Number.isInteger(p.pid) && Number.isInteger(p.ppid)); } catch { PROCS = null; }
   return PROCS;
 }
 

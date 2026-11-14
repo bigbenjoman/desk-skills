@@ -60,7 +60,7 @@
 //                                             recorded batch base, fail only on errors the base does not have
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
 //                                             when avail stays under the band for the window (default 300s)
-//                                             with nothing heavy running
+//                                             with nothing heavy running, and HEAVY-UNKNOWN while ps cannot be read
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
@@ -1359,10 +1359,35 @@ export function usedGiB() {
   return (totalmem() - freemem()) / GiB;
 }
 export function rssGiB() {
-  try {
-    const out = execFileSync('ps', ['-axo', 'rss='], { encoding: 'utf8' });
-    return out.split('\n').reduce((s, l) => s + (Number(l.trim()) || 0), 0) * 1024 / GiB;
-  } catch { return NaN; }
+  try { return psRows('rss=').reduce((s, r) => s + (r.rss || 0), 0) * 1024 / GiB; } catch { return NaN; }
+}
+
+// Every process's command line can carry a worker's whole prompt, so the list runs to megabytes.
+export const PS_MAX_BUFFER = 64 * 1024 * 1024;
+const PS_NUMERIC = new Set(['pid', 'ppid', 'rss']);
+// `ps` output for `columns` (e.g. 'pid=,args=') as one object per process keyed by column name:
+// every column but the last is one word, the last runs to the end of the line. pid, ppid and rss
+// are numbers. A line of another shape is skipped.
+export function parsePs(text, columns) {
+  const names = columns.split(',').map((c) => c.replace(/=.*$/, ''));
+  const re = new RegExp(`^\\s*${names.slice(0, -1).map(() => '(\\S+)\\s+').join('')}(.*?)\\s*$`);
+  const rows = [];
+  for (const line of String(text).split('\n')) {
+    const m = re.exec(line);
+    if (!m || !line.trim()) continue;
+    rows.push(Object.fromEntries(names.map((n, i) => [n, PS_NUMERIC.has(n) ? Number(m[i + 1]) : m[i + 1]])));
+  }
+  return rows;
+}
+// Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
+// partial or empty list.
+export function psRows(columns) {
+  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (r.error || r.status !== 0) {
+    const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
+    throw new Error(`ps could not be read (${why})`);
+  }
+  return parsePs(r.stdout, columns);
 }
 // The `mem status` line, which `queue.mjs watch` prints under its table too.
 export function memStatusLine() {
@@ -1374,23 +1399,22 @@ export const memCeilingGiB = () => memoryCeiling().gb;
 // Heavy processes (suites, typecheck, dev servers) counted by argv[0]/argv[1], never `pgrep -f`:
 // a claude worker carries its briefing in argv (which mentions jest, vitest and tsc), and the
 // harness's own `bash -c` wrapper carries the pattern literally, so a -f match counts both.
+// Throws when ps cannot be read: an empty list would say nothing heavy is running.
 export function heavyProcesses() {
-  let out = '';
-  try { out = execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf8' }); } catch { return []; }
-  return heavyFromPs(out, process.pid);
+  return heavyFromPs(psRows('pid=,args='), process.pid);
 }
 // `playwright` only as a whole name: `playwright test` is a suite, an idle `playwright-mcp` server is not.
-export function heavyFromPs(out, selfPid) {
+// `procs` is psRows('pid=,args=') rows.
+export function heavyFromPs(procs, selfPid) {
   const rows = [];
-  for (const line of out.split('\n')) {
-    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (!m || Number(m[1]) === selfPid) continue;
-    const [a0 = '', a1 = '', a2 = ''] = m[2].split(/\s+/);
+  for (const { pid, args } of procs) {
+    if (!Number.isInteger(pid) || pid === selfPid) continue;
+    const [a0 = '', a1 = '', a2 = ''] = args.split(/\s+/);
     const exe = basename(a0);
     if (['claude', 'bash', 'sh', 'zsh', 'grep', 'ps', 'awk'].includes(exe)) continue;
     // argv[2] only for `python -m <module>`, so a Python suite or server counts the same as a JS one.
     const hay = `${exe} ${basename(a1)}${/^python/.test(exe) && a1 === '-m' ? ` ${a2}` : ''}`;
-    if (/jest|vitest|tsc|next-server|next dev|\bplaywright\b(?!-)|storybook|pytest|uvicorn|gunicorn/.test(hay)) rows.push({ pid: Number(m[1]), args: m[2].slice(0, 160) });
+    if (/jest|vitest|tsc|next-server|next dev|\bplaywright\b(?!-)|storybook|pytest|uvicorn|gunicorn/.test(hay)) rows.push({ pid, args: args.slice(0, 160) });
   }
   return rows;
 }
@@ -1849,8 +1873,15 @@ if (isMain) {
           const cfg = { band: sustainedBandGiB(), windowMs: opt('--window', 300) * 1000 };
           const intervalMs = opt('--interval', 30) * 1000;
           let state = null;
+          let unread = null;
           for (;;) {
-            const r = sustainedStep(state, { now: Date.now(), avail: availableGiB(), heavy: heavyProcesses().length }, cfg);
+            // A sample whose processes cannot be read is skipped, said once until ps reads again.
+            let heavy = null;
+            try { heavy = heavyProcesses().length; unread = null; } catch (e) {
+              if (unread !== e.message) console.log(`HEAVY-UNKNOWN: ${e.message}`);
+              unread = e.message;
+            }
+            const r = heavy === null ? { state } : sustainedStep(state, { now: Date.now(), avail: availableGiB(), heavy }, cfg);
             state = r.state;
             if (r.line) console.log(r.line);
             await new Promise((res) => setTimeout(res, intervalMs));
