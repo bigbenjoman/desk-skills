@@ -1765,9 +1765,9 @@ t('DS-512 AC1 an agent reloaded at the installed commit, whose last pass recorde
   notesOf('reloaded').length, 0);
 t('DS-512 AC2 an agent install.sh did not reload, whose last record reads as current: the supervisor note',
   notesOf('unreloaded').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
-t('DS-512 AC3 a driver whose lock names another version, its last record written before the install: the merge driver note',
-  notesOf('drvold').join(' / '), 'the merge driver runs old desk code. Run ./install.sh in desk-skills.');
-t('DS-512 AC4 a driver whose lock names the installed version, whatever its last record says: no note',
+t('DS-512 AC3 / DS-666 AC3 a driver whose lock names another version: the merge driver note says it moves by itself, with no install to run',
+  notesOf('drvold').join(' / '), 'the merge driver runs old desk code. It moves to the installed code when it next waits between loops.');
+t('DS-512 AC4 / DS-666 AC4 a driver whose lock names the installed version, whatever its last record says: no note',
   notesOf('drvnew').length, 0);
 t('DS-219 AC6 a loaded agent whose last run failed: the red band names the repo and the reason from its log',
   `${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') >= 0} ${bandAt219('cant: the supervisor cannot start (exit 1): supervisor: no repo config found for acme/cant') < needs219}`, 'true true');

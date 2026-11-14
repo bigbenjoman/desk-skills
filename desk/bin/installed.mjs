@@ -7,7 +7,8 @@
 //
 // install.sh replaces scripts by rename, so a running merge driver keeps its old copy until it is
 // started again. A driver is restarted only while it waits between loops (its one child is `sleep`):
-// one mid-loop may be merging, so it is left, and moves when it is next started. Each one is
+// one mid-loop may be merging, so it is left, and a supervisor tick restarts it the same way once it
+// waits between loops (supervisor.mjs moveDriver). Each one is
 // started again with the tickets and deps it was given, from its repo's §2 Primary repo root.
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, openSync, closeSync, realpathSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
@@ -56,7 +57,7 @@ const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'merge-dri
 export const lockVersion = (dir) => { try { return readFileSync(join(dir, 'merge-driver.lock.d', 'version'), 'utf8').trim() || null; } catch { return null; } };
 
 // Every process as {pid, ppid, comm, args}, from one ps.
-function processes() {
+export function processes() {
   const r = spawnSync('ps', ['-ww', '-A', '-o', 'pid=,ppid=,comm=,args='], { encoding: 'utf8' });
   return String(r.stdout ?? '').split('\n').map((l) => /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(l)).filter(Boolean)
     .map(([, pid, ppid, comm, args]) => ({ pid: Number(pid), ppid: Number(ppid), comm: basename(comm), args }));
@@ -104,8 +105,9 @@ export function driverEnv(env = process.env) {
   return out;
 }
 
-// One line saying what became of a running driver.
-function restartDriver({ slug, batch = null, dir, pid }, ps) {
+// One line saying what became of a running driver. `queue`, where given, is the queue it is started on
+// again; a named batch's is otherwise that batch's, the standing batch's the repo's own.
+export function restartDriver({ slug, batch = null, dir, pid, queue = null }, ps) {
   const who = batch ? `${slug} batch ${batch}` : slug;
   const name = `merge driver for ${who} (pid ${pid})`;
   const me = ps.find((p) => p.pid === pid);
@@ -113,7 +115,7 @@ function restartDriver({ slug, batch = null, dir, pid }, ps) {
   if (!args) return `${name}: left running on the old code, its command line names no tickets to start it again with`;
   const kids = ps.filter((p) => p.ppid === pid);
   if (!kids.length || kids.some((k) => k.comm !== 'sleep')) {
-    return `${name}: left running on the old code, it is mid-loop and may be merging; it moves to the new code when the supervisor next starts it`;
+    return `${name}: left running on the old code, it is mid-loop and may be merging; a supervisor tick moves it to the new code once it waits between loops`;
   }
   const raw = E.repoConfigValue(slug, 'repo-root');
   const root = raw && E.expandHome(raw).replace(/\/+$/, '');
@@ -124,6 +126,7 @@ function restartDriver({ slug, batch = null, dir, pid }, ps) {
   const env = { ...driverEnv(), DESK_REPO_DIR: root, DESK_AUTOPILOT_STATE: dir };
   // A named batch's driver acts on that batch's queue, and reads its base as the batch does.
   if (batch) Object.assign(env, { DESK_BATCH: batch, DESK_QUEUE: E.batchPaths(slug, batch).queue });
+  if (queue) env.DESK_QUEUE = queue;
   const argv = ['--tickets', args.tickets.join(' '), ...(args.deps.length ? ['--deps', args.deps.join(' ')] : []), '--log'];
   let fd;
   try {
