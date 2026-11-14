@@ -179,6 +179,10 @@ Things that are not in that file and matter here:
   as a decision, and it never stops the ticket. \`recommended\` is null only for an ask category,
   or when you have no recommendation you can defend: those wait for the user. Two well-aimed
   questions beat five.
+  - **A call an acceptance criterion reserves for the person's record is asked, not taken**,
+    whatever its category: where a criterion says the value must be recorded by the user (under
+    the ticket's Decisions, say) and nothing already settled for this ticket records it, list it
+    with \`"reserved": true\` and your \`recommended\` option. A triage call is not that record.
 - **A design attached to a ticket is not by itself lane D.** Where UI tickets routinely carry a
   design (a Figma frame, or a Claude Design artifact), treating one as sufficient on its own parks
   most of the board. D is for a new screen, section or component the design specifies; a change to
@@ -231,7 +235,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "files_in_scope": ["repo-relative paths you expect to change"],
   "change_kind": "relocate|schema|shared|surface",
   "change_kind_reason": "<one clause: what it moves, the schema or shared code it changes, or the surface it touches>",
-  "unknowns": [{"question": "<one line>", "category": "<an ask or take category, above>", "options": ["<at least two>"], "recommended": "<one of options, or null>"}],
+  "unknowns": [{"question": "<one line>", "category": "<an ask or take category, above>", "options": ["<at least two>"], "recommended": "<one of options, or null>", "reserved": <true only for a call a criterion reserves for the user's record>}],
   "already_met": ["<an acceptance criterion the code already satisfies>: <file:line>"],
   "verify_only": <true only when every acceptance criterion is in already_met>,
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],

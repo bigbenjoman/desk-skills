@@ -375,6 +375,8 @@ CALLS=',"unknowns":["a plain question",{"question":"what does the pro tier cost?
 out=$(STUB_LANE=A STUB_EXTRA="$CALLS" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-394 AC2: the prompt asks for each unknown's category and recommendation, and takes a take-category call" \
   'P0 | grep -qF "\"recommended\": \"<one of options, or null>\"" && P0 | grep -qF "A take-category call with a recommendation" && P0 | grep -qF "\`user-fact\` for a fact only the user holds"'
+check "DS-613 AC3: the prompt says a call a criterion reserves for the person's record is asked, not taken" \
+  'P0 | grep -qF "A call an acceptance criterion reserves for the person'"'"'s record is asked, not taken" && P0 | grep -qF "\"reserved\": <true only for a call a criterion reserves for the user'"'"'s record>"'
 check "DS-394 AC2/AC3: the record keeps only the questions for the user in unknowns, as strings" \
   '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[\"a plain question\",\"what does the pro tier cost?\",\"keep the old export?\"]" ]'
 check "DS-394 AC2: the call taken on its recommendation goes to decided" \

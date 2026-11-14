@@ -50,17 +50,21 @@ export function parseDecision(raw) {
 
 // A triage record's questions, split: `ask` (strings) waits for the person, `taken` (decisions) is
 // each call triage made on its recommendation. An unknown is a string, asked, or
-// {question, category, options, recommended}: taken when parseDecision accepts it with `recommended`
-// as the choice, asked otherwise. Entries already in `decided` are taken, so a split record splits
-// the same again.
+// {question, category, options, recommended, reserved}: taken when parseDecision accepts it with
+// `recommended` as the choice, asked otherwise. One whose `reserved` is anything but false or absent
+// (an acceptance criterion wants the person's own record of it) is asked whatever its category, as
+// "<question> (recommended: <option>)" where it has a recommendation. Entries already in `decided`
+// are taken, so a split record splits the same again.
 export function triageCalls(rec) {
   const ask = [];
   const taken = [];
   const asDecision = (u) => parseDecision(JSON.stringify({ question: u.question, options: u.options, chose: u.recommended ?? u.chose, category: u.category }));
   for (const u of Array.isArray(rec?.unknowns) ? rec.unknowns : []) {
     const obj = u && typeof u === 'object' && !Array.isArray(u);
+    const reserved = obj && u.reserved !== undefined && u.reserved !== false;
     const d = obj ? asDecision(u) : null;
-    if (d?.ok) taken.push(d.decision);
+    if (reserved && text(u.question)) ask.push(`${u.question.trim()}${text(u.recommended) ? ` (recommended: ${u.recommended.trim()})` : ''}`);
+    else if (d?.ok && !reserved) taken.push(d.decision);
     else if (obj) ask.push(text(u.question) ? u.question.trim() : JSON.stringify(u));
     else if (text(String(u ?? ''))) ask.push(String(u).trim());
   }
