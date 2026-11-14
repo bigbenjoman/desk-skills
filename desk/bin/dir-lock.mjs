@@ -2,7 +2,7 @@
 // the queue (queue.mjs) and the lever log (lever-log.mjs), so a fix to stale detection or the clearing
 // race lands once.
 //
-//   import { takeDirLock, releaseDirLock, withDirLock, lockPid } from './dir-lock.mjs'
+//   import { takeDirLock, releaseDirLock, withDirLock, lockPid, alive } from './dir-lock.mjs'
 //   takeDirLock(dir, { waitMs, pollMs, timeoutError })   -> returns once held, or throws timeoutError(pid)
 //   releaseDirLock(dir)                                  -> removes it only while this process holds it
 //   withDirLock(dir, fn, opts)                           -> fn()'s result, the lock held around it
@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 export const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+export const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
 // A holder that has exited never lets go. One with no pid yet is between its mkdir and its write,
 // unless it has sat that way for a minute (with-lock.sh's rule).
