@@ -3753,8 +3753,9 @@ if (drafts.length) {
       if (r.error) out.push(`undraft: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     };
-    // Red only on a verdict state check while the reviewer check fails: no review or fix worker.
-    const gated = !hold && ['review', 'checks'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
+    // Red only on a verdict state check while the reviewer check fails: no review or fix worker,
+    // findings fixes included, as out of draft.
+    const gated = !hold && ['review', 'checks', 'findings'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
     markGateHold(t, s, gated);
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold || gated ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
@@ -4118,10 +4119,11 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   // head the merge driver held for failing §4 Merged-tree check merged into the base.
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
-  // Held by the reviewer check: no gate or verdict try, but a desk-review's findings and a person's
-  // feedback are still worked, as on a draft (feedbackCall's `gated`).
+  // Held by the reviewer check: no review or fix try of any kind, as on a draft. A fix's new head
+  // would need a verdict the gate does not count either.
   const gated = !dirty && !tree && gatedByReviewer(s);
-  if (!gated) markGateHold(t, s, false);
+  markGateHold(t, s, gated);
+  if (gated) continue;
   if (dirty || tree) {
     const row = humanSeen(n) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
     const perm = E.permission(row);
@@ -4150,8 +4152,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   };
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
-  let c = gated ? feedbackCall(t, s, ctx.waived, true) : gateTry(t, s, { ...ctx, baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
-  if (gated) markGateHold(t, s, !c);
+  let c = gateTry(t, s, { ...ctx, baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
   if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
   if (c.call === 'wait') { out.push(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`); continue; }
   // A §4 Check builds build to start or re-run: on its own, or beside a check a person clears.
@@ -4174,8 +4175,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
 // The threads a finished feedback try worked are replied on and resolved first, once its worker has
 // pushed past them, so the next try quotes only what is still open. One GitHub would not settle holds
 // any new try until a later pass settles it: a new try would replace the record of what was worked.
-// `gated`: the reviewer check holds the PR (gatedByReviewer), so no verdict try is sent.
-function feedbackCall(t, s, waived, gated = false) {
+function feedbackCall(t, s, waived) {
   if (s.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const n = s.pr;
   const fb = readFeedback(n);
@@ -4200,7 +4200,7 @@ function feedbackCall(t, s, waived, gated = false) {
   if (ff) return ff;
   // Gaps only the person can settle wait on their call, whatever the checks or the merge grant say.
   const gaps = fb.review ? personGapsCall(fb.review, { judgement }) : null;
-  if (gaps || gated) return gaps;
+  if (gaps) return gaps;
   // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
   const { carry, scope, baseMerge } = baseMoves(t, s.head);
