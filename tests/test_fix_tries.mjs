@@ -765,6 +765,17 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-500 a stale, missing or old-format verdict line reads stale', [staleLine, oldFormatLine].map(staleVerdict).join(), 'true,true');
   t('DS-500 one that is there and not clean, or an approval line, does not', [dirtyLine, studiaLine, limitLine].map(staleVerdict).join(), 'false,false,false');
 
+  // A gate listed as approval that failed its verdict step goes to a review try, then to the person
+  // named as that step.
+  const noReviewLine = 'No PullBot review at f93b2f8a0 yet';
+  const APPROVAL = gctx({ stateChecks: [{ name: GATE, kind: 'approval' }] });
+  t('DS-583 a line saying no review is at the head reads stale, and desk\'s own approval line does not', [noReviewLine, deskLine].map(staleVerdict).join(), 'true,false');
+  const r1 = gateTry(tk(), pr([ok('tests'), gateRed(noReviewLine)]), APPROVAL);
+  t('DS-583 AC2 a gate listed as approval red on its verdict step goes to a review try', `${r1?.call} ${r1?.fix.kind} ${r1?.fix.try}/${r1?.fix.of} ${r1?.fix.ready}`, 'requeue rereview 1/2 true');
+  t('DS-583 AC2 once the review tries at its head are spent, it is stuck naming the verdict step',
+    gateTry(tk({ fix_tries: [r1.fix, r1.fix] }), pr([ok('tests'), gateRed(noReviewLine)]), APPROVAL)?.why,
+    `no review verdict readable at its head after 2 review tries at it: its "${GATE}" check says: ${noReviewLine}`);
+
   // AC1: a protected file the criteria may not need goes to a worker, with the files in its brief.
   const p1 = gateTry(tk(), pr([ok('tests'), gateRed(pkgLine)]), gctx());
   t('DS-500 AC1 a protected file goes to a protected-files try', `${p1?.call} ${p1?.fix.kind} ${p1?.fix.try}/${p1?.fix.of} ${p1?.fix.ready}`, `requeue protected 1/${FIX_TRIES_MAX} true`);

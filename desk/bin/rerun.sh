@@ -6,7 +6,7 @@
 #               "failing": [{ name, runId }], "reasons": [...], "stateFailing": [{ name, kind, why, rerunWith? }] } }
 # RERUN_PERM unset reruns nothing, as `no` does. A check in stateFailing (§4 State checks) is logged and
 # never rerun here: only the rest of `failing` counts. (merge-driver.sh stale_approval reruns an approval
-# one whose run predates the head's approval, once per head, before this is called.)
+# or verdict one whose run predates the head's approval or clean verdict, once per head, before this is called.)
 #
 # Reruns per check per head: at most RERUNS_MAX tried, RERUN_COOLDOWN seconds apart. reruns-<n>-<sha>
 # lists every check a rerun was tried for, reruns-ok-<n>-<sha> only those GitHub accepted.

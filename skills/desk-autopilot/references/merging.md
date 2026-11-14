@@ -75,8 +75,10 @@ approvals or title, so a rerun reads the same state and fails the same way. The 
 one with the error its run gave and reruns only the rest, so a PR red on nothing else gets no rerun
 and no cooldown. A red `approval` check is recorded as `merge_blocked` `approval: … needs approval
 from a human reviewer`, which desk-q and needs-you put to the person, unless its run started before
-the head's newest APPROVED review or clean verdict: that run read the PR before the approval, so its
-job is rerun once per head, and only a second red goes to the person. A red `verdict` check with no
+the head's newest APPROVED review or clean verdict (from any account): that run read the PR before the
+approval, so its job is rerun once per head, and only a second red goes to the person. One whose error
+line says no verdict or review is at the head failed its verdict step, so it is read as a `verdict`
+check; a `verdict` check is rerun the same way once per head for a newer clean verdict. A red `verdict` check with no
 unclean review at the head (a review missing, for an older head, or in a form the gate rejects) goes
 to a review worker that reviews the head and posts it, two review tries at each head outside the fix
 tries below; the person gets it once a head has had both, named as a review that did not post. A
