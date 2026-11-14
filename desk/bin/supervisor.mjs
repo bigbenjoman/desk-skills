@@ -71,6 +71,7 @@ import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
+import { postMergeDue } from './post-merge.mjs';
 import { readInstalled, oldCode, lockVersion, AGENTS, plistPath } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
@@ -375,7 +376,9 @@ function batchInterval(intake) {
   // outside the queue (a PR merged by hand, a variable set) is only seen by a pass.
   const recheck = Object.values(q.tickets ?? {}).some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed')
     && Date.now() - idleAt >= IDLE_RECHECK_MS;
-  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck) {
+  // And a post-merge scan falling due while a merged PR is still watched: only a pass runs it.
+  const watchDue = postMergeDue({ state, queue: q });
+  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck && !watchDue) {
     intakeAlone();
     // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
