@@ -650,7 +650,7 @@ function reapDecider(state, s, now = new Date()) {
 // the rest that is neither handed on and unanswered nor waiting on a decider already running.
 function decide(state, s, v, q, now = new Date()) {
   if (v.status === 'error') return [];
-  const items = deciderItems(v, q);
+  const items = deciderItems(v, q, state);
   pruneHanded(state, items);
   // What the last session settled, checked against this pass only.
   const settled = s.settled ?? [];

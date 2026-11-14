@@ -614,6 +614,8 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `state=${runnable ? 'triaged' : 'parked'}`,
       `collides_with=${collidesWith(t).join('|') || 'null'}`,
       `open_questions=${laneOk(r) ? qsOf(r).length : (r.unknowns ?? []).length}`,
+      // The questions plan-batch adds are printed and nowhere else: the decider reads them here.
+      `plan_questions=${laneOk(r) && added[t]?.length ? JSON.stringify(added[t]) : 'null'}`,
       `held_by=${held(t) ? holdsOf(t).join('|') : 'null'}`,
       `held_outside=${outsideHolds[t]?.length ? outsideHolds[t].join('|') : 'null'}`,
       `location=${placed[t].where === 'cloud' ? 'cloud' : 'null'}`,
