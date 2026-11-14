@@ -49,21 +49,7 @@ export function rerunGate(failing, reasons = []) {
   return runs.length ? { runs, gate: { pending: [], failedRuns: runs, reasons, failing: failing.map((f) => ({ name: f.name, runId: f.runId ? String(f.runId) : null })) } } : null;
 }
 
-// §4 Checks workers can't fix items: `<check>: <what fixes it>`, split on the first `: `, so the
-// command may hold one. An item with no check or no command is an error, never a guess.
-export function parseOperatorChecks(items) {
-  const checks = [];
-  const errors = [];
-  for (const x of items || []) {
-    if (!x || /^none$/i.test(x.trim())) continue;
-    const i = x.indexOf(': ');
-    const name = i < 0 ? '' : x.slice(0, i).trim();
-    const command = i < 0 ? '' : x.slice(i + 2).trim();
-    if (!name || !command) errors.push(`\`${x}\``);
-    else checks.push({ name, command });
-  }
-  return { checks, errors };
-}
+export { parseOperatorChecks } from './workflow-yaml.mjs';
 
 export const runUrl = (repo, id) => (id ? `https://github.com/${repo}/actions/runs/${id}` : null);
 export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
@@ -74,16 +60,11 @@ const OWN_HEAD = new Set(['rereview', 'capture', 'protected', 'renames']);
 const fixedAt = (done, head) => done.some((x) => x.head === head && !OWN_HEAD.has(x.kind));
 
 // The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
-// jobs`. A payload of any other shape names none.
+// jobs`; null where the run names no such job or the payload holds no steps array to read.
 export function failedSteps(view, check) {
   const job = (Array.isArray(view?.jobs) ? view.jobs : []).find((j) => j?.name === check);
-  if (!Array.isArray(job?.steps)) return [];
+  if (!Array.isArray(job?.steps)) return null;
   return job.steps.filter((s) => typeof s?.name === 'string' && stepFailed(s)).map((s) => s.name);
-}
-// As failedSteps, but null where the run names no such job or the job has no steps to read.
-export function runSteps(view, check) {
-  const job = (Array.isArray(view?.jobs) ? view.jobs : []).find((j) => j?.name === check);
-  return Array.isArray(job?.steps) ? failedSteps(view, check) : null;
 }
 // A failing check's failed steps, by ctx.steps(check) where the pass reads them from its run; null
 // (stepsRead) where they cannot be read.

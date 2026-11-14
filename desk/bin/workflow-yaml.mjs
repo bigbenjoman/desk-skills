@@ -93,6 +93,23 @@ export const unquote = (s) => s.replace(/^(["'])([\s\S]*)\1$/, '$2');
 export const checkNameOf = (job) => (job.keys.name?.value ? unquote(job.keys.name.value) : job.id);
 
 // ---- §4 Pre-merge steps and the steps of a job ---------------------------------------------------
+// §4 Checks workers can't fix, Check builds and Pre-merge steps items: `<check>: <what fixes it>`,
+// split on the first `: `, so the command may hold one. An item with no check or no command is an
+// error, never a guess.
+export function parseOperatorChecks(items) {
+  const checks = [];
+  const errors = [];
+  for (const x of items || []) {
+    if (!x || /^none$/i.test(x.trim())) continue;
+    const i = x.indexOf(': ');
+    const name = i < 0 ? '' : x.slice(0, i).trim();
+    const command = i < 0 ? '' : x.slice(i + 2).trim();
+    if (!name || !command) errors.push(`\`${x}\``);
+    else checks.push({ name, command });
+  }
+  return { checks, errors };
+}
+
 // The words that say what a step does: four letters or more, singular, none any CI step could use.
 const STEP_STOPWORDS = new Set(['apply', 'applied', 'first', 'then', 'before', 'after', 'with', 'from', 'into', 'onto', 'this', 'that',
   'them', 'each', 'every', 'check', 'step', 'make', 'sure', 'have', 'been', 'will', 'your', 'must', 'only', 'also', 'when', 'where']);
@@ -136,14 +153,12 @@ export function workflowJobs(root) {
 // §4 Pre-merge steps items (`<check or step>: <the step>`) named after a job of the repo's workflows
 // that runs more than one step, where a failure at any step would be put to the person as that item's.
 // Each with the job's named steps and those that fit the item (stepFits).
+// An item that is also one of its job's step names is keyed to that step already.
 export function jobKeyedPremerge(items, root) {
   const jobs = workflowJobs(root);
-  return (items ?? []).flatMap((x) => {
-    const i = String(x).indexOf(': ');
-    if (i < 0) return [];
-    const item = { name: x.slice(0, i).trim(), command: x.slice(i + 2).trim() };
+  return parseOperatorChecks(items).checks.flatMap((item) => {
     const job = jobs.find((j) => j.name === item.name && j.steps.length > 1);
-    if (!job) return [];
+    if (!job || job.steps.includes(item.name)) return [];
     const named = job.steps.filter(Boolean);
     return [{ ...item, steps: job.steps.length, named, fits: named.filter((s) => stepFits(s, item)) }];
   });

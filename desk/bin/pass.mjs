@@ -48,7 +48,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, runSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -3561,9 +3561,9 @@ const stateRow = parseStateChecks(E.configValues('state-checks'));
 // The rows the fix tries read: one that does not parse makes none this pass.
 const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <what fixes it>`'], ['§4 Pre-merge steps', preMergeRow, '`<check>: <what fixes it>`'], ['§4 State checks', stateRow, '`<check>` or `<check>: verdict|approval`']]
   .filter(([, r]) => r.errors.length).map(([row, r, want]) => `${row} does not parse: ${r.errors.join(', ')} (want ${want})`);
-// The steps a red check's run failed at (fix-tries.mjs runSteps), read once per run; null when gh cannot read them.
+// The steps a red check's run failed at (fix-tries.mjs failedSteps), read once per run; null when gh cannot read them.
 const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'jobs']); return r.ok ? JSON.parse(r.out) : null; });
-const checkSteps = (f) => { try { return runSteps(runJobs(f.runId), f.name); } catch { return null; } };
+const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return null; } };
 // A run's status, start and jobs, for a draft's check stuck pending (undraft.mjs stuckCall); null when unread.
 const runOf = (id) => cached(`run:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,startedAt,jobs']); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } });
 // Why the runner killed or lost a red check rather than its code (gate.mjs runnerFault), from its job's

@@ -179,7 +179,8 @@ writeFileSync(join(repoDir, '.github/workflows/ci.yml'), [
   'name: CI', 'on: [pull_request]', 'jobs:', '  fast:', '    name: Fast checks', '    runs-on: ubuntu-latest', '    steps:',
   '      - uses: actions/checkout@v4', '      - name: Lint', '        run: |', '          name: not a step', '          pnpm lint',
   '      - name: Diff Sanity Scan', '        run: bash scripts/scan.sh', '      - name: "Migration Staging Ack"', '        with:', '          name: not a step either',
-  '  e2e:', '    runs-on: ubuntu-latest', '    steps:', '    - name: Playwright', '      run: pnpm e2e', ''].join('\n'));
+  '  e2e:', '    runs-on: ubuntu-latest', '    steps:', '    - name: Playwright', '      run: pnpm e2e',
+  '  types:', '    name: Typecheck', '    runs-on: ubuntu-latest', '    steps:', '      - uses: actions/checkout@v4', '      - name: Typecheck', '        run: pnpm tsc', ''].join('\n'));
 const pre = (items) => `${conf()}| Pre-merge steps | ${items} |\n`;
 d = drift(pre('`Fast checks: apply the PR\'s migrations to the staging schema first`'));
 t('DS-567 AC4 an item keyed to a job of several steps proposes the step it is for', d.out,
@@ -189,6 +190,7 @@ t('DS-567 AC4 with no step that fits, it lists the named ones', drift(pre('`Fast
   'JOBKEY   §4 Pre-merge steps item "Fast checks" names a job of 4 steps, so desk guesses from its words which failed step is yours: name the step it is for instead, one of "Lint", "Diff Sanity Scan", "Migration Staging Ack"');
 t('DS-567 AC4 an item keyed to the step is not drift', drift(pre('`Migration Staging Ack: apply the PR\'s migrations to staging first`')).out, 'no drift');
 t('DS-567 AC4 an item keyed to a job of one step is not drift', drift(pre('`e2e: re-run it once staging is up`')).out, 'no drift');
+t('DS-567 AC4 an item named after a step its job shares a name with is keyed to the step', drift(pre('`Typecheck: fix the type errors`')).out, 'no drift');
 t('DS-567 AC4 a row of none is not drift', drift(pre('`none`')).out, 'no drift');
 rmSync(join(repoDir, '.github'), { recursive: true, force: true });
 

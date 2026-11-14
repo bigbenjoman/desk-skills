@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, runSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet } from '../desk/bin/review-threads.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
@@ -501,7 +501,7 @@ t('DS-440 AC5 the conflict reason still ignores a sync try\'s summary', conflict
 const jobs375 = JSON.parse(readFileSync(new URL('./fixtures/gh-run-view-jobs.json', import.meta.url), 'utf8'));
 t('DS-375 AC2 the failed step is read from the run, by its job\'s name', failedSteps(jobs375, 'tests').join(), 'Run tests');
 t('DS-375 AC2 a check with no job in the run, or a payload of another shape, names none',
-  [failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: 'x' }, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [{ conclusion: 'failure' }] }] }, 'tests')].map((x) => x.length).join(), '0,0,0,0');
+  [failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: 'x' }, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [{ conclusion: 'failure' }] }] }, 'tests')].map((x) => (x ?? []).length).join(), '0,0,0,0');
 const steps375 = (f) => (f.name === 'Lint' ? ['Run eslint'] : []);
 const c375 = fixCall(tk({ fix_tries: two }), both, ctx({ steps: steps375 }));
 t('DS-375 AC2 still red after both tries: each check with the step its run failed at', c375?.why, 'still red after 2 fix tries: Backend tests, Lint (failed step: Run eslint)');
@@ -541,7 +541,7 @@ t('DS-567 AC3 and the check carries that for needs-you', JSON.stringify(unread56
 t('DS-567 AC3 a check with no run to read is the same', fixCall(tk(), pr([ok('tests'), red('Fast checks', null)]), ctx({ operator: [], premerge: fast, steps: () => ['Diff Sanity Scan'], reruns: () => 0 }))?.why,
   'Fast checks (failed step not readable) · apply the PR\'s migrations to the staging schema first, then re-run the job');
 t('DS-567 a run with no such job, or a job with no steps, is unreadable; one read with none failed names none',
-  JSON.stringify([runSteps(jobs375, 'Lint'), runSteps(null, 'tests'), runSteps({ jobs: [{ name: 'tests', steps: [] }] }, 'tests'), runSteps(jobs375, 'tests')]), JSON.stringify([null, null, [], ['Run tests']]));
+  JSON.stringify([failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [] }] }, 'tests'), failedSteps(jobs375, 'tests')]), JSON.stringify([null, null, [], ['Run tests']]));
 
 // DS-379: a draft's screenshots nobody took go to a capture worker, once per PR, outside the fix tries.
 const cp = captureTry(tk(), { pr: 761, head: HEAD, files: ['a-before.png', 'a-after.png'] });
