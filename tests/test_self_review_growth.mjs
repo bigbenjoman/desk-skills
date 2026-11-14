@@ -22,7 +22,7 @@ const old = rule(before);
 
 const checks = [
   ['AC1 under autopilot-judgement yes it is taken as a scope decision, not parked',
-    (s) => s.includes('`autopilot-judgement` is `yes`, take it, print it as an `AUTOPILOT_DECISION` with category `scope`, and do not park')],
+    (s) => s.includes('`autopilot-judgement` is not `yes`, park naming it. Where it is `yes`, take it, print it as an `AUTOPILOT_DECISION` with category `scope`, and do not park')],
   ['AC1 it widens when the grown diff stays within the ticket\'s size',
     (s) => s.includes('**Widen** when the grown diff stays within the ticket\'s size')],
   ['AC1 a small P0 or P1 in its own feature path is always widened',
