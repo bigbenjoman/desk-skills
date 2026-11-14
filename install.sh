@@ -7,8 +7,8 @@
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
 #
-# Installs nothing from a checkout that is not on the default branch level with origin (fetched
-# first), or when that cannot be checked, unless given --any-branch.
+# Installs nothing from a checkout off the default branch or behind origin's (fetched first), or
+# when that cannot be checked, unless given --any-branch.
 #
 # Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env, desk-q and desk-jira in
 # ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
@@ -252,7 +252,7 @@ if [ "$CHECK_ONLY" = 0 ]; then
   problem="$(checkout_problem)"
   if [ -n "$problem" ] && [ "$ANY_BRANCH" = 0 ]; then
     printf '\nNothing installed: %s.\n' "$problem" >&2
-    printf 'Install desk from its default branch, level with origin (git -C "%s" switch <branch> && git -C "%s" pull --ff-only),\nor install this checkout anyway: ./install.sh --any-branch\n' "$SRC" "$SRC" >&2
+    printf 'Install desk from its default branch, up to date with origin (git -C "%s" switch <branch> && git -C "%s" pull --ff-only),\nor install this checkout anyway: ./install.sh --any-branch\n' "$SRC" "$SRC" >&2
     exit 3
   fi
   [ -n "$problem" ] && warn "installing anyway (--any-branch): $problem"

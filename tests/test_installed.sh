@@ -201,7 +201,7 @@ console.log(JSON.stringify([
 ]));")
 check "driverArgs reads comma or space separated tickets, keeps each deps entry, and needs tickets" '[ "$out" = "[{\"tickets\":[\"A\",\"B\",\"C\"],\"deps\":[\"D:A,B\"]},null,null]" ]'
 
-# ---- install.sh installs only desk's release: the default branch, level with origin ----------------
+# ---- install.sh installs only desk's release: the default branch, not behind origin ----------------
 # A scratch origin and a checkout cloned from it. guard <dir> [args] runs install.sh's checkout guard,
 # taken from install.sh, as that checkout's installer: it prints INSTALLING once the guard lets it on.
 SRCSH="$S/../install.sh"
