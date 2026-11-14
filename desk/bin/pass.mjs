@@ -36,7 +36,7 @@ import { readRegistry, workerLoginDir, loginOf, loginKey, probeLogins } from './
 import { checkLogin, checkLogins, multiAccount, readSubscriptions, signInCommand } from './logins.mjs';
 import { claudeChoice, laterLift, nothingToChoose } from './call-login.mjs';
 import { firstSpawnFromLogs, epicUnread, splitOwnEpic, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { health } from './health.mjs';
+import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
@@ -1709,7 +1709,7 @@ if (modelsBad) personStall(`${modelsBad} — not spawning until it is fixed`);
 let CHECKIN;
 try { CHECKIN = checkinTimes(checkinRow()); } catch (e) { CHECKIN = { ok: false, why: e.message }; }
 if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`);
-// The health watchdog (health.mjs): a required sign-in or the free disk failing holds every new spawn.
+// The health watchdog (health.mjs): a required sign-in, the free disk or the local database failing holds every new spawn.
 // Running workers carry on; the report names each failure and its fix, and the push names it once.
 const HEALTH = await health({ state: STATE });
 for (const s of HEALTH.stalls) personStall(s);
@@ -2928,6 +2928,8 @@ const busyNow = new Set();
 for (const { name, why } of pruneReadRepos()) report.failed.push(`read-only clone ${name}: no longer listed in §4 Worker read-only repos, and could not be deleted — ${why}`);
 // Refreshed once a pass, and only by a pass about to start a local worker: a cloud session cannot read a clone.
 let readRepoFailures = null;
+// health.mjs markFailed's line, stall and push once a worktree setup in this pass has not reached the local database.
+let dbDown = null;
 for (const t of spawnable) {
   // usageStop: the base fix's preflight above was refused at the usage limit.
   if (baseHold || usageStop || !(attempts < ticketSlots)) break;
@@ -2997,6 +2999,11 @@ for (const t of spawnable) {
     spawnCloud(t);
     continue;
   }
+  // An earlier setup in this pass found the local database down: no other worktree is set up on it.
+  if (dbDown) {
+    report.waiting.push(`${t.key}: held, the local database is not answering (health); it spawns on the first pass it answers`);
+    continue;
+  }
   const wt = join(WORKTREES, t.key);
   // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
   // requeue removed for a fresh branch is not resumed.
@@ -3020,10 +3027,29 @@ for (const t of spawnable) {
   const setupWt = [...setup.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim();
   if (!setupRun.ok || setupWt !== wt || !existsSync(wt)) {
     const why = setup.split('\n').filter((l) => /FAIL|WARNING|failed/.test(l)).slice(-3).join(' ') || setup.slice(-200);
-    q('park', t.key, `worktree setup failed, not spawned — ${why}`);
-    report.parked.push(`${t.key}: worktree setup failed, not spawned — ${why}`);
+    // The local database not answering is the machine's, not the ticket's: it stays queued, and the
+    // database health check is marked failing so the hold starts now and lifts once it answers.
+    const pgDown = setup.split('\n').find((l) => /FAIL: cannot reach Postgres in container/.test(l));
+    // Unless the database check answered on this pass, and this ticket waited on it before: then the
+    // container is up and setup still cannot use it (a role it lacks, say), which waiting will not fix.
+    const dbUp = !HEALTH.reused && HEALTH.results?.database?.ok === true;
+    if (setupRun.ok === false && pgDown && !(dbUp && t.db_wait)) {
+      if (!DRY) q('set', t.key, `db_wait=${PASS_AT}`);
+      if (!dbDown) {
+        dbDown = markHealthFailed('database', pgDown.replace(/^.*?FAIL: /, '').trim(), { state: STATE });
+        HEALTH.line = dbDown.line;
+        HEALTH.push.push(dbDown.push);
+        personStall(dbDown.stall);
+      }
+      report.waiting.push(`${t.key}: worktree setup could not reach the local database, so it stays queued and spawns on the first pass the database answers`);
+      continue;
+    }
+    const answered = pgDown ? ' (the local database check passes, so waiting for it will not clear this)' : '';
+    q('park', t.key, `worktree setup failed, not spawned — ${why}${answered}`);
+    report.parked.push(`${t.key}: worktree setup failed, not spawned — ${why}${answered}`);
     continue;
   }
+  if (t.db_wait && !DRY) q('set', t.key, 'db_wait=null');
   // The branch this ticket's PR must come from: recorded so the merge driver matches the PR by
   // branch, never by a fuzzy key search.
   const branch = [...setup.matchAll(/\[setup-worktree\] branch=(\S+)/g)].pop()?.[1] ?? t.branch;
