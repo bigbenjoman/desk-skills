@@ -236,8 +236,8 @@ checkout_problem() {
   fi
   def="$(git -C "$SRC" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   def="${def#origin/}"; def="${def:-main}"
-  if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=15}" \
-    git -C "$SRC" -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 fetch -q origin "$def" >/dev/null 2>&1 ||
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$SRC" -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 \
+    fetch -q origin "$def" </dev/null >/dev/null 2>&1 ||
     ! behind="$(git -C "$SRC" rev-list --count "HEAD..refs/remotes/origin/$def" 2>/dev/null)"; then
     echo "could not fetch origin/$def, so the branch check could not run"; return
   fi
