@@ -16,26 +16,65 @@ import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, ne
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
 import { readRegistry } from './claude-logins.mjs';
+import { parseDecision } from './decisions.mjs';
+import { recommendedAnswer } from './recoveries.mjs';
 
 crashShowsPerson();
 const QUEUE = join(binDir(), 'queue.mjs');
 
-const [ticket, ...args] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+// --taken, before the ticket, is the decider taking the option a worker's park recommended
+// (decider.mjs may run answer.mjs only in this form). It takes the call as decisions.mjs log does,
+// '{"question","options","chose","category"}', and refuses an ask category before writing anything,
+// so the category is checked at the write and not only by the log that follows it. Such an answer
+// approves no step, so it never records a grant, and a park on a refused step is refused outright.
+const taken = argv[0] === '--taken';
+const [ticket, ...args] = taken ? argv.slice(1) : argv;
 // --approve says outright that the answer approves the step its park asks for (batch-state.mjs grantFor).
 const approveFlag = args[0] === '--approve';
 const rest = approveFlag ? args.slice(1) : args;
-const text = rest.join(' ').trim();
-if (!ticket || !text) {
-  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"');
+const given = rest.join(' ').trim();
+if (!ticket || !given) {
+  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"\n       answer.mjs --taken <TICKET> \'{"question","options":[…],"chose","category"}\'');
   process.exit(EXIT.SHOW_PERSON);
 }
+const call = taken ? parseDecision(given) : null;
+if (call && !call.ok) {
+  console.error(`not taken: ${call.why}. Nothing recorded`);
+  process.exit(EXIT.SHOW_PERSON);
+}
+const text = call ? recommendedAnswer(call.decision, 'the decider') : given;
 if (!SAFE_ID.test(ticket) || ticket.includes('..')) {
   console.error(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
+  process.exit(EXIT.SHOW_PERSON);
+}
+if (taken && approveFlag) {
+  console.error('--taken takes a recommended call and approves no step, so it never goes with --approve');
   process.exit(EXIT.SHOW_PERSON);
 }
 // The answer goes to the batch holding the ticket, and the queue.mjs it runs follows (DESK_BATCH).
 useTicketBatch(ticket);
 const STATE = stateDir();
+let takenQuestion = null;
+if (taken) {
+  let t = null;
+  try { t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null; } catch { /* no queue */ }
+  if (t?.state !== 'parked' || isHeld(t)) {
+    console.error(`${ticket} is not parked, so there is no recommended call to take: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+  // A park a session has claimed is that session's, as the pass's own take leaves it (pass.mjs
+  // takeRecommended): a take would requeue a worker beside the session that owns the ticket.
+  if (t.park?.claim?.session) {
+    console.error(`${ticket} is claimed by session ${t.park.claim.session}, so its call is that session's: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+  if (refusedStep(t.park?.question)) {
+    console.error(`${ticket} parked on a refused step, which only the person approves: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+  takenQuestion = String(t.park?.question ?? '');
+}
 
 mkdirSync(join(STATE, 'answers'), { recursive: true });
 mkdirSync(join(STATE, 'briefings'), { recursive: true });
@@ -93,6 +132,17 @@ const brief = join(STATE, 'briefings', `${ticket}.md`);
 const entry = `\n## Answer from the user (${stamp})\n\n${text}\n`;
 if (existsSync(brief)) appendFileSync(brief, entry);
 else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
+
+// A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same
+// park asked again goes to the person, not to another take.
+if (taken) {
+  try {
+    execFileSync('node', [QUEUE, 'set', ticket, `auto_answered=${JSON.stringify({ question: takenQuestion, chose: call.decision.chose, at: stamp, by: 'decider' })}`], { stdio: 'ignore' });
+  } catch (e) {
+    console.error(`${ticket}: answer recorded in the briefing, but not as taken once: ${e.message}`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+}
 
 // A "not now" answer to a park puts its question off: it goes in the register with the inputs it
 // depends on, and is not asked again until they change (not-now.mjs). Any other answer to it ends an
