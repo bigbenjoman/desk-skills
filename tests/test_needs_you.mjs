@@ -1979,6 +1979,81 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-601 an answer with no text is refused', `${N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: ' ' }).ok} ${brief('M-1') === b1}`, 'false true');
 }
 
+// DS-609: a file an answer names is copied into the ticket's fixtures before the requeue.
+{
+  const { openSync, ftruncateSync, closeSync } = await import('node:fs');
+  put('ds609', { port: 3609, beat: 1, supervised: true, tickets: Object.fromEntries(['F-1', 'F-2', 'F-3', 'F-4', 'F-5'].map((k) => [k, parked('A', 30, 'I need a real capture from a test Meet')])) });
+  const fx = (k) => join(env.HOME, '.desk-autopilot', 'acme__ds609', 'fixtures', k);
+  const ls = (d) => (existsSync(d) ? readdirSync(d).sort().join() : '-');
+  const cap = join(T, 'AA-48-recall-capture');
+  mkdirSync(join(cap, 'sub'), { recursive: true });
+  writeFileSync(join(cap, 'capture.json'), '{"a":1}');
+  writeFileSync(join(cap, 'notes.txt'), 'meet');
+  writeFileSync(join(cap, '.DS_Store'), 'x');
+  const f1 = N.record({ word: 'ds609', ticket: 'F-1', action: 'resume', text: `Saved the capture in ${cap}/.` });
+  t('DS-609 AC1 the named folder\'s files are in fixtures/<TICKET>/ and the ticket is requeued', `${f1.ok} ${ls(fx('F-1'))} ${queueOf('ds609').tickets['F-1'].state}`, 'true capture.json,notes.txt triaged');
+  t('DS-609 AC1 the reply names what was copied', f1.line.includes(`Copied ${cap} into ${fx('F-1')}/ for its next worker: capture.json, notes.txt.`), true);
+  t('DS-609 the answer is recorded as written', answers().at(-1).args.join('|'), `F-1|Saved the capture in ${cap}/.`);
+
+  const gone = join(T, 'no-such-capture');
+  const f2 = N.record({ word: 'ds609', ticket: 'F-2', action: 'resume', text: `It is in ${gone}` });
+  t('DS-609 AC2 a path not found copies nothing, records the answer, and says so', `${f2.ok} ${ls(fx('F-2'))} ${answers().at(-1).args[0]} ${f2.line.includes(`${gone} was not found, so nothing was copied from it.`)}`, 'true - F-2 true');
+
+  mkdirSync(fx('F-3'), { recursive: true });
+  writeFileSync(join(fx('F-3'), 'capture.json'), '{}');
+  const f3 = N.record({ word: 'ds609', ticket: 'F-3', action: 'resume', text: `Saved it at ${join(fx('F-3'), 'capture.json')}` });
+  t('DS-609 AC3 a path already under fixtures/<TICKET>/ copies nothing', `${f3.ok} ${ls(fx('F-3'))} ${/Copied|not copied|not found/.test(f3.line)}`, 'true capture.json false');
+
+  const big = join(T, 'big-capture');
+  mkdirSync(big);
+  const fd = openSync(join(big, 'recording.bin'), 'w');
+  ftruncateSync(fd, 51 * 1024 * 1024);
+  closeSync(fd);
+  const f4 = N.record({ word: 'ds609', ticket: 'F-4', action: 'resume', text: `see ${big}` });
+  t('DS-609 AC4 a folder over 50 MB copies nothing, records the answer, and says it is too large', `${f4.ok} ${ls(fx('F-4'))} ${answers().at(-1).args[0]} ${f4.line.includes(`${big} is too large to copy (51 MB, over 50 MB), so nothing was copied from it.`)}`, 'true - F-4 true');
+
+  const hidden = join(T, '.ssh');
+  mkdirSync(hidden);
+  writeFileSync(join(hidden, 'id_rsa'), 'secret');
+  const f5 = N.record({ word: 'ds609', ticket: 'F-5', action: 'resume', text: `the key is ${join(hidden, 'id_rsa')}, and ~/ is home` });
+  const { pathsIn } = await import('../desk/bin/live-read.mjs');
+  t('DS-609 a slash command or URL in an answer is not a path', pathsIn('ran /pullbot and /desk-ticket A-1, see https://x.io/a/b or (/tmp/cap/a.json).', '/h').join(), '/tmp/cap/a.json');
+  t('DS-609 a file in a hidden folder, or home itself, is never copied', `${f5.ok} ${ls(fx('F-5'))} ${f5.line.includes('was not copied: it is in a hidden folder.')} ${f5.line.includes('was not copied: it is your home folder or above it.')}`, 'true - true true');
+  t('DS-609 a quoted or escaped path keeps its spaces', JSON.stringify(pathsIn('In "/tmp/Meet capture" and `/tmp/b c/d.json`, /tmp/Screen\\ Recording.mov, and it\'s at \'/tmp/x y\'.', '/h')), JSON.stringify(['/tmp/Meet capture', '/tmp/b c/d.json', '/tmp/Screen Recording.mov', '/tmp/x y']));
+
+  const spaced = join(T, 'Meet capture');
+  mkdirSync(spaced);
+  writeFileSync(join(spaced, 'meet.json'), '{}');
+  const lib = join(env.HOME, 'Library', 'Cookies');
+  mkdirSync(lib, { recursive: true });
+  writeFileSync(join(lib, 'Cookies.binarycookies'), 'secret');
+  put('ds609b', { port: 3610, beat: 1, supervised: true, tickets: Object.fromEntries(['F-6', 'F-7', 'F-9'].map((k) => [k, parked('A', 30, 'I need a real capture from a test Meet')])) });
+  const fxb = (k) => join(env.HOME, '.desk-autopilot', 'acme__ds609b', 'fixtures', k);
+  const f7 = N.record({ word: 'ds609b', ticket: 'F-7', action: 'resume', text: `It is in "${spaced}", not ~/Library/Cookies` });
+  t('DS-609 a quoted folder with a space is copied, and ~/Library never is', `${f7.ok} ${ls(fxb('F-7'))} ${f7.line.includes('/Library/Cookies was not copied: it is in ~/Library')}`, 'true meet.json true');
+  if (['darwin', 'win32'].includes(process.platform)) {
+    const { saveNamedFixtures } = await import('../desk/bin/live-read.mjs');
+    const odd = saveNamedFixtures({ state: join(T, 'ds609-case-state'), key: 'F-8', text: `~/library/cookies and ${join(env.HOME, 'Library', 'Cookies').toUpperCase()}`, home: env.HOME });
+    t('DS-609 ~/Library spelled in another case is never copied either', `${odd.copied.length} ${odd.refused.filter((x) => x.why.startsWith('it is in ~/Library')).length}`, '0 2');
+  }
+
+  const [ca, cb] = [join(T, 'cap-a'), join(T, 'cap-b')];
+  for (const d of [ca, cb]) { mkdirSync(d); writeFileSync(join(d, 'data.csv'), d); }
+  writeFileSync(join(ca, 'notes.txt'), 'new');
+  mkdirSync(fxb('F-6'), { recursive: true });
+  writeFileSync(join(fxb('F-6'), 'notes.txt'), 'old');
+  const f6 = N.record({ word: 'ds609b', ticket: 'F-6', action: 'resume', text: `old is ${ca} and new is ${cb}` });
+  t('DS-609 a second file of the same name is not copied over the first, and says so', `${readFileSync(join(fxb('F-6'), 'data.csv'), 'utf8') === ca} ${f6.line.includes(`${join(cb, 'data.csv')} was not copied: a file named data.csv was already copied from ${ca}`)} ${f6.line.includes(`Copied ${cb}`)}`, 'true true false');
+  t('DS-609 a file already in the fixtures folder that a copy replaces is named', `${readFileSync(join(fxb('F-6'), 'notes.txt'), 'utf8')} ${f6.line.includes('That replaced the copies already there of notes.txt.')}`, 'new true');
+
+  const cc = join(T, 'cap-c');
+  mkdirSync(cc); writeFileSync(join(cc, 'kept'), 'incoming');
+  mkdirSync(join(fxb('F-9'), 'kept'), { recursive: true });
+  writeFileSync(join(fxb('F-9'), 'kept', 'mine.txt'), 'person');
+  const f9 = N.record({ word: 'ds609b', ticket: 'F-9', action: 'resume', text: `see ${cc}` });
+  t('DS-609 a folder in the fixtures folder is never removed for a same-named file', `${f9.ok} ${readFileSync(join(fxb('F-9'), 'kept', 'mine.txt'), 'utf8')} ${f9.line.includes(`${join(cc, 'kept')} was not copied: ${join(fxb('F-9'), 'kept')} is a folder, which is never replaced.`)}`, 'true person true');
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 11);
