@@ -422,11 +422,15 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     'T-2': { key: 'T-2', state: 'triaged' },
     'T-3': { key: 'T-3', ...held('S-2') },
     'T-4': { key: 'T-4', ...held('B-1') },
+    'T-5': { key: 'T-5', ...held('B-1') },
+    'T-6': { key: 'T-6', ...held('B-1'), collides_with: 'B-1' },
   } });
   const yState = (...p) => join(namedS('Y-1'), ...p);
   mkdirSync(yState('triage'), { recursive: true });
-  for (const k of ['T-1', 'T-2', 'T-3', 'T-4']) {
-    writeFileSync(yState('triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Bug', lane: 'A', lane_reason: 'r', summary: 's', branch: `fix/${k}`, files_in_scope: [`f/${k}`], unknowns: [], blockers: [], ...(k === 'T-4' ? { size: 'XL' } : {}) }));
+  const onB1 = [{ key: 'B-1', category: 'indeterminate' }];
+  const recs = { 'T-1': { blockers: onB1 }, 'T-4': { blockers: onB1, size: 'XL' } };
+  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6']) {
+    writeFileSync(yState('triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Bug', lane: 'A', lane_reason: 'r', summary: 's', branch: `fix/${k}`, files_in_scope: [`f/${k}`], unknowns: [], blockers: [], ...recs[k] }));
   }
   const answer = (text) => `\n## Answer from the user (2026-11-14T10:00:00Z)\n\n${text}\n`;
   mkdirSync(yState('briefings'), { recursive: true });
@@ -465,6 +469,15 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   r = moveTo('T-4');
   t('DS-665 AC5 a move the destination refuses fails, naming why', r.code !== 0 && r.out.includes('cannot be held as well'), true);
   t('DS-665 AC5 and neither batch\'s queue, triage record or briefing changed', files(), before);
+
+  // A hold the person set, on a ticket that is no Jira blocker, would be lifted by the next pass there.
+  const before5 = `${readFileSync(standingQ, 'utf8')}\n${readFileSync(namedQ('Y-1'), 'utf8')}`;
+  r = moveTo('T-5');
+  t('DS-665 a hold that is no Jira blocker refuses the move, naming it', r.code !== 0 && r.out.includes('T-5 is held behind B-1 in this batch, which is not a blocker of it in Jira'), true);
+  t('DS-665 and nothing moved', `${readFileSync(standingQ, 'utf8')}\n${readFileSync(namedQ('Y-1'), 'utf8')}`, before5);
+  r = moveTo('T-6');
+  const t6 = sq()['T-6'] ?? {};
+  t('DS-665 a hold for this batch\'s files stays behind, and the output says so', `${r.code} ${t6.state} ${t6.held_by} ${r.out.includes('its hold on B-1, for this batch\'s files or spine, stays here')}`, '0 triaged null true');
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.
