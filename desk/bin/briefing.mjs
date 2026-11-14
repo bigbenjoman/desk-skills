@@ -1,7 +1,19 @@
-// Pure helpers for a ticket's briefing ($DESK_STATE/briefings/<TICKET>.md), shared by pass.mjs and
-// its tests. Reads nothing.
+// Helpers for a ticket's briefing ($DESK_STATE/briefings/<TICKET>.md), shared by pass.mjs, answer.mjs,
+// needs-you.mjs and their tests. Pure, apart from saveAnswer.
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export const ANSWER_HEAD = '## Answer from the user';
+
+// Appends one answer to a ticket's briefing, starting the briefing where there is none yet. Touches
+// nothing else: not the mailbox, the queue or the not-now register.
+export function saveAnswer(stateDir, ticket, text, stamp) {
+  mkdirSync(join(stateDir, 'briefings'), { recursive: true });
+  const brief = join(stateDir, 'briefings', `${ticket}.md`);
+  const entry = `\n${ANSWER_HEAD} (${stamp})\n\n${text}\n`;
+  if (existsSync(brief)) appendFileSync(brief, entry);
+  else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
+}
 export const SIBLING_HEAD = '## What sibling workers';
 
 // Hard cap regardless of cause: the briefing rides in the worker's first message, one argv string

@@ -6,11 +6,11 @@
 // workers never touch it — their state is derived from their own logs plus `claude agents --json`.
 // Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, dateHeld, badLabelText, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
-import { ANSWER_HEAD } from './briefing.mjs';
+import { saveAnswer } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
@@ -382,7 +382,7 @@ function handback(q, key, note) {
   try { msg = requeue(q, key, { handedBack: true }); } catch (e) { Object.assign(t, was); throw e; }
   // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
-  appendBriefing(key, `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`);
+  saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
   return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
 }
 
@@ -395,17 +395,8 @@ function stepDone(q, key) {
   delete t.park.session_step;
   let msg;
   try { msg = requeue(q, key); } catch (e) { t.park.session_step = s; throw e; }
-  appendBriefing(key, `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.\n`);
+  saveAnswer(stateDir(), key, `The person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.`, new Date().toISOString());
   return `${key}: the approved step is recorded done (${s.step}); ${msg}`;
-}
-
-// A binding answer for a ticket's next worker, appended to its briefing (pass.mjs writeBrief keeps it).
-function appendBriefing(key, entry) {
-  const dir = join(stateDir(), 'briefings');
-  mkdirSync(dir, { recursive: true });
-  const brief = join(dir, `${key}.md`);
-  if (existsSync(brief)) appendFileSync(brief, entry);
-  else writeFileSync(brief, `# Briefing for ${key}\n${entry}`);
 }
 
 // What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
@@ -883,10 +874,10 @@ switch (cmd) {
     const t = ticket(q, key);
     if (!spinePark(t)) throw new Error(`${key} is not a feature spine parked for approval (state ${t.state})`);
     const pr = t.result?.pr;
-    const entry = `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person sent this spine's acceptance specs back: ${note}\n` +
-      (pr != null ? `Your PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.\n` : '');
+    const text = `The person sent this spine's acceptance specs back: ${note}` +
+      (pr != null ? `\nYour PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.` : '');
     const msg = requeue(q, key);
-    appendBriefing(key, entry);
+    saveAnswer(stateDir(), key, text, new Date().toISOString());
     console.log(`${key} sent back with the note in its briefing; ${msg}`);
     break;
   }
