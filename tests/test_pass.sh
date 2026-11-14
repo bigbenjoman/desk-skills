@@ -1333,6 +1333,18 @@ check "DS-598 AC5: while the blocker is in progress the ticket stays held, and n
 x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-598 AC5: once the blocker is Done and on the base, the pass releases it and it can start" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
+# A blocker whose Jira Repository is another configured repo lands there, never on this base: the first
+# pass that reads it Done in Jira releases the ticket, with no PR of its on main here.
+mkdir -p "$HOME/.config/desk/repos/acme__web"
+printf '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/web` |\n' > "$HOME/.config/desk/repos/acme__web/config.md"
+printf '%s\n' '{"ticket":"X-7","repository":"web"}' > "$T/state-j/triage/X-7.json"
+q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once X-7 is Done in Jira"}'
+x7 indeterminate OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-591 AC3: a blocker in another repo that is not Done keeps the ticket held" '[ "$(field J-7 state)" = "\"parked\"" ] && [ "$(field J-7 held_outside)" = "\"X-7\"" ]'
+x7 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-591 AC3: once the pass reads that blocker Done in Jira it releases the ticket, though nothing landed on main" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done in Jira, in another repo; RELEASED"'
+rm -rf "$HOME/.config/desk/repos/acme__web" "$T/state-j/triage/X-7.json"
 q drop J-7
 # A link to the ticket's own epic, the batch's or its Jira parent, never holds it: an epic is Done only
 # once its children are. The record here predates ticket-facts.mjs leaving such a link out.
