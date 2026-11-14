@@ -2138,7 +2138,7 @@ if (isMain) {
           const was = subs;
           subs = L.migrateSubscriptions(was);
           if (L.needsMigration(was) && !was.errors.length && process.env.DESK_AUTOPILOT_WORKER !== '1') {
-            writeWithBackup(path, L.renderSubscriptions(subs.logins, subs.removed));
+            writeWithBackup(path, L.renderSubscriptions(subs.logins.filter((l) => l.source === 'file'), subs.removed));
             console.error(`${path}: now records one default per tool and every other login as unused; the previous copy is ${path}.bak`);
           }
           if (json) console.log(JSON.stringify({ file: path, exists: subs.exists, errors: subs.errors, logins: subs.logins.map(L.loginJson) }, null, 2));
@@ -2160,7 +2160,7 @@ if (isMain) {
         }
         if (sub === 'default' && rest.length === 2) {
           const [tool, who] = rest;
-          const r = L.setDefault(L.migrateSubscriptions(subs), { tool, who });
+          const r = L.setDefault(subs, { tool, who });
           console.log(writeWithBackup(path, r.text));
           console.log(`${tool} ${r.login.name}: default${r.was ? `; ${r.was.name}: unused` : ''}`);
           break;

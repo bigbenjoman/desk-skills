@@ -250,6 +250,22 @@ t('default AC9 removing the default is refused', `${c.rc} ${/make another subscr
 t('default AC9 and the file is unchanged', readFileSync(SUBS, 'utf8'), held);
 c = await new Promise((res) => execFile('node', [join(BIN, 'desk-env.mjs'), 'logins', 'default', 'claude', 'login-2'], { env: workerEnv, cwd: T, encoding: 'utf8' }, (err, stdout, stderr) => res({ rc: err ? err.code ?? 1 : 0, out: stdout + stderr })));
 t('default AC10 refused to a worker as set is', `${c.rc} ${readFileSync(SUBS, 'utf8') === held}`, '4 true');
+for (const rule of ['off', 'standby']) {
+  c = await cli('set', 'claude', 'login-3', rule);
+  t(`default set ${rule} on the default is refused, the file unchanged`, `${c.rc} ${/make another subscription the default first/.test(c.out)} ${readFileSync(SUBS, 'utf8') === held}`, '1 true true');
+}
+const shown = (tool) => readSubscriptions(SUBS).logins.filter((l) => l.tool === tool).map((l) => `${l.name}:${l.stored ?? l.rule}`).join();
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `off` |', '| `claude` | `login-4` | `~/.claude-logins/login-4` | `unused` |']));
+c = await cli('default', 'claude', 'login-4');
+t('default a login set off stays off when the default changes', `${c.rc} ${shown('claude')}`, '0 login-2:unused,login-3:off,login-4:default');
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |']));
+await cli('list');
+t('migrate a file listing only Claude logins gains no Codex row', `${shown('claude')} ${/`codex`/.test(readFileSync(SUBS, 'utf8'))}`, 'login-2:default false');
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |', '| `claude` | `login-5` | `~/elsewhere/login-5` | `unused` |']));
+claudeIn(join(H, '.claude-logins', 'login-5'), 'five@example.com', 'Pro');
+held = readFileSync(SUBS, 'utf8');
+c = await cli('default', 'claude', 'five@example.com');
+t('default an account signed in at a folder sharing a listed login\'s name is refused, the file unchanged', `${c.rc} ${/give one of them another name/.test(c.out)} ${readFileSync(SUBS, 'utf8') === held}`, '1 true true');
 
 // AC11: a signed-in folder the file does not list is unused (login-9 was signed out for AC10 above).
 claudeIn(join(H, '.claude-logins', 'login-9'), 'nine@example.com', 'Pro');

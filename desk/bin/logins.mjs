@@ -327,6 +327,7 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
     const names = subs.logins.filter((l) => l.tool === tool).map((l) => l.name);
     throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
   }
+  if (target.stored === 'default' && rule !== 'in rotation') throw notDefault(tool, name);
   if (rule === 'off') lastUsable(tool, name, target, check, 'turning this one off');
   // In place, so the order (which name keeps a shared account) stays; an added login goes last, and
   // leaves the Removed table. Where the tool's rows say default and unused, the rule is written in
@@ -352,26 +353,30 @@ export function demotedBy(logins, { tool, name, rule }) {
 }
 
 // ---- changing the default --------------------------------------------------------------------
-// The file's text with `who` as its tool's one default and every other login of the tool unused. `who`
-// is a login's name or, for Claude, the account its folder is signed in to (any case). A login the file
-// does not list is added as setRule adds one.
+// The file's text, in default and unused, with `who` as its tool's one default and its previous
+// default unused; a login set off stays off. `who` is a login's name or, for Claude, the account its
+// folder is signed in to (any case). A login the file does not list is added as setRule adds one.
 //   -> { text, login, was: the tool's previous default, or null }, or throws with the reason
 export function setDefault(subs, { tool, who }) {
   if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
+  const moved = migrateSubscriptions(subs);
   const key = String(who ?? '').trim();
   let name = key;
-  if (tool === 'claude' && key.includes('@') && !subs.logins.some((l) => l.tool === tool && l.name === key)) {
-    const on = toolLogins(tool, subs).filter((l) => isDir(l.dir) && claudeAccount(l).email?.toLowerCase() === key.toLowerCase());
+  if (tool === 'claude' && key.includes('@') && !moved.logins.some((l) => l.tool === tool && l.name === key)) {
+    const on = toolLogins(tool, moved).filter((l) => isDir(l.dir) && claudeAccount(l).email?.toLowerCase() === key.toLowerCase());
     if (on.length > 1) throw new Error(`logins: ${on.map((l) => l.name).join(' and ')} are all signed in to ${key}: name the login instead`);
-    if (!on.length) throw new Error(`logins: no claude login is signed in to ${key}: the logins are ${subs.logins.filter((l) => l.tool === tool).map((l) => l.name).join(', ')}`);
+    if (!on.length) throw new Error(`logins: no claude login is signed in to ${key}: the logins are ${moved.logins.filter((l) => l.tool === tool).map((l) => l.name).join(', ')}`);
+    const clash = moved.logins.find((l) => l.tool === tool && l.name === on[0].name && l.dir !== on[0].dir);
+    if (clash) throw new Error(`logins: ${key} is signed in at ${on[0].folder}, but the file's claude ${clash.name} is ${clash.folder}: give one of them another name in the subscriptions file first`);
     name = on[0].name;
   }
-  const r = setRule(subs, { tool, name, rule: 'in rotation', check: () => null });
-  const next = parseSubscriptions(r.text);
-  const logins = migrateLogins(next.logins.map((l) => (l.tool === tool ? asWord(l, l.dir === r.login.dir ? 'default' : 'unused') : l)));
-  const was = defaultOf(subs.logins, tool);
-  return { text: renderSubscriptions(logins, next.removed), login: logins.find((l) => l.tool === tool && l.dir === r.login.dir), was: was && was.dir !== r.login.dir ? was : null };
+  const was = defaultOf(moved.logins, tool);
+  const r = setRule(moved, { tool, name, rule: 'in rotation', check: () => null });
+  return { text: r.text, login: r.login, was: was && was.dir !== r.login.dir ? was : null };
 }
+
+// A tool's default is changed by naming another, never by taking it off, on standby or out.
+const notDefault = (tool, name) => new Error(`logins: ${tool} ${name} is the ${tool === 'claude' ? 'Claude' : 'Codex'} default: make another subscription the default first (desk-env logins default ${tool} <name>)`);
 
 // Refuses to take away the last Claude login desk can use. Asked whatever the target's rule: a found
 // folder is usable on standby before the file lists it, and a login already off is never usable.
@@ -400,9 +405,7 @@ export function removeLogin(subs, { tool, name, check }) {
     throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
   }
   if (!target.configDir) throw new Error(`logins: ${tool} ${name} is ${tilde(TOOL[tool].dir())}, ${tool === 'claude' ? 'Claude' : 'Codex'}'s own folder, which desk always knows: turn it off instead (desk-env logins set ${tool} ${name} off)`);
-  if (target.stored === 'default') {
-    throw new Error(`logins: ${tool} ${name} is the ${tool === 'claude' ? 'Claude' : 'Codex'} default: make another subscription the default first (desk-env logins default ${tool} <name>)`);
-  }
+  if (target.stored === 'default') throw notDefault(tool, name);
   lastUsable(tool, name, target, check, 'removing this one');
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
   return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };
