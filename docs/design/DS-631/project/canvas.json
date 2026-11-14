@@ -1,0 +1,64 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "DeskQ.dc.html": {
+      "expand": "fill",
+      "h": 2500,
+      "title": "Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab",
+      "w": 1280,
+      "x": 4080,
+      "y": 0
+    },
+    "Main.dc.html": {
+      "expand": "fill",
+      "h": 2700,
+      "title": "Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative)",
+      "w": 1280,
+      "x": 0,
+      "y": 0
+    },
+    "Today.dc.html": {
+      "expand": "fill",
+      "h": 1700,
+      "title": "Levers · today, 13 Nov (real numbers)",
+      "w": 1280,
+      "x": 1360,
+      "y": 0
+    },
+    "Views.dc.html": {
+      "expand": "fill",
+      "h": 1060,
+      "title": "Levers · Trends switched to Last 30 days",
+      "w": 1280,
+      "x": 2720,
+      "y": 0
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-11-13T16:40:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "t": {
+      "kind": "title1",
+      "maxW": 5360,
+      "text": "Levers · desk's built-in analytics page",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Views.dc.html",
+    "Today.dc.html",
+    "DeskQ.dc.html"
+  ],
+  "pages": [],
+  "title": "Lever Analytics"
+}

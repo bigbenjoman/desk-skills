@@ -1,0 +1,47 @@
+{
+  "url": "https://claude.ai/artifact/WieQ5tc4zB6UWXkGe5P5Ee",
+  "version": "1794642341-01d3",
+  "fetched_at": "2026-11-14T08:02:41.667Z",
+  "kind": "canvas",
+  "dir": "DS-631",
+  "tickets": [
+    {
+      "key": "DS-653",
+      "boards": []
+    },
+    {
+      "key": "DS-654",
+      "boards": []
+    }
+  ],
+  "boards": [
+    {
+      "name": "Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab",
+      "width": 1280,
+      "file": "DeskQ.dc.html"
+    },
+    {
+      "name": "Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative)",
+      "width": 1280,
+      "file": "Main.dc.html"
+    },
+    {
+      "name": "Levers · today, 13 Nov (real numbers)",
+      "width": 1280,
+      "file": "Today.dc.html"
+    },
+    {
+      "name": "Levers · Trends switched to Last 30 days",
+      "width": 1280,
+      "file": "Views.dc.html"
+    }
+  ],
+  "files": [
+    "project/DeskQ.dc.html",
+    "project/Main.dc.html",
+    "project/Today.dc.html",
+    "project/Views.dc.html",
+    "project/canvas.json",
+    "project/support.js"
+  ]
+}
