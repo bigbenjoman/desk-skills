@@ -407,7 +407,7 @@ olddriver(){
   kid=sleep; [ -f "$T/busy" ] && kid=tail
   echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"
   (cd "$T/repo" && "$T/bin/merge-driver.sh" --tickets "A B" --deps "B:A" --log </dev/null >/dev/null 2>&1 &)
-  i=0; while { [ -z "$(held)" ] || ! pgrep -x "$kid" -P "$(held)" >/dev/null; } && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  i=0; while { [ -z "$(held)" ] || ! pgrep -x -P "$(held)" "$kid" >/dev/null; } && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
   echo old0 > "$T/state/merge-driver.lock.d/version"
 }
 # setdriver <pid> <from>: supervisor.json's record of the driver the supervisor itself started.
