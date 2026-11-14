@@ -365,7 +365,7 @@ export function setDefault(subs, { tool, who }) {
   const key = String(who ?? '').trim();
   let name = key;
   if (tool === 'claude' && key.includes('@') && !moved.logins.some((l) => l.tool === tool && l.name === key)) {
-    const on = toolLogins(tool, moved).filter((l) => isDir(l.dir) && claudeAccount(l).email?.toLowerCase() === key.toLowerCase());
+    const on = signedInTo(moved, key);
     if (on.length > 1) throw new Error(`logins: ${on.map((l) => l.name).join(' and ')} are all signed in to ${key}: name the login instead`);
     if (!on.length) throw new Error(`logins: no claude login is signed in to ${key}: the logins are ${moved.logins.filter((l) => l.tool === tool).map((l) => l.name).join(', ')}`);
     // setRule finds a login by name, a listed or removed one before a folder, so a name another
@@ -377,6 +377,31 @@ export function setDefault(subs, { tool, who }) {
   const was = defaultOf(moved.logins, tool);
   const r = setRule(moved, { tool, name, rule: 'in rotation', check: () => null });
   return { text: r.text, login: r.login, was: was && was.dir !== r.login.dir ? was : null };
+}
+
+// ---- a repo's subscription -------------------------------------------------------------------
+// The Claude logins whose folder is signed in to `email`, any case, as each .claude.json records it.
+function signedInTo(subs, email) {
+  const key = String(email ?? '').trim().toLowerCase();
+  return key ? toolLogins('claude', subs).filter((l) => isDir(l.dir) && claudeAccount(l).email?.toLowerCase() === key) : [];
+}
+// The Claude login signed in to `email`: the first where two share an account (setDefault refuses
+// those instead). null for none.
+export function subscriptionLogin(subs, email) {
+  return signedInTo(subs, email)[0] ?? null;
+}
+// What a repo's subscription resolves to. `value` is `default` or an account email, read from `source`
+// (DESK_SUBSCRIPTION or the repo's row); unset or `default` is this computer's Claude default. An email
+// no login here is signed in to resolves to no login, never to the default.
+//   -> { email, login, source: source | 'default' | 'unknown email' }
+export function repoSubscription(subs, { value, source }) {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (!v || v === 'default') {
+    const l = defaultOf(migrateLogins(subs.logins), 'claude');
+    return { email: claudeAccount(l).email?.toLowerCase() ?? null, login: l, source: 'default' };
+  }
+  const l = subscriptionLogin(subs, v);
+  return { email: v, login: l, source: l ? source : 'unknown email' };
 }
 
 // A tool's default is changed by naming another, never by taking it off, on standby or out.
@@ -396,9 +421,10 @@ function lastUsable(tool, name, target, check, doing) {
 // The file's text with one login removed from the rules: its row dropped and its folder added to the
 // Removed table, so a folder under the logins folder is not found on standby again. The folder and its
 // sign-in are left alone. A tool's default folder is not removed (turn it off), nor the last Claude
-// login desk can use; `check` is called only for a Claude login, -> checkLogins' result.
+// login desk can use, nor a login a repo's Subscription row runs on: `repos(login)` names those repos.
+// `check` is called only for a Claude login, -> checkLogins' result.
 //   -> { text, login }, or throws with the reason
-export function removeLogin(subs, { tool, name, check }) {
+export function removeLogin(subs, { tool, name, check, repos = () => [] }) {
   if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
   const dir = NAME.test(name) ? join(loginsFolder(tool), name) : null;
@@ -410,6 +436,8 @@ export function removeLogin(subs, { tool, name, check }) {
   }
   if (!target.configDir) throw new Error(`logins: ${tool} ${name} is ${tilde(TOOL[tool].dir())}, ${tool === 'claude' ? 'Claude' : 'Codex'}'s own folder, which desk always knows: turn it off instead (desk-env logins set ${tool} ${name} off)`);
   if (shownDefault(subs, tool)?.dir === target.dir) throw notDefault(tool, name);
+  const on = repos(target);
+  if (on.length) throw new Error(`logins: ${on.join(', ')} ${on.length > 1 ? 'run' : 'runs'} on ${tool} ${name}, by ${on.length > 1 ? 'their' : 'its'} config's Subscription row: move ${on.length > 1 ? 'them' : 'it'} to another subscription first (desk-env subscription set <slug> <default|email>)`);
   lastUsable(tool, name, target, check, 'removing this one');
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
   return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };

@@ -111,7 +111,18 @@
 //                                             change one login's rule, keeping the previous file as .bak
 //   node desk-env.mjs logins remove <claude|codex> <name>
 //                                             remove one login from the rules, leaving its folder and sign-in;
-//                                             a folder under the logins folder is not found again
+//                                             a folder under the logins folder is not found again; refused
+//                                             while a repo's Subscription row runs on it
+//   node desk-env.mjs subscription [--json]   print the Claude subscription this repo's work runs on as
+//                                             SUBSCRIPTION=, LOGIN=, FOLDER=, CONFIG_DIR= and SOURCE=:
+//                                             DESK_SUBSCRIPTION, then config §3b Subscription (`row`), then
+//                                             this computer's default; exit 4 naming an email no login here
+//                                             is signed in to
+//   node desk-env.mjs subscription list [--json]
+//                                             every repo's resolved subscription (row, default or unknown
+//                                             email), ignoring DESK_SUBSCRIPTION
+//   node desk-env.mjs subscription set <slug> <default|email>
+//                                             write that repo's Subscription row, naming the previous value
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
@@ -364,6 +375,7 @@ export const CONFIG_ROWS = Object.freeze({
   'promotion-slice': { section: '3b', row: 'Promotion slice size (children)' },
   'claim-release': { section: '3b', row: 'Release idle claims after (hours)' },
   'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
+  subscription: { section: '3b', row: 'Subscription' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
   'intake-query': { section: '3b', row: 'Intake query' },
   'triage-concurrency': { section: '3b', row: 'Triage concurrency' },
@@ -538,7 +550,8 @@ export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
 // copy this file on its own need nothing new.
 export const costsPath = () => expandHome(process.env.DESK_COSTS ?? join(deskConfigRoot(), 'costs.md'));
 // The Claude and Codex logins desk may use, one file per computer beside costs.md: read and change
-// it with logins.mjs, which only the `logins` command imports. A missing file is the default logins.
+// it with logins.mjs, which only the `logins` and `subscription` commands import. A missing file is the
+// default logins.
 export const subscriptionsPath = () => expandHome(process.env.DESK_SUBSCRIPTIONS ?? join(deskConfigRoot(), 'subscriptions.md'));
 // Every configured repo: its config file and §0 GitHub repo (the slug's, where the row is unset).
 export function configuredRepos(root = deskConfigRoot()) {
@@ -1698,6 +1711,51 @@ export function addTemplateRow({ config, section, row, value, note = '', templat
   return { section: sec, label: t.label, line };
 }
 
+// Sets a declared row's value in place, keeping its note. false when the config has no such row.
+function setRowValue(config, section, row, value) {
+  const text = readFileSync(config, 'utf8');
+  const r = tableRows(text).find((x) => x.section === section && x.id === norm(row));
+  if (!r) return false;
+  const cells = r.cells.slice();
+  const col = settingCol(r.header);
+  const cell = cells[col] ?? '';
+  cells[col] = /`[^`]*`/.test(cell) ? cell.replace(/`[^`]*`/, () => `\`${value}\``) : `\`${value}\``;
+  const lines = text.split('\n');
+  lines[r.i] = joinRow(cells);
+  const tmp = `${config}.tmp-${process.pid}`;
+  writeFileSync(tmp, lines.join('\n'));
+  renameSync(tmp, config);
+  cache = null;
+  return true;
+}
+
+// ---- the repo's subscription ---------------------------------------------------------------
+// Config §3b Subscription: `default` or the email of one of this computer's Claude subscriptions.
+// logins.mjs resolves it (repoSubscription); `L` is that module, imported only when a caller needs it.
+// Every configured repo's subscription from its own row and this computer's default. DESK_SUBSCRIPTION
+// is one caller's override, so it is not read here.   -> [{ slug, email, login, source }]
+export function repoSubscriptions(L, subs, root = deskConfigRoot()) {
+  return configuredRepos(root).map(({ slug }) => ({ slug, ...L.repoSubscription(subs, { value: repoConfigValue(slug, 'subscription', root), source: 'row' }) }));
+}
+
+// Writes another repo's Subscription row: `default`, or an email one of this computer's Claude logins is
+// signed in to (stored lowercase). An unknown email or repo is refused with the config unchanged.
+//   -> { slug, was, now }
+export async function setRepoSubscription(slug, value, root = deskConfigRoot()) {
+  const L = await import('./logins.mjs');
+  const config = join(root, 'repos', String(slug), 'config.md');
+  const row = CONFIG_ROWS.subscription.row;
+  if (!/^[\w.-]+$/.test(String(slug)) || !existsSync(config)) throw new DeskConfigError(`desk-env subscription set: no repo config for "${slug}" under ${join(root, 'repos')}`);
+  const now = String(value ?? '').trim().toLowerCase();
+  if (!now || now.includes('`') || /\s/.test(now)) throw new DeskConfigError('desk-env subscription set: the value is `default` or an account email');
+  if (now !== 'default' && !L.subscriptionLogin(L.readSubscriptions(subscriptionsPath()), now)) {
+    throw new DeskConfigError(`desk-env subscription set: ${now} is not one of this computer's subscriptions: sign it in and add it in desk-q view 6 (Usage) first; ${slug}'s config is unchanged`);
+  }
+  const was = repoConfigValue(slug, 'subscription', root)?.toLowerCase() ?? 'default';
+  if (!setRowValue(config, '3b', row, now)) addTemplateRow({ config, section: '3b', row, value: now });
+  return { slug, was, now };
+}
+
 // What `paths` and `identity` print, in that order. Most of it belongs to one repo; a child started
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
@@ -1711,7 +1769,7 @@ const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DI
 // The subcommands that write the machine profile, the cost sources or the login rules: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
 // command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
-export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins default', 'logins remove'];
+export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins default', 'logins remove', 'subscription set'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
@@ -2221,7 +2279,9 @@ if (isMain) {
         }
         if (sub === 'remove' && rest.length === 2) {
           const [tool, name] = rest;
-          const r = L.removeLogin(subs, { tool, name, check: () => L.checkLogins(subs) });
+          const repos = (l) => (l.tool === 'claude'
+            ? repoSubscriptions(L, subs).filter((s) => s.source === 'row' && s.login?.dir === l.dir).map((s) => s.slug) : []);
+          const r = L.removeLogin(subs, { tool, name, check: () => L.checkLogins(subs), repos });
           console.log(writeWithBackup(path, r.text));
           console.log(`${tool} ${name}: removed; ${r.login.folder} and its sign-in are left as they are`);
           break;
@@ -2230,8 +2290,42 @@ if (isMain) {
         process.exit(2);
         break;
       }
+      case 'subscription': {
+        const [sub, ...rest] = args;
+        const L = await import('./logins.mjs');
+        const subs = L.readSubscriptions(subscriptionsPath());
+        const json = args.includes('--json');
+        const shown = (r) => ({ email: r.email, source: r.source, login: r.login?.name ?? null, folder: r.login?.folder ?? null, configDir: r.login?.configDir ?? null });
+        if (sub === 'list' && rest.every((a) => a === '--json')) {
+          const all = repoSubscriptions(L, subs);
+          if (json) console.log(JSON.stringify(all.map((r) => ({ slug: r.slug, ...shown(r) })), null, 2));
+          else for (const r of all) console.log([r.slug, r.email ?? '-', r.source, r.login?.folder ?? '-'].join('\t'));
+          break;
+        }
+        if (sub === 'set' && rest.length === 2) {
+          const r = await setRepoSubscription(rest[0], rest[1]);
+          console.log(`${r.slug}: Subscription ${r.now} (was ${r.was})`);
+          break;
+        }
+        if (sub === undefined || (sub === '--json' && !rest.length)) {
+          const env = process.env.DESK_SUBSCRIPTION?.trim();
+          const r = env ? L.repoSubscription(subs, { value: env, source: 'DESK_SUBSCRIPTION' })
+            : L.repoSubscription(subs, { value: configValue('subscription'), source: 'row' });
+          if (!r.login) {
+            const from = env ? 'DESK_SUBSCRIPTION' : `this repo's config §3b "${CONFIG_ROWS.subscription.row}" row`;
+            throw new DeskConfigError(`desk-env subscription: ${from} names ${r.email}, which is not one of this computer's subscriptions, so this repo has none (it never falls back to the default): sign that account in and add it in desk-q view 6 (Usage), or change ${env ? 'DESK_SUBSCRIPTION' : 'the row'}`);
+          }
+          const s = shown(r);
+          if (json) console.log(JSON.stringify(s, null, 2));
+          else for (const [k, v] of [['SUBSCRIPTION', s.email], ['LOGIN', s.login], ['FOLDER', s.folder], ['CONFIG_DIR', s.configDir], ['SOURCE', s.source]]) console.log(`${k}=${shellQuote(v ?? '')}`);
+          break;
+        }
+        console.error('usage: desk-env.mjs subscription [--json] | list [--json] | set <slug> <default|email>');
+        process.exit(2);
+        break;
+      }
       default:
-        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
+        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins|subscription');
         process.exit(2);
     }
   } catch (e) {
