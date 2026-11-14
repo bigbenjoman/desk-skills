@@ -269,7 +269,7 @@ export const approvesStep = (text) => approves(text) || (OPENS_YES.test(String(t
 // a park that offers to go on without the step ("shall I leave it out?"): a yes there approves that.
 // Only a question the worker puts as its own offer counts, so "it cannot pass without the image" does not.
 const OFFER = /\b(?:(?:shall|should|can|could|may) (?:i|we)|(?:do you )?want me to)\b/i;
-const WITHOUT_STEP = /\b(?:instead|without|skip\w*|leave (?:\S+ ){0,3}out|drop(?:ped|ping)? (?:it|the|that|this)|go on|carry on|continue)\b/i;
+const WITHOUT_STEP = /\b(?:instead|without|skip\w*|leave (?:\S+ ){0,3}out|drop(?:ped|ping)? (?:it|the|that|this))\b/i;
 const offersWithout = (q) => q.split(/(?<=[.?!;])\s+|\n+/).some((c) => /\?\s*$/.test(c) && OFFER.test(c) && WITHOUT_STEP.test(c));
 const TO_WORKER = /\b(?:refus\w*|denied|not (?:allowed|granted|permitted|given)|never (?:allowed|given|granted)|can(?:not|'t) (?:run|use|reach|hold|write|call)|no (?:headless )?worker (?:can|may|could|is allowed|holds?|is given))\b/i;
 const PUSH_STEP = /\b(?:git push|gh pr|push(?:ed|ing|es)?|(?:draft )?PR)\b/i;

@@ -1553,6 +1553,9 @@ const SEED = 'The worker was refused `scripts/seed-staging.sh`, a staging write.
 t('DS-566 not one: a park offering to go on without the refused step', BS.workerRefusedStep(SEED), null);
 t('DS-566 still one: a park that says "without" but offers no way round the step',
   BS.workerRefusedStep('`ensure-grader-image.sh` is refused to this worker, and the specs cannot pass without the image. Can you run it?'), 'ensure-grader-image.sh');
+t('DS-566 still one: a park asking to continue once the person has run the step',
+  ['Once you have built it, shall I continue?', 'Can we continue after you run it?', 'Shall I carry on when it is done?'].map((s) => BS.workerRefusedStep(`\`ensure-grader-image.sh\` is refused to this worker. ${s}`)).join(), 'ensure-grader-image.sh,ensure-grader-image.sh,ensure-grader-image.sh');
+t('DS-566 not one: a park offering to carry on without the step', BS.workerRefusedStep('`ensure-grader-image.sh` is refused to this worker. Shall I carry on without it?'), null);
 put('stepper2', { port: 5510, beat: 1, supervised: true, tickets: { 'V-5': parked('A', 30, SEED) } });
 const st5 = N.record({ word: 'stepper2', ticket: 'V-5', action: 'resume', text: 'ok, leave it out' });
 t('DS-566 AC2 a yes to leaving the refused step out is requeued as today', `${st5.ok} ${queueOf('stepper2').tickets['V-5'].state}`, 'true triaged');
