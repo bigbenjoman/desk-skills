@@ -16,7 +16,7 @@ under the lock **in its directory with `--cwd`**, never as `cd <dir> && …` (a 
 refused and would run unlocked). The cap is config §3b "Test worker cap under the test lock"
 (`desk-env get test-cap`), appended as `--maxWorkers=<cap>` **only when the command is Jest or Vitest**, in the form §4 Unit
 tests gives for passing arguments. Never append it to pytest or any other runner: pytest rejects it
-and the suite fails before running (pytest is single-process unless the repo configures otherwise).
+and the run fails at once.
 
 ```bash
 ~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap> [<spec files>]   # Jest / Vitest only
@@ -31,19 +31,19 @@ prefix and nothing else.
 
 Use the lower cap §3b gives (by default half) while `desk-env mem status` shows `avail=` in the hold
 band (config §3b "Spawn gate (available memory)", `desk-env get spawn-gate`; by default 4–8 GiB), and `1` for a database-backed
-integration suite in that band. The lock is what stops two suites landing in the same minute, which
-is the case that kills the machine. It blocks until it frees and releases on exit,
+integration suite in that band. The lock blocks until it frees and releases on exit,
 including on a crash: **do not add a timeout and do not work around a wait; waiting is the
 feature.** If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your
 output that you ran unlocked**.
 
-**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** When your
-`with-lock.sh` has waited 20 minutes (`ps -o etime`) with no suite output, commit all your work,
-`TaskStop` it, and note the holder (`ps` on the pid in `DESK_LOCK_DIR`'s `desk-test.lock*.pid`
-or `.d/pid`). Record each suite in your verification and the PR's Testing as `not run locally: test
-lock busy (<holder>); CI's required tests cover it`, print one `engineering` `AUTOPILOT_DECISION`
-naming them and the holder, and carry on. A typecheck or lint does the same. A started run is yours:
-fix what fails.
+**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** Silence is
+not proof: it has not started while `ps -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its
+`flock … desk-test.lock`, with no child running your command. At 20 minutes (`etime`) so, commit all
+your work, `TaskStop` it, and note the holder: a live pid in `desk-test.lock*.pid` or `*.d/pid` in
+`DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child. Record each suite
+in your verification and the PR's Testing as `not run locally: test lock busy (<holder>); CI's
+required tests cover it`, print one `engineering` `AUTOPILOT_DECISION` naming them and the holder,
+and carry on. A typecheck or lint does the same. A started run is yours: fix what fails.
 
 The typecheck takes the same lock, so typecheck and tests never overlap. Screenshot capture uses
 `with-lock.sh browser`: a dev server plus Chromium is hundreds of MB, not ten GB, and should not
@@ -59,7 +59,7 @@ desk-env mem status   # gate on avail=, never on vmmem= or free's used
 ```
 
 Under ~4 GiB available, wait and retry rather than starting a suite; a sibling mid-suite will drain.
-Never raise the worker count because the machine looks idle: it looks idle right until two workers hit Stage 4 together, and an OOM takes
+Never raise the worker count because the machine looks idle: it looks idle until two workers hit Stage 4 together, and an OOM takes
 every worker, worktree, database and port with it. Your port is assigned in your briefing; never
 kill a server you did not start, it is likely another session's.
 

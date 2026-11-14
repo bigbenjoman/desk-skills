@@ -131,6 +131,10 @@ t('DS-587 AC2 it logs one engineering decision naming the suites and the lock ho
   lockRule.includes('note the holder') && lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
 t('DS-587 AC3 it commits its work before stopping the run and carrying on', /commit all your work, `TaskStop` it/.test(lockRule), true);
 t('DS-587 AC4 a run that started is not skipped: its failures are fixed', lockRule.includes('A started run is yours: fix what fails.'), true);
+t('DS-587 AC4 silence is not proof of a queued run: it has not started only while the wrapper or its flock has no child running the command',
+  lockRule.includes('Silence is not proof: it has not started while `ps -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its `flock … desk-test.lock`, with no child running your command.') && !lockRule.includes('no suite output'), true);
+t('DS-587 AC2 the holder is found on every lock path: a live holder file, else the single-slot flock with a child',
+  lockRule.includes('a live pid in `desk-test.lock*.pid` or `*.d/pid` in `DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child.'), true);
 t('DS-587 the typecheck and lint follow the same rule', lockRule.includes('A typecheck or lint does the same.'), true);
 t('DS-587 AC5 the refused with-lock.sh rule is unchanged',
   stage4.includes('If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you ran unlocked**.'), true);
@@ -185,8 +189,7 @@ const REWRITTEN = [
   // cut or shortened to fit the busy-lock rule in the Stage 4 file's cap; batch-notes-header keeps the why
   ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
   ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
-  ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
-];
+  ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));
 t(`AC4 every paragraph of the old contract survives the split (${paras.length} read)`, dropped.length, 0);
