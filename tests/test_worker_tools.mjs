@@ -116,12 +116,14 @@ writeFileSync(join(T, 'config.md'), `## 0. Repo
 | Unit tests | \`bash tests/run.sh\` |
 `);
 const SID = '11111111-2222-3333-4444-555555555555';
-// `claude agents --json` reports the session, so spawn-worker finds its pid at once; any other call
+// `claude agents --json` reports the session, so spawn-worker finds its pid at once; `claude --version`
+// (each start's spawn line, DS-637) answers without being counted as a call; any other call
 // writes its argv, NUL-separated, to the next free $STUB_LOG.<n>, moved into place whole: a large
 // system prompt takes more than one write, and argv() below reads the file as soon as it is there.
 const stub = join(T, 'stub', 'claude');
 writeFileSync(stub, `#!/usr/bin/env bash
 if [ "$1" = agents ]; then printf '[{"sessionId":"%s","pid":4242}]' "${SID}"; exit 0; fi
+if [ "$1" = --version ]; then echo '2.1.0 (Claude Code)'; exit 0; fi
 n=0; while [ -e "$STUB_LOG.$n" ]; do n=$((n+1)); done
 printf '%s\\0' "$@" > "$STUB_LOG.$n.tmp"
 mv "$STUB_LOG.$n.tmp" "$STUB_LOG.$n"
