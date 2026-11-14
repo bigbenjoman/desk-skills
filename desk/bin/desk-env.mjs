@@ -1004,12 +1004,14 @@ export function reviewAccount() {
   }
   return acct;
 }
+// A GitHub login, a bot's included: what §4 Review account and §4 Gate reviewers both name.
+const LOGIN = '[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\[bot\\])?';
 // A §4 Review account value as { login, dir }, null where it is unset, a TODO or `none`, and
 // undefined where it is malformed.
 function reviewAccountIn(value) {
   const v = String(value ?? '').trim();
   if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
-  const m = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:\s*(\S.*)$/.exec(v);
+  const m = new RegExp(`^(${LOGIN})\\s*:\\s*(\\S.*)$`).exec(v);
   return m ? { login: m[1], dir: expandHome(m[2].trim()) } : undefined;
 }
 // The logins whose review verdicts are desk's own, comma-separated as loginIn reads them: the §1
@@ -1031,7 +1033,7 @@ export function gateReviewers() {
 // a space or colon, which no login holds), so a login that begins with either is still a login.
 export function gateReviewersIn(items) {
   if (items == null || isNone(items) || (items.length === 1 && /^(?:any$|todo(?:[\s:]|$))/i.test(items[0].trim()))) return null;
-  const bad = items.filter((x) => !/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/.test(x.trim()));
+  const bad = items.filter((x) => !new RegExp(`^${LOGIN}$`).test(x.trim()));
   if (bad.length) {
     const r = CONFIG_ROWS['gate-reviewers'];
     throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not one GitHub login per span, \`any\` or \`none\` in ${configPathHint()}. Refusing to guess.`);

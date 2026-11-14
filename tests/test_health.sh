@@ -469,7 +469,9 @@ jf(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], 
 q add H-20; q set H-20 state=done lane=A branch=fix/H-20 result.pr=950
 q add H-21; q set H-21 state=triaged branch=fix/H-21
 rm -f "$T/state/health.json"; pj
-check "DS-577 AC2 no review or fix try goes to the PR"                  '[ "$(field H-20 state)" = done ] && [ "$(jf H-20 fix)" = null ] && [ "$(jf H-20 stuck)" = null ]'
+# The stub answers no review-thread read, so an unheld PR's try path says so: its absence proves the
+# hold stopped the pass before any review or fix try was weighed.
+check "DS-577 AC2 no review or fix try goes to the PR"                  '[ "$(field H-20 state)" = done ] && [ "$(jf H-20 fix)" = null ] && [ "$(jf H-20 stuck)" = null ] && ! grep -qF "PR #950 (H-20): its review threads could not be read" <<< "$out"'
 check "DS-577 AC2 it is recorded held by the repo item"                  '[[ "$(jf H-20 gate_hold)" =~ \"item\":\"health:[^\"]+:reviewer\" ]] && grep -qF "H-20: GATE — PR #950 is red only on its review gate, held by health:" <<< "$out"'
 check "DS-577 AC3 build workers still spawn"                             '[ "$(field H-21 state)" = running ]'
 echo agent-pullbot > "$T/ghuser"

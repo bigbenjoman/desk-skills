@@ -4119,8 +4119,9 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   // head the merge driver held for failing §4 Merged-tree check merged into the base.
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
-  // Held by the reviewer check: no review or fix try of any kind, as on a draft. A fix's new head
-  // would need a verdict the gate does not count either.
+  // Held by the reviewer check: no review, checks or feedback fix try, as on a draft. A fix's new head
+  // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
+  // only on the gate, so it still goes to its own fix below.
   const gated = !dirty && !tree && gatedByReviewer(s);
   markGateHold(t, s, gated);
   if (gated) continue;
