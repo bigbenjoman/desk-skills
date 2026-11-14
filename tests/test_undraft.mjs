@@ -4,10 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { undraftCall, buildPark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
+import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
-import { parseEvidenceRow, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
+import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
+import { parseEvidenceRow, dispatchCall, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -68,6 +70,27 @@ t('AC2 a marker with only a P2 under "no findings" is the person\'s', call('no f
 t('AC3 key=value counts still undraft a clean marker', call('p0=0 p1=0 gaps=0', [review(marker(ALL_ZERO))])?.call, 'ready');
 t('AC3 but not a marker the review gate rejects: the head is reviewed again (DS-316)', call('p0=0 p1=0 gaps=0', [review(marker('p0=0 p1=0 deferred=0 gaps=0'))])?.call, 'review');
 t('AC3 and still ignore a plain review', call('p0=0 p1=0 gaps=0', [review(CLEAN_TEXT)])?.why, 'no desk-review verdict is posted on it');
+
+// DS-544: a PullBot round's own markers are a verdict, compared on the counts PullBot writes.
+{
+  const at = (clean, reviews, head = PULLBOT_SHA) => undraftCall(tk, { number: 2640, head, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks: green },
+    { perm: 'yes', localReview: '/pullbot', clean, handle: 'ben', required: ['tests'] });
+  const PLAIN = 'no P0, P1 or P2 findings';
+  const round = review(pullbotRound(), PULLBOT_SHA);
+  const approval = review(PULLBOT_APPROVAL, PULLBOT_SHA, 'mousedown');
+  const plainClean = at(PLAIN, [round, approval]);
+  t('DS-544 AC1 a clean PullBot round at the head under the plain-text row is undrafted', `${plainClean?.call} ${plainClean?.verdict?.sha === PULLBOT_SHA}`, 'ready true');
+  t('DS-544 AC2 and under the counts row', at(PULLBOT_CLEAN_COUNTS, [round, approval])?.call, 'ready');
+  for (const clean of [PLAIN, PULLBOT_CLEAN_COUNTS]) {
+    const p1 = at(clean, [review(pullbotRound(PULLBOT_SHA, 'p0=0 p1=1 p2=0 deferred=0 gaps=0'), PULLBOT_SHA)]);
+    t(`DS-544 AC3 a P1 at the head under "${clean}" goes to a fix worker, named`, `${p1?.call} ${p1?.why.includes('p1=1')}`, 'findings true');
+    const old = at(clean, [review(pullbotRound(OLD), OLD)]);
+    t(`DS-544 AC4 a round for an older head under "${clean}" asks for a review of the head`, `${old?.call} ${old?.why.includes(`its review verdict is for ${OLD.slice(0, 9)}, not the head`)}`, 'review true');
+  }
+  t('DS-544 AC1 another handle\'s round attests nothing', at(PLAIN, [review(pullbotRound(), PULLBOT_SHA, 'mousedown')])?.call, 'review');
+  t('DS-544 a PullBot marker the gate cannot read is no verdict, never a plain review',
+    at(PLAIN, [review(pullbotRound().replace(' rounds=5', ''), PULLBOT_SHA)])?.why, 'its PullBot verdict marker is not one the review gate reads');
+}
 
 // AC4: unset or not filled in.
 for (const clean of [null, '', 'TODO (how the local review says clean)', 'none']) {
@@ -360,6 +383,43 @@ t('DS-402 AC3 a check still running: parked as today', bp(P603, prOf([FLOWS, { n
 t('DS-402 AC3 nothing red: parked as today', bp(P603, prOf([])).r, null);
 for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass builds nothing: parked as today`, bp(P603, prOf([FLOWS]), { rerun }).r, null);
 
+// DS-509: a worker's park that waits only on its own green, clean PR merging is no park.
+{
+  const COND = { kind: 'pr-merged', pr: 871 };
+  const GRANT = { by: 'config', why: 'config §3 autopilot-merge is "yes" and pr-merge-green is "yes"' };
+  const pr871 = (more = {}) => ({ state: 'OPEN', number: 871, head: HEAD, checks: green, ...more });
+  const mp = (cond, pr, more = {}) => mergePark(cond, () => pr, { required: ['tests'], verdict: () => ({ clean: true }), ready: 'yes', merge: GRANT, ...more });
+  t('DS-509 AC1 green at head, clean review, pr-ready and the merge grant yes: recorded done on the PR', JSON.stringify(mp(COND, pr871())), JSON.stringify({ call: 'done', pr: 871, head: HEAD }));
+  t('DS-509 AC3 a clears-when other than its PR merging stays a park', mp({ kind: 'pr-ready', pr: 871 }, pr871()), null);
+  t('DS-509 AC3 a clears-when on another PR stays a park', mp({ kind: 'pr-merged', pr: 900 }, pr871()), null);
+  t('DS-509 AC3 no open PR stays a park', mp(COND, null), null);
+  t('DS-509 AC3 a red check stays a park', mp(COND, pr871({ checks: [{ name: 'tests', status: 'completed', conclusion: 'failure' }] })), null);
+  t('DS-509 AC3 a check still running stays a park', mp(COND, pr871({ checks: [{ name: 'tests', status: 'in_progress', conclusion: null }] })), null);
+  t('DS-509 AC3 no clean review at the head stays a park', mp(COND, pr871(), { verdict: () => ({ clean: false }) }), null);
+  t('DS-509 AC3 an unread review stays a park', mp(COND, pr871(), { verdict: () => null }), null);
+  const ask = mp(COND, pr871(), { merge: { by: null, why: 'config §3 pr-merge-green is "ask" with no batch approval' } });
+  t('DS-509 AC4 pr-merge-green not yes: the merge question, naming the row', `${ask?.call} | ${ask?.question}`,
+    `ask | PR #871 is green at ${HEAD.slice(0, 9)} with a clean review, and desk does not merge it because config §3 pr-merge-green is "ask" with no batch approval: undraft and merge it on GitHub, or set that row to yes with /desk-setup, and desk merges it; the ticket is then done`);
+  t('DS-509 AC4 pr-ready not yes: the question names it too', /config §3 pr-ready is "no"/.test(mp(COND, pr871(), { ready: 'no' })?.question ?? ''), true);
+  // AC2: the DONE marker's follow-on steps.
+  const fo = (s) => JSON.stringify(followOnIn(s));
+  t('DS-509 AC2 a DONE line with follow_on keeps each step and its row',
+    fo('pr=871 jira=In Review follow_on=[{"step": "run provision-telnyx-assistant.ts --env staging", "row": "staging-write"}, {"step": "start staging-crons frequent"}] said=two steps wait on the merge'),
+    JSON.stringify({ steps: [{ step: 'run provision-telnyx-assistant.ts --env staging', row: 'staging-write' }, { step: 'start staging-crons frequent', row: null }], error: null }));
+  t('DS-509 AC2 a step naming a ] in its text still reads', followOnIn('pr=1 follow_on=[{"step": "run x [staging]", "row": null}]').steps[0]?.step, 'run x [staging]');
+  t('DS-509 AC2 no follow_on: none', fo('pr=871 jira=In Review'), JSON.stringify({ steps: [], error: null }));
+  t('DS-509 AC2 one that does not read says so and keeps none', followOnIn('pr=1 follow_on=[{"step": 3}]').error?.startsWith('an entry is not'), true);
+  t('DS-509 AC2 one that is not JSON says so', followOnIn('pr=1 follow_on=run it').error, 'not a JSON array');
+  const step = [{ step: 'run x', row: null }];
+  t('DS-509 AC5 a merged ticket with steps not yet run waits on the person', followOnPending({ merged_at: '2026-11-08T10:00:00Z', follow_on: step }), true);
+  t('DS-509 AC5 one not merged, one said run, and one with no steps do not',
+    [{ follow_on: step }, { merged_at: '2026-11-08T10:00:00Z', follow_on: step, follow_on_done: '2026-11-08T11:00:00Z' }, { merged_at: '2026-11-08T10:00:00Z', follow_on: [] }].some(followOnPending), false);
+  // The worker brief forbids the park and names the follow-on form.
+  const s5c = doc('../skills/desk-autopilot/references/worker-contract-stage-5.md');
+  t('DS-509 the Stage 5 to 7 contract forbids a "who merges it" park', /\*\*Who merges your PR is never a park\.\*\*[^]*?print `AUTOPILOT_DONE`/.test(s5c), true);
+  t('DS-509 the Stage 5 to 7 contract makes post-merge steps follow-ons on the DONE line', /\*\*Steps that can only run once your PR merges are follow-ons, not a park\*\*[^]*?follow_on=\[\{"step"/.test(s5c), true);
+}
+
 // Evidence workflow: screenshot cells a repo's own workflow fills are started there, not put to the person.
 {
   const EVB = 'Before | After\n_drag a-before.png_ | _drag a-after.png_\n\n```evidence\na-before.png | before | /x | 1280\n```\n';
@@ -452,6 +512,20 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('EV row: none is off', parseEvidenceRow(['none']), null);
   t('EV row: unset is off', parseEvidenceRow(null), null);
   t('EV row: not a workflow file is refused', !!parseEvidenceRow(['run the screenshots'])?.errors, true);
+  // DS-549 AC1: a worker's own dispatch, checked by evidence.mjs dispatch rather than by a `pr=*` rule.
+  const own = { headRefName: 'fix/a', state: 'OPEN', isCrossRepository: false };
+  const dc = (argv, over = {}) => dispatchCall({ argv, view: own, workflow: 'pr-evidence.yml', repo: 'o/r', ref: 'main', allowed: true, ...over });
+  t('DS-549 AC1 its own open PR: run as the pass does, on the default branch', dc(['fix/a', '935']).args?.join(' '), 'workflow run pr-evidence.yml --repo o/r --ref main -f pr=935');
+  for (const pr of ['93*', '*', '935;id', '0935', '9 35', '', '-1', '935\n'])
+    t(`DS-549 AC1 "${pr}" is not a PR number`, /not a PR number/.test(dc(['fix/a', pr]).refused ?? ''), true);
+  t('DS-549 AC1 an extra argument is refused', /usage/.test(dc(['fix/a', '935', '-f']).refused ?? ''), true);
+  t('DS-549 AC1 no PR number is refused', /usage/.test(dc(['fix/a']).refused ?? ''), true);
+  t('DS-549 AC1 another branch\'s PR is refused', /not fix\/b's own PR/.test(dc(['fix/b', '935']).refused ?? ''), true);
+  t('DS-549 AC1 a fork\'s PR on the same branch name is refused', /own PR/.test(dc(['fix/a', '935'], { view: { ...own, isCrossRepository: true } }).refused ?? ''), true);
+  t('DS-549 AC1 a merged PR is refused', dc(['fix/a', '935'], { view: { ...own, state: 'MERGED' } }).refused, 'PR #935 is merged');
+  t('DS-549 AC1 an unreadable PR is refused', dc(['fix/a', '935'], { view: null }).refused, 'PR #935 could not be read');
+  t('DS-549 AC2 dispatch not yes is refused', /worker-workflow-dispatch/.test(dc(['fix/a', '935'], { allowed: false }).refused ?? ''), true);
+  t('DS-549 AC3 no evidence workflow is refused', /names no usable workflow/.test(dc(['fix/a', '935'], { workflow: null }).refused ?? ''), true);
   t('EV run id from gh workflow run', runIdFrom('https://github.com/o/r/actions/runs/41191877067\n'), '41191877067');
   const evDir = mkdtempSync(join(tmpdir(), 'desk-evidence-'));
   t('EV nothing recorded at a head reads as none', evidenceRecord(evDir, 740, HEAD, () => null), null);
@@ -768,5 +842,32 @@ const acReady = call(DESK_REVIEW_CLEAN, [acGap, acAccepted]);
 t('DS-317 AC3 then accepted at the same head, it is undrafted', acReady?.call, 'ready');
 t('DS-317 AC3 reading gaps=0', acReady?.verdict?.gaps, '0');
 t('DS-317 AC3 under a plain-text row too', call('no findings', [acGap, acAccepted])?.call, 'ready');
+
+// DS-576: a verdict posted by §4 Review account is read as desk's own, as one by the §1 handle is.
+const asAccount = (reviews, handle, clean = DESK_REVIEW_CLEAN) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks: green },
+  { perm: 'yes', localReview: '/desk-review', clean, handle, required: ['tests'] });
+const byAccount = [review(marker(ALL_ZERO), HEAD, 'agent-pullbot')];
+t('DS-576 AC5 a clean verdict at the head by the review account undrafts it', asAccount(byAccount, 'ben,agent-pullbot')?.call, 'ready');
+t('DS-576 AC5 under a plain-text row too', asAccount(byAccount, 'ben,agent-pullbot', 'no findings')?.call, 'ready');
+t('DS-576 AC5 in any case', asAccount([review(marker(ALL_ZERO), HEAD, 'Agent-PullBot')], 'ben,agent-pullbot')?.call, 'ready');
+t('DS-576 AC5 with the handle alone it is not read', asAccount(byAccount, 'ben')?.call, 'review');
+t('DS-576 AC7 a clean verdict by neither login is not desk\'s own', asAccount([review(marker(ALL_ZERO), HEAD, 'mallory')], 'ben,agent-pullbot')?.call, 'review');
+t('DS-576 AC7 nor one by a login that only contains one of them', asAccount([review(marker(ALL_ZERO), HEAD, 'agent-pullbot2')], 'ben,agent-pullbot')?.call, 'review');
+t('DS-576 the review account is not a person who reviewed', humanReviewed({ reviews: byAccount, comments: [] }, 'ben,agent-pullbot'), false);
+t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks off', HEAD, 'mallory')], comments: [] }, 'ben,agent-pullbot'), true);
+{
+  const ra = mkdtempSync(join(tmpdir(), 'desk-review-account-'));
+  const logins = (row) => {
+    writeFileSync(join(ra, 'config.md'), `## 4. Tracker\n\n| Field | Value |\n|---|---|\n${row ? `| Review account | ${row} |\n` : ''}`);
+    const r = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mjs', import.meta.url)), 'verdict-logins'],
+      { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(ra, 'config.md'), DESK_MACHINE: join(ra, 'none.md'), HOME: ra, DESK_GITHUB_HANDLE: 'ben' } });
+    return `${r.status} ${r.stdout.trim()}`;
+  };
+  t('DS-576 verdict-logins: the handle and the review account', logins('`agent-pullbot: ~/.config/gh-agent-pullbot`'), '0 ben,agent-pullbot');
+  t('DS-576 verdict-logins: the handle alone with the row none', logins('`none`'), '0 ben');
+  t('DS-576 verdict-logins: the handle alone with no row', logins(''), '0 ben');
+  t('DS-576 verdict-logins: the handle alone with a malformed row', logins('`agent pullbot`'), '0 ben');
+  rmSync(ra, { recursive: true, force: true });
+}
 
 process.exit(fails ? 1 : 0);

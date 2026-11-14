@@ -36,13 +36,14 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath } from './desk-env.mjs';
-import { isHeld, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript } from './batch-state.mjs';
+import { describeCond } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
 import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since } from './gate.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -120,18 +121,22 @@ function stateOf(q, t, ctx, seen) {
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
   if (worktreeBusy(t)) return 'needs';
-  if (answeredPark(t, ctx) || readPark(t, ctx)) return 'waiting';
+  if (answeredPark(t, ctx) || readPark(t, ctx) || clearsPark(t)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, base: 'main', required: [], advisory: [] };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, base: 'main', required: [], advisory: [] };
 // A park the person answered through desk-needs-you whose requeue was left to the live session running
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
 const answeredPark = (t, ctx) => t?.state === 'parked' && !!t.park?.answered && ctx?.live === true;
 // A park waiting on the §4 Live reads a pass runs on this computer: with passes stopped, nothing runs them.
 const readPark = (t, ctx) => waitingOnRead(t) && ctx?.live === true;
+// A park a pass settles once its clears-when holds (a PR merging, a ticket done): it waits on that,
+// not on the person. A live read is readPark's.
+const clearsPark = (t) => settlesByScript(t) && !waitingOnRead(t);
+const clearsText = (t) => `waiting on ${describeCond(t.park.clears_when)}: a pass requeues it then`;
 const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.batch}` : 'the batch session'} to requeue it`;
 // A triaged ticket the last pass would not spawn because its worktree is in use (pass.mjs busyWorktree,
 // recorded as `worktree_busy`): uncommitted changes, unpushed commits or another process working in it.
@@ -151,7 +156,7 @@ const outsideText = (t) => {
   return o.length === 1 ? `held by ${o[0].key}, outside this batch: start anyway?` : `held by ${o.length} Jira tickets outside: start anyway?`;
 };
 // A ticket whose worker gave up: why, then what moves it.
-const stoppedText = (t) => `worker stopped${t.park?.question ? `: ${t.park.question}` : ''} · requeue it`;
+const stoppedText = (t) => `worker stopped: ${failedWhy(t)} · requeue it`;
 const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
 
 // Who moves a batch on without the user: the merge driver, which alone releases a ticket whose blockers
@@ -164,6 +169,8 @@ function holdContext(r) {
   try { granted = mergeGrant(r.q, (id) => repoPermission(r.slug, id)).by != null; } catch { /* a grant that cannot be read is none */ }
   const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
+  // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
+  const blockerCategory = (key, b) => (triageOf(r.stateDir, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
   let base = typeof r.q?.base === 'string' ? r.q.base.trim() : '';
   if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* an unreadable row reads as main */ } }
@@ -176,13 +183,16 @@ function holdContext(r) {
   let basePush = 'no';
   try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
 // when nothing moves until they act, which `text` names; `act` is the command to run, where one is.
 // Behind several blockers, the first that needs the user speaks for the ticket.
 export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
+  const day = dateHeld(t);
+  if (day?.bad) return { k: 'needs', text: `held: ${badLabelText(day.label)}`, act: releaseCmd(t.key) };
+  if (day) return { k: 'waiting', text: `held until ${day.until}, by its label ${day.label}` };
   // Neither the pass nor the merge driver lets a ticket start whose hold names no blocker.
   if (!keysOf(t.held_by).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
@@ -199,7 +209,10 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
 function blockerHold(q, key, b, ctx, seen) {
   const bt = q.tickets?.[b];
-  if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) return { k: 'waiting', name: b, text: `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
+  if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) {
+    return { k: 'waiting', name: b, text: ctx.blockerCategory?.(key, b) === 'done' ?`behind ${b}, outside this batch: Done, waiting for its code to reach ${ctx.base}`
+      : `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
+  }
   if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {
@@ -278,6 +291,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // the hold names one) and leaves it for a person, so the item says the hold's step.
   const hold = parseHoldNote(t.merge_blocked);
   if (hold?.failed) return needs({ code: 'hold', ...hold }, [`merge hold routine failed: ${hold.failed.step}`, WARN], [' · settle it, then merge it', null]);
+  if (hold && !hold.routine && !holdNeedsPerson(hold.why)) return needs({ code: 'hold', ...hold }, [`merge hold with no routine for its check: ${hold.why}`, WARN], [' · give the hold a routine (/desk-update)', null]);
   if (hold) return needs({ code: 'hold', ...hold }, [`only a person merges it: ${hold.why}`, WARN], [hold.routine ? ` · run ${hold.routine}, then merge it` : ' · take that step, then merge it', null]);
   // With both fix tries made the pass puts it to the person (fixCall), so it is theirs already.
   const triesLeft = triesMade(t.fix_tries) < FIX_TRIES_MAX;
@@ -2045,11 +2059,14 @@ function usageHeadline(repos, now, t) {
 // the account, the new account's folder after it, and the rule its folder takes from ~/.claude. `taken`
 // is the pinned account the folder was signed in to instead of a new one.
 const isAdding = (adding, x) => adding && x.login.tool === adding.tool && [adding.login.dir, adding.first?.next.dir].includes(x.login.dir);
+// What desk-q calls a login being added: a Codex one by the label typed for it, a Claude one as the new
+// account, never by its folder's name, which reads as an account in the column of emails.
+const addingName = (a) => a.label ?? 'the new account';
 function addingRow(a) {
   const claude = a.tool === 'claude';
   const name = claude ? a.first?.email ?? 'new account' : a.label ?? a.login.name;
   const segs = [['  ', null], ...fitCell([[cut(name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
-    ...fitCell([[claude ? 'waiting for you to sign in…' : 'waiting for you to sign it in …', GREY]], U_5H + U_7D), ...fitCell([[claude ? '0' : '—', GREY]], U_WORKERS, true)];
+    ...fitCell([[claude ? 'waiting for you to sign in…' : 'waiting for you to sign in: steps below', GREY]], U_5H + U_7D), ...fitCell([[claude ? '0' : '—', GREY]], U_WORKERS, true)];
   return { id: 'adding', segs: segs.filter(([s]) => s), line: segText(segs) };
 }
 // Lines of coloured runs wrapped to `w`, the first after `lead` and the rest under it.
@@ -2077,13 +2094,13 @@ function addAccountPanel(a, w) {
 function addPanel(a, w) {
   const { shell } = signInParts(a.login);
   return [
-    bold('  Add a Codex login'),
-    ...leadLines('  ', [["desk never sees your password or token. You sign in with Codex's own login, and the login keeps its own folder, so its sessions and settings stay apart from your others.", GREY]], w),
+    bold('  Add another Codex account'),
+    ...leadLines('  ', [["Workers are shared across your accounts, so a batch keeps running when one reaches its limit. desk never sees your password: you sign in with Codex's own login, in a folder of its own.", GREY]], w),
     '',
-    segLine([['  ', null], ['1', BOLD], ['  In another terminal, run:', null]]),
+    ...stepLines('1', [['Open a new terminal tab and paste this (press ', null], ['y', BOLD], [' to copy it):', null]], w),
     { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
-    '     and sign in with the account you want to add.',
-    ...stepLines('2', [[`Come back here. desk-q finds it within a minute and shows its email and plan, or ${a.label} where its sign-in names no email.`, null], [' It starts on standby: press ', null], ['space', BOLD], [' to put it in rotation.', null]], w),
+    ...stepLines('2', [['Sign in with an account not listed above.', null]], w),
+    ...stepLines('3', [[`Come back here. Within a minute, ${a.label} shows its email and plan, or stays ${a.label} where its sign-in names no email.`, null], [' It waits on standby until you press ', null], ['space', BOLD], [' to start giving it workers.', null]], w),
   ];
 }
 
@@ -2480,7 +2497,7 @@ function prSegs(r, t, now) {
 // A ticket on a fix try: its PR, what is wrong with it, and that a worker repairs it, running or next.
 // One not running that startWait holds back says what it waits for first.
 function fixSegs(f, running, wait = null) {
-  const what = f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
+  const what = f.kind === 'conflict' && f.check ? `merged-tree check failing on ${f.base}` : f.kind === 'conflict' ? `merge conflict with ${f.base}` : f.checks ? checksFailed(f.checks.length + (f.not_mine?.length ?? 0)) : f.what;
   const who = running ? 'a worker' : wait ? `${wait}, then a worker` : 'next free worker';
   if (personCall(f)) return [[`#${f.pr}`, PR_SGR], [' · ', null], [what, WARN], [` · ${who} carries out your call`, null]];
   if (f.kind === 'capture') return [[`#${f.pr}`, PR_SGR], [' · ', null], [`${f.files?.length ?? 0} screenshot(s) never taken`, WARN], [` · ${who} takes them`, null]];
@@ -2535,6 +2552,7 @@ function needSegs(r, x, now = Date.now()) {
   if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t));
   if (k === 'running') return [[runningStage(r, x), null]];
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
+  if (clearsPark(t)) return [[clearsText(t), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
   if (k === 'needs' && claimOf(t)) return [[`claimed by session ${claimOf(t).session}`, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open: answer them`, null]];
@@ -2724,8 +2742,9 @@ function moveOf(r, row, k, t, h, now) {
     return { text: `Moves without you: ${segText(fixSegs(f, false, startWait(r, t)))}.` };
   }
   // With passes stopped nothing new starts and no held ticket starts, so only resuming them moves it.
-  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting')) {
-    const text = `Will not move until passes resume${h ? `: ${h.text}` : ''}.`;
+  if (!r.live && (['ready', 'queued'].includes(k) || h?.k === 'waiting' || clearsPark(t))) {
+    const why = h ? h.text : clearsPark(t) ? clearsText(t) : '';
+    const text = `Will not move until passes resume${why ? `: ${why}` : ''}.`;
     return supervisorOff(r) ? { text, lead: 'Run:', cmds: [resumeOf(r)] } : { text, lead: `${capital(resumeOf(r))}.` };
   }
   if (h) {
@@ -2734,6 +2753,7 @@ function moveOf(r, row, k, t, h, now) {
   }
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
+  if (clearsPark(t)) return { text: `Moves without you: ${capital(clearsText(t))}.` };
   if (k === 'needs' && claimOf(t)) {
     if (needsSession(t)) return { text: `Claimed by session ${claimOf(t).session}, which works it. It is lane ${t.lane}, so it stays with a person however long that session is idle${q ? `: ${q}` : '.'}` };
     return { text: `Claimed by session ${claimOf(t).session}, which works it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
@@ -2744,7 +2764,7 @@ function moveOf(r, row, k, t, h, now) {
     return { text: q && t.state === 'parked' && !asks ? `Needs your answer: ${q}` : `Needs you: triage left ${n} question${n === 1 ? '' : 's'} open.`,
       lead: `Answer, in ${r.name}, and the orchestrator decides whether to requeue it:`, cmds: [answerCmd(t.key)] };
   }
-  if (k === 'failed') return { text: `Needs you: its worker stopped${q ? `: ${q}` : '.'}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
+  if (k === 'failed') return { text: `Needs you: its worker stopped: ${failedWhy(t)}`, lead: `Requeue it, in ${r.name}, or drop it:`, cmds: [`node ~/.claude/desk/bin/queue.mjs requeue ${t.key}`] };
   if (k === 'queued') return { text: 'Moves without you: it is being triaged.' };
   if (r.workers === 0) return { text: 'Will not start: workers are set to 0. Raise them with +.' };
   return { text: `Moves without you: it ${readyWhy(r, t)}.` };
@@ -2852,7 +2872,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   // outside, with its Jira status, or as Done and not yet on the base.
   const away = keysOf(t.held_outside).filter((b) => !r.q.tickets[b]);
   const held = keysOf(t.held_by).filter((b) => !away.includes(b));
-  const jiraCat = (b) => (triageOf(r.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === b)?.category;
+  const jiraCat = (b) => r.ctx.blockerCategory(t.key, b);
   const outside = [...outsideOf(t), ...away.filter((b) => !outsideOf(t).some((o) => o.key === b))
     .map((b) => ({ key: b, category: jiraCat(b) === 'done' ? `Done, not yet on ${r.ctx.base}` : jiraCat(b) ?? 'outside this batch' }))];
   if (held.length || outside.length) {
@@ -3036,6 +3056,7 @@ function moveTicket(r, key, verb, to) {
   if (n < 1 || n > last || n === i) throw new Usage(`${key} is already at position ${i}. Nothing moved.`);
   queueCmd(r, ['move', key, String(n)]);
   const why = answeredPark(x.t, r.ctx) ? ` It is ${answeredText(r.q)}, then starts from here.`
+    : clearsPark(x.t) ? ` It is ${clearsText(x.t)}, and starts from here.`
     : x.k === 'waiting' ? ` It still waits on ${unmergedBlockers(r.q, x.t).join(', ') || 'its blockers'}, then starts from here.`
     : x.k === 'stuck' ? ` It is still held outside this batch: moving it does not start it.`
       : x.k === 'needs' ? ' It still needs you first.' : x.k === 'queued' ? ' It still waits for triage.' : '';
@@ -3621,7 +3642,7 @@ export function interactive({
     }
     tried.add('migrate');
     selId = 'adding';
-    msg = `esc stops waiting and removes ${name ?? f.name}.`;
+    msg = `esc cancels adding ${addingName(adding)}.`;
     clearInterval(addTimer);
     addTimer = setInterval(() => { if (!done && adding && !checking) checkLogins(); }, addCheckMs);
     if (!checking) checkLogins();
@@ -3645,7 +3666,7 @@ export function interactive({
       if (c.rule !== 'standby' && saving) return;
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      const said = `${c.email ?? a.label ?? a.login.name} is signed in and on standby. space puts it in rotation.`;
+      const said = `${c.email ?? a.label ?? 'The new account'} is added, on standby. Press space to start giving it workers.`;
       if (c.rule === 'standby') msg = said;
       else saveLogin(['set', a.tool, a.login.name, 'standby'], said, null);
     }
@@ -3661,7 +3682,7 @@ export function interactive({
       lastLogins = null;
       adding = { tool: a.tool, login: a.first.next, label: null };
       selId = 'adding';
-      msg = `${email} signs in for desk through ${a.login.folder}. esc stops waiting and removes ${a.first.next.name}.`;
+      msg = `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`;
       if (!done && !checking) checkLogins();
       if (!done) draw();
     };
@@ -3678,13 +3699,13 @@ export function interactive({
     const a = adding;
     stopAdding();
     selId = null;
-    const name = a.label ?? a.login.name;
-    if (!existsSync(a.login.dir) || dropNewFolder(a.login.dir)) { msg = `Stopped waiting: ${name} is not added.`; return; }
-    saveLogin(['remove', a.tool, a.login.name], `Stopped waiting: ${name} is not added. Its folder ${a.login.folder} is left as it is.`, null);
+    const name = addingName(a);
+    if (!existsSync(a.login.dir) || dropNewFolder(a.login.dir)) { msg = `Cancelled: ${name} is not added.`; return; }
+    saveLogin(['remove', a.tool, a.login.name], `Cancelled: ${name} is not added. Its folder ${a.login.folder} is left as it is.`, null);
   }
   // a: a Codex login when the CODEX table's row is selected, which asks for its label first; else a Claude one.
   function addKey(x) {
-    if (adding) { msg = `Still waiting for ${adding.label ?? adding.login.name} to be signed in: esc stops waiting.`; return; }
+    if (adding) { msg = `Still waiting for ${addingName(adding)} to be signed in: esc cancels adding it.`; return; }
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (x?.login?.tool !== 'codex') return startAdding('claude');
     typed = '';
@@ -3725,8 +3746,7 @@ export function interactive({
     }
     if (k === 'y' && adding) {
       const { shell } = signInParts(adding.login);
-      const name = adding.label ?? adding.login.name;
-      try { copier(shell); msg = `The command is copied. esc stops waiting and removes ${name}.`; }
+      try { copier(shell); msg = `Copied. Paste it in a new terminal tab, or esc to cancel adding ${addingName(adding)}.`; }
       catch (e) { msg = `Could not copy the command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
       return;
     }

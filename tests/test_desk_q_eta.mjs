@@ -34,7 +34,11 @@ function world({ tickets, logs = {}, sizes = {}, merged = {} }) {
   mkdirSync(join(T, 'stub'));
   writeFileSync(join(T, 'stub', 'gh'), `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(join(T, 'gh.log'))}, process.argv.slice(2).join(' ') + '\\n');\nconsole.log(JSON.stringify(${JSON.stringify(Object.entries(merged).map(([number, mergedAt]) => ({ number: Number(number), mergedAt })))}));\n`);
   chmodSync(join(T, 'stub', 'gh'), 0o755);
-  const env = { ...process.env, PATH: `${join(T, 'stub')}:${process.env.PATH}`, DESK_QUEUE: join(T, 'queue.json'), DESK_AUTOPILOT_STATE: state, DESK_GH_REPO: 'acme/widgets', DESK_HOME: join(T, 'deskhome') };
+  // A worker runs this with DESK_REPO_DIR on its real checkout, and that repo's origin outranks
+  // DESK_GH_REPO, so drop the inherited repo pins and force the fixture repo. (Not otherRepoEnv:
+  // importing desk-env.mjs here would load it before the forecast below points HOME at its fixtures.)
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DESK_REPO')));
+  const env = { ...inherited, PATH: `${join(T, 'stub')}:${process.env.PATH}`, DESK_QUEUE: join(T, 'queue.json'), DESK_AUTOPILOT_STATE: state, DESK_GH_REPO: 'acme/widgets', DESK_REPO_OVERRIDE: 'acme/widgets', DESK_HOME: join(T, 'deskhome') };
   const run = (script, ...args) => spawnSync(process.execPath, [join(BIN, script), ...args], { cwd: T, env, encoding: 'utf8' });
   const lines = () => readHistory(state) ?? [];
   const queueNow = () => JSON.parse(readFileSync(join(T, 'queue.json'), 'utf8'));

@@ -64,12 +64,24 @@
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
 #                                            is yes (once per head), else parked for a person
+#   - fails §4 Merged-tree check             last before the merge, its head merged into the base's head
+#                                            in a throwaway checkout must pass the check (base-sync.mjs
+#                                            prTreeCheck), once per head and base commit. GitHub reports
+#                                            no conflict for two PRs that each add the next migration, nor
+#                                            BEHIND where the base need not be up to date. A failure is
+#                                            recorded on the ticket as tree_check and logged with the
+#                                            command; pass.mjs sends it to a fix worker as it does DIRTY.
+#                                            The epic PR's is noted on the queue's promotion, which the
+#                                            pass reports to the person, and cleared once it passes
+#                                            With the row unset or `none` it merges, saying none is set
 #   - an approving review required           GitHub's review decision is REVIEW_REQUIRED: recorded as
 #                                            merge_blocked (`approval: …`) for the person, red or
 #                                            green; a red one is still rerun and repaired
 #   - a red approval state check             a §4 State check of kind approval is red: recorded as
-#                                            merge_blocked (`approval: …`) for the person, and never
-#                                            rerun, so no cooldown is scheduled for it
+#                                            merge_blocked (`approval: …`) for the person, and not
+#                                            rerun, so no cooldown is scheduled for it; one whose run
+#                                            started before the head's newest approval is rerun
+#                                            once per head instead (approval-rerun-<n>-<sha>)
 #   - not green                             "green" is desk-config.md's one definition, evaluated by
 #                                            gate.mjs (shared with desk-clearance); a head must stay
 #                                            green across two loops before it merges, so a check that
@@ -108,7 +120,9 @@
 # cooldown-<n> in <state>/merge-driver for that, so their names and contents are shared with it.
 # A red §4 State check reads the PR's state, not its code, so it is never rerun: each is logged with
 # the error its run gave. One of kind `approval` is recorded as merge_blocked (`approval: …`) for the
-# person; one of kind `verdict` the pass sends to a review worker (fix-tries.mjs verdictTry).
+# person, unless its run started before an APPROVED review of the head or a clean verdict at it,
+# whichever is newer: that run read the PR before the approval, so its job is rerun once per head.
+# One of kind `verdict` the pass sends to a review worker (fix-tries.mjs verdictTry).
 # It NEVER undrafts, and never arms auto-merge (the platform's idea of green is not this one); an
 # armed auto-merge on a held PR, or one with feedback outstanding, is disarmed.
 #
@@ -186,7 +200,7 @@ fi
 # The last line is always the exit code, so the supervisor can tell a driver that failed from one it
 # never saw stop. The lock is removed only once this driver holds it, never another driver's.
 LOCK_HELD=""
-on_exit(){ rc=$?; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
+on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
 trap on_exit EXIT
 
 # Who lets this driver merge: config §3 (`config`), or the batch's Stage 3 approval (`batch`). It is
@@ -254,7 +268,11 @@ echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
 # The desk version this driver runs, so the supervisor can tell it started before the last install.
 node "$DESK_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
-trap 'exit 143' TERM
+# TERM is a request to stop: a driver between loops stops at once (pause), and one mid-loop finishes
+# the PR it is on first (stop_if_asked), so a stop never leaves a merge half-recorded.
+STOP=""; SLEEP_PID=""
+trap 'STOP=143' TERM
+stop_if_asked(){ if [ -n "$STOP" ]; then exit "$STOP"; fi; }
 
 cd "$DESK_REPO_ROOT" || exit 1
 log(){ echo "$(date -u +%H:%M:%SZ) $*"; }
@@ -272,6 +290,8 @@ case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" 
 esac
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
+# The logins whose review verdicts are desk's own: the handle, and the §4 Review account it posts from.
+VERDICT_BY="$(node "$DESK_ENV_MJS" verdict-logins 2>/dev/null || printf '%s' "$AUTHOR")"
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
 SD="$DESK_STATE/merge-driver"; mkdir -p "$SD"
 GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
@@ -319,13 +339,13 @@ prs(){
 # when GitHub could not be read. An empty reviewDecision is not an approval.
 feedback(){
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" read --handle "$AUTHOR" --clean "$CLEAN_ROW" 2>/dev/null
+    | node "$THREADS" read --handle "$VERDICT_BY" --clean "$CLEAN_ROW" 2>/dev/null
 }
 # Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
 # Nothing when GitHub could not be read.
 head_verdict(){ # head_verdict <n> [<base>]
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" verdict --handle "$AUTHOR" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" 2>/dev/null
+    | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" 2>/dev/null
 }
 # Prints true once GitHub has resolved the thread.
 resolve_thread(){
@@ -401,7 +421,9 @@ for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(
 // No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
 const unapproved = (p) => p === spine && q[p]?.approved !== true;
 // A blocker in no batch (held_outside) waits on Jira as well as a merge: pass.mjs lifts it, not this.
-for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
+// So does a ticket held on its blocked-until label (held_label with no held_by, batch-state.mjs dateHeld).
+const onDate = (t) => !!t.held_label && !String(t.held_by ?? '').split('|').some(Boolean);
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0
@@ -457,6 +479,41 @@ behind(){ # behind <n> <sha> <key>
 # Reruns per check per head (RERUNS_MAX, RERUN_COOLDOWN, reruns_at, rerun), shared with pass.mjs.
 # shellcheck source=rerun.sh
 . "$DESK_ENV_DIR/rerun.sh"
+
+# stale_approval <n> <sha> <gate json> -> STALE set to the red approval state checks rerun this loop,
+# one per line. A run that started before the head's newest approval (an APPROVED review of the head,
+# or a clean verdict at it) read the PR before that approval: its job is rerun once per head, where §3
+# ci-rerun is yes. Red again after that, the check waits on a person as any other.
+STALE=""
+stale_approval(){
+  local reds ap at by name rid jid started newer ok f="$SD/approval-rerun-$1-$2"
+  STALE=""
+  reds=$(printf '%s' "$3" | jq -r '.gate.stateFailing[]? | select(.kind == "approval" and .startedAt != null) | "\(.name)\t\(.runId // "")\t\(.jobId // "")\t\(.startedAt)"')
+  [ -n "$reds" ] || return 0
+  ap=$(gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
+    | node "$THREADS" approved --handle "$VERDICT_BY" --clean "$CLEAN_ROW" 2>/dev/null) \
+    || { log "#$1 could not read its approvals, so its red approval check is not weighed for a rerun"; return 0; }
+  [ "$(printf '%s' "$ap" | jq -r .head)" = "$2" ] || return 0
+  at=$(printf '%s' "$ap" | jq -r '.at // empty'); by=$(printf '%s' "$ap" | jq -r '.by // empty')
+  [ -n "$at" ] || return 0
+  while IFS="$TAB" read -r name rid jid started; do
+    [ -n "$name" ] || continue
+    newer=$(jq -nr --arg a "$at" --arg s "$started" 'def t: sub("\\.[0-9]+"; "") | fromdateiso8601; ($a | t) > ($s | t)' 2>/dev/null)
+    [ "$newer" = true ] || continue
+    if grep -qxF "$name" "$f" 2>/dev/null; then
+      log "#$1 \"$name\" was rerun once at ${2:0:9} for the approval its run started before, and is red again — not rerunning it a second time"; continue
+    fi
+    [ "$RERUN_PERM" = yes ] || { log "#$1 \"$name\" ran before $by at ${2:0:9}, but §3 ci-rerun is $RERUN_PERM, so it is not rerun"; continue; }
+    log "#$1 \"$name\" failed in a run started $started, before $by at ${2:0:9} ($at): rerunning it once at this head"
+    printf '%s\n' "$name" >> "$f"
+    ok=""
+    if [ -n "$jid" ]; then gh run rerun --job "$jid" --repo "$REPO" >/dev/null 2>&1 && ok=1
+    elif [ -n "$rid" ]; then gh run rerun "$rid" --repo "$REPO" --failed >/dev/null 2>&1 && ok=1; fi
+    if [ -n "$ok" ]; then STALE="$STALE$name"$'\n'; else log "#$1 rerun of \"$name\" refused"; fi
+  done <<EOF_STALE
+$reds
+EOF_STALE
+}
 
 # waivable <n> <sha> <gate json> <key> -> 0 when the red head may merge on the written waiver (header),
 # with WAIVED set to its check names, quoted and comma-joined. Otherwise says why and returns 1.
@@ -766,6 +823,45 @@ EOF_REPAIRS
   return 1
 }
 
+# tree_checked <n> <sha> <key> <base> -> 0 when #n merged into <base>'s head passes §4 Merged-tree check,
+# or none is set. A ticket's failure is recorded on it as tree_check, which the pass sends to a fix worker
+# as it does a conflict; a later pass of the check clears it. The epic PR's is noted on the queue's
+# promotion, which the pass reports to the person: a base behind <base> is synced and checked by the
+# pass first, but one already holding <base>'s head fails on its own tree, which no sync rechecks.
+# A check that could not run holds the merge.
+tree_checked(){
+  local r res line
+  r=$(node --input-type=module - "$DESK_BIN/base-sync.mjs" "$DESK_REPO_ROOT" "$SD" "$4" "$1" "$2" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const [mod, repo, cache, base, pr, head] = process.argv.slice(2);
+const { prTreeCheck } = await import(pathToFileURL(mod).href);
+console.log(JSON.stringify(prTreeCheck({ repo, cache, dir: `${cache}/tree-${pr}-checkout`, base, pr, head })));
+NODE
+) || r='{"result":"error","why":"the check could not be started"}'
+  res=$(printf '%s' "$r" | jq -r '.result // "error"' 2>/dev/null)
+  case "$res" in
+    none) log "#$1 no §4 Merged-tree check is configured — merging without one"; return 0 ;;
+    pass)
+      log "#$1 merged into $4 at $(printf '%s' "$r" | jq -r '.base_sha[:9]'), it passes §4 Merged-tree check"
+      if [ -n "$EPIC_KEY" ]; then blocked_clear "$3" "merged-tree check:"
+      elif [ "$(jq -r --arg k "$3" '.tickets[$k].tree_check // empty | .head' "$DESK_QUEUE" 2>/dev/null)" ]; then node "$Q" set "$3" tree_check=null >/dev/null 2>&1; fi
+      return 0 ;;
+    fail)
+      line="merged into $4 at $(printf '%s' "$r" | jq -r '.base_sha[:9]'), it fails the merged-tree check \`$(printf '%s' "$r" | jq -r .check.command)\`: $(printf '%s' "$r" | jq -r '.check.output | split("\n") | last')"
+      if [ -n "$EPIC_KEY" ]; then
+        log "#$1 HELD: $line — not merging; noted on the batch's promotion for the person"
+        queue_note "$3" "merged-tree check: $line"
+        return 1
+      fi
+      log "#$1 HELD: $line — not merging; the pass sends it to a fix worker"
+      node "$Q" set "$3" "tree_check=$(printf '%s' "$r" | jq -c --arg head "$2" --arg base "$4" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{ head: $head, base: $base, base_sha, command: .check.command, output: .check.output, at: $at }')" >/dev/null 2>&1 \
+        || log "#$1 its failed merged-tree check could not be recorded on $3"
+      return 1 ;;
+    *) log "#$1 §4 Merged-tree check could not run: $(printf '%s' "$r" | jq -r '.why // "no result"' 2>/dev/null) — not merging it this loop"; return 1 ;;
+  esac
+}
+
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
@@ -864,11 +960,17 @@ EOF_RESOLVE
     fail)
       log "#$n red at ${sha:0:9}: $(printf '%s' "$g" | jq -r '.gate.reasons[:3] | join("; ")')"
       # A red §4 State check of kind approval reads a person's approval at the head: only a person
-      # clears it, so the queue asks them, and rerun leaves it alone.
-      awaiting=$(printf '%s' "$g" | jq -r '[.gate.stateFailing[]? | select(.kind == "approval") | "\"\(.name)\""] | join(", ")')
+      # clears it, so the queue asks them, and rerun leaves it alone. One whose run started before the
+      # head's newest approval is rerun once instead (stale_approval).
+      STALE=""; [ -n "$review_required" ] || stale_approval "$n" "$sha" "$g"
+      awaiting=$(printf '%s' "$g" | jq -r --arg s "$STALE" '[.gate.stateFailing[]? | select(.kind == "approval" and (.name as $x | $s | split("\n") | index($x) | not)) | "\"\(.name)\""] | join(", ")')
       if [ -n "$awaiting" ] && [ -z "$review_required" ]; then
         log "#$n at ${sha:0:9} waits on an approval: $awaiting — a person approves it; no rerun"
         queue_note "$key" "approval: $awaiting needs approval from a human reviewer at ${sha:0:9}: a person approves it before desk merges it"
+      fi
+      if [ -n "$STALE" ]; then
+        [ -n "$awaiting" ] || approval_clear "$key"
+        log "#$n at ${sha:0:9} reran its approval check for an approval it had not seen — read again once it finishes"; return 1
       fi
       # A waiver only lets a head merge, which one awaiting an approval may not, and its note would replace the approval's.
       if [ -z "$review_required" ] && [ -z "$awaiting" ] && waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
@@ -927,6 +1029,8 @@ EOF_RESOLVE
   if [ $(( $(date +%s) - green_at )) -lt "$GREEN_HOLD_SECS" ]; then log "#$n $label at ${sha:0:9} — confirming"; return 1; fi
 
   if [ -z "$EPIC_KEY" ] && repair_held "$n" "$g"; then return 1; fi
+  # The epic PR too: §0 Default branch may have gained a migration since the base's last sync.
+  if ! tree_checked "$n" "$sha" "$key" "$want"; then return 1; fi
 
   if ! grant=$(node "$DESK_ENV_MJS" merge-grant 2>&1); then
     log "FAIL: ${grant#*"$TAB"} — not merging #$n; stopping"; exit 1
@@ -977,9 +1081,17 @@ EOF_RESOLVE
 log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD merge-by=$GRANT_BY required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)] state=[$(printf '%s' "$STATE_CHECKS" | cut -f1 | paste -sd ',' -)]"
 # One release pass and out: for tests, and for checking by hand what would be released now.
 if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
-# pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run.
-pause(){ if [ -n "${MERGE_DRIVER_ONE_LOOP:-}" ]; then exit "${2:-0}"; fi; sleep "$1"; }
+# pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run. The sleep
+# runs in the background, since `wait` returns as soon as TERM arrives where a foreground sleep would not.
+pause(){
+  if [ -n "${MERGE_DRIVER_ONE_LOOP:-}" ]; then exit "${2:-0}"; fi
+  stop_if_asked
+  sleep "$1" & SLEEP_PID=$!
+  wait "$SLEEP_PID"; kill "$SLEEP_PID" 2>/dev/null; SLEEP_PID=""
+  stop_if_asked
+}
 while true; do
+  stop_if_asked
   join_queue_tickets
   release_chain
 
@@ -1008,6 +1120,7 @@ while true; do
     [ -n "$n" ] || continue
     # stdin from /dev/null: nothing inside may eat the list this loop is reading.
     if try_pr "$n" "$key" "$kind" </dev/null; then merged=1; release_chain </dev/null; break; fi
+    stop_if_asked
   done <<EOF_READY
 $ready
 EOF_READY

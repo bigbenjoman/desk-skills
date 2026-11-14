@@ -54,30 +54,31 @@
 // verdict it read, for the comment the PR gets on leaving draft (undraftComment), and `carried`, the
 // commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
 // review-reuse lever on restsOnCarries, whose base range checked is `range`).
-import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, PENDING_LIMIT_MS, since } from './gate.mjs';
+import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, loginIn, PENDING_LIMIT_MS, since } from './gate.mjs';
 import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
-import { parseVerdict as gateVerdict, LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
+import { parseVerdict as gateVerdict, LOCAL_MARKER, LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 // The name of desk-gate.yml's verdict job, the check that runs review-gate.mjs verdict.
 export const VERDICT_CHECK = 'desk-review verdict';
 
 // A posted desk-review's verdict as the review gate reads it, or null. Values are strings, in
-// marker order, as the §4 Clean review verdict row compares them; the heading is left out.
+// marker order, as the §4 Clean review verdict row compares them; the heading and form are left out.
 export function parseVerdict(body) {
   const v = gateVerdict(String(body ?? ''));
   if (!v) return null;
-  const { heading, ...marker } = v;
+  const { heading, kind, ...marker } = v;
   return Object.fromEntries(Object.entries(marker).map(([k, x]) => [k, String(x)]));
 }
 
 // The reviews among `reviews` (gh pr view --json reviews: oldest first) that `handle` posted: on a
-// public repo anyone can post a review, and only the person's own attests it.
+// public repo anyone can post a review, and only the person's own attests it. `handle` may list
+// logins (loginIn), as verdictLogins gives the §1 handle with the §4 Review account.
 function ownReviews(reviews, handle) {
-  return (reviews ?? []).filter((r) => handle && r.author?.login?.toLowerCase() === handle.toLowerCase());
+  return (reviews ?? []).filter((r) => loginIn(r.author?.login, handle));
 }
 
 // The latest review carrying a verdict among the reviews `handle` posted, as { verdict, body, id }, or
@@ -99,10 +100,12 @@ export function verdictAt(v, head, clean) {
 }
 
 // A §4 Clean review verdict that is plain text (`no findings`, as the config template offers) names no
-// counts. A desk-review verdict marker is then read against every count desk-review writes. A review
+// counts. A verdict marker, desk-review's or PullBot's, is then read against every count it writes. A review
 // with no marker is clean when it is the latest at the head, a line of it opens with the value as its
 // outcome, it states that nothing is deferred or carried, and no line defers, carries or counts an item.
 export const DESK_REVIEW_CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
+// DESK_REVIEW_CLEAN cut to the counts a parsed marker writes: a PullBot verdict has no unrefuted or partial.
+export const markerClean = (v) => Object.keys(pairs(DESK_REVIEW_CLEAN)).filter((k) => k in (v ?? {})).map((k) => `${k}=0`).join(' ') || DESK_REVIEW_CLEAN;
 const LEFT = '(?:defer(?:s|red|ring|rals?)?|carr(?:y|ies|ied|ying))';
 const LEFT_OVER = new RegExp(`\\b${LEFT}\\b`, 'i');
 // "nothing deferred or carried", "no items carried", "nothing to defer", "deferred: none", "carried 0",
@@ -119,15 +122,17 @@ export function leftOver(body) {
 }
 
 // What the latest of `handle`'s reviews says about this head, under a plain-text §4 row (`clean`):
-// { clean, why, settle, verdict }. A review with an empty body (GitHub records one for a reply to an
-// inline comment) says nothing and is passed over.
+// { clean, why, settle, verdict, review }, `review` the review read when it is clean or carries a marker.
+// A review with an empty body (GitHub records one for a reply to an inline comment) says nothing and is
+// passed over.
 export function plainVerdictAt(reviews, handle, head, clean) {
   const r = ownReviews(reviews, handle).filter((x) => String(x.body ?? '').trim()).pop();
   if (!r) return { clean: false, why: `no review stating "${clean}" is posted on it` };
   const v = parseVerdict(r.body);
-  if (v) return { ...verdictAt(v, head, DESK_REVIEW_CLEAN), verdict: v };
-  // A desk-review whose marker the review gate cannot read is no verdict, never a plain review.
-  if (String(r.body).split(/\r?\n/)[0].trim() === LOCAL_MARKER) return { clean: false, why: 'its desk-review verdict marker is not one the review gate reads' };
+  if (v) return { ...verdictAt(v, head, markerClean(v)), verdict: v, review: r };
+  // A local review whose marker the review gate cannot read is no verdict, never a plain review.
+  const opener = String(r.body).split(/\r?\n/)[0].trim();
+  if (LOCAL_MARKERS.includes(opener)) return { clean: false, why: `its ${opener === LOCAL_MARKER ? 'desk-review' : 'PullBot'} verdict marker is not one the review gate reads` };
   const at = r.commit?.oid ?? '';
   if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its latest review is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
   const c = clean.toLowerCase();
@@ -136,7 +141,7 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   const left = leftOver(r.body);
   if (left.length) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but leaves items open, deferred or carried: ${left.map((l) => `"${l}"`).join('; ')}` };
   if (!plainLines(r.body).some((l) => l.replace(NOTHING_LEFT, '') !== l)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
-  return { clean: true, why: null, verdict: stated };
+  return { clean: true, why: null, verdict: stated, review: r };
 }
 
 // The review verdict the handle has at this head, under a set §4 Clean review verdict row (`clean`), as
@@ -155,7 +160,7 @@ export function verdictAtHead(reviews, handle, head, clean, carry, scope = null)
   let carried = null, range = null, targeted = null;
   const older = !v.clean && !v.settle && found?.sha && head && !head.startsWith(found.sha);
   const held = older ? carry?.(found.sha, review?.body) : null;
-  const was = older ? verdictAt(found, found.sha, plain ? DESK_REVIEW_CLEAN : clean) : null;
+  const was = older ? verdictAt(found, found.sha, plain ? markerClean(found) : clean) : null;
   if (held) {
     v = { ...was, ...(plain ? { verdict: found } : {}) };
     carried = found.sha;
@@ -434,7 +439,11 @@ function stuckCall(gate, checks, cfg, n) {
 // it succeeded, `sync` when it failed at a head behind its base (cfg.behind(head) -> the base's name, or
 // null when the head has it or git cannot say), and `person` when it failed at a head up to date with its base,
 // its re-run was refused, or the checks are still red after it. Anything else is null, handled as any red check.
-function buildCall(gate, cfg, n, head, t) {
+// `person` and `sync` carry `lead`, what failed, and `each`, what a ready PR's stuck record keeps on each
+// check: a failed build's `build` and last output line (`error`), a refused re-run's `command` (a person's
+// step), and nothing for a check still red after it (a plain red check).
+// A ready PR's fix tries (fix-tries.mjs fixCall) ask it about its §4 Check builds checks alone.
+export function buildCall(gate, cfg, n, head, t) {
   const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
   const failing = gate.failing;
   if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
@@ -450,13 +459,14 @@ function buildCall(gate, cfg, n, head, t) {
   if (rec.code !== 0) {
     const exit = rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`;
     const failed = `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`;
+    const said = { lead: `its check build \`${command}\` ${exit}`, each: { build: command, ...(rec.tail ? { error: rec.tail.split(' / ').at(-1) } : {}) } };
     const base = cfg.behind?.(head) ?? null;
-    if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base };
-    return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}` };
+    if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base, ...said };
+    return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}`, ...said };
   }
-  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, checks: names, runs };
-  if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}` };
-  return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}` };
+  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
+  if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}`, lead: `its check build \`${command}\` ran, but the re-run was refused: ${rec.reran.out}`, each: { command: `re-run ${checks} on #${n}` } };
+  return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
 }
 
 // The words a park's not-reached tail may hold after its marker: the steps the worker contract has it
@@ -502,6 +512,27 @@ export function buildPark(question, readPr, cfg) {
   const used = names.map((x) => builds.find((b) => b.name === x));
   if (used.some((b) => !b)) return null;
   return { checks: names, command: [...new Set(used.map((b) => b.command))].join(' && ') };
+}
+
+// A worker's park that waits only on its own PR merging (clears_when pr-merged on the ticket's open PR),
+// where that PR is green at its head with a clean review there: nothing but a merge holds it, so it is
+// no park. Its wording is not read: post-merge steps in it depend on the merge and never block it.
+// readPr() -> { state, number, head, checks }; cfg: { required, advisory, verdict(pr) -> { clean },
+// ready (§3 pr-ready, or `yes` with the batch's approval), merge (desk-env mergeGrant) }. Returns null
+// to leave the park as it is; { call: 'done', pr, head } where desk may undraft and merge it, so the
+// ticket is recorded done on that PR; { call: 'ask', pr, head, question } where a row keeps desk from
+// it, the merge question for the person naming that row.
+export function mergePark(cond, readPr, cfg) {
+  if (cond?.kind !== 'pr-merged') return null;
+  const pr = readPr();
+  if (pr?.state !== 'OPEN' || Number(pr.number) !== Number(cond.pr)) return null;
+  const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
+  if (gate.state !== 'pass' || !cfg.verdict?.(pr)?.clean) return null;
+  const at = String(pr.head ?? '?').slice(0, 9);
+  const said = { pr: pr.number, head: pr.head };
+  const off = [...(cfg.ready === 'yes' ? [] : [`config §3 pr-ready is "${cfg.ready ?? 'unset'}"`]), ...(cfg.merge?.by ? [] : [cfg.merge?.why ?? 'no merge grant was read'])];
+  if (!off.length) return { call: 'done', ...said };
+  return { call: 'ask', ...said, question: `PR #${pr.number} is green at ${at} with a clean review, and desk does not merge it because ${off.join(', and ')}: undraft and merge it on GitHub, or set that row to yes with /desk-setup, and desk merges it; the ticket is then done` };
 }
 
 // A body with `_drag <file>_` cells left and a fenced ```evidence block, where §4 Evidence workflow

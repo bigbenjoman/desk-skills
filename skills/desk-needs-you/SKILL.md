@@ -21,8 +21,9 @@ node ~/.claude/desk/bin/needs-you.mjs list
 node ~/.claude/desk/bin/needs-you.mjs list <repo>
 ```
 
-Use the second form when the user named a repo. If it prints `Nothing needs you…`, say that line
-and stop.
+Use the second form when the user named a repo. `list` first settles what finished outside desk (a
+merged PR, a pushed worktree), a line each: show them. If it then prints `Nothing needs you…`, say
+that line and stop.
 
 Otherwise it prints:
 
@@ -35,8 +36,8 @@ Otherwise it prints:
 <repo> <TICKET> <kind> <waited> | <what is needed> | 1. <action> (recommended: <why>) | 2. <action> | …
 ```
 
-`<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch). Pass it to
-`record` as it is printed.
+`<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch): pass it to
+`record` as printed.
 
 `<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `plan` (an
 epic admitted with `/desk-admit` or by intake: its drafted plan, in the file the need names, waits
@@ -62,8 +63,8 @@ Call `AskUserQuestion` with **at most four questions**, taking items in list ord
 - For `resume`, `answer` and `reject`, the answer text is recorded. Where the question
   offers choices ("A or B?"), make each one an option (`Resume: A (Recommended)`). Otherwise
   the user types it in "Other". A `parked` item has no `answer`: a typed answer to it is a
-  resume, so it never stays parked once answered. A `session` item has none either: once its step
-  is done, `resume` takes what was done and hands it to a worker. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
+  resume, so it never stays parked once answered. A `session` item has none either: offer
+  only the actions its line lists. A `pr` item whose review left gaps offers `answer`: the user's call on each gap, which
   `record` posts on the PR and sends to a worker on it. An open PR's `resume` sends a worker an instruction, unposted.
 - `override <id>` takes the user's choice as its text.
 - A `move` takes the batch's name (`standing` for the standing batch). Moving a ticket to another
@@ -82,21 +83,21 @@ Leave `"<text>"` off for `start`, `requeue`, `fix`, `drop`, `approve`, `not-now`
 line on what it recorded.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
-  answered but not requeued, and desk-q shows it waiting on that session. `SendMessage` that text to the session named `<name>`. If that name is
+  answered but not requeued. `SendMessage` that text to the session named `<name>`. If that name is
   unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
   tell the user to give the message to that repo's session themselves.
-- **`drop`** (a PR closed unmerged): takes the ticket out of its batch (`queue.mjs drop`).
+- **`drop`**: out of its batch, its clean worktree removed (`queue.mjs drop`).
 - **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the
   `/desk-ticket` or `/desk-admit` to run.
 - **`not-now`**: puts it in the not-now register; `list` and `left` hide it until its
-  question, blocker or PR head changes or it gains an action.
+  question, blocker or PR head changes, it gains an action, or 3 or more held tickets wait behind
+  it (listed first, saying how many).
 - **`waiting`**: as `not-now`, until the PR gets an approval or its head moves.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 
 Where the supervisor runs the batch, its next pass picks the answer up.
 
-Never run `queue.mjs`, `answer.mjs` or `digest.mjs` yourself, and never edit a queue: `record` runs
-them against the right repo.
+Never run `queue.mjs`, `answer.mjs` or `digest.mjs` yourself, or edit a queue: `record` does.
 
 ## 4. Until nothing is left
 
@@ -112,5 +113,5 @@ node ~/.claude/desk/bin/needs-you.mjs left
 node ~/.claude/desk/bin/needs-you.mjs left <repo>
 ```
 
-Print its output last. Its first line is the desk-q count still left. A line follows for each repo
-whose passes stopped, saying how to resume them.
+Print its output last: the desk-q count still left, then how to resume each repo whose passes
+stopped.

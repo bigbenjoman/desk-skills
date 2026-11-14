@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # suite: base sync (a batch base's worktree, synced from the default branch before a pass spawns)
-# pass.mjs with a batch base: every pass makes the base its own worktree, and a pass that will spawn
-# first merges main into the base and pushes it. A conflict, a refused push or the §3 batch-base-push
+# pass.mjs with a batch base: every pass makes the base its own worktree, and a pass that will spawn,
+# or finds the base behind main, first merges main into the base and pushes it. A conflict, a refused push or the §3 batch-base-push
 # row pushes nothing and is reported; in feature mode it also holds the spawns. A non-fast-forward
-# push is fetched, merged and retried once. A primary checkout on the base gets no worktree and no
-# sync. Each case has its own throwaway origin; the real pass.mjs runs with stub claude, gh,
+# push is fetched, merged and retried once. The base worktree is detached at origin's base, so a
+# primary checkout or another worktree on the base is left as it is. Each case has its own throwaway origin; the real pass.mjs runs with stub claude, gh,
 # setup-worktree and spawn-worker. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -17,7 +17,7 @@ git config --global init.defaultBranch main
 # An autopilot worker inherits spawn-worker's exports, which would point this suite at the real repo.
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR AUTOPILOT_BATCH_BUDGET_USD \
-  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE
+  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -104,14 +104,16 @@ check "no base: a pass spawns as before"              '[[ "$out" == *"spawned: T
 check "no base: no base worktree is made"            '[ -z "$(ls "$C/wt" | grep base-)" ]'
 check "no base: no sync is attempted"                '[[ "$out" != *"base sync"* ]]'
 
-# AC1, AC3: the first pass makes the base worktree; a pass that spawns nothing does not sync.
-fresh idle; node "$B/queue.mjs" set T-1 state=done >/dev/null; tip=$(origin_tip); pass
-check "the first pass makes the base worktree"       "[ \"\$(git -C $BWT symbolic-ref --short HEAD)\" = feat/x ]"
-check "it is a worktree of the primary checkout"     'git -C "$C/repo" worktree list | grep -q "base-feat-x .*\[feat/x\]"'
+# AC1, AC3: the first pass makes the base worktree. DS-542 AC1: a pass that spawns nothing still syncs a
+# base behind main, and a later one, with the base current, says nothing about it.
+fresh idle; node "$B/queue.mjs" set T-1 state=done >/dev/null; pass
+check "DS-594 the first pass makes the base worktree on a detached HEAD at origin's base" "! git -C $BWT symbolic-ref -q HEAD && [ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$(origin_tip)\" ]"
+check "it is a worktree of the primary checkout"     'git -C "$C/repo" worktree list | grep -q "base-feat-x .*(detached HEAD)"'
 check "the report says it was made"                  '[[ "$out" == *"base worktree for feat/x made at $C/wt/base-feat-x"* ]]'
-check "a pass that spawns nothing does not sync"     '[ "$(origin_tip)" = "$tip" ] && [[ "$out" != *"base sync"* ]]'
-pass
-check "a second pass keeps the worktree, quietly"    '[[ "$out" != *"base worktree"* ]] && [ -d "$C/wt/base-feat-x" ]'
+check "DS-542 AC1 a pass that spawns nothing syncs a base behind main" 'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"spawned:"* ]]'
+tip=$(origin_tip); pass
+check "DS-594 AC4 a second pass reuses the detached worktree, quietly" '[[ "$out" != *"base worktree"* ]] && [ -d "$C/wt/base-feat-x" ] && [ "$(git -C "$C/repo" worktree list | grep -c base-feat-x)" = 1 ]'
+check "DS-542 a current base on a pass that spawns nothing is left, quietly" '[ "$(origin_tip)" = "$tip" ] && [[ "$out" != *"base sync"* ]]'
 
 # AC2: a base behind main that merges cleanly is merged, pushed and counted before the spawn.
 fresh clean; pass
@@ -150,7 +152,7 @@ rm -f "$T/agents.json"; : > "$T/spawns"
 fresh bfix; feature; fixrow yes; conflict; tip=$(origin_tip); pass
 check "DS-320 AC1 a pass that would spawn starts a conflict fix worker for the base" \
   '[[ "$out" == *"base-feat-x port="*"(conflict fix try 1 of 2 on feat/x)"* ]] && grep -q "^base-feat-x $C/wt/base-feat-x feat/x .*Your task is conflict fix try 1 of 2 on feat/x" "$T/spawns"'
-check "DS-320 AC1 it is told to merge, never rebase, and to push the base" 'grep -q "merge origin/main into feat/x (git merge, never a rebase or a force push)" "$T/spawns" && grep -q "git push origin feat/x" "$T/spawns"'
+check "DS-320 AC1 it is told to merge, never rebase, and to push the base" 'grep -q "merge origin/main into feat/x (git merge, never a rebase or a force push)" "$T/spawns" && grep -q "git push origin HEAD:refs/heads/feat/x" "$T/spawns" && grep -q "on a detached HEAD at origin/feat/x: never check feat/x out" "$T/spawns"'
 check "DS-320 AC1 and the conflict is not put to the person" '[[ "$out" != *"by hand"* ]] && [ $rc -ne 11 ]'
 check "DS-320 AC1 feature mode: nothing else spawns until the base is synced" '[ "$(grep -c "^T-1 " "$T/spawns")" = 0 ] && [[ "$out" == *"Conflict fix try 1 of 2 starts this pass"* ]]'
 check "DS-320 AC1 the try is kept on the queue, with its files" \
@@ -329,6 +331,101 @@ pass
 check "DS-339 a base fix try moves an earlier try's resume file and handoff aside" \
   'grep -q "^base-feat-x " "$T/spawns" && [ ! -e "$C/state/resume/base-feat-x.json" ] && [ -e "$C/state/resume/base-feat-x.json.old" ] && [ ! -e "$C/state/handoffs/base-feat-x.json" ]'
 
+# DS-521: with more than one login, a base worker try (a conflict fix or an epic PR review) whose
+# session exited at one login's limit carries on as a fresh session on another, in the base worktree,
+# as the same try. logins <names>: the subscriptions file lists each (`default` is ~/.claude, `b` is
+# ~/.claude-logins/b), all in rotation. A folder listed in $LIM, as `<folder> <reset>`, is at its
+# limit: its preflight and its probe are refused. The spawn line records the login it was given.
+LB="$HOME/.claude-logins/b"; LD="$HOME/.claude"; LIM="$T/limited"
+mkdir -p "$LD" "$T/usage"
+export DESK_USAGE_DIR="$T/usage"
+# Only the listed logins' folders exist: a folder under ~/.claude-logins is a login whether listed or not.
+logins(){
+  rm -rf "$HOME/.claude-logins"
+  printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n' > "$T/subs.md"
+  # The table holds a literal ~ as a user's does, for the reader to expand.
+  # shellcheck disable=SC2088
+  for n in "$@"; do [ "$n" = default ] || mkdir -p "$HOME/.claude-logins/$n"; printf '| `claude` | `%s` | `%s` | `in rotation` |\n' "$n" "$([ "$n" = default ] && echo '~/.claude' || echo "~/.claude-logins/$n")" >> "$T/subs.md"; done
+  export DESK_SUBSCRIPTIONS="$T/subs.md"
+}
+cat > "$T/stub/claude" <<EOF
+#!/bin/sh
+d="\${CLAUDE_CONFIG_DIR:-$LD}"
+case "\$1" in
+  auth) printf '{"loggedIn":true,"email":"%s@example.com"}\n' "\$(basename "\$d")" ;;
+  -p) r=\$(grep -F "\$d " "$LIM" 2>/dev/null | head -n 1 | cut -d' ' -f2)
+    if [ -n "\$r" ]; then printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":%s}}\n' "\$r"; echo '{"type":"result","is_error":true}'; exit 1; fi
+    echo '{"type":"result","is_error":false}' ;;
+  *) cat "$T/agents.json" 2>/dev/null || echo "[]" ;;
+esac
+EOF
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+ld="\${AUTOPILOT_LOGIN_DIR:-$LD}"
+if [ "\$3" = preflight ]; then if grep -qF "\$ld " "$LIM" 2>/dev/null; then echo "[preflight] usage-limit: the account is at its usage limit"; else echo "[preflight] pass"; fi
+else echo "\$1 \$2 login=\${AUTOPILOT_LOGIN_DIR-unset} \${AUTOPILOT_TASK:-}\${AUTOPILOT_RESUME:+RESUME session=\$3}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
+EOF
+# A try of each kind, as base_fix records it, running as session sid-old.
+TRY_conflict='{"try":1,"head":"abc","source":"def","files":["a.txt"],"at":"2026-11-09T00:00:00Z","session":"sid-old"}'
+TRY_review='{"kind":"review","try":1,"head":"abc","pr":300,"at":"2026-11-09T00:00:00Z","session":"sid-old"}'
+WHAT_conflict='conflict fix try 1 of 2 on feat/x'; WHAT_review='epic PR review try 1 of 2 on feat/x, PR #300'
+TASK_conflict='Your task is conflict fix try 1 of 2 on feat/x'; TASK_review='It is epic PR #300'
+HEAD_conflict='## Base conflict fix try 1 of 2: feat/x'; HEAD_review='## Epic PR review try 1 of 2: #300'
+# stopped <case> <kind> [login folder]: the try's session, on login b unless given, exited at that
+# login's 5-hour limit, an hour off, in the base worktree on feat/x.
+stopped(){
+  : > "$T/spawns"; rm -f "$T/agents.json"; fresh "$1"; feature; fixrow yes
+  git -C "$C/repo" fetch -q origin; git -C "$C/repo" worktree add -q --track -b feat/x "$C/wt/base-feat-x" origin/feat/x
+  local try="TRY_$2"
+  node "$B/queue.mjs" set-batch "base_fix={\"tries\":[${!try}],\"running\":\"sid-old\",\"port\":3510}" >/dev/null
+  mkdir -p "$C/state/logs" "$C/state/workers"
+  local on=${3:-$LB}
+  [ "$on" = "$LD" ] || printf '{"login":"b","config_dir":"%s"}\n' "$on" > "$C/state/workers/base-feat-x.login.json"
+  limit_event "$(( $(date +%s) + 3600 ))"; age_log
+  echo "$on $(( $(date +%s) + 3600 ))" > "$LIM"
+}
+bench_default(){ node "$B/queue.mjs" set-batch "benched={\"default\":{\"login\":\"default\",\"config_dir\":null,\"type\":\"five_hour\",\"resets_at\":$(( $(date +%s) + 7200 )),\"since\":\"2026-11-09T00:00:00Z\",\"by\":\"T-9\"}}" >/dev/null; echo "$LD $(( $(date +%s) + 7200 ))" >> "$LIM"; }
+for kind in conflict review; do
+  what="WHAT_$kind"; task="TASK_$kind"; head="HEAD_$kind"; what=${!what}; task=${!task}; head=${!head}
+  # AC1, AC2: login b at its limit, the default login with room.
+  logins default b; stopped "m1$kind" "$kind"; pass
+  check "DS-521 AC1 $kind: a fresh session carries on the try on the other login, in the base worktree" \
+    '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && grep -q "^base-feat-x $C/wt/base-feat-x login=unset .*$task" "$T/spawns" && ! grep -q RESUME "$T/spawns" && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" != sid-old ]'
+  check "DS-521 AC1 $kind: its briefing says it moved logins, with the try's own brief" \
+    'grep -q "^## Moved logins: this session starts its task again" "$C/state/briefings/base-feat-x.md" && grep -q "stopped at the 5-hour usage limit on login b" "$C/state/briefings/base-feat-x.md" && grep -qF "$head" "$C/state/briefings/base-feat-x.md"'
+  check "DS-521 AC1 $kind: the base fix record names the login, and b stays benched" \
+    '[ "$(jq -r .base_fix.login.name "$DESK_QUEUE")" = default ] && [ "$(jq -r ".benched.b.login" "$DESK_QUEUE")" = b ]'
+  check "DS-521 AC1 $kind: the pass report says it moved logins" \
+    '[[ "$out" == *"base-feat-x port="*" login=default ($what), moved logins from b, at the 5-hour usage limit;"* ]]'
+  check "DS-521 AC2 $kind: the move is not a try, and the try number stays the same" \
+    '[ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r ".base_fix.tries[0].try" "$DESK_QUEUE")" = 1 ] && [ "$(jq -r ".base_fix.tries[0].session" "$DESK_QUEUE")" = "$(jq -r .base_fix.running "$DESK_QUEUE")" ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ]'
+  # AC3: uncommitted changes in the base worktree stay, and the briefing names them.
+  logins default b; stopped "m3$kind" "$kind"; echo half > "$C/wt/base-feat-x/a.txt"; echo new > "$C/wt/base-feat-x/new.txt"; pass
+  check "DS-521 AC3 $kind: the worktree keeps the changes" '[ "$(cat "$C/wt/base-feat-x/a.txt")$(cat "$C/wt/base-feat-x/new.txt")" = halfnew ]'
+  check "DS-521 AC3 $kind: the briefing and the report say they are there" \
+    'grep -q "^### Uncommitted changes in your worktree" "$C/state/briefings/base-feat-x.md" && grep -qF -- "- \` M a.txt\`" "$C/state/briefings/base-feat-x.md" && grep -qF -- "- \`?? new.txt\`" "$C/state/briefings/base-feat-x.md" && [[ "$out" == *"keeping 2 uncommitted change(s)"* ]]'
+  # AC4: every other login benched. It waits on its own, then resumes its own session there once b is back.
+  logins default b; stopped "m4$kind" "$kind"; bench_default; pass
+  check "DS-521 AC4 $kind: with every other login benched it waits on its own" \
+    '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r ".benched | keys | join(\",\")" "$DESK_QUEUE")" = b,default ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
+  echo "$LD $(( $(date +%s) + 7200 ))" > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
+  check "DS-521 AC4 $kind: once b is back it resumes its own session there, as today" \
+    'grep -q "^base-feat-x $C/wt/base-feat-x login=$LB .*RESUME session=sid-old" "$T/spawns" && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r ".base_fix.tries | length" "$DESK_QUEUE")" = 1 ]'
+  # The login it would move to is refused at its preflight: it goes back to waiting on its own.
+  logins default b; stopped "m6$kind" "$kind"; echo "$LD $(( $(date +%s) + 7200 ))" >> "$LIM"; pass
+  check "DS-521 $kind: a move refused on the other login waits on its own, with no try ended" \
+    '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r ".base_fix.tries[0].outcome" "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x: not moved off login b, as login default was refused at the limit too"* ]]'
+  # AC5: one login. It is held and resumed exactly as today.
+  logins default; stopped "m5$kind" "$kind" "$LD"; pass
+  check "DS-521 AC5 $kind: one login: it waits, nothing benched or moved" \
+    '[ ! -s "$T/spawns" ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = sid-old ] && [ "$(jq -r .benched "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
+  : > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
+  check "DS-521 AC5 $kind: one login: once the limit lifts it resumes its own session" 'grep -q "^base-feat-x .* login=unset .*RESUME session=sid-old" "$T/spawns"'
+done
+unset DESK_SUBSCRIPTIONS; rm -f "$LIM"; probe_off
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \$2 \${AUTOPILOT_BRANCH:-} \${AUTOPILOT_TASK:-}\${AUTOPILOT_RESUME:+RESUME session=\$3 \$AUTOPILOT_RESUME}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
+EOF
+
 # An ordinary batch plan-batch seeded while feature.json still names the epic and a spine (here §4
 # Acceptance specs is unset, so feature mode is off): a failed sync holds no spawns.
 fresh planned; conflict; node "$B/queue.mjs" set-batch epic=E-1 >/dev/null; node "$B/queue.mjs" drop T-1 >/dev/null
@@ -402,13 +499,31 @@ fresh race; git clone -q "$C/origin.git" "$C/other"; git -C "$C/other" switch -q
 check "a non-fast-forward push is retried and lands" 'origin_has_main && git -C "$C/origin.git" log --format=%s feat/x | grep -qx "merged by the driver"'
 check "the report says it retried"                   '[[ "$out" == *"fetched, merged again, retried once"* ]] && [[ "$out" == *"spawned: T-1"* ]]'
 
-# AC8: a primary checkout on the base gets no worktree and no sync.
-fresh primary; git -C "$C/repo" switch -q feat/x; tip=$(origin_tip); pass
-check "primary on the base: no base worktree"        '[ ! -e "$C/wt/base-feat-x" ]'
-check "and no sync"                                   '[ "$(origin_tip)" = "$tip" ]'
-check "and the report says to switch it off"         '[[ "$out" == *"switch the primary checkout off feat/x"* ]]'
-node "$B/queue.mjs" set T-1 state=done >/dev/null; pass
-check "it is reported even on a pass that spawns nothing" '[[ "$out" == *"switch the primary checkout off feat/x"* ]]'
+# DS-594 AC3: a primary checkout on the base gets a detached base worktree and a sync, and is left as it was.
+fresh primary; git -C "$C/repo" switch -q feat/x; echo mine > "$C/repo/local.txt"; head=$(git -C "$C/repo" rev-parse HEAD); pass
+check "DS-594 AC3 primary on the base: a detached base worktree is made" "[ -d $BWT ] && ! git -C $BWT symbolic-ref -q HEAD"
+check "DS-594 AC3 and the base is synced"             'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"switch the primary checkout off"* ]]'
+check "DS-594 AC3 the primary checkout's branch and files are unchanged" \
+  '[ "$(git -C "$C/repo" symbolic-ref --short HEAD)" = feat/x ] && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$head" ] && [ "$(cat "$C/repo/local.txt")" = mine ] && [ "$(git -C "$C/repo" status --porcelain)" = "?? local.txt" ]'
+
+# DS-594 AC1: another worktree holding the base leaves it as it is, and a detached base worktree syncs.
+fresh holder; git -C "$C/repo" fetch -q origin; git -C "$C/repo" worktree add -q --track -b feat/x "$C/wt/T-9" origin/feat/x
+head=$(git -C "$C/wt/T-9" rev-parse HEAD); pass
+check "DS-594 AC1 another worktree on the base: a detached base worktree is made at origin's base" \
+  "[ -d $BWT ] && ! git -C $BWT symbolic-ref -q HEAD && [[ \"\$out\" == *\"base worktree for feat/x made at \$C/wt/base-feat-x\"* ]]"
+check "DS-594 AC1 and the pass reports the base synced" 'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"is checked out in"* ]]'
+check "DS-594 AC1 the other worktree is left on the base, where it was" '[ "$(git -C "$C/wt/T-9" symbolic-ref --short HEAD)" = feat/x ] && [ "$(git -C "$C/wt/T-9" rev-parse HEAD)" = "$head" ]'
+
+# DS-594 AC5: a detached base worktree with uncommitted changes pushes nothing and says so.
+fresh dirty; node "$B/queue.mjs" set T-1 state=done >/dev/null; pass; tip=$(origin_tip)
+git -C "$C/repo" commit -q --allow-empty -m three; git -C "$C/repo" push -q origin main; echo stray > "$C/wt/base-feat-x/stray.txt"; pass
+check "DS-594 AC5 uncommitted changes in a detached base worktree: nothing is pushed" '[ "$(origin_tip)" = "$tip" ]'
+check "DS-594 AC5 and the report names them" '[[ "$out" == *"the base worktree $C/wt/base-feat-x has uncommitted changes"* ]]'
+
+# A base worktree an earlier pass made on the branch itself is still reused.
+fresh legacy; git -C "$C/repo" fetch -q origin; git -C "$C/repo" worktree add -q --track -b feat/x "$C/wt/base-feat-x" origin/feat/x; pass
+check "DS-594 a base worktree on the branch from an earlier pass is reused and synced" \
+  '[[ "$out" != *"base worktree for feat/x made"* ]] && [ "$(git -C "$C/wt/base-feat-x" symbolic-ref --short HEAD)" = feat/x ] && origin_has_main'
 
 # Baseline checks: tc.sh stands in for §4 Typecheck, printing errors.txt as tsc would and failing when it
 # holds any error. baseline <case> [on|off] [base]: fresh, with that row and the toolchain rows set.
@@ -498,15 +613,18 @@ exit 0
 EOF
 chmod +x "$T/stub/gh"
 reopens(){ grep -c "^pr reopen 801" "$T/ghlog" 2>/dev/null || true; }
-fresh stale416; echo "[main, 'feat/**']" > "$T/mainwf"
+# A base behind main syncs on any pass (DS-542), so these bases start current with main, and main moves
+# on only after the pass that reads the PR.
+current(){ git -C "$C/repo" push -q origin main:feat/x; }
+mainmoves(){ git -C "$C/repo" commit -q --allow-empty -m three; git -C "$C/repo" commit -q --allow-empty -m four; git -C "$C/repo" push -q origin main; }
+fresh stale416; current; echo "[main, 'feat/**']" > "$T/mainwf"
 printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
 node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
-echo '[main]' > "$T/basewf"; echo b1 > "$T/bhead"; : > "$T/ghlog"; tip=$(origin_tip); pass
+echo '[main]' > "$T/basewf"; echo b1 > "$T/bhead"; : > "$T/ghlog"; pass
 check "DS-416 the PR's check only main's workflow runs on the base is recorded as behind" \
   '[ "$(jq -r ".tickets[\"T-1\"].pr_status.behind.tests" "$DESK_QUEUE")" != null ] && [ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered" "$DESK_QUEUE")" = null ] && [ "$(reopens)" = 0 ]'
-check "DS-416 nothing synced before the pass that read it" '[ "$(origin_tip)" = "$tip" ]'
 # The sync brings main's trigger to the base, which gh's base copy stands in for.
-echo "[main, 'feat/**']" > "$T/basewf"; pass
+echo "[main, 'feat/**']" > "$T/basewf"; mainmoves; pass
 check "DS-416 AC2 with nothing to spawn, the base syncs for the PR's CI" 'origin_has_main && [[ "$out" == *"merged 2 commit(s) from main into feat/x and pushed; PR #801 is reopened so CI runs"* ]] && [[ "$out" != *"spawned:"* ]]'
 check "DS-416 AC4 the PR is closed and reopened, and the base head recorded" \
   'grep -q "^pr close 801" "$T/ghlog" && [ "$(reopens)" = 1 ] && [ "$(jq -r .reopened_at "$DESK_QUEUE")" = b1 ] && [[ "$out" == *"closed and reopened PR #801 (T-1)"* ]]'
@@ -530,11 +648,11 @@ check "DS-416 the next pass reads the closed PR again and reopens it without clo
   '[ "$(cat "$T/prstate")" = OPEN ] && [ "$(closes)" = "$c" ] && [ "$(jq -r ".tickets[\"T-1\"].reopening" "$DESK_QUEUE")" = null ] && [[ "$out" == *"closed and reopened PR #801 (T-1)"* ]]'
 c=$(closes); r=$(reopens); pass
 check "DS-416 once reopened, the same base head does not close it again" '[ "$(closes)" = "$c" ] && [ "$(reopens)" = "$r" ]'
-fresh trig416 yes; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
+fresh trig416 yes; current; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n' >> "$C/config.md"
 node "$B/queue.mjs" set T-1 state=done result.pr=801 >/dev/null
-echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; tip=$(origin_tip); pass; pass
-check "DS-416 AC5 a check main's workflow does not run on the base either is untriggered: no sync, no reopen" \
-  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered.tests" "$DESK_QUEUE")" != null ] && [ "$(origin_tip)" = "$tip" ] && [ "$(reopens)" = 0 ]'
+echo '[main]' > "$T/basewf"; echo '[main]' > "$T/mainwf"; : > "$T/ghlog"; pass; mainmoves; pass
+check "DS-416 AC5 a check main's workflow does not run on the base either is untriggered: the behind base syncs, no reopen" \
+  '[ "$(jq -r ".tickets[\"T-1\"].pr_status.untriggered.tests" "$DESK_QUEUE")" != null ] && origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x"* ]] && [[ "$out" != *"is reopened so CI runs"* ]] && [ "$(reopens)" = 0 ]'
 
 # DS-508: an epic batch not in feature mode lands its base through one epic PR, opened once every child
 # has merged. gh serves each PR from $T/ep/<n>.json and its GraphQL review read from $T/ep/<n>.graphql;
@@ -699,5 +817,39 @@ epicbeside efull '1 / 1'
 check "DS-520 AC3 with the §3b cap full, the review waits" '! grep -q "^base-feat-x " "$T/spawns" && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
 check "DS-520 AC3 and the pass says why" '[[ "$out" == *"epic PR #300: review try 1 of 2 starts once a worker may (none may this pass: repo workers: 1 of the §3b cap of 1 running"* ]]'
 rm -f "$SIB"
+
+# DS-542: parks waiting on "base contains main", in a batch that spawns nothing (every ticket held).
+# waitpark <KEY> <question>: a lane A ticket parked on the base containing main.
+waitpark(){ node "$B/queue.mjs" add "$1" Story A >/dev/null; node "$B/queue.mjs" park "$1" "$2" >/dev/null; node "$B/queue.mjs" clears-when "$1" "base contains main" >/dev/null; }
+Q1="requeue me once the hotfix is on main and main has been merged into feat/x"
+Q2="requeue me once main is merged into feat/x, then build the image"
+fresh bparks; node "$B/queue.mjs" set-batch concurrency=0 >/dev/null; node "$B/queue.mjs" set T-1 state=done >/dev/null
+waitpark W-1 "$Q1"; waitpark W-2 "$Q2"; node "$B/not-now.mjs" add W-2 "$Q2" >/dev/null 2>&1
+put_off(){ node "$B/not-now.mjs" check "$1" >/dev/null 2>&1; [ $? -eq 3 ]; }
+check "DS-542 a put-off park starts in the not-now register" 'put_off "$Q2"'
+pass
+check "DS-542 AC1 with nothing to spawn, main is merged into the base and pushed" 'origin_has_main && [[ "$out" == *"base sync: merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"spawned:"* ]]'
+check "DS-542 AC2 the park on the base containing main is requeued in the same pass, naming the condition" \
+  '[ "$(jq -r ".tickets[\"W-1\"].state" "$DESK_QUEUE")" = triaged ] && [[ "$out" == *"W-1: \"the batch base contains main\" holds: requeued"* ]]'
+check "DS-542 AC2 the next worker is told what cleared it" '[ "$(jq -r ".tickets[\"W-1\"].cleared.what" "$DESK_QUEUE")" = "the batch base contains main" ]'
+check "DS-542 AC3 a put-off one is requeued and its not-now entry lifted" \
+  '[ "$(jq -r ".tickets[\"W-2\"].state" "$DESK_QUEUE")" = triaged ] && [[ "$out" == *"W-2: \"the batch base contains main\" holds: requeued, its not-now entry lifted"* ]] && ! put_off "$Q2"'
+
+fresh bparkconflict; conflict; node "$B/queue.mjs" set-batch concurrency=0 >/dev/null; node "$B/queue.mjs" set T-1 state=done >/dev/null
+waitpark W-3 "$Q1"; tip=$(origin_tip); pass
+check "DS-542 AC4 a conflicting sync leaves the park" '[ "$(jq -r ".tickets[\"W-3\"].state" "$DESK_QUEUE")" = parked ]'
+check "DS-542 AC4 the merge is aborted: nothing pushed, the base worktree clean" "[ \"\$(origin_tip)\" = \"\$tip\" ] && [ -z \"\$(git -C $BWT status --porcelain)\" ]"
+check "DS-542 AC4 the pass says why the base did not sync, on the base and on the park" \
+  '[[ "$out" == *"base sync: merging main into feat/x conflicts, nothing pushed. Conflicting files: a.txt"* ]] && [[ "$out" == *"W-3: waiting on \"the batch base contains main\" (feat/x is 3 commit(s) behind main, and the base did not sync this pass: merging main into feat/x conflicts"*"): left parked"* ]]'
+
+# DS-594 AC2: an epic batch whose base another worktree holds still opens its epic PR once every child
+# has merged (the DS-508 gh stub above serves it).
+fresh epic594; epicrows; rm -f "$T/ep"/*; : > "$T/ghlog"
+git -C "$C/repo" fetch -q origin; git -C "$C/repo" worktree add -q --track -b feat/x "$C/wt/T-9" origin/feat/x
+node "$B/queue.mjs" set-batch epic=E-8 feature=false >/dev/null
+node "$B/queue.mjs" set T-1 state=done result.pr=801 merged_at=2026-11-06T10:00:00Z >/dev/null
+echo '{"state":"MERGED","mergedAt":"2026-11-06T10:00:00Z"}' > "$T/ep/801.json"; pass
+check "DS-594 AC2 with the base held in another worktree, the PR from the base to main is opened" \
+  'grep -q "^pr create --repo acme/widgets --draft --base main --head feat/x --title E-8: promote feat/x to main" "$T/ghlog" && [ "$(jq -r .promotion.pr "$DESK_QUEUE")" = 300 ] && [[ "$out" != *"is checked out in"* ]]'
 
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]

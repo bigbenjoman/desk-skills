@@ -13,15 +13,19 @@
 //
 // The supervisor runs the archive check for each named batch on every tick. A batch is archived once
 // its last promotion PR is merged, or its promotion PR is closed, no ticket runs, no ticket PR is open, and no pass, merge driver
-// or queue write holds it. A ticket PR still open then is the person's to merge or close, never desk's:
-// it goes to the check-in digest, handed on as kind `archive` until it is merged or closed.
-import { existsSync, mkdirSync, renameSync, rmSync, realpathSync } from 'node:fs';
+// or queue write holds it. A merge driver still running then has nothing left to merge, so the check
+// stops it, and a later tick archives the batch once it has exited. A ticket PR still open then is the person's to merge or close, never desk's:
+// it goes to the check-in digest, handed on as kind `archive` until it is merged or closed. A ticket left
+// in the batch, not done and not running, is moved to the standing batch first when a merged last
+// promotion leaves it ready to run, and otherwise parked and handed on the same way, holding the
+// archive until it is moved or dropped.
+import { existsSync, mkdirSync, renameSync, rmSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readQueue, EXIT, crashShowsPerson, describeCrash } from './batch-state.mjs';
-import { listBatches, finished, prState, prMergedAt, lastPromotion, orchestratorHolder, supervisorHolder } from './batches.mjs';
+import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX } from './batch-state.mjs';
+import { listBatches, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
 
@@ -144,25 +148,33 @@ function moveDone(dir, at) {
 
 // The archive check for one named batch {name, queue, state}. -> {archived, lines, log}: `lines` go in
 // the batch's own log, `log` in the standing batch's, since an archived batch's own log moves with it.
-export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date() } = {}) {
+// `stopped` is set when the check told the batch's merge driver to stop, and the batch waits for it to exit.
+export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date(), move = moveToStanding, park = parkIn, stop = (pid) => process.kill(pid, 'SIGTERM') } = {}) {
   const none = { archived: false, lines: [], log: [] };
   if (!b?.name) return none;
   let q;
   try { q = readQueue(b.queue); } catch { return none; /* the tick says the queue is unreadable */ }
   const p = q.promotion?.pr;
   const ps = p != null ? state(p) : null;
+  const rows = Object.values(q.tickets ?? {});
+  // Left behind: not done, not running, never merged. A ticket admitted after the last promotion
+  // merged is one; a pass that saw that merge recorded it as the last (lastPromotionRecorded).
+  const left = rows.filter((t) => !['done', 'running'].includes(t.state) && !t.merged_at);
+  const kept = rows.filter((t) => !left.includes(t));
   // A merged promotion ends the batch only when it was the last slice, as pass.mjs nextPromotion
   // decides; an earlier merged slice is followed by the next one. It is decided here too, since no
   // pass runs for a batch that went idle before its last promotion merged.
-  const last = ps === 'MERGED' && lastPromotion(q.tickets, mergedAt(p));
+  const last = ps === 'MERGED' && (lastPromotion(q.tickets, mergedAt(p))
+    || (lastPromotionRecorded(q) && lastPromotion(Object.fromEntries(kept.map((t) => [t.key, t])), mergedAt(p))));
   const shut = last || ps === 'CLOSED';
   // Only open ticket PRs of a shut promotion stay handed on: one merged or closed since goes.
-  const rows = Object.values(q.tickets ?? {});
   const openPrs = shut ? rows.filter((t) => t.result?.pr != null && !['MERGED', 'CLOSED'].includes(state(t.result.pr))) : [];
   const items = openPrs.map((t) => ({ item: { id: `archive:${b.name}:${t.key}:${t.result.pr}`, ticket: t.key, kind: 'archive',
     text: `PR #${t.result.pr} into ${q.base ?? 'the feature branch'} is still open, and batch ${b.name}'s promotion PR #${p} is ${ps.toLowerCase()}: merge or close it, and the batch is archived once no ticket PR is open` },
   why: 'desk never closes an epic\'s ticket PRs', pr: t.result.pr }));
-  const lines = dropArchiveItems(b.state, new Set(items.map((i) => i.item.id)));
+  // A left-behind ticket's item stays while the ticket is still in the batch.
+  const leftId = (t) => `archive:${b.name}:${t.key}:left`;
+  const lines = dropArchiveItems(b.state, new Set([...items.map((i) => i.item.id), ...left.map(leftId)]));
   if (!shut || rows.some((t) => t.state === 'running')) return { ...none, lines };
   if (items.length) {
     const added = existsSync(b.state) ? handItems(b.state, items, now) : [];
@@ -170,11 +182,74 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
     return { ...none, lines };
   }
   const busy = holder(b);
+  // A shut batch leaves its merge driver nothing to merge, so it is stopped; a driver mid-merge finishes
+  // that merge first. The archive waits for the lock to go, on a later tick.
+  const driver = busy === 'its merge driver' ? E.mergeDriverHolder(b.state) : null;
+  if (typeof driver === 'number') {
+    const told = readStopped(b.state);
+    if (told?.pid === driver) return { ...none, stopped: true, lines: [...lines, `archive: batch ${b.name} is ready to archive; its merge driver (pid ${driver}) was told to stop at ${told.at} and has not exited yet, so the next tick tries again`] };
+    try { stop(driver); } catch (e) {
+      if (e.code !== 'ESRCH') return { ...none, lines: [...lines, `archive: batch ${b.name} is ready to archive, but its merge driver (pid ${driver}) could not be stopped (${e.code ?? e.message}); the next tick tries again`] };
+    }
+    writeFileSync(join(b.state, STOPPED), `${JSON.stringify({ pid: driver, at: now.toISOString() })}\n`);
+    return { ...none, stopped: true, lines: [...lines, `archive: batch ${b.name} is ready to archive: its merge driver (pid ${driver}) has nothing left to merge, so it was told to stop; the batch is archived once it has exited`] };
+  }
   if (busy) return { ...none, lines: [...lines, `archive: batch ${b.name} is ready to archive, but ${busy} holds it; the next tick tries again`] };
+  // A left-behind ticket must not run here again. After the last promotion merged, one ready to run moves
+  // to the standing batch. Any other is the person's: after a closed promotion (the epic abandoned), a
+  // park or a hold the move would not carry over (queue.mjs transfer re-admits from the triage record),
+  // or a refused move. Each is parked under the archive's own question as it is handed, its earlier park
+  // kept in the text: a pass releases a hold, a clears-when or a recommended take with no person, and
+  // would start it in the finished batch.
+  const moved = [];
+  const stay = [];
+  for (const t of left) {
+    const ready = ['triaged', 'queued'].includes(t.state) && !t.held_by && !t.held_outside;
+    const why = ps === 'CLOSED' ? `batch ${b.name}'s promotion PR #${p} was closed, so its epic may be abandoned`
+      : !ready ? `it is ${t.state}${t.held_outside ? `, held behind ${String(t.held_outside).split('|').join(', ')} outside every batch` : t.held_by ? `, held behind ${String(t.held_by).split('|').join(', ')}` : ''}, which a move would not carry over`
+        : move(b, t.key);
+    if (why) stay.push({ t, why }); else moved.push(t.key);
+  }
+  const movedText = moved.length ? `moved ${moved.join(', ')} to the standing batch, ` : '';
+  if (stay.length) {
+    // batch-state.mjs leftPark reads LEFT_PREFIX, so requeue, clears-when, the decider and a pass leave it to the person.
+    const leftPrefix = `${LEFT_PREFIX}${b.name} after its promotion PR #${p} `;
+    for (const { t, why } of stay) {
+      const was = String(t.park?.question ?? '');
+      if (!['triaged', 'queued', 'parked'].includes(t.state) || was.startsWith(leftPrefix)) continue;
+      const r = park(b, t.key, `${leftPrefix}${ps.toLowerCase()}, and not moved to the standing batch (${why})${was ? `; it was parked: ${was}` : ''}`);
+      if (r) lines.push(`archive: ${t.key} in batch ${b.name} could not be parked (${r}): a pass may start it`);
+    }
+    const handed = stay.map(({ t, why }) => ({ item: { id: leftId(t), ticket: t.key, kind: 'archive',
+      text: `${t.key} is ${t.state} in batch ${b.name}, whose promotion PR #${p} is ${ps.toLowerCase()}, and was not moved to the standing batch (${why}): move it (node queue.mjs --batch ${b.name} transfer ${t.key} standing) or drop it, and the batch is archived once no ticket is left in it` },
+    why: 'a ticket left in a finished feature batch never runs there' }));
+    const added = existsSync(b.state) ? handItems(b.state, handed, now) : [];
+    if (moved.length || added.length) {
+      lines.push(`archive: batch ${b.name} ${movedText}${added.length ? `waits on ${added.map((x) => x.item.ticket).join(', ')}, left in it and handed to the digest` : 'and waits on the tickets still left in it'}`);
+    }
+    return { ...none, lines };
+  }
+  const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);
   const s2 = moveDone(b.state, now);
-  return { archived: true, lines: [], log: [`batch ${b.name} archived: its promotion PR #${p} is ${ps.toLowerCase()} and no ticket runs or has a PR open; moved ${dirname(b.queue)} to ${q2}${s2 ? ` and ${b.state} to ${s2}` : ''}`] };
+  const stoppedText = told ? `; its merge driver (pid ${told.pid}) was stopped for it at ${told.at}, since it had nothing left to merge` : '';
+  return { archived: true, lines: [], log: [`batch ${b.name} archived: its promotion PR #${p} is ${ps.toLowerCase()} and no ticket runs or has a PR open${stoppedText}; ${movedText}moved ${dirname(b.queue)} to ${q2}${s2 ? ` and ${b.state} to ${s2}` : ''}`] };
 }
+
+// <state>/archive-driver-stopped.json: the merge driver the archive check told to stop, {pid, at}.
+const STOPPED = 'archive-driver-stopped.json';
+function readStopped(state) {
+  try { const v = JSON.parse(readFileSync(join(state, STOPPED), 'utf8')); return Number.isInteger(v?.pid) ? v : null; } catch { return null; }
+}
+
+// Runs queue.mjs `args` against named batch `b`. -> null, or why it failed.
+function queueIn(b, args) {
+  const r = spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { env: batchEnv(b), encoding: 'utf8' });
+  return r.status === 0 ? null : (`${r.stderr}${r.stdout}`.trim().replace(/^queue: /, '').split('\n')[0] || `queue.mjs ${args[0]} exited ${r.status}`);
+}
+// Moves `key` from named batch `b` to the standing batch (queue.mjs transfer). -> null, or why not.
+const moveToStanding = (b, key) => queueIn(b, ['transfer', key, 'standing']);
+const parkIn = (b, key, question) => queueIn(b, ['park', key, question]);
 
 // Drops this batch's archive items no longer open. -> report lines.
 function dropArchiveItems(state, keep) {

@@ -46,6 +46,8 @@
 //   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
 //                                             the args named one, then DESK_ARGS=( the args without it )
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
+//   node desk-env.mjs git-author              print §1 Git author name / email as NAME<TAB>EMAIL (gitAuthor);
+//                                             exit 3 if unset or `none`, 4 if it is neither form
 //   node desk-env.mjs mem <avail|used|rss|status>
 //   node desk-env.mjs test-scope [--base <ref>]   what a worker tests before pushing: scope=related|full|none,
 //                                             reason=, changed=, workspace= per uncovered workspace, then
@@ -69,7 +71,8 @@
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run (UNLISTED), an app directory other command rows
-//                                             name with no Dev server item (NODEV), a dontAsk settings file (DONTASK);
+//                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
+//                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
@@ -78,8 +81,9 @@
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
 //   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
 //   node desk-env.mjs machine set <key>=<value>...
-//                                             set the bench's bench-cap-points and bench-reserve-percent in
-//                                             the profile (only after the user answers); a bad value exits 1
+//                                             set the bench's bench-cap-points, bench-reserve-percent and
+//                                             bench-run-limit-<provider> in the profile (only after the
+//                                             user answers); a bad value exits 1
 //                                             naming it, and nothing is written
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
 //   node desk-env.mjs costs detect            print the GitHub repos, Vercel teams and projects and AWS
@@ -110,6 +114,7 @@ import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
+import { jobKeyedPremerge } from './workflow-yaml.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -264,6 +269,7 @@ export const CONFIG_ROWS = Object.freeze({
   'jira-email': { section: '1', row: 'Jira email' },
   'jira-display-name': { section: '1', row: 'Jira display name' },
   'jira-account-id': { section: '1', row: 'Jira account id' },
+  'git-author': { section: '1', row: 'Git author name / email' },
   name: { section: '1', row: 'Name' },
   'repo-root': { section: '2', row: 'Primary repo root' },
   'worktrees-dir': { section: '2', row: 'Worktrees directory' },
@@ -295,6 +301,7 @@ export const CONFIG_ROWS = Object.freeze({
   'merge-method': { section: '4', row: 'Merge method' },
   'local-review': { section: '4', row: 'Local review command' },
   'clean-verdict': { section: '4', row: 'Clean review verdict' },
+  'review-account': { section: '4', row: 'Review account' },
   'review-bar': { section: '4', row: 'Review bar' },
   'review-experts': { section: '4', row: 'Review domain experts' },
   'agents-sync': { section: '4', row: 'Project subagents sync' },
@@ -936,6 +943,43 @@ export const jiraName = () => {
   try { return resolve({ env: 'DESK_JIRA_NAME', id: 'jira-display-name', identity: true }); }
   catch { return resolve({ env: 'DESK_JIRA_NAME', id: 'name', identity: true }); }
 };
+// §1 Git author name / email as { name, email }, or null when the row is unset or `none`. It takes
+// `Name <email>` or two spans, `Name` / `email`. Anything else throws: an author desk guessed is worse
+// than git's own default, and the row is the one place a worker's commit author comes from.
+export function gitAuthor() {
+  const items = configValues('git-author');
+  if (items == null || isNone(items)) return null;
+  const one = items.length === 1 ? /^(.+?)\s*<([^<>]*)>$/.exec(items[0].trim()) : null;
+  const [name, email] = (one ? one.slice(1) : items.length === 2 ? items : []).map((x) => String(x).trim());
+  if (!name || !email || !/^[^\s@<>]+@[^\s@<>]+$/.test(email) || /[<>\u0000-\u001f\u007f]/.test(name)) {
+    const r = CONFIG_ROWS['git-author'];
+    throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not \`Name <email>\` or \`Name\` / \`email\` in ${configPathHint()}. Refusing to guess.`);
+  }
+  return { name, email };
+}
+// §4 Review account, the login desk posts its review verdicts from and that login's gh config
+// directory: { login, dir }, or null where the row is unset, a TODO or `none` (verdicts post from the
+// §1 GitHub handle). A value in another shape throws rather than posting from a guessed account.
+export function reviewAccount() {
+  const v = String(configValue('review-account') ?? '').trim();
+  if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
+  const m = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:\s*(\S.*)$/.exec(v);
+  if (!m) {
+    const r = CONFIG_ROWS['review-account'];
+    throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${v}) is not \`<login>: <gh config directory>\` or \`none\` in ${configPathHint()}. Refusing to guess.`);
+  }
+  return { login: m[1], dir: expandHome(m[2].trim()) };
+}
+// The logins whose review verdicts are desk's own, comma-separated as loginIn reads them: the §1
+// GitHub handle, and the §4 Review account's login where it is set (a malformed row adds none: the
+// review-post command refuses it). null with no handle.
+export function verdictLogins() {
+  let handle = null, acct = null;
+  try { handle = githubHandle(); } catch { return null; }
+  if (!handle) return null;
+  try { acct = reviewAccount(); } catch { /* malformed: the handle alone */ }
+  return acct && acct.login.toLowerCase() !== handle.toLowerCase() ? `${handle},${acct.login}` : handle;
+}
 export const repoRoot = () => resolve({ env: 'DESK_REPO_ROOT', id: 'repo-root', identity: true }).replace(/\/+$/, '');
 // reviewPlan on this repo's rows.
 export const reviewRows = () => reviewPlan(configValues('local-review'), configValue('clean-verdict'), repoRoot());
@@ -969,6 +1013,8 @@ export const binDir = () => join(deskHome(), 'bin');
 // them in `batches/<name>/`, so a reader that takes each top-level state folder for a repo slug never
 // meets a batch. An explicit DESK_QUEUE or DESK_AUTOPILOT_STATE wins over both.
 export const BATCHES_DIR = 'batches';
+// The repo's own state folder for a state folder that may be a named batch's (<repo state>/batches/<name>).
+export const repoStateOf = (state) => state.replace(new RegExp(`[/\\\\]${BATCHES_DIR}[/\\\\][^/\\\\]+[/\\\\]?$`), '');
 // DESK_BATCH, or null for the standing batch. It names a directory, so a value that is not a safe id
 // is refused before any path is built from it.
 export function batchName() {
@@ -1202,7 +1248,7 @@ export function takeBatchArg(argv = process.argv, env = process.env) {
 // Every desk script loads this module first, so a bad --batch or DESK_BATCH stops it before it touches a file.
 let batchArg = null;
 try { batchArg = takeBatchArg(); batchName(); } catch (e) { console.error(e.message); process.exit(4); }
-const fullMatch = (pattern, s) => { try { return new RegExp(`^(?:${pattern})$`).test(s); } catch { return false; } };
+export const fullMatch = (pattern, s) => { try { return new RegExp(`^(?:${pattern})$`).test(s); } catch { return false; } };
 export function ticketKind(key) {
   const k = String(key ?? '');
   if (!SAFE_ID.test(k) || k.includes('..')) return { ok: false, error: `'${k}' is not usable as a ticket id (letters, digits, . _ - only; no ..)` };
@@ -1472,12 +1518,22 @@ export function devServerGaps(parsed, root) {
     .map(({ dir, rows }) => ({ dir, rows }));
 }
 
-export function driftLines({ missing, stalls, unlisted = [], noDev = [], dontAsk }) {
+// A §4 Pre-merge steps item named after a job of several steps (workflow-yaml.mjs jobKeyedPremerge): the
+// step it is for, in its place, where one step fits it, else the job's named steps to choose from.
+const jobKeyedLine = (j) => {
+  const quoted = (xs) => xs.map((s) => `"${s}"`).join(', ');
+  const fix = j.fits.length === 1 ? `name the step instead: "${j.fits[0]}: ${j.command}"`
+    : (j.fits.length ? j.fits : j.named).length ? `name the step it is for instead, one of ${quoted(j.fits.length ? j.fits : j.named)}` : 'name the step it is for instead';
+  return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
+};
+
+export function driftLines({ missing, stalls, unlisted = [], noDev = [], jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
+    ...jobKeyed.map(jobKeyedLine),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
   return lines.length ? lines : ['no drift'];
@@ -1605,6 +1661,13 @@ if (isMain) {
         console.log(run);
         break;
       }
+      case 'verdict-logins': {
+        // The logins a verdict is read as desk's own from, comma-separated (merge-driver.sh's --handle).
+        const l = verdictLogins();
+        if (!l) process.exit(3);
+        console.log(l);
+        break;
+      }
       case 'levers': {
         // `levers <name>` prints on or off; bare, every lever on and every name desk does not know.
         const l = levers();
@@ -1712,6 +1775,12 @@ if (isMain) {
       case 'identity':
         for (const [k, f] of Object.entries(IDENTITY)) console.log(`${k}=${shellQuote(f())}`);
         break;
+      case 'git-author': {
+        const a = gitAuthor();
+        if (!a) process.exit(3);
+        console.log(`${a.name}\t${a.email}`);
+        break;
+      }
       case 'mem': {
         const what = args[0] ?? 'status';
         if (what === 'avail') console.log(availableGiB().toFixed(1));
@@ -1843,7 +1912,9 @@ if (isMain) {
           // A repo's settings live in its main checkout (§2 Primary repo root); this repo's, failing that, in the cwd's.
           const rootRow = configValueIn(parseConfigFile(config), 'repo-root');
           const root = rootRow ? expandHome(rootRow) : slug ? null : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
-          const lines = driftLines(configDrift({ config, root }));
+          const premerge = configValuesIn(parseConfigFile(config), 'pre-merge-steps');
+          const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
+          const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;
           if (slug) console.log(`== ${slug}`);
           for (const l of lines) console.log(slug ? `  ${l}` : l);
@@ -2029,7 +2100,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|review-cmd|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
+        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
         process.exit(2);
     }
   } catch (e) {

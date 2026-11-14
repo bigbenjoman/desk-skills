@@ -4,8 +4,9 @@
 // in, resolves the threads `resolve` names, and holds the PR on what is `left`:
 //
 //   review-threads.mjs query      the GraphQL query the payload answers
-//   review-threads.mjs read --handle <§1 GitHub handle> --clean "<§4 Clean review verdict>" < payload.json
+//   review-threads.mjs read --handle <§1 GitHub handle[,§4 Review account]> --clean "<§4 Clean review verdict>" < payload.json
 //   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> < payload.json
+//   review-threads.mjs approved --handle <handle> --clean "<row>" < payload.json   (approvedAt)
 //
 // prints one JSON line: { decision, head, verdict, resolve: [thread], left: [thread] }, where a thread is
 // { id, path, line, first, text }: `first` is the first line of its opening comment, `text` the two as
@@ -26,13 +27,14 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, DESK_REVIEW_CLEAN } from './undraft.mjs';
+import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, markerClean } from './undraft.mjs';
 import { pairs, leverOn } from './desk-env.mjs';
-import { LOCAL_MARKER } from '../templates/scripts/desk/review-gate.mjs';
+import { LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
+import { loginIn } from './gate.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
   headRefOid reviewDecision
-  reviews(last:100){nodes{id author{login} body commit{oid}}}
+  reviews(last:100){nodes{id author{login} body state submittedAt commit{oid}}}
   reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine
     comments(first:1){nodes{author{login} body pullRequestReview{id}}}}}}}}`;
 
@@ -40,8 +42,8 @@ export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){reposi
 const rowSet = (row) => { const s = String(row ?? '').trim(); return !!s && !/^(todo|none)\b/i.test(s); };
 const firstLine = (s) => String(s ?? '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
 
-// payload: the GraphQL response. handle: §1 GitHub handle. clean: the §4 Clean review verdict row; a
-// plain-text row is read against desk-review's own counts, and an unset one settles nothing.
+// payload: the GraphQL response. handle: §1 GitHub handle, or desk-env's verdictLogins list. clean: the §4 Clean review verdict row; a
+// plain-text row is read against every count the verdict's marker writes, and an unset one settles nothing.
 // `review` is the handle's latest desk-review when its verdict is at the head and not clean
 // ({ id, verdict, body }), else null.
 export function readThreads(payload, { handle, clean }) {
@@ -49,14 +51,14 @@ export function readThreads(payload, { handle, clean }) {
   if (!pr) return null;
   const reviews = pr.reviews?.nodes ?? [];
   const row = String(clean ?? '').trim();
-  const want = !rowSet(row) ? null : Object.keys(pairs(row)).length ? row : DESK_REVIEW_CLEAN;
-  const latest = handle && want ? latestReview(reviews, handle) : null;
+  const latest = handle && rowSet(row) ? latestReview(reviews, handle) : null;
+  const want = Object.keys(pairs(row)).length ? row : markerClean(latest?.verdict);
   const atHead = latest ? verdictAt(latest.verdict, pr.headRefOid, want) : null;
   const settles = !!atHead?.clean;
   const review = atHead?.settle ? { id: latest.id, verdict: latest.verdict, body: latest.body } : null;
   const index = new Map(reviews.map((r, i) => [r.id, i]));
   const at = latest ? index.get(latest.id) ?? -1 : -1;
-  const own = (login) => !!handle && String(login ?? '').toLowerCase() === handle.toLowerCase();
+  const own = (login) => loginIn(login, handle);
   const resolve = [], left = [];
   for (const t of pr.reviewThreads?.nodes ?? []) {
     if (t.isResolved) continue;
@@ -64,7 +66,7 @@ export function readThreads(payload, { handle, clean }) {
     const i = index.get(c?.pullRequestReview?.id);
     const opener = i == null ? null : reviews[i];
     const ours = settles && own(c?.author?.login) && own(opener?.author?.login)
-      && firstLine(opener?.body) === LOCAL_MARKER && i < at;
+      && LOCAL_MARKERS.includes(firstLine(opener?.body)) && i < at;
     const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(c?.body) };
     (ours ? resolve : left).push({ ...th, text: threadLine(th) });
   }
@@ -91,6 +93,28 @@ export function readVerdict(payload, { handle, clean, carry, scope }) {
   if (v.clean) return { head, clean: true, carried, range, said: range ? carryComment(carried, head, range) : null, why: null, settle: false, person: false };
   // An unclean verdict carried from an older head is not at this one: reviewing the head posts it there.
   return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, ...(targeted ? { targeted } : {}) };
+}
+
+// When the PR last had an approval at its head: the newest of an APPROVED review of the head and the
+// handle's clean verdict at it (never one carried from an older head). { head, at, by }, `at` null when
+// there is neither, for the driver to weigh against when a red approval check's run started.
+export function approvedAt(payload, { handle, clean }) {
+  const pr = payload?.data?.repository?.pullRequest;
+  if (!pr) return null;
+  const head = pr.headRefOid ?? '';
+  const reviews = pr.reviews?.nodes ?? [];
+  const hits = reviews.filter((r) => r.state === 'APPROVED' && head && r.commit?.oid === head && r.submittedAt)
+    .map((r) => ({ at: r.submittedAt, by: `an APPROVED review by ${r.author?.login ?? 'someone'}` }));
+  if (rowSet(clean)) {
+    const { plain, v, review } = verdictAtHead(reviews, handle, head, String(clean).trim());
+    // The review the verdict was read from: under a plain-text row the one plainVerdictAt judged, else
+    // the latest carrying a verdict marker.
+    const id = plain ? v.review?.id : review?.id;
+    const r = v.clean && id ? reviews.find((x) => x.id === id) : null;
+    if (r?.submittedAt) hits.push({ at: r.submittedAt, by: 'a clean review verdict' });
+  }
+  const best = hits.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))[0];
+  return { head, at: best?.at ?? null, by: best?.by ?? null };
 }
 
 // A thread as one line names it: `path:line "first line"`, cut to a readable length.
@@ -127,6 +151,11 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   } catch { /* unreadable: null */ }
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
   console.log(JSON.stringify(r));
+} else if (a[0] === 'approved') {
+  let r = null;
+  try { r = approvedAt(JSON.parse(readFileSync(0, 'utf8')), { handle: at('--handle'), clean: at('--clean') }); } catch { /* unreadable: null */ }
+  if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
+  console.log(JSON.stringify(r));
 } else {
-  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> < payload.json'); process.exit(2);
+  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> < payload.json | approved --handle <login> --clean "<row>" < payload.json'); process.exit(2);
 }

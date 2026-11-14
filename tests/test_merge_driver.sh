@@ -87,7 +87,7 @@ if (a[0] === 'pr' && a[1] === 'list') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
     state: p.state.toUpperCase(), mergeable: p.mergeState === 'DIRTY' ? 'CONFLICTING' : 'MERGEABLE', mergeStateStatus: p.mergeState ?? 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
-    statusCheckRollup: p.checks.map(([name, conclusion, run, job]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci',
+    statusCheckRollup: p.checks.map(([name, conclusion, run, job, startedAt]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci', startedAt,
       detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/' + (job ?? run) : undefined })) });
 } else if (a[0] === 'api' && /check-runs\/\d+\/annotations/.test(a[1] ?? '')) {
   // A job's annotations: annotations.json maps a job id to the error its run gave.
@@ -202,6 +202,7 @@ check "pass: held behind an open PR, nothing else left, exits 10"  '[ $rc -eq 10
 loop
 check "AC1: the second loop also exits without sleeping"            '[ $rc -eq 0 ] && [ ! -e "$T/sleeps" ]'
 check "AC2: one merge in the loop, the first PR, pinned to its head" '[ "$(merged)" = 101 ] && grep -qx "101 main $SHA1" "$T/merges.log" && grep -q -- "--match-head-commit $SHA1" "$T/gh.log"'
+check "DS-552 AC3: with §4 Merged-tree check unset it merges as before, logging that none is configured" 'echo "$out" | grep -q "#101 no §4 Merged-tree check is configured — merging without one" && echo "$out" | grep -q "#101 MERGED"'
 check "AC4: the held ticket is released to triaged"                  '[ "$(qf T-3 .state)" = triaged ] && [ "$(qf T-3 .held_by)" = null ] && echo "$out" | grep -q "RELEASED T-3"'
 check "AC4: the released ticket is at the front of the queue"        '[ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = T-3 ]'
 check "the merge is recorded on the ticket and in the eta history"   '[ "$(qf T-1 .merged_at)" != null ] && [ "$(jq -r .key "$T/state/eta-history.jsonl")" = T-1 ] && [ "$(jq -r .merged_at "$T/state/eta-history.jsonl")" = "$(qf T-1 .merged_at)" ]'
@@ -234,6 +235,15 @@ q add T-13 Task A; q set T-13 state=triaged branch=fix/T-13; q hold T-13 T-14
 loop
 check "a blocker GitHub does not list but the queue records as merged releases its successor" '[ "$(qf T-12 .state)" = triaged ] && [ "$(qf T-12 .held_by)" = null ] && echo "$out" | grep -q "merged: T-11#426 -> RELEASED T-12"'
 check "a blocker with no recorded merge and no merged PR still holds its successor" '[ "$(qf T-13 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-13"'
+# A ticket the pass holds on its blocked-until date waits on that date, even where --deps names merged blockers.
+q add T-15 Task A; q set T-15 state=triaged branch=fix/T-15
+q park T-15 "held by orchestrator: blocked until 2099-01-01 (label blocked-until-2099-01-01) — starts on that date by itself"; q set T-15 held_label=blocked-until-2099-01-01
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-15:T-11" 2>&1)
+check "DS-555 a ticket held on its blocked-until date is not released by merged --deps blockers" '[ "$(qf T-15 .state)" = parked ] && [ "$(qf T-15 .held_label)" = blocked-until-2099-01-01 ] && ! echo "$out" | grep -q "RELEASED T-15"'
+q set T-15 held_label=null
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-15:T-11" 2>&1)
+check "DS-555 the same hold with no blocked-until label is released by those blockers" '[ "$(qf T-15 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-15"'
+q set T-15 state=done
 q drop T-11; q drop T-12; q drop T-13; q drop T-14
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
@@ -260,6 +270,21 @@ check "the approved spine merges, pinned, and its child is released" 'grep -qx "
 echo '{}' > "$T/prs.json"
 loop
 check "AC1: a loop with no ready PRs exits 0 without sleeping"       '[ $rc -eq 0 ] && [ ! -e "$T/sleeps" ] && echo "$out" | grep -q "no ready batch PRs$"'
+# A driver told to stop in its pause stops then, not once the sleep is out: this sleep asks it to stop,
+# then sleeps on for 30s.
+mkdir -p "$T/slowstub"
+cat > "$T/slowstub/sleep" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_SLEEPS"
+kill -TERM "$PPID"
+exec /bin/sleep 30
+EOF
+chmod +x "$T/slowstub/sleep"
+began=$SECONDS
+out=$(PATH="$T/slowstub:$PATH" MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" 2>&1); rc=$?
+took=$((SECONDS - began))
+check "DS-525 AC3: a stop during the pause ends the driver at once"   '[ $rc -eq 143 ] && [ $took -lt 15 ] && grep -qx 60 "$T/sleeps" && echo "$out" | grep -q "merge driver exited 143$"'
+rm -f "$T/sleeps"
 cat > "$T/prs.json" <<EOF
 {
   "131": { "head": "fix/T-1", "base": "release", "sha": "$SHA1", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
@@ -775,6 +800,52 @@ check "DS-422 AC1: a later loop reruns no state check either" '! grep -q "run re
 out=$(DESK_CONFIG="$T/config-state-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merge-driver.sh" --tickets "T-91" 2>&1); rc=$?
 check "DS-422: a state row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -qF "FAIL: config §4 State checks does not parse: \`🔐 Review gate: approve\`" && ! echo "$out" | grep -q "merge driver up"'
 
+# ---- DS-561: a red approval check whose run started before the head's approval is rerun once -----
+# Each red "🔐 Review gate" run started at RAN; an approval or clean verdict newer than RAN is one it never saw.
+CLEAN_561='p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
+cp "$T/config-state.md" "$T/config-stale.md"; echo "| Clean review verdict | \`$CLEAN_561\` |" >> "$T/config-stale.md"
+cp "$T/config-state.md" "$T/config-stale-plain.md"; echo '| Clean review verdict | `no findings` |' >> "$T/config-stale-plain.md"
+SHA94=c944444444444444444444444444444444444444; SHA95=c955555555555555555555555555555555555555; SHA96=c966666666666666666666666666666666666666; SHA97=c977777777777777777777777777777777777777
+SHA98=c988888888888888888888888888888888888888; SHA99=c999999999999999999999999999999999999999
+RAN='2026-11-10T22:02:10Z'
+# ap <n> <sha> <review>...: PR #n's GraphQL read, each review `<login>|<state>|<submittedAt>|<commit>[|verdict|plain]`.
+ap(){
+  node -e 'const [f, clean, ...rows] = process.argv.slice(1);
+    const reviews = rows.map((x, i) => { const [login, state, at, oid, v] = x.split("|");
+      return { id: "PRR_" + i, author: { login }, state, submittedAt: at, commit: { oid },
+        body: v === "plain" ? "No findings. Nothing deferred or carried."
+          : v ? ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${oid} ${clean} vendor=codex round=1 -->`].join("\n") : "LGTM" }; });
+    require("fs").writeFileSync(f, JSON.stringify({ data: { repository: { pullRequest: { reviewDecision: null, reviews: { nodes: reviews }, reviewThreads: { nodes: [] } } } } }));' "$T/ap-$1.json" "$CLEAN_561" "${@:2}"
+}
+ap 195 "ben|APPROVED|2026-11-10T22:02:50Z|$SHA95"
+ap 196 "ben|APPROVED|2026-11-10T22:01:30Z|$SHA96"
+ap 197 "ben|COMMENTED|2026-11-10T22:02:50Z|$SHA97" "ben|APPROVED|2026-11-10T22:02:50Z|c900000000000000000000000000000000000000"
+ap 198 "ben|APPROVED|2026-11-10T22:02:50Z|$SHA98"
+ap 199 "tester|COMMENTED|2026-11-10T22:02:33Z|$SHA99|verdict"
+ap 194 "tester|COMMENTED|2026-11-10T22:01:00Z|c900000000000000000000000000000000000000|verdict" "tester|COMMENTED|2026-11-10T22:02:33Z|$SHA94|plain"
+gate_pr(){ printf '"%s": { "head": "fix/T-%s", "base": "main", "sha": "%s", "state": "open", "draft": false, "payload": "%s", "checks": [["test", "SUCCESS", 9090], ["%s", "FAILURE", %s, %s, "%s"]] }' "$1" "${1#1}" "$2" "$T/ap-$1.json" "$3" "$4" "$5" "$RAN"; }
+printf '{ %s, %s, %s, %s, %s, %s }\n' "$(gate_pr 194 "$SHA94" '🔐 Review gate' 9241 94101)" "$(gate_pr 195 "$SHA95" '🔐 Review gate' 9251 95001)" "$(gate_pr 196 "$SHA96" '🔐 Review gate' 9261 96101)" \
+  "$(gate_pr 197 "$SHA97" '🔐 Review gate' 9271 97101)" "$(gate_pr 198 "$SHA98" '🌿 Local Adversarial Code Review' 9281 98101)" \
+  "$(gate_pr 199 "$SHA99" '🔐 Review gate' 9291 99101)" > "$T/prs.json"
+echo '{ "95001": "No PullBot review at c95555555 yet" }' > "$T/annotations.json"
+q init merge-stale
+for k in T-94 T-95 T-96 T-97 T-98 T-99; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+: > "$T/merges.log"; : > "$T/gh.log"
+saloop(){ out=$(DESK_CONFIG="$T/config-stale.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-95 T-96 T-97 T-98 T-99" 2>&1); rc=$?; }
+saloop
+check "DS-561 AC1: an APPROVED review of the head newer than the red approval check's run reruns that check's job once, and says why" 'grep -q "run rerun --job 95001 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -qF "#195 \"🔐 Review gate\" failed in a run started $RAN, before an APPROVED review by ben at c95555555 (2026-11-10T22:02:50Z): rerunning it once at this head" && [ "$(cat "$SD/approval-rerun-195-$SHA95")" = "🔐 Review gate" ]'
+check "DS-561 AC1: it is not put to the person while that rerun runs" '[ "$(qf T-95 .merge_blocked)" = null ] && ! echo "$out" | grep -q "#195 at c95555555 waits on an approval"'
+check "DS-561: a clean verdict at the head newer than the run reruns it too" 'grep -q "run rerun --job 99101 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -qF "#199 \"🔐 Review gate\" failed in a run started $RAN, before a clean review verdict at c99999999"'
+check "DS-561 AC3: an approval older than the run reruns nothing, and waits on a person as today" '! grep -q "run rerun.*\(9261\|96101\)" "$T/gh.log" &&[ "$(qf T-96 .merge_blocked)" = "approval: \"🔐 Review gate\" needs approval from a human reviewer at c96666666: a person approves it before desk merges it" ]'
+check "DS-561 AC3: no approval at the head (only a comment, and one approving another commit) reruns nothing" '! grep -q "run rerun.*\(9271\|97101\)" "$T/gh.log" &&[ "$(qf T-97 .merge_blocked)" = "approval: \"🔐 Review gate\" needs approval from a human reviewer at c97777777: a person approves it before desk merges it" ]'
+check "DS-561 AC4: a red verdict check is not rerun for an approval, as DS-422 has it" '! grep -q "run rerun.*\(9281\|98101\)" "$T/gh.log" &&echo "$out" | grep -qF "#198 \"🌿 Local Adversarial Code Review\" failed (verdict state)" && [ ! -e "$SD/approval-rerun-198-$SHA98" ]'
+: > "$T/gh.log"
+saloop
+check "DS-561 AC2: still red at that head after its rerun, it is not rerun again and waits on a person as today" '! grep -q "run rerun" "$T/gh.log" && echo "$out" | grep -qF "#195 \"🔐 Review gate\" was rerun once at c95555555 for the approval its run started before, and is red again — not rerunning it a second time" && [ "$(qf T-95 .merge_blocked)" = "approval: \"🔐 Review gate\" needs approval from a human reviewer at c95555555: a person approves it before desk merges it" ]'
+: > "$T/gh.log"
+out=$(DESK_CONFIG="$T/config-stale-plain.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-94" 2>&1)
+check "DS-561: under a plain-text clean row, a clean plain review at the head newer than the run reruns it, not an older marker review" 'grep -q "run rerun --job 94101 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -qF "#194 \"🔐 Review gate\" failed in a run started $RAN, before a clean review verdict at c94444444 (2026-11-10T22:02:33Z)"'
+
 # ---- DS-433: every PR merges on a clean desk-review at its head, whatever its title, with no approval --
 cp "$T/config.md" "$T/config-rv.md"
 echo '| Local review command | `/desk-review` |' >> "$T/config-rv.md"
@@ -863,6 +934,21 @@ node -e 'const sha = process.argv[2]; require("fs").writeFileSync(process.argv[1
 rv_prs plain "201|fix/T-201|$SHA201|fix: T-201 a bug|"
 RV_CONFIG="$T/config-rv-plain.md"; rvloop; rvloop; RV_CONFIG=""
 check "DS-433: under a plain-text row, a review stating it at the head reads as clean, so it merges" '[ "$(merged)" = 201 ]'
+
+# DS-576: a clean verdict posted by §4 Review account is read as desk's own; one by another login is not.
+cp "$T/config-rv.md" "$T/config-rv-acct.md"; mkdir -p "$T/gh-agent-pullbot"
+echo "| Review account | \`agent-pullbot: $T/gh-agent-pullbot\` |" >> "$T/config-rv-acct.md"
+vp_by(){ node -e 'const [f, sha, counts, login] = process.argv.slice(1);
+  const reviews = [{ id: "PRR_1", author: { login }, commit: { oid: sha }, body: ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts} vendor=codex round=1 -->`].join("\n") }];
+  require("fs").writeFileSync(f, JSON.stringify({ data: { repository: { pullRequest: { reviewDecision: null, reviews: { nodes: reviews }, reviewThreads: { nodes: [] } } } } }));' "$T/vp-$1.json" "$2" "$3" "$4"; }
+vp_by 201 "$SHA201" "$CLEAN" agent-pullbot
+rv_prs acct "201|fix/T-201|$SHA201|fix: T-201 a bug|"
+RV_CONFIG="$T/config-rv-acct.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-576 AC6: a ready PR whose only clean verdict at its head is the review account's merges" '[ "$(merged)" = 201 ] && grep -qx "201 main $SHA201" "$T/merges.log"'
+vp_by 201 "$SHA201" "$CLEAN" mallory
+rv_prs acct7 "201|fix/T-201|$SHA201|fix: T-201 a bug|"
+RV_CONFIG="$T/config-rv-acct.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-576 AC7: a clean verdict by neither the handle nor the review account holds it" '[ -z "$(merged)" ] && echo "$out" | grep -q "#201 green at d20111111, HELD with no clean review at its head"'
 
 # A verdict carried across a clean merge of the base holds at the head; commits of its own do not. Real commits, fetched.
 git init -q --bare -b main "$T/origin.git"; git -C "$T/repo" remote add origin "file://$T/origin.git"
@@ -987,5 +1073,117 @@ rp_setup true SUCCESS 7200000 "$SHARED"; hand_repair; rploop; printf '%s\t%s\n' 
 check "AC3 a hand repair's hold ends 60 minutes after it was seen" '[ "$(merged)" = 411 ] && echo "$out" | grep -q "ended: 60 minutes since its repair"'
 rp_setup true SUCCESS 0 "$SHARED" "$SHAR"; q set T-402 'fix_tries=[]'; pr412 "$SHAR" DIRTY; rploop; pr412 "$SHAR"; rploop; rploop
 check "out of DIRTY with no new push (the base moved): no repair, no hold" '[ "$(merged)" = 411 ]'
+
+# ---- §4 Merged-tree check: two green PRs that each add the next migration revision ------------------
+# Each adds a migration numbered 131 on top of main's 130, under its own filename: git merges both
+# cleanly and GitHub says neither is BEHIND, so only the check sees the second leaves two heads.
+git init -q --bare "$T/tc-origin.git"
+git -C "$T/repo" remote add origin "$T/tc-origin.git" 2>/dev/null || git -C "$T/repo" remote set-url origin "$T/tc-origin.git"
+WT_BEFORE=$(git -C "$T/repo" worktree list | wc -l | tr -d ' ')
+mkdir -p "$T/repo/migrations"; echo base > "$T/repo/migrations/130_base.py"
+git -C "$T/repo" add migrations; git -C "$T/repo" commit -q -m m130; git -C "$T/repo" push -q origin main
+TCMAIN=$(git -C "$T/repo" rev-parse HEAD)
+tc_branch(){ # tc_branch <branch> <file> -> its head sha
+  git -C "$T/repo" switch -q -c "$1" "$TCMAIN"; echo x > "$T/repo/migrations/$2"
+  git -C "$T/repo" add migrations; git -C "$T/repo" commit -q -m "$2"; git -C "$T/repo" push -q origin "$1"
+  git -C "$T/repo" rev-parse HEAD; git -C "$T/repo" switch -q main
+}
+SHA501=$(tc_branch fix/T-501 131_add_ai_model_data.py); SHA502=$(tc_branch fix/T-502 131_add_waitlist_invitations.py)
+printf 'echo run >> %s\n' "$T/tc-runs" > "$T/tc-check.sh"
+cat >> "$T/tc-check.sh" <<'EOF'
+d=$(ls migrations 2>/dev/null | cut -d_ -f1 | sort | uniq -d)
+[ -z "$d" ] && exit 0
+touch stray.tmp; echo "Multiple head revisions are present: $d"; exit 1
+EOF
+HOLDS_ROW='| Merge holds | `none` |'; READY_ROW='| `pr-ready` | Undraft | `yes` | `yes` |'
+conflict_rows(){ printf '%s\n| `pr-conflict-unreviewed` | Conflicts | `yes` | `%s` |\n| `pr-conflict-reviewed` | Conflicts | `yes` | `%s` |' "$READY_ROW" "$1" "$1"; }
+TC=$(cat "$T/config.md"); TC=${TC/"$HOLDS_ROW"/"$HOLDS_ROW"$'\n'"| Merged-tree check | \`sh $T/tc-check.sh\` |"}
+printf '%s\n' "$TC" > "$T/config-tc.md"
+ROWS=$(conflict_rows yes); TCF=${TC/"$READY_ROW"/$ROWS}; printf '%s\n' "$TCF" > "$T/config-tc-fix.md"
+ROWS=$(conflict_rows no); TCF=${TC/"$READY_ROW"/$ROWS}; printf '%s\n' "$TCF" > "$T/config-tc-no.md"
+tcloop(){ out=$(DESK_CONFIG="${TC_CONFIG:-$T/config-tc.md}" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-501 T-502" 2>&1); rc=$?; }
+: > "$T/merges.log"; q init tree-check
+cat > "$T/prs.json" <<EOF
+{
+  "501": { "head": "fix/T-501", "base": "main", "sha": "$SHA501", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "502": { "head": "fix/T-502", "base": "main", "sha": "$SHA502", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
+}
+EOF
+for k in T-501 T-502; do q add "$k" Task A; q set "$k" "branch=fix/$k" state=done "result.pr=50${k#T-50}"; done
+tcloop; tcloop
+check "DS-552: the first PR merges once its merged tree passes the check, which it says" '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#501 merged into main at ${TCMAIN:0:9}, it passes §4 Merged-tree check"'
+# GitHub's merge of #501 lands on origin's main.
+git -C "$T/repo" push -q origin "$SHA501:refs/heads/main"
+tcloop
+check "DS-552 AC1: the second PR is not merged, and the log names the failed merged-tree check" \
+  '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#502 HELD: merged into main at ${SHA501:0:9}, it fails the merged-tree check \`sh $T/tc-check.sh\`: Multiple head revisions are present: 131 — not merging"'
+check "DS-552 AC1: the hold is on the ticket for the pass, with the head and the check's output, not as merge_blocked" \
+  '[ "$(qf T-502 .tree_check.head)" = "$SHA502" ] && [ "$(qf T-502 .tree_check.output)" = "Multiple head revisions are present: 131" ] && [ "$(qf T-502 .tree_check.base_sha)" = "$SHA501" ] && [ "$(qf T-502 .merge_blocked)" = null ]'
+check "DS-552: the throwaway checkout is gone and the repo's worktrees are as they were" \
+  '[ -z "$(find "$T/state" -name "tree-502-checkout")" ] && [ "$(git -C "$T/repo" worktree list | wc -l | tr -d " ")" = "$WT_BEFORE" ] && [ -z "$(git -C "$T/repo" status --porcelain)" ]'
+: > "$T/tc-runs"; tcloop
+check "DS-552: held at the same head and base, the next loop reads its kept result, runs no check and still does not merge" \
+  '[ "$(merged)" = 501 ] && echo "$out" | grep -q "#502 HELD: merged into main" && [ ! -s "$T/tc-runs" ] && [ "$(find "$T/state" -name "tree-502-$SHA502-$SHA501-*.json" | wc -l | tr -d " ")" = 1 ]'
+# A changed §4 row is not answered from the old row's kept result.
+TCR=$(cat "$T/config.md"); TCR=${TCR/"$HOLDS_ROW"/"$HOLDS_ROW"$'\n'"| Merged-tree check | \`sh $T/tc-check.sh again\` |"}
+printf '%s\n' "$TCR" > "$T/config-tc-row.md"
+TC_CONFIG="$T/config-tc-row.md" tcloop
+check "DS-552: a changed §4 Merged-tree check row runs the check again" '[ -s "$T/tc-runs" ] && echo "$out" | grep -q "#502 HELD: merged into main"'
+# A check that timed out or never started says nothing about the tree: held this loop, not kept, not on the ticket.
+q set T-502 tree_check=null
+KEPT=$(find "$T/state" -name "tree-502-*.json" | wc -l | tr -d ' ')
+STOP=$(DESK_CONFIG="$T/config-tc.md" node --input-type=module -e "
+import { prTreeCheck } from '$B/base-sync.mjs';
+const check = () => ({ command: 'sh slow.sh', output: 'it did not finish in 300s', stopped: true }); check.row = 'sh slow.sh';
+console.log(JSON.stringify(prTreeCheck({ repo: '$T/repo', cache: '$T/state', dir: '$T/tc-stop-checkout', base: 'main', pr: 502, head: '$SHA502', check })));")
+check "DS-552: a check that did not finish is an error, never a failure, and is not kept" \
+  '[ "$(printf "%s" "$STOP" | jq -r .result)" = error ] && printf "%s" "$STOP" | jq -r .why | grep -q "did not finish" && [ "$(find "$T/state" -name "tree-502-*.json" | wc -l | tr -d " ")" = "$KEPT" ] && [ ! -e "$T/tc-stop-checkout" ]'
+tcloop
+
+# The pass: the held PR goes to a fix worker as a conflict does, with the check's output, and not to the person.
+tcpass(){ out=$(DESK_CONFIG="$1" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; }
+cp "$DESK_QUEUE" "$T/tc-queue.json"
+tcpass "$T/config-tc-fix.md"
+check "DS-552 AC2: the next pass requeues the held PR for a merged-tree fix try" \
+  'js .message | grep -q "fix try 1 of 2: T-502 requeued for PR #502 — fails §4 Merged-tree check merged into main" && [ "$(qf T-502 .fix.kind)" = conflict ] && [ "$(qf T-502 .fix.check.output)" = "Multiple head revisions are present: 131" ]'
+check "DS-552 AC2: and it is not shown to the person" '! js ".waiting[], .stuck[]?" | grep -q "T-502"'
+cp "$T/tc-queue.json" "$DESK_QUEUE"
+tcpass "$T/config-tc-no.md"
+check "DS-552: where §3 forbids a conflict worker, the person is told, naming the check" \
+  'js ".waiting[]" | grep -q "^T-502: CONFLICT — PR #502 is out of draft and merged into main, fails §4 Merged-tree check \`sh $T/tc-check.sh\`, and config §3 pr-conflict-" && [ "$(qf T-502 .fix)" = null ]'
+cp "$T/tc-queue.json" "$DESK_QUEUE"
+
+# The fix worker renumbers its migration after main's and pushes: the new head passes, merges and clears the hold.
+git -C "$T/repo" switch -q fix/T-502; git -C "$T/repo" merge -q --no-edit "$SHA501"
+git -C "$T/repo" mv migrations/131_add_waitlist_invitations.py migrations/132_add_waitlist_invitations.py
+git -C "$T/repo" commit -q -m renumber; SHA502B=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" push -q origin fix/T-502; git -C "$T/repo" switch -q main
+jq --arg s "$SHA502B" '."502".sha = $s' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+tcloop; tcloop
+check "DS-552: renumbered, the PR merges and its hold is cleared" '[ "$(merged)" = "501 502" ] && [ "$(qf T-502 .tree_check)" = null ]'
+
+# The epic PR too: main gained #501's migration since its base feat/TC last synced, so its merge is held.
+git -C "$T/repo" switch -q -c feat/TC "$TCMAIN"; echo x > "$T/repo/migrations/131_epic_child.py"
+git -C "$T/repo" add migrations; git -C "$T/repo" commit -q -m epic-child; git -C "$T/repo" push -q origin feat/TC
+SHAEP=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" switch -q main
+RVTC=$(cat "$T/config-rv.md"); RVTC=${RVTC/"$HOLDS_ROW"/"$HOLDS_ROW"$'\n'"| Merged-tree check | \`sh $T/tc-check.sh\` |"}
+printf '%s\n' "$RVTC" > "$T/config-rv-tc.md"
+vp 601 "$SHAEP" "$CLEAN"
+: > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-*; q init tree-check-epic
+q set-batch base=feat/TC epic=T-600 feature=false 'promotion={"pr":601}'
+q add T-61 Story A; q set T-61 branch=fix/T-61 state=done result.pr=610 merged_at=2026-11-06T10:00:00Z
+jq -n --arg s "$SHAEP" --arg pl "$T/vp-601.json" \
+  '{ "601": { head: "feat/TC", base: "main", sha: $s, state: "open", draft: false, title: "T-600: promote feat/TC to main", payload: $pl, checks: [["test", "SUCCESS"]] } }' > "$T/prs.json"
+RV_TICKETS="T-61"; RV_CONFIG="$T/config-rv-tc.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-552: an epic PR whose merge into main fails the merged-tree check is held" \
+  '[ -z "$(merged)" ] && echo "$out" | grep -q "#601 HELD: merged into main at ${SHA501:0:9}, it fails the merged-tree check \`sh $T/tc-check.sh\`: Multiple head revisions are present: 131 — not merging; noted on the batch'"'"'s promotion for the person"'
+check "DS-552: and the hold is noted on the queue's promotion, which the pass reports, not left in the log alone" \
+  '[ "$(jq -r .promotion.merge_blocked "$DESK_QUEUE")" = "merged-tree check: merged into main at ${SHA501:0:9}, it fails the merged-tree check \`sh $T/tc-check.sh\`: Multiple head revisions are present: 131" ]'
+# The base renumbers its migration after main's: the epic PR passes, its note is cleared and it merges.
+git -C "$T/repo" switch -q feat/TC; git -C "$T/repo" merge -q --no-edit "$SHA501"
+git -C "$T/repo" mv migrations/131_epic_child.py migrations/132_epic_child.py; git -C "$T/repo" commit -q -m renumber
+SHAEP=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" push -q origin feat/TC; git -C "$T/repo" switch -q main
+vp 601 "$SHAEP" "$CLEAN"; jq --arg s "$SHAEP" '."601".sha = $s' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+RV_CONFIG="$T/config-rv-tc.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-552: renumbered, the epic PR passes, its note is cleared and it merges" '[ "$(merged)" = 601 ] && [ "$(jq -r .promotion.merge_blocked "$DESK_QUEUE")" = null ]'
 
 echo "merge driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

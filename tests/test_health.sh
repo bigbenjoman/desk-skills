@@ -277,11 +277,41 @@ check "DS-463 AC7 and pushed under its own key"             '[[ "$(pushes)" =~ h
 rm -f "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
 pj
 check "DS-463 AC7 signed back in, nothing is said of it"    '! grep -q "Claude login b" <<< "$out" && [ -z "$(pushes)" ]'
-mv "$HOME/.claude-logins/b" "$HOME/.claude-logins/b.gone"; rm -f "$T/state/health.json"
+
+# ---- DS-602: a listed login whose folder does not exist ----------------------------------------
+# Login c is on standby at a folder never made. Another slot is the same health checks run with its
+# own state folder, on the same machine.
+slot(){ json=$(DESK_AUTOPILOT_STATE="$T/state2" node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs"); out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json"); }
+printf '| `claude` | `c` | `~/.claude-logins/c` | `standby` |\n' >> "$DESK_SUBSCRIPTIONS"
+note_c="claude login c listed at ~/.claude-logins/c, which does not exist: remove its row (desk-env logins remove claude c) or sign it in (CLAUDE_CONFIG_DIR=~/.claude-logins/c claude, then /login)"
+rm -f "$T/state/health.json"
 before=$(calls claude)
 pj
-check "DS-463 AC7 a listed login with no folder is told signed out, unasked" '[ "$(calls claude)" = $((before + 1)) ] && grep -qF "health: Claude login b (~/.claude-logins/b) is signed out (~/.claude-logins/b does not exist)" <<< "$out"'
-mv "$HOME/.claude-logins/b.gone" "$HOME/.claude-logins/b"
+check "DS-602 AC1 a login with no folder is not checked"           '[ "$(calls claude)" = $((before + 2)) ]'
+check "DS-602 AC1 no stall line for it, and spawns are not held"   '! grep -qE "^ *health: Claude login c" <<< "$out" && grep -q "health: all checks pass" <<< "$out"'
+check "DS-602 AC1 the health line's notes name the row and folder" 'grep "^health: all checks pass" <<< "$out" | grep -qF "$note_c"'
+check "DS-602 AC2 the first pass on the machine pushes it"         '[ "$(pushes)" = "health:claude-missing:c" ] && [[ "$json" == *"Claude login c is listed at ~/.claude-logins/c, which does not exist"* ]]'
+pj
+check "DS-602 AC2 the next pass in this slot lists the same key, which the supervisor sends once" '[ "$(pushes)" = "health:claude-missing:c" ] && grep -qF "$note_c" <<< "$out"'
+slot
+check "DS-602 AC2 a pass in another slot names it, does not push"  '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out" && ! grep -qE "^ *health: Claude login c" <<< "$out"'
+: > "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
+pj
+check "DS-602 AC3 a login whose folder exists is still told signed out" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out" && [[ "$(pushes)" =~ health:.+:claude:b ]]'
+rm -f "$HOME/.claude-logins/b/signed-out"
+mkdir -p "$HOME/.claude-logins/c"
+pj
+check "DS-602 AC4 once the folder is made and signed in, the note goes" '! grep -q "login c" <<< "$out" && [ -z "$(pushes)" ] && grep -q "health: all checks pass" <<< "$out"'
+slot
+check "DS-602 AC4 in the other slot too"                            '! grep -q "login c" <<< "$out" && [ -z "$(pushes)" ]'
+rm -rf "$HOME/.claude-logins/c"
+pj
+check "DS-602 a folder that goes missing again is pushed again"    '[ "$(pushes)" = "health:claude-missing:c" ]'
+printf '%s\n' "$T/a-slot-since-removed" > "$HOME/.desk-autopilot/health-missing-logins/c"
+slot
+check "DS-602 a slot whose owner's state folder is gone takes the push over" '[ "$(pushes)" = "health:claude-missing:c" ]'
+pj
+check "DS-602 and the slot it took it from no longer lists it"     '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out"'
 unset DESK_SUBSCRIPTIONS
 
 echo "$PASS checks passed, $FAIL failed"

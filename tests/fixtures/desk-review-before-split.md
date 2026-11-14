@@ -732,7 +732,7 @@ inside its worktree, everything goes in the body, written to `desk-review.md` at
 after the finders are done, and removed afterwards with `git clean -f desk-review.md`:
 
 ```bash
-gh pr review <n> --repo <owner>/<repo> --comment --body-file desk-review.md
+node ~/.claude/desk/bin/review-post.mjs <n> --repo <owner>/<repo> --body-file desk-review.md
 ```
 
 Every placeholder is substituted **literally**, never a shell variable: `gh pr review ""` does not
@@ -744,7 +744,7 @@ A `gh` exit code is not evidence. Count our marker reviews **at the reviewed SHA
 and again after; the second count must be one higher:
 
 ```bash
-gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --paginate --slurp | jq '[add[] | select(.user.login=="<me>") | select(.commit_id=="<sha>") | select((.body // "") | startswith("<!-- desk-review:local -->"))] | length'
+gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --paginate --slurp | jq '[add[] | select(.user.login=="<poster>") | select(.commit_id=="<sha>") | select((.body // "") | startswith("<!-- desk-review:local -->"))] | length'
 ```
 
 **`--paginate --slurp` piped to `jq`, never `--paginate --jq`**: `gh` runs `--jq` once per page, so
@@ -755,7 +755,7 @@ A worker has no `gh api`. It reads the GraphQL shape, whose field names differ (
 `commit.oid`), and a copy of the REST filter there counts zero every time and double-posts:
 
 ```bash
-gh pr view <n> --repo <owner>/<repo> --json reviews --jq '[.reviews[] | select(.author.login=="<me>") | select(.commit.oid=="<sha>") | select((.body // "") | startswith("<!-- desk-review:local -->"))] | length'
+gh pr view <n> --repo <owner>/<repo> --json reviews --jq '[.reviews[] | select(.author.login=="<poster>") | select(.commit.oid=="<sha>") | select((.body // "") | startswith("<!-- desk-review:local -->"))] | length'
 ```
 
 **No increase means nothing landed**: post once more and say it took two attempts. A count that was

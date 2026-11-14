@@ -3,6 +3,7 @@
 // place they read the queue and triage records, so a corrupt file refuses the same way in all four.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { personClears } from './clears-when.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
 // on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
@@ -39,6 +40,34 @@ export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'tria
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
 
+// A ticket shipped outside its worker, recorded done: the `queue.mjs` arguments pass.mjs and
+// needs-you.mjs both write. Where the queue's PR status is that PR's, it is marked merged as well, or the
+// done ticket would read as an unmerged PR until the next pass reads GitHub.
+export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
+  `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
+  ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
+
+// Why a worktree holds work origin lacks, read with `git` (its arguments -> stdout, or null when the read
+// fails): uncommitted tracked changes, or commits its branch has not pushed. -> the reason; null when it
+// has neither; undefined when git cannot say. pass.mjs holds a worktree on it, and needs-you.mjs list
+// drops that hold once it reads null.
+export function gitHold(wt, git) {
+  const diff = git(['diff', '--name-only', 'HEAD']);
+  if (diff == null) return undefined;
+  const dirty = diff.split('\n').filter(Boolean);
+  if (dirty.length) return `its worktree ${wt} has uncommitted changes (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''})`;
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  if (!branch || branch === 'HEAD') return undefined;
+  const ahead = git(['rev-list', '--count', `origin/${branch}..HEAD`]);
+  if (ahead == null) return undefined;
+  return Number(ahead) > 0 ? `its branch ${branch} is ${ahead} commit(s) ahead of origin/${branch}, not pushed` : null;
+}
+// A hold gitHold wrote: { wt } with the worktree its reason names (null where it names none), else null
+// for a hold of another kind, such as another process working in the worktree.
+const DIRTY_HOLD = /^its worktree (\S+) has uncommitted changes/;
+const AHEAD_HOLD = /^its branch \S+ is \d+ commit\(s\) ahead of origin\//;
+export const gitHeld = (why) => { const s = String(why ?? ''); return DIRTY_HOLD.test(s) ? { wt: DIRTY_HOLD.exec(s)[1] } : AHEAD_HOLD.test(s) ? { wt: null } : null; };
+
 // A running batch as a ticket can be moved into it (queue.mjs transfer), and the batches `queue.mjs
 // running` printed as those: { name, base, word }, the standing batch's name null and its word
 // `standing`. needs-you's move action and the decider both offer these, in the one sentence moveOffer
@@ -56,6 +85,11 @@ export function openQuestion(stateDir, t) {
   try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
 }
 
+// Why a failed ticket's worker stopped, never empty: the reason the pass recorded (`failed.why`), else
+// a park the ticket kept, else that none was recorded.
+export const failedWhy = (t) => String(t?.failed?.why ?? '').trim() || String(t?.park?.question ?? '').trim()
+  || `no reason was recorded: read its worker log, logs/${t?.key ?? '<KEY>'}.log`;
+
 // A crash is a refusal like any other: it exits SHOW_PERSON, never node's own 1. `report` prints it.
 export function crashShowsPerson(report = (e) => console.error(describeCrash(e))) {
   const die = (e) => { try { report(e); } finally { process.exit(EXIT.SHOW_PERSON); } };
@@ -68,6 +102,32 @@ export const HELD_PREFIX = 'held by orchestrator';
 // Parked "held by orchestrator" (a dependency chain, released by merge-driver.sh release_chain or by
 // the one sanctioned manual release once every predecessor's PR has merged).
 export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
+
+// A label that holds a ticket until a calendar day, read on this machine's local date.
+const UNTIL_LABEL = /^blocked-until-(.*)$/i;
+export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// The YYYY-MM-DD day a blocked-until label names, or null when that is not a real day.
+export function untilDay(label) {
+  const m = UNTIL_LABEL.exec(String(label ?? '').trim());
+  const d = m && /^(\d{4})-(\d{2})-(\d{2})$/.exec(m[1]);
+  if (!d) return null;
+  const at = new Date(Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3])));
+  return at.getUTCMonth() === Number(d[2]) - 1 && at.getUTCDate() === Number(d[3]) ? m[1] : null;
+}
+// The hold a ticket's labels ask for: { label, bad: true } for a blocked-until label whose date cannot
+// be read (it wins), else { label, until } for the latest day one names, else null.
+export function dateHoldOf(labels) {
+  const own = (Array.isArray(labels) ? labels : []).map(String).filter((l) => UNTIL_LABEL.test(l.trim()));
+  const bad = own.find((l) => !untilDay(l));
+  if (bad) return { label: bad, bad: true };
+  return own.map((l) => ({ label: l, until: untilDay(l) })).sort((a, b) => b.until.localeCompare(a.until))[0] ?? null;
+}
+// A ticket pass.mjs holds on its blocked-until label (held_label), as dateHoldOf reads it, or null. A
+// ticket held behind blockers too waits on them first (queue.mjs hold clears held_label), and the pass
+// reads its label again once they release it.
+export const dateHeld = (t) => (isHeld(t) && t.held_label && !String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
+// What the person is told about a blocked-until label whose date cannot be read.
+export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
 
 // A feature spine pass.mjs parked once its worker finished: 'approval' when its specs passed the check
 // (the person approves or rejects them), 'specs' when they did not (the person sends it back with a
@@ -85,6 +145,12 @@ export function spinePark(t) {
 // answers its drafted plan; its children are held behind it.
 export const FEATURE_PLAN_PREFIX = 'feature plan awaiting your answer';
 export const planPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(FEATURE_PLAN_PREFIX);
+
+// A ticket left in a finished feature batch, parked by the archive check (batch.mjs archiveCheck) with
+// any earlier park kept behind this prefix. Only the person moves or drops it: no requeue, recorded
+// condition or recommended take may start it in the finished batch.
+export const LEFT_PREFIX = 'left in batch ';
+export const leftPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(LEFT_PREFIX);
 
 // A park waiting on the §4 Live reads it named (live-read.mjs), which a pass runs on the host and
 // settles: it waits on the pass, not on the person.
@@ -189,6 +255,34 @@ export function leaseRefusedBrief(t) {
 const YES_WORD = String.raw`(?:yes|yep|y|approved?|ok(?:ay)?|go ahead|do it|push it|force[- ]?push(?: it)?|confirmed?|granted|sure|please)`;
 const YES = new RegExp(String.raw`^\s*${YES_WORD}(?:[\s,.!:;-]+${YES_WORD})*[\s.!]*$`, 'i');
 export const approves = (text) => YES.test(String(text ?? ''));
+// An answer approving a step it names no grant for: a bare yes, or one opening with a yes that holds
+// back, redirects or puts off nothing ("Approved, go ahead and build it", not "Yes, but merge instead").
+const OPENS_YES = new RegExp(String.raw`^\s*${YES_WORD}\b`, 'i');
+const HOLDS_BACK = /\b(?:no|not|never|instead|rather|skip\w*|without|but|wait|hold off|later|only)\b|n't\b/i;
+export const approvesStep = (text) => approves(text) || (OPENS_YES.test(String(text ?? '')) && !HOLDS_BACK.test(String(text ?? '')));
+
+// The step a park says its worker cannot run, where no grant covers it and the question alone does not
+// already make it a session's (sessionPark): a refused script or command, a staging write, a credential
+// no worker is given. Named by the refusing sentence's first code span, else the question's, else its
+// first script, else that sentence; null for any other park. A grantable force-push is a grant's, and a
+// plain push or draft PR the pass finishes itself (recoveries.mjs pushPark), so neither is one. Nor is
+// a park that offers to go on without the step ("shall I leave it out?"): a yes there approves that.
+// Only a question the worker puts as its own offer counts, so "it cannot pass without the image" does not.
+const OFFER = /\b(?:(?:shall|should|can|could|may) (?:i|we)|(?:do you )?want me to)\b/i;
+const WITHOUT_STEP = /\b(?:instead|without|skip\w*|leave (?:\S+ ){0,3}out|drop(?:ped|ping)? (?:it|the|that|this))\b/i;
+const offersWithout = (q) => q.split(/(?<=[.?!;])\s+|\n+/).some((c) => /\?\s*$/.test(c) && OFFER.test(c) && WITHOUT_STEP.test(c));
+const TO_WORKER = /\b(?:refus\w*|denied|not (?:allowed|granted|permitted|given)|never (?:allowed|given|granted)|can(?:not|'t) (?:run|use|reach|hold|write|call)|no (?:headless )?worker (?:can|may|could|is allowed|holds?|is given))\b/i;
+const PUSH_STEP = /\b(?:git push|gh pr|push(?:ed|ing|es)?|(?:draft )?PR)\b/i;
+const CODE = /`([^`\n]+)`/;
+const SCRIPT = /[\w./-]+\.(?:sh|mjs|js|py|ts)\b/;
+export function workerRefusedStep(question) {
+  const q = String(question ?? '');
+  if (refusedStep(q)?.grantable || sessionPark(q) || offersWithout(q)) return null;
+  const said = q.split(/(?<=[.?!;])\s+|\n+/).find((c) => TO_WORKER.test(c));
+  if (!said) return null;
+  const step = (CODE.exec(said)?.[1] ?? CODE.exec(q)?.[1] ?? SCRIPT.exec(q)?.[0] ?? said).trim();
+  return PUSH_STEP.test(step) ? null : step.slice(0, 200);
+}
 
 // The grant an answer records on a parked ticket, { grant }, or { why } when it records none. The lease
 // is the SHA the park names (namedLease), so the approval was of that one overwrite, and a grant is
@@ -238,9 +332,24 @@ const LANE_D = /(?<!\b(?:not|from|no longer|than) )\blane D\b/i;
 const NO_CANVAS = /\bcanvas (?:is |was )?not (?:saved|on)\b|\bno saved canvas\b|\blinks no Claude Design canvas\b|\bonly (?:in|design is a) Figma\b/i;
 export const sessionPark = (question) => LANE_C.test(question) || (LANE_D.test(question) && NO_CANVAS.test(question)) || neverStep(question) !== null;
 
+// A park saying its ticket has no worker work left: it asks for the ticket to leave the queue, or says
+// no worker has anything to do on it. A requeue only parks it again, so drop is its recommendation.
+const NO_WORKER_WORK = /\bno (?:more |further )?worker work\b|\bnothing (?:left )?for (?:a |the |any )?worker\b|\b(?:take|drop|remove) (?:it|this(?: ticket)?|[A-Z][A-Z0-9]*-\d+) (?:off|out of|from) (?:the |its |this )?(?:autopilot )?(?:queue|batch)\b/i;
+export const noWorkerWork = (question) => NO_WORKER_WORK.test(String(question ?? ''));
+
 // A queue ticket only an interactive session takes on: lane C, one parked at triage on its lane, or
-// one whose worker parked it in lane C or a canvas-less lane D. Any other lane D park is requeued.
-export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? ''));
+// one whose worker parked it in lane C or a canvas-less lane D, or one whose park's step the person
+// approved where no worker can run it (park.session_step, answer.mjs). Any other lane D park is requeued.
+export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? '')) || !!t?.park?.session_step;
+
+// A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
+// the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A
+// claimed park is its session's (pass.mjs clearable never settles one), so it is not one. The digest
+// and needs-you leave it out, and desk-q shows it as waiting.
+export const settlesByScript = (t) => {
+  const c = t?.park?.clears_when;
+  return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
+};
 
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
@@ -283,6 +392,9 @@ function holdLeadsTo(q, t, prState, seen) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
   if (!isHeld(t) || seen.has(t)) return null;
+  // Held on its label, it starts on its day by itself, and a fixed label is only read by a pass, so
+  // the batch is not settled while either waits.
+  if (dateHeld(t)) return [];
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
   const outside = String(t.held_outside ?? '').split('|');

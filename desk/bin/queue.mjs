@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, spinePark, planPark, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { ANSWER_HEAD } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -19,9 +19,10 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
+import { followOnPending } from './harvest.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs } from './claude-logins.mjs';
-import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches } from './batches.mjs';
+import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -43,7 +44,7 @@ function setBase(q, v) {
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -225,10 +226,19 @@ const answerWith = (t) => `answer with answer.mjs ${t.key} "<answer>"`;
 // edit that fails silently. The last round's log, park record and mailbox move aside to one
 // `.round<n>`, so pass.mjs neither refuses it as finished nor reports an old question as the new
 // worker's. The branch is kept: the merge driver finds the ticket's PR by it.
+// A ticket the archive check left in a finished feature batch (leftPark) runs there never again: the
+// person moves it to the standing batch or drops it, whatever park it carried before.
+function refuseLeft(t, key, what) {
+  if (!leftPark(t)) return;
+  const name = String(t.park.question).slice(LEFT_PREFIX.length).split(/\s/)[0];
+  throw new Error(`${key} was left in finished batch ${name} (${t.park.question}), so it is not ${what} there: move it (node queue.mjs --batch ${name} transfer ${key} standing) or drop it`);
+}
+
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
   if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
   if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
+  refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
   // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
   // dependency cycle), a lane C, or a lane D parked on its design would slip by. A worker's own park never has open questions:
@@ -236,6 +246,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
   if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
   if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
+  if (t.state === 'parked' && t.park?.session_step) throw new Error(`${key} waits on a step the person approved that no worker can run (${t.park.session_step.step}): do it in an interactive session, then \`queue.mjs step-done ${key}\` sends it back to a worker`);
   // A lane D ticket handed back (handback) had its session step done by the person, so its design park
   // no longer keeps it from a worker. A lane C one is moved to lane B first.
   if (!handedBack && t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
@@ -274,7 +285,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
   const pending = String(t.held_by ?? '').split('|').filter((p) => p && (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null,
+  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
@@ -308,6 +319,19 @@ function handback(q, key, note) {
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
   appendBriefing(key, `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`);
   return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
+}
+
+// A step the person approved that no worker can run (park.session_step, answer.mjs), done by them:
+// the ticket goes back to a worker as a requeue sends it, with the step in its briefing as done.
+function stepDone(q, key) {
+  const t = ticket(q, key);
+  const s = t.park?.session_step;
+  if (t.state !== 'parked' || !s?.step) throw new Error(`${key} is not waiting on an approved step no worker can run, so there is no step to record done`);
+  delete t.park.session_step;
+  let msg;
+  try { msg = requeue(q, key); } catch (e) { t.park.session_step = s; throw e; }
+  appendBriefing(key, `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.\n`);
+  return `${key}: the approved step is recorded done (${s.step}); ${msg}`;
 }
 
 // A binding answer for a ticket's next worker, appended to its briefing (pass.mjs writeBrief keeps it).
@@ -376,29 +400,54 @@ const batchWord = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 const baseOf = (bq) => bq.base ?? configValue('default-branch') ?? 'main';
 const otherRunning = () => otherRunningBatches(repoSlug(), QUEUE, () => baseOf({}));
 
+// The worktree `wt`: removed with its local branch when `held` finds no work in it. `held` gets its
+// uncommitted or untracked paths (`dirty`), its `branch` (`HEAD` when detached) and a `lines` reader of
+// git output in it, and returns what it holds. -> the path removed, or null when there is none. Throws
+// `refusal(holds)`, removing nothing, when it holds work or git cannot read it.
+function removeWorktree(wt, held, refusal) {
+  if (!existsSync(wt)) return null;
+  const lines = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split('\n').filter(Boolean);
+  const holds = [];
+  let branch = 'HEAD';
+  try {
+    const dirty = lines('status', '--porcelain').map((l) => l.slice(3));
+    branch = lines('rev-parse', '--abbrev-ref', 'HEAD')[0];
+    holds.push(...held({ dirty, branch, lines }));
+  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
+  if (holds.length) throw new Error(refusal(holds));
+  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
+  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
+  return wt;
+}
+
 // The worktree a worker of `key` was given, cut from `cut`: removed with its local branch when it holds
 // no work of its own, so the next worker's is cut from its new base. -> the path removed, or null when
 // there is none. Throws, removing nothing, when it holds work.
 function dropStaleWorktree(key, cut) {
   const wt = join(worktreesDir(), key);
-  if (!existsSync(wt)) return null;
-  const git = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  const holds = [];
-  let branch = 'HEAD';
-  try {
-    const dirty = git('status', '--porcelain');
-    if (dirty) holds.push('uncommitted changes or untracked files');
-    branch = git('rev-parse', '--abbrev-ref', 'HEAD');
-    const own = Number(git('rev-list', '--count', `origin/${cut}..HEAD`));
+  return removeWorktree(wt, ({ dirty, branch, lines }) => {
+    const holds = dirty.length ? ['uncommitted changes or untracked files'] : [];
+    const own = Number(lines('rev-list', '--count', `origin/${cut}..HEAD`)[0]);
     if (own > 0) holds.push(`${own} commit(s) not on origin/${cut}`);
     if (branch !== 'HEAD') {
-      try { git('show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`); holds.push(`its branch ${branch} pushed to origin`); } catch { /* not pushed */ }
+      try { lines('show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`); holds.push(`its branch ${branch} pushed to origin`); } catch { /* not pushed */ }
     }
-  } catch (e) { holds.push(`git cannot read it (${String(e.stderr || e.message).trim().split('\n')[0]})`); }
-  if (holds.length) throw new Error(`${key}'s worktree ${wt} holds work cut from ${cut} (${holds.join(', ')}), which a worker on another base would start from: move that work by hand or discard it, remove the worktree, then move ${key} again. Nothing was moved`);
-  execFileSync('git', ['-C', repoRoot(), 'worktree', 'remove', '--force', wt], { stdio: ['ignore', 'pipe', 'pipe'] });
-  if (branch !== 'HEAD') { try { execFileSync('git', ['-C', repoRoot(), 'branch', '-D', branch], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* already gone */ } }
-  return wt;
+    return holds;
+  }, (holds) => `${key}'s worktree ${wt} holds work cut from ${cut} (${holds.join(', ')}), which a worker on another base would start from: move that work by hand or discard it, remove the worktree, then move ${key} again. Nothing was moved`);
+}
+
+// The worktree a dropped ticket `t` was given: removed with its local branch when nothing in it is
+// missing from origin. -> the path removed, or null when there is none. Throws, removing nothing,
+// naming the worktree and what it holds, when it has uncommitted files or commits no origin ref has.
+function dropWorktree(key, t) {
+  const wt = t.worktree || join(worktreesDir(), key);
+  const listed = (ls) => `${ls.slice(0, 5).join('; ')}${ls.length > 5 ? `; and ${ls.length - 5} more` : ''}`;
+  return removeWorktree(wt, ({ dirty, lines }) => {
+    const holds = dirty.length ? [`uncommitted or untracked files: ${listed(dirty)}`] : [];
+    const unpushed = lines('log', '--format=%h %s', 'HEAD', '--not', '--remotes=origin');
+    if (unpushed.length) holds.push(`${unpushed.length} commit(s) not pushed: ${listed(unpushed)}`);
+    return holds;
+  }, (holds) => `${key}'s worktree ${wt} holds work origin does not have (${holds.join('; ')}): push or discard it, then drop ${key} again. Nothing was dropped`);
 }
 
 // Move `key` from this queue `q` (whose lock is held) to the running batch `to` (`standing` for the
@@ -455,7 +504,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (WRITES.includes(cmd)) lock();
@@ -475,7 +524,7 @@ switch (cmd) {
       if (ifAt < 0) throw new Error('init --standing wants --if-batch <the batch it replaces, or none>');
       let cur = null;
       try { cur = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { cur = { batch: null, tickets: {} }; }
-      const rows = Object.values(cur?.tickets ?? {});
+      const rows = ownRows(cur);
       const same = cur ? String(cur.batch) === args[ifAt + 1] && rows.length > 0 && rows.every((t) => t.state === 'done') && !cur.base : args[ifAt + 1] === 'none';
       if (!same) throw new Error(`init --standing: the queue is batch ${cur?.batch ?? 'none'} now, not the finished ${args[ifAt + 1]}: left as it is`);
     }
@@ -486,6 +535,13 @@ switch (cmd) {
     const fresh = empty();
     fresh.batch = name ?? new Date().toISOString().slice(0, 16);
     if (standing) fresh.supervised = true;
+    // A merged ticket whose follow-on steps the person has not run yet (needs-you lists them from the
+    // queue) moves into the new batch, so replacing the old one never drops them from the list. Marked
+    // carried_from, it is no ticket of this batch: a queue holding only those is one not yet planned.
+    let prev = null;
+    try { prev = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { prev = null; }
+    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t))
+      .map(([k, t]) => [k, { ...t, carried_from: t.carried_from ?? prev.batch ?? null }]));
     save(fresh);
     // Batch notes record what workers learnt about *this* configuration. Carrying them
     // across batches propagates claims that a config change has since made false.
@@ -553,6 +609,8 @@ switch (cmd) {
     if (['running', 'done', 'failed'].includes(t.state)) throw new Error(`${key} is ${t.state}: too late to hold it`);
     // A release sets state=triaged, so only a ticket that is triaged (or already held) may be held.
     if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it before holding it`);
+    // A date hold waits behind its blockers: once they release it, the pass reads its label again.
+    if (dateHeld(t)) t.held_label = null;
     const all = [...new Set([...String(t.held_by ?? '').split('|').filter(Boolean), ...preds])];
     t.held_by = all.join('|');
     t.state = 'parked';
@@ -671,6 +729,7 @@ switch (cmd) {
     if (!key || !rest.length) throw new Error(`usage: queue.mjs clears-when <TICKET> <${CLEARS_WHEN_FORMS}>`);
     const t = ticket(q, key);
     if (t.state !== 'parked' || isHeld(t)) throw new Error(`${key} is not parked for its own reason (state ${t.state}), so it has no park to clear`);
+    refuseLeft(t, key, 'given a condition to clear on');
     const p = parseClearsWhen(rest.join(' '));
     if (!p.ok) throw new Error(p.why);
     t.park.clears_when = p.cond;
@@ -692,6 +751,13 @@ switch (cmd) {
     const note = rest.join(' ').trim();
     if (!key || !note) throw new Error('usage: queue.mjs handback <TICKET> "<what the person did>"');
     console.log(handback(q, key, note));
+    break;
+  }
+
+  case 'step-done': {
+    const [key] = args;
+    if (!key) throw new Error('usage: queue.mjs step-done <TICKET>');
+    console.log(stepDone(q, key));
     break;
   }
 
@@ -841,10 +907,13 @@ switch (cmd) {
 
   case 'drop': {
     const key = args[0];
-    ticket(q, key);
+    const t = ticket(q, key);
+    // A running ticket's worker is in its worktree, so that is left where it is.
+    const running = t.state === 'running';
+    const removed = running ? null : dropWorktree(key, t);
     delete q.tickets[key];
     save(q);
-    console.log(`dropped ${key} from the batch`);
+    console.log(`dropped ${key} from the batch${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : running && t.worktree ? `; its worker was running, so its worktree ${t.worktree} was left` : ''}`);
     break;
   }
 
@@ -908,7 +977,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
@@ -967,14 +1036,18 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
   const out = [];
   for (const t of rows) {
     const parks = isHeld(t) ? waitingOnPark(q, t) : null;
-    const stuck = isHeld(t) && !parks && !waitingOnMerge(q, t);
+    const day = dateHeld(t);
+    const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
     const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : t.state.toUpperCase();
     const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
-    const tail = stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
+    const tail = day?.bad ? badLabelText(day.label)
+      : day ? `until ${day.until} (label ${day.label})`
+      : stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
       : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${String(t.held_by).split('|').join(', ')} merge`
       : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`
       : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
       : t.state === 'parked' ? t.park?.question ?? ''
+      : t.state === 'failed' ? failedWhy(t)
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}${t.merged_at ? ' merged' : ''}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`

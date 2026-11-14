@@ -12,9 +12,11 @@
 // The run is read back by its id (gh workflow run prints the run's URL). A run whose id was not
 // printed is read as done once DISPATCH_GRACE_MS has passed, so its cells go on from then as any left
 // by a finished run do (undraft.mjs undraftCall).
-import { readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { SCREENSHOT_FILE, expandHome } from './desk-env.mjs';
+import { fileURLToPath } from 'node:url';
+import { SCREENSHOT_FILE, expandHome, configValue, configValues, ghRepo, permission } from './desk-env.mjs';
 import { failureLines } from './gate.mjs';
 
 export const DISPATCH_GRACE_MS = 30 * 60 * 1000;
@@ -223,4 +225,53 @@ No UI.
 * \`.github/workflows/${workflow}\` and the script it runs.
 `;
   return { summary, body };
+}
+
+// `gh`'s arguments to start the evidence workflow for PR n: on `ref`, the default branch whose code it
+// runs, with the PR number its one input. The pass (pass.mjs startEvidence) and dispatchCall both use it.
+export const evidenceRunArgs = (workflow, repo, ref, n) => ['workflow', 'run', workflow, '--repo', repo, '--ref', ref, '-f', `pr=${n}`];
+
+// A worker's own dispatch of §4 Evidence workflow, which it may start from the moment its draft PR
+// opens, before the queue records the PR. Its settings allow only
+// `node <bin>/evidence.mjs dispatch <its branch> <n>`, the branch fixed by the rule. A `pr=*` rule
+// could not hold the number to digits, as the shell expands an unquoted `*` against files the worker
+// writes, so this checks the arguments instead and starts the run with evidenceRunArgs, on the config
+// row's default branch, never a batch base.
+//
+//   node evidence.mjs dispatch <branch> <pr>
+//
+// `view` is gh pr view's { headRefName, state, isCrossRepository } for the PR, or null when it could
+// not be read. -> { args } for `gh`, or { refused } saying why.
+export function dispatchCall({ argv, view, workflow, repo, ref, allowed }) {
+  if (argv.length !== 2) return { refused: 'usage: evidence.mjs dispatch <branch> <pr>' };
+  const [branch, pr] = argv;
+  if (!/^[1-9]\d*$/.test(pr)) return { refused: `"${pr}" is not a PR number` };
+  if (!allowed) return { refused: '§3 worker-workflow-dispatch is not yes' };
+  if (!workflow) return { refused: '§4 Evidence workflow names no usable workflow' };
+  if (!repo) return { refused: 'no §0 GitHub repo' };
+  if (!view) return { refused: `PR #${pr} could not be read` };
+  if (view.headRefName !== branch || view.isCrossRepository) return { refused: `PR #${pr} is not ${branch}'s own PR` };
+  if (view.state !== 'OPEN') return { refused: `PR #${pr} is ${String(view.state).toLowerCase()}` };
+  return { args: evidenceRunArgs(workflow, repo, ref, pr) };
+}
+
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+})();
+if (isMain) {
+  const [cmd, ...argv] = process.argv.slice(2);
+  if (cmd !== 'dispatch') { console.error('usage: evidence.mjs dispatch <branch> <pr>'); process.exit(2); }
+  const safe = (f) => { try { return f(); } catch { return null; } };
+  const repo = safe(ghRepo);
+  const row = parseEvidenceRow(safe(() => configValues('evidence-workflow')));
+  const view = /^[1-9]\d*$/.test(argv[1] ?? '') && repo ? safe(() => JSON.parse(execFileSync('gh', ['pr', 'view', argv[1], '--repo', repo, '--json', 'headRefName,state,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))) : null;
+  const call = dispatchCall({
+    argv, view, workflow: row?.workflow ?? null, repo,
+    ref: String(safe(() => configValue('default-branch')) ?? '').trim() || 'main',
+    allowed: safe(() => permission('worker-workflow-dispatch')) === 'yes',
+  });
+  if (call.refused) { console.error(`evidence.mjs: refused: ${call.refused}`); process.exit(1); }
+  const r = spawnSync('gh', call.args, { stdio: 'inherit' });
+  if (r.error) { console.error(`evidence.mjs: ${r.error.message}`); process.exit(1); }
+  process.exit(r.status ?? 1);
 }

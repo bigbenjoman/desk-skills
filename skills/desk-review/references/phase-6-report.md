@@ -25,7 +25,7 @@ P2 (2)
 
 REQUIREMENT GAPS (3, 1 unverified)  ABC-123
  AC3: "export includes VAT" — no VAT column in the CSV writer
- PERSON'S CALL · AC4: "the job finishes within a minute" — takes 90s on the largest tenant; accept it on the PR or amend AC4
+ PERSON'S CALL · AC4: "the job finishes within a minute" — takes 90s on the largest tenant; accept it on the PR or amend AC4. Recommended: amend AC4 to 2 minutes
  AC1: "the cache is keyed per tenant" — UNVERIFIED CODE CLAIM, terminal only, not posted
 
 UNPROVEN PREMISES (1)

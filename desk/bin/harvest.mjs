@@ -27,9 +27,14 @@ export function saidIn(c) {
   return m ? `AUTOPILOT_STAGE: ${m[2]}` : null;
 }
 
+// A session's final result text with a DONE marker that ends it, as a sentence of its own after other
+// words on its line, moved to a line of its own: its last word is that it finished. A marker that is
+// quoted, mentioned mid-sentence or followed by more text is left where it is, and is not read.
+const resultSaid = (s) => s.trimEnd().replace(/([.!?])[ \t]+(?=AUTOPILOT_DONE:[^\n`]*$)/, '$1\n');
+
 // What one parsed log event said: an assistant message's blocks through saidIn, or a result's text.
 const saidBy = (d) => (d?.type === 'assistant' ? (d.message?.content ?? []).map(saidIn).filter((s) => s != null)
-  : d?.type === 'result' && typeof d.result === 'string' ? [d.result] : []);
+  : d?.type === 'result' && typeof d.result === 'string' ? [resultSaid(d.result)] : []);
 
 // Only what the worker itself said: its text blocks and its final result (`texts`). Tool inputs
 // and tool results are never read, so a grep for a marker, or a file that quotes one, is not the
@@ -98,6 +103,27 @@ export function endedNormally(logText) {
   return false;
 }
 
+// How a worker that printed no marker ended, in a phrase: that its session wrote nothing after desk's
+// own lines (`desk_*` events, before and around the launch), else its session's error, else the last
+// line it said, else the last line of its log that was not an event (the CLI's own error).
+export const NO_OUTPUT = 'ended after its preflight with no output';
+export function workerEnd(logText) {
+  let events = 0, said = null, result = null, stray = null;
+  for (const line of logText.split('\n')) {
+    if (!line.trim()) continue;
+    let d;
+    try { d = JSON.parse(line); } catch { stray = line.trim(); continue; }
+    if (String(d?.type ?? '').startsWith('desk_')) continue;
+    events += 1;
+    if (d?.type === 'result') result = d;
+    for (const s of saidBy(d)) if (s.trim()) said = s;
+  }
+  const quote = (s) => { const l = s.trim().split('\n').filter((x) => x.trim()).pop().trim(); return `"${l.length > 200 ? `${l.slice(0, 199)}…` : l}"`; };
+  if (!events) return stray ? `${NO_OUTPUT} from its session; the last line of its log: ${quote(stray)}` : NO_OUTPUT;
+  const last = said ? `its last line: ${quote(said)}` : stray ? `the last line of its log: ${quote(stray)}` : 'it said nothing';
+  return result?.is_error ? `its session ended in error (${result.subtype ?? 'error'}); ${last}` : last;
+}
+
 // The last PR body a worker wrote between AUTOPILOT_PR_BODY_BEGIN: and AUTOPILOT_PR_BODY_END:, in its
 // own text (readLog's `texts`), without a code fence around it, or null when it wrote none.
 export function prBodyIn(texts) {
@@ -106,6 +132,30 @@ export function prBodyIn(texts) {
   for (const m of texts.join('\n').matchAll(re)) body = m[1];
   return body == null ? null : body.replace(/^```[a-z]*\n/, '').replace(/\n```\s*$/, '');
 }
+
+// The steps a DONE marker names as waiting on its PR's merge: `follow_on=` then a one-line JSON array of
+// {"step": "<one line>", "row": "<the §3 key it needs>"} (row null where none says), before any said=,
+// which runs to the line's end. -> { steps, error }: steps [] with no follow_on=, and with an error
+// naming why where one is there but does not read.
+export const FOLLOW_ON_MAX = 500;
+export function followOnIn(done) {
+  const s = String(done ?? '');
+  const at = s.search(/\bfollow_on=/);
+  if (at < 0) return { steps: [], error: null };
+  const rest = s.slice(at + 'follow_on='.length);
+  if (!rest.startsWith('[')) return { steps: [], error: 'not a JSON array' };
+  let list = null;
+  // The array ends at the first `]` that closes a whole JSON value.
+  for (let i = rest.indexOf(']'); i >= 0 && list == null; i = rest.indexOf(']', i + 1)) {
+    try { list = JSON.parse(rest.slice(0, i + 1)); } catch { /* not closed yet */ }
+  }
+  if (!Array.isArray(list)) return { steps: [], error: 'not a JSON array' };
+  const bad = list.find((x) => typeof x?.step !== 'string' || !x.step.trim() || (x.row != null && typeof x.row !== 'string'));
+  if (bad !== undefined) return { steps: [], error: `an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}` };
+  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null })), error: null };
+}
+// A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
+export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Array.isArray(t.follow_on) && t.follow_on.length > 0;
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }

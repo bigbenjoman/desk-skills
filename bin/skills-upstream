@@ -88,6 +88,9 @@ def load():
 
 
 def save(data):
+    # Unchanged data leaves the file untouched, so an upgrade that moves no pin dirties nothing.
+    if data == load():
+        return
     tmp = SOURCES + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)

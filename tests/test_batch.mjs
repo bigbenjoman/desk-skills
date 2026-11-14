@@ -301,12 +301,113 @@ a = res(archive('X-3', { 9: 'MERGED', 10: 'MERGED' }));
 t('AC5 a second X-3 archives beside the first', a.archived === true && existsSync(doneQ('X-3')) && (a.log ?? []).join(' ').includes('.done/X-3.'), true);
 t('AC5 a last promotion merged is logged as merged', (a.log ?? []).join(' ').includes('its promotion PR #9 is merged'), true);
 
+// DS-523 AC3: a ticket left in a batch ready to archive is never archived with it. After a last
+// promotion a pass recorded, one admitted since moves to the standing batch, and the archive line names it.
+const standingLive = JSON.stringify({ version: 1, batch: 'standing-2', supervised: true, tickets: { 'S-1': { key: 'S-1', state: 'running' } } });
+writeFileSync(standingQ, standingLive);
+const lastRecorded = { pr: 9, merged: [{ pr: 9, slice: 1, merged_at: MERGED_AT }] };
+writeQ('X-9', { epic: 'X-9', base: 'feat/x-9', promotion: lastRecorded, tickets: {
+  'X-10': { key: 'X-10', state: 'done', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z' },
+  'X-11': { key: 'X-11', state: 'triaged' },
+} });
+mkdirSync(join(namedS('X-9'), 'triage'), { recursive: true });
+writeFileSync(join(namedS('X-9'), 'triage', 'X-11.json'), JSON.stringify({ ticket: 'X-11', type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: 'fix/X-11', files_in_scope: ['f/X-11'], unknowns: [], blockers: [] }));
+a = res(archive('X-9', { 9: 'MERGED', 10: 'MERGED' }));
+t('DS-523 AC3 a ticket left after the last promotion: the batch is archived', a.archived, true);
+t('DS-523 AC3 the ticket is in the standing batch', JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-11']?.state, 'triaged');
+t('DS-523 AC3 and not in the archived queue', JSON.parse(readFileSync(doneQ('X-9'), 'utf8')).tickets['X-11'], undefined);
+t('DS-523 AC3 the archive line names it', (a.log ?? []).join(' ').includes('moved X-11 to the standing batch'), true);
+// With no record, a merged slice and a ticket still to come is not the last: nothing moves.
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': { key: 'X-13', state: 'queued' } } });
+mkdirSync(namedS('X-12'), { recursive: true });
+a = res(archive('X-12', { 9: 'MERGED' }));
+t('DS-523 a merged slice no pass recorded as last: not archived, nothing moved', a.archived === false && readQ('X-12').tickets['X-13']?.state === 'queued', true);
+// A refused move, or a closed promotion, hands the ticket to the digest and holds the archive.
+const archiveMove = (name, states, why) => run(`const s = ${JSON.stringify(states)}; const b = B.listBatches().find((x) => x.name === '${name}');
+  console.log(JSON.stringify(A.archiveCheck(b, { state: (n) => s[n] ?? 'OPEN', mergedAt: (n) => (s[n] === 'MERGED' ? '${MERGED_AT}' : null), move: () => ${JSON.stringify(why)} })))`);
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: lastRecorded, tickets: { 'X-13': { key: 'X-13', state: 'triaged' } } });
+a = res(archiveMove('X-12', { 9: 'MERGED' }, 'the standing batch is not running'));
+t('DS-523 AC3 a refused move: not archived', a.archived === false && existsSync(namedQ('X-12')), true);
+t('DS-523 AC3 the ticket is handed to the digest with the reason', Object.values(handed('X-12')).some((e) => e.kind === 'archive' && e.ticket === 'X-13' && e.text.includes('the standing batch is not running')), true);
+t('DS-523 AC3 the report names it', (a.lines ?? []).join(' ').includes('waits on X-13'), true);
+t('DS-523 AC3 a handed ticket ready to run is parked, so no pass starts it', readQ('X-12').tickets['X-13']?.state === 'parked' && readQ('X-12').tickets['X-13']?.park?.question.includes('the standing batch is not running'), true);
+a = res(archiveMove('X-12', { 9: 'MERGED' }, 'still refused'));
+t('DS-523 AC3 a second check hands nothing new on', (a.lines ?? []).length === 0 && Object.keys(handed('X-12')).length === 1, true);
+// A hold outside every batch is one transfer would drop: that ticket is handed on, never moved.
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: lastRecorded, tickets: {
+  'X-15': { key: 'X-15', state: 'parked', held_by: 'OUT-1', held_outside: 'OUT-1', park: { question: 'held by orchestrator: blocked by OUT-1', since: MERGED_AT } },
+  'X-16': { key: 'X-16', state: 'parked', park: { question: 'which copy?', since: MERGED_AT, clears_when: 'pr 5 merged' } },
+  'X-17': { key: 'X-17', state: 'parked', lane: 'A', park: { question: 'size XL: split it', since: MERGED_AT } },
+} });
+a = res(archiveMove('X-12', { 9: 'MERGED' }, null));
+t('DS-523 AC3 a ticket held outside every batch is not moved', a.archived === false && readQ('X-12').tickets['X-15']?.held_outside === 'OUT-1', true);
+t('DS-523 AC3 and is handed on naming its hold', Object.values(handed('X-12')).some((e) => e.ticket === 'X-15' && e.text.includes('held behind OUT-1 outside every batch')), true);
+// A hold or a clears-when a pass would release with no person is replaced by the archive's own park.
+const p15 = readQ('X-12').tickets['X-15']?.park ?? {};
+t('DS-523 AC3 a held leftover is parked under the archive, no longer a hold', p15.question?.startsWith('left in batch X-12 after its promotion PR #9 merged') && p15.question.includes('it was parked: held by orchestrator'), true);
+const p16 = readQ('X-12').tickets['X-16']?.park ?? {};
+t('DS-523 AC3 a leftover parked for its own reason loses its clears-when, keeping its question', p16.clears_when === undefined && p16.question?.includes('it was parked: which copy?'), true);
+a = res(archiveMove('X-12', { 9: 'MERGED' }, null));
+t('DS-523 AC3 the archive\'s own park is not parked again', readQ('X-12').tickets['X-16']?.park?.question === p16.question, true);
+// The archive's park hides an earlier one's start (a size park here), so the guards read its own prefix:
+// no requeue, recorded condition, decider take or pass release starts a leftover in the finished batch.
+const p17 = readQ('X-12').tickets['X-17']?.park ?? {};
+t('DS-523 AC3 a size-parked leftover is parked under the archive', p17.question?.startsWith('left in batch X-12') && p17.question.includes('it was parked: size XL'), true);
+for (const k of ['X-16', 'X-17']) {
+  r = cli('queue.mjs', ['--batch', 'X-12', 'requeue', k]);
+  t(`DS-523 AC3 requeue refuses ${k} left in the finished batch, naming the move`, r.code !== 0 && r.out.includes(`queue.mjs --batch X-12 transfer ${k} standing`) && readQ('X-12').tickets[k]?.state === 'parked', true);
+}
+r = cli('queue.mjs', ['--batch', 'X-12', 'clears-when', 'X-16', 'pr 5 merged']);
+t('DS-523 AC3 clears-when refuses a leftover', r.code !== 0 && r.out.includes('transfer X-16 standing') && readQ('X-12').tickets['X-16']?.park?.clears_when === undefined, true);
+r = run(`const S = await import('${join(BIN, 'batch-state.mjs')}'); const Dc = await import('${join(BIN, 'decider.mjs')}');
+  const q = ${JSON.stringify(p17.question ?? '')};
+  console.log(S.leftPark({ state: 'parked', park: { question: q } }), Dc.presort([{ kind: 'parked', lane: 'A', ticket: 'X-17', text: q }]).hand.length)`);
+t('DS-523 AC3 leftPark reads it, and the decider hands it to the person', r.out, 'true 1');
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-14': { key: 'X-14', state: 'failed' } } });
+a = res(archiveMove('X-12', { 9: 'CLOSED' }, null));
+t('DS-523 AC3 a closed promotion: its left ticket is handed on, not moved', a.archived === false && !!readQ('X-12').tickets['X-14'] && Object.values(handed('X-12')).some((e) => e.ticket === 'X-14' && e.text.includes('was closed')), true);
+t('DS-523 AC3 and the item of a ticket no longer left is dropped', Object.values(handed('X-12')).some((e) => e.ticket === 'X-13'), false);
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: {} });
+a = res(archive('X-12', { 9: 'CLOSED' }));
+t('DS-523 AC3 once it is dropped the batch archives and its item goes', a.archived === true && existsSync(doneQ('X-12')), true);
+
 // A pass or merge driver still holding the batch keeps it for the next tick.
 writeQ('X-4', { epic: 'X-4', base: 'feat/x-4', promotion: { pr: 9 }, tickets: {} });
 mkdirSync(namedS('X-4'), { recursive: true });
 writeFileSync(join(namedS('X-4'), 'orchestrator.lock'), JSON.stringify({ pid: process.pid }));
 a = res(archive('X-4', { 9: 'MERGED' }));
 t('a live pass keeps the batch for the next tick', a.archived === false && existsSync(namedQ('X-4')) && (a.lines ?? []).join(' ').includes('a pass (pid'), true);
+rmSync(join(namedS('X-4'), 'orchestrator.lock'));
+
+// A live merge driver on a shut batch is stopped, and the batch archives once it has exited. `stop` is
+// injected: it records the pid it was asked to stop in stops.log.
+const stops = join(namedS('X-4'), 'stops.log');
+const stopsMade = () => (existsSync(stops) ? readFileSync(stops, 'utf8').trim().split('\n').filter(Boolean) : []);
+const archiveStop = (name, states) => run(`const s = ${JSON.stringify(states)}; const b = B.listBatches().find((x) => x.name === '${name}');
+  const { appendFileSync } = await import('node:fs');
+  console.log(JSON.stringify(A.archiveCheck(b, { state: (n) => s[n] ?? 'OPEN', mergedAt: (n) => (s[n] === 'MERGED' ? '${MERGED_AT}' : null), stop: (p) => appendFileSync('${stops}', p + '\\n') })))`);
+const driverLock = join(namedS('X-4'), 'merge-driver.lock.d');
+mkdirSync(driverLock, { recursive: true });
+writeFileSync(join(driverLock, 'pid'), String(process.pid));
+// AC2: an open promotion, or a ticket PR still open, leaves the driver running.
+a = res(archiveStop('X-4', { 9: 'OPEN' }));
+t('DS-525 AC2 an open promotion leaves the driver running', `${a.archived} ${a.stopped ?? false} ${stopsMade().length}`, 'false false 0');
+writeQ('X-4', { epic: 'X-4', base: 'feat/x-4', promotion: { pr: 9 }, tickets: { 'X-9': { key: 'X-9', state: 'done', result: { pr: 13 } } } });
+a = res(archiveStop('X-4', { 9: 'CLOSED', 13: 'OPEN' }));
+t('DS-525 AC2 an open ticket PR leaves the driver running', `${a.archived} ${a.stopped ?? false} ${stopsMade().length}`, 'false false 0');
+// AC1: shut, nothing running, no ticket PR open: the driver is told to stop, once.
+writeQ('X-4', { epic: 'X-4', base: 'feat/x-4', promotion: { pr: 9 }, tickets: {} });
+a = res(archiveStop('X-4', { 9: 'MERGED' }));
+t('DS-525 AC1 a shut batch\'s live driver is told to stop', `${a.archived} ${a.stopped} ${stopsMade().join(',')}`, `false true ${process.pid}`);
+t('DS-525 AC1 the report says so', (a.lines ?? []).join(' ').includes(`its merge driver (pid ${process.pid}) has nothing left to merge, so it was told to stop`), true);
+a = res(archiveStop('X-4', { 9: 'MERGED' }));
+t('DS-525 AC1 a driver still exiting is not told again', `${a.archived} ${a.stopped} ${stopsMade().length}`, 'false true 1');
+t('DS-525 AC1 and the report says it has not exited yet', (a.lines ?? []).join(' ').includes('has not exited yet'), true);
+// Once it has exited, the next tick archives the batch, saying the driver was stopped for it.
+rmSync(driverLock, { recursive: true, force: true });
+a = res(archiveStop('X-4', { 9: 'MERGED' }));
+t('DS-525 AC1 the next tick archives it', a.archived === true && !existsSync(namedQ('X-4')), true);
+t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(' ').includes(`its merge driver (pid ${process.pid}) was stopped for it`), true);
 
 // The standing batch is never archived, even with a promotion that would archive a named one.
 writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 's1', promotion: { pr: 9 }, tickets: {} }));

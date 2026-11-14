@@ -102,10 +102,13 @@ desk-env drift                                      # only when EXISTS=yes: each
                                                     # template has and this repo's config lacks
 node ~/.claude/desk/bin/repo-templates.mjs status   # only when EXISTS=yes: exit 1, a desk template this repo
                                                     # committed (pre-push hook, desk gate) is BEHIND
+node ~/.claude/desk/bin/gate.mjs hold-kind          # only when EXISTS=yes: an `agent` line is a merge hold
+                                                    # an agent can clear that names no routine
 ```
 
 **Inside a configured repo, read `references/repo-drift.md` now**: it says how the `MISSING` §3 rows
-are asked and written (each once, this run), and how a `BEHIND` template becomes one PR on this repo.
+are asked and written (each once, this run), how a merge hold an agent can clear gets its routine
+proposed, and how a `BEHIND` template becomes one PR on this repo.
 A missing row reads as `no`, so every worker is refused it until it is asked: this is how a row
 shipped after the repo was set up reaches it.
 
@@ -190,11 +193,17 @@ that is checked out (the tree must be clean; if it is not, say so and upgrade no
 
 ```bash
 git -C "$D" fetch -q origin
-git -C "$D" switch --no-track -c "chore/vendor-$(date +%F)" origin/main   # exists already: say so and stop
+bash ~/.claude/desk/bin/vendor-prs.sh free "$D" <owner/name> "chore/vendor-$(date +%F)"   # exit 1: it exists; print its line and stop
+git -C "$D" switch --no-track -c "chore/vendor-$(date +%F)" origin/main
 skills-upstream upgrade <name>...          # writes vendor/<name> and the pin; nothing is installed yet
 git -C "$D" diff --stat -- vendor/
 git -C "$D" diff -- vendor/<name>/SKILL.md # summarise the substance for the user
 ```
+
+`free` exits 1 when today's branch is already in the checkout, on origin, or both: its line names where and
+any open PR from it. Report that line and upgrade nothing, since an upgrade on a fresh local branch
+would be thrown away when its push fails as non-fast-forward. Exit 2 means origin could not be read:
+say so and upgrade nothing. `<owner/name>` is as for `open` below.
 
 A `REFUSED` line means a local patch in that entry's `patches` no longer applies: that skill is not
 upgraded; tell the user, and never drop the patch to get past it.

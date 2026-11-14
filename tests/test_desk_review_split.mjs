@@ -76,6 +76,7 @@ const REWRITTEN = [
   ['DS-427', '```bash codex exec --sandbox read-only ', 3], // each codex command skips the trusted-directory check
   ['DS-456', 'Use when reviewing a branch, a PR or the open PR queue in this repo before a human', 1], // the description says when, not how
   ['DS-456', 'Fix it with `! codex login`, or say', 1], // the preflight question leads with its recommended option
+  ['DS-584', 'She reads the ticket and the diff, not their output.', 1], // and the calls already taken on it
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 
@@ -171,6 +172,24 @@ const CODEX_DOCS = [
 const codexCalls = CODEX_DOCS.flatMap((p) => readFileSync(p, 'utf8').split('\n').filter((l) => /^\s*codex exec /.test(l)).map((l) => [label(p), l.trim()]));
 t(`DS-427 AC2 the documented codex commands are read (${codexCalls.length})`, codexCalls.length, 5);
 for (const [f, l] of codexCalls) t(`DS-427 AC2 ${f}: "${l.slice(0, 50)}…" carries --skip-git-repo-check`, l.startsWith('codex exec --sandbox read-only --skip-git-repo-check '), true);
+
+// DS-584: the requirements seat tags a gap code when a settled call, its own text, a same-review
+// P0/P1 fix or a later-merged ticket settles it; a person gap names the seat's pick.
+const req = norm(read('phase-5-requirements.md'));
+t('DS-584 AC1 Bea reads the PR body\'s Decisions taken and the triage record\'s decided entries', req.includes('each line of the PR body\'s `### Decisions taken` section') && req.includes('the triage record\'s `decided` list'), true);
+t('DS-584 AC1 a gap a settled call covers is code', req.includes('- a gap a settled call covers;'), true);
+t('DS-584 AC2 a gap a later-merged ticket forces is code, named in an engineering decision', req.includes('a ticket merged after this one\'s triage added') && req.includes('`Engineering decision: keep <TICKET>\'s <behaviour>; <TICKET> merged after this ticket\'s triage`'), true);
+t('DS-584 AC3 a gap whose text names its code change is code', req.includes('- a gap whose own `gap:` text names the code change that closes it;'), true);
+t('DS-584 AC4 a gap caused by a same-review P0 or P1 fix is code', req.includes('- a gap that exists only because of the fix for a P0 or P1 found in this same review;'), true);
+t('DS-584 AC5 a deployed-build check stays the person\'s call', req.includes('`settled_by` is `person` only when') && req.includes('can pass only on a deployed build'), true);
+const personLine = /`- PERSON'S CALL · AC\d: "<criterion>" — [^`]+\. Recommended: <option>`/;
+t('DS-584 AC5 the PERSON\'S CALL line format ends with the seat\'s Recommended pick', personLine.test(req), true);
+t('DS-584 AC5 the report example carries a Recommended pick', /PERSON'S CALL · AC4: .*\. Recommended: \S/.test(read('phase-6-report.md')), true);
+// DS-596: a gap a worker's own logged decision caused is code; reversing the decision closes it.
+t('DS-596 AC3 a worker\'s logged call amends a criterion only by picking a reading', req.includes('A call this ticket\'s worker logged amends a criterion only by choosing between its readings, or by keeping a later-merged ticket\'s behaviour (below): any other that leaves a criterion unmet as worded amends nothing, and the gap is the worker\'s to close.'), true);
+t('DS-596 AC3 a gap a decision this ticket\'s worker logged caused is code, unless the decision keeps a later-merged ticket\'s behaviour', req.includes('- a gap whose cause is a decision this ticket\'s worker logged, which reversing that decision closes, unless the decision keeps a later-merged ticket\'s behaviour (next);'), true);
+t('DS-596 the later-merged-ticket decision still settles its gap on the next round', req.includes('so the next round reads it as a settled call'), true);
+t('DS-596 AC4 a gap only the person can close is still person', req.includes('`settled_by` is `person` only when no change the ticket allows can close the gap'), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

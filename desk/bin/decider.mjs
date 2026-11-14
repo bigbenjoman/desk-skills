@@ -1,6 +1,7 @@
 // The decider: a fresh, small headless session the supervisor starts when a pass exits needing the
 // person. It is given that pass's report and the recovery rules, settles what the rules let the
-// orchestrator settle without asking (a requeue or a move to another batch, mostly), and hands
+// orchestrator settle without asking (a requeue or a move to another batch, mostly, and under config
+// §3 autopilot-judgement yes a recommended take call answered and logged), and hands
 // everything else to the check-in digest. One runs at a time per repo, at low effort, and is stopped after DECIDER_TIMEOUT_MS.
 //
 // What a pass lists becomes items, each with an id that stays the same while the item does:
@@ -19,11 +20,13 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
-import { CLEARS_WHEN_FORMS, describeCond } from './clears-when.mjs';
-import { needsSession, planPark, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
+import { CLEARS_WHEN_FORMS, describeCond, personClears } from './clears-when.mjs';
+import { needsSession, planPark, leftPark, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 import { callLogin } from './call-login.mjs';
+import { TAKE_CATEGORIES } from './decisions.mjs';
+import { recommendedAnswer } from './recoveries.mjs';
 
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
@@ -74,6 +77,8 @@ export function deciderItems(v, q = {}) {
       id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: String(p.question ?? ''), lane: tickets[p.key]?.lane ?? null,
       since: tickets[p.key]?.park?.since ?? null, clears: condKey(tickets[p.key]?.park?.clears_when),
       round: (prev?.round ?? 0) + 1, prev, repeat: !!prev && samePark(prev.question, p.question, p.key),
+      takenOnce: !!tickets[p.key]?.auto_answered && samePark(tickets[p.key].auto_answered.question, p.question, p.key),
+      ...(tickets[p.key]?.park?.session_step ? { step: tickets[p.key].park.session_step } : {}),
     };
   });
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
@@ -98,12 +103,20 @@ export function presort(items, state = null) {
     const prevAt = item.prev?.since ?? item.prev?.requeued_at;
     if (item.kind === 'parked' && planPark({ state: 'parked', park: { question: item.text } })) {
       hand.push({ item, why: 'an epic\'s drafted plan: only the person starts, edits or discards it' });
+    } else if (item.kind === 'parked' && leftPark({ state: 'parked', park: { question: item.text } })) {
+      hand.push({ item, why: 'left in a finished feature batch: only the person moves it to the standing batch or drops it' });
+    } else if (item.kind === 'parked' && item.step) {
+      hand.push({ item, why: `the person approved a step no worker can run (${short(String(item.step.step))}): it goes to an interactive desk-ticket session` });
     } else if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
+    } else if (item.kind === 'parked' && item.clears && personClears(JSON.parse(item.clears))) {
+      hand.push({ item, why: 'waits on issue links only the person makes: a pass records it done again once each is on Jira' });
     } else if (item.kind === 'parked' && item.clears) {
       waits.push(item);
     } else if (item.kind === 'parked' && item.repeat && !(state && prevAt && answered(state, { ticket: item.ticket, at: prevAt }))) {
       hand.push({ item, why: `park ${item.round} asks what park ${item.round - 1} asked, with no answer since: a requeue would park again (last park: "${short(item.prev.question)}")` });
+    } else if (item.kind === 'parked' && item.takenOnce && !(state && item.since && answered(state, { ticket: item.ticket, at: item.since }))) {
+      hand.push({ item, why: 'its recommended option was taken once already (auto_answered) and it parked on the same call again: a call is taken once, so it is the person\'s' });
     } else if (row && row[2] !== 'yes') {
       hand.push({ item, why: `needs config §3 ${row[1]}, which is "${row[2]}"` });
     } else if (item.kind === 'waiting' && item.state === 'done') {
@@ -190,7 +203,9 @@ const BASE_ASK = /\b(base|batch)\b/i;
 
 // ---- the session ---------------------------------------------------------------------------------
 // Only what settling needs: requeue, move and record, read the ticket and the PR, read the state directory.
-export function deciderSettings({ bin, state }) {
+// Under config §3 autopilot-judgement yes (`judgement`), also take a call a worker parked on with a
+// recommended option: answer it (answer.mjs --taken, which records no grant) and log it as the decider's.
+export function deciderSettings({ bin, state, judgement = null }) {
   return {
     permissions: {
       allow: [
@@ -198,6 +213,10 @@ export function deciderSettings({ bin, state }) {
         `Bash(node ${join(bin, 'needs-you.mjs')} move:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} clears-when:*)`,
         `Bash(node ${join(bin, 'queue.mjs')} render)`,
+        ...(judgement === 'yes' ? [
+          `Bash(node ${join(bin, 'answer.mjs')} --taken:*)`,
+          `Bash(node ${join(bin, 'decisions.mjs')} log --source decider:*)`,
+        ] : []),
         'Bash(desk-jira get:*)',
         'Bash(gh pr view:*)',
         `Read(/${state}/**)`,
@@ -208,7 +227,7 @@ export function deciderSettings({ bin, state }) {
   };
 }
 
-export function deciderPrompt({ slug, report, items, rules, bin, webRead = false, targets = [] }) {
+export function deciderPrompt({ slug, report, items, rules, bin, webRead = false, targets = [], judgement = null }) {
   const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
   const prevLines = (i) => (i.prev?.question ? [`  - park ${i.round}; the last requeue cleared park ${i.round - 1}: ${i.prev.question.replace(/\n/g, ' ')}`] : []);
   const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...prevLines(i), ...answerLines(i)]).join('\n');
@@ -228,6 +247,16 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
   const onWeb = webRead ? [
     '- a park asking only for a public fact (a published figure, or a page, robots.txt or terms anyone can read on the web) is not a fact only the person holds: this repo\'s workers can search and read the web (config §3 `worker-web-read` is `yes`). On lane A, B, D or E, requeue it for its worker to look the fact up, and settle the item',
   ] : [];
+  // Only where config §3 autopilot-judgement is yes and an item is parked, so a prompt for any other
+  // repo reads as it always has. The ask categories are decisions.mjs ASK_CATEGORIES, worded as ask-or-take.md asks them.
+  const takes = judgement === 'yes' && items.some((i) => i.kind === 'parked');
+  const onTake = takes ? [
+    `- take a call a worker could have taken itself (config §3 \`autopilot-judgement\` is \`yes\`): a park on lane A, B, D or E whose question marks one option as recommended (or as the worker's pick), on a ${TAKE_CATEGORIES.join(', ')} call, that touches no money, legal or regulatory matter, production data or credentials, new customer-facing copy or customer copy where length means cost, or fact only the person holds. Write the call once as <CALL>, \`'{"question": "<the question parked on, one line>", "options": ["<the recommended option>", "<each other option>"], "chose": "<the recommended option>", "category": "<one of ${TAKE_CATEGORIES.join(', ')}>"}'\`. Record it as the answer (which refuses an ask category before it writes anything), requeue it as above, then log the call, in that order, each only once the one before it succeeded, and settle the item:`,
+    `  \`node ${join(bin, 'answer.mjs')} --taken <TICKET> <CALL>\`, which gives the worker "${recommendedAnswer({ chose: '<the recommended option>', category: '<category>' }, 'the decider')}"`,
+    `  \`node ${join(bin, 'decisions.mjs')} log --source decider <TICKET> <CALL>\``,
+    '  Keep the shell quoting whole: inside the single-quoted JSON write an apostrophe as `\'\\\'\'`, and leave `` ` `` and `$` out of it',
+    '  A park with no option marked recommended, one in an ask category, one a session has claimed, one naming a config §3 row that is not `yes`, one asking what its last requeue\'s park asked, or one either command refuses: hand it on',
+  ] : [];
   return [
     `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
     '',
@@ -235,9 +264,10 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
     `- requeue a ticket whose worker parked asking for more agent work, on lane A, B, D or E:\`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
     ...onMove,
     `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory`,
-    '- never requeue a lane C ticket or a park that starts `lane C` or `lane D` (parked at triage on its lane), never answer a product, design or copy question, and never act on anything that needs a config §3 row that is not `yes`: hand those on',
+    `- never requeue a lane C ticket or a park that starts \`lane C\` or \`lane D\` (parked at triage on its lane), never requeue or record a clears-when for a park that starts \`${LEFT_PREFIX}\` (left in a finished feature batch), never answer a ${takes ? 'product, design or copy question other than by taking its recommended option as below' : 'product, design or copy question'}, and never act on anything that needs a config §3 row that is not \`yes\`: hand those on`,
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
+    ...onTake,
     ...onWeb,
     ...onRepeats,
     '',
@@ -262,15 +292,15 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
 // Starts the session detached, on a Claude login that is not benched (call-login.mjs), its JSON result
 // written to <state>/decider/<id>.json. Returns the record the supervisor keeps until the session
 // ends, or null, starting nothing, when every usable login is benched.
-export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
+export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
   const { login, env, all } = callLogin({ env: callerEnv, now: now.getTime() });
   if (all) return null;
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
   const settings = join(dir, `${id}.settings.json`);
-  writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state }), null, 2)}\n`);
-  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead, targets });
+  writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state, judgement }), null, 2)}\n`);
+  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead, targets, judgement });
   writeFileSync(join(dir, `${id}.prompt.md`), prompt);
   const out = join(dir, `${id}.json`);
   const fd = openSync(out, 'w');

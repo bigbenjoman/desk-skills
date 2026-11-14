@@ -59,6 +59,14 @@ reap "$P"
 "desk_timeout_perl" 5 /nonexistent/cmd 2>/dev/null; rc=$?
 check "desk_timeout_perl: a command that cannot run exits 127" '[ $rc -eq 127 ]'
 
+# A timeout(1) that is not GNU's (uutils', Ubuntu 26.04's default) does not KILL the whole group, so
+# desk_timeout passes over it to the perl fallback rather than run it.
+mkdir -p "$T/uu"
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo "timeout (uutils coreutils) 0.2.2"; exit 0; }\nexit 99\n' > "$T/uu/timeout"
+cp "$T/uu/timeout" "$T/uu/gtimeout"; chmod +x "$T/uu/timeout" "$T/uu/gtimeout"
+out=$(PATH="$T/uu:$PATH"; unset _desk_timeout_bin; desk_timeout 5 sh -c 'exit 3'; echo "rc=$? bin=${_desk_timeout_bin:-}")
+check "desk_timeout: a timeout(1) that is not GNU's is passed over for perl" '[[ "$out" == "rc=3 bin=perl" ]]'
+
 # setup-worktree.sh against a container whose psql never answers.
 git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
@@ -105,7 +113,7 @@ export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json
 cd "$T/repo" || exit 1
 
 t0=$SECONDS
-out=$(DESK_PSQL_TIMEOUT=2 bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?; took=$((SECONDS - t0))
+out=$(DESK_PSQL_TIMEOUT=2 DESK_PSQL_RETRY_S=0 bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?; took=$((SECONDS - t0))
 check "hung psql: setup fails"                                  '[ $rc -ne 0 ]'
 check "hung psql: within the limit (2s) plus the kill grace"    '[ $took -le 10 ]'
 check "hung psql: the failure names the container and limit"   '[[ "$out" == *"FAIL: cannot reach Postgres in container pg-hung"*"did not answer within 2s"* ]]'

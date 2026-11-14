@@ -1,9 +1,10 @@
 // suite: live-read (§4 Live reads: which parks the pass runs a read for, and how it records one)
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, statSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout } from '../desk/bin/live-read.mjs';
+import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES } from '../desk/bin/live-read.mjs';
+import { repoStateOf } from '../desk/bin/desk-env.mjs';
 import { waitingOnRead, batchSettled } from '../desk/bin/batch-state.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
 import { describeCond } from '../desk/bin/clears-when.mjs';
@@ -83,6 +84,56 @@ t('nor is one whose fetch fails', `${lost.ok} ${/fetching origin's main/.test(lo
 t('nor one with no origin to clone from', prepareCheckout(join(dir, 'none'), { origin: '', branch: 'main' }).ok, false);
 git('-C', co, 'remote', 'set-url', 'origin', join(dir, 'gone.git'));
 t('the origin given is fetched, not the one the clone recorded', prepareCheckout(co, { origin, branch: 'main' }).ok, true);
+
+// A ticket's fixtures, copied into its worktree (copyFixtures): from a named batch's state and the
+// repo state above it, where a person saves them.
+const repoState = join(dir, 'state');
+const batchState = join(repoState, 'batches', 'epic-1');
+mkdirSync(join(repoState, 'fixtures', 'F-1'), { recursive: true });
+mkdirSync(join(batchState, 'fixtures', 'F-1'), { recursive: true });
+writeFileSync(join(repoState, 'fixtures', 'F-1', 'post.json'), '{"post":1}');
+writeFileSync(join(repoState, 'fixtures', 'F-1', 'reply.json'), '{"from":"repo"}');
+writeFileSync(join(batchState, 'fixtures', 'F-1', 'reply.json'), '{"from":"batch"}');
+writeFileSync(join(repoState, 'fixtures', 'F-1', 'big.json'), 'x'.repeat(21));
+writeFileSync(join(repoState, 'fixtures', 'F-1', 'a\\b.json'), '{}');
+symlinkSync(join(src, 'a.txt'), join(repoState, 'fixtures', 'F-1', 'link.json'));
+mkdirSync(join(repoState, 'fixtures', 'F-1', 'sub'));
+const cp = copyFixtures({ state: batchState, key: 'F-1', worktree: src, max: 20 });
+const into = join(src, WORKTREE_FIXTURES, 'F-1');
+t('a ticket\'s fixtures are copied into <worktree>/.desk-fixtures/<KEY>/', `${cp.dir === into} ${cp.copied.join(' ')} ${readFileSync(join(into, 'post.json'), 'utf8')}`, 'true reply.json post.json {"post":1}');
+t('a name in both folders is copied from the batch\'s', readFileSync(join(into, 'reply.json'), 'utf8'), '{"from":"batch"}');
+t('the copies stay out of git status', git('-C', src, 'status', '--porcelain'), '');
+const why = Object.fromEntries(cp.refused.map((r) => [r.name, r.why]));
+t('a file over the copy limit is not copied, saying why', `${existsSync(join(into, 'big.json'))} ${why['big.json']}`, 'false it is 21 bytes, over the 20-byte copy limit');
+t('nor a name holding a path separator', `${existsSync(join(into, 'a\\b.json'))} ${why['a\\b.json']}`, 'false its name holds a path separator');
+t('nor a symlink or a folder', `${existsSync(join(into, 'link.json'))} ${why['link.json']} ${why.sub}`, 'false it is a symlink it is not a file');
+copyFixtures({ state: batchState, key: 'F-1', worktree: src, max: 20 });
+const excl = readFileSync(join(src, '.git', 'info', 'exclude'), 'utf8');
+t('a second copy adds no second exclude line', excl.split('\n').filter((l) => l === `/${WORKTREE_FIXTURES}/`).length, 1);
+t('a ticket with no fixtures folder copies nothing', `${copyFixtures({ state: batchState, key: 'F-2', worktree: src })} ${existsSync(join(src, WORKTREE_FIXTURES, 'F-2'))}`, 'null false');
+mkdirSync(join(dir, 'wt2'));
+copyFixtures({ state: repoState, key: 'F-1', worktree: join(dir, 'wt2') });
+t('the standing batch reads its own state only', readFileSync(join(dir, 'wt2', WORKTREE_FIXTURES, 'F-1', 'reply.json'), 'utf8'), '{"from":"repo"}');
+// The worktree is the worker's: a symlink it left where the copies go is replaced, never followed.
+const outside = join(dir, 'outside');
+mkdirSync(outside);
+writeFileSync(join(outside, 'post.json'), 'host file', { mode: 0o600 });
+const wt3 = join(dir, 'wt3');
+mkdirSync(join(wt3, WORKTREE_FIXTURES, 'F-1'), { recursive: true });
+symlinkSync(join(outside, 'post.json'), join(wt3, WORKTREE_FIXTURES, 'F-1', 'post.json'));
+copyFixtures({ state: repoState, key: 'F-1', worktree: wt3 });
+t('a symlink at a copy\'s path is replaced, its target untouched', `${readFileSync(join(outside, 'post.json'), 'utf8')} ${(statSync(join(outside, 'post.json')).mode & 0o777).toString(8)} ${readFileSync(join(wt3, WORKTREE_FIXTURES, 'F-1', 'post.json'), 'utf8')}`, 'host file 600 {"post":1}');
+const wt4 = join(dir, 'wt4');
+mkdirSync(join(wt4, WORKTREE_FIXTURES), { recursive: true });
+symlinkSync(outside, join(wt4, WORKTREE_FIXTURES, 'F-1'));
+const cp4 = copyFixtures({ state: repoState, key: 'F-1', worktree: wt4 });
+t('so is a symlinked folder, and nothing lands where it pointed', `${readFileSync(join(outside, 'post.json'), 'utf8')} ${existsSync(join(outside, 'reply.json'))} ${cp4.copied.join(' ')}`, 'host file false big.json post.json reply.json');
+const wt5 = join(dir, 'wt5');
+mkdirSync(wt5);
+symlinkSync(outside, join(wt5, WORKTREE_FIXTURES));
+copyFixtures({ state: repoState, key: 'F-1', worktree: wt5 });
+t('and a symlinked .desk-fixtures', `${existsSync(join(outside, 'F-1'))} ${readFileSync(join(wt5, WORKTREE_FIXTURES, 'F-1', 'post.json'), 'utf8')}`, 'false {"post":1}');
+t('the repo state of a named batch\'s', `${repoStateOf(batchState) === repoState} ${repoStateOf(repoState) === repoState}`, 'true true');
 
 // Every place that describes §4 Live reads says where the command runs: a clean checkout of the
 // default branch, never the ticket's worktree.

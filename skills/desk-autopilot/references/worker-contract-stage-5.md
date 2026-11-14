@@ -8,6 +8,15 @@ core does.
 CI or end-to-end run you ask for is the narrowest one that covers your change": a session that
 started at Stage 7 has not read it, so read it before you write that park.
 
+**Asked to stop for a planned reboot, never park.** When a session or the person tells you a reboot
+is planned and asks you to stop or save your work, at any stage, finish the command you are in
+without starting a new one, commit what is verified, update your resume file, then print
+`AUTOPILOT_REBOOT: <who asked, and when>` at the start of a line in your reply text, never in a code
+fence, and end your turn. The pass resumes your own session after the computer restarts (or, if
+none comes, after config §3b Maintenance drain limit), uncounted as a kill, and you carry on from
+where you stopped, pushing what you committed. A base conflict fix worker parks instead: nothing
+resumes its try from this marker.
+
 ## 4. Before you push: rebase
 
 The default branch moves while you work. `git fetch origin`, and if
@@ -139,3 +148,17 @@ rule): it was not retried, so fix it or park on it as for any failed step.
   steps and print `AUTOPILOT_DONE`, naming the check and saying the pass builds it. A red check it
   does not name is handled as any red check is.
 - **Merging.** Never. Your terminal state is a draft PR with its review posted.
+- **Who merges your PR is never a park.** You cannot merge, and you need not ask who will: the
+  orchestrator undrafts it once it is green with a clean review, and the merge driver merges it where
+  config §3 lets desk merge, so a park waiting on your own PR merging is one nothing but the person
+  can clear. With your PR open and its review posted, print `AUTOPILOT_DONE`. The pass refuses a
+  park whose only clears-when is your own PR merging once that PR is green and clean, records it done,
+  and where §3 keeps desk from merging, asks the person the merge question naming the row.
+- **Steps that can only run once your PR merges are follow-ons, not a park** (a staging script, a
+  deploy, a job to start against the merged code). They depend on the merge; they never block it. Name
+  each on your DONE line as `follow_on=` and a one-line JSON array, before any `said=`:
+  `AUTOPILOT_DONE: pr=871 jira=In Review follow_on=[{"step": "run provision-telnyx-assistant.ts --env staging", "row": "staging-write"}]`,
+  `row` being the §3 key the step needs (`null` where none does). Put the same steps in your Stage 8
+  ticket comment, one line each, under "Once this merges:". Once the PR merges, needs-you lists each
+  step for the person with its row's value. A step you can run before the merge is not a follow-on: run
+  it.

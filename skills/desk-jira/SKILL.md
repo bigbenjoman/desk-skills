@@ -174,6 +174,9 @@ desk-jira link ABC-904 duplicates ABC-850          # any type the site has: rela
 desk-jira unlink ABC-903 ABC-901                   # remove it; prints ABC-903's links left
 ```
 
+`desk-jira edit ABC-905 parent=` takes ABC-905 out of its epic or story, and fails if the read-back
+still shows the parent.
+
 `link` takes a type by its name (`Blocks`, `Relates`, `Duplicate`, `Cloners`) or by its wording
 from KEY's side (`blocked-by`, `blocks`, `relates-to`, `is-duplicated-by`), owns Jira's inverted
 direction, refuses a self link or the reverse of an existing one, skips one that exists, and reads

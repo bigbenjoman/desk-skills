@@ -136,6 +136,13 @@ with no marker is. A fix try queued to resume its own session is never held as W
 the uncommitted changes or unpushed commits it left: they are its own.
 The count is the queue's `resumes`; a requeue starts a fresh session and clears a pending resume.
 
+A worker asked to stop for a planned reboot ends with `AUTOPILOT_REBOOT`, not a park
+(`resume=reboot`). The spawn holds it, listed as `waiting for the reboot`, until the computer's boot
+time is after its stop, or until config §3b "Maintenance drain limit (minutes)" (unset is 60) has
+passed since the stop with no restart. It then resumes its own session, uncounted, and the report
+names the restart or says no reboot was seen. Like any resume, it is never held as WORKTREE IN USE
+for its own unpushed commits.
+
 A resume always runs on the login the worker started on (the row's `login`), whatever that login's
 rule is now, because its session lives in that login's folder. If that login has been signed out the
 ticket parks naming the login and its sign-in command, and no session starts. A new session,

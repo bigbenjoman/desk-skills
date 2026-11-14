@@ -156,6 +156,9 @@ if [ -n "$READ_REPOS" ]; then
 fi
 
 ADD_DIRS=(--add-dir "$DESK_SKILLS_DIR" --add-dir "$STATE")
+# A named batch's worker reads the repo's design snapshots, read only (worker-settings.mjs).
+DESIGNS_DIR="$(printf '%s\n' "$WS_OUT" | sed -n 's/^CONFIG_READ_DESIGNS: //p')"
+[ -n "$DESIGNS_DIR" ] && ADD_DIRS+=(--add-dir "$DESIGNS_DIR")
 # The model checks below need no tool; the worker and its preflight get the same list (worker-tools.mjs).
 desk_tool_args none || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
 NO_TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})
@@ -419,14 +422,30 @@ cd "$WT"
 export DESK_AUTOPILOT_WORKER=1
 # Where hooks/desk-worker-stop.py records a turn that ended with a background task still running.
 export DESK_WORKER_LOG="$LOG"
+# The commit author and committer, from config §1 Git author name / email. A worker is refused
+# `git config` and `git -c`, so without these its commits carry the name and hostname email git
+# guesses. A row that is unset or `none` sets nothing; one desk cannot read is warned about and sets nothing.
+if GIT_AUTHOR_ROW="$(node "$DESK_ENV_MJS" git-author 2>/dev/null </dev/null)"; then
+  IFS="$(printf '\t')" read -r GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL <<EOF
+$GIT_AUTHOR_ROW
+EOF
+  export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+elif [ $? -eq 4 ]; then
+  echo "[spawn] config §1 Git author name / email is not \`Name <email>\` or \`Name\` / \`email\`; $TICKET commits with git's default author" >&2
+fi
 # The login this worker runs on (its CLAUDE_CONFIG_DIR, or the default), read back by the pass and
 # desk-q (claude-logins.mjs) to probe that login's usage. Beside its settings, never in its log, whose
 # growth is the worker's own output.
 node "$DESK_ENV_DIR/claude-logins.mjs" login-event > "$STATE/workers/$TICKET.login.json" 2>/dev/null < /dev/null || true
 # Where desk-env lines finds what this worker may read (worker-settings.mjs writes it beside these settings).
 export DESK_WORKER_SETTINGS="$SETTINGS"
+# The session's exit code, written beside its settings once claude exits, for pass.mjs to quote when it
+# marks the ticket failed: { session, code, at }. A reboot ends the shell that writes it too, so none is.
+export DESK_EXIT_FILE="$STATE/workers/$TICKET.exit.json" DESK_EXIT_SID="$SID"
+rm -f "$DESK_EXIT_FILE"
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
-desk_detach claude -p "$PROMPT" \
+desk_detach bash -c '"$@"; rc=$?; printf "{\"session\":\"%s\",\"code\":%d,\"at\":\"%s\"}\n" "$DESK_EXIT_SID" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DESK_EXIT_FILE"; exit "$rc"' desk-worker \
+  claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
   --output-format stream-json --verbose \
   --setting-sources "" --strict-mcp-config \

@@ -28,6 +28,8 @@
 //     the exact §4 Worker workflows commands on the ticket's own branch. `gh api` (any method) and
 //     `gh alias` are denied: a GET cannot be told from a write by prefix. `desk-gh read` is the
 //     read-only `gh api`: it parses its arguments and refuses a mutation or a non-GET method itself.
+//     `review-post.mjs` posts the self-review as §4 Review account under §3 pr-self-review-comment, and
+//     a `GH_CONFIG_DIR=` or gh token variable anywhere in a command is denied.
 //   - the toolchain: the exact §4 command items (and their `<pm> run <script>` twins), behind §4
 //     Command prefix where there is one; never the package manager, the prefix binary, node or python
 //     by name. Each item also runs as `with-lock.sh <lock> [--cwd <dir>] -- <cmd>` (`nolock` for a
@@ -71,7 +73,9 @@ import { dirname, join, resolve } from 'node:path';
 import { platform } from 'node:os';
 import * as E from './desk-env.mjs';
 import { grantPush } from './batch-state.mjs';
+import { baseRefspec } from './base-fix.mjs';
 import { wrappersFile } from './desk-lines.mjs';
+import { parseEvidenceRow } from './evidence.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
 const opt = {};
@@ -333,6 +337,16 @@ if (mode === 'triage') {
       for (const r of ['', ...(REPO ? [` --repo ${REPO}`] : [])]) DISPATCH_RULES.push(...exact('gh', ` workflow run ${m[1]}${r} --ref ${BRANCH}${m[2]}`));
     }
   }
+  // §4 Evidence workflow, under the same row, for this ticket's own PR from the moment it opens, so
+  // before the queue records it too: through evidence.mjs dispatch, with this ticket's branch fixed by
+  // the rule. That checks the PR number is digits and the PR is the branch's own open one, then starts
+  // the run as the pass does (pass.mjs startEvidence), on the config row's default branch. A
+  // `gh workflow run … -f pr=*` rule cannot hold the value to digits, as the shell expands an unquoted
+  // `*` against files the worker writes, so `gh workflow` itself gives the evidence workflow nothing.
+  const EVIDENCE_RULES = [];
+  const evidence = DISPATCH === 'yes' && dispatchRef ? parseEvidenceRow(cfgList('evidence-workflow')) : null;
+  if (evidence?.errors) warns.push(`§4 Evidence workflow ${evidence.errors.join('; ')} — not allow-listed`);
+  else if (evidence) EVIDENCE_RULES.push(...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch ${BRANCH} *)`));
   // This worktree as given and as its real path (a symlinked --wt, or macOS's /tmp and /var).
   const WTS = [...new Set([WT, (() => { try { return realpathSync(WT); } catch { return WT; } })()])];
   const OWN_CS = WTS.map((w) => ` -C ${w}`);
@@ -399,7 +413,7 @@ if (mode === 'triage') {
   deny.push(
     ...READ_DENY,
     ...bash('git', ...GIT_DENY_WT),
-    // `gh workflow` gives way only to the exact dispatches above; enable and disable stay denied.
+    // `gh workflow` gives way only to the §4 Worker workflows dispatches above; enable and disable stay denied.
     ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !DISPATCH_RULES.length)),
     ...(DISPATCH_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
@@ -501,6 +515,15 @@ if (mode === 'triage') {
   if (readRepoLines.length) deny.push(...bash('git', ...[' clone', ' remote -v *add*', ' remote -v *set-url*', ' remote -v *rename*'].flatMap((s) => [s, ...OWN_CS.map((c) => `${c}${s}`)])));
   opt.readRepoLines = readRepoLines;
 
+  // Design snapshots live once, in the repo's own state folder: a named batch's worker may read them
+  // there and edit none of them. Nothing else at the repo level is granted.
+  const designs = join(E.repoStateOf(STATE), 'designs');
+  if (E.repoStateOf(STATE) !== STATE && existsSync(designs)) {
+    dirs.add(designs);
+    deny.push(`Edit(${abs(designs)}/**)`);
+    opt.readRepoLines.push(`CONFIG_READ_DESIGNS: ${designs}`);
+  }
+
   // A package manager's one-off runner fetches and executes an arbitrary package. Denied in every
   // form this repo's config does not itself use (deny beats allow, so a used form is left to the
   // allow-list, which permits only the exact configured command).
@@ -538,7 +561,8 @@ if (mode === 'triage') {
 
   // git push: only this ticket's branch, only as exact commands, never the default branch. The one
   // exception is the batch base's conflict fix worker (base-fix.mjs), whose branch is the base: one
-  // exact push of it, under the grant every base sync needs (§3 batch-base-push).
+  // exact push of it, under the grant every base sync needs (§3 batch-base-push). Its worktree is on a
+  // detached HEAD (base-sync.mjs ensureBaseWorktree), so the push names HEAD, the refspec its task gives.
   const FORCE = [...[' push *--force', ' push *--force *', ' push *--force-if-includes*', ' push *--mirror*', ' push *--all*', ' push *--delete*',
     ' push +*', ' push * +*'], ...shortFlag(' push', '-f'), ...shortFlag(' push', '-d')];
   // push-retry.mjs runs the same push, so it is allowed exactly where that push is. A dry run's
@@ -546,7 +570,7 @@ if (mode === 'triage') {
   const retried = (tail) => (opt.dry ? [] : BIN_FORMS.flatMap((b) => ['', ' --more'].map((more) => `Bash(node ${b}/push-retry.mjs${more}${tail})`)));
   if (baseFix) {
     const push = E.basePushGrant();
-    if (push.ok) allow.push(...exact('git', ` push origin ${BRANCH}`), ...retried(` origin ${BRANCH}`));
+    if (push.ok) allow.push(...exact('git', ` push origin ${baseRefspec(BRANCH)}`), ...retried(` origin ${baseRefspec(BRANCH)}`));
     else { deny.push(...bash('git', ' push')); denied.push(`${push.key} (${push.perm})`); }
   } else if (!branchOk) {
     deny.push(...bash('git', ' push'));
@@ -570,14 +594,18 @@ if (mode === 'triage') {
   grant('pr-open', bash('gh', ...draftForms), bash('gh', ' pr create'));
   grant('pr-edit', bash('gh', ' pr edit'));
   // The self-review post is a COMMENTED review; --approve / --request-changes stay denied above.
-  const selfReview = grant('pr-self-review-comment', bash('gh', ' pr review', ' pr comment'), bash('gh', ' pr review'));
+  // review-post.mjs posts as §4 Review account, setting GH_CONFIG_DIR itself; it refuses a verdict flag.
+  const reviewPost = BIN_FORMS.flatMap((b) => [`Bash(${b}/review-post.mjs:*)`, `Bash(node ${b}/review-post.mjs:*)`]);
+  const selfReview = grant('pr-self-review-comment', [...bash('gh', ' pr review', ' pr comment'), ...reviewPost], [...bash('gh', ' pr review'), ...reviewPost]);
+  // gh's login is the handle's or review-post.mjs's choice, never one the worker names.
+  deny.push(...['GH_CONFIG_DIR', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'].map((v) => `Bash(*${v}=*)`));
   // Replies go in as PR comments: resolving a thread needs `gh api graphql`, which no worker has.
   if (!grant('pr-reply', bash('gh', ' pr comment'), []) && !selfReview) deny.push(...bash('gh', ' pr comment', ' issue comment'));
   grant('pr-update-branch', bash('gh', ' pr update-branch'));
   grant('ci-rerun', bash('gh', ' run rerun'));
   if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${setting('worker-workflow-dispatch')})`);
-  else if (!DISPATCH_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
-  allow.push(...DISPATCH_RULES);
+  else if (!DISPATCH_RULES.length && !EVIDENCE_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
+  allow.push(...DISPATCH_RULES, ...EVIDENCE_RULES);
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
@@ -625,8 +653,9 @@ if (mode === 'triage') {
     if (!depSubs.length) warns.push(`§3 worker-dependency-install is yes, but §4 Package manager "${PM || 'none'}" has no known add or sync command — nothing allowed`);
   }
 
-  // Screenshot capture, only under the browser lock and only from this worktree: a script at its root
-  // or under node_modules (Playwright), a Storybook or Playwright binary, or a Python script.
+  // Screenshot and image scripts, only under the browser lock and only from this worktree: a script at
+  // its root or under node_modules (Playwright), a Storybook or Playwright binary, or a Python script.
+  // Any script there that captures a screenshot or generates an image file runs by these same rules.
   const SHOT_TOOLS = ['playwright', 'storybook', 'test-storybook', 'storycap'];
   const PYTHONS = ['python', 'python3', 'uv run python', 'uv run python3', '.venv/bin/python', `${WT}/.venv/bin/python`];
   const shots = BIN_FORMS.flatMap((b) => [
@@ -686,6 +715,7 @@ if (mode === 'triage') {
     deny.push(
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun', ' workflow'),
+      ...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch:*)`),
       ...bash('desk-jira', ' edit', ' comment', ' create', ' create-batch', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }

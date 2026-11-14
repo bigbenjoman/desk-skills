@@ -33,7 +33,9 @@ mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs ho
 |---|---|
 | in the batch, admitted | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
 | outside the batch and done | nothing (noted) |
-| outside the batch and not done; in the batch but parked or someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
+| outside the batch, not done, and triage's `blocker_needs` says the successor needs it | holds the successor, `held_outside` set, with no question: the pass lifts the hold once the blocker is Done and on the base |
+| outside the batch, not done, and `blocker_needs` says it is not needed, under §3 `autopilot-judgement` `yes` | nothing held: a plan note, and an engineering decision "start without it" logged when the queue is seeded |
+| outside the batch and not done otherwise; in the batch but parked or someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
 | on a cycle | parks every ticket on it: the links need fixing |
 
 A ticket parked for its lane (C, D) or its size (L, XL) is **never held and never in `--deps`**:
@@ -60,6 +62,22 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   finished with no PR, closed its PR unmerged or is not in the batch comes to you as STUCK. A
   blocker in no batch that the ticket was admitted behind (`held_outside`) is not STUCK: the pass
   lifts it once it is Done in Jira and its PR has merged to the batch's base.
+
+**A `blocked-until-YYYY-MM-DD` label holds a ticket until that day**, read on this machine's local
+date from its triage record. The pass parks it `held by orchestrator: blocked until <date>`, shows
+it under `HELD: <TICKET> (until <date>)`, and releases it on the first pass on or after that day, in
+its usual order. Nothing goes to the user. Each pass reads the hold against the triage record's
+labels, so a label moved, fixed or removed (then `triage.sh <TICKET>` again) moves the hold with it.
+A label whose date cannot be read holds it too, and comes to the user under `waiting` (and in
+desk-needs-you) naming the label: they fix it or let it start. A date-held ticket that `queue.mjs
+hold` puts behind blockers waits on them first; once they release it, the pass reads its label again.
+The merge driver never releases a date hold: only its day, or the person, does.
+
+**A link to the ticket's own epic never holds it.** An epic is Done only once its children are, so a
+ticket linked "is blocked by" its Jira parent epic, or by the epic its batch runs, would wait for ever.
+Triage leaves that link out of the ticket's blockers, the pass lifts any hold already on it and prints
+one `lint:` line saying the link is ignored, and `desk-jira lint` flags it. Nothing writes to Jira:
+removing the link is the person's.
 
 **A blocker in no batch that is a step only the person takes holds the merge, not the build.** A
 Task whose summary says apply, confirm or sign off, or a blocker whose summary names one of the

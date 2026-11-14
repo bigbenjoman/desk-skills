@@ -1,8 +1,9 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
 import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
-import { undraftCall, undraftComment, movedByBase } from '../desk/bin/undraft.mjs';
-import { readVerdict, localReviewSet } from '../desk/bin/review-threads.mjs';
+import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
+import { readVerdict, readThreads, localReviewSet } from '../desk/bin/review-threads.mjs';
+import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
 import { errorLinesIn } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -146,20 +147,23 @@ const p0At = (head) => ({ pr: 348, head, verdict: { p0: '1', p1: '0' }, body: re
 const capped379 = [{ ...ds379[0], kind: 'checks', what: 'red: tests' }, ds379[1]];
 t('DS-435 after DS-379\'s conflict try and rereview try, a P0 at the head gets both review fix tries', `${reviewFix(tk({ fix_tries: ds379 }), p0At(ds379[1].head))?.fix.try}/${reviewFix(tk({ fix_tries: ds379 }), p0At(ds379[1].head))?.fix.of}`, '1/2');
 const a1 = reviewFix(tk({ fix_tries: capped379 }), p0At(ds379[1].head));
-t('DS-384 AC1 after a check try and a rereview try, a P0 at the head goes to a review fix worker, as its last try', `${a1?.call} ${a1?.fix.kind} ${a1?.fix.try}/${a1?.fix.of}`, 'requeue review 1/1');
+t('DS-558 AC2 after a check try and a rereview try, a P0 at the head goes to a review fix worker with both its tries', `${a1?.call} ${a1?.fix.kind} ${a1?.fix.try}/${a1?.fix.of}`, 'requeue review 1/2');
 t('DS-384 AC1 the try quotes the P0', a1?.fix.findings.map((x) => x.text).join('|'), '- **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
-t('DS-384 AC1 its brief says a finding it quotes that the next review still lists goes to the person', fixBrief(tk({ fix: a1.fix })).includes('This is try 1 of 1. A finding quoted here that the review of your new head still lists goes to the person.'), true);
+t('DS-384 AC1 its brief says a finding it quotes that the next review still lists goes to the person', fixBrief(tk({ fix: a1.fix })).includes('This is try 1 of 2. A finding quoted here that the review of your new head still lists goes to the person.'), true);
+const twoChecks = [{ ...ds379[0], kind: 'checks', what: 'red: tests' }, { try: 2, head: 'e'.repeat(40), kind: 'checks', what: 'red: tests' }];
+t('DS-384 AC1 after two check tries, a P0 goes to a review fix worker, as its last try', `${reviewFix(tk({ fix_tries: twoChecks }), p0At(HEAD))?.fix.try}/${reviewFix(tk({ fix_tries: twoChecks }), p0At(HEAD))?.fix.of}`, '1/1');
 const reviewTries = (n, from = 3) => Array.from({ length: n }, (_, i) => ({ try: i + 1, head: `${from + i}`.repeat(40), kind: 'review' }));
 const afterOne = reviewFix(tk({ fix_tries: [ds379[0]] }), p0At(HEAD));
 t('DS-384 one conflict try leaves a review fix both its tries', `${afterOne?.fix.try}/${afterOne?.fix.of}`, `1/${FIX_TRIES_MAX}`);
 const a2 = reviewFix(tk({ fix_tries: reviewTries(FIX_TRIES_MAX) }), p0At(HEAD));
 t('DS-384 AC2 once its review fix tries are spent, findings at the head go to the person', `${a2?.call} | ${a2?.why}`, 'stuck | review not clean after 2 fix tries (2 review): 1 P0 — P0: - **P0** `desk/bin/evidence.mjs:40` a code span splits the cell');
-const a3 = reviewFix(tk({ fix_tries: [...capped379, ...reviewTries(1)] }), p0At(HEAD));
-t('DS-384 AC3 with a review try of its own left but the overall cap reached, it goes to the person, naming the tries by kind', `${a3?.call} | ${a3?.why.split(':')[0]}`, 'stuck | review not clean after 3 fix tries (1 checks, 1 rereview, 1 review)');
-const ex = reviewFix(tk({ fix_tries: [ds379[0], { try: 1, head: 'e'.repeat(40), kind: 'rereview', extra: true }, ...reviewTries(1)] }), p0At(HEAD));
-t('DS-384 AC3 an extra review try a base merge earned counts toward neither cap', `${ex?.call} ${ex?.fix?.try}/${ex?.fix?.of}`, 'requeue 2/2');
-const cap = reviewFix(tk({ fix_tries: [{ try: 1, head: 'f'.repeat(40), kind: 'capture' }, ...capped379, ...reviewTries(1)] }), p0At(HEAD));
-t('DS-384 a capture try is not counted or named among the tries by kind', cap?.why.split(':')[0], 'review not clean after 3 fix tries (1 checks, 1 rereview, 1 review)');
+const a3 = reviewFix(tk({ fix_tries: [...twoChecks, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 AC3 with a review try of its own left but the overall cap reached, it goes to the person, naming the tries by kind', `${a3?.call} | ${a3?.why.split(':')[0]}`, 'stuck | review not clean after 3 fix tries (2 checks, 1 review)');
+t('DS-558 AC2 a rereview try does not count toward the overall cap', reviewFix(tk({ fix_tries: [...capped379, ...reviewTries(1)] }), p0At(HEAD))?.fix?.try, 2);
+const ex = reviewFix(tk({ fix_tries: [ds379[0], { try: 1, head: 'e'.repeat(40), kind: 'checks', extra: true }, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 AC3 an extra fix try counts toward neither cap', `${ex?.call} ${ex?.fix?.try}/${ex?.fix?.of}`, 'requeue 2/2');
+const cap = reviewFix(tk({ fix_tries: [{ try: 1, head: 'f'.repeat(40), kind: 'capture' }, ...twoChecks, ...reviewTries(1)] }), p0At(HEAD));
+t('DS-384 a capture try is not counted or named among the tries by kind', cap?.why.split(':')[0], 'review not clean after 3 fix tries (2 checks, 1 review)');
 
 // ---- a review fix try that cleared what it quoted does not use up the tries; one that did not, ends them
 // PR #367's three rounds: try 1 quoted round 1's finding at pass.mjs:617, try 2 round 2's gap, and the
@@ -311,24 +315,34 @@ t('DS-316 AC2 its brief says why and asks for a desk-review posted on the head, 
 const taskRv = fixTask(tk({ fix: rv1.fix }));
 t('DS-316 AC2 its task is the review try, leaving the PR in draft', taskRv.includes('review try 1 of 2 on PR #702') && taskRv.includes('change no code') && taskRv.includes('leave the PR in draft') && !taskRv.includes('git push'), true);
 const rvTried = [{ try: 1, head: HEAD, kind: 'rereview' }];
-t('DS-316 AC5 a review try already made at this head leaves it to the person, saying what is unread', reviewTry(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, why: 'no desk-review verdict is posted on it' })?.why, 'no review verdict readable at its head after 1 fix try: no desk-review verdict is posted on it');
-t('DS-316 AC5 so does one with both tries spent', reviewTry(tk({ fix_tries: tried }), { pr: 702, head: HEAD, why: 'x' })?.call, 'stuck');
+const rv2 = reviewTry(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, why: 'no desk-review verdict is posted on it' });
+t('DS-558 a review try already made at this head leaves it a second', `${rv2?.call} ${rv2?.fix.try}/${rv2?.fix.of} ${rv2?.fix.kind}`, 'requeue 2/2 rereview');
+t('DS-558 the second try\'s brief says it is the last at this head, and not a fix try', fixBrief(tk({ fix: rv2.fix })).includes('This is review try 2 of 2 at this head, and not one of the fix tries. A PR with no verdict readable at its head after it goes to the person'), true);
+t('DS-558 the first try\'s brief says one more follows', briefRv.includes('This is review try 1 of 2 at this head, and not one of the fix tries. A PR with no verdict readable at its head after it gets one more review try there.'), true);
+const rvTwice = [...rvTried, { try: 2, head: HEAD, kind: 'rereview' }];
+t('DS-558 AC3 two review tries at this head that posted nothing readable leave it to the person, naming the review failure', reviewTry(tk({ fix_tries: rvTwice }), { pr: 702, head: HEAD, why: 'no desk-review verdict is posted on it' })?.why, 'no review verdict readable at its head after 2 review tries at it: no desk-review verdict is posted on it');
+const saidTwice = tk({ fix_tries: rvTwice, fix: { ...rvTwice[1], finished: true }, result: { summary: 'pr=702 jira=In Review gh pr review refused: 502' } });
+t('DS-558 AC3 and what the last review try said', reviewTry(saidTwice, { pr: 702, head: HEAD, why: 'x' })?.why, 'no review verdict readable at its head after 2 review tries at it: x; the last try said: pr=702 jira=In Review gh pr review refused: 502');
+const ac1 = reviewTry(tk({ fix_tries: tried }), { pr: 702, head: HEAD, why: 'its review verdict is for bbbbbbbbb, not the head aaaaaaaaa' });
+t('DS-558 AC1 both fix tries spent, a head whose verdict is for an older head still goes to a review worker', `${ac1?.call} ${ac1?.fix.kind} ${ac1?.fix.try}/${ac1?.fix.of}`, 'requeue rereview 1/2');
+const afterReview = fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 1, head: 'c'.repeat(40), kind: 'rereview' }, { try: 2, head: 'c'.repeat(40), kind: 'rereview' }] }), both, ctx());
+t('DS-558 AC2 review tries use no fix try: a red check after a fix try and two review tries gets try 2 of 2', `${afterReview?.call} ${afterReview?.fix.try}/${afterReview?.fix.of}`, 'requeue 2/2');
 t('DS-316 a review try at this head does not use up a fix of the findings it then posts', reviewFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, verdict: u1.verdict, body: u1.review })?.call, 'requeue');
 
 // ---- DS-377: a head a merge from the base moved gets a review try of its own, outside the fix tries
 const unread = 'its latest review is for ccccccccc, not the head aaaaaaaaa';
 const merged = reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, base: 'feat/epics', baseMerge: () => true });
-t('DS-377 AC3 tries spent, a head moved by a base merge goes to a review worker, not the person', `${merged?.call} ${merged?.fix.kind} ${merged?.fix.extra} ${merged?.fix.head === HEAD}`, 'requeue rereview true true');
+t('DS-377 AC3 tries spent, a head moved by a base merge goes to a review worker, not the person', `${merged?.call} ${merged?.fix.kind} ${merged?.fix.try}/${merged?.fix.of} ${merged?.fix.head === HEAD}`, 'requeue rereview 1/2 true');
 t('DS-377 AC3 it says the base merge moved the head', merged?.fix.what, `review its head, moved by a merge from feat/epics: ${unread}`);
 const briefX = fixBrief(tk({ fix: merged.fix }));
-t('DS-377 AC3 its brief says the try is not one of the fix tries', briefX.includes('## Review try for a merge from the base: PR #871') && briefX.includes(`at its head ${HEAD.slice(0, 12)}: ${unread}.`) && briefX.includes('this try is not one of the 2 fix tries'), true);
-t('DS-377 AC3 its task names the extra review try', fixTask(tk({ fix: merged.fix })).includes('Your task is a review try after a merge from the base on PR #871'), true);
-t('DS-377 AC3 a head no base merge moved is stuck as before, and the merge is not asked of a head already tried', reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, baseMerge: () => false })?.call
-  + ' ' + reviewTry(tk({ fix_tries: rvTried }), { pr: 871, head: HEAD, why: unread, baseMerge: () => { throw new Error('asked'); } })?.call, 'stuck stuck');
+t('DS-377 AC3 its brief says the try is not one of the fix tries', briefX.includes('## Review try 1 of 2: PR #871') && briefX.includes(`at its head ${HEAD.slice(0, 12)}: ${unread}.`) && briefX.includes('not one of the fix tries'), true);
+t('DS-377 AC3 its task names the review try', fixTask(tk({ fix: merged.fix })).includes('Your task is review try 1 of 2 on PR #871'), true);
+t('DS-558 a head no base merge moved gets a review try too, and the merge is not asked of a head already tried', reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, baseMerge: () => false })?.fix.what
+  + ' | ' + reviewTry(tk({ fix_tries: rvTried }), { pr: 871, head: HEAD, why: unread, baseMerge: () => { throw new Error('asked'); } })?.fix.try, `review its head: ${unread} | 2`);
 const afterX = [...tried, { try: 2, head: HEAD, kind: 'rereview', extra: true }];
-t('DS-377 AC4 still unreadable after that try, it is the person\'s as today', reviewTry(tk({ fix_tries: afterX }), { pr: 871, head: HEAD, why: unread, baseMerge: () => true })?.why, `no review verdict readable at its head after 3 fix tries: ${unread}`);
+t('DS-558 an extra review try recorded at the head is one of its two', reviewTry(tk({ fix_tries: afterX }), { pr: 871, head: HEAD, why: unread, baseMerge: () => true })?.fix.try, 2);
 const oneX = [{ try: 0, head: OLD, kind: 'rereview', extra: true }];
-t('DS-377 the extra try is not counted: a fix try after it is try 1 of 2', reviewTry(tk({ fix_tries: oneX }), { pr: 871, head: HEAD, why: unread })?.fix.try, 1);
+t('DS-558 a review try at an older head leaves the current head its first review try', reviewTry(tk({ fix_tries: oneX }), { pr: 871, head: HEAD, why: unread })?.fix.try, 1);
 // A fake git: `chain` is rev-list's first-parent lines from OLD to HEAD, and `onBase` the ancestry answer.
 const MID = 'e'.repeat(40), THEIRS = 'd'.repeat(40);
 const git = ({ chain, onBase = true }) => (args) => (args[0] === 'rev-parse' ? { ok: true, out: OLD }
@@ -435,6 +449,29 @@ t('DS-441 AC3 a conflict try runs the merged-tree check before it pushes', brief
 t('DS-441 AC3 so does a sync try', fixBrief(tk({ fix: { kind: 'sync', try: 1, of: 2, pr: 2594, head: HEAD, base: 'main', build: 'x' } })).includes(treeLine), true);
 t('DS-441 AC3 negative: a review try, which merges nothing, is not told to', fixBrief(tk({ fix: { kind: 'review', try: 1, of: 2, pr: 2594, head: HEAD, base: 'main' } })).includes(treeLine), false);
 
+// ---- DS-552: a green PR the merge driver held for failing §4 Merged-tree check goes the conflict's way.
+const held552 = { head: HEAD, base: 'main', base_sha: 'b'.repeat(40), command: 'apps/api: uv run python check_heads.py', output: 'alembic\nMultiple head revisions are present: 131' };
+const green552 = pr([ok('tests')], { mergeState: 'CLEAN', pr: 909 });
+const c552 = fixCall(tk({ tree_check: held552 }), green552, ctx());
+t('DS-552 AC2 a held green PR is requeued as conflict try 1, with the check',
+  `${c552?.call} ${c552?.fix?.try}/${c552?.fix?.of} ${c552?.fix?.kind} ${c552?.fix?.check?.command} | ${c552?.fix?.what}`,
+  `requeue 1/${FIX_TRIES_MAX} conflict apps/api: uv run python check_heads.py | fails §4 Merged-tree check merged into main`);
+t('DS-552 negative: a hold recorded at an older head is spent', fixCall(tk({ tree_check: { ...held552, head: 'c'.repeat(40) } }), green552, ctx()), null);
+t('DS-552 negative: with no hold, a green PR is nothing to fix', fixCall(tk(), green552, ctx()), null);
+const d552 = fixCall(tk({ tree_check: held552 }), { ...dirty, head: HEAD }, ctx());
+t('DS-552 a DIRTY PR stays a conflict, whatever the hold says', `${d552?.call} ${d552?.fix?.kind} ${d552?.fix?.what} ${d552?.fix?.check === undefined}`, 'requeue conflict conflicts with main true');
+const brief552 = fixBrief(tk({ fix: c552.fix }));
+t('DS-552 AC2 the brief quotes the check\'s output and says to merge the base and renumber',
+  [brief552.includes('`apps/api: uv run python check_heads.py` (§4 Merged-tree check) fails on the merged tree'), brief552.includes('> Multiple head revisions are present: 131'),
+    brief552.includes('Merge origin/main into your branch, then run each item `desk-env cmds merged-tree-check-cmd` prints'), brief552.includes('renumber your branch\'s own'), brief552.includes('Conflicting files')].join(' '),
+  'true true true true false');
+t('DS-552 AC2 the task merges the base and renumbers until the check passes',
+  fixTask(tk({ fix: c552.fix })).includes("merge origin/main into your branch (git merge, never a rebase or a force push) and change your branch's own side, renumbering its migration"), true);
+const spent552 = [{ try: 1, head: HEAD, kind: 'conflict' }];
+t('DS-552 a try already made at this head is spent, naming the check and its last line',
+  fixCall(tk({ tree_check: held552, fix_tries: spent552 }), green552, ctx())?.why,
+  'merged into main, still failing §4 Merged-tree check `apps/api: uv run python check_heads.py` after 1 fix try: Multiple head revisions are present: 131');
+
 // ---- DS-440: a check build that failed behind the base goes to a sync try, one of the FIX_TRIES_MAX.
 const build440 = "its check build `./scripts/ensure-flows-image.sh` exited 1 at aaaaaaaaa: main's backend/ has changed; its head is behind main";
 const s440 = syncFix(tk(), { pr: 855, head: HEAD, base: 'main', why: build440 });
@@ -464,7 +501,7 @@ t('DS-440 AC5 the conflict reason still ignores a sync try\'s summary', conflict
 const jobs375 = JSON.parse(readFileSync(new URL('./fixtures/gh-run-view-jobs.json', import.meta.url), 'utf8'));
 t('DS-375 AC2 the failed step is read from the run, by its job\'s name', failedSteps(jobs375, 'tests').join(), 'Run tests');
 t('DS-375 AC2 a check with no job in the run, or a payload of another shape, names none',
-  [failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: 'x' }, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [{ conclusion: 'failure' }] }] }, 'tests')].map((x) => x.length).join(), '0,0,0,0');
+  [failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: 'x' }, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [{ conclusion: 'failure' }] }] }, 'tests')].map((x) => (x ?? []).length).join(), '0,0,0,0');
 const steps375 = (f) => (f.name === 'Lint' ? ['Run eslint'] : []);
 const c375 = fixCall(tk({ fix_tries: two }), both, ctx({ steps: steps375 }));
 t('DS-375 AC2 still red after both tries: each check with the step its run failed at', c375?.why, 'still red after 2 fix tries: Backend tests, Lint (failed step: Run eslint)');
@@ -485,6 +522,26 @@ t('DS-375 AC5 a check failing at a §4 Pre-merge steps step: never requeued, stu
 t('DS-375 AC5 the same check failing at another step is a worker\'s', fixCall(tk(), lint375, ctx({ operator: [], premerge, steps: () => ['Run eslint'] }))?.call, 'requeue');
 t('DS-375 AC5 a draft reads the row the same way', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [{ name: 'Lint, Type Check & Build', runId: '904' }] }, { repo: 'acme/widgets', premerge, steps: () => ['Check portal schema mirror'] })?.call, 'stuck');
 t('DS-375 the reason with no worker\'s check left names only what a person clears', stuckWhy({ lead: 'still red after 1 fix try', checks: [{ name: 'Flows image', command: 'x.sh' }] }), 'Flows image · x.sh');
+
+// A §4 Pre-merge steps item named after a whole job is the person's only for the step it describes:
+// a failed step sharing a word with the item's text. Any other failed step in that job is a worker's.
+const fast = [{ name: 'Fast checks', command: 'apply the PR\'s migrations to the staging schema first, then re-run the job' }];
+const fast567 = pr([ok('tests'), red('Fast checks', '906')]);
+const scan567 = fixCall(tk(), fast567, ctx({ operator: [], premerge: fast, steps: () => ['Diff Sanity Scan'] }));
+t('DS-567 AC1 a job-keyed item, its job red only at another step: the failure goes to a fix worker', `${scan567?.call} | ${scan567?.fix?.what} | ${scan567?.fix?.not_mine.length}`, 'requeue | red: Fast checks | 0');
+t('DS-567 AC1 a draft reads the item the same way', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [{ name: 'Fast checks', runId: '906' }] }, { repo: 'acme/widgets', premerge: fast, steps: () => ['Run eslint'] })?.call, 'requeue');
+const ack567 = fixCall(tk(), fast567, ctx({ operator: [], premerge: fast, steps: () => ['Migration Staging Ack'], reruns: () => 0 }));
+t('DS-567 AC2 the same item, its job red at the step it describes: the person\'s step, naming it', `${ack567?.call} | ${ack567?.why}`,
+  'stuck | Fast checks (failed step: Migration Staging Ack) · apply the PR\'s migrations to the staging schema first, then re-run the job');
+t('DS-567 AC2 red at both, the person\'s step', fixCall(tk(), fast567, ctx({ operator: [], premerge: fast, steps: () => ['Diff Sanity Scan', 'Migration Staging Ack'], reruns: () => 0 }))?.call, 'stuck');
+const unread567 = fixCall(tk(), fast567, ctx({ operator: [], premerge: fast, steps: () => null, reruns: () => 0 }));
+t('DS-567 AC3 the job\'s steps cannot be read: the person\'s step, saying so', `${unread567?.call} | ${unread567?.why}`,
+  'stuck | Fast checks (failed step not readable) · apply the PR\'s migrations to the staging schema first, then re-run the job');
+t('DS-567 AC3 and the check carries that for needs-you', JSON.stringify(unread567?.checks?.[0]), JSON.stringify({ name: 'Fast checks', unread: true, command: fast[0].command }));
+t('DS-567 AC3 a check with no run to read is the same', fixCall(tk(), pr([ok('tests'), red('Fast checks', null)]), ctx({ operator: [], premerge: fast, steps: () => ['Diff Sanity Scan'], reruns: () => 0 }))?.why,
+  'Fast checks (failed step not readable) · apply the PR\'s migrations to the staging schema first, then re-run the job');
+t('DS-567 a run with no such job, or a job with no steps, is unreadable; one read with none failed names none',
+  JSON.stringify([failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [] }] }, 'tests'), failedSteps(jobs375, 'tests')]), JSON.stringify([null, null, [], ['Run tests']]));
 
 // DS-379: a draft's screenshots nobody took go to a capture worker, once per PR, outside the fix tries.
 const cp = captureTry(tk(), { pr: 761, head: HEAD, files: ['a-before.png', 'a-after.png'] });
@@ -604,7 +661,8 @@ const vt = verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE 
 t('DS-422 AC3 a red verdict state check goes to a review worker', `${vt?.call} ${vt?.fix.kind} ${vt?.fix.ready}`, 'requeue rereview true');
 t('DS-422 AC3 its brief says the PR is out of draft and why', fixBrief(tk({ fix: vt.fix })).includes('Your PR #697 is open and out of draft on this branch, and the merge driver will not rerun the check that reads its review at its head aaaaaaaaaaaa: its "🌿 Local Adversarial Code Review" check is red, and a rerun reads the same verdict.'), true);
 t('DS-422 AC3 its task reviews the head and leaves it out of draft', /desk-review.*leave the PR out of draft/.test(fixTask(tk({ fix: vt.fix }))), true);
-t('DS-422 AC3 one review try per head: tried here, it is the person\'s', verdictTry(tk({ fix_tries: [{ ...vt.fix }] }), stateRed, { required: ['tests'], stateChecks: STATE })?.call, 'stuck');
+t('DS-558 two review tries per head: tried twice here, it is the person\'s', verdictTry(tk({ fix_tries: [{ ...vt.fix }] }), stateRed, { required: ['tests'], stateChecks: STATE })?.call
+  + ' ' + verdictTry(tk({ fix_tries: [{ ...vt.fix }, { ...vt.fix }] }), stateRed, { required: ['tests'], stateChecks: STATE })?.call, 'requeue stuck');
 t('DS-422 AC4 a red approval check alone sends no worker', verdictTry(tk(), pr([ok('tests'), red('🔐 Review gate', '7')]), { required: ['tests'], stateChecks: STATE }), null);
 t('DS-422 a draft is undraft.mjs\'s, not this', verdictTry(tk(), { ...stateRed, isDraft: true }, { required: ['tests'], stateChecks: STATE }), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
@@ -617,9 +675,9 @@ const vs = verdictTry(tk(), green433, ctx433(stale));
 t('DS-433 AC2 a stale verdict on a green PR goes to a review worker, out of draft', `${vs?.call} ${vs?.fix.kind} ${vs?.fix.ready} ${vs?.fix.held}`, 'requeue rereview true true');
 t('DS-433 AC2 its brief says the driver will not merge it, and why', fixBrief(tk({ fix: vs.fix })).includes('Your PR #697 is open and out of draft on this branch, and the merge driver will not merge it without a clean review at its head aaaaaaaaaaaa: its review verdict is for bbbbbbbbb, not the head aaaaaaaaa.'), true);
 t('DS-433 AC2 its task reviews the head and leaves it out of draft', /desk-review.*leave the PR out of draft/.test(fixTask(tk({ fix: vs.fix }))), true);
-t('DS-433 AC2 one review try per head: tried here, it is the person\'s', verdictTry(tk({ fix_tries: [{ ...vs.fix }] }), green433, ctx433(stale))?.why, `no review verdict readable at its head after 1 fix try: ${stale.why}`);
+t('DS-558 AC3 two review tries per head: tried twice here, it is the person\'s, naming the review failure', verdictTry(tk({ fix_tries: [{ ...vs.fix }, { ...vs.fix }] }), green433, ctx433(stale))?.why, `no review verdict readable at its head after 2 review tries at it: ${stale.why}`);
 const movedTry = [{ try: 1, head: 'c'.repeat(40), kind: 'checks' }, { try: 2, head: 'd'.repeat(40), kind: 'checks' }];
-t('DS-433 AC2 tries spent, a head a base merge moved still gets its extra try', verdictTry(tk({ fix_tries: movedTry }), green433, ctx433(stale, { base: 'main', baseMerge: () => true }))?.fix.extra, true);
+t('DS-558 AC1 fix tries spent, a held PR still gets a review try at its head', verdictTry(tk({ fix_tries: movedTry }), green433, ctx433(stale, { base: 'main', baseMerge: () => true }))?.fix.what, `review its head, moved by a merge from main: ${stale.why}`);
 t('DS-433 a clean review at the head sends no worker', verdictTry(tk(), green433, ctx433({ ...stale, clean: true, why: null })), null);
 t('DS-433 nothing waiting on a verdict (no §4 Local review command, or no driver) sends no worker', verdictTry(tk(), green433, ctx433(null)), null);
 t('DS-433 no atHead at all is as it was', verdictTry(tk(), green433, { required: ['tests'], stateChecks: STATE }), null);
@@ -640,7 +698,7 @@ t('DS-449 AC1 and its task asks for the targeted round on only that', fixTask(tk
 t('DS-449 AC1 with no PR file using them, the brief says so', fixBrief(tk({ fix: { ...rvT.fix, targeted: { ...narrowed, users: [] } } })).includes("- The PR's code that uses them: none of its changed files names one"), true);
 t('DS-449 AC4 an unnarrowed try is the whole review, as before', !briefRv.includes('Targeted') && !('targeted' in rv1.fix) && !fixTask(tk({ fix: rv1.fix })).includes('targeted'), true);
 const xT = reviewTry(tk({ fix_tries: tried }), { pr: 871, head: HEAD, why: unread, base: 'main', baseMerge: () => true, targeted: narrowed });
-t('DS-449 AC1 an extra try after a base merge is narrowed too', `${xT?.fix.extra} ${xT?.fix.targeted?.files}`, 'true src/helper.js');
+t('DS-449 AC1 a try after a base merge is narrowed too', `${xT?.fix.what.includes('moved by a merge')} ${xT?.fix.targeted?.files}`, 'true src/helper.js');
 t('DS-449 AC1 a held PR the driver will not merge gets the narrowed try', verdictTry(tk(), green433, ctx433({ ...stale, targeted: narrowed }))?.fix.targeted?.users?.[0], 'src/a.js');
 
 // What the driver holds on (review-threads.mjs readVerdict).
@@ -670,6 +728,15 @@ const narrowRead = read433(pl(HEAD, marked(OLD)), { carry: () => null, scope: (s
 t('DS-449 AC1 a clean verdict that does not carry is narrowed, asked with its commit and body', `${narrowRead.clean} ${narrowRead.targeted === scoped} ${JSON.stringify(scopeAsked)}`, `false true ${JSON.stringify([OLD, true])}`);
 t('DS-449 AC3 an unclean verdict for an older head is not narrowed: the head is reviewed whole', 'targeted' in read433(pl(HEAD, marked(OLD, 'p0=0 p1=1 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0')), { carry: () => null, scope: () => scoped }), false);
 t('DS-449 a carried verdict is never narrowed', 'targeted' in read433(pl(HEAD, marked(OLD)), { carry: () => true, scope: () => { throw new Error('asked'); } }), false);
+// DS-544 AC6: the merge driver reads a clean PullBot round at the head as clean under either row, so a
+// PR it held as unreadable is released on the next pass.
+const round544 = (sha, counts) => ({ id: 'RP', author: { login: 'ben' }, commit: { oid: sha }, body: pullbotRound(sha, counts) });
+for (const clean of ['no P0, P1 or P2 findings', PULLBOT_CLEAN_COUNTS]) {
+  t(`DS-544 AC6 a clean PullBot round at the head reads clean under "${clean}"`, read433(pl(PULLBOT_SHA, round544(PULLBOT_SHA)), { clean }).clean, true);
+  const p1 = read433(pl(PULLBOT_SHA, round544(PULLBOT_SHA, 'p0=0 p1=1 p2=0 deferred=0 gaps=0')), { clean });
+  t(`DS-544 AC3 a P1 in it under "${clean}" is a review at the head to settle, named`, `${p1.clean} ${p1.settle} ${p1.why.includes('p1=1')}`, 'false true true');
+  t(`DS-544 AC6 the thread read takes it as the clean verdict under "${clean}"`, readThreads(pl(PULLBOT_SHA, round544(PULLBOT_SHA)), { handle: 'ben', clean }).verdict, PULLBOT_SHA);
+}
 t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/desk-review'), localReviewSet('none'), localReviewSet('TODO (run before)'), localReviewSet(null)].join(), 'true,false,false,false');
 }
 
@@ -726,7 +793,9 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-500 AC2 an old-format verdict goes to a review try at the head', `${v2?.call} ${v2?.fix.kind} ${v2?.fix.head === HEAD} ${v2?.fix.ready}`, 'requeue rereview true true');
   t('DS-500 AC2 its brief quotes the gate', fixBrief(tk({ fix: v2.fix })).includes(oldFormatLine), true);
   t('DS-500 AC2 so does a stale one', gateTry(tk(), pr([ok('tests'), gateRed(staleLine)]), gctx())?.fix.kind, 'rereview');
-  t('DS-500 AC2 reviewed at this head already: left to fixCall and the person', gateTry(tk({ fix_tries: [v2.fix] }), pr([ok('tests'), gateRed(limitLine, oldFormatLine)]), gctx()), null);
+  t('DS-558 reviewed at this head once: a second review try', gateTry(tk({ fix_tries: [v2.fix] }), pr([ok('tests'), gateRed(limitLine, oldFormatLine)]), gctx())?.fix.try, 2);
+  const g2 = gateTry(tk({ fix_tries: [v2.fix, v2.fix] }), pr([ok('tests'), gateRed(limitLine, oldFormatLine)]), gctx());
+  t('DS-558 AC3 reviewed at this head twice already: the person\'s, named as a review that did not post, and no fix try is sent', `${g2?.call} ${/^no review verdict readable at its head after 2 review tries at it: /.test(g2?.why ?? '')}`, 'stuck true');
   const pv = gateTry(tk(), pr([ok('tests'), gateRed(pkgLine, staleLine)]), gctx());
   t('DS-500 AC2 beside a protected file, the protected try goes first', pv?.fix.kind, 'protected');
   t('DS-500 AC2 and the review try once it reported the file needed', gateTry(tk({ fix_tries: [pv.fix] }), pr([ok('tests'), gateRed(pkgLine, staleLine)]), gctx())?.fix.kind, 'rereview');
@@ -771,6 +840,92 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-494 negative: an exit line, a clean summary and plain output name none', errorLinesIn('##[error]Process completed with exit code 1.\nTests: 0 failed, 3 passed\nbuilding…').length, 0);
   t('DS-494 a build tool\'s capitalised error lines name a cause', errorLinesIn('ERROR: Could not find a version\n[ERROR] Failed to execute goal\nFailed to compile.\nBUILD FAILURE').length, 4);
   t('DS-494 each line once, at most five', errorLinesIn(['a error', 'a error', 'b error', 'c error', 'd error', 'e error', 'f error'].join('\n')).length, 5);
+}
+
+{
+  // Each try that asks for a review names §4 Local review command's, and desk-review only in its place.
+  const H = 'a'.repeat(40);
+  const tries = {
+    rereview: { try: 1, of: 2, pr: 9, head: H, kind: 'rereview', what: 'review its head: no verdict is posted' },
+    review: { try: 1, of: 2, pr: 9, head: H, kind: 'review', verdict: 'p0=0 p1=1', findings: [{ sev: 'P1', text: 'src/a.ts:1 x' }] },
+    renames: { try: 0, of: 2, extra: true, pr: 9, head: H, kind: 'renames', base: 'main', draft: true, renames: [{ old: 'a.sql', new: 'b.sql', to: 'm/b.sql', files: ['t.ts'] }] },
+    protected: { try: 1, of: 2, pr: 9, head: H, kind: 'protected', checks: ['protected-path approval'], paths: ['x.sql'] },
+    instruction: { try: 1, of: 1, pr: 9, head: H, kind: 'instruction', ready: true, what: 'your instruction', answer: 'do x' },
+    gaps: { try: 1, of: 1, pr: 9, head: H, kind: 'gaps', ready: false, what: 'review gaps: your call', answer: 'drop it' },
+  };
+  const pull = (s) => `${s.includes('/pullbot')} ${s.includes('desk-review')}`;
+  t('DS-545 AC1 a review try\'s task names /pullbot, never desk-review', pull(fixTask(tk({ fix: tries.rereview }), '/pullbot')), 'true false');
+  t('DS-545 AC1 and so does its Review try section', pull(fixBrief(tk({ fix: tries.rereview }), '/pullbot')), 'true false');
+  t('DS-545 AC1 and it is told to post the review as /pullbot says', fixTask(tk({ fix: tries.rereview }), '/pullbot').includes('Review its head with /pullbot and post its review on the PR as its own instructions say, and change no code.'), true);
+  t('DS-545 AC2 a review fix reviews the new head with /pullbot', /review the new head with \/pullbot and post its review on the PR as its own instructions say/.test(fixTask(tk({ fix: tries.review }), '/pullbot')), true);
+  t('DS-545 AC2 and neither its task nor its brief names desk-review', `${fixTask(tk({ fix: tries.review }), '/pullbot').includes('desk-review')} ${fixBrief(tk({ fix: tries.review }), '/pullbot').includes('desk-review')}`, 'false false');
+  t('DS-545 AC3 a draft\'s rename try re-reviews with /pullbot', pull(fixTask(tk({ fix: tries.renames }), '/pullbot')), 'true false');
+  t('DS-545 AC3 so does a protected-file try', pull(fixTask(tk({ fix: tries.protected }), '/pullbot')), 'true false');
+  t('DS-545 AC4 the person\'s instruction re-reviews with /pullbot', pull(fixTask(tk({ fix: tries.instruction }), '/pullbot')), 'true false');
+  t('DS-545 AC4 so does the person\'s call on gaps, brief included', `${pull(fixTask(tk({ fix: tries.gaps }), '/pullbot'))} ${pull(fixBrief(tk({ fix: tries.gaps }), '/pullbot'))}`, 'true false true false');
+  for (const [kind, fix] of Object.entries(tries)) {
+    const asToday = [fixTask(tk({ fix })), fixBrief(tk({ fix }))];
+    const same = ['/desk-review', 'none', '', null].every((r) => fixTask(tk({ fix }), r) === asToday[0] && fixBrief(tk({ fix }), r) === asToday[1]);
+    t(`DS-545 AC5 a ${kind} try under /desk-review, none or an unset row reads as today`, same, true);
+  }
+  // A narrowed try's targeted round is desk-review's own, so another review reads the whole head.
+  const tT = fixTask(tk({ fix: rvT.fix }), '/pullbot'), bT = fixBrief(tk({ fix: rvT.fix }), '/pullbot');
+  t('DS-545 AC1 a narrowed review try under /pullbot names /pullbot alone, task and brief', `${pull(tT)} ${pull(bT)}`, 'true false true false');
+  t('DS-545 AC1 and it asks for a whole review, with no Targeted section', `${tT.includes('targeted')} ${bT.includes('Targeted')}`, 'false false');
+  t('DS-545 AC5 a narrowed try under /desk-review reads as today', fixTask(tk({ fix: rvT.fix }), '/desk-review') === fixTask(tk({ fix: rvT.fix })) && fixBrief(tk({ fix: rvT.fix }), '/desk-review') === briefT, true);
+  t('DS-545 AC5 and today\'s names desk-review Phase 7', fixTask(tk({ fix: tries.rereview })).includes('Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code.'), true);
+}
+
+// DS-548: a ready PR red on a §4 Check builds check gets the draft's host build and sync try, and
+// only a build that failed goes to the person, with its last line.
+{
+  const rows = [{ name: 'Flows image', command: './scripts/ensure-flows-image.sh' }];
+  const built = { state: 'done', command: rows[0].command, code: 0, tail: 'pushed', reran: null };
+  const failed = { ...built, code: 1, tail: 'step 7 / ECR denied the push' };
+  // ctx.build as pass.mjs gives it: buildCall on the red build checks alone, with the record at HEAD.
+  const bctx = (rec, { behind = () => null, rerun = 'yes', ...o } = {}) => ctx({ operator: [], builds: rows,
+    build: (failing) => buildCall({ pending: [], failing }, { builds: rows, rerun, built: (h) => (h === HEAD ? rec : null), behind }, 697, HEAD, tk()), ...o });
+  const only = pr([ok('tests'), red('Flows image', '903')]);
+  const a1 = fixCall(tk(), only, bctx(null));
+  t('DS-548 AC1 ready and red only on a check build not run at its head: the build runs', `${a1?.call} | ${a1?.command} | ${a1?.checks} | ${a1?.runs}`, 'build | ./scripts/ensure-flows-image.sh | Flows image | 903');
+  t('DS-548 AC1 while it runs, nothing goes to anyone', fixCall(tk(), only, bctx({ state: 'running', command: built.command }))?.call, 'wait');
+  t('DS-548 AC1 once it succeeded, the check is re-run', fixCall(tk(), only, bctx(built))?.call, 'rebuilt');
+  t('DS-548 AC1 negative control: with §3 ci-rerun not yes it is the person\'s, with its command, as before', fixCall(tk(), only, bctx(null, { rerun: 'ask' }))?.why, 'Flows image · ./scripts/ensure-flows-image.sh');
+  const a2 = fixCall(tk(), only, bctx(failed, { behind: () => 'main' }));
+  t('DS-548 AC2 a build that failed behind the base goes to a sync try, out of draft', `${a2?.call} | ${a2?.fix.kind} | ${a2?.fix.draft} | ${a2?.fix.try}/${a2?.fix.of} | ${a2?.fix.base} | ${a2?.fix.what}`,
+    `requeue | sync | undefined | 1/${FIX_TRIES_MAX} | main | ready PR behind main, its check build failed`);
+  const brief2 = fixBrief(tk({ fix: a2.fix }));
+  t('DS-548 AC2 its brief says the PR is out of draft and leaves the build to the pass', brief2.includes(`Your PR #697 is open and out of draft on this branch, and its head ${HEAD.slice(0, 12)} is behind main.`) && brief2.includes('Do not run the check build yourself'), true);
+  t('DS-548 AC2 its task merges the base and leaves the PR out of draft', fixTask(tk({ fix: a2.fix })).includes('merge origin/main into your branch') && fixTask(tk({ fix: a2.fix })).includes('leave the PR out of draft'), true);
+  t('DS-548 AC2 the sync try shares FIX_TRIES_MAX with the red-check tries', fixCall(tk({ fix_tries: one }), only, bctx(failed, { behind: () => 'main' }))?.fix.try, 2);
+  t('DS-548 AC2 negative control: up to date with its base, no sync try', fixCall(tk(), only, bctx(failed))?.call, 'stuck');
+  t('DS-548 AC2 the draft\'s sync try is unchanged', syncFix(tk(), { pr: 855, head: HEAD, base: 'main', why: 'x' })?.fix.what, 'draft behind main, its check build failed');
+  const mixed = pr([ok('tests'), red('Flows image', '903'), red('Lint', '902')]);
+  const a3 = fixCall(tk(), mixed, bctx(null));
+  t('DS-548 AC3 beside a check a worker fixes, that one goes to the worker and the build is no one\'s to clear by hand', `${a3?.call} | ${a3?.fix.what} | ${a3?.fix.not_mine.length} | ${a3?.fix.builds}`, 'requeue | red: Lint | 0 | Flows image');
+  t('DS-548 AC3 its brief tells the worker to leave the built check red', fixBrief(tk({ fix: a3.fix })).includes('- Flows image is red too, and it is not yours to fix: §4 Check builds names it, so the pass builds your head once the rest are green.'), true);
+  const a3s = fixCall(tk({ fix_tries: two }), mixed, bctx(null));
+  t('DS-548 AC3 its tries spent, the stuck reason lists only the worker\'s check, and the build starts beside it', `${a3s?.call} | ${a3s?.why} | ${a3s?.checks.map((c) => c.name)} | ${a3s?.build?.call}`, 'stuck | still red after 2 fix tries: Lint | Lint | build');
+  t('DS-548 AC3 negative control: with a try left, no build starts under the worker', a3?.build, undefined);
+  const a3f = fixCall(tk({ fix_tries: two }), mixed, bctx(failed));
+  t('DS-548 AC3 its tries spent and its build already failed, that build joins the stuck checks with its line', JSON.stringify(a3f?.checks), '[{"name":"Flows image","build":"./scripts/ensure-flows-image.sh","error":"ECR denied the push"},{"name":"Lint"}]');
+  t('DS-548 AC3 once the rest are green, its build runs, tries spent or not', fixCall(tk({ fix_tries: two }), only, bctx(null))?.call, 'build');
+  t('DS-548 AC3 negative control: with ci-rerun not yes the built check is the person\'s beside it, as before', fixCall(tk({ fix_tries: two }), mixed, bctx(null, { rerun: 'no' }))?.why, 'still red after 2 fix tries: Lint; Flows image · ./scripts/ensure-flows-image.sh');
+  const a4 = fixCall(tk(), only, bctx(failed));
+  t('DS-548 AC4 a build that failed up to date with its base is stuck, quoting its last line', `${a4?.call} | ${a4?.why}`, 'stuck | its check build `./scripts/ensure-flows-image.sh` exited 1: Flows image says "ECR denied the push"');
+  t('DS-548 AC4 its check carries the build and the line, and no command a person runs', JSON.stringify(a4?.checks), '[{"name":"Flows image","build":"./scripts/ensure-flows-image.sh","error":"ECR denied the push"}]');
+  const a4s = fixCall(tk({ fix_tries: two }), only, bctx(failed, { behind: () => 'main' }));
+  t('DS-548 AC4 behind its base with no try left, stuck the same way', `${a4s?.call} | ${a4s?.why}`, 'stuck | still behind main with its check build failing after 2 fix tries: Flows image says "ECR denied the push"');
+  const still = fixCall(tk(), only, bctx({ ...built, reran: { ok: true, out: '' } }));
+  t('DS-548 AC4 negative control: still red after a build that passed and its re-run, a plain red check, not a failed build', `${still?.call} | ${JSON.stringify(still?.checks)}`, 'stuck | [{"name":"Flows image"}]');
+  const refused = fixCall(tk(), only, bctx({ ...built, reran: { ok: false, out: 'HTTP 403' } }));
+  t('DS-548 AC4 negative control: a refused re-run is the person\'s step, not a failed build', `${refused?.call} | ${JSON.stringify(refused?.checks)}`, 'stuck | [{"name":"Flows image","command":"re-run \\"Flows image\\" on #697"}]');
+  const steps = { premerge: [{ name: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' }], steps: () => [] };
+  const both = pr([ok('tests'), red('Flows image', '903'), red('Check portal schema mirror', '905')]);
+  const a5 = fixCall(tk(), both, bctx(null, steps));
+  t('DS-548 AC5 a pre-merge step beside it is the person\'s alone, and the build starts with it', `${a5?.call} | ${a5?.why} | ${a5?.build?.call}`, 'stuck | Check portal schema mirror · apply the PR\'s migrations to staging first | build');
+  t('DS-548 AC5 while the build runs, that step alone is stuck', fixCall(tk(), both, bctx({ state: 'running', command: built.command }, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
+  t('DS-548 AC5 negative control: a pre-merge step alone is the person\'s, as today', fixCall(tk(), pr([ok('tests'), red('Check portal schema mirror', '905')]), bctx(null, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
 }
 
 process.exit(fails ? 1 : 0);

@@ -41,6 +41,8 @@ t('AC5 and never a carry-on', /never a skip/.test(core), true);
 
 // AC2: the Stage 4 section is read before any suite runs, whatever the stage.
 t('AC2 the core sends the worker to the Stage 4 section before any suite', /about to run any suite, typecheck, lint or build, at any stage[^\n]*\n[^\n]*read the Stage 4 file first/.test(core), true);
+t('DS-551 a worker asked to stop for a reboot, at any stage, is sent to the Stage 5 section, which holds the rule',
+  /asked to stop for a reboot[^\n]*\n[^\n]*read the Stage 5 file first/.test(core) && read('worker-contract-stage-5.md').includes('`AUTOPILOT_REBOOT: <who asked, and when>`'), true);
 t('AC2 the Stage 4 section holds verification and self-review', read('worker-contract-stage-4.md').includes('## 3. Verification must cover what CI covers') && read('worker-contract-stage-4.md').includes('### Self-review'), true);
 
 // A lane D ticket admitted with its canvas saved builds without stopping, and only one with no saved
@@ -157,6 +159,9 @@ const REWRITTEN = [
   ['DS-458', 'wording calls park as before.', 1], // the rule as it stands, not against an earlier behaviour
   ['DS-458', 'Nobody is reading live, so drop the running commentary.', 1], // print a stage line, suppress nothing
   ['DS-511', 'check headroom, keep the cap, proceed', 1], // a refused with-lock.sh drops to the lower cap
+  ['AA-184', '**Screenshot capture**, only where §3', 1], // the route covers any screenshot or image script
+  ['DS-576', '```bash gh pr review <n> --repo <repo> --comment --body-file <report> ```', 1], // review-post.mjs posts it
+  ['DS-576', '**Use the plain form above: never a `GH_TOKEN=… gh pr review …` prefix.**', 1], // as §4 Review account
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

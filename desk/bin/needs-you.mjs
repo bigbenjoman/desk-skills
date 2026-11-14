@@ -5,7 +5,9 @@
 //
 //   needs-you.mjs list [<repo>]                       one line per batch with items, then one per item
 //       <repo> is a repo's name (all its batches) or <repo>:<name> (one named batch), as each item
-//       line starts
+//       line starts. Before listing it reads GitHub, Jira and git again: a parked or session item whose
+//       own PR merged, with its ticket done (or in no tracker), is recorded done, and a worktree held for
+//       changes since committed and pushed is released, each with a line saying so
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
@@ -23,7 +25,10 @@
 //                           a worker (queue.mjs requeue)
 //       fix                 send a PR whose review findings outlasted desk's fix tries back to a worker
 //                           on the PR, for one more try at the findings its stuck reason quotes
-//       drop                take a ticket whose PR was closed unmerged out of the batch (queue.mjs drop)
+//       drop                take a parked, session or stopped-session ticket, or one whose PR was closed
+//                           unmerged, out of the batch and remove its worktree (queue.mjs drop), refused
+//                           naming the worktree and what it holds while that has unpushed work; Jira is
+//                           left as it is. Recommended first where the park says it has no worker work
 //       move "<batch>"      a parked or stopped ticket out of its batch and into another running batch of
 //                           the repo (queue.mjs transfer), its next worker on that batch's base; a batch
 //                           not running is refused, naming those that are
@@ -34,12 +39,16 @@
 //       waiting             a PR held only by a person's approval: put off the same way, with the PR's head
 //                           and who approved it as its inputs, so it is back once it gets one or its head moves
 //       open                a lane C or D park, or one on a step no worker is allowed (aws, curl, gh
-//                           api, …): names the desk-ticket session to open; records nothing
+//                           api, …) or on a step the person approved that no worker can run: names
+//                           the desk-ticket session to open; records nothing
 //       admit               a ticket held by open tickets outside its batch that no batch holds: names
 //                           the /desk-admit to run for them; records nothing
 //       done                the person did the step themselves. On a PR it reads the PR from GitHub:
 //                           merged is recorded and leaves the list; unmerged is said, and noted on the
-//                           item until its head moves
+//                           item until its head moves. On a session item, the ticket finished outside
+//                           desk: its PR merged, or no PR, records it done; an unmerged PR is refused.
+//                           On a step the person approved that no worker can run, that step is done:
+//                           the ticket goes back to a worker with it in its briefing (queue.mjs step-done)
 //   needs-you.mjs move <repo> <TICKET> <batch>        record's move alone: the one action the decider is
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
@@ -50,25 +59,28 @@
 // checks them again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
-// first, then the longest waiting, less any put off with not-now whose inputs are unchanged and, where
-// its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
+// first, then any put off with three or more held tickets behind it, then the longest waiting, less any
+// other put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
+// offered, that offers none it did not offer then. Exits 0, or 11
 // (show the person) on anything it refuses.
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, stuckFindings } from './fix-tries.mjs';
-import { approvalFiles } from './gate.mjs';
-import { repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, PERMISSION_KEYS } from './desk-env.mjs';
+import { approvalFiles, holdNeedsPerson } from './gate.mjs';
+import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
+import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, moveTarget, targetsText, moveOffer, prStatusOf, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
+import { followOnPending } from './harvest.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -90,6 +102,26 @@ const sessionWhy = (q) => { const s = neverStep(q); return s ? `a worker is neve
 // mid-build there, and self-review would skip the rest of its build.
 const handBack = (r, t) => (t.worktree && t.branch && !neverStep(parkText(r, t))
   ? [['resume', null, 'once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review']] : []);
+// Every parked or session item can be dropped out of its batch (queue.mjs drop, which removes its clean
+// worktree). Where its park says it has no worker work, drop comes first as the recommendation and the
+// item's own first action keeps its reason as a note; otherwise drop is offered just before not-now.
+const DROP_WHY = 'its park says it has no worker work, so a requeue would only park it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is';
+const DROP_NOTE = 'drop takes it out of the batch and removes its worktree, refused while that holds unpushed work; Jira is left as it is';
+function withDrop(r, t, actions) {
+  if (noWorkerWork(parkText(r, t))) {
+    const [[name, why, note], ...rest] = actions;
+    return [['drop', DROP_WHY], [name, null, note ?? why], ...rest];
+  }
+  const at = actions.findIndex(([a]) => a === 'not-now');
+  return at < 0 ? [...actions, ['drop', null, DROP_NOTE]] : [...actions.slice(0, at), ['drop', null, DROP_NOTE], ...actions.slice(at)];
+}
+// A session item the person finished themselves, outside desk: done records it, once its PR has merged.
+const SESSION_DONE = ['done', null, 'if you finished the ticket yourself, done reads its PR and records it done once the PR has merged, or where it has none'];
+// A step the person approved that its park says no worker can run (park.session_step, answer.mjs):
+// they run it in a session, and done sends the ticket back to a worker with it recorded done.
+const STEP_WHY = 'no worker can run the step you approved, so a requeue would only park it again: run it in an interactive session';
+const STEP_DONE = ['done', null, 'once you have run the step, done sends the ticket back to a worker with it recorded as done'];
+const STEP_ANSWER = ['answer', null, 'if you did not mean to approve running it, answer again: an answer approving no step makes it an ordinary park you can resume'];
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
@@ -102,12 +134,95 @@ const SEND_BACK = ['resume', null, 'resume "<instruction>" keeps it for the next
 // Why a PR in this state takes no instruction, or null for an open one.
 const prShut = (pr, state) => (state === 'MERGED' ? `PR #${pr} is merged, so no worker can carry out an instruction on it, and nothing was recorded.`
   : state === 'CLOSED' ? `PR #${pr} was closed without merging, so no worker can carry out an instruction on it, and nothing was recorded. Drop the ticket, or requeue it for a worker that opens a new PR.` : null);
+// What GitHub shows of a PR that has not merged.
+const prShows = (v) => (v.state === 'CLOSED' ? 'closed without merging' : `unmerged${v.isDraft === true ? ', still a draft' : ''}`);
+
+// ---- Work finished outside desk. The pass looks for it only on tickets it could spawn, so a parked
+// ticket whose PR merged, or a worktree pushed since the pass held it, stays listed until list reads
+// it again here. A read that fails is null, and the item stays as it was.
+const ghRepoOf = (r) => repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
+const quiet = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] };
+export const READS = {
+  // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err }.
+  pr: (r, pr, more = '') => {
+    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', ghRepoOf(r), '--json', `state,mergedAt,isDraft,headRefOid${more}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '' }; }
+    catch (e) { return { v: null, err: one(e.stderr || e.message) }; }
+  },
+  // The ticket's status category (`new`, `indeterminate`, `done`), read in the repo's own checkout so
+  // its own Jira is the one asked.
+  ticket: (r, key) => {
+    try {
+      const at = checkoutOf(r, 'read its ticket');
+      return JSON.parse(execFileSync('desk-jira', ['get', key, '--json'], { ...quiet, cwd: at.cwd, env: at.env }))?.fields?.status?.statusCategory?.key ?? null;
+    } catch { return null; }
+  },
+  git: (dir, args) => { try { return execFileSync('git', ['-C', dir, ...args], quiet).trim(); } catch { return null; } },
+};
+// The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
+// ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
+const ownPr = (t) => { const earlier = t.merged_at ? Number(t.result?.pr) : NaN; return [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier) ?? null; };
+// Whether a key is a ticket in the repo's tracker, by its §4 Ticket key pattern.
+function trackerTicket(r, key) {
+  const pattern = repoConfigValue(r.slug, 'ticket-pattern');
+  return !!pattern && !isNone(pattern) && fullMatch(pattern, key);
+}
+const ticketWords = (key, status) => (status === 'done' ? `${key} is done in Jira` : status ? `${key} is not done in Jira yet` : `${key}'s Jira status could not be read`);
+const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${String(v.mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}`);
+const recordShipped = (r, t, how, pr, v) => queueCmd(r, shippedSet(t, how, pr, v?.mergedAt ?? null));
+// A park waiting on issue links only the person makes (clears-when personClears) holds them in its
+// clears_when alone: the pass records it done once each reads on Jira, so it is never closed here.
+const linksPending = (t) => (personClears(t.park?.clears_when) ? describeCond(t.park.clears_when) : null);
+// A parked or session item that shipped: its own PR merged, and its ticket done or in no tracker. -> how, or null.
+function shippedOf(r, t, reads) {
+  const pr = ownPr(t);
+  if (pr == null || linksPending(t)) return null;
+  const { v } = reads.pr(r, pr);
+  if (v?.state !== 'MERGED') return null;
+  if (!trackerTicket(r, t.key)) return { how: mergedWords(pr, v), pr, v };
+  return reads.ticket(r, t.key) === 'done' ? { how: `${mergedWords(pr, v)}, and ${ticketWords(t.key, 'done')}`, pr, v } : null;
+}
+// A worktree held for uncommitted changes or unpushed commits (batch-state gitHold): true once it has
+// neither, else false, or null where it cannot be read. One held because another process works in it
+// is the pass's to read.
+function worktreeClean(r, t, reads) {
+  const held = gitHeld(worktreeBusy(t)?.why);
+  if (!held) return null;
+  const dir = expandHome(repoConfigValue(r.slug, 'worktrees-dir') ?? '');
+  const wt = [t.worktree, held.wt, dir && !isNone(dir) ? join(dir, t.key) : null].find((p) => p && existsSync(p));
+  if (!wt) return null;
+  const why = gitHold(wt, (args) => reads.git(wt, args));
+  return why === undefined ? null : why === null;
+}
+
+// What list settles before it lists, in the batches `word` names: a parked or session item that shipped
+// is recorded done, and a worktree hold found clean is dropped. -> one line for each.
+export function refresh({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
+  const lines = [];
+  for (const r of scopeOf(repos, word).scope.filter((x) => !x.error && x.q)) {
+    for (const x of needsRows(r)) {
+      const t = x.t;
+      if (worktreeBusy(t)) {
+        if (worktreeClean(r, t, reads) !== true) continue;
+        const m = queueCmd(r, ['set', t.key, 'worktree_busy=null']);
+        lines.push(`${r.word} ${t.key}: ${m.ok ? 'its worktree is clean and its branch matches origin, so it is off your list; the next pass can start it.' : `its worktree is clean, but dropping its hold was refused: ${m.out}`}`);
+        continue;
+      }
+      if (t.state !== 'parked' || !['parked', 'session'].includes(itemOf(r, x).kind)) continue;
+      const shipped = shippedOf(r, t, reads);
+      if (!shipped) continue;
+      const { how } = shipped;
+      const m = recordShipped(r, t, how, shipped.pr, shipped.v);
+      lines.push(`${r.word} ${t.key}: ${m.ok ? `${how}, so it is recorded done and off your list.` : `${how}, but recording it done was refused: ${m.out}`}`);
+    }
+  }
+  return lines;
+}
 
 // ---- A PR item in the person's words: what is wrong, then what to do and what happens once they have.
 // No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
 // quoted in one is kept whole, and a URL in it untouched, so the session can ask it as it stands.
 const URL_PART = /(https?:\/\/\S+)/;
-const passWords = (s) => s.replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
+const passWords = (s) => s.replace(/,\s*at [0-9a-f]{7,40}\b,/g, '').replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
   .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
 const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : passWords(p))).join(''));
 // Once the person's step is done: desk merges it where it may, else merging is theirs too.
@@ -161,11 +276,15 @@ function conflictPlain(r, t, n, base, why = '') {
 function stuckPlain(r, n, s, t) {
   const checks = s?.checks ?? [];
   if (checks.length) {
-    const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : ''}`;
-    const mine = checks.filter((c) => !c.command), theirs = checks.filter((c) => c.command);
-    const parts = [...(mine.length ? [`${andList(mine.map(label))} ${mine.length === 1 ? 'is' : 'are'} failing, and ${REPAIRED} ${mine.length === 1 ? 'it' : 'them'}`] : []),
+    const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : c.unread ? ' (desk could not read which step failed)' : ''}`;
+    // A check desk builds (§4 Check builds) whose build failed: a worker fixes the build on its branch.
+    const built = checks.filter((c) => c.build);
+    const mine = checks.filter((c) => !c.command && !c.build), theirs = checks.filter((c) => c.command);
+    const buildSaid = (c) => `"${c.name}"'s check build \`${c.build}\` failed${c.error ? `, and its last line says: "${one(c.error)}"` : ''}`;
+    const parts = [...built.map(buildSaid), ...(mine.length ? [`${andList(mine.map(label))} ${mine.length === 1 ? 'is' : 'are'} failing, and ${REPAIRED} ${mine.length === 1 ? 'it' : 'them'}`] : []),
       ...theirs.map((c) => `${label(c)} needs a step outside GitHub: ${c.command}`)];
-    const todo = mine.length ? `Fix ${mine.length === 1 ? 'it' : 'them'} on its branch${theirs.length ? ', and do that step' : ''}` : `Do ${theirs.length === 1 ? 'that step' : 'those steps'}`;
+    const fix = [...built, ...mine];
+    const todo = fix.length ? `${built.length ? 'Send it back to a worker on the PR with what to fix, or fix' : 'Fix'} ${fix.length === 1 ? 'it' : 'them'} on its branch${theirs.length ? ', and do that step' : ''}` : `Do ${theirs.length === 1 ? 'that step' : 'those steps'}`;
     const said = mine.filter((c) => c.error).map((c) => ` "${c.name}" says: "${one(c.error)}".`).join('');
     return `${n}: ${parts.join('; ')}.${said} ${todo}; ${thenMerge(r)}.`;
   }
@@ -186,8 +305,14 @@ function stuckPlain(r, n, s, t) {
   }
   const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
   if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
+  // Before the conflict test too: this reason ends with what the last review try's worker said.
+  if (/^no review verdict/.test(why)) {
+    const said = /; the last try said: (.+)$/.exec(why)?.[1];
+    const k = /after (\d+) review tr(?:y|ies) at it/.exec(why)?.[1];
+    const ran = k ? `: desk's review ran on it ${k === '1' ? 'once' : k === '2' ? 'twice' : `${k} times`} and posted none it can read${said ? `, and the last one said "${plainWords(said)}"` : ''}` : '';
+    return `${n} has no code review desk can read for its latest commit${ran}. Post one (run /desk-review on it); the next pass then takes it on.`;
+  }
   if (/conflict/.test(why)) return conflictPlain(r, t, n, r.ctx?.base, why);
-  if (/^no review verdict/.test(why)) return `${n} has no code review desk can read for its latest commit. Post one (run /desk-review on it); the next pass then takes it on.`;
   const red = /^still red[^:]*:\s*(.+)$/.exec(why);
   if (red) return `${n} has failing checks ${REPAIRED}: ${plainWords(red[1])}. Fix them on its branch; ${thenMerge(r)}.`;
   return `${n} is stuck where desk can not move it${why ? ` (${plainWords(why)})` : ''}. Settle it on GitHub; the next pass then picks it up.`;
@@ -233,7 +358,9 @@ function holdPlain(n, w) {
   // routine stays the person's even with the row on.
   if (w.routine && /^§3 /.test(w.off ?? '')) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off}. Run it yourself, then merge it on GitHub (or set that row to yes with /desk-setup, and desk runs it and merges); the ticket is then done.`;
   if (w.routine) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off ?? 'it was not run'}. Run it and take that step yourself, then merge it on GitHub; the ticket is then done.`;
-  // With no routine, the hold's reason is the step the person takes before merging.
+  // With no routine, a step an agent can check is a gap in the config, not the person's to take.
+  if (!holdNeedsPerson(w.why)) return `${n} is under a merge hold whose step an agent can check, but the hold names no routine, so desk cannot run it: "${one(w.why)}"${files}. Give this hold a routine: /desk-update proposes one (\`; desk runs: <command>\` on its §4 Merge holds item, with §3 merge-hold-routine yes); desk then runs it and merges.`;
+  // Otherwise the hold's reason is the step the person takes before merging.
   return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
 }
 
@@ -450,6 +577,30 @@ function stepItem(key, ws) {
     since: finite(Math.min(...ws.map(({ t }) => timeOf(t.added_at) ?? Infinity))) };
 }
 
+// ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
+// Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
+// that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
+// records them run (follow_on_done) and the item leaves the list.
+const FOLLOW = 'follow:';
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter(followOnPending);
+function followItems(r) {
+  return followsOf(r).map((t) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t) }));
+}
+function followItem(r, t) {
+  const rowSaid = (row) => {
+    if (!row) return 'it names no §3 row';
+    let v;
+    try { v = repoPermission(r.slug, row); } catch { v = 'unread'; }
+    return `§3 ${row} is "${v}"`;
+  };
+  const steps = t.follow_on.map((s, i) => `(${i + 1}) ${one(s.step)} (${rowSaid(s.row)})`).join(' ');
+  const n = t.follow_on.length;
+  return { kind: 'follow', ticket: t.key,
+    need: `PR #${t.result?.pr ?? '?'} (${t.key}) is merged, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done`,
+    actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes the item off your list`], ['not-now']],
+    since: timeOf(t.merged_at) };
+}
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 function itemOf(r, x) {
   const t = x.t;
@@ -473,15 +624,19 @@ function itemOf(r, x) {
     const stuck = stuckOf(t, r.ctx);
     const need = prPlain(r, t), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
-    if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch'], ['requeue'], ['not-now']] };
+    if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch and removes its clean worktree'], ['requeue'], ['not-now']] };
     const openPr = (...actions) => ({ kind: 'pr', need, note, actions: [...actions, SEND_BACK, ['not-now']] });
     // Findings left beside the gaps are still a worker's to fix, so fix stays on offer.
     if (reviewGaps(t, stuck)) return openPr(['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ...(stuck && personReviewFix(t, { why: stuck.why }) ? [['fix', 'its findings are in the code: fix sends it to a worker on the PR for one more try, and leaves the gaps for your answer']] : []), ['done']);
     // Held by nothing but a person's approval: once asked for, there is nothing to do but wait for it.
     const ask = approvalAsk(t, prWhy(r, t) ?? {});
     if (ask && !ask.left.length) return { ...openPr(['waiting', 'once the approval is asked for, waiting keeps it off this list until it gets one or its head moves'], ['done']), approval: true };
-    // A step off GitHub (a build, a staging migration) has no recommendation: its need names the step,
-    // and the item leaves the list once every check it is still stuck on is green.
+    // A check build desk ran that failed is the branch's to fix, so a worker on the PR is recommended.
+    if (stuck?.checks.some((c) => c.build)) {
+      return { kind: 'pr', need, note, actions: [[SEND_BACK[0], 'desk built it and the build failed, which a change on its branch fixes: resume "<instruction>" sends it to a worker on the PR with what to fix', SEND_BACK[2]], ['done'], ['not-now']] };
+    }
+    // A step off GitHub (a staging migration, a build desk does not run) has no recommendation: its need
+    // names the step, and the item leaves the list once every check it is still stuck on is green.
     const outside = stuck?.outside ?? [];
     if (outside.length) {
       const checks = `${stuck.checks.map((c) => `"${c.name}"`).join(', ')} ${stuck.checks.length === 1 ? 'is' : 'are'} green`;
@@ -495,6 +650,9 @@ function itemOf(r, x) {
     if (stuck?.checks.some((c) => c.error)) return openPr(['done', 'desk\'s workers could not clear what its log names; say done once it is fixed, and the PR is checked on GitHub there and then']);
     // Desk's own upload crashed on every try: the saved output says why, and the files are still there.
     if (UPLOAD_CRASHED.test(String(t.undraft?.why ?? ''))) return openPr(['done', "desk's upload crashed on every try it gets, and its saved output says why; say done once no screenshot cell is left, and the PR is checked on GitHub there and then"]);
+    // A hold with no routine whose step an agent can check waits on a config change, not on the person's step.
+    const w = prWhy(r, t);
+    if (w?.code === 'hold' && !w.routine && !w.failed && !holdNeedsPerson(w.why)) return openPr(['done', 'the hold needs a routine in the config; say done once it has one, and the PR is checked on GitHub there and then']);
     return openPr(['done', 'only you can do this step; say done once you have, and the PR is checked on GitHub there and then']);
   }
   // A worktree the pass will not spawn into (desk-q worktreeBusy): only the person, or the session in
@@ -504,8 +662,12 @@ function itemOf(r, x) {
   // already, so a resume only records what the next worker should know.
   if (busyPark(t)) return { kind: 'worktree', need: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
-  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: [['open', sessionWhy(parkText(r, t))], ['not-now']] };
-  if (x.k === 'failed') return { kind: 'stopped', need: needText(r, x), actions: [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now'], ...moveAction(r)] };
+  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) };
+  if (x.k === 'failed') {
+    // A park file saying it has no worker work recommends drop over a requeue that would only park it again.
+    const actions = [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']];
+    return { kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] };
+  }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
   // blocker no batch holds is worked by nobody, so admitting it comes first; answering says whether this
   // one can start without them.
@@ -532,15 +694,16 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, note, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
-    if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), ['not-now']] };
-    if (needsSession(t)) return { kind: 'session', need, note, actions: [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), ['not-now']] };
-    if (triagePark(t)) return { kind: 'session', need, note, actions: [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], ['not-now']] };
+    if (t.park?.session_step) return { kind: 'session', need: `you approved a step no worker can run: ${one(t.park.session_step.step)}`, note, actions: withDrop(r, t, [['open', STEP_WHY], STEP_DONE, STEP_ANSWER, ['not-now']]) };
+    if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
+    if (needsSession(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
+    if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], SESSION_DONE, ['not-now']]) };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
     const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
-    return { kind: 'parked', need, note, actions: [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now'], ...moveAction(r), ...offer] };
+    return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
   const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
@@ -557,6 +720,7 @@ function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
   // A step: what waits on it in every batch of the repo, not its need, which names only those passed.
   if (item.kind === 'step') return { question: `${t.key} step`, inputs: { ticket: t.key, waiting: item.waiting.join(', ') } };
+  if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
@@ -575,13 +739,34 @@ function putOffKey(r, t, item) {
 // since without them is an item no batch listed when it was put off: it stays put off on its inputs.
 const ACTIONS_SINCE = Date.parse('2026-11-01T15:00:00Z');
 const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
+// A put-off item is listed anyway, first, while this many tickets of its batch are held behind it.
+export const HOLDS_BACK = 3;
+// How many held tickets of r's batch wait behind `key`: held by it, or by a ticket held behind it.
+export function heldBehind(r, key) {
+  const held = Object.values(r.q?.tickets ?? {}).filter((o) => o.key !== key && isHeld(o));
+  const behind = new Set();
+  for (let edge = new Set([key]); edge.size;) {
+    const next = held.filter((o) => !behind.has(o.key) && keysOf(o.held_by).some((k) => edge.has(k))).map((o) => o.key);
+    next.forEach((k) => behind.add(k));
+    edge = new Set(next);
+  }
+  return behind.size;
+}
+const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
+// What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
+function stillListed(r, key) {
+  const n = heldBehind(r, key);
+  return n >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${n} do now).` : '';
+}
 function judged(r, x, register) {
   const item = itemOf(r, x);
   const l = lookup(register, putOffKey(r, x.t, item));
   if (l.status !== 'put_off') return { item, l };
+  const behind = heldBehind(r, x.t.key);
+  const shown = behind >= HOLDS_BACK ? { ...item, need: `${item.need} (${holdingWords(behind)})`, behind } : item;
   const was = Array.isArray(l.entry.actions) ? l.entry.actions : null, now = verbsOf(item);
-  if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return { item, l };
-  return { item, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
+  if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return shown === item ? { item, l } : { item: shown, l: { status: 'holding', entry: l.entry } };
+  return { item: shown, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
 }
 
 // Records on a ticket's put-off entry the actions its item offers now, so one it gains later brings it
@@ -618,6 +803,9 @@ export function needsCount(r) {
   }
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+  }
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap(followItems)) {
+    if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
   }
   return { shown: rows.length + steps, putOff, rows };
 }
@@ -669,6 +857,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
     }
   }
+  for (const f of inScope.flatMap(followItems)) repoItem(f.r, f.t, f.item, f.item.since);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -676,7 +865,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
     const item = r && !r.error ? templatesItem(r, templatesRecord(slug)) : null;
     if (item) repoItem(r, { key: TEMPLATES }, item, item.since);
   }
-  items.sort((a, b) => (b.broken - a.broken) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
+  items.sort((a, b) => (b.broken - a.broken) || ((b.behind ?? 0) - (a.behind ?? 0)) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   return { repos, scope, items, named, putOff };
 }
 
@@ -720,8 +909,8 @@ function queueCmd(r, args) {
 }
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
-export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now) }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
+export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -762,8 +951,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // fix on a ticket still done, so one left for a session to requeue would be lost.
   const gapsAnswer = () => {
     const pr = x.t.result.pr;
-    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
-    try { execFileSync('gh', ['pr', 'comment', String(pr), '--repo', repo, '--body', prComment(text)], { stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { execFileSync('gh', ['pr', 'comment', String(pr), '--repo', ghRepoOf(r), '--body', prComment(text)], { stdio: ['ignore', 'pipe', 'pipe'] }); }
     catch (e) { return say(false, `not posted on PR #${pr} (${one(e.stderr || e.message)}), so nothing was recorded.`); }
     const a = ans();
     if (!a.ok) return say(false, `posted on PR #${pr}, but not recorded: ${a.why}`);
@@ -771,12 +959,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     if (no) return say(false, `posted on PR #${pr} and in its briefing, but ${no}`);
     return say(true, `posted on PR #${pr}, kept for its next worker and requeued; the next pass sends it to a worker on the PR.`);
   };
-  // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err, repo }.
-  const readPr = (pr, more = '') => {
-    const repo = repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
-    try { return { v: JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', `state,mergedAt,isDraft,headRefOid${more}`],{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })), err: '', repo }; }
-    catch (e) { return { v: null, err: one(e.stderr || e.message), repo }; }
-  };
+  const readPr = (pr, more = '') => ({ ...reads.pr(r, pr, more), repo: ghRepoOf(r) });
   // The person's instruction on an open PR: kept in the briefing and as the fix its next worker starts
   // on, then requeued whoever runs the batch, as a gaps answer is. Read from GitHub first: a worker
   // sent to a PR merged or closed since the last pass has nothing to push to.
@@ -824,7 +1007,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `GitHub shows no screenshot cell left in PR #${pr}'s body, so it is off your list; ${next}.`);
     }
     const check = { at: new Date(now).toISOString(), state: v.state, draft: v.isDraft === true, head: v.headRefOid ?? null, ...(cells ? { cells } : {}) };
-    const shows = v.state === 'CLOSED' ? 'closed without merging' : `unmerged${check.draft ? ', still a draft' : ''}`;
+    const shows = prShows(v);
     const m = queueCmd(r, ['set', ticket, `done_check=${JSON.stringify(check)}`]);
     if (cells) {
       const still = `GitHub still shows ${cells} screenshot cell(s) in PR #${pr}'s body`;
@@ -833,6 +1016,19 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     if (!m.ok) return say(false, `GitHub still shows PR #${pr} ${shows}; noting it on the item was refused: ${m.out}`);
     const moved = check.head && x.t.pr_status?.head && check.head !== x.t.pr_status.head;
     return say(false, `GitHub still shows PR #${pr} ${shows}${moved ? ', though it has new commits the next pass reads' : ''}, so it stays on your list with that note.`);
+  };
+  // Done on a session item: the person finished the ticket outside desk. Its PR and ticket are read now;
+  // a merged PR, or none, is recorded done as list records one that shipped, and anything else is refused.
+  const sessionDone = () => {
+    const links = linksPending(x.t);
+    if (links) return say(false, `it waits on ${links}, so it is not recorded done and stays on your list: the next pass records it done once each is on Jira.`);
+    const pr = ownPr(x.t);
+    const { v, err } = pr == null ? { v: null, err: '' } : readPr(pr);
+    if (pr != null && !v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not recorded done and stays on your list.`);
+    if (pr != null && v.state !== 'MERGED') return say(false, `GitHub shows PR #${pr} ${prShows(v)}, so it is not recorded done and stays on your list. Say done once it has merged.`);
+    const how = `you said done; ${mergedWords(pr, v)}${trackerTicket(r, ticket) ? `; ${ticketWords(ticket, reads.ticket(r, ticket))}` : ''}`;
+    const m = recordShipped(r, x.t, how, pr, v);
+    return m.ok ? say(true, `recorded done (${how}), so it is off your list.`) : say(false, `recording it done was refused: ${m.out}`);
   };
   switch (verb) {
     case 'answer': {
@@ -851,6 +1047,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const a = ans();
       if (!a.ok) return say(false, a.why);
       if (item.kind === 'worktree') return say(true, 'recorded for its next worker; the next pass that finds the worktree clean starts it.');
+      // Approving a step no worker can run makes it a session item (answer.mjs), never a requeue.
+      const step = readQueue(r.queuePath).tickets?.[ticket]?.park?.session_step;
+      if (step) return say(true, `answer recorded; not requeued, because no worker can run the step you approved (${one(step.step)}): run it in an interactive session, then say done and it goes back to a worker with the step recorded done.`);
       if (w.by === 'session') {
         // Marked answered, so desk-q shows it waiting on that session rather than needing the person.
         const m = queueCmd(r, ['set', ticket, `park.answered=${new Date(now).toISOString()}`]);
@@ -896,18 +1095,19 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'not-now': {
       // A park is put off by answer.mjs, keyed to its inputs, and its entry then records the actions it
       // offers; anything else here, as putOffKey keys it.
+      const still = stillListed(r, ticket);
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
         if (!a.ok) return say(false, a.why);
         stampItem(r, x, item);
-        return say(true, 'put off (not-now register).');
+        return say(true, `put off (not-now register).${still}`);
       }
       putOff();
-      return say(true, `put off (${notNowPath(r.stateDir)}).`);
+      return say(true, `put off (${notNowPath(r.stateDir)}).${still}`);
     }
     case 'waiting': {
       putOff();
-      return say(true, `waiting on its approval (${notNowPath(r.stateDir)}): not listed again until it gets one or its head moves.`);
+      return say(true, `waiting on its approval (${notNowPath(r.stateDir)}): not listed again until it gets one or its head moves.${stillListed(r, ticket)}`);
     }
     // Into another running batch of the repo, by its name, `<repo>:<name>`, or `standing`. Made here
     // whoever runs either batch: the move holds both queue locks, and the next pass there spawns it.
@@ -930,10 +1130,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `sent back to a worker on PR #${pr} for one more try at its findings; the review of its new head says whether they are gone.`);
     }
     // Nothing spawns from a drop, so it is made here whoever runs the batch.
-    case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, 'dropped from the batch (queue.mjs drop).') : say(false, `drop refused: ${q.out}`); }
+    case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, `${q.out} (queue.mjs drop); Jira is left as it is.`) : say(false, `drop refused: ${q.out}`); }
     case 'open': {
       const root = repoConfigValue(r.slug, 'repo-root');
-      return say(true, `not requeued (${neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
+      return say(true, `not requeued (${x.t.park?.session_step ? 'a step you approved that no worker can run' : neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
     }
     // Admission runs its own checks on each blocker, so it is the person's /desk-admit, not made here.
     case 'admit': {
@@ -942,7 +1142,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
+      if (x.t.park?.session_step) {
+        const d = queueCmd(r, ['step-done', ticket]);
+        return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);
+      }
       if (x.pr || heldDraft(x.t)) return prDone();
+      if (item.kind === 'session') return sessionDone();
       if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
       if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
       return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
@@ -956,7 +1161,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, now, repos }) {
   const c = collect({ word, now, repos });
-  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step') && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow') && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
     const key = ticket.slice(UNSET.length);
@@ -975,6 +1180,10 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
   if (verb === 'not-now') {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
     return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
+  }
+  if (i.kind === 'follow') {
+    const m = queueCmd(i.r, ['set', i.ticket, `follow_on_done=${new Date(now).toISOString()}`]);
+    return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
   if (i.kind === TEMPLATES) {
@@ -1025,7 +1234,10 @@ if (isMain) {
   const [cmd, ...rest] = process.argv.slice(2);
   const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
   try {
-    if (cmd === 'list' && rest.length <= 1) console.log(listText(collect({ word: rest[0] ?? null })));
+    if (cmd === 'list' && rest.length <= 1) {
+      const settled = refresh({ word: rest[0] ?? null });
+      console.log([...settled, listText(collect({ word: rest[0] ?? null }))].join('\n'));
+    }
     else if (cmd === 'left' && rest.length <= 1) console.log(leftText({ word: rest[0] ?? null }));
     else if (cmd === 'record' && rest.length >= 3) {
       const [word, ticket, verb, ...more] = rest;

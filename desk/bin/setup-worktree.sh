@@ -24,6 +24,9 @@
 #   §4 Database migrate        run against the per-ticket database only
 #
 # DESK_PSQL_TIMEOUT (seconds, default 30) limits each psql call, so a wedged container fails setup.
+# DESK_PSQL_RETRY_S (seconds, default 120) is how long the first psql call is retried, with backoff,
+# before setup fails; a container docker reports missing fails at once. A failed §4 Install runs a
+# second time DESK_INSTALL_RETRY_DELAY_S (default 10) seconds later, and setup fails only if both do.
 #
 # Databases, the rule: in a worktree's copied env files, every §4 Database URL variable either points
 # at this ticket's own local database or is blank. A URL whose host is not local (a hosted, staging or
@@ -132,6 +135,26 @@ run_cmds() { # run_cmds <DIR<TAB>CMD lines> — every item, each in its director
   done <<EOF_CMDS
 $1
 EOF_CMDS
+}
+# §4 Install gets a second run when its first fails: a registry that drops one request (mise's
+# "Failed to install npm:…") clears in seconds. Both runs stream as before and are kept outside the
+# worktree, so setup fails only when both did, quoting the last line of each.
+INSTALL_RETRY_DELAY="${DESK_INSTALL_RETRY_DELAY_S:-10}"
+case "$INSTALL_RETRY_DELAY" in ''|*[!0-9]*) fail "DESK_INSTALL_RETRY_DELAY_S='$INSTALL_RETRY_DELAY' is not a whole number of seconds" ;; esac
+install_last() { grep -v '^[[:space:]]*$' "$1" | tail -n 1 | cut -c1-200; }
+install_twice() {
+  local log1 log2 why1 why2
+  log1="$(mktemp "${TMPDIR:-/tmp}/desk-install.XXXXXX")"; log2="$(mktemp "${TMPDIR:-/tmp}/desk-install.XXXXXX")"
+  if run_cmds "$INSTALL_CMDS" 2>&1 | tee "$log1"; then rm -f "$log1" "$log2"; return 0; fi
+  why1="$(install_last "$log1")"
+  say "  §4 Install failed on its first run ($why1); running it again in ${INSTALL_RETRY_DELAY}s"
+  sleep "$INSTALL_RETRY_DELAY"
+  if run_cmds "$INSTALL_CMDS" 2>&1 | tee "$log2"; then
+    rm -f "$log1" "$log2"; say "  §4 Install passed on its second run"; return 0
+  fi
+  why2="$(install_last "$log2")"
+  rm -f "$log1" "$log2"
+  fail "config §4 Install failed twice in $WT, ${INSTALL_RETRY_DELAY}s apart — first run: ${why1:-no output}; second run: ${why2:-no output}"
 }
 
 # Claude Code harness allow rules written by /desk-setup for this repo live in the primary checkout's
@@ -310,6 +333,10 @@ EOF_FILES
 # Every psql call runs under this limit: a stopped or wedged container must fail setup, not hang it.
 PSQL_LIMIT="${DESK_PSQL_TIMEOUT:-30}"
 case "$PSQL_LIMIT" in ''|*[!0-9]*|0) fail "DESK_PSQL_TIMEOUT='$PSQL_LIMIT' is not a positive number of seconds" ;; esac
+# How long the first psql call keeps being retried (backoff 5, 10, 20, 40s) before setup fails: a
+# container slow for a minute is a transient fault, not the person's. 0 tries once.
+PSQL_RETRY="${DESK_PSQL_RETRY_S:-120}"
+case "$PSQL_RETRY" in ''|*[!0-9]*) fail "DESK_PSQL_RETRY_S='$PSQL_RETRY' is not a whole number of seconds" ;; esac
 pg() { # pg <user> <psql args...>: psql against the postgres database in the container, time-limited
   local u="$1"; shift
   desk_timeout "$PSQL_LIMIT" docker exec "$PG_CONTAINER" psql -U "$u" -d postgres "$@"
@@ -327,14 +354,32 @@ pg_host_port() {
   case "$line" in *:*) line="${line##*:}" ;; *) return 0 ;; esac
   case "$line" in ''|*[!0-9]*) ;; *) printf '%s' "$line" ;; esac
 }
+pg_missing() { # docker says the container does not exist: waiting cannot make it, so no retry
+  local err
+  err="$(desk_timeout "$PSQL_LIMIT" docker container inspect --format '{{.State.Status}}' "$PG_CONTAINER" 2>&1 >/dev/null)" || true
+  case "$err" in *"No such"*|*"no such"*) return 0 ;; esac
+  return 1
+}
 CREATED_DB=""
 ensure_db() { # the per-ticket database exists, or setup fails
   command -v docker >/dev/null 2>&1 || fail "docker is not on PATH — cannot create $DB in $PG_CONTAINER"
   local user; user="$(pg_user)"
-  local have rc=0
-  have="$(pg "$user" -Atc "SELECT 1 FROM pg_database WHERE datname = '$DB'" 2>/dev/null)" || rc=$?
-  [ "$rc" = 0 ] \
-    || fail "cannot reach Postgres in container $PG_CONTAINER as $user: $(pg_why "$rc") (is it running? §4 Local database names it as \`postgres container <name>\`)"
+  local have rc t0=$SECONDS tries=0 delay=5 left
+  while :; do
+    rc=0; tries=$((tries + 1))
+    have="$(pg "$user" -Atc "SELECT 1 FROM pg_database WHERE datname = '$DB'" 2>/dev/null)" || rc=$?
+    [ "$rc" = 0 ] && break
+    # A timeout is a container that exists and is slow; any other failure may be one that is not there.
+    case "$rc" in 124|137) ;; *) pg_missing \
+      && fail "container $PG_CONTAINER does not exist (docker reports no such container), so Postgres was not retried — §4 Local database names it as \`postgres container <name>\`" ;; esac
+    left=$((PSQL_RETRY - (SECONDS - t0)))
+    [ "$left" -gt 0 ] \
+      || fail "cannot reach Postgres in container $PG_CONTAINER as $user: $(pg_why "$rc"), after $tries $([ "$tries" = 1 ] && echo try || echo tries) over $((SECONDS - t0))s (is it running? §4 Local database names it as \`postgres container <name>\`)"
+    [ "$delay" -le "$left" ] || delay=$left
+    say "  Postgres in $PG_CONTAINER did not answer ($(pg_why "$rc")); trying again in ${delay}s"
+    sleep "$delay"; delay=$((delay * 2))
+  done
+  [ "$tries" = 1 ] || say "  Postgres in $PG_CONTAINER answered after a retry (try $tries, $((SECONDS - t0))s after the first)"
   if [ "$have" = 1 ]; then say "  database $DB already exists"; return 0; fi
   pg "$user" -c "CREATE DATABASE \"$DB\"" >/dev/null || { rc=$?; fail "could not create database $DB: $(pg_why "$rc")"; }
   CREATED_DB="$user"
@@ -414,6 +459,51 @@ finish() {
   if [ -n "$MIGRATE_FAILED" ]; then say "migrate=failed"; fi
 }
 
+# A branch can be checked out in only one worktree. Another worktree holding it is detached at the same
+# commit, which keeps its folder and files, only when nothing there can be lost or disturbed: no
+# changes, no untracked files, no stash on the branch, HEAD equal to origin's, and no process working
+# in it. Anything else fails, naming the folder and what it holds.
+free_branch() {
+  local line path="" holder="" why st tracked untracked stashed head up ahead users
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "branch refs/heads/$BRANCH") holder="$path" ;;
+    esac
+  done < <(git -C "$MAIN" worktree list --porcelain)
+  [ -n "$holder" ] || return 0
+  why="branch $BRANCH is checked out in another worktree, $holder,"
+  [ -d "$holder" ] || fail "$why which no longer exists — run git worktree prune"
+  st="$(git -C "$holder" status --porcelain --untracked-files=normal 2>&1)" || fail "$why and git cannot read it: $st"
+  tracked="$(printf '%s\n' "$st" | grep -v '^??' || true)"
+  untracked="$(printf '%s\n' "$st" | grep '^??' || true)"
+  [ -z "$tracked" ] || fail "$why which has uncommitted changes:
+$tracked"
+  [ -z "$untracked" ] || fail "$why which has untracked files:
+$untracked"
+  stashed="$(git -C "$MAIN" stash list --format=%gs | grep -F -e "WIP on $BRANCH: " -e "On $BRANCH: " || true)"
+  [ -z "$stashed" ] || fail "$why and the branch has stashed work:
+$stashed"
+  git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH" \
+    || fail "$why and $BRANCH is not on origin, so its commits are not pushed"
+  head="$(git -C "$holder" rev-parse HEAD)"; up="$(git -C "$MAIN" rev-parse "refs/remotes/origin/$BRANCH")"
+  if [ "$head" != "$up" ]; then
+    ahead="$(git -C "$MAIN" rev-list --count "$up..$head")"
+    [ "$ahead" = 0 ] || fail "$why which has $ahead commit(s) not pushed to origin/$BRANCH"
+    fail "$why which is behind origin/$BRANCH"
+  fi
+  users="$(node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const { dirUsers, usersText } = await import(pathToFileURL(process.argv[1]).href);
+    const users = dirUsers(process.argv[2], [process.pid, process.ppid, Number(process.argv[3])]);
+    console.log(users ? usersText(users) : "?");
+  ' "$DESK_ENV_DIR/suite-wait.mjs" "$holder" "$$")" || fail "$why and its processes could not be read"
+  [ "$users" != "?" ] || fail "$why and no process working directories could be read to tell whether it is in use"
+  [ -z "$users" ] || fail "$why which is the working directory of $users"
+  git -C "$holder" checkout --quiet --detach || fail "$why and detaching it failed"
+  say "branch $BRANCH was checked out in $holder, clean and level with origin — detached that worktree at ${head:0:12} to free the branch"
+}
+
 mkdir -p "$DESK_WORKTREES_DIR"
 
 if [ -d "$WT" ] && [ ! -f "$MARKER" ]; then
@@ -447,6 +537,7 @@ else
   git -C "$MAIN" fetch origin --quiet
   if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
     say "branch $BRANCH already exists — checking it out into the worktree"
+    free_branch
     git -C "$MAIN" worktree add "$WT" "$BRANCH" --quiet
   else
     say "creating $BRANCH off $BASE"
@@ -468,7 +559,7 @@ databases
 
 if [ -n "$INSTALL_CMDS" ]; then
   say "installing dependencies (this is the slow part)"
-  run_cmds "$INSTALL_CMDS" || fail "config §4 Install failed in $WT"
+  install_twice
 else
   say "config §4 Install is none — no install step"
 fi

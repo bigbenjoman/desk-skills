@@ -12,7 +12,8 @@
 // is kept under <set dir>/<task id>/validate/{base,merge}/.
 //
 // A PR already in the set, kept or dropped, is left exactly as it is unless --rewrite is given, which
-// builds the PRs named on this run again. The set file is written only when something in it changed.
+// builds the PRs named on this run again. The set file is written after each PR, and only when
+// something in it changed.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
@@ -96,7 +97,7 @@ export function counts(tasks) {
 const run = (cmd, args, opts) => spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts });
 
 function ghPr({ repo, pr }) {
-  const r = run('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'number,title,headRefName,state,baseRefOid,mergeCommit,files,commits']);
+  const r = run('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'number,title,headRefName,state,mergeCommit,files,commits']);
   if (r.status !== 0) throw new Error(`gh pr view failed: ${(r.stderr || '').trim()}`);
   return JSON.parse(r.stdout);
 }
@@ -156,6 +157,18 @@ function validateAt(repo, task, commit, dir, timeout) {
 
 const fail = (why) => { throw Object.assign(new Error(why), { drop: true }); };
 
+// How many first-parent commits the PR put on the base branch. A merge commit or a squash is one. A
+// rebase merge lands each of the PR's commits with the author dates they had, so the merge commit is
+// the last of them: read from its first parent, the base would already hold the rest of the PR.
+function commitsLanded(root, merge, commits) {
+  if (commits.length < 2) return 1;
+  const r = git(root, ['log', '--first-parent', '--format=%P %at', '-n', String(commits.length), merge]);
+  const landed = (r.stdout ?? '').trim().split('\n').reverse().map((line) => line.split(' '));
+  const rebased = landed.length === commits.length && landed.every((f, i) =>
+    f.length === 2 && Number(f[1]) === Date.parse(commits[i].authoredDate) / 1000);
+  return rebased ? commits.length : 1;
+}
+
 // One PR to a validated task, or a thrown reason it was dropped.
 function freeze(want, setDir, opts, repos) {
   if (!repos.has(want.repo)) repos.set(want.repo, (() => { try { return readRepo(want.repo); } catch (e) { return e; } })());
@@ -163,7 +176,6 @@ function freeze(want, setDir, opts, repos) {
   if (repo instanceof Error) fail(repo.message);
   const pr = ghPr(want);
   if (pr.state !== 'MERGED' || !SHA.test(pr.mergeCommit?.oid ?? '')) fail('the PR is not merged');
-  if (!SHA.test(pr.baseRefOid ?? '')) fail('GitHub gives no base commit for the PR');
   const { files, run: runs } = testFiles((pr.files ?? []).filter((f) => f.changeType !== 'DELETED').map((f) => f.path));
   if (!runs.length) fail('the PR changed no test files, so it has no tests to hide');
 
@@ -176,8 +188,13 @@ function freeze(want, setDir, opts, repos) {
   const ticket = ticketAt(repo, key, first);
   if (!ticket.description.trim() && !ticket.summary.trim()) fail(`${key} had no text when the PR's first commit was made`);
 
-  const base = pr.baseRefOid, merge = pr.mergeCommit.oid;
-  for (const sha of [base, merge]) haveCommit(repo.root, sha);
+  // The base is the commit the merge applied the PR to, so the merge differs from it by the PR alone.
+  // GitHub's baseRefOid can be older: work merged to the base branch after it would reach the hidden
+  // tests without reaching the run.
+  const merge = pr.mergeCommit.oid;
+  haveCommit(repo.root, merge);
+  const base = git(repo.root, ['rev-parse', '--verify', '--quiet', `${merge}~${commitsLanded(repo.root, merge, pr.commits ?? [])}`]).stdout?.trim();
+  if (!SHA.test(base ?? '')) fail('the merge commit has no parent to start from');
   const id = taskId(want);
   if (!FILE_SAFE.test(id)) fail(`cannot make a task id from ${want.repo}#${want.pr}`);
   const taskDir = join(setDir, id);
@@ -221,6 +238,15 @@ export function build(opts, log = () => {}) {
   const tasks = [...(prior.tasks ?? [])];
   const dropped = [...(prior.dropped ?? [])];
   const repos = new Map();
+  let written = false;
+  // Saved after every PR, so a build that is killed keeps each PR it finished.
+  const save = () => {
+    const text = `${JSON.stringify({ tasks, counts: counts(tasks), dropped }, null, 2)}\n`;
+    if (existsSync(path) && readFileSync(path, 'utf8') === text) return;
+    mkdirSync(setDir, { recursive: true });
+    writeFileSync(path, text);
+    written = true;
+  };
   for (const want of opts.prs) {
     const name = `${want.repo}#${want.pr}`;
     const t = tasks.findIndex(same(want)), d = dropped.findIndex(same(want));
@@ -237,12 +263,10 @@ export function build(opts, log = () => {}) {
       dropped.push({ repo: want.repo, pr: want.pr, why: e.message });
       log(`  dropped: ${e.message}`);
     }
+    save();
   }
-  const next = { tasks, counts: counts(tasks), dropped };
-  const text = `${JSON.stringify(next, null, 2)}\n`;
-  const written = !existsSync(path) || readFileSync(path, 'utf8') !== text;
-  if (written) { mkdirSync(setDir, { recursive: true }); writeFileSync(path, text); }
-  return { path, written, ...next };
+  save();
+  return { path, written, tasks, counts: counts(tasks), dropped };
 }
 
 const isMain = (() => {

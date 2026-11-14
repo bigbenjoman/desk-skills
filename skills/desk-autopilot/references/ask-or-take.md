@@ -50,7 +50,8 @@ user. One whose inputs changed is asked, with a line saying what changed since i
 - **A park can say what clears it**: a worker's `AUTOPILOT_PARK_CLEARS_WHEN: <condition>` on the
   line after its park (`pr <n> merged`, `pr <n> ready` for out of draft, `ticket <KEY> done`,
   `variable <NAME> set` for a repo Actions variable, `run <id> completed` for a GitHub Actions run
-  to finish, or `none`), or
+  to finish, `base contains <branch>` for the batch base to hold every commit on that branch, as
+  `base contains main` once main is merged into it, or `none`), or
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
   left out (or `none`) when only a person can settle it. Each pass checks it, and once it holds settles the park as
@@ -76,7 +77,12 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   only where `autopilot-judgement` is `yes`), the pass answers the park with the recommended option,
   requeues it and logs the decision, with no decider or person; an ask category is never taken. It
   is taken once: the same park asked again after that answer goes to the person. Each outcome is one
-  line under `recovered:` in the report.
+  line under `recovered:` in the report. A park with no such line whose question still marks one
+  option recommended on a take call is the decider's to take where `autopilot-judgement` is `yes`:
+  it answers with that option (`answer.mjs --taken` with the call's JSON, which refuses an ask
+  category before writing and never records a grant), requeues and logs
+  the call (`decisions.mjs log --source decider`), once, as the pass does, and hands on an ask
+  category or a park with no recommendation.
 - **You and interactive sessions** check before asking, and record a "not now" the user gives in
   the conversation (an answer through `answer.mjs` or the digest is recorded for you):
 

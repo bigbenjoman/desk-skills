@@ -1,5 +1,6 @@
 // The Codex login a desk-codex call runs on. With one Codex login, or no subscriptions file, there is
-// nothing to choose and the call keeps the caller's environment. With more, it runs on the usable login (signed in, in rotation
+// nothing to choose and the call keeps the caller's environment, unless the file sets every Codex
+// login it lists off, when no call runs. With more, it runs on the usable login (signed in, in rotation
 // or on standby) with the most room, ranked as a Claude login's is (login-choice.mjs) on whichever
 // windows its plan has. A login whose newest reading is at a limit is benched until that window
 // resets; with every usable login benched, or none usable, no call runs and `dead` says why.
@@ -22,12 +23,19 @@ export function benchedUntil(reading) {
 // call runs in, and, when no call may run, the reason.
 export function codexCallLogin({ env = process.env, now = Date.now() } = {}) {
   const keep = { login: null, env, dead: null };
-  if (codexLogins().length <= 1) return keep;
+  const none = { login: null, env, dead: 'no Codex login is signed in with a rule of in rotation or standby (desk-env logins check)' };
   // With no subscriptions file desk has one login per tool, whatever folders exist (logins.mjs).
   const subs = readSubscriptions(subscriptionsPath());
   if (!subs.exists) return keep;
+  // The one login found runs only if it is not off and the file has a Codex row that is not off: an
+  // off row whose folder is gone leaves ~/.codex found with no rule of its own.
+  const found = codexLogins();
+  if (found.length <= 1) {
+    const anyOn = subs.logins.some((l) => l.tool === 'codex' && l.rule !== 'off');
+    return found[0]?.rule === 'off' || !anyOn ? none : keep;
+  }
   const { usable } = checkLogins(subs, { tools: ['codex'], env });
-  if (!usable.length) return { login: null, env, dead: 'no Codex login is signed in with a rule of in rotation or standby (desk-env logins check)' };
+  if (!usable.length) return none;
   const { login, read } = codexChoice(usable, now);
   if (!login) {
     const first = [...read].sort((a, b) => a.until - b.until)[0];

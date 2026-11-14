@@ -34,7 +34,8 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 - when a pass needs the person, starts the decider (`decider.mjs`): one fresh headless session per
   repo at a time, at low effort, given only that pass's report and `references/orchestrator-recovery.md`.
   It settles what those rules let you do without asking (a requeue of a lane A, B, D or E worker's park that
-  needs more agent work) and hands the rest to the check-in digest, which lists it (`<state>/handed.json`).
+  needs more agent work, and where §3 `autopilot-judgement` is `yes`, taking the recommended option of
+  a park on a take call: answered, requeued and logged as the decider's) and hands the rest to the check-in digest, which lists it (`<state>/handed.json`).
   A lane C park, a lane D parked at triage on its design, and anything needing a §3 row that is not `yes` go to the digest without a
   session; an item handed on and not answered since starts none, and an answer to one (`answer.mjs`,
   the digest's included) runs a pass again even in an idle batch. A decider still running after 15

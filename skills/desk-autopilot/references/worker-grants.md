@@ -34,9 +34,12 @@ a worker cannot:
   so it cannot resolve review threads (it replies with `gh pr comment` under §3 `pr-reply`) and
   opens PRs only with a command beginning `gh pr create --draft` or
   `gh pr create --repo <§0 GitHub repo> --draft`;
-- run `gh workflow` beyond the exact §4 Worker workflows dispatches on its own branch where §3
+- run `gh workflow` beyond the exact §4 Worker workflows dispatches on its own branch, where §3
   `worker-workflow-dispatch` is `yes`: no other workflow, input or ref, none in a dry run, and
-  never `gh workflow enable` or `disable`;
+  never `gh workflow enable` or `disable`. At `yes` it also starts the §4 Evidence workflow, only as
+  `node <bin>/evidence.mjs dispatch <its branch> <n>`, its branch fixed by the rule: that refuses a
+  `<n>` that is not digits or not its branch's own open PR, then runs `gh workflow run <file>.yml
+  --repo <§0 GitHub repo> --ref <§0 Default branch> -f pr=<n>` as the pass does;
 - run the package manager beyond `install` with no arguments and the configured rows (no `add`,
   no `exec`/`dlx`/`x`, no `npx`/`bunx`/`uvx`), or the §4 Command prefix on its own;
 - run `sed`, `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`; `codex` other than
@@ -89,6 +92,15 @@ one is answered by opening an interactive `/desk-ticket` session, never by addin
 requeueing: the worker would only park again. desk-needs-you offers such a park as a session item,
 and the pass never requeues it. Triage puts a change that writes under `.claude/` in
 lane C for the same reason.
+
+**An approved step no worker can run is a session item.** Where a park says its worker was refused a
+named step that no grant covers (a refused script, a staging write, a credential no worker is given),
+an answer approving it records the step on the park (`park.session_step`) rather than requeueing:
+desk-needs-you lists it as a session item naming the step, and `queue.mjs requeue` refuses it. Once
+the person has run it, `done` on that item (`queue.mjs step-done <TICKET>`) sends the ticket back to a
+worker with the step in its briefing as done. An answer that approves nothing requeues as before, and
+so does a yes to a park that offers to go on without the step ("shall I leave it out?"). Answering the
+item again with no approval makes it an ordinary park.
 
 **The `wrappers` lever (config §3b Phase 0 levers) adds no capability.** On, `desk-env lines <file>
 A,B` prints what `sed -n A,Bp <file>` does, refusing any file the worker's reading tools are refused

@@ -87,6 +87,33 @@ t('AC9 one login: no sign-in check and no login named', [r.statuses, r.on], [0, 
 r = codex('probe');
 t('AC9 one login: the probe records no login', [r.status, JSON.parse(readFileSync(record, 'utf8')).login], [0, undefined]);
 
+// The subscriptions file's rule holds for a sole login too: off runs nothing, in rotation and standby
+// run on the caller's environment as before.
+subs(['default', 'off']);
+r = codex('refuter', 'x');
+t('sole login off: exit 75, codex is not run, and the reason says none is usable', [r.status, r.calls, /no Codex login is signed in with a rule of in rotation or standby/.test(r.err)], [75, 0, true]);
+r = codex('probe');
+t('sole login off: the probe refuses with the same reason rather than standing on its last pass', [r.status, r.calls, /no Codex login is signed in/.test(r.err)], [75, 0, true]);
+for (const rule of ['in rotation', 'standby']) {
+  subs(['default', rule]);
+  r = codex('refuter', 'x');
+  t(`sole login ${rule}: the call runs on the caller's environment, with no sign-in check`, [r.status, r.calls, r.home, r.statuses, r.on], [0, 1, 'unset', 0, null]);
+}
+// A sole listed login whose folder is gone: its rule still decides, ~/.codex being found does not.
+subs(['gone', 'off']);
+r = codex('refuter', 'x');
+t('sole login off, its folder gone: exit 75 and codex is not run', [r.status, r.calls], [75, 0]);
+subs(['gone', 'in rotation']);
+r = codex('refuter', 'x');
+t('sole login in rotation, its folder gone: the call runs on the caller\'s environment as before', [r.status, r.calls, r.home], [0, 1, 'unset']);
+subs(['default', 'off'], ['gone', 'in rotation']);
+r = codex('refuter', 'x');
+t('the one login found is off, another row in rotation has no folder: exit 75 and codex is not run', [r.status, r.calls], [75, 0]);
+writeFileSync(SUBS, `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| claude | default | ${join(H, '.claude')} | in rotation |\n`);
+r = codex('refuter', 'x');
+t('a file listing only Claude logins: the sole Codex login runs on the caller\'s environment as before', [r.status, r.calls, r.home], [0, 1, 'unset']);
+rmSync(SUBS);
+
 // AC1: two logins in rotation: the one with the most room, named for the review record.
 reading('login-2', five(20), week(10));
 r = codex('refuter', 'x');

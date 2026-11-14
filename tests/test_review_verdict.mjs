@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { render, tally, isClean, carriedSection, acceptedSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
-import { reviewGaps } from '../desk/bin/fix-tries.mjs'
+import { reviewGaps, reviewFix, personGapsCall } from '../desk/bin/fix-tries.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -319,6 +319,28 @@ const accOut = spawnSync('node', [SCRIPT, '--accepted', join(T, 'acc.json')], { 
 t('DS-317 CLI --accepted prints the section', `${accOut.status} ${accOut.stdout.startsWith('### Accepted gaps\n')}`, '0 true')
 const noAcc = spawnSync('node', [SCRIPT, '--accepted', join(T, 'ok.json')], { encoding: 'utf8' })
 t('DS-317 CLI --accepted with nothing accepted prints nothing', `${noAcc.status} ${JSON.stringify(noAcc.stdout)}`, '0 ""')
+
+// ---- DS-596: a requirement gap's results file through the CLI, then as the pass reads the posted
+// body. A gap a worker's own logged decision caused is code: untagged, it earns a fix try. One only
+// the person can close keeps its PERSON'S CALL tag and goes to the person.
+const { parseVerdict } = await import('../desk/templates/scripts/desk/review-gate.mjs')
+const gapReview = (name, gap) => {
+  writeFileSync(join(T, name), JSON.stringify(base({ gaps: 1 })))
+  const out = spawnSync('node', [SCRIPT, join(T, name)], { encoding: 'utf8' })
+  const body = [out.stdout.trim(), '', '### Requirement gaps', gap].join('\n')
+  return { status: out.status, review: { pr: 7, head: SHA, verdict: parseVerdict(body), body, comments: [] } }
+}
+const codeGap = '- AC2: "the ticket parks" — the diff keeps the link as a follow-on step instead, a call this ticket\'s worker logged; reversing it closes the gap'
+const personGap = '- PERSON\'S CALL · AC4: "the nightly job finishes on production" — passes only on the deployed build; accept it on the PR once it has run. Recommended: accept it after the first nightly run'
+const byCode = gapReview('gap-code.json', codeGap)
+t('DS-596 AC3 the code gap\'s results file: the CLI counts one open gap', `${byCode.status} ${byCode.review.verdict?.gaps}`, '0 1')
+const codeFix = reviewFix({ fix_tries: [] }, byCode.review, { judgement: 'yes' })
+t('DS-596 AC3 a gap the worker\'s own decision caused carries no PERSON\'S CALL tag, so it earns a fix try', `${codeFix?.call} ${JSON.stringify(codeFix?.fix.gaps)} ${codeFix?.fix.person_gaps}`, `requeue ${JSON.stringify([codeGap.slice(2)])} undefined`)
+t('DS-596 AC3 and is not put to the person', personGapsCall(byCode.review, { judgement: 'yes' }), null)
+const byPerson = gapReview('gap-person.json', personGap)
+t('DS-596 AC4 the person gap\'s results file: the CLI counts one open gap', `${byPerson.status} ${byPerson.review.verdict?.gaps}`, '0 1')
+t('DS-596 AC4 a gap only the person can close keeps its tag and earns no fix try', reviewFix({ fix_tries: [] }, byPerson.review, { judgement: 'yes' }), null)
+t('DS-596 AC4 it goes to the person, named', personGapsCall(byPerson.review, { judgement: 'yes' })?.why, `review gaps only you can settle: ${personGap.slice(2)}`)
 
 // A named seat that ran as general-purpose is named in the heading.
 const as = (role, agent) => ({ ...seat(role), agent })

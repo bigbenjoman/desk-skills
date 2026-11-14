@@ -38,6 +38,7 @@ on its feature branch while the standing batch carries on.
 | `desk-clearance` | Your open PRs: review comments, CI, branches behind the default branch, merging | `/desk-clearance` |
 | `desk-cleanup` | Stale worktrees and branches, ticket statuses that drifted from GitHub, leaked memory (scripted scans in `bin/`) | `/desk-cleanup` |
 | `desk-disk` | When the Mac or its Time Machine drive runs low: measures each known offender (Docker volumes, Messages and Chrome copies, iCloud downloads, worktrees, Postgres, Backblaze logs, backups), explains it, and frees it one approved fix at a time, measured before and after (read-only scan in `bin/`) | `/desk-disk` |
+| `desk-design` | Saves a ticket's Claude Design canvas or Slides deck into the repo (or imports its HTML export), says whether the saved copy is still current, renders every board at each breakpoint, and compares the built UI with each board; the steps desk-ticket and desk-admit take, on request | `/desk-design ABC-123` |
 | `desk-groom` | Checks every open ticket for work already on the default branch, duplicates, missing links, stale citations, blank fields and dead blockers, and every epic for uncovered DoD items, a stale Children list, a child that outranks it and a status its children have moved past; proposes each fix with its evidence, and asks where loose tickets belong and each call with no single correct fix; writes nothing (scripted checks in `bin/`) | `/desk-groom` |
 | `desk-checkout` | Drafts your end-of-day check-out from calendar, meeting notes, Jira, GitHub, Slack and Claude Code; never sends it | `/desk-checkout` |
 | `desk-pr` | Opening or updating a PR, screenshots included | loads itself |
@@ -241,7 +242,8 @@ Each tick does this for every batch the repo holds, one after another: the stand
 named batch, each on its own base, with its own log and merge driver. A named batch whose last promotion
 PR is merged, or whose promotion PR is closed, with no ticket running and no ticket PR open, is archived under
 `batches/.done/` instead; a ticket PR still open then goes to the check-in digest for you to merge or
-close. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
+close. A merge driver still running for such a batch has nothing left to merge, so the tick stops it
+(one mid-merge finishes that merge first) and a later tick archives the batch. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
 `batch.mjs discard <EPIC>` removes one no ticket has started in.
 `./install.sh` records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
 reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting
@@ -302,7 +304,8 @@ filled in from the arm's settings:
 
 ```
 node ~/.claude/desk/bin/bench.mjs --tasks <tasks.json> --arm <name>[=<model>[:<effort>]] [--arm …] \
-  --max-budget-usd <usd> [--total-budget-usd 5] [--out <dir>] [--timeout 1800] [--seed <n>]
+  --max-budget-usd <usd> [--total-budget-usd 5] [--out <dir>] [--timeout 1800] [--seed <n>] \
+  [--plans <file>] [--providers <file>]
 ```
 
 Keep the task set outside this repo. Its paths are relative to the file:
@@ -328,6 +331,48 @@ and arm not yet scored. The cap and reserve are per computer, set as the machine
 `bench-cap-points` and `bench-reserve-percent` (unset: 10 points and 25%), which `/desk-setup` asks
 for once per computer and stores with `desk-env machine set`, which starts a profile holding only them where there is none. A value that is not a number refuses to
 start.
+
+An arm on OpenCode Go (model `opencode-go/<model>`) has no meter to read: each Go response
+reports only `opencode.allowance`, the dollars that request counted against the model's monthly
+limit. So the guard adds up the allowance the bench's own runs on that model recorded over rolling
+windows of 5 hours, 7 days and 30 days. It measures each window against the model's monthly limit in
+the plan table (below; `--plans <file>`, default `<out>/plans.json`), read from the longest `usd`
+window on the row serving the model. The 5-hour window is 20% of that limit, the week 50% and the
+month 100%, and the cap and reserve apply to each window. A run's `quota.points` is its share of the
+weekly window, and `quota.windows` holds its share of each window. Every stop line and report row
+for Go says it counts the bench's own use only, since use of the plan outside the bench is invisible
+to it. The bench stops before the next run on that model, naming the model and the reason, when a
+response's allowance is missing, is not a finite non-negative number or has a shape it does not know,
+or when no plan table row gives the model a monthly limit. A run whose allowance was never recorded
+holds that model's runs until the run is 30 days old. An arm on any other `<provider>/<model>` has no
+meter and no ledger, so it is refused unless the machine profile gives that provider a run limit,
+the most runs a week the bench may start on it: `desk-env machine set bench-run-limit-<provider>=<runs>`.
+Either kind of arm also needs a runner that sends its runs to that provider, and a Go one that records
+each response's allowance. An `--arm` from the command line has one only as an endpoint arm (below);
+otherwise it would run on claude, so the bench refuses it.
+
+An endpoint arm runs Claude Code itself against the provider's Anthropic-compatible endpoint, so the
+task, brief, sandbox and scoring are the Claude arms' and only the model differs:
+`--arm go-kimi=opencode-go/kimi-k3.1-pro`. The provider needs an entry in the providers file
+(`--providers <file>`, default `bench-providers.json` in the desk usage dir, beside
+`bench-quota.jsonl`):
+
+```json
+{"providers": {"opencode-go": {"base_url": "https://opencode.ai/inference/go/anthropic",
+  "key_file": "~/.config/desk/opencode-go.key", "session_header": "x-opencode-session"}}}
+```
+
+`headers` (name to value) are sent with every request, and `session_header` with one new id per run.
+Before any run, the bench refuses an arm whose entry is missing, whose base URL is unset or
+Anthropic's, or whose key file is missing, empty or open to group or others (fix: `chmod 600`).
+Claude runs on that endpoint with the model after the slash, behind a local forwarding proxy
+(`endpoint-proxy.mjs`) that alone reads the key: claude, and every command the model runs, hold only a
+token made for that run, which the proxy swaps for the key on each request it sends on, and the arm's
+settings deny the key file and its folder to every tool, by absolute path and by `~` and `$HOME`. Its environment holds no Claude credential and its `CLAUDE_CONFIG_DIR` is a
+fresh empty folder, checked again just before it starts, so the run cannot bill a Claude login. Its
+tokens come from the session's own log. Its USD figure is claude's pricing at Anthropic's rates, so it
+is kept as `claude_priced_usd`, its `cost` is null, and it spends none of `--total-budget-usd`. On
+OpenCode Go, the proxy also records each response's `opencode.allowance` for the guard.
 
 **`bench-build.mjs`** writes that task set from merged PRs. For each one it records the base and
 merge commits and the ticket its title or branch names. It keeps the ticket's key, size, summary and
@@ -376,11 +421,24 @@ ticket, and it names the baseline's last day. With no baseline, the column reads
 the report gives the command that produces one. Until the scores are joined, the score reads "not
 scored". A run the cap or budget never started is listed as not run. When the arms did not run the
 same tasks, the report puts no two arms side by side: each arm gets its own table beside the
-baseline. The report states figures and gives no verdict:
+baseline.
+
+Each arm also shows £ per accepted task and accepted tasks per 5-hour window, priced from the plan
+table at `<out>/plans.json` (or `--plans <file>`), which you write by hand from each provider's own
+page. Each plan row gives its provider, plan, monthly price and currency, the date and URL the price
+was read from, its windows (`{ name, hours, size, unit }`), and the arms or models it serves; a
+served entry may carry its own windows where the plan's allowance is per model. The table's `rates`
+list gives each other currency's rate to GBP and the date it was read. Accepted tasks per 5-hour
+window is that window's size over the arm's median use per accepted task. £ per accepted task is the
+monthly price in £ over the accepted tasks a month of windows allows at that use, the tightest
+window binding. The bench records use only in `weekly points`, so a window in any other unit reads
+"not measured". An arm with no plan, or a price with no rate, reads "not priced" and the report
+names why; a price read over 31 days ago is flagged stale. The report states figures and gives no
+verdict:
 
 ```
 node ~/.claude/desk/bin/phase0-report.mjs --days 7 > <out>/phase0-baseline.txt
-node ~/.claude/desk/bin/bench-report.mjs --tasks <tasks.json> [--out <dir>] [--blind <dir>] [--baseline <file>]
+node ~/.claude/desk/bin/bench-report.mjs --tasks <tasks.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]
 ```
 
 **`bench-replay.mjs`** asks whether the spawn preflight and the decider need Opus. It samples
@@ -804,6 +862,8 @@ those suites, and `bash tests/related.sh` only the ones your branch's change rea
 when that cannot be decided). `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
+`run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
+or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cannot reach a suite.
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and

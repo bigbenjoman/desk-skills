@@ -33,11 +33,33 @@ grants, and each ticket that needs it parks naming it (needs-you lists those par
   worker's settings read the row when each worker spawns, so the answer takes effect on the next spawn.
 - **No `MISSING  §3` line, no permission question.** A config with every template row asks none.
 - `MISSING` rows in §2, §3b, §4 and §5 are detected facts, not grants: report them on one ROW line and
-  offer `/desk-setup` (a re-run asks exactly those). `STALLS`, `UNLISTED`, `NODEV` and `DONTASK` lines are
+  offer `/desk-setup` (a re-run asks exactly those). `STALLS`, `UNLISTED`, `NODEV`, `JOBKEY` and `DONTASK` lines are
   `/desk-setup`'s too: report them, change nothing.
 
 If any parked ticket names a row answered here, say that `/desk-needs-you` (its `unset:<key>` item,
 `done`) requeues them.
+
+## Merge holds an agent can clear
+
+A §4 Merge holds item whose step is a check an agent can run, written with no routine, puts every PR
+it holds to the user. Sort the row's items with the classifier needs-you reads:
+
+```bash
+node ~/.claude/desk/bin/gate.mjs hold-kind     # <kind>\t<item>, for each §4 Merge holds item
+```
+
+- **Each `agent` line gets a routine proposed**, built and tested as `/desk-setup` builds one
+  (`desk-setup/references/step-1-detect.md`, *Merge holds*): a read-only script at
+  `<CREDS>/routines/<name>.sh` (`desk-env where` prints `CREDS`), run on a recent PR the hold covers
+  and on a negative control for each way the check fails, each exit code shown. On a yes, show the
+  item as it would become, `` `<glob>: <why>; desk runs: bash <the script's absolute path>` ``, and
+  offer `/desk-setup` to write it, with §3 `merge-hold-routine` `yes` where it is not. Where no
+  command can perform the check, say so and offer to drop the hold instead.
+- **`person` and `routine` lines are left as they are**, except a `person` line whose step is plainly a
+  read or check an agent can run, in none of the ask classes, that printed `person` on an incidental
+  word ("the pages it would publish"): treat it as an `agent` line. A hold the user wants kept as
+  theirs whatever its wording takes `person only` in its reason, which makes `hold-kind` print `person`.
+- No `agent` line: say `merge holds: nothing to add`.
 
 ## Templates the repo committed
 
