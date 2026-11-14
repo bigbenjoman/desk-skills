@@ -163,10 +163,11 @@ time on the push that follows. A new commit runs them again.
   Name it in the `pre-push` slot.
 - **The row is set but `scripts/desk/pre-push.sh` is not in the tree**: the templates were never
   committed here. Never push unchecked: run each item `desk-env cmds pre-push-checks` prints
-  yourself, in order, in its `DIR`, under the lock the script would take
-  (`~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD>`, where `<lock>` is `tsc` for a
-  §4 Typecheck item or any item naming `typecheck`, `test` for a §4 Unit tests item, and `nolock`
-  otherwise), and push only when every item passes, as above. Say the script is missing, and offer
+  yourself, in order, in its `DIR`, under its lock
+  (`~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD>`). `<lock>` is that of the §4 row
+  the item is, or extends with arguments: `tsc` for Typecheck, `test` for Unit, Related or
+  Integration tests, `browser` for E2E tests. Any other item takes `tsc` where it names `typecheck`,
+  and `nolock` otherwise. Push only when every item passes, as above. Say the script is missing, and offer
   `/desk-setup` to add it.
 - **Unset or `TODO`**: push as before, and say once that `/desk-setup` can set it. **`none`**: push.
 

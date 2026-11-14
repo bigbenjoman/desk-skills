@@ -135,8 +135,10 @@ t(`AC4 desk-pr's own citations of its sections were read (${count.inner})`, coun
 // With §4 Pre-push checks set and no committed script, the items run under their locks rather than
 // the push going out unchecked; where the script is in the tree it is still what runs.
 const pushing = norm(core);
-t('DS-611 AC2 with no script, each item runs under the lock the script would take', pushing.includes('Never push unchecked: run each item `desk-env cmds pre-push-checks` prints yourself, in order, in its `DIR`, under the lock the script would take'), true);
-t('DS-611 AC2 and the push waits for every item to pass', pushing.includes('and push only when every item passes, as above. Say the script is missing'), true);
+t('DS-611 AC2 with no script, each item runs in its DIR under its lock', pushing.includes('Never push unchecked: run each item `desk-env cmds pre-push-checks` prints yourself, in order, in its `DIR`, under its lock'), true);
+t('DS-611 AC2 an item that is or extends a locked row takes the lock a worker is granted for that row', pushing.includes('`<lock>` is that of the §4 row the item is, or extends with arguments: `tsc` for Typecheck, `test` for Unit, Related or Integration tests, `browser` for E2E tests.'), true);
+t('DS-611 AC2 any other item takes tsc for a typecheck, else nolock', pushing.includes('Any other item takes `tsc` where it names `typecheck`, and `nolock` otherwise.'), true);
+t('DS-611 AC2 and the push waits for every item to pass', pushing.includes('Push only when every item passes, as above. Say the script is missing'), true);
 t('DS-611 AC2 the missing script no longer means pushing as before', pushing.includes('Say so, push as before, and offer `/desk-setup`'), false);
 t('DS-611 AC3 the committed script is still run first where it is in the tree', pushing.includes("run the repo's committed script on HEAD **yourself before every push of the branch**"), true);
 
