@@ -283,7 +283,7 @@ for (let i = 1; i <= 36; i++) {
     login: { name: i % 2 ? 'work' : 'personal', config_dir: null }, ...(i === 1 ? { levers: PIN } : {}),
     fix_tries: i === 1 ? [{ try: 1, kind: 'checks', at: iso(DAY_MS) }, { kind: 'capture', at: iso(DAY_MS) }] : [] };
   if (i !== 2) writeFileSync(join(s, 'triage', `${key}.json`), JSON.stringify({ size: i % 2 ? 'M' : 's' }));
-  const lines = [init(`ps-${i}`), result(1 + i * 0.37 + 0.001, 100 * i, 10 * i)];
+  const lines = [init(`ps-${i}`), result(1 + i * 0.37 + 0.002, 100 * i, 10 * i)];
   if (i === 1) lines.splice(1, 0, say('AUTOPILOT_STAGE: 4b/9 self-review'), say('AUTOPILOT_PARK: approve the pricing call?'),
     say('AUTOPILOT_PARK: worktree setup failed'), use('pd', 'Bash', { command: 'gh api x' }), deniedEvent('pd', 'Bash'));
   if (i % 4 === 0) lines.unshift(preflightLine({ usd: 0.05 * i, turns: 1 }).trim());
@@ -329,8 +329,8 @@ t('per-ticket AC3: every row holds every field', pt.rows.every((r) => FIELDS.eve
 t('per-ticket AC3: identity, type, lane, size, admitted and login', `${p1.slug} ${p1.key} ${p1.type} ${p1.lane} ${p1.size} ${p1.admitted_at === tickets[liveQ]['P-1'].added_at} ${p1.login}`, 'o__r P-1 Story A M true work');
 t('per-ticket AC3: a size recorded in lower case reads as its size', rowOf('P-4').size, 'S');
 t('per-ticket AC3: merged_at, or the terminal state for one not merged', `${p1.merged_at != null} ${rowOf('P-9').merged_at} ${rowOf('P-9').state}`, 'true null failed');
-t('per-ticket AC3: cost, tokens and starts', `${p1.cost.toFixed(3)} ${p1.input} ${p1.output} ${p1.starts} ${p1.cost_complete}`, '1.371 100 10 1 true');
-t('per-ticket AC3: preflight dollars are in the cost and on their own', `${rowOf('P-4').preflight_cost.toFixed(2)} ${rowOf('P-4').cost.toFixed(3)}`, '0.20 2.681');
+t('per-ticket AC3: cost, tokens and starts', `${p1.cost.toFixed(3)} ${p1.input} ${p1.output} ${p1.starts} ${p1.cost_complete}`, '1.372 100 10 1 true');
+t('per-ticket AC3: preflight dollars are in the cost and on their own', `${rowOf('P-4').preflight_cost.toFixed(2)} ${rowOf('P-4').cost.toFixed(3)}`, '0.20 2.682');
 t('per-ticket AC3: fix tries, a capture not a try', p1.fix_tries, 1);
 t('per-ticket AC3: parks by class', JSON.stringify(p1.parks_by_class), '{"missing decision":1,"runner or resource":1}');
 t('per-ticket AC3: Stage 4b rounds and permission denials', `${p1.review_rounds} ${p1.denials} ${JSON.stringify(p1.denials_by_command)}`, '1 1 {"gh api":1}');
@@ -341,7 +341,7 @@ t('per-ticket AC3: distinct desk commits and the levers and claude version of ea
 t('per-ticket AC3: a start with no record is there with nothing filled in', JSON.stringify(rowOf('P-7').start_records), '[{"at":null,"session":"ps-7","stage":null,"desk_commit":null,"levers":null,"claude_version":null}]');
 const p5 = rowOf('P-5');
 t('per-ticket AC4: a run with no result event leaves the cost incomplete', `${p5.cost_complete} ${p5.unknown_runs} ${p5.runs}`, 'false 1 2');
-t('per-ticket AC4: and no estimate is filled in: the recorded run alone', p5.cost.toFixed(3), (1 + 5 * 0.37 + 0.001).toFixed(3));
+t('per-ticket AC4: and no estimate is filled in: the recorded run alone', p5.cost.toFixed(3), (1 + 5 * 0.37 + 0.002).toFixed(3));
 t('per-ticket AC5: no triage size is null and the row is still printed', rowOf('P-2')?.size, null);
 t('per-ticket AC6: a start that recorded no claude version is null', JSON.stringify(rowOf('P-3').start_records.map((s) => [s.desk_commit, s.claude_version])), '[["feedface00112233",null]]');
 t('per-ticket AC8: a pinned ticket holds the pin\'s set, arms and trial ids', JSON.stringify(p1.pin), JSON.stringify({ set: PIN.set, arms: PIN.arms, trial_ids: PIN.trial_ids }));
