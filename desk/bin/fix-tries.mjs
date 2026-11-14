@@ -32,7 +32,7 @@
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, PENDING_LIMIT_MS } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
-import { stepFits } from './desk-ci.mjs';
+import { stepFits } from './workflow-yaml.mjs';
 
 export const FIX_TRIES_MAX = 2;
 // merge-driver.sh's own cap and gap: reruns per check per head, and the seconds between them.

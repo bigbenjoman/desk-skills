@@ -114,6 +114,7 @@ import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
+import { jobKeyedPremerge } from './workflow-yaml.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -1912,7 +1913,7 @@ if (isMain) {
           const rootRow = configValueIn(parseConfigFile(config), 'repo-root');
           const root = rootRow ? expandHome(rootRow) : slug ? null : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
           const premerge = configValuesIn(parseConfigFile(config), 'pre-merge-steps');
-          const jobKeyed = root && premerge && !isNone(premerge) ? (await import('./desk-ci.mjs')).jobKeyedPremerge(premerge, root) : [];
+          const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
           const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;
           if (slug) console.log(`== ${slug}`);
