@@ -16,8 +16,9 @@
 //
 // A read that exits 0 having printed at most MAX_BYTES has its stdout saved, mode 0644, to
 // <fixtures>/<KEY>/<name>.json, where the requeued worker reads it as an untrusted API response.
-import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { readFileSync, readdirSync, existsSync, mkdirSync, realpathSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
+import { join, dirname, resolve, relative, isAbsolute, basename, sep } from 'node:path';
+import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { repoStateOf } from './desk-env.mjs';
 import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
@@ -168,6 +169,67 @@ export function copyFixtures({ state, key, worktree, max = MAX_BYTES }) {
   }
   if (copied.length) excludeFromGit(worktree, `/${WORKTREE_FIXTURES}/`);
   return { dir, copied, refused };
+}
+
+// The most an answer's named files may total to be copied into a ticket's fixtures.
+export const NAMED_MAX_BYTES = 50 * 1024 * 1024;
+
+// The absolute paths an answer names (`~/` expanded against `home`), each once, in order: a path
+// starts a word or follows a quote or bracket, and loses a sentence's trailing punctuation.
+export function pathsIn(text, home = homedir()) {
+  const out = [];
+  for (const m of String(text ?? '').matchAll(/(?:^|[\s"'`(<[{])((?:~\/|\/)[^\s"'`)<>\]}]*)/g)) {
+    const p = m[1].replace(/[.,;:!?]+$/, '');
+    const abs = resolve(p.startsWith('~/') ? join(home, p.slice(2)) : p);
+    if (p.length > 1 && !out.includes(abs)) out.push(abs);
+  }
+  return out;
+}
+
+const inside = (p, dir) => { const rel = relative(resolve(dir), p); return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel)); };
+
+// Copies each existing file or folder an answer names into <state>/fixtures/<key>/, where the pass
+// copies a ticket's fixtures into its worktree. A folder gives its own visible regular files, not its
+// subfolders. Nothing is copied from the state folders, from home or above it, from a hidden folder
+// (credentials live there), or from a git checkout's root, and a path whose files total over `max`
+// bytes copies nothing. { dir, copied: [{ path, names }], notFound: [path], tooLarge: [{ path, bytes }],
+// refused: [{ path, why }], over: [name] }, where `over` names copied files a worker's copy refuses.
+export function saveNamedFixtures({ state, key, text, home = homedir(), max = NAMED_MAX_BYTES }) {
+  const dir = join(state, 'fixtures', key);
+  const res = { dir, copied: [], notFound: [], tooLarge: [], refused: [], over: [] };
+  const states = [...new Set([state, repoStateOf(state)])];
+  for (const path of pathsIn(text, home)) {
+    if (states.some((s) => inside(path, s))) continue;
+    if (!existsSync(path)) { res.notFound.push(path); continue; }
+    // Judged where a symlink leads, so a link cannot carry a hidden folder's files out.
+    const real = realpathSync(path), realHome = existsSync(home) ? realpathSync(home) : resolve(home);
+    if (states.some((s) => existsSync(s) && inside(real, realpathSync(s)))) continue;
+    if (inside(realHome, real)) { res.refused.push({ path, why: 'it is your home folder or above it' }); continue; }
+    if (relative(inside(real, realHome) ? realHome : '/', real).split(sep).some((s) => s.startsWith('.'))) { res.refused.push({ path, why: 'it is in a hidden folder' }); continue; }
+    const st = statSync(real);
+    let files;
+    if (st.isFile()) files = [{ from: path, name: basename(path), size: st.size }];
+    else if (st.isDirectory()) {
+      if (existsSync(join(path, '.git'))) { res.refused.push({ path, why: 'it is a git checkout: name the folder or file inside it' }); continue; }
+      files = [];
+      for (const name of readdirSync(path).sort()) {
+        if (name.startsWith('.')) continue;
+        const f = lstatSync(join(path, name));
+        if (f.isFile()) files.push({ from: join(path, name), name, size: f.size });
+        else res.refused.push({ path: join(path, name), why: `it is ${f.isSymbolicLink() ? 'a symlink' : 'a folder'}, and only the files directly in a named folder are copied` });
+      }
+    } else { res.refused.push({ path, why: 'it is not a file or folder' }); continue; }
+    const bytes = files.reduce((n, f) => n + f.size, 0);
+    if (bytes > max) { res.tooLarge.push({ path, bytes }); continue; }
+    if (!files.length) continue;
+    mkdirSync(dir, { recursive: true });
+    for (const f of files) {
+      writeNew(join(dir, f.name), readFileSync(f.from));
+      if (f.size > MAX_BYTES && !res.over.includes(f.name)) res.over.push(f.name);
+    }
+    res.copied.push({ path, names: files.map((f) => f.name) });
+  }
+  return res;
 }
 
 // Adds `pattern` to the worktree's info/exclude, once, so it stays out of git status without touching

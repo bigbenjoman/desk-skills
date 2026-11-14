@@ -104,6 +104,9 @@ When the call parks, or `desk-ticket` says stop and wait for anything else:
    directory. You may also write the question there as `{"question": "<one line>"}`, which the
    orchestrator's pass reports while you wait. Put the full payload (the exact Jira text, the
    PR body, the diff, whatever needs approving) in your normal output above that line.
+   A park asking the person for a file names where to save it: `$DESK_STATE/fixtures/<TICKET>/`,
+   written out as the absolute path (`desk-env paths`), which your next worker reads as
+   `.desk-fixtures/<TICKET>/`.
    A park waits for the next check-in digest. Only when a live service is broken now, and the
    park is how you found it, start the question with `PRODUCTION BROKEN: `: that one is pushed to
    the person at once. Never use it for anything else.

@@ -1958,6 +1958,46 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-601 an answer with no text is refused', `${N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: ' ' }).ok} ${brief('M-1') === b1}`, 'false true');
 }
 
+// DS-609: a file an answer names is copied into the ticket's fixtures before the requeue.
+{
+  const { openSync, ftruncateSync, closeSync } = await import('node:fs');
+  put('ds609', { port: 3609, beat: 1, supervised: true, tickets: Object.fromEntries(['F-1', 'F-2', 'F-3', 'F-4', 'F-5'].map((k) => [k, parked('A', 30, 'I need a real capture from a test Meet')])) });
+  const fx = (k) => join(env.HOME, '.desk-autopilot', 'acme__ds609', 'fixtures', k);
+  const ls = (d) => (existsSync(d) ? readdirSync(d).sort().join() : '-');
+  const cap = join(T, 'AA-48-recall-capture');
+  mkdirSync(join(cap, 'sub'), { recursive: true });
+  writeFileSync(join(cap, 'capture.json'), '{"a":1}');
+  writeFileSync(join(cap, 'notes.txt'), 'meet');
+  writeFileSync(join(cap, '.DS_Store'), 'x');
+  const f1 = N.record({ word: 'ds609', ticket: 'F-1', action: 'resume', text: `Saved the capture in ${cap}/.` });
+  t('DS-609 AC1 the named folder\'s files are in fixtures/<TICKET>/ and the ticket is requeued', `${f1.ok} ${ls(fx('F-1'))} ${queueOf('ds609').tickets['F-1'].state}`, 'true capture.json,notes.txt triaged');
+  t('DS-609 AC1 the reply names what was copied', f1.line.includes(`Copied ${cap} into ${fx('F-1')}/ for its next worker: capture.json, notes.txt.`), true);
+  t('DS-609 the answer is recorded as written', answers().at(-1).args.join('|'), `F-1|Saved the capture in ${cap}/.`);
+
+  const gone = join(T, 'no-such-capture');
+  const f2 = N.record({ word: 'ds609', ticket: 'F-2', action: 'resume', text: `It is in ${gone}` });
+  t('DS-609 AC2 a path not found copies nothing, records the answer, and says so', `${f2.ok} ${ls(fx('F-2'))} ${answers().at(-1).args[0]} ${f2.line.includes(`${gone} was not found, so nothing was copied from it.`)}`, 'true - F-2 true');
+
+  mkdirSync(fx('F-3'), { recursive: true });
+  writeFileSync(join(fx('F-3'), 'capture.json'), '{}');
+  const f3 = N.record({ word: 'ds609', ticket: 'F-3', action: 'resume', text: `Saved it at ${join(fx('F-3'), 'capture.json')}` });
+  t('DS-609 AC3 a path already under fixtures/<TICKET>/ copies nothing', `${f3.ok} ${ls(fx('F-3'))} ${/Copied|not copied|not found/.test(f3.line)}`, 'true capture.json false');
+
+  const big = join(T, 'big-capture');
+  mkdirSync(big);
+  const fd = openSync(join(big, 'recording.bin'), 'w');
+  ftruncateSync(fd, 51 * 1024 * 1024);
+  closeSync(fd);
+  const f4 = N.record({ word: 'ds609', ticket: 'F-4', action: 'resume', text: `see ${big}` });
+  t('DS-609 AC4 a folder over 50 MB copies nothing, records the answer, and says it is too large', `${f4.ok} ${ls(fx('F-4'))} ${answers().at(-1).args[0]} ${f4.line.includes(`${big} is too large to copy (51 MB, over 50 MB), so nothing was copied from it.`)}`, 'true - F-4 true');
+
+  const hidden = join(T, '.ssh');
+  mkdirSync(hidden);
+  writeFileSync(join(hidden, 'id_rsa'), 'secret');
+  const f5 = N.record({ word: 'ds609', ticket: 'F-5', action: 'resume', text: `the key is ${join(hidden, 'id_rsa')}, and ~/ is home` });
+  t('DS-609 a file in a hidden folder, or home itself, is never copied', `${f5.ok} ${ls(fx('F-5'))} ${f5.line.includes('was not copied: it is in a hidden folder.')} ${f5.line.includes('was not copied: it is your home folder or above it.')}`, 'true - true true');
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);

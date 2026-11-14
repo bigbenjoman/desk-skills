@@ -150,6 +150,8 @@ t('DS-596 the rule is in the contract\'s section 1', section1.includes('**A call
 t('DS-596 AC2 a call picks a reading, and builds the option that meets the criterion as worded', section1.includes('It may pick a reading of one, or keep a later-merged ticket\'s behaviour as review directs; where one option meets it as worded, build and log that one.'), true);
 t('DS-596 AC1 every option breaking a criterion parks before the PR, quoting it', section1.includes('Where every option breaks one, park before the PR, quoting it.'), true);
 
+t('DS-609 AC5 a park asking for a file names the absolute path of the ticket\'s fixtures folder', section1.includes('A park asking the person for a file names where to save it: `$DESK_STATE/fixtures/<TICKET>/`, written out as the absolute path'), true);
+
 // A worker in a repo with no committed pre-push script runs the row's items itself; the script stays first.
 const stage4 = norm(read('worker-contract-stage-4.md'));
 t('DS-611 AC3 the pre-push script is still the first choice', stage4.includes('"Before every push": `bash scripts/desk/pre-push.sh --head`, or if absent'), true);

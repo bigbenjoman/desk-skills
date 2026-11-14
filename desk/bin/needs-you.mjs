@@ -86,6 +86,7 @@ import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, 
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
 import { followOnPending } from './harvest.mjs';
 import { saveAnswer } from './briefing.mjs';
+import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -972,7 +973,22 @@ function movedOn(r, ticket, verb, text, now) {
   if (spent || !['answer', 'resume'].includes(verb) || !text.trim()) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   try { saveAnswer(r.stateDir, ticket, text.trim(), new Date(now).toISOString()); }
   catch (e) { return { ok: false, line: `${r.name} ${ticket}: no longer waiting on you, and your answer was not saved: ${one(e.message)}` }; }
-  return { ok: true, line: `${r.name} ${ticket}: no longer waiting on you; your answer is saved in its briefing for its next worker.` };
+  return { ok: true, line: `${r.name} ${ticket}: no longer waiting on you; your answer is saved in its briefing for its next worker.${namedFixturesText(r, ticket, text)}` };
+}
+
+// What saveNamedFixtures did with the paths an answer names, as sentences led by a space; '' when it
+// names none outside the state folders.
+function namedFixturesText(r, ticket, text) {
+  let f;
+  try { f = saveNamedFixtures({ state: r.stateDir, key: ticket, text }); } catch (e) { return ` Copying the files your answer names failed (${one(e.message)}), so its next worker may not be able to read them.`; }
+  const mb = (n) => `${Math.ceil(n / 1048576)} MB`;
+  return [
+    ...f.copied.map((c) => `Copied ${c.path} into ${f.dir}/ for its next worker: ${c.names.join(', ')}.`),
+    ...(f.over.length ? [`Over the ${mb(MAX_BYTES)} a worktree copy takes, so its worker cannot read: ${f.over.join(', ')}.`] : []),
+    ...f.notFound.map((p) => `${p} was not found, so nothing was copied from it.`),
+    ...f.tooLarge.map((x) => `${x.path} is too large to copy (${mb(x.bytes)}, over ${mb(NAMED_MAX_BYTES)}), so nothing was copied from it.`),
+    ...f.refused.map((x) => `${x.path} was not copied: ${x.why}.`),
+  ].map((s) => ` ${s}`).join('');
 }
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
@@ -995,8 +1011,11 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   if (!allowed.includes(verb)) return { ok: false, line: `${r.name} ${ticket}: ${verb} is not an action for a ${item.kind} item (${[...new Set(allowed)].join(', ')}).` };
   const w = runner(r);
   const tail = w.by === 'stopped' ? ` Passes are stopped in ${r.name}: nothing acts on it until they resume.` : '';
-  const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}`, message });
+  let named = '';
+  const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${named}`, message });
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
+  // A file the answer names is copied where the ticket's next worker reads it, before any requeue.
+  if (['answer', 'resume'].includes(verb)) named = namedFixturesText(r, ticket, text);
   if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
