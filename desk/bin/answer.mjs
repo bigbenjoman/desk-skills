@@ -8,7 +8,7 @@
 // unattended at all, and un-parking here once sent exactly such a ticket to a headless worker.
 // Exits 0 once the answer is recorded, or 11 (show the person) on any refusal or error: EXIT in
 // batch-state.mjs.
-import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
@@ -18,6 +18,7 @@ import { useTicketBatch } from './batches.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { parseDecision } from './decisions.mjs';
 import { recommendedAnswer } from './recoveries.mjs';
+import { saveAnswer } from './briefing.mjs';
 
 crashShowsPerson();
 const QUEUE = join(binDir(), 'queue.mjs');
@@ -128,10 +129,7 @@ if (waiting) {
 
 // The briefing is what a future or resumed worker actually reads, so the answer has to
 // survive there too — the answers file is consumed and deleted by the worker.
-const brief = join(STATE, 'briefings', `${ticket}.md`);
-const entry = `\n## Answer from the user (${stamp})\n\n${text}\n`;
-if (existsSync(brief)) appendFileSync(brief, entry);
-else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
+saveAnswer(STATE, ticket, text, stamp);
 
 // A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same
 // park asked again goes to the person, not to another take.
