@@ -343,9 +343,9 @@ export DESK_USAGE_DIR="$T/usage"
 logins(){
   rm -rf "$HOME/.claude-logins"
   printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n' > "$T/subs.md"
+  use=default
   # The table holds a literal ~ as a user's does, for the reader to expand.
   # shellcheck disable=SC2088
-  use=default
   for n in "$@"; do [ "$n" = default ] || mkdir -p "$HOME/.claude-logins/$n"; printf '| `claude` | `%s` | `%s` | `%s` |\n' "$n" "$([ "$n" = default ] && echo '~/.claude' || echo "~/.claude-logins/$n")" "$use" >> "$T/subs.md"; use=unused; done
   export DESK_SUBSCRIPTIONS="$T/subs.md"
 }
