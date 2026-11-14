@@ -108,6 +108,11 @@ rule): it was not retried, so fix it or park on it as for any failed step.
   every worktree); and real data needs the repo's seed command (§4 Local database, `desk-env get local-db`, says how), run
   against your own database. "I could not seed" is not a reason to skip evidence.
 
+  **An app you cannot run for screenshots is checked whole, and parks once.** Before any park on it,
+  run `desk-env drift --app <its directory>`: it prints every §4 row the app lacks, `NODEV` (Dev
+  server) and `NOENV` (Env files), each with the value to add, or `no setup gaps`. Never park on the
+  first row you meet and leave the next for a requeue: each round costs the person an answer.
+
   **No §4 Dev server item for the app you changed?** (`desk-env cmds dev-cmd` has no line whose
   directory holds the screen.) Its dev command is refused, so capture from the PR's preview instead:
   open the draft PR first, then read the preview's URL from the host's bot comment
@@ -117,11 +122,14 @@ rule): it was not retried, so fix it or park on it as for any failed step.
   staging-bypass`) or the sign-in token path in `desk-pr`'s `screenshot-surfaces.md` works against
   it; take the "before" from §4 Staging (`desk-env list staging`) on the same terms, or say in the table why there is none. A preview still building is not a park: leave
   the cells `_drag`, finish, and say so in `AUTOPILOT_DONE`; the pass's capture try takes them. With
-  no preview you can sign in to, park naming the row and the step that clears it, with the rest of
-  the tail (core section 1): `AUTOPILOT_PARK: screenshots for <dir>: §4 Dev server has no item for
-  it and the PR has no preview I can sign in to: add "<dir>: <its dev command>" to that row
-  (/desk-setup step 1, "Dev server"; desk-env drift names it NODEV) and requeue me, or capture them
-  yourself`, then `AUTOPILOT_PARK_INPUTS: {"config:dev-cmd": "<what desk-env get dev-cmd prints>"}`.
+  no preview you can sign in to, park once naming every row `drift --app` printed, and only those,
+  each with its value, with the rest of the tail (core section 1): `AUTOPILOT_PARK: screenshots for
+  <dir>: the PR has no preview I can sign in to, and its setup lacks <each row, e.g. §4 Dev server
+  "apps/portal: pnpm run dev"; §4 Env files "apps/portal/.env.local">: add them (/desk-setup;
+  desk-env drift --app <dir> checks it) and requeue me, or capture them yourself`, then
+  `AUTOPILOT_PARK_INPUTS: {"config:dev-cmd": "<what desk-env get dev-cmd prints>", "config:env-files":
+  "<what desk-env list env-files prints>"}`. An app whose dev server runs but fails for want of its env
+  files parks the same way, naming the Env files row alone.
 - **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head
   <your branch> --body-file <file> --title "<title>"`, in that order: the allow rule matches only a
   command beginning `gh pr create --draft` or `gh pr create --repo <repo> --draft`, and `--repo`
