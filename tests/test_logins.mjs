@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule, multiAccount, toolLogins, needsMigration, codexAccount,
+  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule, multiAccount, toolLogins, needsMigration, codexAccount, removeLogin,
 } from '../desk/bin/logins.mjs';
 
 let fails = 0;
@@ -212,7 +212,18 @@ const mixed = renderSubscriptions([...s5.logins, ...parseSubscriptions('| Tool |
 t('a pinned file has the 5-column header', mixed.includes('| Tool | Name | Folder | Account | Rule |'), true);
 t('an unpinned Claude row beside a pin carries -', mixed.includes('| `claude` | `spare` | `~/.claude-logins/spare` | `-` | `standby` |'), true);
 t('no row has an account: the 4-column header, exactly', renderSubscriptions(two.logins).split('\n').includes('| Tool | Name | Folder | Rule |'), true);
-t('those rows are left out and the defaults stand', badAcc.logins.map((l) => `${l.tool}:${l.name}`).join(), 'claude:default,codex:default');
+t('those rows are left out: Codex keeps its default, Claude none, as the Account column keeps the file pinned', `${badAcc.logins.map((l) => `${l.tool}:${l.name}`).join()} ${multiAccount(badAcc)}`, 'codex:default true');
+// A pinned file whose every Claude row fails to read never falls back to ~/.claude, and keeps ~/.claude in Removed.
+const allBad = parseSubscriptions('| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `w` | `~/.claude-logins/w` | `me@localhost` | `in rotation` |\n\n## Removed\n\n| Tool | Name | Folder |\n|---|---|---|\n| `claude` | `default` | `~/.claude` |\n');
+t('every pinned row unreadable: no Claude login, still multi-account, ~/.claude stays removed',
+  `${allBad.errors.length} ${allBad.logins.some((l) => l.tool === 'claude')} ${multiAccount(allBad)} ${allBad.removed.some((r) => r.folder === '~/.claude')}`, '1 false true true');
+// The last pinned account is never removed, signed in or not: the file would leave multi-account mode.
+const pinnedPair = '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `w` | `~/.claude-logins/w` | `w@x.io` | `in rotation` |\n| `claude` | `v` | `~/.claude-logins/v` | `v@x.io` | `standby` |\n';
+const noneUsable = () => ({ usable: [] });
+const lastPin = (() => { try { removeLogin(parseSubscriptions(pinnedPair.split('\n').slice(0, 3).join('\n')), { tool: 'claude', name: 'w', check: noneUsable }); return 'removed'; } catch (e) { return e.message; } })();
+t('the last pinned account, signed out, is not removed', /only Claude account desk has/.test(lastPin), true);
+const onePin = removeLogin(parseSubscriptions(pinnedPair), { tool: 'claude', name: 'v', check: noneUsable });
+t('a pinned account with another pinned beside it is removed', `${multiAccount(parseSubscriptions(onePin.text))} ${parseSubscriptions(onePin.text).logins.filter((l) => l.tool === 'claude').map((l) => l.name).join()}`, 'true w');
 t('setRule keeps a pin', setRule(s5, { tool: 'claude', name: 'login-2', rule: 'standby', check: () => ({ usable: [] }) }).text.includes('`ben.lavender1@gmail.com` | `standby`'), true);
 
 // ---- the account check states (DS-529): login-2 pinned to a@x.io, login-3 to b@x.io, login-4 unlisted

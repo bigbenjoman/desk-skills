@@ -64,8 +64,10 @@ export function login({ tool, name, folder, rule, source, account = null }) {
   const dir = resolve(expand(folder));
   return { tool, name, folder: tilde(dir), dir, configDir: dir === TOOL[tool].dir() ? null : dir, rule, source, account: account ? String(account).toLowerCase() : null };
 }
-// True when any Claude login has an account: the file is then in multi-account mode.
-export const multiAccount = (subs) => (subs?.logins ?? []).some((l) => l.tool === 'claude' && l.account);
+// True when the file has an Account column (`accounts`, which parseSubscriptions sets even when every
+// pinned row in it failed to read) or any Claude login has an account: the file is then in
+// multi-account mode.
+export const multiAccount = (subs) => subs?.accounts === true || (subs?.logins ?? []).some((l) => l.tool === 'claude' && l.account);
 export const defaultLogin = (tool) => login({ tool, name: 'default', folder: TOOL[tool].dir(), rule: 'in rotation', source: 'default' });
 
 // The environment a login's tool runs in: the caller's, never with an API key (the call stays on the
@@ -80,14 +82,17 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 
-// -> { exists, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A malformed
-// row is named and left out; a tool with no good row keeps its default login. `removed` are the logins
-// the Removed table (Tool, Name, Folder) names, so setting a rule on one puts back its own folder.
+// -> { exists, accounts, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A
+// malformed row is named and left out; a tool with no good row keeps its default login, except Claude in
+// a file with an Account column (`accounts`), which stays in multi-account mode with no login rather
+// than fall back to ~/.claude. `removed` are the logins the Removed table (Tool, Name, Folder) names, so
+// setting a rule on one puts back its own folder.
 export function parseSubscriptions(text, { exists = true } = {}) {
   const logins = [];
   const removed = [];
   const errors = [];
   let header = null;
+  let accounts = false;
   String(text ?? '').split('\n').forEach((raw, i) => {
     const line = raw.trim();
     if (!line.startsWith('|')) { header = null; return; }
@@ -103,6 +108,7 @@ export function parseSubscriptions(text, { exists = true } = {}) {
     }
     const pinned = header.join('|') === 'tool|name|folder|account|rule';
     if (!pinned && header.join('|') !== 'tool|name|folder|rule') return;
+    if (pinned) accounts = true;
     const [tool, name, folder, ...rest] = c;
     const ruleText = rest.at(-1);
     const accountText = pinned ? rest[0] : '';
@@ -123,8 +129,8 @@ export function parseSubscriptions(text, { exists = true } = {}) {
     }
   });
   // A file with pins has no ~/.claude login unless it lists one.
-  for (const tool of TOOLS) if (!logins.some((l) => l.tool === tool) && !(tool === 'claude' && multiAccount({ logins }))) logins.push(defaultLogin(tool));
-  return { exists, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
+  for (const tool of TOOLS) if (!logins.some((l) => l.tool === tool) && !(tool === 'claude' && multiAccount({ accounts, logins }))) logins.push(defaultLogin(tool));
+  return { exists, accounts, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
 }
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
 const removedLogin = (tool, name, folder) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir }; };
@@ -294,6 +300,7 @@ export function toolLogins(tool, subs, extra = []) {
 //   email     the pinned email when there is a pin, else the live one
 //   liveEmail what the folder is signed in to, or null
 //   pinnable  true only for a not set up folder signed in to an email no other login is pinned to
+//   sameAs    for a not set up folder on an account another login has, that login's name, else null
 // Without pins, a second Claude folder on one account is not set up, and the first keeps it. With pins
 // (multi-account mode) ~/.claude is never checked: a pinned folder is signed in only on its own account,
 // wrong account on another, and a check that fails leaves its state as the check reported it, never
@@ -316,22 +323,23 @@ export function checkLogins(subs, { tools = TOOLS, ...opts } = {}) {
   for (const l of checked) {
     l.liveEmail = l.tool === 'claude' ? l.email : null;
     l.pinnable = false;
+    l.sameAs = null;
     if (l.tool !== 'claude') continue;
     const live = l.liveEmail?.toLowerCase() ?? null;
     if (multi) {
-      if (l.account && pins.get(l.account) !== l) Object.assign(l, { state: 'not set up', why: `pinned to the same account as ${pins.get(l.account).name}` });
+      if (l.account && pins.get(l.account) !== l) Object.assign(l, { state: 'not set up', why: `pinned to the same account as ${pins.get(l.account).name}`, sameAs: pins.get(l.account).name });
       else if (l.account) {
         l.email = l.account;
         if (l.state === 'signed in' && !live) Object.assign(l, { state: 'error', why: 'its account could not be read' });
         else if (l.state === 'signed in' && live !== l.account) Object.assign(l, { state: 'wrong account', why: `signed in to ${l.liveEmail}` });
       } else if (l.state === 'signed in') {
         const other = live ? pins.get(live) : null;
-        Object.assign(l, { state: 'not set up', why: other ? `the same account as ${other.name}` : null, pinnable: !!live && !other });
+        Object.assign(l, { state: 'not set up', why: other ? `the same account as ${other.name}` : null, sameAs: other?.name ?? null, pinnable: !!live && !other });
       }
       else if (l.state === 'signed out') Object.assign(l, { state: 'not set up', why: `signed out${l.why ? ` (${l.why})` : ''}` });
     } else if (l.state === 'signed in' && live) {
       // Two Claude names on one account: the first keeps it.
-      if (owner.has(live)) Object.assign(l, { state: 'not set up', why: `the same account as ${owner.get(live).name}` });
+      if (owner.has(live)) Object.assign(l, { state: 'not set up', why: `the same account as ${owner.get(live).name}`, sameAs: owner.get(live).name });
       else owner.set(live, l);
     }
   }
@@ -400,6 +408,11 @@ export function removeLogin(subs, { tool, name, check }) {
   }
   if (!target.configDir) throw new Error(`logins: ${tool} ${name} is ${tilde(TOOL[tool].dir())}, ${tool === 'claude' ? 'Claude' : 'Codex'}'s own folder, which desk always knows: turn it off instead (desk-env logins set ${tool} ${name} off)`);
   lastUsable(tool, name, target, check, 'removing this one');
+  // The last pinned account is kept whatever its state: without a pin the file would leave
+  // multi-account mode, and desk would go back to ~/.claude, the person's own Claude Code.
+  if (tool === 'claude' && target.account && !subs.logins.some((l) => l.tool === 'claude' && l.account && l.dir !== target.dir)) {
+    throw new Error(`logins: claude ${name} is the only Claude account desk has, and removing it would put desk back on ${tilde(TOOL.claude.dir())}: add another account first, or sign this one in again (${signInCommand(target)})`);
+  }
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
   return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };
 }
@@ -516,4 +529,4 @@ export function listLines(subs, path) {
 // The JSON a script reads: nothing from a status call but the fields above.
 export const loginJson = (l) => ({ tool: l.tool, name: l.name, folder: l.folder, configDir: l.configDir, rule: l.rule, source: l.source,
   ...(l.account ? { account: l.account } : {}),
-  ...(l.state ? { state: l.state, email: l.email, plan: l.plan, why: l.why, account: l.account ?? null, liveEmail: l.liveEmail ?? null, pinnable: !!l.pinnable, signIn: l.state === 'signed out' ? signInCommand(l) : null } : {}) });
+  ...(l.state ? { state: l.state, email: l.email, plan: l.plan, why: l.why, account: l.account ?? null, liveEmail: l.liveEmail ?? null, pinnable: !!l.pinnable, sameAs: l.sameAs ?? null, signIn: l.state === 'signed out' ? signInCommand(l) : null } : {}) });

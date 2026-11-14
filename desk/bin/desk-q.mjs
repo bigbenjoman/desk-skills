@@ -1948,7 +1948,11 @@ function usageTable(repos, now, checked = null) {
   const multi = pinnedFile();
   const missing = (l) => (l.source !== 'found' ? null : multi && l.tool === 'claude' ? { state: 'not set up', why: 'signed out' } : { state: 'signed out' });
   const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? missing(l));
-  const claude = claudeLogins().map((l) => {
+  // With accounts pinned every account has a row, its folder there or not: a pinned account whose folder
+  // is gone shows as not signed in, with the command that signs it in (and makes the folder).
+  const listed = claudeLogins();
+  const gone = multi ? readSubscriptions(subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.account && !listed.some((o) => o.dir === l.dir)) : [];
+  const claude = [...listed, ...gone].map((l) => {
     const b = benched[loginKey(l)];
     return { tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: b ? { at: b.resets_at ?? null, type: b.type } : null,
       workers: runningOn(repos, l), check: checkOf(l), multi };
@@ -1983,9 +1987,9 @@ function ruleCell(x, n) {
   if (n === 1 && inUse(x.login)) return ['● only login', GOOD];
   return RULE_CELL[x.login.rule] ?? ['· no rule', GREY];
 }
-// The login a second folder on one account repeats, from the check's reason ("the same account as <name>",
-// or "pinned to the same account as <name>"), or null: a not set up folder with another reason is not one.
-const sameAccountAs = (check) => (check?.state === 'not set up' ? /same account as (\S+)$/.exec(check.why ?? '')?.[1] ?? null : null);
+// The login a second folder on one account repeats (the check's `sameAs`), or null: a not set up folder
+// for another reason is not one.
+const sameAccountAs = (check) => (check?.state === 'not set up' ? check.sameAs ?? null : null);
 // A login desk won't use has one cell across both windows, saying why: with accounts pinned, not signed
 // in or on another account (which it names); without, signed out; either way, not set up.
 function unusable(x) {
@@ -2175,7 +2179,7 @@ function fixNote(x) {
       cmd, [' in another terminal', null], ...then(email), ...press, ['.', null]] };
   }
   const name = x.login.name;
-  const first = /^pinned to the same account as \S+$/.test(x.check.why ?? '') ? `${name} is ${x.check.why}.` : `${name} isn't one of desk's accounts.`;
+  const first = x.check.sameAs && x.check.account ? `${name} is pinned to the same account as ${x.check.sameAs}.` : `${name} isn't one of desk's accounts.`;
   return { tag: '◆ not set up', sgr: YOU, text: [[`${first} To add it, run `, null], cmd, [' in another terminal', null],
     ...(login ? [[', type ', null], login, [', and', null]] : [[' and', null]]), [' sign in to an account desk doesn\'t have. ', null], ...press, [', or ', null], ['x', BOLD], [' to remove it.', null]] };
 }

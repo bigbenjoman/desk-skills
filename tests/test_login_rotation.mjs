@@ -663,6 +663,23 @@ t('DS-531 AC6 a hold on ~/.claude is never probed', probes().includes(DEF), fals
 env = pinned([['login-2', 'in rotation', 90, 90], ['login-3', 'in rotation', 10, 10]], { 'K-1': { ...RESUMING('pending')['K-1'], login: { name: 'login-2', config_dir: dirOf('login-2') } } });
 pass(env);
 t('DS-531 AC9 a session that started on login-2 resumes on login-2', calls('K-1').at(-1), `K-1|sess-1|${dirOf('login-2')}|resume`);
+// A pass whose own folder is the only pinned account still checks it: signed in to another account, it
+// takes no new work.
+env = pinned([['login-2', 'in rotation', 10, 10]], fresh);
+writeFileSync(join(dirOf('login-2'), '.account'), 'someone-else');
+pass({ ...env, CLAUDE_CONFIG_DIR: dirOf('login-2') });
+t('pinned: a pass on the only pinned folder, now on another account, starts no worker', `${row('Y-1').state} ${calls('Y-1').length}`, 'triaged 0');
+// With accounts pinned, weekly pacing reads the pinned accounts, never ~/.claude.
+const pacing = (v) => writeFileSync(config, readFileSync(config, 'utf8').replace(/\| Usage pacing headroom \(points\) \| `5` \| `[^`]*` \|/, `| Usage pacing headroom (points) | \`5\` | \`${v}\` |`));
+pacing('5');
+env = pinned(PINNED, fresh);
+writeFileSync(join(process.env.DESK_USAGE_DIR, 'probe.log'), `${event(99, 99)}\n`);
+out = pass(env);
+t('pinned: ~/.claude far ahead of pace holds no spawn', `${/holding spawns/.test(out)} ${calls('Y-1').length > 0}`, 'false true');
+env = pinned([['login-2', 'in rotation', 99, 99], ['login-3', 'in rotation', 99, 99]], fresh);
+out = pass(env);
+t('pinned: every account ahead of pace holds new spawns', `${/holding spawns/.test(out)} ${calls('Y-1').length}`, 'true 0');
+pacing('off');
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }

@@ -242,10 +242,11 @@ const loginDirOf = (t) => (t.login ? t.login.config_dir : workerLoginDir(STATE, 
 // A new session starts on the login with the most room (login-choice.mjs), and a resumed one on the
 // login it started on, because its session lives in that login's folder. With no subscriptions file,
 // or with this pass's own login the only one in use, there is nothing to choose: a worker inherits
-// the pass's login and nothing is checked.
+// the pass's login and nothing is checked. With accounts pinned there is always a choice, as in
+// call-login.mjs: even the pass's own folder must still be signed in to its pinned account.
 const SUBS = readSubscriptions(E.subscriptionsPath());
 const IN_USE = probeLogins();
-const rotating = !nothingToChoose(SUBS, OWN_LOGIN, IN_USE);
+const rotating = multiAccount(SUBS) || !nothingToChoose(SUBS, OWN_LOGIN, IN_USE);
 let CHECKED = null;
 const PROBES = new Map();
 // At most one probe a login a pass, made only when something on that login is held on the limit. With
@@ -1719,16 +1720,21 @@ for (const s of HEALTH.stalls) personStall(s);
 // probe: the hold would keep itself on its last figure, an old subscription's after a switch. So a pass
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
+// With accounts pinned, pacing reads the accounts new work starts on, never ~/.claude: spawns hold only
+// while every usable one is ahead of pace, and the probe goes to one of them.
 const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(usageDir(), login)], login, recent });
-const paceReading = () => loginReading(OWN_LOGIN);
-let READING = paceReading();
-let PACE = usagePace({ usage: READING.seven_day });
+const paceLogins = () => (multiAccount(SUBS) ? (CHECKED ??= checkLogins(SUBS, { tools: ['claude'] })).usable : [OWN_LOGIN]);
+const paceOf = (login) => { const reading = loginReading(login); return { login, reading, pace: usagePace({ usage: reading.seven_day }) }; };
+const paceNow = () => {
+  const each = paceLogins().map(paceOf);
+  return each.find((e) => !e.pace.hold) ?? each[0] ?? { login: null, reading: {}, pace: usagePace({ usage: null }) };
+};
+let { login: PACE_LOGIN, reading: READING, pace: PACE } = paceNow();
 let paceProbe = '';
-if (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READING, now: Date.now() })) {
-  const p = probeOnce();
+if (PACE.hold && !PACE.bad && PACE_LOGIN && probeDue({ running: running.length, reading: READING, now: Date.now() })) {
+  const p = probeOnce(PACE_LOGIN);
   if (p.ok) {
-    READING = paceReading();
-    PACE = usagePace({ usage: READING.seven_day });
+    ({ login: PACE_LOGIN, reading: READING, pace: PACE } = paceNow());
     paceProbe = '; read by a probe call just now';
   } else paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
 }
@@ -2400,7 +2406,8 @@ function noLogin() {
   if (noLoginTold) return;
   noLoginTold = true;
   const state = (l) => (l.rule === 'off' ? `${l.name} is off` : l.state === 'signed out' ? `${l.name} is signed out (${signInCommand(l)})` : `${l.name}: ${l.why ?? 'no rule set'}`);
-  personStall(`no Claude login can take new work — ${CHECKED.logins.map(state).join('; ')}. Nothing new spawns until one can; resumes carry on`);
+  const unread = SUBS.errors.map((e) => `the subscriptions file's ${e}`);
+  personStall(`no Claude login can take new work — ${[...CHECKED.logins.map(state), ...unread].join('; ')}. Nothing new spawns until one can; resumes carry on`);
 }
 // Why a session cannot resume on its login, or null. A login that could not be checked goes on to its
 // preflight, which says what is wrong with it.

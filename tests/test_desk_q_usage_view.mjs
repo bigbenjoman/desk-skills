@@ -477,6 +477,16 @@ subscriptions([PERSONAL, ['codex', 'codexmain', '~/.codex', 'off'], ['codex', 'c
 v = await codexRow('work@x.io');
 t('DS-532 AC7 a Codex login whose folder is ~/.codex-work is labelled by its own id_token\'s email', v.row?.slice(0, 50), row(0, 'work@x.io', 'Plus', '● in rotation', '', '', '').slice(0, 50));
 
+// A pinned account whose folder is gone keeps its row, as not signed in, so its sign-in command is offered.
+subscriptions([...ROWS, ['claude', 'gone', '~/.claude-logins/gone', 'gone@example.test', 'standby']]);
+const G = open();
+await sleep(20);
+await G.press('6');
+const gf = await G.until((x) => rowOf(x, 'gone@example.test')?.includes('not signed in') ?? false);
+t('a pinned account whose folder is gone keeps its row, not signed in', rowOf(gf, 'gone@example.test')?.includes('◆ not signed in: desk won\'t use it') ?? false, true);
+t('and its note gives the command that signs it in', prose(gf).includes('CLAUDE_CONFIG_DIR=~/.claude-logins/gone claude'), true);
+G.done();
+
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all desk-q Usage view checks passed');
 process.exit(fails ? 1 : 0);
