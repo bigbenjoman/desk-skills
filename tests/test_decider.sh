@@ -477,5 +477,38 @@ out=$(posort)
 check "DS-580 AC1: a person-only park with no answer since it parked is handed on, naming its step, and not given to the model" '[ "$(cut -d" " -f1 <<< "$out")" = P1 ] && grep -q "only a person or another account takes, with no answer since it parked: a requeue would park again (\"No worker can run it: only a person with Mac mini or org access can do this.\")" <<< "$out"'
 check "DS-580 AC2: the same park answered since it parked goes to the model, as an ordinary park does" '[ "$(cut -d" " -f2 <<< "$out")" = P2,P3 ]'
 
+# ---- DS-597: the decider is shown a triaged ticket's open questions, and may search the state folder --
+# SV-1 has one unknown in its triage record and one question plan-batch added on its queue entry;
+# SV-2 has a plan question but is not waiting; SV-3 has neither.
+mkdir -p "$T/q597/triage"
+echo '{"unknowns":["Which retry rule applies: the first or the second?"]}' > "$T/q597/triage/SV-1.json"
+cat > "$T/ds597.mjs" <<EOF
+import { deciderItems, deciderPrompt, deciderSettings } from '$B/decider.mjs';
+const triaged = (key, n, more = {}) => ({ key, state: 'triaged', lane: 'A', open_questions: n, ...more });
+const q = { tickets: {
+  'SV-1': triaged('SV-1', 2, { plan_questions: ['SV-1 is blocked by SV-9, which is not in this batch: hold it or drop the link?'] }),
+  'SV-2': triaged('SV-2', 1, { plan_questions: ['which copy goes on the button?'] }),
+  'SV-3': triaged('SV-3', 1) } };
+const v = { waiting: ['SV-1: 2 question(s) open — answer with answer.mjs SV-1 "<answer>"', 'SV-3: 1 question(s) open — answer with answer.mjs SV-3 "<answer>"'] };
+const items = deciderItems(v, q, '$T/q597');
+const bare = deciderItems(v, q);
+const line = (p, key) => p.split('\n').filter((l) => l.includes(' · ' + key + ' · ')).join('');
+const prompt = deciderPrompt({ slug: 's', report: '', items, rules: '', bin: '/b', state: '$T/q597' });
+const plain = deciderPrompt({ slug: 's', report: '', items: bare, rules: '', bin: '/b' });
+const allow = deciderSettings({ bin: '/b', state: '/s' }).permissions.allow;
+console.log(prompt);
+const after = (p, key) => p.split('\n')[p.split('\n').findIndex((l) => l.includes(' · ' + key + ' · ')) + 1];
+console.log('SV3_SAME=' + (JSON.stringify(items[1]) === JSON.stringify(bare[1]) && !('questions' in items[1]) && line(prompt, 'SV-3') === line(plain, 'SV-3') && !after(prompt, 'SV-3').startsWith('  - open question')));
+console.log('FILE_RULES=' + allow.filter((a) => /^(Read|Grep|Glob)\(/.test(a)).join(' '));
+EOF
+out=$(node "$T/ds597.mjs" 2>&1)
+check "DS-597 AC1: a triaged item lists its triage unknown and the question plan-batch added, word for word, under its line" \
+  '[ "$(grep -c "^  - open question: " <<< "$out")" = 2 ] && grep -A2 -F " · SV-1 · waiting" <<< "$out" | grep -qxF "  - open question: Which retry rule applies: the first or the second?" && grep -A2 -F " · SV-1 · waiting" <<< "$out" | grep -qxF "  - open question: SV-1 is blocked by SV-9, which is not in this batch: hold it or drop the link?"'
+check "DS-597 AC1: another ticket's plan question is not listed" '! grep -qF "which copy goes on the button" <<< "$out"'
+check "DS-597 AC2: a triaged item with no triage record and no plan question reads as it did" 'grep -qx "SV3_SAME=true" <<< "$out"'
+check "DS-597 AC3: the decider may Read, Grep and Glob the state folder and nothing outside it" 'grep -qx "FILE_RULES=Read(//s/\*\*) Grep(//s/\*\*) Glob(//s/\*\*)" <<< "$out"'
+check "DS-597 AC4: the read line names Read, Grep and Glob on the state folder and says each command runs alone" \
+  'grep -qF "files in the batch state directory ($T/q597) with the Read, Grep and Glob tools only. Run each allowed command on its own: no \`cd\`, pipe or \`;\`, which are refused" <<< "$out"'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
