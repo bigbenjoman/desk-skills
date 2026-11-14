@@ -78,7 +78,7 @@ whose pass saw it first, until main moves. Each move goes in `maintenance.log` a
   pass after it, back to the last digest sent. An idle batch runs no pass, so the supervisor's tick,
   or the loop (`digest.mjs checkin`), runs the check-in on its own while its tickets stay parked.
 - **What it lists.** Per repo: every open question (each parked ticket's question, a hold is not
-  one, and each triaged ticket's unknowns), every call taken and every question settled by checking
+  one, and each triaged or held ticket's unknowns), every call taken and every question settled by checking
   since the last digest, and, under `Put off`, each question the user put off whose inputs have not
   changed, once, with the date and an `ask-again` command; a put-off question is never pushed. A question
   still open at the next check-in is listed again, and the batch carries on meanwhile with every
