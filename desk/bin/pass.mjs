@@ -2287,9 +2287,9 @@ let noLoginWhy = null;
 function repoLogin() {
   if (INHERITS) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
   const login = REPO_SUB.login;
-  const from = REPO_SUB.source === 'DESK_SUBSCRIPTION' ? 'DESK_SUBSCRIPTION' : `config §3b "${E.CONFIG_ROWS.subscription.row}"`;
   if (!login) {
-    noLogin(`${from} names ${REPO_SUB.email}, which is not one of this computer's subscriptions, so nothing new starts for this repo; it never falls back to another. Sign that account in and add it in desk-q view 6 (Usage), or change ${REPO_SUB.source === 'DESK_SUBSCRIPTION' ? 'DESK_SUBSCRIPTION' : 'the row'}`);
+    const from = SUB_ENV ? 'DESK_SUBSCRIPTION' : `config §3b "${E.CONFIG_ROWS.subscription.row}"`;
+    noLogin(`${from} names ${REPO_SUB.email}, which is not one of this computer's subscriptions, so nothing new starts for this repo; it never falls back to another. Sign that account in and add it in desk-q view 6 (Usage), or change ${SUB_ENV ? 'DESK_SUBSCRIPTION' : 'the row'}`);
     return null;
   }
   REPO_CHECK ??= checkLogin(login);
