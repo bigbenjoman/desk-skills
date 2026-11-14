@@ -463,5 +463,19 @@ check "DS-557: the digest asks a park waiting on links-made, and still not one w
 sorted(){ node --input-type=module -e "import { presort } from '$B/decider.mjs'; const c = (k) => JSON.stringify({ kind: k }); const r = presort([{ kind: 'parked', lane: 'A', ticket: 'L', text: 'x', clears: c('links-made') }, { kind: 'parked', lane: 'A', ticket: 'U', text: 'y', clears: c('pr-merged') }]); console.log(r.hand.map((h) => h.item.ticket).join(), r.waits.map((w) => w.ticket).join());"; }
 check "DS-557: the decider hands a links-made park on to the person rather than letting it wait" '[ "$(sorted)" = "L U" ]'
 
+# ---- DS-580: a park on a step only a person or another account takes is handed on unless answered since -
+PO="There is no review from agent-pullbot at all. No worker can run it: only a person with Mac mini or org access can do this."
+mkdir -p "$T/ds580/briefings"
+printf '# P2\n\n## Answer from the user (2026-11-13T10:00:00Z)\nagent-pullbot has posted its review\n' > "$T/ds580/briefings/P2.md"
+posort(){ node --input-type=module -e "
+import { deciderItems, presort } from '$B/decider.mjs';
+const q = { tickets: { P1: { lane: 'B', state: 'parked', park: { question: process.argv[1], since: '2026-11-13T09:00:00Z' } }, P2: { lane: 'B', state: 'parked', park: { question: process.argv[1], since: '2026-11-13T09:00:00Z' } }, P3: { lane: 'B', state: 'parked', park: { question: 'Retry or fail?', since: '2026-11-13T09:00:00Z' } } } };
+const r = presort(deciderItems({ parked: ['P1', 'P2', 'P3'].map((key) => ({ key, question: q.tickets[key].park.question })) }, q), '$T/ds580');
+console.log(r.hand.map((h) => h.item.ticket).join(), r.ask.map((i) => i.ticket).join(), r.hand[0]?.why);
+" "$PO"; }
+out=$(posort)
+check "DS-580 AC1: a person-only park with no answer since it parked is handed on, naming its step, and not given to the model" '[ "$(cut -d" " -f1 <<< "$out")" = P1 ] && grep -q "only a person or another account takes, with no answer since it parked: a requeue would park again (\"No worker can run it: only a person with Mac mini or org access can do this.\")" <<< "$out"'
+check "DS-580 AC2: the same park answered since it parked goes to the model, as an ordinary park does" '[ "$(cut -d" " -f2 <<< "$out")" = P2,P3 ]'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
