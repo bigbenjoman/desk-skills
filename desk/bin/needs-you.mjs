@@ -39,13 +39,16 @@
 //       waiting             a PR held only by a person's approval: put off the same way, with the PR's head
 //                           and who approved it as its inputs, so it is back once it gets one or its head moves
 //       open                a lane C or D park, or one on a step no worker is allowed (aws, curl, gh
-//                           api, …): names the desk-ticket session to open; records nothing
+//                           api, …) or on a step the person approved that no worker can run: names
+//                           the desk-ticket session to open; records nothing
 //       admit               a ticket held by open tickets outside its batch that no batch holds: names
 //                           the /desk-admit to run for them; records nothing
 //       done                the person did the step themselves. On a PR it reads the PR from GitHub:
 //                           merged is recorded and leaves the list; unmerged is said, and noted on the
 //                           item until its head moves. On a session item, the ticket finished outside
-//                           desk: its PR merged, or no PR, records it done; an unmerged PR is refused
+//                           desk: its PR merged, or no PR, records it done; an unmerged PR is refused.
+//                           On a step the person approved that no worker can run, that step is done:
+//                           the ticket goes back to a worker with it in its briefing (queue.mjs step-done)
 //   needs-you.mjs move <repo> <TICKET> <batch>        record's move alone: the one action the decider is
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
@@ -114,6 +117,11 @@ function withDrop(r, t, actions) {
 }
 // A session item the person finished themselves, outside desk: done records it, once its PR has merged.
 const SESSION_DONE = ['done', null, 'if you finished the ticket yourself, done reads its PR and records it done once the PR has merged, or where it has none'];
+// A step the person approved that its park says no worker can run (park.session_step, answer.mjs):
+// they run it in a session, and done sends the ticket back to a worker with it recorded done.
+const STEP_WHY = 'no worker can run the step you approved, so a requeue would only park it again: run it in an interactive session';
+const STEP_DONE = ['done', null, 'once you have run the step, done sends the ticket back to a worker with it recorded as done'];
+const STEP_ANSWER = ['answer', null, 'if you did not mean to approve running it, answer again: an answer approving no step makes it an ordinary park you can resume'];
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
@@ -686,6 +694,7 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, note, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
+    if (t.park?.session_step) return { kind: 'session', need: `you approved a step no worker can run: ${one(t.park.session_step.step)}`, note, actions: withDrop(r, t, [['open', STEP_WHY], STEP_DONE, STEP_ANSWER, ['not-now']]) };
     if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
     if (needsSession(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
     if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], SESSION_DONE, ['not-now']]) };
@@ -1037,6 +1046,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const a = ans();
       if (!a.ok) return say(false, a.why);
       if (item.kind === 'worktree') return say(true, 'recorded for its next worker; the next pass that finds the worktree clean starts it.');
+      // Approving a step no worker can run makes it a session item (answer.mjs), never a requeue.
+      const step = readQueue(r.queuePath).tickets?.[ticket]?.park?.session_step;
+      if (step) return say(true, `answer recorded; not requeued, because no worker can run the step you approved (${one(step.step)}): run it in an interactive session, then say done and it goes back to a worker with the step recorded done.`);
       if (w.by === 'session') {
         // Marked answered, so desk-q shows it waiting on that session rather than needing the person.
         const m = queueCmd(r, ['set', ticket, `park.answered=${new Date(now).toISOString()}`]);
@@ -1120,7 +1132,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, `${q.out} (queue.mjs drop); Jira is left as it is.`) : say(false, `drop refused: ${q.out}`); }
     case 'open': {
       const root = repoConfigValue(r.slug, 'repo-root');
-      return say(true, `not requeued (${neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
+      return say(true, `not requeued (${x.t.park?.session_step ? 'a step you approved that no worker can run' : neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
     }
     // Admission runs its own checks on each blocker, so it is the person's /desk-admit, not made here.
     case 'admit': {
@@ -1129,6 +1141,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
+      if (x.t.park?.session_step) {
+        const d = queueCmd(r, ['step-done', ticket]);
+        return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);
+      }
       if (x.pr || heldDraft(x.t)) return prDone();
       if (item.kind === 'session') return sessionDone();
       if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');

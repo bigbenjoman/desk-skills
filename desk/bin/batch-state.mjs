@@ -255,6 +255,34 @@ export function leaseRefusedBrief(t) {
 const YES_WORD = String.raw`(?:yes|yep|y|approved?|ok(?:ay)?|go ahead|do it|push it|force[- ]?push(?: it)?|confirmed?|granted|sure|please)`;
 const YES = new RegExp(String.raw`^\s*${YES_WORD}(?:[\s,.!:;-]+${YES_WORD})*[\s.!]*$`, 'i');
 export const approves = (text) => YES.test(String(text ?? ''));
+// An answer approving a step it names no grant for: a bare yes, or one opening with a yes that holds
+// back, redirects or puts off nothing ("Approved, go ahead and build it", not "Yes, but merge instead").
+const OPENS_YES = new RegExp(String.raw`^\s*${YES_WORD}\b`, 'i');
+const HOLDS_BACK = /\b(?:no|not|never|instead|rather|skip\w*|without|but|wait|hold off|later|only)\b|n't\b/i;
+export const approvesStep = (text) => approves(text) || (OPENS_YES.test(String(text ?? '')) && !HOLDS_BACK.test(String(text ?? '')));
+
+// The step a park says its worker cannot run, where no grant covers it and the question alone does not
+// already make it a session's (sessionPark): a refused script or command, a staging write, a credential
+// no worker is given. Named by the refusing sentence's first code span, else the question's, else its
+// first script, else that sentence; null for any other park. A grantable force-push is a grant's, and a
+// plain push or draft PR the pass finishes itself (recoveries.mjs pushPark), so neither is one. Nor is
+// a park that offers to go on without the step ("shall I leave it out?"): a yes there approves that.
+// Only a question the worker puts as its own offer counts, so "it cannot pass without the image" does not.
+const OFFER = /\b(?:(?:shall|should|can|could|may) (?:i|we)|(?:do you )?want me to)\b/i;
+const WITHOUT_STEP = /\b(?:instead|without|skip\w*|leave (?:\S+ ){0,3}out|drop(?:ped|ping)? (?:it|the|that|this))\b/i;
+const offersWithout = (q) => q.split(/(?<=[.?!;])\s+|\n+/).some((c) => /\?\s*$/.test(c) && OFFER.test(c) && WITHOUT_STEP.test(c));
+const TO_WORKER = /\b(?:refus\w*|denied|not (?:allowed|granted|permitted|given)|never (?:allowed|given|granted)|can(?:not|'t) (?:run|use|reach|hold|write|call)|no (?:headless )?worker (?:can|may|could|is allowed|holds?|is given))\b/i;
+const PUSH_STEP = /\b(?:git push|gh pr|push(?:ed|ing|es)?|(?:draft )?PR)\b/i;
+const CODE = /`([^`\n]+)`/;
+const SCRIPT = /[\w./-]+\.(?:sh|mjs|js|py|ts)\b/;
+export function workerRefusedStep(question) {
+  const q = String(question ?? '');
+  if (refusedStep(q)?.grantable || sessionPark(q) || offersWithout(q)) return null;
+  const said = q.split(/(?<=[.?!;])\s+|\n+/).find((c) => TO_WORKER.test(c));
+  if (!said) return null;
+  const step = (CODE.exec(said)?.[1] ?? CODE.exec(q)?.[1] ?? SCRIPT.exec(q)?.[0] ?? said).trim();
+  return PUSH_STEP.test(step) ? null : step.slice(0, 200);
+}
 
 // The grant an answer records on a parked ticket, { grant }, or { why } when it records none. The lease
 // is the SHA the park names (namedLease), so the approval was of that one overwrite, and a grant is
@@ -310,8 +338,9 @@ const NO_WORKER_WORK = /\bno (?:more |further )?worker work\b|\bnothing (?:left 
 export const noWorkerWork = (question) => NO_WORKER_WORK.test(String(question ?? ''));
 
 // A queue ticket only an interactive session takes on: lane C, one parked at triage on its lane, or
-// one whose worker parked it in lane C or a canvas-less lane D. Any other lane D park is requeued.
-export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? ''));
+// one whose worker parked it in lane C or a canvas-less lane D, or one whose park's step the person
+// approved where no worker can run it (park.session_step, answer.mjs). Any other lane D park is requeued.
+export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? '')) || !!t?.park?.session_step;
 
 // A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
 // the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A

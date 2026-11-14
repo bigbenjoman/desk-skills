@@ -12,7 +12,7 @@ import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } fr
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
-import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor } from './batch-state.mjs';
+import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
 import { readRegistry } from './claude-logins.mjs';
@@ -193,6 +193,25 @@ try {
   }
 } catch (e) {
   console.error(`${ticket}: answer recorded in the briefing, but its grant was not: ${e.message}`);
+}
+
+// An answer approving a step its park says no worker can run makes the ticket a session item naming
+// that step (park.session_step): a requeue would only park it again. Once the person has run it, done
+// on that item hands the ticket back to a worker with the step recorded done (queue.mjs step-done).
+// Any later answer that approves nothing takes it back to an ordinary park.
+try {
+  const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
+  const live = t?.state === 'parked' && !isHeld(t) && !putOffAnswer;
+  const step = live ? workerRefusedStep(t.park?.question) : null;
+  if (step && (approveFlag || approvesStep(text))) {
+    execFileSync('node', [QUEUE, 'set', ticket, `park.session_step=${JSON.stringify({ step, at: stamp })}`], { stdio: 'ignore' });
+    console.log(`${ticket}: you approved a step no worker can run (${step}), so it is a session item now, not a requeue: do it in an interactive session (/desk-ticket ${ticket}), then record done and it goes back to a worker with the step recorded done.`);
+  } else if (live && t.park?.session_step) {
+    execFileSync('node', [QUEUE, 'set', ticket, 'park.session_step=null'], { stdio: 'ignore' });
+    console.log(`${ticket}: this answer approves no step, so it is no longer a session item for the step approved earlier (${t.park.session_step.step}).`);
+  }
+} catch (e) {
+  console.error(`${ticket}: answer recorded in the briefing, but whether it approved a step no worker can run was not: ${e.message}`);
 }
 
 // A triaged ticket's questions are its triage unknowns: clearing the count is what makes it eligible
