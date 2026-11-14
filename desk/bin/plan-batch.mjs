@@ -205,7 +205,7 @@ for (const r of admitted) {
         // Only on the ticket's own link: the pass lifts merge_after once its own links no longer list the
         // step, so one inherited from a container would be lifted at once, and is asked below instead. A
         // step whose Jira Repository this computer cannot place is asked about too.
-b.category !== 'done' && r.blockers.some((x) => x?.key === k) && (br ? !elsewhere(br) && stepParked(br) : stepLabel(b.labels, STEP_LABELS))) {
+        b.category !== 'done' && r.blockers.some((x) => x?.key === k) && (br ? !elsewhere(br) && stepParked(br) : stepLabel(b.labels, STEP_LABELS))) {
         (mergeAfter[t] ??= []).push(k);
         note(t, `built now, merged only once ${k} (your step) is Done`);
       } else if (br) {
