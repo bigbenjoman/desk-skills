@@ -64,6 +64,8 @@ out=$(mod "import { heavyProcesses } from '$B/desk-env.mjs'; try { console.log('
 check "AC4: heavyProcesses throws that ps could not be read" 'grep -q "^ps could not be read (ps: cannot read the process table)$" <<< "$out"'
 out=$(mod "import { processList } from '$B/suite-wait.mjs'; console.log(processList())")
 check "AC4: processList is null, ps cannot be read" '[ "$out" = null ]'
+out=$(mod "import { suiteWait, SUITE_WAIT_TEXT } from '$B/suite-wait.mjs'; const w = suiteWait('$T', { procs: null, cwds: [], holders: new Set() }); console.log(w, '|', SUITE_WAIT_TEXT[w])")
+check "AC4: suiteWait with no process list is unknown, saying ps could not be read" '[ "$out" = "unknown | ps could not be read, so whether it is running its suite is unknown" ]'
 out=$(upload); rc=$?
 check "AC4: upload-images refuses, saying ps could not be read" '[ $rc -eq 2 ] && grep -q "ps could not be read" <<< "$out" && ! grep -q LAUNCHED <<< "$out"'
 out=$(node "$B/desk-env.mjs" heavy 2>&1); rc=$?

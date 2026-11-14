@@ -1363,7 +1363,7 @@ export function rssGiB() {
 }
 
 // Every process's command line can carry a worker's whole prompt, so the list runs to megabytes.
-export const PS_MAX_BUFFER = 64 * 1024 * 1024;
+const PS_MAX_BUFFER = 64 * 1024 * 1024;
 const PS_NUMERIC = new Set(['pid', 'ppid', 'rss']);
 // `ps` output for `columns` (e.g. 'pid=,args=') as one object per process keyed by column name:
 // every column but the last is one word, the last runs to the end of the line. pid, ppid and rss
