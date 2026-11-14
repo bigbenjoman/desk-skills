@@ -121,6 +121,15 @@ check-in digest can list it. Taking it is not widening §3: a row that is not `y
 asks, so a take never makes a write the config did not grant. And `autopilot-judgement` decides it
 for workers: where that row is not `yes`, a worker parks on it.
 
+Two scope calls are always taken where it is `yes`:
+
+- **A gap a sibling ticket in the epic owns is not a question.** Cite the sibling's key where the
+  gap is reported (the PR body, the review) and carry on.
+- **A self-review fix that grows** is widened or split as the Stage 4 file says
+  (`worker-contract-stage-4.md`, *A fix that grows*). A confirmed P0 or P1 in the ticket's own
+  feature path that needs at most one more file and about 20 lines, under no §4 Merge holds glob, is
+  widened and logged.
+
 Each taken call is one entry in `<state>/decisions.jsonl` (time, repo, ticket, question, options,
 the option chosen, category, PR link):
 

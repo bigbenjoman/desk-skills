@@ -162,6 +162,7 @@ const REWRITTEN = [
   ['AA-184', '**Screenshot capture**, only where §3', 1], // the route covers any screenshot or image script
   ['DS-576', '```bash gh pr review <n> --repo <repo> --comment --body-file <report> ```', 1], // review-post.mjs posts it
   ['DS-576', '**Use the plain form above: never a `GH_TOKEN=… gh pr review …` prefix.**', 1], // as §4 Review account
+  ['DS-564', '**A fix that grows parks**', 1], // under autopilot-judgement it is a scope call taken
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

@@ -196,9 +196,22 @@ finders read-only, and when and how to call `codex`. Read that section before th
   deferred count fails on any non-zero value, so a deferred finding is a PR that can never merge.
   Carrying is not deferring: it exists only from round 2, only for a P2, and leaves the counts.
   Cost the fix before calling it out of scope: a "restructuring" is often ~30 lines. Fix it where it
-  stands. **A fix that grows parks**: one needing a new file other than its own spec, or a file your
-  diff does not already touch, is the user's call to widen the PR or split it out, so park naming it.
-  So does a fix that needs someone else's decision. Moving equivalent sites onto a helper this PR
+  stands. **A fix that grows** (one needing a new file other than its own spec, or a file your diff
+  does not already touch) is a scope call, to widen the PR or split the finding out. Where config §3
+  `autopilot-judgement` is not `yes`, park naming it. Where it is `yes`, take it, print it as an
+  `AUTOPILOT_DECISION` with category `scope`, and do not park:
+  - **Widen** when the grown diff stays within the ticket's size (its Size field; M with none) and
+    adds no file under a §4 Merge holds glob (`desk-env list merge-holds`). A confirmed P0 or P1 in
+    the ticket's own feature path that needs at most one more file and about 20 lines always does.
+  - **Split** otherwise: file one follow-up ticket for the finding with `desk-jira create`
+    (desk-jira's ticket template, the finding's `file:line` in it), print
+    `AUTOPILOT_LINK: <follow-up> relates-to <TICKET>` (Stage 8 file), and carry the finding with the
+    follow-up's key in its title. Only a P2 from round 2 can be carried, so a P0 or P1, or a P2 on
+    round 1, too big to widen still parks, naming the finding and the follow-up.
+  - **A §3 row the growth needs that is not `yes`** (`jira-create` for the follow-up, a production
+    or staging write for the fix) parks naming that row, whatever `autopilot-judgement` says.
+
+  A fix that needs someone else's decision parks. Moving equivalent sites onto a helper this PR
   creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR
   body. Growth means new behaviour, not new call sites.
 - **Requirement gaps**: report in `AUTOPILOT_DONE` and in the verdict's gap count, do not act. A gap
