@@ -63,6 +63,7 @@ function put(name, r) {
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
@@ -1509,7 +1510,7 @@ t('DS-389 AC7 done checks the copies again, and clears once none is behind', `${
 // ---- DS-577 AC8: the repo's failing reviewer check is one item, naming every PR the pass holds on it
 const rvWhy = 'the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman';
 const gated = (pr) => redPr(pr, { gate_hold: { item: 'health:acme__rv:reviewer', head: `h${pr}`, why: rvWhy, at: minsAgo(30 + pr - 300) } });
-put('rv', { port: 4302, beat: 1, supervised: true, tickets: {
+put('rv', { port: 4302, beat: 1, supervised: true, gateReviewers: 'agent-pullbot', tickets: {
   'RV-1': gated(301), 'RV-2': gated(302), 'RV-3': gated(303), 'RV-4': gated(304), 'RV-5': gated(305),
   'RV-6': redPr(306),
   'RV-7': { ...gated(307), pr_status: { ...gated(307).pr_status, head: 'h307-moved' } },
@@ -1525,6 +1526,13 @@ t('DS-577 AC8 desk-q counts it once, beside the PRs it does not hold', N.needsCo
 t('DS-577 AC8 the list shows it as one line', cli('list', 'rv').out.split('\n').filter((l) => l.startsWith('rv reviewer reviewer')).length, 1);
 const rvDone = N.record({ word: 'rv', ticket: 'reviewer', action: 'done' });
 t('DS-577 AC8 done records nothing and says the next pass checks again', `${rvDone.ok} ${/next pass checks the account again/.test(rvDone.line)}`, 'true true');
+{
+  const c = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__rv', 'config.md');
+  const was = readFileSync(c, 'utf8');
+  writeFileSync(c, was.replace('| Gate reviewers | `agent-pullbot` |', '| Gate reviewers | `any` |'));
+  t('DS-577 a failure recorded before Gate reviewers became any lists no item', rv().some((i) => i.kind === 'reviewer'), false);
+  writeFileSync(c, was);
+}
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__rv', 'health.json'), JSON.stringify({ at: minsAgo(2), results: {}, failing: [], streak: {}, reviewer: { ok: true, gate: ['agent-pullbot'], login: 'agent-pullbot' } }));
 t('DS-577 AC4 a passing reviewer check lists no item', rv().some((i) => i.kind === 'reviewer'), false);
 

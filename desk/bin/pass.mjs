@@ -3606,7 +3606,7 @@ function gatedByReviewer(s) {
   return verdict.size > 0 && gate.failing.every((f) => verdict.has(f.name));
 }
 function markGateHold(t, s, on) {
-  if (!on) { if (t.gate_hold && !DRY) q('set', t.key, 'gate_hold=null'); return; }
+  if (!on) { if (t.gate_hold && !DRY) { q('set', t.key, 'gate_hold=null'); t.gate_hold = null; } return; }
   const h = HEALTH.reviewer;
   if (!DRY && (t.gate_hold?.item !== h.key || t.gate_hold?.head !== s.head)) {
     q('set', t.key, `gate_hold=${JSON.stringify({ item: h.key, head: s.head ?? null, why: h.why, at: t.gate_hold?.at ?? new Date().toISOString() })}`);
@@ -4118,9 +4118,10 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   // head the merge driver held for failing §4 Merged-tree check merged into the base.
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
+  // Held by the reviewer check: no gate or verdict try, but a desk-review's findings and a person's
+  // feedback are still worked, as on a draft (feedbackCall's `gated`).
   const gated = !dirty && !tree && gatedByReviewer(s);
-  markGateHold(t, s, gated);
-  if (gated) continue;
+  if (!gated) markGateHold(t, s, false);
   if (dirty || tree) {
     const row = humanSeen(n) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
     const perm = E.permission(row);
@@ -4149,7 +4150,8 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   };
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
-  let c = gateTry(t, s, { ...ctx, baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
+  let c = gated ? feedbackCall(t, s, ctx.waived, true) : gateTry(t, s, { ...ctx, baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
+  if (gated) markGateHold(t, s, !c);
   if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
   if (c.call === 'wait') { out.push(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`); continue; }
   // A §4 Check builds build to start or re-run: on its own, or beside a check a person clears.
@@ -4172,7 +4174,8 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
 // The threads a finished feedback try worked are replied on and resolved first, once its worker has
 // pushed past them, so the next try quotes only what is still open. One GitHub would not settle holds
 // any new try until a later pass settles it: a new try would replace the record of what was worked.
-function feedbackCall(t, s, waived) {
+// `gated`: the reviewer check holds the PR (gatedByReviewer), so no verdict try is sent.
+function feedbackCall(t, s, waived, gated = false) {
   if (s.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const n = s.pr;
   const fb = readFeedback(n);
@@ -4197,7 +4200,7 @@ function feedbackCall(t, s, waived) {
   if (ff) return ff;
   // Gaps only the person can settle wait on their call, whatever the checks or the merge grant say.
   const gaps = fb.review ? personGapsCall(fb.review, { judgement }) : null;
-  if (gaps) return gaps;
+  if (gaps || gated) return gaps;
   // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
   const { carry, scope, baseMerge } = baseMoves(t, s.head);

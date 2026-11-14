@@ -1025,14 +1025,22 @@ export function verdictLogins() {
 // each: null where the row is unset, a TODO, `none` or `any` (the gate counts any account). A span that
 // is not a GitHub login throws rather than comparing against a guess.
 export function gateReviewers() {
-  const items = configValues('gate-reviewers');
-  if (items == null || isNone(items) || (items.length === 1 && /^(any|todo\b)/i.test(items[0].trim()))) return null;
+  return gateReviewersIn(configValues('gate-reviewers'));
+}
+// The same, from the row's spans. `any` and a TODO match the whole span (a TODO may carry a note after
+// a space or colon, which no login holds), so a login that begins with either is still a login.
+export function gateReviewersIn(items) {
+  if (items == null || isNone(items) || (items.length === 1 && /^(?:any$|todo(?:[\s:]|$))/i.test(items[0].trim()))) return null;
   const bad = items.filter((x) => !/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/.test(x.trim()));
   if (bad.length) {
     const r = CONFIG_ROWS['gate-reviewers'];
     throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not one GitHub login per span, \`any\` or \`none\` in ${configPathHint()}. Refusing to guess.`);
   }
   return items.map((x) => x.trim());
+}
+// Another repo's §4 Gate reviewers, by slug, as gateReviewers reads this repo's.
+export function repoGateReviewers(slug, root = deskConfigRoot()) {
+  return gateReviewersIn(configValuesIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), 'gate-reviewers'));
 }
 // Another repo's, by slug, as verdictLogins reads this repo's: $DESK_GITHUB_HANDLE, else its §1 row.
 export function repoVerdictLogins(slug, root = deskConfigRoot()) {

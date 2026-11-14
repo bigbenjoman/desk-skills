@@ -402,7 +402,7 @@ mkdir -p "$T/fx"
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
 case "\$1 \$2" in
-  "api user") echo "\${GH_CONFIG_DIR:-default}" >> "$T/calls.ghuser"
+  "api user") echo "\${GH_CONFIG_DIR:-default}" >> "$T/calls.ghuser"; echo "\${GH_TOKEN-unset}" >> "$T/calls.ghtoken"
     [ "\$(cat "$T/mode.ghuser" 2>/dev/null || echo ok)" = out ] && { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }
     cat "$T/ghuser"; exit 0 ;;
   "pr view") [ -f "$T/fx/\$3.json" ] || exit 1; cat "$T/fx/\$3.json"; exit 0 ;;
@@ -416,7 +416,9 @@ echo bigbenjoman > "$T/ghuser"
 GATE_ROWS='| Gate reviewers | `agent-pullbot` |
 | State checks | `Review gate: verdict` |'
 # One fresh run of the health checks alone: $json, $out and $rv (the reviewer item's key, or null).
-hl(){ rm -f "$T/state/health.json"; json=$(node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push, reviewer: h.reviewer?.key ?? null }))' "$B/health.mjs"); out=$(node -e 'const v = JSON.parse(process.argv[1]); console.log([v.message, ...v.push.map((p) => p.text)].join("\n"))' "$json"); rv=$(node -e 'console.log(JSON.parse(process.argv[1]).reviewer)' "$json"); }
+hl(){ rm -f "$T/state/health.json"; hlkeep; }
+# The same, over the last run's record.
+hlkeep(){ json=$(node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push, reviewer: h.reviewer?.key ?? null }))' "$B/health.mjs"); out=$(node -e 'const v = JSON.parse(process.argv[1]); console.log([v.message, ...v.push.map((p) => p.text)].join("\n"))' "$json"); rv=$(node -e 'console.log(JSON.parse(process.argv[1]).reviewer)' "$json"); }
 lastdir(){ tail -n 1 "$T/calls.ghuser"; }
 
 config yes yes; : > "$T/calls.ghuser"
@@ -441,6 +443,8 @@ EXTRA="$GATE_ROWS
 | Review account | \`agent-pullbot: $T/gh-pullbot\` |" config yes yes
 hl
 check "DS-577 decision: read as §4 Review account where it is set"      '[ "$(lastdir)" = "$T/gh-pullbot" ] && [ "$rv" = null ]'
+GH_TOKEN=person-token hl
+check "DS-577 read as §4 Review account with no token in the way, as review-post posts" '[ "$(tail -n 1 "$T/calls.ghtoken")" = unset ] && [ "$(lastdir)" = "$T/gh-pullbot" ] && [ "$rv" = null ]'
 
 mode ghuser out
 hl
@@ -450,6 +454,12 @@ mode ghuser ok
 EXTRA='| Gate reviewers | `agent pullbot` |' config yes yes
 hl
 check "DS-577 a row that is not one login per span is told, not guessed" '[[ "$(pushes)" =~ :reviewer$ ]] && grep -q "Refusing to guess" <<< "$out"'
+EXTRA='| Gate reviewers | `anya-bot` |' config yes yes
+hl
+check "DS-577 a login that begins with any is a login, not any"          'grep -qF "the review gate counts anya-bot; desk posts verdicts as agent-pullbot" <<< "$out"'
+EXTRA='| Gate reviewers | `any` |' config yes yes
+hlkeep
+check "DS-577 a reviewer failure no longer configured is not kept by a reused run" '[ "$rv" = null ] && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).reviewer ?? null)" "$T/state/health.json")" = null ]'
 
 # AC2 / AC3 through the pass: H-20's PR is out of draft and red only on its verdict state check.
 echo bigbenjoman > "$T/ghuser"

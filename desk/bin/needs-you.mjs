@@ -81,7 +81,7 @@ import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
-import { heldByReviewer } from './health.mjs';
+import { reviewerRecord } from './health.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
@@ -658,7 +658,9 @@ function followItem(r, t) {
 // reads the account again and lifts every hold once it passes.
 const REVIEWER = 'reviewer';
 function reviewerItems(batches) {
-  const h = batches.map((b) => heldByReviewer(b.stateDir, b.slug)).find(Boolean);
+  // The newest run across the repo's batches decides: a stopped batch's older failure is not shown.
+  const h = batches.map((b) => reviewerRecord(b.stateDir, b.slug)).filter(Boolean)
+    .sort((a, c) => String(c.at).localeCompare(String(a.at)))[0]?.item;
   if (!h) return [];
   const held = batches.flatMap((b) => Object.values(b.q?.tickets ?? {}).filter(gateHeldAt));
   const r = batches.find((b) => b.batch == null) ?? [...batches].sort((a, c) => String(a.batch).localeCompare(String(c.batch)))[0];

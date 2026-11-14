@@ -50,6 +50,7 @@ import { loginState } from './find-playwright.mjs';
 import { parseDfAvailableGB } from './machine.mjs';
 import { isDir, loginEnv, readSubscriptions, signInCommand } from './logins.mjs';
 import { inUse, loginKey } from './claude-logins.mjs';
+import { accountEnv } from './review-post.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
@@ -223,7 +224,8 @@ async function reviewerCheck(env, timeoutMs, retryMs) {
   if (!gate) return null;
   try { acct = E.reviewAccount(); } catch (e) { return { ok: false, kind: 'config', gate, why: e.message, fix: 'correct §4 Review account with /desk-update' }; }
   const who = acct ? `${acct.login} (GH_CONFIG_DIR=${acct.dir})` : 'your default gh login';
-  const run = () => runCommand(REVIEWER_CMD, timeoutMs, acct ? { ...env, GH_CONFIG_DIR: acct.dir } : undefined, true);
+  // As review-post.mjs posts: the account's config directory with no token, else gh as it stands.
+  const run = () => runCommand(REVIEWER_CMD, timeoutMs, acct ? accountEnv(acct, env) : undefined, true);
   let r = await run();
   if (!r.ok && r.kind === 'network') { await new Promise((res) => setTimeout(res, retryMs)); r = { ...(await run()), retried: true }; }
   if (!r.ok) {
@@ -303,7 +305,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const others = listed.filter((l) => isDir(l.dir));
   const reusedLogins = others.every((l) => prev?.logins?.[loginKey(l)]?.ok);
   const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins
-    && (!reviewerWanted || prev.reviewer?.ok === true);
+    && (reviewerWanted ? prev.reviewer?.ok === true : !prev.reviewer);
   let results;
   let loginResults;
   let reviewer = null;
@@ -327,9 +329,9 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   // The reviewer check holds no spawn. A connection failure is told once it has lasted two runs, as a
   // remote check's is; a mismatch, a row that does not read or a refused sign-in at once.
   const reviewerOut = reviewer && !reviewer.ok ? reviewer : null;
-  const reviewerStreak = reused ? prev.reviewer_streak ?? null
-    : reviewerOut ? { kind: reviewerOut.kind, n: prev?.reviewer_streak?.kind === reviewerOut.kind ? prev.reviewer_streak.n + 1 : 1 } : null;
-  const reviewerTold = !!reviewerOut && (reviewerOut.kind !== 'network' || reviewerStreak?.n >= 2);
+  const reviewerStreak = reused ? prev.reviewer_streak ?? {}
+    : nextStreak({ streak: prev?.reviewer_streak ?? {} }, reviewerOut ? [{ key: 'reviewer', kind: reviewerOut.kind }] : []);
+  const reviewerTold = !!reviewerOut && (reviewerOut.kind !== 'network' || reviewerStreak.reviewer?.n >= 2);
   const failing = wanted.filter((id) => !results[id].ok);
   const remote = wanted.filter(isRemote);
   const network = remote.length > 1 && remote.every((id) => !results[id].ok) && remote.some((id) => results[id].kind === 'network');
@@ -352,7 +354,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   if (!reused) {
     mkdirSync(state, { recursive: true });
     const kept = others.length ? { logins: loginResults, login_streak: loginStreak } : {};
-    const rev = reviewer ? { reviewer: { ...reviewer, told: reviewerTold }, ...(reviewerStreak ? { reviewer_streak: reviewerStreak } : {}) } : {};
+    const rev = reviewer ? { reviewer: { ...reviewer, told: reviewerTold }, ...(reviewerOut ? { reviewer_streak: reviewerStreak } : {}) } : {};
     writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing, streak, ...kept, ...rev }, null, 2)}\n`);
   }
 
@@ -406,8 +408,13 @@ export function reviewerItem(slug, r) {
   const signin = r.kind === 'auth' || r.kind === 'network';
   return { ...r, signin, key: `health:${slug}:${signin ? 'reviewer-signin' : 'reviewer'}` };
 }
-// The reviewer item as the last health run at `state` recorded it, while it is told; else null.
-export function heldByReviewer(state, slug) {
-  const r = readRecord(state)?.reviewer;
-  return r && !r.ok && r.told ? reviewerItem(slug, r) : null;
+// The reviewer check as the last health run at `state` recorded it: null where it recorded none, or
+// the slug's §4 Gate reviewers no longer names logins. { at, item }: `item` is the told failure's
+// repo item, else null.
+export function reviewerRecord(state, slug) {
+  const rec = readRecord(state);
+  const r = rec?.reviewer;
+  if (!r) return null;
+  try { if (E.repoGateReviewers(slug) == null) return null; } catch { /* a row that does not read is still told */ }
+  return { at: rec.at, item: !r.ok && r.told ? reviewerItem(slug, r) : null };
 }
