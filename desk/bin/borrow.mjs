@@ -91,6 +91,10 @@ export function lastBeat(stateDir, queuePath) {
 export const liveBeat = (beat, now = Date.now()) => beat != null
   && (now - beat.at < LIVE_MS || (beat.next != null && now < beat.next + PASS_GRACE_MS));
 
+// Whether otherQueues() entry `o` has an orchestrator with a live beat.
+export const queueLive = (o, { now = Date.now(), stateRoot = join(E.HOME, '.desk-autopilot') } = {}) =>
+  liveBeat(lastBeat(join(stateRoot, o.slug, ...(o.batch ? [E.BATCHES_DIR, o.batch] : [])), o.path), now);
+
 // Every batch's queue under $DESK_HOME/repos but `self`, read and never written: each repo's standing
 // batch, then its named batches (this repo's own included), in slug order. Each is
 // { slug, batch, path, q } or { slug, batch, path, error } for one that cannot be read or is not a
@@ -208,7 +212,7 @@ export function otherBatches({ self, now = Date.now(), home = E.deskHome(), stat
     return {
       slug,
       batch,
-      live: liveBeat(lastBeat(join(stateRoot, slug, ...(batch ? [E.BATCHES_DIR, batch] : [])), path), now),
+      live: queueLive({ slug, batch, path }, { now, stateRoot }),
       running: runningIn(q),
       ready: tickets.filter(isReady).length,
       share: batchConcurrency(q, E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency'))).n,

@@ -38,7 +38,7 @@ import { claudeChoice, laterLift, nothingToChoose } from './call-login.mjs';
 import { firstSpawnFromLogs, epicUnread, splitOwnEpic, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
@@ -56,7 +56,7 @@ import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirU
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
+import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -1301,6 +1301,8 @@ const clearsRead = {
     return { holds: false, note: `${base} is ${n} commit(s) behind ${branch}${why}` };
   },
   link: (l) => linkThere(cached(`links:${l.key}`, () => JSON.parse(readOrThrow(`desk-jira get ${l.key}`, 'desk-jira', ['get', l.key, '--json']))?.fields?.issuelinks), l),
+  reviews: (n) => cached(`reviews:${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefOid,reviews']))),
+  queued: (ticket, repo) => queuedIn(ticket, repo, cached('queues', () => otherQueues({ self: QUEUE_FILE })), (o) => queueLive(o)),
 };
 // The ticket's own PR, if it merged: the one it recorded, else a merged PR from its branch.
 function ownMergedPr(t) {
@@ -1391,7 +1393,7 @@ function settleClear(t) {
     report.done.push(`${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${E.mergeGrant(queue()).why})`);
     return;
   }
-  const r = checkCond(c, { ...clearsRead, push: (p) => pushParked(t, p) });
+  const r = checkCond(c, { ...clearsRead, push: (p) => pushParked(t, p), file: (f) => existsSync(condPath(f, { worktree: t.worktree, state: STATE })) });
   if (r.error) { report.clears.push(`${t.key}: could not check "${cond}" (${r.error}): left parked`); return; }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
   if (!r.holds) { if (r.note) report.clears.push(`${t.key}: waiting on "${cond}" (${r.note}): left parked`); return; }
