@@ -19,13 +19,20 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : 
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR DESK_UPLOAD_APPROVED AUTOPILOT_BATCH_BUDGET_USD \
-  AUTOPILOT_HEALTH_CHECKS DESK_HEALTH_TIMEOUT_MS AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED
+  AUTOPILOT_HEALTH_CHECKS DESK_HEALTH_TIMEOUT_MS AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_PG_CONTAINER
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
-# config <codex-review> <pr-images>
-config(){ cat > "$T/config.md" <<EOF
+# config <codex-review> <pr-images>; $DBROW, when set, is §4 Local database, with a per-ticket database made in it
+config(){
+  local perm="" rows=""
+  if [ -n "${DBROW:-}" ]; then
+    perm="| \`db-per-ticket\` | A database per ticket | \`yes\` | \`yes\` |"
+    rows="| Local database | \`$DBROW\` |
+| Database URL variable | \`DATABASE_URL\` |"
+  fi
+  cat > "$T/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
 |---|---|
@@ -44,6 +51,7 @@ config(){ cat > "$T/config.md" <<EOF
 | \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
 | \`codex-review\` | Send diffs to codex | \`yes\` | \`$1\` |
 | \`pr-images\` | Upload PR screenshots | \`yes\` | \`$2\` |
+$perm
 
 ## 3b. Cost and autonomy
 | Field | Recommended | Your setting |
@@ -54,12 +62,19 @@ config(){ cat > "$T/config.md" <<EOF
 | Field | Value |
 |---|---|
 | Tracker | \`jira\` |
+$rows
 EOF
 }
 config yes yes
 
 for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# Setup answers per $T/mode.setup: ok, pgdown (Postgres not answering) or other (any other failure).
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+echo "\$2" >> "$T/calls.setup"
+case "\$(cat "$T/mode.setup" 2>/dev/null || echo ok)" in
+  pgdown) echo "FAIL: cannot reach Postgres in container acme-pg as postgres: psql in container acme-pg did not answer within 30s, after 4 tries over 120s (is it running?)" >&2; exit 1 ;;
+  other) echo "FAIL: §4 Install failed twice" >&2; exit 1 ;;
+esac
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<'EOF'
@@ -313,6 +328,64 @@ check "DS-602 a slot whose owner's state folder is gone takes the push over" '[ 
 pj
 check "DS-602 and the slot it took it from no longer lists it"     '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out"'
 unset DESK_SUBSCRIPTIONS
+
+# ---- DS-589: the local Postgres container ------------------------------------------------------
+# docker answers pg_isready per $T/mode.docker (ok or down) and logs each call.
+cat > "$T/stub/docker" <<EOF
+#!/bin/sh
+echo "\$@" >> "$T/calls.docker"
+[ "\$(cat "$T/mode.docker" 2>/dev/null || echo ok)" = down ] && { echo "/var/run/postgresql:5432 - no response"; exit 2; }
+echo "/var/run/postgresql:5432 - accepting connections"
+EOF
+chmod +x "$T/stub/docker"
+q set H-5 state=done; q set H-4 state=done
+q add H-6; q set H-6 state=triaged branch=fix/H-6
+: > "$T/calls.docker"
+pj
+check "DS-589 AC5 no local database: no check runs, nothing held" '[ "$(calls docker)" = 0 ] && [ "$(field H-6 state)" = running ] && grep -q "health: all checks pass (checked now)" <<< "$out" && ! grep -q "local database" <<< "$out"'
+q set H-6 state=done
+DBROW="postgres container acme-pg" config yes yes
+q add H-7; q set H-7 state=triaged branch=fix/H-7
+mode docker down
+pj
+check "DS-589 AC1 the container not answering holds the spawn" '[ "$(field H-7 state)" = triaged ] && [ "$(calls docker)" = 1 ] && grep -q "health: 1 check(s) failing — database — holding new spawns" <<< "$out"'
+check "DS-589 AC1 one item naming the container, told at once" 'grep -qF "health: local database (docker exec acme-pg pg_isready) failed:" <<< "$out" && grep -qF "start Docker and the container acme-pg" <<< "$out" && [[ "$(pushes)" =~ ^health:.+:database$ ]]'
+mode docker ok
+pj
+check "DS-589 AC2 once it answers the ticket spawns, no answer needed" '[ "$(field H-7 state)" = running ] && grep -q "health: all checks pass (checked now; recovered: database)" <<< "$out" && [ -z "$(pushes)" ]'
+q set H-7 state=done
+mv "$T/stub/docker" "$T/docker.off"
+json=$(PATH="$T/stub" "$(command -v node)" --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs" 2>&1)
+out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json")
+check "DS-589 AC6 no docker on PATH: the check fails saying so" 'grep -qF "health: local database (docker exec acme-pg pg_isready) failed: docker not found" <<< "$out"'
+mv "$T/docker.off" "$T/stub/docker"
+rm -f "$T/state/health.json"
+
+# AC3/AC4: health passes, then setup itself fails.
+q add H-8; q set H-8 state=triaged branch=fix/H-8
+q add H-9; q set H-9 state=triaged branch=fix/H-9
+echo pgdown > "$T/mode.setup"; : > "$T/calls.setup"
+pj
+check "DS-589 AC3 setup not reaching Postgres: queued, not parked" '[ "$(field H-8 state)" = triaged ] && [ "$(field H-9 state)" = triaged ] && grep -q "worktree setup could not reach the local database, so it stays queued" <<< "$out" && ! grep -q "worktree setup failed, not spawned" <<< "$out"'
+check "DS-589 AC3 the hold starts that pass: one setup, one item"   '[ "$(calls setup)" = 1 ] && grep -q "held, the local database is not answering" <<< "$out" && grep -qF "health: local database (docker exec acme-pg pg_isready) failed: cannot reach Postgres in container acme-pg" <<< "$out" && [[ "$(pushes)" =~ ^health:.+:database$ ]]'
+check "DS-589 AC3 the health line says the database holds spawns"    'grep -q "health: 1 check(s) failing — database — holding new spawns" <<< "$out"'
+echo ok > "$T/mode.setup"
+json=$(node "$B/pass.mjs" --json 2>/dev/null); out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json")
+check "DS-589 AC2 the next pass checks afresh and spawns both"      '[ "$(field H-8 state)" = running ] && [ "$(field H-9 state)" = running ] && grep -q "recovered: database" <<< "$out"'
+q set H-8 state=done; q set H-9 state=done
+q add H-10; q set H-10 state=triaged branch=fix/H-10
+echo other > "$T/mode.setup"
+pj
+check "DS-589 AC4 any other setup failure parks as today"            '[ "$(field H-10 state)" = parked ] && grep -q "H-10: worktree setup failed, not spawned — FAIL: §4 Install failed twice" <<< "$out" && ! grep -q "local database" <<< "$out"'
+check "DS-589 a ticket that waited and spawned keeps no wait mark"   '[ "$(field H-8 db_wait)" = null ]'
+q set H-10 state=done
+q add H-11; q set H-11 state=triaged branch=fix/H-11
+echo pgdown > "$T/mode.setup"
+pj
+check "DS-589 setup not reaching Postgres once: queued"             '[ "$(field H-11 state)" = triaged ]'
+pj
+check "DS-589 again while the database check answers: parks"        '[ "$(field H-11 state)" = parked ] && grep -q "H-11: worktree setup failed, not spawned — FAIL: cannot reach Postgres in container acme-pg.*the local database check passes" <<< "$out"'
+rm -f "$T/mode.setup"
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
