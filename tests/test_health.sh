@@ -282,7 +282,7 @@ q set-batch supervised=false
 mode gh ok; rm -f "$T/state/health.json"
 mkdir -p "$HOME/.claude-logins/b"; : > "$HOME/.claude-logins/b/signed-out"
 export DESK_SUBSCRIPTIONS="$T/subscriptions.md"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `standby` |\n' > "$DESK_SUBSCRIPTIONS"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$DESK_SUBSCRIPTIONS"
 before=$(calls claude)
 pj
 check "DS-463 AC7 login b is checked in its own folder"     '[ "$(calls claude)" = $((before + 2)) ]'
@@ -294,10 +294,10 @@ pj
 check "DS-463 AC7 signed back in, nothing is said of it"    '! grep -q "Claude login b" <<< "$out" && [ -z "$(pushes)" ]'
 
 # ---- DS-602: a listed login whose folder does not exist ----------------------------------------
-# Login c is on standby at a folder never made. Another slot is the same health checks run with its
+# Login c is unused, at a folder never made. Another slot is the same health checks run with its
 # own state folder, on the same machine.
 slot(){ json=$(DESK_AUTOPILOT_STATE="$T/state2" node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs"); out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json"); }
-printf '| `claude` | `c` | `~/.claude-logins/c` | `standby` |\n' >> "$DESK_SUBSCRIPTIONS"
+printf '| `claude` | `c` | `~/.claude-logins/c` | `unused` |\n' >> "$DESK_SUBSCRIPTIONS"
 note_c="claude login c listed at ~/.claude-logins/c, which does not exist: remove its row (desk-env logins remove claude c) or sign it in (CLAUDE_CONFIG_DIR=~/.claude-logins/c claude, then /login)"
 rm -f "$T/state/health.json"
 before=$(calls claude)

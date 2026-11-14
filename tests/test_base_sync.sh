@@ -334,7 +334,7 @@ check "DS-339 a base fix try moves an earlier try's resume file and handoff asid
 # DS-521: with more than one login, a base worker try (a conflict fix or an epic PR review) whose
 # session exited at one login's limit carries on as a fresh session on another, in the base worktree,
 # as the same try. logins <names>: the subscriptions file lists each (`default` is ~/.claude, `b` is
-# ~/.claude-logins/b), all in rotation. A folder listed in $LIM, as `<folder> <reset>`, is at its
+# ~/.claude-logins/b), the first the default and the rest unused. A folder listed in $LIM, as `<folder> <reset>`, is at its
 # limit: its preflight and its probe are refused. The spawn line records the login it was given.
 LB="$HOME/.claude-logins/b"; LD="$HOME/.claude"; LIM="$T/limited"
 mkdir -p "$LD" "$T/usage"
@@ -343,9 +343,10 @@ export DESK_USAGE_DIR="$T/usage"
 logins(){
   rm -rf "$HOME/.claude-logins"
   printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n' > "$T/subs.md"
+  use=default
   # The table holds a literal ~ as a user's does, for the reader to expand.
   # shellcheck disable=SC2088
-  for n in "$@"; do [ "$n" = default ] || mkdir -p "$HOME/.claude-logins/$n"; printf '| `claude` | `%s` | `%s` | `in rotation` |\n' "$n" "$([ "$n" = default ] && echo '~/.claude' || echo "~/.claude-logins/$n")" >> "$T/subs.md"; done
+  for n in "$@"; do [ "$n" = default ] || mkdir -p "$HOME/.claude-logins/$n"; printf '| `claude` | `%s` | `%s` | `%s` |\n' "$n" "$([ "$n" = default ] && echo '~/.claude' || echo "~/.claude-logins/$n")" "$use" >> "$T/subs.md"; use=unused; done
   export DESK_SUBSCRIPTIONS="$T/subs.md"
 }
 cat > "$T/stub/claude" <<EOF

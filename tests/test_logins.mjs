@@ -4,12 +4,12 @@
 // signed-in and signed-out; no fixture token in anything shown; rule changes through the CLI. A
 // scratch HOME only; nothing reads this computer's logins.
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule,
+  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, removeLogin, loginEnv, normRule,
 } from '../desk/bin/logins.mjs';
 
 let fails = 0;
@@ -143,7 +143,8 @@ c = await cli('set', 'claude', 'nobody', 'off');
 t('an unknown login is refused, naming the logins', /^logins: no claude login "nobody": the logins are default, login-2, login-3, login-4/.test(c.out), true);
 
 // AC10: only the default Claude login is usable (login-4, found, is the same account).
-writeFileSync(SUBS, ROWS(['| `claude` | `default` | `~/.claude` | `in rotation` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `standby` |']));
+// login-2, signed out below, is the default list shows, so ~/.claude is not: the default is never turned off.
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |', '| `claude` | `default` | `~/.claude` | `standby` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `standby` |']));
 for (const n of ['login-2', 'login-9']) writeFileSync(join(H, '.claude-logins', n, 'status.json'), '{"loggedIn": false}');
 const lastFile = readFileSync(SUBS, 'utf8');
 c = await cli('set', 'claude', 'default', 'off');
@@ -163,8 +164,8 @@ claudeIn(join(H, '.claude-logins', 'login-3'), 'three@example.com', 'Pro');
 const nw = checkLogins(parseSubscriptions(NEW), { ...fakes, tools: ['claude'] });
 const nwOut = checkLines(nw, SUBS);
 t('default and unused: both signed in and usable', nw.usable.filter((l) => l.source === 'file').map((l) => l.name).join(), 'login-2,login-3');
-t('default and unused: login-2 checked as in rotation', nwOut.some((l) => /^claude\s+login-2\s.*signed in.*in rotation$/.test(l)), true);
-t('default and unused: login-3 checked as standby', nwOut.some((l) => /^claude\s+login-3\s.*signed in.*standby$/.test(l)), true);
+t('default and unused: login-2 checked as default', nwOut.some((l) => /^claude\s+login-2\s.*signed in.*default$/.test(l)), true);
+t('default and unused: login-3 checked as unused', nwOut.some((l) => /^claude\s+login-3\s.*signed in.*unused$/.test(l)), true);
 t('default and unused: the file round-trips in its own words', renderSubscriptions(parseSubscriptions(NEW).logins), renderSubscriptions(parseSubscriptions(renderSubscriptions(parseSubscriptions(NEW).logins)).logins));
 t('default and unused: rendered as written', /\| `login-2` \| `~\/\.claude-logins\/login-2` \| `default` \|[\s\S]*\| `login-3` \| `~\/\.claude-logins\/login-3` \| `unused` \|/.test(renderSubscriptions(parseSubscriptions(NEW).logins)), true);
 const ruleOf = (name) => (/\| `([^`]+)` \|$/m.exec(readFileSync(SUBS, 'utf8').split('\n').find((l) => l.includes(`\`${name}\``)) ?? '') ?? [])[1];
@@ -179,20 +180,119 @@ const legacy = setRule(parseSubscriptions(FILE), { tool: 'claude', name: 'login-
 t('today\'s rules alone: set in rotation still writes in rotation and leaves the others', parseSubscriptions(legacy.text).logins.filter((l) => l.tool === 'claude').map((l) => `${l.name}:${l.rule}`).join(), 'default:in rotation,login-2:in rotation,login-3:in rotation,login-4:in rotation');
 t('today\'s rules alone: nothing written as default or unused', /`(default|unused)` \|$/m.test(legacy.text), false);
 
-// No file: setting the default login writes the file with the defaults.
+// No file: the default list shows is refused as one the file marks default, and setting another login
+// writes the file with the defaults.
 const fresh = join(T, 'fresh');
 mkdirSync(fresh);
-const r2 = setRule(readSubscriptions(join(fresh, 'subscriptions.md')), { tool: 'codex', name: 'default', rule: 'standby', check: () => { throw new Error('not called'); } });
-t('no file: set writes both default logins, with the change', parseSubscriptions(r2.text).logins.map((l) => `${l.tool}:${l.name}:${l.rule}`).join(), 'claude:default:in rotation,codex:default:standby');
+let refused = '';
+try { setRule(readSubscriptions(join(fresh, 'subscriptions.md')), { tool: 'codex', name: 'default', rule: 'standby', check: () => { throw new Error('not called'); } }); } catch (e) { refused = e.message; }
+t('no file: the default list shows cannot be set standby', /^logins: codex default is the Codex default: make another subscription the default first/.test(refused), true);
 const r3 = setRule(readSubscriptions(join(fresh, 'subscriptions.md')), { tool: 'claude', name: 'login-9', rule: 'in rotation', check: () => null });
 t('a found folder is added by its name', parseSubscriptions(r3.text).logins.map((l) => `${l.name}:${l.folder}`).join(), 'default:~/.claude,login-9:~/.claude-logins/login-9,default:~/.codex');
-let refused = '';
+// A file in today's rules, not yet listed: its first login in rotation is the default list shows.
+const unlisted = parseSubscriptions(ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `in rotation` |']));
+refused = '';
+try { setRule(unlisted, { tool: 'claude', name: 'login-2', rule: 'off', check: () => null }); } catch (e) { refused = e.message; }
+t('today\'s rules: the first login in rotation cannot be turned off', /is the Claude default: make another/.test(refused), true);
+refused = '';
+try { removeLogin(unlisted, { tool: 'claude', name: 'login-2', check: () => null }); } catch (e) { refused = e.message; }
+t('today\'s rules: nor removed', /is the Claude default: make another/.test(refused), true);
+t('today\'s rules: another login in rotation can be', setRule(unlisted, { tool: 'claude', name: 'login-3', rule: 'standby', check: () => null }).login.rule, 'standby');
+refused = '';
 try { setRule(bad, { tool: 'claude', name: 'default', rule: 'standby', check: () => null }); } catch (e) { refused = e.message; }
 t('set is refused while the file has rows desk cannot read', /^logins: the subscriptions file has rows desk cannot read/.test(refused), true);
 refused = '';
 const onlyFound = { usable: [{ tool: 'claude', name: 'login-9', dir: join(H, '.claude-logins', 'login-9') }] };
 try { setRule(parseSubscriptions(ROWS(['| `claude` | `default` | `~/.claude` | `in rotation` |'])), { tool: 'claude', name: 'login-9', rule: 'off', check: () => onlyFound }); } catch (e) { refused = e.message; }
 t('AC10 a found folder that is the last usable Claude login cannot be turned off', /desk needs one login it can use/.test(refused), true);
+
+// ---- the older rules migrate to one default per tool and the rest unused
+const OLD = ROWS([
+  '| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |',
+  '| `claude` | `login-3` | `~/.claude-logins/login-3` | `in rotation` |',
+  '| `claude` | `login-4` | `~/.claude-logins/login-4` | `standby` |',
+  '| `codex` | `codex-2` | `~/.codex-logins/codex-2` | `standby` |',
+  '| `codex` | `codex-3` | `~/.codex-logins/codex-3` | `in rotation` |',
+]) + '\n## Removed\n\n| Tool | Name | Folder |\n|---|---|---|\n| `claude` | `old` | `~/.claude-logins/old` |\n';
+const words = (tool) => readSubscriptions(SUBS).logins.filter((l) => l.tool === tool).map((l) => `${l.name}:${l.stored}`).join();
+writeFileSync(SUBS, OLD);
+c = await cli('list');
+t('migrate AC1 list shows the first in rotation as default, the rest unused', ['login-2', 'login-3', 'login-4'].map((n) => c.out.split('\n').find((l) => l.startsWith(`claude  ${n}`))?.trim().split(/\s+/).at(-1)).join(), 'default,unused,unused');
+t('migrate AC1 and the file now records them', words('claude'), 'login-2:default,login-3:unused,login-4:unused');
+t('migrate AC2 the Codex login in rotation is its default, the one on standby unused', words('codex'), 'codex-2:unused,codex-3:default');
+t('migrate the previous copy is kept', readFileSync(`${SUBS}.bak`, 'utf8'), OLD);
+const once = readFileSync(SUBS, 'utf8');
+await cli('list');
+t('migrate AC4 a second list leaves the file byte for byte', readFileSync(SUBS, 'utf8'), once);
+const before = parseSubscriptions(OLD), after = readSubscriptions(SUBS);
+t('migrate AC5 names, folders and order unchanged', after.logins.map((l) => `${l.tool}:${l.name}:${l.folder}`).join(), before.logins.map((l) => `${l.tool}:${l.name}:${l.folder}`).join());
+t('migrate AC5 the Removed table unchanged', JSON.stringify(after.removed), JSON.stringify(before.removed));
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `standby` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `off` |']));
+await cli('list');
+t('migrate AC3 with none in rotation the first listed is the default', words('claude'), 'login-2:default,login-3:unused');
+const workerEnv = { ...env, DESK_AUTOPILOT_WORKER: '1' };
+let held;
+writeFileSync(SUBS, OLD);
+c = await new Promise((res) => execFile('node', [join(BIN, 'desk-env.mjs'), 'logins', 'list'], { env: workerEnv, cwd: T, encoding: 'utf8' }, (err, stdout) => res({ rc: err ? 1 : 0, out: stdout })));
+t('migrate a worker is shown the migrated rules and writes nothing', `${c.rc} ${/^claude\s+login-2\s.*default$/m.test(c.out)} ${readFileSync(SUBS, 'utf8') === OLD}`, '0 true true');
+
+// A login set off beside a default is kept off: only the older rules migrate.
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `off` |']));
+held = readFileSync(SUBS, 'utf8');
+await cli('list');
+t('migrate a file already saying default keeps a login set off', readFileSync(SUBS, 'utf8'), held);
+
+// ---- changing the default
+claudeIn(join(H, '.claude-logins', 'login-3'), 'ben@studia.io', 'Max 5x');
+writeFileSync(SUBS, OLD);
+await cli('list');
+c = await cli('default', 'claude', 'login-3');
+t('default AC6 login-3 is the default and login-2 unused', words('claude'), 'login-2:unused,login-3:default,login-4:unused');
+t('default AC6 the output names both', c.out.trim().split('\n').at(-1), 'claude login-3: default; login-2: unused');
+await cli('default', 'claude', 'login-2');
+c = await cli('default', 'claude', 'BEN@studia.io');
+t('default AC7 named by the account its folder is signed in to, any case', `${c.rc} ${words('claude')}`, '0 login-2:unused,login-3:default,login-4:unused');
+c = await cli('default', 'codex', 'codex-2');
+t('default AC8 the Codex default changes and the Claude default does not', `${c.rc} ${words('codex')} ${words('claude')}`, '0 codex-2:default,codex-3:unused login-2:unused,login-3:default,login-4:unused');
+c = await cli('default', 'claude', 'nobody@example.com');
+t('default an account no login is signed in to is refused', `${c.rc} ${/^logins: no claude login is signed in to nobody@example\.com/.test(c.out)}`, '1 true');
+held = readFileSync(SUBS, 'utf8');
+c = await cli('remove', 'claude', 'login-3');
+t('default AC9 removing the default is refused', `${c.rc} ${/make another subscription the default first/.test(c.out)}`, '1 true');
+t('default AC9 and the file is unchanged', readFileSync(SUBS, 'utf8'), held);
+c = await new Promise((res) => execFile('node', [join(BIN, 'desk-env.mjs'), 'logins', 'default', 'claude', 'login-2'], { env: workerEnv, cwd: T, encoding: 'utf8' }, (err, stdout, stderr) => res({ rc: err ? err.code ?? 1 : 0, out: stdout + stderr })));
+t('default AC10 refused to a worker as set is', `${c.rc} ${readFileSync(SUBS, 'utf8') === held}`, '4 true');
+for (const rule of ['off', 'standby']) {
+  c = await cli('set', 'claude', 'login-3', rule);
+  t(`default set ${rule} on the default is refused, the file unchanged`, `${c.rc} ${/make another subscription the default first/.test(c.out)} ${readFileSync(SUBS, 'utf8') === held}`, '1 true true');
+}
+const shown = (tool) => readSubscriptions(SUBS).logins.filter((l) => l.tool === tool).map((l) => `${l.name}:${l.stored ?? l.rule}`).join();
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `off` |', '| `claude` | `login-4` | `~/.claude-logins/login-4` | `unused` |']));
+c = await cli('default', 'claude', 'login-4');
+t('default a login set off stays off when the default changes', `${c.rc} ${shown('claude')}`, '0 login-2:unused,login-3:off,login-4:default');
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |']));
+await cli('list');
+t('migrate a file listing only Claude logins gains no Codex row', `${shown('claude')} ${/`codex`/.test(readFileSync(SUBS, 'utf8'))}`, 'login-2:default false');
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |', '| `claude` | `login-5` | `~/elsewhere/login-5` | `unused` |']));
+claudeIn(join(H, '.claude-logins', 'login-5'), 'five@example.com', 'Pro');
+held = readFileSync(SUBS, 'utf8');
+c = await cli('default', 'claude', 'five@example.com');
+t('default an account signed in at a folder sharing a listed login\'s name is refused, the file unchanged', `${c.rc} ${/give one of them another name/.test(c.out)} ${readFileSync(SUBS, 'utf8') === held}`, '1 true true');
+writeFileSync(SUBS, `${ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |'])}\n## Removed\n\n| Tool | Name | Folder |\n|---|---|---|\n| \`claude\` | \`login-6\` | \`~/elsewhere/login-6\` |\n`);
+claudeIn(join(H, '.claude-logins', 'login-6'), 'six@example.com', 'Pro');
+held = readFileSync(SUBS, 'utf8');
+c = await cli('default', 'claude', 'six@example.com');
+t('default an account signed in at a folder sharing a removed login\'s name is refused, the file unchanged', `${c.rc} ${/give one of them another name/.test(c.out)} ${readFileSync(SUBS, 'utf8') === held}`, '1 true true');
+
+// AC11: a signed-in folder the file does not list is unused (login-9 was signed out for AC10 above).
+claudeIn(join(H, '.claude-logins', 'login-9'), 'nine@example.com', 'Pro');
+c = await cli('check');
+t('default AC11 a found folder is listed as unused', `${/^claude\s+login-9\s.*unused$/m.test(c.out)} ${/standby/.test(c.out)}`, 'true false');
+// AC12: no file and one Claude login: ~/.claude is the default, and nothing is written.
+const empty = join(T, 'empty-config');
+c = await new Promise((res) => execFile('node', [join(BIN, 'desk-env.mjs'), 'logins', 'list'], { env: { ...env, DESK_CONFIG_ROOT: empty }, cwd: T, encoding: 'utf8' }, (err, stdout) => res({ out: stdout })));
+t('default AC12 no file: ~/.claude is the Claude default', /^claude\s+default\s+~\/\.claude\s+default$/m.test(c.out), true);
+t('default AC12 and no file is written', existsSync(join(empty, 'subscriptions.md')), false);
 
 console.log(fails ? `${fails} FAILED` : 'all logins checks passed');
 process.exit(fails ? 1 : 0);

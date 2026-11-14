@@ -831,11 +831,11 @@ echo MERGED > "$T/pr/202"; echo 2999-01-01T00:00:00Z > "$T/pr/202.merged_at"
 pass
 check "AC6: a promotion PR merged after every child opens no further one" '[ "$(grep -c "^pr create" "$T/gh.log")" = 3 ] && [ "$(bfield promotion.merged.2.pr)" = 202 ]'
 
-# ---- a login in rotation with more room: the real spawn-worker.sh puts the preflight and worker on it --
+# ---- the default login is not ~/.claude: the real spawn-worker.sh puts the preflight and worker on it --
 export DESK_QUEUE="$T/queue-l.json" DESK_AUTOPILOT_STATE="$T/state-l" DESK_SUBSCRIPTIONS="$T/subscriptions.md" DESK_USAGE_DIR="$T/usage"
 LOGIN_B="$T/home/.claude-logins/b"
 mkdir -p "$T/state-l/triage" "$T/usage" "$LOGIN_B"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `in rotation` |\n' > "$DESK_SUBSCRIPTIONS"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `unused` |\n| `claude` | `b` | `~/.claude-logins/b` | `default` |\n' > "$DESK_SUBSCRIPTIONS"
 reading(){ node -e 'const r = Math.floor(Date.now() / 1000) + 3600; const u = Number(process.argv[1]); console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: u, resetsAt: r }, seven_day: { utilization: u, resetsAt: r } } } }))' "$1"; }
 reading 0.9 > "$T/usage/probe.log"; reading 0.1 > "$T/usage/probe.b.log"
 printf '{"ticket": "T-91", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-91", "files_in_scope": ["src/l.txt"], "unknowns": []}\n' > "$T/state-l/triage/T-91.json"

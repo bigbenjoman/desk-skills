@@ -3595,7 +3595,7 @@ export function interactive({
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (k === 'u') {
       if (!undo) { msg = 'Nothing to undo.'; return; }
-      const [u] = undo, said = savedText(loginLabel(u.login), u.rule);
+      const u = undo.at(-1), said = savedText(loginLabel(u.login), u.rule);
       const step = ([s, ...more]) => saveLogin(['set', s.login.tool, s.login.name, s.rule], said, null, more.length ? () => step(more) : null);
       return step(undo);
     }
@@ -3618,10 +3618,10 @@ export function interactive({
     if (k === ' ') {
       const rule = LOGIN_RULES[(LOGIN_RULES.indexOf(l.rule) + 1) % LOGIN_RULES.length];
       // A login set in rotation in a file saying default and unused takes over as the default, so u
-      // puts the old default back too.
+      // puts the old default back first: the new one can leave its default only once another holds it.
       let down = [];
       try { down = demotedBy(readSubscriptions(subscriptionsPath()).logins, { tool: l.tool, name: l.name, rule }); } catch { /* none */ }
-      return saveLogin(['set', l.tool, l.name, rule], savedText(label, rule), was && [...was, ...down.map((d) => ({ login: d, rule: 'in rotation' }))]);
+      return saveLogin(['set', l.tool, l.name, rule], savedText(label, rule), was && [...down.map((d) => ({ login: d, rule: 'in rotation' })), ...was]);
     }
     if (k === 'x') saveLogin(['remove', l.tool, l.name], `${label} is removed from the rules for this computer. Its folder and sign-in are left as they are.`, was);
   }
