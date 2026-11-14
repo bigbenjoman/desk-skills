@@ -1506,6 +1506,28 @@ t('DS-389 AC7 it has waited since the copy was first found behind', Math.round((
 const tDone = N.record({ word: 'nu', ticket: 'templates', action: 'done' });
 t('DS-389 AC7 done checks the copies again, and clears once none is behind', `${tDone.ok} ${tDone.line} ${nu().some((i) => i.kind === 'templates')}`, 'true nu templates: no copy is behind on origin/main now, so it is off your list. false');
 
+// ---- DS-577 AC8: the repo's failing reviewer check is one item, naming every PR the pass holds on it
+const rvWhy = 'the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman';
+const gated = (pr) => redPr(pr, { gate_hold: { item: 'health:acme__rv:reviewer', head: `h${pr}`, why: rvWhy, at: minsAgo(30 + pr - 300) } });
+put('rv', { port: 4302, beat: 1, supervised: true, tickets: {
+  'RV-1': gated(301), 'RV-2': gated(302), 'RV-3': gated(303), 'RV-4': gated(304), 'RV-5': gated(305),
+  'RV-6': redPr(306),
+  'RV-7': { ...gated(307), pr_status: { ...gated(307).pr_status, head: 'h307-moved' } },
+} });
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__rv', 'health.json'), JSON.stringify({ at: minsAgo(2), results: {}, failing: [], streak: {},
+  reviewer: { ok: false, kind: 'mismatch', gate: ['agent-pullbot'], login: 'bigbenjoman', why: rvWhy, fix: 'set §4 Review account to agent-pullbot with its gh config directory, or add bigbenjoman to the gate\'s reviewer list and to §4 Gate reviewers', told: true } }));
+const rv = () => N.collect({ word: 'rv' }).items;
+const rvItem = rv().find((i) => i.kind === 'reviewer');
+t('DS-577 AC8 one item for the repo, and no per-PR item for the PRs it holds', rv().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'RV-6 pr,RV-7 pr,reviewer reviewer');
+t('DS-577 AC8 its note names the five PRs it holds', rvItem?.note, 'Held on it: PR #301 (RV-1), PR #302 (RV-2), PR #303 (RV-3), PR #304 (RV-4) and PR #305 (RV-5).');
+t('DS-577 AC8 its need names both logins and what it holds', `${rvItem?.need.includes(rvWhy)} ${/no PR red only on that gate gets a review or fix try; build workers still start$/.test(rvItem?.need)} ${rvItem?.actions.map((a) => a[0]).join()}`, 'true true done,not-now');
+t('DS-577 AC8 desk-q counts it once, beside the PRs it does not hold', N.needsCount(N.collect({ word: 'rv' }).scope[0]).shown, 3);
+t('DS-577 AC8 the list shows it as one line', cli('list', 'rv').out.split('\n').filter((l) => l.startsWith('rv reviewer reviewer')).length, 1);
+const rvDone = N.record({ word: 'rv', ticket: 'reviewer', action: 'done' });
+t('DS-577 AC8 done records nothing and says the next pass checks again', `${rvDone.ok} ${/next pass checks the account again/.test(rvDone.line)}`, 'true true');
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__rv', 'health.json'), JSON.stringify({ at: minsAgo(2), results: {}, failing: [], streak: {}, reviewer: { ok: true, gate: ['agent-pullbot'], login: 'agent-pullbot' } }));
+t('DS-577 AC4 a passing reviewer check lists no item', rv().some((i) => i.kind === 'reviewer'), false);
+
 // ---- DS-396: an idle batch the loaded supervisor runs is not stopped; one with no agent is
 // Each last passed 20 minutes ago. omicron's supervisor has ticked idle since, refreshing its heartbeat as
 // supervisor.mjs idleBeat does (test_supervisor.sh proves the tick writes it); pi's agent is not loaded.

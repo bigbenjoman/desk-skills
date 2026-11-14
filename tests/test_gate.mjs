@@ -120,6 +120,8 @@ t('DS-413 the reason is matched as a code-owner approval in any spelling', ['nee
 // /desk-setup's Merge holds step, read against what the merge driver does with the holds it proposes.
 const setup = readFileSync(new URL('../skills/desk-setup/references/step-1-detect.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
 const setupHold = (re) => parseHolds([re.exec(setup)?.[1] ?? 'missing: missing'])[0];
+t('DS-577 AC7 setup step 1 proposes §4 Gate reviewers from the verdict job\'s login list',
+  /\*\*Gate reviewers\.\*\*[^*]*`PULLBOT_REVIEWERS: "agent-pullbot"`[^*]*Propose them for §4 Gate reviewers, one span each \(`` `agent-pullbot` ``\)[^*]*`author_association`[^*]*is `any`/.test(setup), true);
 const soleHeld = await codeOwnerHolds(matchHolds(['pricing/plans.ts'], parseHolds(['pricing/**: code-owner approval'])), { repo: 'o/r', base: 'main', merger: 'BigBenjoman', run: coGh({ CODEOWNERS: '* @bigbenjoman' }) });
 t('DS-424 AC1 a code-owner approval hold on a path only the merging account owns holds nothing, so setup does not propose it', `${soleHeld.held.length} ${soleHeld.satisfied.map((h) => h.glob).join()}`, '0 pricing/**');
 const policy = /ask what policy the path stands for \("([^"]+)"\)/.exec(setup)?.[1];

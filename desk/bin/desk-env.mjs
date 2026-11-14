@@ -306,6 +306,7 @@ export const CONFIG_ROWS = Object.freeze({
   'local-review': { section: '4', row: 'Local review command' },
   'clean-verdict': { section: '4', row: 'Clean review verdict' },
   'review-account': { section: '4', row: 'Review account' },
+  'gate-reviewers': { section: '4', row: 'Gate reviewers' },
   'review-bar': { section: '4', row: 'Review bar' },
   'review-experts': { section: '4', row: 'Review domain experts' },
   'agents-sync': { section: '4', row: 'Project subagents sync' },
@@ -1019,6 +1020,19 @@ export function verdictLogins() {
   try { handle = githubHandle(); } catch { return null; }
   try { acct = reviewAccount(); } catch { /* malformed: the handle alone */ }
   return loginsOf(handle, acct);
+}
+// §4 Gate reviewers, the logins whose verdicts a §4 State check of kind verdict counts, one span
+// each: null where the row is unset, a TODO, `none` or `any` (the gate counts any account). A span that
+// is not a GitHub login throws rather than comparing against a guess.
+export function gateReviewers() {
+  const items = configValues('gate-reviewers');
+  if (items == null || isNone(items) || (items.length === 1 && /^(any|todo\b)/i.test(items[0].trim()))) return null;
+  const bad = items.filter((x) => !/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/.test(x.trim()));
+  if (bad.length) {
+    const r = CONFIG_ROWS['gate-reviewers'];
+    throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not one GitHub login per span, \`any\` or \`none\` in ${configPathHint()}. Refusing to guess.`);
+  }
+  return items.map((x) => x.trim());
 }
 // Another repo's, by slug, as verdictLogins reads this repo's: $DESK_GITHUB_HANDLE, else its §1 row.
 export function repoVerdictLogins(slug, root = deskConfigRoot()) {
