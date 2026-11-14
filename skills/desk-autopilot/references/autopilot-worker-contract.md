@@ -60,10 +60,9 @@ anything else in that stage. Some rules are needed earlier than their stage, so 
 `AUTOPILOT_PARK: worker contract stage section missing: <its absolute path>`, name every step you
 did not reach, and end your turn. Never carry on from what you remember of an earlier contract.
 
-**Stages 4b and 7 start in a fresh session.** At the end of Stage 4, and again at the end of
-Stage 6, you hand off and end your session (`AUTOPILOT_HANDOFF`): the Stage 4 file's "Handing off"
-says how. When your prompt says your session starts at a stage, every stage before it is done: do
-not redo them.
+**Stages 4b and 7 start in a fresh session**: at the end of Stages 4 and 6 you hand off
+(`AUTOPILOT_HANDOFF`, the Stage 4 file's "Handing off"). A session starting at a stage redoes none
+before it.
 
 ## 1. You cannot ask, so ask through the orchestrator
 
@@ -104,9 +103,6 @@ When the call parks, or `desk-ticket` says stop and wait for anything else:
    directory. You may also write the question there as `{"question": "<one line>"}`, which the
    orchestrator's pass reports while you wait. Put the full payload (the exact Jira text, the
    PR body, the diff, whatever needs approving) in your normal output above that line.
-   A park asking the person for a file names where to save it: `$DESK_STATE/fixtures/<TICKET>/`,
-   written out as the absolute path (`desk-env paths`), which your next worker reads as
-   `.desk-fixtures/<TICKET>/`.
    A park waits for the next check-in digest. Only when a live service is broken now, and the
    park is how you found it, start the question with `PRODUCTION BROKEN: `: that one is pushed to
    the person at once. Never use it for anything else.
@@ -121,6 +117,8 @@ When the call parks, or `desk-ticket` says stop and wait for anything else:
    orchestrator clears it.
 4. Otherwise **end your turn**. You have printed the marker, so the question is not lost. Never sit
    blocked; you are holding a worktree and a concurrency slot.
+
+**A park asking for a file** names the absolute path of `$DESK_STATE/fixtures/<TICKET>/` to save it in.
 
 **Name every step you did not reach, not just the one that failed.** A park lists the whole
 remaining tail (PR, review comment, Jira comment, Jira transition) because the orchestrator has
