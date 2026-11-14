@@ -965,13 +965,20 @@ export function gitAuthor() {
 // §1 GitHub handle). A value in another shape throws rather than posting from a guessed account.
 export function reviewAccount() {
   const v = String(configValue('review-account') ?? '').trim();
-  if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
-  const m = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:\s*(\S.*)$/.exec(v);
-  if (!m) {
+  const acct = reviewAccountIn(v);
+  if (acct === undefined) {
     const r = CONFIG_ROWS['review-account'];
     throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${v}) is not \`<login>: <gh config directory>\` or \`none\` in ${configPathHint()}. Refusing to guess.`);
   }
-  return { login: m[1], dir: expandHome(m[2].trim()) };
+  return acct;
+}
+// A §4 Review account value as { login, dir }, null where it is unset, a TODO or `none`, and
+// undefined where it is malformed.
+function reviewAccountIn(value) {
+  const v = String(value ?? '').trim();
+  if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
+  const m = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:\s*(\S.*)$/.exec(v);
+  return m ? { login: m[1], dir: expandHome(m[2].trim()) } : undefined;
 }
 // The logins whose review verdicts are desk's own, comma-separated as loginIn reads them: the §1
 // GitHub handle, and the §4 Review account's login where it is set (a malformed row adds none: the
@@ -979,10 +986,18 @@ export function reviewAccount() {
 export function verdictLogins() {
   let handle = null, acct = null;
   try { handle = githubHandle(); } catch { return null; }
-  if (!handle) return null;
   try { acct = reviewAccount(); } catch { /* malformed: the handle alone */ }
-  return acct && acct.login.toLowerCase() !== handle.toLowerCase() ? `${handle},${acct.login}` : handle;
+  return loginsOf(handle, acct);
 }
+// Another repo's, by slug, as verdictLogins reads this repo's: $DESK_GITHUB_HANDLE, else its §1 row.
+export function repoVerdictLogins(slug, root = deskConfigRoot()) {
+  const parsed = parseConfigFile(join(root, 'repos', slug, 'config.md'));
+  const env = process.env.DESK_GITHUB_HANDLE;
+  const handle = unset(env) ? configValueIn(parsed, 'github-handle') : env;
+  return loginsOf(handle == null ? null : expandHome(handle), reviewAccountIn(configValueIn(parsed, 'review-account')));
+}
+const loginsOf = (handle, acct) => (!handle ? null
+  : acct && acct.login.toLowerCase() !== handle.toLowerCase() ? `${handle},${acct.login}` : handle);
 export const repoRoot = () => resolve({ env: 'DESK_REPO_ROOT', id: 'repo-root', identity: true }).replace(/\/+$/, '');
 // reviewPlan on this repo's rows.
 export const reviewRows = () => reviewPlan(configValues('local-review'), configValue('clean-verdict'), repoRoot());

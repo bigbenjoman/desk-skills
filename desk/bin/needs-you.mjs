@@ -75,7 +75,7 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
+import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
@@ -151,21 +151,12 @@ const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stat
 // A PR out of draft has no such record: the pass marks it stuck on the gaps only its person can settle.
 const draftHasGaps = (t) => t.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
 const reviewGaps = (t, stuck) => draftHasGaps(t) || (t.pr_status?.isDraft === false && personGapsIn(stuck?.why).length > 0);
-// The logins whose review verdicts are desk's own in this repo, as desk-env verdictLogins gives them in
-// the repo it runs in: the §1 GitHub handle, and the §4 Review account's login where it differs. null
-// with no handle.
-function verdictLoginsOf(r) {
-  const h = String(repoConfigValue(r.slug, 'github-handle') ?? process.env.DESK_GITHUB_HANDLE ?? '').trim();
-  if (!h || isNone(h) || /^todo\b/i.test(h)) return null;
-  const acct = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:/.exec(String(repoConfigValue(r.slug, 'review-account') ?? '').trim())?.[1];
-  return acct && acct.toLowerCase() !== h.toLowerCase() ? `${h},${acct}` : h;
-}
 // The requirement gaps a draft's review lists (fix-tries.mjs reviewGaps), read from GitHub: the latest
 // of desk's own reviews whose verdict is the one its undraft record names (`verdict at <sha>`). null
 // when the PR, that review, or a gap under its gaps heading cannot be read.
 function draftGapsOf(r, t, reads) {
   const at = /\bverdict at ([0-9a-f]{7,40})\b/.exec(String(t.undraft?.why ?? ''))?.[1];
-  const logins = verdictLoginsOf(r);
+  const logins = repoVerdictLogins(r.slug);
   if (!at || !logins) return null;
   const { v } = reads.pr(r, t.result.pr, ',reviews');
   const review = (v?.reviews ?? []).filter((x) => loginIn(x.author?.login, logins)).filter((x) => {
