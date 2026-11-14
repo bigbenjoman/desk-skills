@@ -750,12 +750,15 @@ export function undraftCall(t, pr, cfg) {
   const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
   const stateRed = gate.failing.filter((f) => stateNames.has(f.name)).map((f) => f.name);
+  // Red on state checks alone: the gate passes once they are set aside, with nothing else missing or failing.
+  const stateOnly = stateRed.length > 0 && evaluateGate((pr.checks ?? []).filter((c) => !stateNames.has(c.name)),
+    { required: (cfg.required ?? []).filter((c) => !stateNames.has(c)), advisory: cfg.advisory ?? [] }).state === 'pass';
   // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.
   if (red && gate.untriggered?.length && !codeRed.length) {
     return person(`its checks are not green: ${gate.reasons.join('; ')}`,
       `add ${pr.base} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${gate.untriggered.map((c) => `"${c}"`).join(', ')}, a change to the repo; once #${n}'s branch has it, its next push runs the check (re-running cannot, as no run exists)`);
   }
-  if (red && (codeRed.length || !gate.failing.length)) {
+  if (red && (codeRed.length || !gate.failing.length || (!stateOnly && !stateRed.includes(VERDICT_CHECK)))) {
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
     const notGreen = person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
     // A cancelled or timed-out run tested no code, so a fix worker has nothing to fix until its reruns are spent.

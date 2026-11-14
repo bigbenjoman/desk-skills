@@ -700,6 +700,7 @@ t('DS-316 beside a red code check, only the code check goes to the fix worker', 
   t('DS-578 AC6 red only on the verdict check: a review worker', st('approval', { checks: [...green, { ...gateRed }] })?.call, 'review');
   t('DS-578 AC6 beside another red state check too', st('approval', { checks: [...green, gateCheck, gateRed] })?.call, 'review');
   t('DS-578 a check §4 State checks does not name is still a checks call', st('approval', { stateChecks: DEFAULT_STATE_CHECKS })?.call, 'checks');
+  t('DS-578 a required check that never reported keeps it draft beside a red state check', st('approval', { checks: [gateCheck] })?.call, 'checks');
 }
 
 // verdictCarries, against a real repository: the reviewed commit A, the base merged in to make B.
