@@ -80,7 +80,8 @@ printf '%s\n' "local $VM" "local my-vm" "OCI ghcr.io/cirruslabs/ubuntu:24.04" \
 printf '#!/bin/sh\necho "$@" >> "%s/runner.calls"\n' "$T" > "$HOME/.claude/desk/bin/$VM"; chmod +x "$HOME/.claude/desk/bin/$VM"
 left(){ for f in "${OLD[@]}"; do [ -e "$f" ] && echo "$f"; done; }
 
-out="$("$SH" "$S/../install.sh" </dev/null 2>&1)"
+# --any-branch: this checkout is a feature branch, or CI's detached merge commit (the guard: test_installed.sh).
+out="$("$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
 # shellcheck disable=SC2034  # rc and summary are read inside check's eval strings
 rc=$?
 # shellcheck disable=SC2034
