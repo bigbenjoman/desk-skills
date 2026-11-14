@@ -162,6 +162,30 @@ codexReading(join(H, '.codex'), null, [27, at(26, 9, 0)]);
 codexReading(join(H, '.codex-logins', 'alt'), [40, at(24, 12, 0)], [9, at(30, 18, 0)]);
 t('AC6 the Codex line shows the weekly bar alone, never a 5h bar at 0%', lines()[1], 'Codex   codexmain  7d ███······· 27% Mon 09:00  │ +1 standby');
 
+// ---- the bottom line names a Claude login the way view 6 does: its account, not its folder
+const claudeJson = (path, email) => writeFileSync(path, JSON.stringify({ oauthAccount: { emailAddress: email, planDisplayName: 'Ultra' } }));
+const WORK_JSON = join(H, '.claude-logins', 'work', '.claude.json');
+claudeJson(join(H, '.claude.json'), 'me@example.test');
+claudeJson(WORK_JSON, 'work@example.test');
+subscriptions(CLAUDE);
+t('the Claude line names the account new work starts on', lines()[0].startsWith('Claude  me@example.test  5h'), true);
+repo({ default: { login: 'personal', config_dir: null, type: 'seven_day', resets_at: at(27, 6, 0), since: 'x', by: 'x' },
+  work: { login: 'work', config_dir: join(H, '.claude-logins', 'work'), type: 'seven_day', resets_at: at(26, 9, 0), since: 'x', by: 'x' },
+  spare: { login: 'spare', config_dir: join(H, '.claude-logins', 'spare'), type: 'seven_day', resets_at: null, since: 'x', by: 'x' } });
+t('with every login out, the first back is named by its account', lines()[0].includes('first back work@example.test at'), true);
+t('and the note on Home says the same', Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 }).includes('The first back is work@example.test at'), true);
+// DS-533 AC23: with accounts pinned, each is named by its pin, whatever its folder is signed in to now.
+writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n'
+  + '| `claude` | `work` | `~/.claude-logins/work` | `pinned@example.test` | `in rotation` |\n| `claude` | `spare` | `~/.claude-logins/spare` | `spare@example.test` | `standby` |\n');
+t('DS-533 AC23 the Queue footer names the first back by its pinned email', lines()[0].includes('first back pinned@example.test at'), true);
+t('DS-533 AC23 and so does Home\'s ▲ usage note', Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30 }).includes('The first back is pinned@example.test at'), true);
+repo();
+t('DS-533 AC23 the Claude line names the account new work starts on by its pin', lines()[0].startsWith('Claude  pinned@example.test  5h'), true);
+subscriptions(CLAUDE);
+rmSync(join(H, '.claude.json'));
+rmSync(WORK_JSON);
+repo();
+
 // ---- AC7: no subscriptions file
 rmSync(env.DESK_SUBSCRIPTIONS);
 const AC7 = 'Claude usage  5h ███······· 31% 14:05 · 7d ██████···· 61% Tue 06:00';
