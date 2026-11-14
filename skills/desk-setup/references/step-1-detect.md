@@ -191,6 +191,11 @@ How to turn what you find into rows:
   Pre-merge steps as `` `<check or step>: <the step>` ``, named exactly as the run shows it; the user
   confirms each, and `none` is the default. Say that autopilot never sends a PR red on one of these
   to a fix worker: it is put to the user as stuck, naming the step.
+- **Person-step labels.** Ask which labels the team puts on a ticket that is the user's own step (a
+  production deploy, an account set up), e.g. `ben-step`, and record each as one span in §4
+  Person-step labels; with none named, or with Tracker `none`, write `none`. Say that autopilot admits a ticket
+  carrying one parked as the user's step, so no worker spawns on it, and builds a ticket it blocks
+  now, merging it only once the step is Done.
 - **Evidence workflow.** Look in the workflows for one that takes a PR's screenshots and writes them
   into its body (a `workflow_dispatch` with a `pr` input that replaces `_drag <file>_` cells, e.g.
   `pr-evidence.yml`). Where there is one, propose it for §4 Evidence workflow as `` `<file>.yml` ``;

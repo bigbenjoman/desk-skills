@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -17,7 +17,7 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
@@ -309,6 +309,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
   if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
   if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
+  if (personStepPark(t)) throw new Error(`${key} is the person's own step (${t.park.question}): no worker takes it. Once the step is taken, mark it Done and \`queue.mjs drop ${key}\``);
   if (t.state === 'parked' && t.park?.session_step) throw new Error(`${key} waits on a step the person approved that no worker can run (${t.park.session_step.step}): do it in an interactive session, then \`queue.mjs step-done ${key}\` sends it back to a worker`);
   // A lane D ticket handed back (handback) had its session step done by the person, so its design park
   // no longer keeps it from a worker. A lane C one is moved to lane B first.
@@ -415,14 +416,17 @@ const spineHolds = (q, key) => [
 function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, holdCollisions = false }) {
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
-  const park = lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
+  // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
+  const stepPark = labelPark(r, personStepLabels());
+  const park = stepPark ?? lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
   // The collision check plan-batch makes, against every ticket still to finish: two tickets that
-  // touch one file never run at once.
-  const mine = new Set(r.files_in_scope ?? []);
+  // touch one file never run at once. The person's step runs on no worker, so it collides with nothing:
+  // a hold behind it would wait on a merge that never comes.
+  const mine = new Set(stepPark ? [] : r.files_in_scope ?? []);
   const collides = [];
   for (const [k, other] of Object.entries(q.tickets)) {
-    if (['done', 'failed'].includes(other.state)) continue;
+    if (['done', 'failed'].includes(other.state) || personStepPark(other)) continue;
     if (!existsSync(join(state, 'triage', `${k}.json`))) continue;
     const files = readTriage(state, k).files_in_scope ?? [];
     if (files.some((f) => mine.has(f))) {
@@ -434,8 +438,8 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
   // A hold would let a release send a ticket parked for its own reason to a worker (hold, above). A
   // design park keeps its holds in held_by instead, unreleased, and requeue holds it behind the open
-  // ones once the design is snapshotted.
-  const designOnly = park != null && park === designPark(r);
+  // ones once the design is snapshotted; so does the person's step, which no release starts.
+  const designOnly = park != null && (park === designPark(r) || park === stepPark);
   if (park && holds.length && !designOnly) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
   q.tickets[key] = {
     key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
@@ -558,11 +562,16 @@ function transfer(q, key, to) {
   if (tq.tickets?.[key]) throw new Error(`${key} is already in ${batchWord(dest)} (${tq.tickets[key].state}). Nothing was moved`);
   tq.tickets ??= {};
   // Admitted in memory first, so a refusal from either step leaves the worktree and both queues as they were.
-  // Its merge holds on the person's steps go with it; a step in that batch is held behind there instead.
-  const holds = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
-  const mergeAfter = String(t.merge_after ?? '').split('|').filter((p) => p && !tq.tickets[p]);
+  // Its merge holds on the person's steps go with it; a blocker in that batch is held behind there instead,
+  // unless it is parked there as the person's step (labelPark), which nothing builds: it merges after that.
+  const stepThere = (k) => personStepPark(tq.tickets[k]);
+  const there = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
+  const holds = there.filter((k) => !stepThere(k));
+  const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p))), ...there.filter(stepThere)])];
   // Its holds go with it. One on a ticket in that batch is held behind there until it merges. A blocker
-  // left in this batch, or one in no batch, is held outside it, lifted by that batch's pass once Done in
+  // parked there as the person's step is a merge_after step already (above), or holds nothing once Done;
+  // a hold on such a step that is no blocker stays a hold, since pass.mjs lifts an unlinked merge_after
+  // step at once. A blocker left in this batch, or one in no batch, is held outside it, lifted by that batch's pass once Done in
   // Jira and on its base (a key its triage record does not list as a blocker, Done or not, is lifted at
   // once, so only those go). A hold on this batch's own files or spine means nothing there and stays
   // behind, as does one on a ticket here already finished. Any other hold is the person's, a key no
@@ -575,8 +584,8 @@ function transfer(q, key, to) {
   const stays = [];
   const theirs = [];
   for (const p of String(t.held_by ?? '').split('|')) {
-    if (!p || p === key || [holds, outside, stays, theirs].some((l) => l.includes(p))) continue;
-    if (tq.tickets[p]) { if (!childDone(tq.tickets[p])) holds.push(p); }
+    if (!p || p === key || [holds, outside, stays, theirs, mergeAfter].some((l) => l.includes(p))) continue;
+    if (tq.tickets[p]) { if (!(stepThere(p) && blocking.has(p)) && !childDone(tq.tickets[p])) holds.push(p); }
     else if (wasOutside.includes(p) || blocking.has(p)) outside.push(p);
     else if (q.tickets[p] && childDone(q.tickets[p])) continue;
     else (local.has(p) ? stays : theirs).push(p);
@@ -754,7 +763,8 @@ switch (cmd) {
     if (args.includes('--hold-merge') && !mergeAfter.length) throw new Error('admit --hold-merge wants the steps, comma-separated');
     for (const p of mergeAfter) {
       if (!SAFE_ID.test(p) || p === key || outside.includes(p) || holds.includes(p)) throw new Error(`admit --hold-merge: ${p} is not a step ${key} merges after`);
-      if (q.tickets[p]) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
+      // One in this batch is a step only once it is parked as the person's (labelPark): nothing builds it.
+      if (q.tickets[p] && !personStepPark(q.tickets[p])) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
     }
     if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);

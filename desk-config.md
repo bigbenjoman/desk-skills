@@ -337,6 +337,7 @@ such thing.
 | Size field | `TODO` (the size field's id, e.g. `customfield_10208`, or `none`. `desk-jira` refuses an XL on every type but Epic: split the ticket instead) |
 | Priorities only you set | `TODO` (the top values of the §4 Priority field, one span each, e.g. `` `P0` `P1` ``; or `none`. A headless autopilot worker can never set them; an interactive session sets them only with `desk-jira … --approved "<your decision>"`, which is posted to the ticket) |
 | Labels | `TODO` (labels the skills may apply, or `any`) |
+| Person-step labels | `none` (labels that mark a ticket as a step only you take, one span each, e.g. `` `ben-step` `operator-task` ``; or `none`. Autopilot admits a ticket carrying one parked as your step, so no worker spawns on it, and a ticket it blocks is built now and merged only once it is Done) |
 | `desk-jira` set up? | `TODO` (`yes` / `no`; reads the email and token in this repo's credentials folder) |
 
 ### GitHub and CI

@@ -238,6 +238,41 @@ check "DS-407 AC1: the report says it is built now and merged once the step is D
 check "DS-407 AC1: a blocker naming one of the ticket'\''s ben_steps is a person'\''s step too" '[ "$(qget tickets.P-2.state)" = triaged ] && [ "$(qget tickets.P-2.merge_after)" = OPS-2 ]'
 check "DS-407 AC4: an ordinary dev ticket in no batch still holds the build, as DS-391 has it" '[ "$(qget tickets.P-3.state)" = parked ] && [ "$(qget tickets.P-3.held_outside)" = OUT-7 ] && [ "$(qget tickets.P-3.merge_after)" = undefined ]'
 
+# DS-568: a ticket carrying one of §4 Person-step labels is admitted parked as the person's step, so no
+# worker spawns, and a ticket it blocks, in the batch or out of it, is built now and merged after it.
+steprow(){ printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Person-step labels | %s |\n' "$1" >> "$T/cfg/repos/acme__widgets/config.md"; }
+steprow '`ben-step` `operator-task`'
+rec S-1 A '"labels":["ben-step"],"files_in_scope":["infra/images.sh"],"blockers":[{"key":"OUT-6","category":"new"}]'
+rec S-2 A '"files_in_scope":["infra/images.sh"],"blockers":[{"key":"S-1","category":"new","type":"Story","summary":"Rebuild the images"}]'
+rec S-3 A '"blockers":[{"key":"OPS-9","category":"new","type":"Story","summary":"Create the Vercel project","labels":["Operator-Task"]}]'
+search S-2 S-1 S-3; out=$(intake)
+check "DS-568 AC1: a ticket labelled as the person's step is admitted parked on it, held by nothing" \
+  '[ "$(qget tickets.S-1.state)" = parked ] && [[ "$(qget tickets.S-1.park.question)" == "the person'\''s step: labelled ben-step"* ]] && [ "$(qget tickets.S-1.held_by)" = null ] && [ "$(qget tickets.S-1.held_outside)" = undefined ]'
+check "DS-568 AC1: the report names its park" 'grep -q "admitted S-1 by intake into batch b1 (lane A, size S), parked: the person.s step: labelled ben-step" <<< "$out"'
+out=$(cd "$T/repo" && node "$T/bin/queue.mjs" requeue S-1 2>&1); rc=$?
+check "DS-568 AC1: requeue refuses it, so no worker spawns" '[ $rc -ne 0 ] && grep -q "S-1 is the person.s own step" <<< "$out" && [ "$(qget tickets.S-1.state)" = parked ]'
+check "DS-568 AC2: a ticket blocked by it in the batch is built now and merged after it" \
+  '[ "$(qget tickets.S-2.state)" = triaged ] && [ "$(qget tickets.S-2.held_by)" = null ] && [ "$(qget tickets.S-2.merge_after)" = S-1 ]'
+check "DS-568 AC2: sharing a file with the step holds nothing, since no worker ever merges the step" \
+  '[ "$(qget tickets.S-2.collides_with)" = null ] && [ "$(qget tickets.S-1.collides_with)" = null ]'
+check "DS-568 AC2: a blocker in no batch carrying the label is the person'\''s step whatever its summary" \
+  '[ "$(qget tickets.S-3.state)" = triaged ] && [ "$(qget tickets.S-3.merge_after)" = OPS-9 ]'
+rec S-7 A '"blockers":[{"key":"S-1","category":"done","type":"Story","summary":"Rebuild the images"}]'
+search S-7; out=$(intake)
+check "DS-568 AC2: once the step is Done, though still in the batch, a ticket it blocks is held by nothing" \
+  '[ "$(qget tickets.S-7.state)" = triaged ] && [ "$(qget tickets.S-7.held_by)" = null ] && [ "$(qget tickets.S-7.merge_after)" = undefined ]'
+rec S-6 C '"labels":["ben-step"],"unknowns":["which region?"]'
+search S-6; out=$(intake)
+check "DS-568 AC1: whatever its lane or open questions, it is admitted parked as the person'\''s step, not handed on" \
+  '[ "$(qget tickets.S-6.state)" = parked ] && [[ "$(qget tickets.S-6.park.question)" == "the person'\''s step: "* ]]'
+config yes; steprow '`none`'
+rec S-4 A '"labels":["ben-step"]'
+rec S-5 A '"blockers":[{"key":"OPS-8","category":"new","type":"Story","summary":"Create the Vercel project","labels":["ben-step"]}]'
+search S-4 S-5; out=$(intake)
+check "DS-568 AC3: with Person-step labels none, a labelled ticket and one it blocks are triaged as today" \
+  '[ "$(qget tickets.S-4.state)" = triaged ] && [ "$(qget tickets.S-5.held_outside)" = OPS-8 ] && [ "$(qget tickets.S-5.merge_after)" = undefined ]'
+config yes
+
 # ---- the triage cap, and a triage that fails ------------------------------------------------------
 for k in M-1 M-2 M-3 M-4; do rec "$k" A; done
 search M-1 M-2 M-3 M-4; out=$(intake)
@@ -385,6 +420,11 @@ rec H-9 A "$(design https://claude.ai/artifact/H9 null)"; rec H-10 A "$(design h
 out=$(admit H-9 H-10 --by ben); rc=$?
 check "DS-358 AC4: /desk-admit refuses a ticket whose canvas has no snapshot, naming the artifact" '[ $rc -eq 11 ] && grep -q "^not admitted H-9: design not snapshotted: https://claude.ai/artifact/H9: snapshot it into $T/state/designs/H-9/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared" <<< "$out" && [ "$(qget tickets.H-9)" = undefined ]'
 check "DS-358 AC1: a snapshotted canvas is admitted runnable" '[ "$(qget tickets.H-10.state)" = triaged ]'
+steprow '`ben-step`'
+rec H-11 A "$(design https://claude.ai/artifact/H11 null),\"labels\":[\"ben-step\"]"
+out=$(admit H-11 --by ben); rc=$?
+check "DS-568 AC1: /desk-admit admits the person's step parked on it, though its canvas has no snapshot: no worker reads it" \
+  '! grep -q "not admitted H-11" <<< "$out" && [ "$(qget tickets.H-11.state)" = parked ] && [[ "$(qget tickets.H-11.park.question)" == "the person'\''s step: "* ]]'
 # Without autopilot-workers yes, a session plans an epic with the person.
 config ask '`none`'
 rec H-6 A '"type":"Epic"'
