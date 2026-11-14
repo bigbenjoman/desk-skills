@@ -92,11 +92,14 @@ export function condPath(c, { worktree, state }) {
 
 // Whether a GitHub login is `want`: case aside, and with or without an app's [bot] suffix.
 const sameLogin = (a, want) => String(a ?? '').toLowerCase().replace(/\[bot\]$/, '') === String(want).toLowerCase().replace(/\[bot\]$/, '');
-// Whether a desk slug (owner__name) is the repo a condition names, as name or owner/name.
+// Whether a desk slug (owner__name) is the repo a condition names, as name or owner/name. A GitHub
+// owner holds no underscore, so the slug's first `__` ends the owner and the rest is the whole name:
+// `web` is not the repo `foo__web`, nor `acme/web` the repo `other/acme__web`.
 const sameRepo = (slug, repo) => {
   const s = String(slug).toLowerCase();
   const r = String(repo).toLowerCase().replace('/', '__');
-  return s === r || s.endsWith(`__${r}`);
+  const at = s.indexOf('__');
+  return r.includes('__') ? s === r : at > 0 && s.slice(at + 2) === r;
 };
 const queueLabel = (o) => `${o.slug}${o.batch ? ` batch ${o.batch}` : ''}`;
 

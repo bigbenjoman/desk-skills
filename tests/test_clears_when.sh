@@ -206,8 +206,14 @@ console.log([
   condPath({ kind: 'file-exists', path: 'a/b', root: 'state' }, { worktree: '/w', state: '/s' }), condPath({ kind: 'file-exists', path: 'a/b', root: 'worktree' }, { worktree: '/w', state: '/s' }),
   qi([web('a', {}), web('b', { 'SV-1': {} })]), qi([web('b', { 'SV-1': {} })], () => false), qi([{ slug: 'acme__studia-zendesk', q: { tickets: { 'SV-1': {} } } }]),
   qi([web('a', {}), { slug: 'acme__studia-web', batch: 'c', error: 'torn' }]), qi([web('b', { 'SV-1': {} }), { slug: 'acme__studia-web', batch: 'c', error: 'torn' }]),
+  qi([{ slug: 'acme__x__studia-web', q: { tickets: { 'SV-1': {} } } }]),
+  JSON.stringify(queuedIn('SV-1', 'acme/studia-web', [{ slug: 'other__acme__studia-web', q: { tickets: { 'SV-1': {} } } }], () => true)),
+  JSON.stringify(queuedIn('SV-1', 'ACME/Studia-Web', [web('b', { 'SV-1': {} })], () => true)),
 ].join('|'));
 ")
+check "DS-581 a repo named by its name is not another whose name only ends the same, nor owner/name one under another owner" \
+  '[ "$(cut -d"|" -f17,18 <<< "$r")" = "{\"holds\":false,\"note\":\"no studia-web queue was found on this computer\"}|{\"holds\":false,\"note\":\"no acme/studia-web queue was found on this computer\"}" ]'
+check "DS-581 owner/name matches its slug, case aside" '[[ "$(cut -d"|" -f19 <<< "$r")" == "{\"holds\":true"* ]]'
 check "DS-581 AC6 a ticket in a running batch of the repo holds" '[ "$(cut -d"|" -f12 <<< "$r")" = "{\"holds\":true,\"note\":\"in acme__studia-web batch b\"}" ]'
 check "DS-581 in a batch whose orchestrator is not running, it does not" '[ "$(cut -d"|" -f13 <<< "$r")" = "{\"holds\":false,\"note\":\"in acme__studia-web batch b, whose orchestrator is not running\"}" ]'
 check "DS-581 AC7 with no queue of the repo, it does not hold, saying so" '[ "$(cut -d"|" -f14 <<< "$r")" = "{\"holds\":false,\"note\":\"no studia-web queue was found on this computer\"}" ]'
