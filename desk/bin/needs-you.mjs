@@ -276,7 +276,7 @@ function conflictPlain(r, t, n, base, why = '') {
 function stuckPlain(r, n, s, t) {
   const checks = s?.checks ?? [];
   if (checks.length) {
-    const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : ''}`;
+    const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : c.unread ? ' (desk could not read which step failed)' : ''}`;
     // A check desk builds (§4 Check builds) whose build failed: a worker fixes the build on its branch.
     const built = checks.filter((c) => c.build);
     const mine = checks.filter((c) => !c.command && !c.build), theirs = checks.filter((c) => c.command);

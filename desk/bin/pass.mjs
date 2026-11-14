@@ -3561,9 +3561,9 @@ const stateRow = parseStateChecks(E.configValues('state-checks'));
 // The rows the fix tries read: one that does not parse makes none this pass.
 const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <what fixes it>`'], ['§4 Pre-merge steps', preMergeRow, '`<check>: <what fixes it>`'], ['§4 State checks', stateRow, '`<check>` or `<check>: verdict|approval`']]
   .filter(([, r]) => r.errors.length).map(([row, r, want]) => `${row} does not parse: ${r.errors.join(', ')} (want ${want})`);
-// The steps a red check's run failed at (fix-tries.mjs failedSteps), read once per run; none when gh cannot read it.
+// The steps a red check's run failed at (fix-tries.mjs failedSteps), read once per run; null when gh cannot read them.
 const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'jobs']); return r.ok ? JSON.parse(r.out) : null; });
-const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
+const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return null; } };
 // A run's status, start and jobs, for a draft's check stuck pending (undraft.mjs stuckCall); null when unread.
 const runOf = (id) => cached(`run:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,startedAt,jobs']); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } });
 // Why the runner killed or lost a red check rather than its code (gate.mjs runnerFault), from its job's
