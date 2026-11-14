@@ -40,6 +40,15 @@ const A = repo('acme__a', {
 });
 const B = repo('acme__b', { 'B-1': { key: 'B-1', state: 'triaged', open_questions: 1 } });
 writeFileSync(join(B.state, 'triage', 'B-1.json'), JSON.stringify({ unknowns: ['Which plan tier gets the export?'] }));
+// A ticket held inside its batch with a triage question of its own: the question is asked by its text.
+const HELD = repo('acme__h', {
+  'H-1': { key: 'H-1', state: 'running' },
+  'H-2': { key: 'H-2', state: 'parked', held_by: 'H-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by H-1' } },
+  'H-3': { key: 'H-3', state: 'parked', held_by: 'H-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by H-1' } },
+});
+writeFileSync(join(HELD.state, 'triage', 'H-2.json'), JSON.stringify({ unknowns: ['What is the cost of one blind audit run?'] }));
+t('DS-669 a held, parked ticket\'s triage unknown is listed by its text', openQuestions(HELD).map((q) => `${q.ticket} ${q.kind}: ${q.text}`).join(' | '),
+  'H-2 triage: What is the cost of one blind audit run? | H-3 triage: 1 triage question(s) open');
 const C = repo('acme__c', {}, [dec('d1', 'C-1', at('2026-10-22', '09:00').toISOString()), dec('d2', 'C-2', at('2026-10-22', '10:00').toISOString())]);
 const list = [A, B, C];
 const dir = join(root, 'digest');

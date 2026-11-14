@@ -11,6 +11,18 @@ import { NO_EFFORT } from './desk-env.mjs';
 
 export const START_UP = 'start-up';
 
+// API list prices in USD per million tokens, for the current model of each family (Opus 5.5, Sonnet
+// 5.5, Haiku 5.5): uncached input, a write to the 5-minute and the 1-hour prompt cache, a cache read,
+// and output. Haiku's `over` prices a request whose prompt is past `above` tokens.
+export const MODEL_PRICES = {
+  opus: { input: 4, write5m: 5, write1h: 8, read: 0.2, output: 20 },
+  sonnet: { input: 2, write5m: 2.5, write1h: 4, read: 0.1, output: 10 },
+  haiku: { input: 0.1, write5m: 0.125, write1h: 0.2, read: 0.01, output: 0.5,
+    over: { above: 100000, input: 0.5, write5m: 0.625, write1h: 1, read: 0.05, output: 2.5 } },
+};
+// The family a model id belongs to (`claude-opus-5-5` is `opus`), or null for one MODEL_PRICES lacks.
+export const modelFamily = (model) => Object.keys(MODEL_PRICES).find((f) => String(model ?? '').toLowerCase().includes(f)) ?? null;
+
 // pass.mjs writes one of these into the ticket's log before each spawn: the permissions preflight is
 // a claude -p call of its own, outside the worker's session, so its result event is not in the log.
 // A null figure is one the preflight did not report. Its time is `at`, not `timestamp`, which

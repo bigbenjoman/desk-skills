@@ -1058,7 +1058,7 @@ check "DS-158 AC5 the sixth parks it as wedged, as before" '[ "$(field P-1 state
 export DESK_QUEUE="$T/queue-w.json" DESK_AUTOPILOT_STATE="$T/state-w" DESK_LOCK_DIR="$T/locks"
 mkdir -p "$T/state-w/logs" "$T/locks/desk-test.lock.d" "$T/locks/desk-test.lock.2.d" "$T/elsewhere"
 # The process table the pass reads: what $T/ps.out says, else the real ps.
-printf '#!/bin/sh\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
+printf '#!/bin/sh\n[ -f "%s/ps.fail" ] && exit 1\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
 # W-1 holds a mkdir slot (wrapper and suite); W-2's wrapper waits, polling with sleep; W-3's worktree
 # runs only a dev server and its worker, whose prompt quotes the lock commands, while another
 # session's suite holds slot 2; W-4's suite holds a flock slot.
@@ -1086,7 +1086,13 @@ check "DS-109 AC1 a quiet worker running its own suite is not stopped, and is qu
 check "DS-109 AC2 a quiet worker waiting on the test lock is not stopped, and says so" '[ "$(field W-2 state)" = "\"running\"" ] && echo "$out" | grep -q "W-2: quiet for 6 passes, waiting on the test lock"'
 check "DS-109 AC3 a quiet worker with no suite and no wait of its own is stopped as wedged" '[ "$(field W-3 state)" = "\"parked\"" ] && field W-3 park | grep -q "wedged — no output for 6 passes, worker stopped"'
 check "DS-109 AC4 one exempted past the ceiling is stopped as wedged, naming the ceiling" '[ "$(field W-4 state)" = "\"parked\"" ] && field W-4 park | grep -q "wedged — no output for 6 passes, running its suite for over the 30-minute ceiling"'
-rm -f "$T/ps.out" "$T/lsof.out"; unset DESK_LOCK_DIR
+# With ps unreadable, a quiet worker is held as one running its suite would be, and the pass says why.
+q add W-5; say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-w/logs/W-5.log"; mkdir -p "$T/wt/W-5"
+q set W-5 state=running lane=A branch=feat/W-5 session_id=live-1 "worktree=$T/wt/W-5" idle_passes=5 "log_bytes=$(wc -c < "$T/state-w/logs/W-5.log" | tr -d ' ')"
+touch "$T/ps.fail"
+out=$(node "$B/pass.mjs" 2>&1)
+check "a quiet worker is not stopped while ps cannot be read, and the pass says ps could not be read" '[ "$(field W-5 state)" = "\"running\"" ] && echo "$out" | grep -q "W-5: quiet for 6 passes, ps could not be read, so whether it is running its suite is unknown"'
+rm -f "$T/ps.fail" "$T/ps.out" "$T/lsof.out"; unset DESK_LOCK_DIR
 
 # ---- DS-194: each done ticket's PR state and checks are recorded as pr_status, until it merges or closes
 export DESK_QUEUE="$T/queue-g.json" DESK_AUTOPILOT_STATE="$T/state-g"
@@ -1333,6 +1339,19 @@ check "DS-598 AC5: while the blocker is in progress the ticket stays held, and n
 x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-598 AC5: once the blocker is Done and on the base, the pass releases it and it can start" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
+# A blocker whose Jira Repository is another configured repo lands there, never on this base: the first
+# pass that reads it Done in Jira releases the ticket, with no PR of its on main here.
+mkdir -p "$HOME/.config/desk/repos/acme__web"; git init -q -b main "$T/web"; git -C "$T/web" commit -q --allow-empty -m init
+printf '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/web` |\n| Default branch | `main` |\n\n## 2. Paths\n| Field | Value |\n|---|---|\n| Primary repo root | `%s` |\n' "$T/web" > "$HOME/.config/desk/repos/acme__web/config.md"
+printf '%s\n' '{"ticket":"X-7","repository":"web"}' > "$T/state-j/triage/X-7.json"
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"indeterminate"}]}' > "$T/state-j/triage/J-7.json"
+q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once X-7 is Done in Jira"}'
+x7 indeterminate OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-591 AC3: a blocker in another repo that is not Done keeps the ticket held" '[ "$(field J-7 state)" = "\"parked\"" ] && [ "$(field J-7 held_outside)" = "\"X-7\"" ] || { echo "     J-7: $(field J-7 state) $(field J-7 held_outside) $(jq -c .blockers "$T/state-j/triage/J-7.json")"; false; }'
+x7 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-591 AC3: once the pass reads that blocker Done in Jira it releases the ticket, though nothing landed on main" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done in Jira, in another repo; RELEASED"'
+rm -rf "$HOME/.config/desk/repos/acme__web" "$T/web" "$T/state-j/triage/X-7.json"
 q drop J-7
 # A link to the ticket's own epic, the batch's or its Jira parent, never holds it: an epic is Done only
 # once its children are. The record here predates ticket-facts.mjs leaving such a link out.
@@ -1954,6 +1973,7 @@ else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'workflow' && a[1] === 'run' && fs.existsSync('$T/wf-refuse-' + a[a.length - 1].replace('pr=', ''))) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
 else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
 else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
+else if (a[0] === 'api' && /check-runs\/\d+\/annotations$/.test(a[1] ?? '')) { try { process.stdout.write(fs.readFileSync('$T/fr/notes-' + a[1].match(/check-runs\/(\d+)\//)[1] + '.json', 'utf8')); } catch { process.exit(1); } }
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"
@@ -2310,6 +2330,46 @@ check "DS-316 AC2 the review worker's task is to review the head and post it, ch
   'grep -q "^C-2 .*Your task is review try 1 of 2 on PR #752.*Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code" "$T/spawns"'
 check "DS-316 AC4 the fix worker's briefing names the failing check, its run and how to read its log" \
   'grep -q "^- tests: https://github.com/acme/widgets/actions/runs/953$" "$T/state-c/briefings/C-3.md" && grep -q "gh run view <run id> --log-failed" "$T/state-c/briefings/C-3.md"'
+
+# ---- DS-579: a draft red on a test and on §4 State checks' approval check sends only the test to its fix
+# worker, and one whose approval check names a protected file goes to a protected-files try, in draft.
+# statered <n> <run> <job> [<error line>]: its tests check failed in <run>, and its approval check in job <job>.
+statered(){ node -e 'const fs = require("fs"); const [f, run, job] = process.argv.slice(1); const j = JSON.parse(fs.readFileSync(f, "utf8"));
+  j.statusCheckRollup = [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/widgets/actions/runs/${run}/job/1` },
+    { __typename: "CheckRun", name: "protected-path approval", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/widgets/actions/runs/${job}/job/${job}` }]; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json" "$2" "$3"
+  [ "${TESTS_GREEN:-}" = 1 ] && node -e 'const fs = require("fs"); const f = process.argv[1]; const j = JSON.parse(fs.readFileSync(f, "utf8")); j.statusCheckRollup[0].conclusion = "SUCCESS"; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json"
+  if [ -n "${4:-}" ]; then jq -n --arg m "$4" '[{ annotation_level: "failure", message: $m }]' > "$T/fr/notes-$3.json"; else echo '[]' > "$T/fr/notes-$3.json"; fi; }
+was579="$DESK_QUEUE|$DESK_AUTOPILOT_STATE"
+export DESK_QUEUE="$T/queue-s579.json" DESK_AUTOPILOT_STATE="$T/state-s579"
+mkdir -p "$T/state-s579/logs"; q init s579; q set-batch concurrency=6
+for k in 1 2; do q add "S-$k"; q set "S-$k" state=done lane=A "branch=fix/S-$k" "result.pr=77$k"; done
+frx 771 "$H1" "$H1" 'p0=0 p1=0 p2=0'; statered 771 971 9710
+frx 772 "$H1" "$H1" 'p0=0 p1=0 p2=0'; statered 772 972 9720 'Approval required — 1 protected file(s): `package.json`.'
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-579 AC2 §4 State checks reach the draft's fix try: only the test is its worker's, the state check named as not" \
+  '[ "$(field S-1 fix | jq -c "[.kind, .draft, [.checks[].name], .not_mine]")" = "[\"checks\",true,[\"tests\"],[{\"name\":\"protected-path approval\",\"command\":\"a §4 State check, which reads the PR'"'"'s reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads\",\"state\":true}]]" ]'
+check "DS-579 AC3 a draft whose approval check names a protected file goes to a protected-files try, in draft" \
+  '[ "$(field S-2 fix | jq -c "[.kind, .draft, .ready, .paths]")" = "[\"protected\",true,null,[\"package.json\"]]" ] && echo "$out" | grep -q "protected files try 1 of 2: S-2 requeued for PR #772"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-579 AC2 the fix worker's briefing names the state check as not its to fix" \
+  'grep -q "^- protected-path approval is red too, and it is not yours to fix: a §4 State check, .* Leave it red.$" "$T/state-s579/briefings/S-1.md"'
+check "DS-579 AC3 the protected-files worker's briefing says the PR is a draft, and its task leaves it in draft" \
+  'grep -q "^Your PR #772 is a draft on this branch, and its \"protected-path approval\" check asks" "$T/state-s579/briefings/S-2.md" && grep -q "^S-2 .*Your task is protected files try 1 of 2 on PR #772.*leave the PR in draft" "$T/spawns"'
+# Under pr-ready no, a clean draft red only on that approval check is the person's call, and its
+# protected-files try still reads the PR's events first: S-4 a person put back to draft is held.
+node -e 'const fs = require("fs"); const [a, b] = process.argv.slice(1); fs.writeFileSync(b, fs.readFileSync(a, "utf8").replace("| `pr-ready` | Undraft PRs | `yes` | `yes` |", "| `pr-ready` | Undraft PRs | `yes` | `no` |"));' "$T/config-c.md" "$T/config-s579n.md"
+export DESK_CONFIG="$T/config-s579n.md" DESK_QUEUE="$T/queue-s579n.json" DESK_AUTOPILOT_STATE="$T/state-s579n"
+mkdir -p "$T/state-s579n/logs"; q init s579n; q set-batch concurrency=6
+for k in 3 4; do q add "S-$k"; q set "S-$k" state=done lane=A "branch=fix/S-$k" "result.pr=77$k"; done
+for n in 773 774; do frx "$n" "$H1" "$H1" 'p0=0 p1=0 p2=0'; TESTS_GREEN=1 statered "$n" "97${n: -1}" "97${n: -1}0" 'Approval required — 1 protected file(s): `package.json`.'; done
+printf '2026-11-14T09:00:00Z\tben\n' > "$T/fr/774.events"
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-579 AC3 a person's call over a draft's approval check still sends its protected-files try, in draft" \
+  '[ "$(field S-3 fix | jq -c "[.kind, .draft, .paths]")" = "[\"protected\",true,[\"package.json\"]]" ]'
+check "DS-579 a draft a person put back to draft gets no protected-files try: it is held" \
+  '[ "$(field S-4 fix)" = null ] && [ "$(field S-4 undraft.call)" = "\"held\"" ] && echo "$out" | grep -q "S-4: HELD — PR #774 stays draft: it was put back to draft by ben"'
+export DESK_CONFIG="$T/config-c.md"
+IFS='|' read -r DESK_QUEUE DESK_AUTOPILOT_STATE <<< "$was579"; export DESK_QUEUE DESK_AUTOPILOT_STATE
 
 # ---- with the review-reuse lever on, the carry rests on the files the review recorded. Both PRs
 # moved by the same clean merge of main, which changed c.txt: R-1's review rests on b.txt, R-2's on c.txt.
