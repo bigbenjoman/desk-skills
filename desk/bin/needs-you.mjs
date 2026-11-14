@@ -14,7 +14,10 @@
 //                           person has done, "<what was done>": handed back to a worker that starts at
 //                           self-review, with it in its briefing (queue.mjs handback). On a PR open on
 //                           GitHub, "<instruction>": kept for its next worker and requeued for a worker
-//                           on the PR, whoever runs the batch; a merged or closed PR is refused, saying so
+//                           on the PR, whoever runs the batch; a merged or closed PR is refused, saying so.
+//                           On a park whose step only a person or another account takes, its PR is read
+//                           first: one unchanged since the park (head, reviews, failing checks), or one
+//                           that cannot be read, is refused, saying what GitHub shows, and nothing requeued
 //       answer "<answer>"  answer it only (digest.mjs answer): triage questions, and an epic's drafted
 //                           plan (start, discard, or an edit), recorded on the epic for the supervisor to
 //                           act on (epic-plan.mjs actOnPlan). On a draft PR whose
@@ -70,12 +73,12 @@ import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, stuckFindings } from './fix-tries.mjs';
-import { approvalFiles, holdNeedsPerson } from './gate.mjs';
+import { approvalFiles, holdNeedsPerson, FAILED, latestPerCheck, normaliseRollup } from './gate.mjs';
 import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
@@ -114,6 +117,23 @@ function withDrop(r, t, actions) {
   }
   const at = actions.findIndex(([a]) => a === 'not-now');
   return at < 0 ? [...actions, ['drop', null, DROP_NOTE]] : [...actions.slice(0, at), ['drop', null, DROP_NOTE], ...actions.slice(at)];
+}
+const PERSON_RESUME_NOTE = 'once the step is done, resume "<what you did>" reads its PR on GitHub and requeues it only if its head, reviews or failing checks changed since the park';
+// What changed on a PR (`v`, read with reviews and statusCheckRollup) since its ticket parked: its head or
+// failing checks against the ticket's recorded PR status, and any review submitted after the park. ->
+// { changed, shows }, `shows` saying what GitHub still shows when nothing did. Without a recorded status
+// for that PR, only reviews are compared.
+export function prSincePark(t, pr, v) {
+  const base = Number(t?.pr_status?.pr) === Number(pr) ? t.pr_status : null;
+  const since = Date.parse(t?.park?.since ?? '');
+  const red = (checks) => [...new Set(checks.filter((c) => FAILED.has(c.conclusion)).map((c) => c.name))].sort();
+  const now = red(latestPerCheck(normaliseRollup(v.statusCheckRollup)));
+  const reviews = Number.isNaN(since) ? [] : (v.reviews ?? []).filter((x) => Date.parse(x?.submittedAt ?? '') > since);
+  const head = base?.head && v.headRefOid && base.head !== v.headRefOid;
+  const checks = Array.isArray(base?.checks) && red(base.checks).join('\0') !== now.join('\0');
+  if (head || checks || reviews.length) return { changed: true };
+  const failing = now.length ? `${now.length === 1 ? 'a failing check' : `${now.length} failing checks`}, ${andList(now.map((c) => `"${c}"`))}` : 'no failing check';
+  return { changed: false, shows: `head ${String(v.headRefOid ?? '?').slice(0, 7)}${base?.head ? ' as at the park' : ''}, no review since it parked, and ${failing}` };
 }
 // A session item the person finished themselves, outside desk: done records it, once its PR has merged.
 const SESSION_DONE = ['done', null, 'if you finished the ticket yourself, done reads its PR and records it done once the PR has merged, or where it has none'];
@@ -702,6 +722,11 @@ function itemOf(r, x) {
     const overridden = new Set(overrides.map((o) => o.override_of));
     const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
+    // A step only the person or another account takes: nothing a worker does moves it, so no action is
+    // the recommendation, and resume reads its PR on GitHub before it requeues (record).
+    const step = personOnlyStep(parkText(r, t));
+    if (step) return { kind: 'parked', personOnly: step, need: `a step only you or another account takes: ${step}${one(parkText(r, t)) === step ? '' : ` (${need})`}`, note,
+      actions: [['resume', null, PERSON_RESUME_NOTE], ['drop', null, DROP_NOTE], ['not-now'], ...moveAction(r), ...offer] };
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
     return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
   }
@@ -1044,6 +1069,17 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
         return h.ok ? say(true, 'handed back to a worker that starts at self-review, with your note in its briefing; the next pass can spawn it.') : say(false, `not handed back: ${h.out}`);
       }
       if (item.kind === 'pr') return prResume();
+      // A step only the person or another account takes shows on its PR once taken: read GitHub first,
+      // and requeue only once its head, reviews or failing checks moved since the park.
+      const pr = item.personOnly ? ownPr(x.t) : null;
+      if (pr != null) {
+        const { v, err } = readPr(pr, ',reviews,statusCheckRollup');
+        if (!v?.state) return say(false, `could not read PR #${pr} from GitHub${err ? ` (${err})` : ''}, so nothing was recorded or requeued, and it stays on your list.`);
+        const gone = prShut(pr, v.state);
+        if (gone) return say(false, gone);
+        const s = prSincePark(x.t, pr, v);
+        if (!s.changed) return say(false, `GitHub shows PR #${pr} unchanged since the park (${s.shows}), so nothing was recorded or requeued: a worker would park again. Resume once the step shows on the PR.`);
+      }
       const a = ans();
       if (!a.ok) return say(false, a.why);
       if (item.kind === 'worktree') return say(true, 'recorded for its next worker; the next pass that finds the worktree clean starts it.');

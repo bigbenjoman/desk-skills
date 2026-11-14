@@ -1830,6 +1830,45 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-600 AC4 waiting on a PR with 3 held behind it says it stays listed, and it is', `${wait.ok} ${wait.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')} ${keysIn('ds600d')[0]}`, 'true true V-1');
 }
 
+// ---- DS-580: a park on a step only a person or another account takes recommends nothing, and its resume
+// reads the PR on GitHub (stubbed here) and requeues only once it changed since the park.
+{
+  const PO = 'There is no review from agent-pullbot at all. No worker can run it: only a person with Mac mini or org access can do this.';
+  const STEP = 'No worker can run it: only a person with Mac mini or org access can do this.';
+  const HEAD = 'a'.repeat(40);
+  const po = (m, pr) => ({ ...parked('B', m, PO), draft_pr: pr, pr_status: { pr, state: 'OPEN', isDraft: true, head: HEAD, checks: [{ name: 'ci', status: 'completed', conclusion: 'failure' }] } });
+  put('ds580', { port: 4580, beat: 1, supervised: true, tickets: {
+    'PO-1': po(60, 951), 'PO-2': po(50, 952), 'PO-3': po(40, 953), 'PO-4': po(30, 954),
+    'Q-1': parked('B', 20, 'Retry or fail? I recommend retry.'),
+  } });
+  const rollup = [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }];
+  const later = new Date(NOW).toISOString();
+  const gh = {
+    951: { state: 'OPEN', isDraft: true, headRefOid: HEAD, reviews: [{ state: 'COMMENTED', submittedAt: minsAgo(600) }], statusCheckRollup: rollup },
+    952: { state: 'OPEN', isDraft: true, headRefOid: HEAD, reviews: [{ state: 'COMMENTED', author: { login: 'agent-pullbot' }, submittedAt: later }], statusCheckRollup: rollup },
+    954: { state: 'OPEN', isDraft: true, headRefOid: 'b'.repeat(40), reviews: [], statusCheckRollup: [] },
+  };
+  const reads = { pr: (_r, n, more) => (gh[n] ? { v: more.includes('reviews') ? gh[n] : { state: gh[n].state }, err: '' } : { v: null, err: 'HTTP 502' }), ticket: () => null, git: () => null };
+  const items = () => Object.fromEntries(N.collect({ word: 'ds580' }).items.map((i) => [i.t.key, i]));
+  const p1 = items()['PO-1'];
+  t('DS-580 AC3 a person-only park marks no action recommended', `${p1?.kind} ${p1?.actions.map((a) => a[0]).join()} ${p1?.actions.some((a) => a[1])}`, 'parked resume,drop,not-now false');
+  t('DS-580 AC3 its need names the step only a person or another account takes', p1?.need, `a step only you or another account takes: ${STEP} (${PO})`);
+  t('DS-580 AC7 a park asking the worker a question still recommends resume', `${items()['Q-1']?.actions[0][0]} ${!!items()['Q-1']?.actions[0][1]}`, 'resume true');
+
+  const r1 = N.record({ word: 'ds580', ticket: 'PO-1', action: 'resume', text: 'agent-pullbot has run /pullbot', reads });
+  t('DS-580 AC4 resume on a PR unchanged since the park requeues nothing, and names what GitHub shows',
+    `${r1.ok} ${r1.line} ${queueOf('ds580').tickets['PO-1'].state}`,
+    'false ds580 PO-1: GitHub shows PR #951 unchanged since the park (head aaaaaaa as at the park, no review since it parked, and a failing check, "ci"), so nothing was recorded or requeued: a worker would park again. Resume once the step shows on the PR. parked');
+  const r2 = N.record({ word: 'ds580', ticket: 'PO-2', action: 'resume', text: 'agent-pullbot has run /pullbot', reads });
+  t('DS-580 AC5 resume on a PR with a review since the park requeues it as today', `${r2.ok} ${queueOf('ds580').tickets['PO-2'].state}`, 'true triaged');
+  const r3 = N.record({ word: 'ds580', ticket: 'PO-3', action: 'resume', text: 'done', reads });
+  t('DS-580 AC6 resume on a PR GitHub cannot read requeues nothing, saying so', `${r3.ok} ${r3.line} ${queueOf('ds580').tickets['PO-3'].state}`,
+    'false ds580 PO-3: could not read PR #953 from GitHub (HTTP 502), so nothing was recorded or requeued, and it stays on your list. parked');
+  const r4 = N.record({ word: 'ds580', ticket: 'PO-4', action: 'resume', text: 'pushed the fix', reads });
+  t('DS-580 a PR whose head moved since the park is requeued', `${r4.ok} ${queueOf('ds580').tickets['PO-4'].state}`, 'true triaged');
+  t('DS-580 a red check gone green since the park counts as a change', N.prSincePark(po(10, 9), 9,{ headRefOid: HEAD, reviews: [], statusCheckRollup: [] }).changed, true);
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
