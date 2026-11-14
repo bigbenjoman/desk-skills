@@ -56,6 +56,7 @@ function put(name, r) {
   spawnSync('git', ['-C', root, 'remote', 'add', 'origin', `https://github.com/acme/${name}.git`]);
   mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
+    (r.handle ? `## 1. Who you are\n\n| Field | Value |\n|---|---|\n| GitHub handle | \`${r.handle}\` |\n\n` : '') +
     `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${root}\` |\n\n` +
     `## 3. Permissions\n\n| Key | Action | Recommended | Your setting |\n|---|---|---|---|\n| \`pr-ready\` | Undraft | \`ask\` | \`${r.prReady ?? 'no'}\` |\n` +
     `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n\n` +
@@ -351,7 +352,7 @@ put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
 } });
 const iota = N.collect({ word: 'iota' }).items;
 const i1 = iota.find((i) => i.t.key === 'I-1');
-t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
+t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Desk could not read the review to quote the gaps, so read them on the PR. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
 t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
 const i2 = iota.find((i) => i.t.key === 'I-2');
 t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72 is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; then merge it on GitHub once its checks are green.');
@@ -421,6 +422,29 @@ const m1q = queueOf('mu').tickets['M-1'];
 t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 81 --repo acme/mu --body')}`, '0 true');
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
 t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
+
+// ---- DS-586: a draft whose review left gaps quotes them from that review, as a ready PR's item does.
+const SHA586 = '65ad4e75a1b2c3d4e5f60718293a4b5c6d7e8f90';
+const review586 = (login, sha, lines) => ({ author: { login }, body: `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${sha} p0=0 p1=0 p2=0 deferred=0 gaps=${lines.length} unrefuted=0 partial=0 vendor=codex round=1 -->\n## desk-review: ${lines.length} requirement gaps\n\n### Requirement gaps\n${lines.map((l) => `- ${l}`).join('\n')}\n` });
+const GAP1 = 'PERSON\'S CALL · AC1: "the export lists every order" — the ticket does not say whether refunded orders count.';
+const GAP2 = 'PERSON\'S CALL · AC2: "totals match the invoice" — rounding differs by a cent on multi-currency orders.\n  Recommended: round per line, as the invoice does.';
+put('gq', { handle: 'me', port: 4207, beat: 1, supervised: true, tickets: {
+  'GQ-1': draftPr(301, passed, { call: 'person', why: `its review verdict at ${SHA586.slice(0, 9)} is not clean (gaps=2)`, action: 'settle the findings or gaps on #301' }),
+  'GQ-2': draftPr(302, passed, { call: 'person', why: `its review verdict at ${SHA586.slice(0, 9)} is not clean (gaps=2)`, action: 'settle the findings or gaps on #302' }),
+} });
+onGitHub(301, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: SHA586, reviews: [
+  review586('me', '1111111aaaaaaa', ['PERSON\'S CALL · AC9: an older round\'s gap']),
+  review586('me', SHA586, [GAP1, GAP2]),
+  review586('stranger', SHA586, ['PERSON\'S CALL · AC1: a gap someone else posted']),
+] });
+const gq = Object.fromEntries(N.collect({ word: 'gq' }).items.map((i) => [i.t.key, i]));
+t('DS-586 AC1 a draft\'s two gaps are quoted, each criterion with what is open', /AC1: "the export lists every order" — the ticket does not say whether refunded orders count; PERSON'S CALL · AC2: "totals match the invoice" — rounding differs by a cent/.test(gq['GQ-1']?.need ?? ''), true);
+t('DS-586 AC1 negative: an older round\'s gaps and another login\'s review are not quoted', /AC9|someone else/.test(gq['GQ-1']?.need ?? ''), false);
+t('DS-586 AC2 a gap\'s recommendation is shown beside it', gq['GQ-1']?.need,
+  'PR #301 is a draft, and its code review left 2 requirement gaps: PERSON\'S CALL · AC1: "the export lists every order" — the ticket does not say whether refunded orders count; PERSON\'S CALL · AC2: "totals match the invoice" — rounding differs by a cent on multi-currency orders. Recommended: round per line, as the invoice does. Say how to settle them; a worker on the PR carries out your call.');
+t('DS-586 AC3 a review that cannot be read gives the count and says so', gq['GQ-2']?.need,
+  'PR #302 is a draft, and its code review left 2 requirement gaps. Desk could not read the review to quote the gaps, so read them on the PR. Say how to settle them; a worker on the PR carries out your call.');
+t('DS-586 the item still offers answer first', gq['GQ-1']?.actions.map((a) => a[0]).join(), 'answer,done,resume,not-now');
 
 // ---- An open PR takes the person's instruction for a worker on it; a merged or closed one says why not.
 const readyPr = (pr, extra = {}) => { const d = draftPr(pr, passed); return { ...d, ...extra, pr_status: { ...d.pr_status, isDraft: false } }; };
@@ -1901,8 +1925,41 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
       'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?', 'Only you can decide whether I can push this change. Should I proceed?'].map(personOnlyStep).join(), ',,,,,');
 }
 
+// DS-601: an answer for a ticket a pass moved on since it was listed is kept for its next worker.
+{
+  // A running worker with a session, and a queued ticket requeued with a one-off grant: answer.mjs
+  // would write the mailbox and take the grant back.
+  const grant = { branch: 'fix/m-2', lease: 'abc123', at: minsAgo(10) };
+  put('moved', { port: 3601, beat: 1, supervised: true, tickets: {
+    'M-1': { state: 'running', lane: 'A', stage: '3/9', session_id: 'sess-m1' },
+    'M-2': { state: 'queued', lane: 'A', grant },
+    'M-3': { state: 'done', lane: 'A', merged_at: minsAgo(5), result: { pr: 70 }, pr_status: { pr: 70, state: 'MERGED' } },
+  } });
+  const dir = join(env.HOME, '.desk-autopilot', 'acme__moved');
+  const brief = (k) => { const f = join(dir, 'briefings', `${k}.md`); return existsSync(f) ? readFileSync(f, 'utf8') : ''; };
+  const queueText = () => JSON.stringify(queueOf('moved'));
+  const q0 = queueText(), before = answers().length;
+  const m1 = N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: 'keep the gap as it is' });
+  t('DS-601 AC1 an answer for a ticket no longer listed is saved in its briefing, and the reply says so',
+    `${m1.ok} ${m1.line} ${brief('M-1').includes('## Answer from the user') && brief('M-1').includes('keep the gap as it is')}`,
+    'true moved M-1: no longer waiting on you; your answer is saved in its briefing for its next worker. true');
+  t('DS-601 AC1 a running worker gets no mailbox answer for a park it has not made', existsSync(join(dir, 'answers', 'M-1.txt')), false);
+  const m2 = N.record({ word: 'moved', ticket: 'M-2', action: 'resume', text: 'use the short copy' });
+  t('DS-601 AC2 a resume with text is saved the same way, and its queue entry is unchanged, grant included',
+    `${m2.ok} ${brief('M-2').includes('## Answer from the user') && brief('M-2').includes('use the short copy')} ${queueText() === q0} ${answers().length - before}`, 'true true true 0');
+  const b1 = brief('M-1');
+  const m3 = N.record({ word: 'moved', ticket: 'M-1', action: 'requeue', text: 'try again' });
+  t('DS-601 AC3 requeue is refused as today and writes nothing',
+    `${m3.ok} ${m3.line} ${brief('M-1') === b1} ${queueText() === q0}`, 'false moved M-1: desk-q does not count it as needing you, so nothing was recorded. true true');
+  const m4 = N.record({ word: 'moved', ticket: 'M-9', action: 'answer', text: 'x' });
+  t('DS-601 AC4 a ticket in no queue of the repo is refused as today and writes nothing', `${m4.ok} ${brief('M-9')} ${queueText() === q0}`, 'false  true');
+  const m5 = N.record({ word: 'moved', ticket: 'M-3', action: 'answer', text: 'x' });
+  t('DS-601 a ticket whose PR merged can spawn no worker, so it is refused and writes nothing', `${m5.ok} ${brief('M-3')} ${queueText() === q0}`, 'false  true');
+  t('DS-601 an answer with no text is refused', `${N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: ' ' }).ok} ${brief('M-1') === b1}`, 'false true');
+}
+
 // Refusals.
-t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
+t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');

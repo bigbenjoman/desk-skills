@@ -6,7 +6,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
 import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
-import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
+import { untriggeredChecks, runnerFault, DEFAULT_STATE_CHECKS } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
 import { parseEvidenceRow, dispatchCall, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
@@ -676,6 +676,36 @@ t('DS-316 and its reason names the check and the carry', gc?.why, `its desk-revi
 t('DS-316 a stale verdict whose verdict check is red goes to a review worker, not a fix worker', withCarry(older, () => false, 'p0=0 p1=0 gaps=0', [...green, gateRed])?.call, 'review');
 const both = withCarry(older, () => true, 'p0=0 p1=0 gaps=0', [{ ...green[0], conclusion: 'failure', runId: '77' }, gateRed]);
 t('DS-316 beside a red code check, only the code check goes to the fix worker', `${both?.call} ${both?.failing?.map((f) => f.name).join(',')}`, 'checks tests');
+
+// DS-578: a §4 State check other than the verdict check reads reviews a reviewer posts only on a ready
+// PR, so a clean draft red on such checks alone leaves draft under §3 pr-ready as a green one does.
+{
+  const gateCheck = { name: 'Review gate', status: 'completed', conclusion: 'failure', runId: '79' };
+  const redTests = { ...green[0], conclusion: 'failure', runId: '77' };
+  const st = (kind, { checks = [...green, gateCheck], perm = 'yes', approved = false, reviews = [review(marker(ALL_ZERO))], stateChecks = [{ name: 'Review gate', kind }, ...DEFAULT_STATE_CHECKS] } = {}) =>
+    undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks },
+      { perm, permKey: 'pr-ready', approved, localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], stateChecks });
+  t('DS-578 AC1 red only on an approval state check, clean at the head, pr-ready yes: ready', st('approval')?.call, 'ready');
+  t('DS-578 AC1 and on a verdict state check', st('verdict')?.call, 'ready');
+  const ask = st('approval', { perm: 'ask' });
+  t('DS-578 AC2 pr-ready ask with no batch approval: the person undrafts it', `${ask?.call} | ${ask?.action}`, 'person | undraft #701');
+  t('DS-578 AC2 and the reason names the state check', ask?.why, 'it is clean, red only on §4 State checks (Review gate), and config §3 pr-ready is "ask" with no batch approval');
+  t('DS-578 AC2 pr-ready ask with the batch approval: ready', st('approval', { perm: 'ask', approved: true })?.call, 'ready');
+  const mixed = st('approval', { checks: [redTests, gateCheck] });
+  t('DS-578 AC3 beside a red code check: a checks call naming only the code check', `${mixed?.call} ${mixed?.failing?.map((f) => f.name).join(',')}`, 'checks tests');
+  t('DS-578 AC4 a P1 at the head: findings, not undrafted', st('approval', { reviews: [review(marker(ALL_ZERO.replace('p1=0', 'p1=1')))] })?.call, 'findings');
+  t('DS-578 AC4 no verdict at the head: a review worker', st('approval', { reviews: [review(marker(ALL_ZERO, OLD), OLD)] })?.call, 'review');
+  t('DS-578 AC5 a bare state check: ready', st(null)?.call, 'ready');
+  t('DS-578 AC5 under pr-ready ask, the person', st(null, { perm: 'ask' })?.call, 'person');
+  t('DS-578 AC6 red only on the verdict check: a review worker', st('approval', { checks: [...green, { ...gateRed }] })?.call, 'review');
+  t('DS-578 AC6 beside another red state check too', st('approval', { checks: [...green, gateCheck, gateRed] })?.call, 'review');
+  t('DS-578 a check §4 State checks does not name is still a checks call', st('approval', { stateChecks: DEFAULT_STATE_CHECKS })?.call, 'checks');
+  t('DS-578 a required check that never reported keeps it draft beside a red state check', st('approval', { checks: [gateCheck] })?.call, 'checks');
+  const onlyState = undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))],
+    checks: [{ name: VERDICT_CHECK, status: 'completed', conclusion: 'success' }, { name: 'protected-path approval', status: 'completed', conclusion: 'failure', runId: '80' }] },
+  { perm: 'yes', permKey: 'pr-ready', approved: false, localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: [], stateChecks: DEFAULT_STATE_CHECKS });
+  t('DS-578 with no check but state checks, a green verdict check is the success the gate needs: ready', onlyState?.call, 'ready');
+}
 
 // verdictCarries, against a real repository: the reviewed commit A, the base merged in to make B.
 const dir = mkdtempSync(join(tmpdir(), 'undraft-carry-'));
