@@ -163,7 +163,7 @@ export function compareText(rep) {
     const [b, a] = [before.rows[c], after.rows[c]];
     if (!b.sessions.size || !a.sessions.size) return '-';
     const [x, y] = [b.writeUsd / b.sessions.size, a.writeUsd / a.sessions.size];
-    const d = y - x;
+    const d = Math.round((y - x) * 1e4) / 1e4;
     return `${d < 0 ? '-' : '+'}${usd(Math.abs(d), 4)}${x ? ` (${d < 0 ? '' : '+'}${((100 * d) / x).toFixed(0)}%)` : ''}`;
   };
   const reqRows = CALLERS.flatMap((c) => [[c, 'before', ...perReq(before.rows[c])], ['', 'after', ...perReq(after.rows[c])]]);

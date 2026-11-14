@@ -65,8 +65,9 @@ t('AC5 decider: read from the second login', row('decider'), [1, 1, 10, 0, 600, 
 t('AC5 usage probe', row('usage probe'), [1, 1, 10, 0, 300, 0]);
 t('AC5 interactive', row('interactive'), [1, 1, 10, 0, 0, 500]);
 t('AC5 a request out of the window is left out', rep.windows[0].rows.triage.requests, 2);
-t('AC5 opus priced at list: 10 input, 1,000 5m writes, 50 output', requestUsd(requestOf(r1)), { write: 0.005, total: 0.00604 });
-t('AC5 haiku past 100,000 prompt tokens is priced at its higher rate', requestUsd(requestOf(req('h', { model: 'claude-haiku-5-5', uncached: 0, read: 200000 }))).total, 0.01);
+const cents = (u) => u && [u.write.toFixed(6), u.total.toFixed(6)];
+t('AC5 opus priced at list: 10 input, 1,000 5m writes, 50 output', cents(requestUsd(requestOf(r1))), ['0.005000', '0.006040']);
+t('AC5 haiku past 100,000 prompt tokens is priced at its higher rate', cents(requestUsd(requestOf(req('h', { model: 'claude-haiku-5-5', uncached: 0, read: 200000 })))), ['0.000000', '0.010000']);
 t('AC5 a model with no price is counted, not priced', requestUsd(requestOf(req('x', { model: 'mystery-1' }))), null);
 const text = windowText(rep);
 t('AC5 the table has every caller and the columns', ['worker', 'triage', 'decider', 'usage probe', 'subagent', 'interactive', 'other'].every((c) => new RegExp(`^  ${c} `, 'm').test(text))
