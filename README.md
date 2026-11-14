@@ -677,7 +677,11 @@ the expected skill, and Claude opened the index on the 3 ambiguous ones. To undo
 ./install.sh            # install or update
 ./install.sh --check    # report missing tools and unreachable skills, change nothing
 ./install.sh --yes      # accept the prompts (not large downloads)
+./install.sh --any-branch   # install a checkout off main or behind origin/main, which it otherwise refuses
 ```
+
+It fetches `origin/main` first and installs nothing from another branch, a detached HEAD, a `main`
+behind `origin/main`, or when the fetch fails, saying the branch and how many commits behind.
 
 What it does:
 
