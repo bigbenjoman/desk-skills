@@ -125,10 +125,18 @@ Two scope calls are always taken where it is `yes`:
 
 - **A gap a sibling ticket in the epic owns is not a question.** Cite the sibling's key where the
   gap is reported (the PR body, the review) and carry on.
-- **A self-review fix that grows** is widened or split as the Stage 4 file says
-  (`worker-contract-stage-4.md`, *A fix that grows*). A confirmed P0 or P1 in the ticket's own
-  feature path that needs at most one more file and about 20 lines, under no §4 Merge holds glob, is
-  widened and logged.
+- **A self-review fix that grows** (`worker-contract-stage-4.md`, *A fix that grows*) is printed as
+  an `AUTOPILOT_DECISION` with category `scope`, and is widened or split:
+  - **Widen** when the grown diff stays within the ticket's size (its Size field; M with none) and
+    adds no file under a §4 Merge holds glob (`desk-env list merge-holds`). A confirmed P0 or P1 in
+    the ticket's own feature path that needs at most one more file and about 20 lines always does.
+  - **Split** otherwise: file one follow-up ticket for the finding with `desk-jira create`
+    (desk-jira's ticket template, the finding's `file:line` in it), print
+    `AUTOPILOT_LINK: <follow-up> relates-to <TICKET>` (`worker-contract-stage-8.md`), and carry the
+    finding with the follow-up's key in its title. Only a P2 from round 2 can be carried, so a P0 or
+    P1, or a P2 on round 1, too big to widen still parks, naming the finding and the follow-up.
+  - **A §3 row the growth needs that is not `yes`** (`jira-create` for the follow-up, a production
+    or staging write for the fix) parks naming that row, whatever `autopilot-judgement` says.
 
 Each taken call is one entry in `<state>/decisions.jsonl` (time, repo, ticket, question, options,
 the option chosen, category, PR link):
