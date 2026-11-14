@@ -15,6 +15,9 @@
 //                                                 sign-out, not a seat out of usage: only a real call does)
 //   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no
 //   disk     free space on the worktrees disk, against config §3b "Free disk floor (GB)" (default 20)
+//   database `docker exec <container> pg_isready`  where §4 Local database is `postgres container <name>`
+//                                                 and setup-worktree.sh makes a per-ticket database in it
+//                                                 (§3 db-per-ticket yes, §4 Database URL variable names one)
 //
 // A check that does not answer within 20 seconds has failed, "timed out". A remote check that times
 // out or cannot reach its host is a network failure: it is run once more, 5 seconds later, before it
@@ -23,7 +26,7 @@
 //
 // A pass holds every new spawn while a required check fails. A remote check is told to the person
 // (a stall line and a push) only once it has failed on two runs in a row, as a blip clears by
-// itself; the local ones (browser, disk) on the first. Every remote check failing together, with at
+// itself; the local ones (browser, disk, database) on the first. Every remote check failing together, with at
 // least one of them not reaching its host, is the network, one item (`health:<slug>:network`) with no
 // sign-in fix, so a CLI that words a dropped connection in a way NETWORK misses does not push its
 // sign-in; only when every one of them is a refused sign-in are they the sign-ins. A network failure
@@ -56,6 +59,7 @@ export const CHECKS = Object.freeze([
   { id: 'codex', name: 'Codex', cmd: ['codex', 'login', 'status'], fix: 'codex login' },
   { id: 'browser', name: 'browser profile', fix: 'node ~/.claude/desk/bin/github-signin.mjs' },
   { id: 'disk', name: 'free disk' },
+  { id: 'database', name: 'local database' },
 ]);
 const byId = Object.fromEntries(CHECKS.map((c) => [c.id, c]));
 const isRemote = (id) => Boolean(byId[id]?.cmd);
@@ -98,8 +102,25 @@ function clearFound(dir, missing) {
   for (const n of names) if (!keep.has(n)) { try { unlinkSync(join(dir, n)); } catch { /* another pass took it */ } }
 }
 
+// Whether setup-worktree.sh makes a per-ticket database, by its rules: `container` is the Postgres
+// container §4 Local database names (DESK_PG_CONTAINER stands in for the name it gives), or null;
+// `none` is why no per-ticket database is made, or null when one is, so a container that does not
+// answer fails every new worktree. plan-batch.mjs reads it too.
+export function perTicketDb(env = process.env) {
+  const raw = String(E.configValue('local-db') ?? '').trim();
+  const m = /^postgres\s+container\s+([A-Za-z0-9_.-]+)$/i.exec(raw);
+  const container = m ? env.DESK_PG_CONTAINER || m[1] : null;
+  const why = (none) => ({ container, none });
+  if (!raw || E.isNone(raw)) return why(`config §4 Local database is ${raw ? 'none' : 'unset'}`);
+  if (!m) return why(`config §4 Local database is "${raw}", which is not \`postgres container <name>\``);
+  if (E.permission('db-per-ticket') !== 'yes') return why(`config §3 ${E.permissionKey('db-per-ticket')} is ${E.permission('db-per-ticket')}`);
+  const vars = [].concat(E.configValues('db-url-var') ?? []).filter((v) => !E.isNone(v) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(v));
+  return why(vars.length ? null : 'config §4 Database URL variable names none');
+}
+
 // Why a check is not required here, or null when it is.
 export function notRequired(id) {
+  if (id === 'database') return perTicketDb().none;
   const off = (perm) => ['no', 'never'].includes(E.permission(perm));
   if (id === 'jira') {
     const t = (E.configValue('tracker') ?? '').trim().toLowerCase();
@@ -174,6 +195,12 @@ function diskCheck(env) {
 async function runCheck(id, env, timeoutMs, retryMs) {
   if (id === 'browser') return browserCheck();
   if (id === 'disk') return diskCheck(env);
+  // Local: no host to be unreachable, so never retried and never part of the network verdict.
+  if (id === 'database') {
+    const r = await runCommand(dbCmd(env), timeoutMs);
+    delete r.kind;
+    return r;
+  }
   const r = await runCommand(byId[id].cmd, timeoutMs);
   if (r.ok || r.kind !== 'network') return r;
   await new Promise((res) => setTimeout(res, retryMs));
@@ -184,12 +211,37 @@ function readRecord(state) {
   try { return JSON.parse(readFileSync(healthFile(state), 'utf8')); } catch { return null; }
 }
 
+const dbCmd = (env = process.env) => ['docker', 'exec', perTicketDb(env).container, 'pg_isready'];
 const fixOf = (id, r) => {
   if (id === 'disk') return `free space on ${r.path ?? 'the worktrees disk'}`;
+  if (id === 'database') return `start Docker and the container ${perTicketDb().container}; the queued tickets spawn on the first pass it answers`;
   if (r.kind === 'network') return `check this machine's connection to ${byId[id].name}; it is not reaching it, which is not a sign-in`;
   return byId[id].fix;
 };
-const label = (id) => `${byId[id].name}${byId[id].cmd ? ` (${byId[id].cmd.join(' ')})` : ''}`;
+const label = (id) => {
+  const cmd = id === 'database' ? dbCmd() : byId[id].cmd;
+  return `${byId[id].name}${cmd ? ` (${cmd.join(' ')})` : ''}`;
+};
+
+const stallOf = (id, r) => `health: ${label(id)} failed: ${r.why} — fix: ${fixOf(id, r)}; no new worker starts until it passes`;
+const pushOf = (slug, id, r) => ({ key: `health:${slug}:${id}`, text: `desk ${slug}: the ${byId[id].name} check is failing (${r.why}), so no new worker starts. Fix: ${fixOf(id, r)}` });
+
+// A local check found failing outside the checks, as worktree setup not reaching Postgres: recorded
+// as failing in <state>/health.json, so the next pass runs the checks afresh rather than reusing a
+// passing run, and returned as this pass's health line, stall and push, so the hold starts now.
+export function markFailed(id, why, { state = E.stateDir(), slug = E.repoSlug(), now = Date.now() } = {}) {
+  const prev = readRecord(state) ?? {};
+  const r = { ok: false, why };
+  const failing = [...new Set([...(prev.failing ?? []), id])];
+  const streak = { ...(prev.streak ?? {}), [id]: { kind: 'auth', n: (prev.streak?.[id]?.n ?? 0) + 1 } };
+  mkdirSync(state, { recursive: true });
+  writeFileSync(healthFile(state), `${JSON.stringify({ ...prev, at: new Date(now).toISOString(), results: { ...(prev.results ?? {}), [id]: r }, failing, streak }, null, 2)}\n`);
+  return {
+    line: `health: ${failing.length} check(s) failing — ${failing.join(', ')} — holding new spawns (${id} failed during worktree setup)`,
+    stall: stallOf(id, r),
+    push: pushOf(slug, id, r),
+  };
+}
 
 // How many runs in a row each failure has lasted, by check id (and `network` for every remote check
 // failing together, one of them unreachable). A failure of another kind than last run's starts again at 1.
@@ -262,7 +314,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const notes = [when];
   if (recovered.length) notes.push(`recovered: ${recovered.join(', ')}`);
   if (unconfirmed.length) notes.push(`rechecking before telling you: ${unconfirmed.join(', ')}`);
-  const skipped = Object.entries(skip).map(([id, why]) => `${byId[id].name} (${why})`);
+  // A repo with no Postgres container has no database to check, so it is not named as skipped.
+  const skipped = Object.entries(skip).filter(([id]) => id !== 'database' || perTicketDb(env).container).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
   if (loginsOut.length) notes.push(`claude login${loginsOut.length > 1 ? 's' : ''} ${loginsOut.map((l) => l.name).join(', ')} failing, not holding spawns`);
   const missingFix = (l) => `remove its row (desk-env logins remove claude ${l.name}) or sign it in (${signInCommand(l)})`;
@@ -273,10 +326,10 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const shown = units.filter(told);
   const stalls = shown.map((u) => (u.key === 'network'
     ? `health: every remote check failed (${u.ids.map((id) => `${id}: ${results[id].why}`).join('; ')}) — this machine looks offline, not signed out: check its network connection; no new worker starts until they pass`
-    : `health: ${label(u.key)} failed: ${results[u.key].why} — fix: ${fixOf(u.key, results[u.key])}; no new worker starts until it passes`));
+    : stallOf(u.key, results[u.key])));
   const push = shown.map((u) => (u.key === 'network'
     ? { key: `health:${slug}:network`, text: `desk ${slug}: every remote check is failing (${u.ids.join(', ')}), so this machine looks offline rather than signed out, and no new worker starts. Fix: check its network connection` }
-    : { key: `health:${slug}:${u.key}`, text: `desk ${slug}: the ${byId[u.key].name} check is failing (${results[u.key].why}), so no new worker starts. Fix: ${fixOf(u.key, results[u.key])}` }));
+    : pushOf(slug, u.key, results[u.key])));
   for (const l of loginTold) {
     const r = loginResults[loginKey(l)];
     const out = r.kind === 'network' ? `could not reach Claude (${r.why})` : `is signed out (${r.why})`;

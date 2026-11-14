@@ -19,7 +19,7 @@ import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
-import { parseDecision, parseCheck, decisionEntry, appendDecisions, triageCalls, ticketCalls } from './decisions.mjs';
+import { parseDecision, decisionEntry, appendDecisions, workerCalls, noteLine, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
@@ -36,7 +36,7 @@ import { readRegistry, workerLoginDir, loginOf, loginKey, probeLogins } from './
 import { checkLogin, checkLogins, readSubscriptions, signInCommand } from './logins.mjs';
 import { claudeChoice, laterLift, nothingToChoose } from './call-login.mjs';
 import { firstSpawnFromLogs, epicUnread, splitOwnEpic, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { health } from './health.mjs';
+import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
@@ -405,15 +405,8 @@ function ownedBrief(t, wt) {
 function logDecisions(t, log, pr) {
   let markers;
   try { markers = workerMarkers(readFileSync(log, 'utf8')); } catch { return; }
-  const entries = [];
-  const unreadable = new Set();
-  for (const [k, v] of markers) {
-    if (k !== 'AUTOPILOT_DECISION' && k !== 'AUTOPILOT_CHECKED') continue;
-    const d = k === 'AUTOPILOT_CHECKED' ? parseCheck(v) : parseDecision(v);
-    const what = k === 'AUTOPILOT_CHECKED' ? 'check' : 'decision';
-    if (d.ok) entries.push(decisionEntry({ decision: d.check ?? d.decision, ticket: t.key, run: t.session_id, repo: GH_REPO, pr, source: 'worker' }));
-    else if (!unreadable.has(v)) { unreadable.add(v); report.waiting.push(`${t.key}: unreadable ${what} (${d.why}), nothing logged: ${v}`); }
-  }
+  const { entries, unreadable } = workerCalls(markers, { ticket: t.key, run: t.session_id, repo: GH_REPO, pr });
+  for (const u of unreadable) report.waiting.push(`${t.key}: unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`);
   if (entries.length) appendDecisions(entries, STATE);
 }
 
@@ -816,7 +809,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
   // hangs after printing it must be recorded done, never left running and then parked as wedged.
   const done = park || handoff || reboot ? undefined : lastDone?.[1];
-  for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(`- [${t.key}] ${m[1].trim()}`);
+  for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(noteLine(t.key, m[1]));
 
   // A worker at a usage limit (usage-limit.mjs decides; nothing here reads the event). Only a worker
   // that has neither parked nor finished, and has not answered since the limit, is acted on.
@@ -1176,17 +1169,7 @@ let USAGE_HOLD = null;
 }
 
 // ---- batch notes ---------------------------------------------------------
-if (notes.length) {
-  const path = join(STATE, 'batch-notes.md');
-  const existing = existsSync(path) ? readFileSync(path, 'utf8') : '# Batch notes\n\n';
-  // Dedup against the file AND within this pass: harvest sees a note twice (once in the
-  // assistant text, once echoed in the result), so filtering only against the file
-  // appends every note in duplicate.
-  const seen = new Set(existing.split('\n'));
-  const freshNotes = [];
-  for (const n of notes) { if (!seen.has(n)) { seen.add(n); freshNotes.push(n); } }
-  if (freshNotes.length) appendFileSync(path, `${freshNotes.join('\n')}\n`);
-}
+if (notes.length) appendNotes(notes, STATE);
 
 // ---- interactive close-outs --------------------------------------------------
 // A ticket an interactive session merged or moved to Done (closeout.mjs) is done here too, rather than
@@ -1721,7 +1704,7 @@ if (modelsBad) personStall(`${modelsBad} — not spawning until it is fixed`);
 let CHECKIN;
 try { CHECKIN = checkinTimes(checkinRow()); } catch (e) { CHECKIN = { ok: false, why: e.message }; }
 if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`);
-// The health watchdog (health.mjs): a required sign-in or the free disk failing holds every new spawn.
+// The health watchdog (health.mjs): a required sign-in, the free disk or the local database failing holds every new spawn.
 // Running workers carry on; the report names each failure and its fix, and the push names it once.
 const HEALTH = await health({ state: STATE });
 for (const s of HEALTH.stalls) personStall(s);
@@ -2934,6 +2917,8 @@ const busyNow = new Set();
 for (const { name, why } of pruneReadRepos()) report.failed.push(`read-only clone ${name}: no longer listed in §4 Worker read-only repos, and could not be deleted — ${why}`);
 // Refreshed once a pass, and only by a pass about to start a local worker: a cloud session cannot read a clone.
 let readRepoFailures = null;
+// health.mjs markFailed's line, stall and push once a worktree setup in this pass has not reached the local database.
+let dbDown = null;
 for (const t of spawnable) {
   // usageStop: the base fix's preflight above was refused at the usage limit.
   if (baseHold || usageStop || !(attempts < ticketSlots)) break;
@@ -3003,6 +2988,11 @@ for (const t of spawnable) {
     spawnCloud(t);
     continue;
   }
+  // An earlier setup in this pass found the local database down: no other worktree is set up on it.
+  if (dbDown) {
+    report.waiting.push(`${t.key}: held, the local database is not answering (health); it spawns on the first pass it answers`);
+    continue;
+  }
   const wt = join(WORKTREES, t.key);
   // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
   // requeue removed for a fresh branch is not resumed.
@@ -3026,10 +3016,29 @@ for (const t of spawnable) {
   const setupWt = [...setup.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim();
   if (!setupRun.ok || setupWt !== wt || !existsSync(wt)) {
     const why = setup.split('\n').filter((l) => /FAIL|WARNING|failed/.test(l)).slice(-3).join(' ') || setup.slice(-200);
-    q('park', t.key, `worktree setup failed, not spawned — ${why}`);
-    report.parked.push(`${t.key}: worktree setup failed, not spawned — ${why}`);
+    // The local database not answering is the machine's, not the ticket's: it stays queued, and the
+    // database health check is marked failing so the hold starts now and lifts once it answers.
+    const pgDown = setup.split('\n').find((l) => /FAIL: cannot reach Postgres in container/.test(l));
+    // Unless the database check answered on this pass, and this ticket waited on it before: then the
+    // container is up and setup still cannot use it (a role it lacks, say), which waiting will not fix.
+    const dbUp = !HEALTH.reused && HEALTH.results?.database?.ok === true;
+    if (setupRun.ok === false && pgDown && !(dbUp && t.db_wait)) {
+      if (!DRY) q('set', t.key, `db_wait=${PASS_AT}`);
+      if (!dbDown) {
+        dbDown = markHealthFailed('database', pgDown.replace(/^.*?FAIL: /, '').trim(), { state: STATE });
+        HEALTH.line = dbDown.line;
+        HEALTH.push.push(dbDown.push);
+        personStall(dbDown.stall);
+      }
+      report.waiting.push(`${t.key}: worktree setup could not reach the local database, so it stays queued and spawns on the first pass the database answers`);
+      continue;
+    }
+    const answered = pgDown ? ' (the local database check passes, so waiting for it will not clear this)' : '';
+    q('park', t.key, `worktree setup failed, not spawned — ${why}${answered}`);
+    report.parked.push(`${t.key}: worktree setup failed, not spawned — ${why}${answered}`);
     continue;
   }
+  if (t.db_wait && !DRY) q('set', t.key, 'db_wait=null');
   // The branch this ticket's PR must come from: recorded so the merge driver matches the PR by
   // branch, never by a fuzzy key search.
   const branch = [...setup.matchAll(/\[setup-worktree\] branch=(\S+)/g)].pop()?.[1] ?? t.branch;
