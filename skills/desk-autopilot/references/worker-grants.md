@@ -98,7 +98,9 @@ named step that no grant covers (a refused script, a staging write, a credential
 an answer approving it records the step on the park (`park.session_step`) rather than requeueing:
 desk-needs-you lists it as a session item naming the step, and `queue.mjs requeue` refuses it. Once
 the person has run it, `done` on that item (`queue.mjs step-done <TICKET>`) sends the ticket back to a
-worker with the step in its briefing as done. An answer that approves nothing requeues as before.
+worker with the step in its briefing as done. An answer that approves nothing requeues as before, and
+so does a yes to a park that offers to go on without the step ("shall I leave it out?"). Answering the
+item again with no approval makes it an ordinary park.
 
 **The `wrappers` lever (config §3b Phase 0 levers) adds no capability.** On, `desk-env lines <file>
 A,B` prints what `sed -n A,Bp <file>` does, refusing any file the worker's reading tools are refused

@@ -121,6 +121,7 @@ const SESSION_DONE = ['done', null, 'if you finished the ticket yourself, done r
 // they run it in a session, and done sends the ticket back to a worker with it recorded done.
 const STEP_WHY = 'no worker can run the step you approved, so a requeue would only park it again: run it in an interactive session';
 const STEP_DONE = ['done', null, 'once you have run the step, done sends the ticket back to a worker with it recorded as done'];
+const STEP_ANSWER = ['answer', null, 'if you did not mean to approve running it, answer again: an answer approving no step makes it an ordinary park you can resume'];
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
@@ -693,7 +694,7 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, note, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
-    if (t.park?.session_step) return { kind: 'session', need: `you approved a step no worker can run: ${one(t.park.session_step.step)}`, note, actions: withDrop(r, t, [['open', STEP_WHY], STEP_DONE, ['not-now']]) };
+    if (t.park?.session_step) return { kind: 'session', need: `you approved a step no worker can run: ${one(t.park.session_step.step)}`, note, actions: withDrop(r, t, [['open', STEP_WHY], STEP_DONE, STEP_ANSWER, ['not-now']]) };
     if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
     if (needsSession(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
     if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], SESSION_DONE, ['not-now']]) };

@@ -265,14 +265,16 @@ export const approvesStep = (text) => approves(text) || (OPENS_YES.test(String(t
 // already make it a session's (sessionPark): a refused script or command, a staging write, a credential
 // no worker is given. Named by the refusing sentence's first code span, else the question's, else its
 // first script, else that sentence; null for any other park. A grantable force-push is a grant's, and a
-// plain push or draft PR the pass finishes itself (recoveries.mjs pushPark), so neither is one.
+// plain push or draft PR the pass finishes itself (recoveries.mjs pushPark), so neither is one. Nor is
+// a park that offers to go on without the step ("shall I leave it out?"): a yes there approves that.
+const OFFERS_WITHOUT = /\b(?:instead|without|skip\w*|leave (?:\S+ ){0,3}out|drop(?:ped|ping)? (?:it|the|that|this))\b/i;
 const TO_WORKER = /\b(?:refus\w*|denied|not (?:allowed|granted|permitted|given)|never (?:allowed|given|granted)|can(?:not|'t) (?:run|use|reach|hold|write|call)|no (?:headless )?worker (?:can|may|could|is allowed|holds?|is given))\b/i;
 const PUSH_STEP = /\b(?:git push|gh pr|push(?:ed|ing|es)?|(?:draft )?PR)\b/i;
 const CODE = /`([^`\n]+)`/;
 const SCRIPT = /[\w./-]+\.(?:sh|mjs|js|py|ts)\b/;
 export function workerRefusedStep(question) {
   const q = String(question ?? '');
-  if (refusedStep(q)?.grantable || sessionPark(q)) return null;
+  if (refusedStep(q)?.grantable || sessionPark(q) || OFFERS_WITHOUT.test(q)) return null;
   const said = q.split(/(?<=[.?!;])\s+|\n+/).find((c) => TO_WORKER.test(c));
   if (!said) return null;
   const step = (CODE.exec(said)?.[1] ?? CODE.exec(q)?.[1] ?? SCRIPT.exec(q)?.[0] ?? said).trim();

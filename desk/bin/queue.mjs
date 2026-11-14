@@ -44,7 +44,7 @@ function setBase(q, v) {
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done','approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -504,7 +504,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (WRITES.includes(cmd)) lock();
