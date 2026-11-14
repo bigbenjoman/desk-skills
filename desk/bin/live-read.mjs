@@ -240,7 +240,10 @@ export function saveNamedFixtures({ state, key, text, home = homedir(), max = NA
     const names = [];
     for (const f of files) {
       if (given.has(fold(f.name))) { res.refused.push({ path: f.from, why: `a file named ${f.name} was already copied from ${given.get(fold(f.name))}: rename one and record it again` }); continue; }
-      if (existsSync(join(dir, f.name))) res.replaced.push(f.name);
+      let there = null;
+      try { there = lstatSync(join(dir, f.name)); } catch { there = null; }
+      if (there && !there.isFile()) { res.refused.push({ path: f.from, why: `${join(dir, f.name)} is ${there.isSymbolicLink() ? 'a symlink' : 'a folder'}, which is never replaced` }); continue; }
+      if (there) res.replaced.push(f.name);
       writeNew(join(dir, f.name), readFileSync(f.from));
       given.set(fold(f.name), path);
       names.push(f.name);

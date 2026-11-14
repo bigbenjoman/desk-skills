@@ -2024,6 +2024,13 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const f6 = N.record({ word: 'ds609b', ticket: 'F-6', action: 'resume', text: `old is ${ca} and new is ${cb}` });
   t('DS-609 a second file of the same name is not copied over the first, and says so', `${readFileSync(join(fxb('F-6'), 'data.csv'), 'utf8') === ca} ${f6.line.includes(`${join(cb, 'data.csv')} was not copied: a file named data.csv was already copied from ${ca}`)} ${f6.line.includes(`Copied ${cb}`)}`, 'true true false');
   t('DS-609 a file already in the fixtures folder that a copy replaces is named', `${readFileSync(join(fxb('F-6'), 'notes.txt'), 'utf8')} ${f6.line.includes('That replaced the copies already there of notes.txt.')}`, 'new true');
+
+  const cc = join(T, 'cap-c');
+  mkdirSync(cc); writeFileSync(join(cc, 'kept'), 'incoming');
+  mkdirSync(join(fxb('F-9'), 'kept'), { recursive: true });
+  writeFileSync(join(fxb('F-9'), 'kept', 'mine.txt'), 'person');
+  const f9 = N.record({ word: 'ds609b', ticket: 'F-9', action: 'resume', text: `see ${cc}` });
+  t('DS-609 a folder in the fixtures folder is never removed for a same-named file', `${f9.ok} ${readFileSync(join(fxb('F-9'), 'kept', 'mine.txt'), 'utf8')} ${f9.line.includes(`${join(cc, 'kept')} was not copied: ${join(fxb('F-9'), 'kept')} is a folder, which is never replaced.`)}`, 'true person true');
 }
 
 // Refusals.
