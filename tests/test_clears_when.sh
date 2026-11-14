@@ -209,8 +209,12 @@ console.log([
   qi([{ slug: 'acme__x__studia-web', q: { tickets: { 'SV-1': {} } } }]),
   JSON.stringify(queuedIn('SV-1', 'acme/studia-web', [{ slug: 'other__acme__studia-web', q: { tickets: { 'SV-1': {} } } }], () => true)),
   JSON.stringify(queuedIn('SV-1', 'ACME/Studia-Web', [web('b', { 'SV-1': {} })], () => true)),
+  JSON.stringify(queuedIn('SV-1', 'foo__web', [{ slug: 'acme__foo__web', q: { tickets: { 'SV-1': {} } } }], () => true)),
+  JSON.stringify(queuedIn('SV-1', 'acme__studia-web', [web('b', { 'SV-1': {} })], () => true)),
 ].join('|'));
 ")
+check "DS-581 a bare name that holds __ is still the whole name, and the owner__name slug matches itself" \
+  '[[ "$(cut -d"|" -f20 <<< "$r")" == "{\"holds\":true"* ]] && [[ "$(cut -d"|" -f21 <<< "$r")" == "{\"holds\":true"* ]]'
 check "DS-581 a repo named by its name is not another whose name only ends the same, nor owner/name one under another owner" \
   '[ "$(cut -d"|" -f17,18 <<< "$r")" = "{\"holds\":false,\"note\":\"no studia-web queue was found on this computer\"}|{\"holds\":false,\"note\":\"no acme/studia-web queue was found on this computer\"}" ]'
 check "DS-581 owner/name matches its slug, case aside" '[[ "$(cut -d"|" -f19 <<< "$r")" == "{\"holds\":true"* ]]'
