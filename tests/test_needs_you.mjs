@@ -1836,37 +1836,55 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const PO = 'There is no review from agent-pullbot at all. No worker can run it: only a person with Mac mini or org access can do this.';
   const STEP = 'No worker can run it: only a person with Mac mini or org access can do this.';
   const HEAD = 'a'.repeat(40);
-  const po = (m, pr) => ({ ...parked('B', m, PO), draft_pr: pr, pr_status: { pr, state: 'OPEN', isDraft: true, head: HEAD, checks: [{ name: 'ci', status: 'completed', conclusion: 'failure' }] } });
+  // As a worker leaves it: a draft PR and a park, and no PR state recorded (pass.mjs records that only once done).
+  const po = (m, pr) => ({ ...parked('B', m, PO), draft_pr: pr });
+  const DECIDE = 'Only you can decide between A and B. Which should I use? I recommend A.';
   put('ds580', { port: 4580, beat: 1, supervised: true, tickets: {
     'PO-1': po(60, 951), 'PO-2': po(50, 952), 'PO-3': po(40, 953), 'PO-4': po(30, 954),
-    'Q-1': parked('B', 20, 'Retry or fail? I recommend retry.'),
+    'Q-1': parked('B', 20, 'Retry or fail? I recommend retry.'), 'Q-2': { ...parked('B', 15, DECIDE), draft_pr: 955 },
   } });
-  const rollup = [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }];
+  const before = minsAgo(600);
   const later = new Date(NOW).toISOString();
+  const red = (at) => [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE', completedAt: at }];
+  const green = (at) => [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: at }];
+  const old = { commits: [{ oid: HEAD, committedDate: before }], reviews: [{ state: 'COMMENTED', submittedAt: before }] };
   const gh = {
-    951: { state: 'OPEN', isDraft: true, headRefOid: HEAD, reviews: [{ state: 'COMMENTED', submittedAt: minsAgo(600) }], statusCheckRollup: rollup },
-    952: { state: 'OPEN', isDraft: true, headRefOid: HEAD, reviews: [{ state: 'COMMENTED', author: { login: 'agent-pullbot' }, submittedAt: later }], statusCheckRollup: rollup },
-    954: { state: 'OPEN', isDraft: true, headRefOid: 'b'.repeat(40), reviews: [], statusCheckRollup: [] },
+    951: { state: 'OPEN', isDraft: true, headRefOid: HEAD, ...old, statusCheckRollup: red(before) },
+    952: { state: 'OPEN', isDraft: true, headRefOid: HEAD, ...old, reviews: [{ state: 'COMMENTED', author: { login: 'agent-pullbot' }, submittedAt: later }], statusCheckRollup: red(before) },
+    954: { state: 'OPEN', isDraft: true, headRefOid: 'b'.repeat(40), commits: [{ oid: 'b'.repeat(40), committedDate: later }], reviews: [], statusCheckRollup: [] },
+    955: { state: 'OPEN', isDraft: true, headRefOid: HEAD, ...old, statusCheckRollup: [] },
   };
-  const reads = { pr: (_r, n, more) => (gh[n] ? { v: more.includes('reviews') ? gh[n] : { state: gh[n].state }, err: '' } : { v: null, err: 'HTTP 502' }), ticket: () => null, git: () => null };
+  const reads = { pr: (_r, n, more) => (gh[n] ? { v: more.includes('commits') ? gh[n] : { state: gh[n].state }, err: '' } : { v: null, err: 'HTTP 502' }), ticket: () => null, git: () => null };
   const items = () => Object.fromEntries(N.collect({ word: 'ds580' }).items.map((i) => [i.t.key, i]));
   const p1 = items()['PO-1'];
   t('DS-580 AC3 a person-only park marks no action recommended', `${p1?.kind} ${p1?.actions.map((a) => a[0]).join()} ${p1?.actions.some((a) => a[1])}`, 'parked resume,drop,not-now false');
   t('DS-580 AC3 its need names the step only a person or another account takes', p1?.need, `a step only you or another account takes: ${STEP} (${PO})`);
   t('DS-580 AC7 a park asking the worker a question still recommends resume', `${items()['Q-1']?.actions[0][0]} ${!!items()['Q-1']?.actions[0][1]}`, 'resume true');
+  t('DS-580 AC7 a call only the person makes ("only you can decide") still recommends resume', `${items()['Q-2']?.actions[0][0]} ${!!items()['Q-2']?.actions[0][1]}`, 'resume true');
+  const rq = N.record({ word: 'ds580', ticket: 'Q-2', action: 'resume', text: 'use A', reads });
+  t('DS-580 AC7 its answer requeues it with its PR unchanged', `${rq.ok} ${queueOf('ds580').tickets['Q-2'].state}`, 'true triaged');
 
   const r1 = N.record({ word: 'ds580', ticket: 'PO-1', action: 'resume', text: 'agent-pullbot has run /pullbot', reads });
   t('DS-580 AC4 resume on a PR unchanged since the park requeues nothing, and names what GitHub shows',
     `${r1.ok} ${r1.line} ${queueOf('ds580').tickets['PO-1'].state}`,
-    'false ds580 PO-1: GitHub shows PR #951 unchanged since the park (head aaaaaaa as at the park, no review since it parked, and a failing check, "ci"), so nothing was recorded or requeued: a worker would park again. Resume once the step shows on the PR. parked');
+    'false ds580 PO-1: GitHub shows PR #951 unchanged since the park (head aaaaaaa, no commit, review or passing check since it parked, and a failing check, "ci"), so nothing was recorded or requeued: a worker would park again. Resume once the step shows on the PR. parked');
   const r2 = N.record({ word: 'ds580', ticket: 'PO-2', action: 'resume', text: 'agent-pullbot has run /pullbot', reads });
   t('DS-580 AC5 resume on a PR with a review since the park requeues it as today', `${r2.ok} ${queueOf('ds580').tickets['PO-2'].state}`, 'true triaged');
   const r3 = N.record({ word: 'ds580', ticket: 'PO-3', action: 'resume', text: 'done', reads });
   t('DS-580 AC6 resume on a PR GitHub cannot read requeues nothing, saying so', `${r3.ok} ${r3.line} ${queueOf('ds580').tickets['PO-3'].state}`,
     'false ds580 PO-3: could not read PR #953 from GitHub (HTTP 502), so nothing was recorded or requeued, and it stays on your list. parked');
   const r4 = N.record({ word: 'ds580', ticket: 'PO-4', action: 'resume', text: 'pushed the fix', reads });
-  t('DS-580 a PR whose head moved since the park is requeued', `${r4.ok} ${queueOf('ds580').tickets['PO-4'].state}`, 'true triaged');
-  t('DS-580 a red check gone green since the park counts as a change', N.prSincePark(po(10, 9), 9,{ headRefOid: HEAD, reviews: [], statusCheckRollup: [] }).changed, true);
+  t('DS-580 a draft PR with no recorded state and a commit since the park is requeued', `${r4.ok} ${queueOf('ds580').tickets['PO-4'].state}`, 'true triaged');
+  const since = (rollup) => N.prSincePark(po(10, 9), { headRefOid: HEAD, ...old, statusCheckRollup: rollup }).changed;
+  t('DS-580 a red check gone green since the park counts as a change', since(green(later)), true);
+  t('DS-580 a check rerun since the park and still red does not', since(red(later)), false);
+  t('DS-580 a park with no time to compare against resumes as before', N.prSincePark({ park: {} }, gh[951]).changed, true);
+  const { personOnlyStep } = await import('../desk/bin/batch-state.mjs');
+  t('DS-580 each branch alone reads as person-only', [personOnlyStep('No worker can run it.'), personOnlyStep('Only agent-pullbot can post its review.')].join('|'),
+    'No worker can run it.|Only agent-pullbot can post its review.');
+  t('DS-580 a call, a product role or a passing "only" is not person-only',
+    [DECIDE, 'The diff touches only user-facing copy, so could I skip the E2E run?', 'Only admins can delete invoices today. Should managers also be able to?',
+      'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?'].map(personOnlyStep).join(), ',,,,');
 }
 
 // Refusals.

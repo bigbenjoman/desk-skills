@@ -16,7 +16,7 @@
 //                           GitHub, "<instruction>": kept for its next worker and requeued for a worker
 //                           on the PR, whoever runs the batch; a merged or closed PR is refused, saying so.
 //                           On a park whose step only a person or another account takes, its PR is read
-//                           first: one unchanged since the park (head, reviews, failing checks), or one
+//                           first: one with no commit, review or passing check since the park, or one
 //                           that cannot be read, is refused, saying what GitHub shows, and nothing requeued
 //       answer "<answer>"  answer it only (digest.mjs answer): triage questions, and an epic's drafted
 //                           plan (start, discard, or an edit), recorded on the epic for the supervisor to
@@ -118,22 +118,24 @@ function withDrop(r, t, actions) {
   const at = actions.findIndex(([a]) => a === 'not-now');
   return at < 0 ? [...actions, ['drop', null, DROP_NOTE]] : [...actions.slice(0, at), ['drop', null, DROP_NOTE], ...actions.slice(at)];
 }
-const PERSON_RESUME_NOTE = 'once the step is done, resume "<what you did>" reads its PR on GitHub and requeues it only if its head, reviews or failing checks changed since the park';
-// What changed on a PR (`v`, read with reviews and statusCheckRollup) since its ticket parked: its head or
-// failing checks against the ticket's recorded PR status, and any review submitted after the park. ->
-// { changed, shows }, `shows` saying what GitHub still shows when nothing did. Without a recorded status
-// for that PR, only reviews are compared.
-export function prSincePark(t, pr, v) {
-  const base = Number(t?.pr_status?.pr) === Number(pr) ? t.pr_status : null;
+const PERSON_RESUME_NOTE = 'once the step is done, resume "<what you did>" reads its PR on GitHub and requeues it only if a commit, review or passing check landed since the park';
+// What changed on a PR (`v`, read with commits, reviews and statusCheckRollup) since its ticket parked
+// (park.since): a commit, a review, or a check finished since that is not failing (a red one gone green).
+// Read from GitHub's own times, since no PR state is recorded when a ticket parks. -> { changed, shows },
+// `shows` saying what GitHub still shows when nothing did. With no park time nothing can be compared, so
+// it reads as changed and resumes as before.
+export function prSincePark(t, v) {
   const since = Date.parse(t?.park?.since ?? '');
-  const red = (checks) => [...new Set(checks.filter((c) => FAILED.has(c.conclusion)).map((c) => c.name))].sort();
-  const now = red(latestPerCheck(normaliseRollup(v.statusCheckRollup)));
-  const reviews = Number.isNaN(since) ? [] : (v.reviews ?? []).filter((x) => Date.parse(x?.submittedAt ?? '') > since);
-  const head = base?.head && v.headRefOid && base.head !== v.headRefOid;
-  const checks = Array.isArray(base?.checks) && red(base.checks).join('\0') !== now.join('\0');
-  if (head || checks || reviews.length) return { changed: true };
-  const failing = now.length ? `${now.length === 1 ? 'a failing check' : `${now.length} failing checks`}, ${andList(now.map((c) => `"${c}"`))}` : 'no failing check';
-  return { changed: false, shows: `head ${String(v.headRefOid ?? '?').slice(0, 7)}${base?.head ? ' as at the park' : ''}, no review since it parked, and ${failing}` };
+  if (Number.isNaN(since)) return { changed: true };
+  const after = (at) => Date.parse(at ?? '') > since;
+  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup));
+  const moved = (v.commits ?? []).some((c) => after(c?.committedDate))
+    || (v.reviews ?? []).some((x) => after(x?.submittedAt))
+    || checks.some((c) => after(c.completedAt ?? c.startedAt) && c.conclusion && !FAILED.has(c.conclusion));
+  if (moved) return { changed: true };
+  const red = [...new Set(checks.filter((c) => FAILED.has(c.conclusion)).map((c) => c.name))].sort();
+  const failing = red.length ? `${red.length === 1 ? 'a failing check' : `${red.length} failing checks`}, ${andList(red.map((c) => `"${c}"`))}` : 'no failing check';
+  return { changed: false, shows: `head ${String(v.headRefOid ?? '?').slice(0, 7)}, no commit, review or passing check since it parked, and ${failing}` };
 }
 // A session item the person finished themselves, outside desk: done records it, once its PR has merged.
 const SESSION_DONE = ['done', null, 'if you finished the ticket yourself, done reads its PR and records it done once the PR has merged, or where it has none'];
@@ -1070,14 +1072,14 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       }
       if (item.kind === 'pr') return prResume();
       // A step only the person or another account takes shows on its PR once taken: read GitHub first,
-      // and requeue only once its head, reviews or failing checks moved since the park.
+      // and requeue only once a commit, review or passing check landed since the park.
       const pr = item.personOnly ? ownPr(x.t) : null;
       if (pr != null) {
-        const { v, err } = readPr(pr, ',reviews,statusCheckRollup');
+        const { v, err } = readPr(pr, ',commits,reviews,statusCheckRollup');
         if (!v?.state) return say(false, `could not read PR #${pr} from GitHub${err ? ` (${err})` : ''}, so nothing was recorded or requeued, and it stays on your list.`);
         const gone = prShut(pr, v.state);
         if (gone) return say(false, gone);
-        const s = prSincePark(x.t, pr, v);
+        const s = prSincePark(x.t, v);
         if (!s.changed) return say(false, `GitHub shows PR #${pr} unchanged since the park (${s.shows}), so nothing was recorded or requeued: a worker would park again. Resume once the step shows on the PR.`);
       }
       const a = ans();
