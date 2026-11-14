@@ -75,6 +75,7 @@ const stub = join(T, 'stub', 'claude');
 writeFileSync(stub, `#!/usr/bin/env bash
 if [ "$1" = --version ]; then cat "${T}/version"; exit 0; fi
 if [ "$1 $2" = "auth status" ]; then cat "${T}/account"; exit 0; fi
+printf '%s\\n' "\${FORCE_PROMPT_CACHING_5M-unset}" >> "${T}/cache"
 printf '%s' "$*" | tr '\\n' ' ' >> "${T}/calls"
 echo >> "${T}/calls"
 cat "${T}/reply"
@@ -196,6 +197,11 @@ const finder = preflight({ AUTOPILOT_FINDER_MODEL: 'opus' });
 t('lever on: the finder check runs at low effort too', [finder.calls.length, finder.calls.every((c) => /--effort low( |$)/.test(c))], [2, true]);
 
 t('first and last pass on the same inputs agree', (preflight(), readFileSync(record, 'utf8')) === first, true);
+
+// DS-649 AC4: a worker's preflight keeps the 1-hour prompt cache, even under a caller that set the 5-minute one.
+rmSync(join(T, 'cache'), { force: true });
+r = preflight({ ...off, FORCE_PROMPT_CACHING_5M: '1' });
+t('DS-649 AC4 the preflight runs with FORCE_PROMPT_CACHING_5M unset', [ran(r), readFileSync(join(T, 'cache'), 'utf8').trim().split('\n')], [RAN, ['unset']]);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

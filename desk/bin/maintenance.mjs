@@ -190,7 +190,8 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!pull.ok) return { ok: false, old, why: `git ${to ? 'merge' : 'pull'} --ff-only failed in ${dir}: ${said(pull)}` };
   const head = git('rev-parse', 'HEAD').out;
   const commits = old === head ? 0 : Number(git('rev-list', '--count', `${old}..${head}`).out) || 0;
-  const inst = run(join(dir, 'install.sh'), [], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
+  // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
+  const inst = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
   if (!inst.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(inst)}` };
   return { ok: true, old, new: head, commits };
 }
@@ -209,6 +210,7 @@ export function rebootCheck({ selfQueue = null } = {}) {
   if (!summary) blockers.push(`the reboot check gave no summary (${said(r)})`);
   const heavy = Number(field('heavy') ?? 0);
   if (heavy > 0) blockers.push(`${heavy} heavy process(es) running (test suites, typechecks, dev servers)`);
+  else if (!Number.isFinite(heavy)) blockers.push(`could not tell whether anything heavy is running (heavy=${field('heavy')}: ps could not be read)`);
   const o = othersRunning(selfQueue);
   if (o.running.length) blockers.push(`${o.running.length} worker(s) running in another repo (${o.running.join(', ')})`);
   blockers.push(...o.unreadable);

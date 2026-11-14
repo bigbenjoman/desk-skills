@@ -56,11 +56,9 @@ const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'merge-dri
 // The desk version the driver holding the lock in `dir` started at, or null with none written.
 export const lockVersion = (dir) => { try { return readFileSync(join(dir, 'merge-driver.lock.d', 'version'), 'utf8').trim() || null; } catch { return null; } };
 
-// Every process as {pid, ppid, comm, args}, from one ps.
+// Every process as {pid, ppid, comm, args}, from one ps. Throws when ps cannot be read.
 export function processes() {
-  const r = spawnSync('ps', ['-ww', '-A', '-o', 'pid=,ppid=,comm=,args='], { encoding: 'utf8' });
-  return String(r.stdout ?? '').split('\n').map((l) => /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(l)).filter(Boolean)
-    .map(([, pid, ppid, comm, args]) => ({ pid: Number(pid), ppid: Number(ppid), comm: basename(comm), args }));
+  return E.psRows('pid=,ppid=,comm=,args=').map((p) => ({ ...p, comm: basename(p.comm) }));
 }
 
 // --tickets and --deps from a driver's command line, or null when it names no tickets. No id or deps
@@ -181,7 +179,13 @@ function reloadAgents(dir) {
 
 export function restart({ stateRoot = join(E.HOME, '.desk-autopilot'), agents = AGENTS } = {}) {
   // A fresh ps for each driver: restarting the one before can take seconds, in which this one wakes.
-  const lines = [...runningDrivers(stateRoot).map((d) => restartDriver(d, processes())), ...reloadAgents(agents)];
+  const lines = [...runningDrivers(stateRoot).map((d) => {
+    let ps;
+    try { ps = processes(); } catch (e) {
+      return `merge driver for ${d.batch ? `${d.slug} batch ${d.batch}` : d.slug} (pid ${d.pid}): left running on the old code, ${e.message}`;
+    }
+    return restartDriver(d, ps);
+  }), ...reloadAgents(agents)];
   return lines.length ? lines : ['nothing to restart: no merge driver or supervisor agent is running'];
 }
 

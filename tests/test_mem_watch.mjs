@@ -1,7 +1,8 @@
 // suite: memory watch (avail band, heavy processes)
 // The sustained-high watch and what counts as heavy: fixture `ps` output and stubbed memory
 // figures only; nothing reads this computer.
-import { heavyFromPs, sustainedBandGiB, sustainedStep } from '../desk/bin/desk-env.mjs';
+import { heavyFromPs as heavyFromRows, parsePs, sustainedBandGiB, sustainedStep } from '../desk/bin/desk-env.mjs';
+const heavyFromPs = (text, self) => heavyFromRows(parsePs(text, 'pid=,args='), self);
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 

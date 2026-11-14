@@ -52,6 +52,7 @@ const REWRITTEN = [
   ['DS-565', 'needs more agent work) and hands the rest', 1], // under autopilot-judgement yes the decider takes a recommended call
   ['DS-598', 'outside the batch and not done; in the batch but parked', 1], // a blocker triage judged is held or started on
   ['DS-589', 'and the disk on the first', 1], // the local database is a health check
+  ['DS-669', 'and each triaged ticket\'s unknowns)', 1], // a held ticket's triage unknowns are asked too
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',
@@ -149,6 +150,8 @@ const section1 = contract.split('## 1. ')[1]?.split(' ## 2. ')[0] ?? '';
 t('DS-596 the rule is in the contract\'s section 1', section1.includes('**A call never leaves an acceptance criterion unmet.**'), true);
 t('DS-596 AC2 a call picks a reading, and builds the option that meets the criterion as worded', section1.includes('It may pick a reading of one, or keep a later-merged ticket\'s behaviour as review directs; where one option meets it as worded, build and log that one.'), true);
 t('DS-596 AC1 every option breaking a criterion parks before the PR, quoting it', section1.includes('Where every option breaks one, park before the PR, quoting it.'), true);
+
+t('DS-609 AC5 a park asking for a file names the absolute path of the ticket\'s fixtures folder', section1.includes('**A park asking for a file** names the absolute path of `$DESK_STATE/fixtures/<TICKET>/` to save it in.'), true);
 
 // A worker in a repo with no committed pre-push script runs the row's items itself; the script stays first.
 const stage4 = norm(read('worker-contract-stage-4.md'));

@@ -30,7 +30,7 @@ import { readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dragCells } from './evidence.mjs';
 import { join } from 'node:path';
-import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, SCREENSHOT_FILE } from './desk-env.mjs';
+import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, SCREENSHOT_FILE, psRows } from './desk-env.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
 const [pr, dir] = process.argv.slice(2);
@@ -80,8 +80,12 @@ console.log(`[upload] #${pr} <- ${files.length} image(s) from ${dir}`);
 
 // Refuse to run two at once: the profile has a single lock and a collision either kills
 // the browser or closes the page mid-upload. `ps` rather than `pgrep -a` (procps-only).
-const holders = execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf8' })
-  .split('\n')
+let procs;
+try { procs = psRows('pid=,args='); } catch (e) {
+  console.error(`[upload] ${e.message}, so whether the shared profile is in use is unknown — refusing`);
+  process.exit(2);
+}
+const holders = procs.map((p) => `${p.pid} ${p.args}`)
   .filter((l) => l.includes(`user-data-dir=${PROFILE}`) && !l.includes('upload-images.mjs'))
   .join('\n').trim();
 if (holders) { console.error(`[upload] the shared profile is in use — refusing:\n${holders}`); process.exit(2); }

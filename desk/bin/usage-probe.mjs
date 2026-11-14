@@ -82,11 +82,11 @@ export function allReadingsText(claude, codex, now) {
 // A probe is due only with no worker running on what it reads and no reading in the last PROBE_EVERY_MS.
 export const probeDue = ({ running, reading, now }) => running === 0 && (reading?.at == null || now - reading.at > PROBE_EVERY_MS);
 
-// The probe's environment: the caller's without ANTHROPIC_API_KEY, in the login's folder when given one.
+// The probe's environment: the caller's without ANTHROPIC_API_KEY, in the login's folder when given one,
+// on the 5-minute prompt cache, as a one-request call never reads a cache an hour later.
 export function probeEnv(env = process.env, login = null) {
-  if (login) return loginEnv(login, env);
   const { ANTHROPIC_API_KEY: _key, ...rest } = env;
-  return rest;
+  return { ...(login ? loginEnv(login, env) : rest), FORCE_PROMPT_CACHING_5M: '1' };
 }
 
 // Start one probe, unless another desk-q started one on the same login in the last PROBE_GAP_MS. The

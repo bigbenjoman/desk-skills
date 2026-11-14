@@ -14,7 +14,8 @@
 // a clean verdict at its head (verdictTry), goes to a review worker, under REVIEW_TRIES_PER_HEAD tries
 // at each head outside them. A draft whose screenshots were never taken goes
 // to a capture worker, once (captureTry). A ready PR whose red check asks an approval for protected files,
-// or reads no verdict it accepts at the head, goes to a worker that may clear it first (gateTry).
+// or reads no verdict it accepts at the head, goes to a worker that may clear it first (gateTry), and a
+// draft whose red check asks that approval goes to the same protected-files try (draftGateTry).
 // pass.mjs reads each done ticket's PR (pr_status) and asks fixCall what to do with it:
 //
 //   requeue  send the ticket back for a fix worker; `fix` is the try (its number, the head it is for,
@@ -127,7 +128,7 @@ const operatorStuck = (notMine, ctx) => checksStuck(null, [], notMine, ctx);
 const checksFix = (mine, notMine, repo, base = null) => ({
   kind: 'checks', what: `red: ${mine.map((f) => f.name).join(', ')}${base?.unknown.length ? `; base state unknown for ${base.unknown.map((f) => f.name).join(', ')} (no run of it on ${base.branch} at the merge base)` : ''}`,
   checks: mine.map((f) => ({ name: f.name, url: runUrl(repo, f.runId) })),
-  not_mine: notMine.map(({ name, command }) => ({ name, command })),
+  not_mine: notMine.map(({ name, command, state }) => ({ name, command, ...(state ? { state: true } : {}) })),
   ...(base ? { base: base.branch, base_red: base.red.map((f) => f.name) } : {}),
 });
 // With the failure-class lever on (ctx.baseRead, failure-class.mjs baseSplit), the red checks a worker
@@ -148,7 +149,12 @@ const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tr
 // A red check's error lines, as pr_status keeps them: its job's annotations, else what its failed log
 // names. One asking a person's approval is no cause a worker can clear.
 const LINE_CHARS = 300, LINES_PER_CHECK = 5;
-const errorLines = (c) => (c?.errors?.length ? c.errors : c?.log_errors ?? []).filter((l) => !approvalFiles(l));
+const checkLines = (c) => (c?.errors?.length ? c.errors : c?.log_errors ?? []);
+const errorLines = (c) => checkLines(c).filter((l) => !approvalFiles(l));
+// A red §4 State check, as what clears it: it reads the PR's state, not its code, so no fix try turns it green.
+const stateClears = (kind) => (kind === 'verdict'
+  ? 'a §4 State check, which reads the review verdict at the head and not the code, so only a review of a new head turns it green'
+  : 'a §4 State check, which reads the PR\'s reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads');
 const withLines = (mine, checks) => {
   const latest = latestPerCheck(checks ?? []);
   return mine.map((f) => ({ ...f, lines: errorLines(latest.find((c) => c.name === f.name)).slice(0, LINES_PER_CHECK).map((l) => l.slice(0, LINE_CHARS)) }));
@@ -660,23 +666,11 @@ export function verdictTry(t, s, ctx) {
 // s: its pr_status; ctx: fixCall's, with base and baseMerge.
 export function gateTry(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
-  if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') return null;
-  const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
-  if (gate.state !== 'fail' || gate.pending.length) return null;
-  const failing = new Set(gate.failing.map((f) => f.name));
-  const lines = (s.checks ?? []).filter((c) => failing.has(c.name))
-    .flatMap((c) => (c.errors ?? []).map((line) => ({ name: c.name, line })));
-  const done = t.fix_tries ?? [];
-  const before = done.filter((x) => x.kind === 'protected');
-  const judged = new Set(before.flatMap((x) => x.paths ?? []));
-  const asks = lines.map((x) => ({ ...x, prot: approvalFiles(x.line) })).filter((x) => x.prot?.files.length);
-  const paths = [...new Set(asks.flatMap((x) => x.prot.files))];
-  if (paths.some((p) => !judged.has(p)) && before.length < FIX_TRIES_MAX && !before.some((x) => x.head === s.head)) {
-    const more = Math.max(0, ...asks.map((x) => x.prot.more));
-    const checks = [...new Set(asks.map((x) => x.name))];
-    return { call: 'requeue', fix: { try: before.length + 1, of: FIX_TRIES_MAX, pr: s.pr, head: s.head, kind: 'protected', ready: true,
-      what: `${checks.map((c) => `"${c}"`).join(', ')} asks an approval for protected files: ${paths.join(', ')}${more ? ` and ${more} more` : ''}`, checks, paths, more } };
-  }
+  const gate = readGate(s, ctx);
+  if (!gate) return null;
+  const lines = errorLinesOf(s, gate);
+  const prot = protectedTry(t, s, lines, false);
+  if (prot) return prot;
   const verdictChecks = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'verdict').map((x) => x.name));
   const stale = lines.filter((x) => !verdictChecks.has(x.name) && staleVerdict(x.line));
   if (!stale.length) return null;
@@ -688,6 +682,37 @@ export function gateTry(t, s, ctx) {
   if (splitFailing(rest, ctx).mine.length) return null;
   const c = reviewTry(t, { pr: s.pr, head: s.head, why: `its "${stale[0].name}" check says: ${stale[0].line}`, base: ctx.base, baseMerge: ctx.baseMerge });
   return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c;
+}
+// A PR's gate, read only where it is red with nothing pending and no conflict holds it; else null.
+function readGate(s, ctx) {
+  if (s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY') return null;
+  const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
+  return gate.state === 'fail' && !gate.pending.length ? gate : null;
+}
+// The error lines of the gate's failing checks, each with its check's name.
+const errorLinesOf = (s, gate) => {
+  const failing = new Set(gate.failing.map((f) => f.name));
+  return (s.checks ?? []).filter((c) => failing.has(c.name)).flatMap((c) => (c.errors ?? []).map((line) => ({ name: c.name, line })));
+};
+// The protected-files try for the files these error lines ask an approval for, where one is left
+// (gateTry), marked for a PR out of draft or in it; null where none is.
+function protectedTry(t, s, lines, draft) {
+  const before = (t.fix_tries ?? []).filter((x) => x.kind === 'protected');
+  const judged = new Set(before.flatMap((x) => x.paths ?? []));
+  const asks = lines.map((x) => ({ ...x, prot: approvalFiles(x.line) })).filter((x) => x.prot?.files.length);
+  const paths = [...new Set(asks.flatMap((x) => x.prot.files))];
+  if (!paths.some((p) => !judged.has(p)) || before.length >= FIX_TRIES_MAX || before.some((x) => x.head === s.head)) return null;
+  const more = Math.max(0, ...asks.map((x) => x.prot.more));
+  const checks = [...new Set(asks.map((x) => x.name))];
+  return { call: 'requeue', fix: { try: before.length + 1, of: FIX_TRIES_MAX, pr: s.pr, head: s.head, kind: 'protected', ...(draft ? { draft: true } : { ready: true }),
+    what: `${checks.map((c) => `"${c}"`).join(', ')} asks an approval for protected files: ${paths.join(', ')}${more ? ` and ${more} more` : ''}`, checks, paths, more } };
+}
+// A draft whose red check asks an approval for protected files gets gateTry's protected-files try too,
+// under the same limits, and stays a draft. null where none is left, so it goes on as it would.
+export function draftGateTry(t, s, ctx) {
+  if (s?.state !== 'OPEN' || s.isDraft !== true || !s.head) return null;
+  const gate = readGate(s, ctx);
+  return gate ? protectedTry(t, s, errorLinesOf(s, gate), true) : null;
 }
 
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
@@ -724,8 +749,21 @@ function withRerunNote(c, note) {
 }
 export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
   if (!head) return null;
-  const { mine, notMine } = splitFailing(failing ?? [], ctx);
-  if (!mine.length) return notMine.length ? operatorStuck(notMine, ctx) : null;
+  // A §4 State check (ctx.stateChecks) is no worker's code to fix: beside checks a worker fixes it is
+  // named in the brief as not theirs, and on its own it is stuck with the step it failed at.
+  const latest = latestPerCheck(checks ?? []);
+  const lineOf = (f) => checkLines(latest.find((x) => x.name === f.name))[0] ?? null;
+  const state = [...new Map(stateFailing(failing, ctx.stateChecks, lineOf).map((f) => [f.name, { name: f.name, runId: f.runId, state: true, command: stateClears(f.kind) }])).values()];
+  const split = splitFailing((failing ?? []).filter((f) => !state.some((x) => x.name === f.name)), ctx);
+  const mine = split.mine, notMine = [...split.notMine, ...state];
+  // A stuck answer names a state check in its reason only: its record's checks are those a worker or an
+  // off-GitHub step clears, and a record left with none holds at this head, as fixCall's does.
+  const unstated = (c) => {
+    if (c?.call !== 'stuck' || !state.length || !Array.isArray(c.checks)) return c;
+    const kept = c.checks.filter((x) => !state.some((s) => s.name === x.name));
+    return kept.length ? { ...c, checks: kept } : { call: 'stuck', why: c.why };
+  };
+  if (!mine.length) return notMine.length ? unstated(operatorStuck(notMine, ctx)) : null;
   const base = againstBase(t, head, mine, notMine, ctx);
   if (base?.held) return base.held;
   const classed = classedRerun(base?.mine ?? mine, checks, ctx);
@@ -733,7 +771,7 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
   const done = t.fix_tries ?? [];
   const fix = { ...checksFix(base?.mine ?? mine, notMine, ctx.repo, base), draft: true };
   const c = spent(done, fixedAt(done, head)) ? spentOnRed(done, { pr, head, draft: true }, base?.mine ?? mine, base?.notMine ?? notMine, ctx, checks, base) : withRecord(nextTry(done, pr, head, fix), base?.record);
-  return classed ? withRerunNote(c, classed.note) : c;
+  return unstated(classed ? withRerunNote(c, classed.note) : c);
 }
 
 // A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3
@@ -845,7 +883,7 @@ export function fixBrief(t, review = null) {
   }
   if (f.kind === 'protected') {
     return [`## Protected files try ${f.try} of ${f.of}: PR #${f.pr}`, '',
-      `Your PR #${f.pr} is open and out of draft on this branch, and its ${f.checks.map((c) => `"${c}"`).join(', ')} check asks a person's approval at its head ${String(f.head).slice(0, 12)} because the PR changes protected files:`, '',
+      `Your PR #${f.pr} is ${f.draft ? 'a draft' : 'open and out of draft'} on this branch, and its ${f.checks.map((c) => `"${c}"`).join(', ')} check asks a person's approval at its head ${String(f.head).slice(0, 12)} because the PR changes protected files:`, '',
       ...f.paths.map((p) => `- ${p}`), ...(f.more ? [`- and ${f.more} more the check counts but does not name: its run log (gh run view --log-failed) or the gate's protected-path rule names them`] : []), '',
       "Read the ticket's acceptance criteria (desk-jira get, or its ticket file) against your diff to each one. A change to it the criteria do not need (a convenience script, a stray edit, a tidy-up) comes out: restore the file, or the lines, to the base's version. " +
       'A change the criteria need stays as it is: never move it to another path, rename it or reword it to get past the rule.', '',
@@ -919,7 +957,7 @@ export function fixBrief(t, review = null) {
       ? `Your PR #${f.pr} is a draft on this branch, and these required checks are red at ${String(f.head).slice(0, 12)}, so it cannot leave draft:`
       : `Your PR #${f.pr} is open and out of draft on this branch, and these checks are still red at ${String(f.head).slice(0, 12)} after the merge driver's two reruns:`, '');
     for (const c of f.checks) lines.push(`- ${c.name}: ${c.url ?? 'no run URL reported'}`);
-    for (const c of f.not_mine ?? []) lines.push(`- ${c.name} is red too, and it is not yours to fix: ${c.command}. A person runs that; leave it red.`);
+    for (const c of f.not_mine ?? []) lines.push(`- ${c.name} is red too, and it is not yours to fix: ${c.command}.${c.state ? ' Leave it red.' : ' A person runs that; leave it red.'}`);
     for (const name of f.builds ?? []) lines.push(`- ${name} is red too, and it is not yours to fix: §4 Check builds names it, so the pass builds your head once the rest are green. Do not run that build yourself; leave it red.`);
     for (const name of f.base_red ?? []) lines.push(`- ${name} is red too, and on ${f.base} at your merge base as well, so it is not yours to fix: leave it red.`);
     if (f.lines?.length) {
@@ -976,7 +1014,7 @@ export function fixTask(t, review = null) {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
       `Your task is protected files try ${f.try} of ${f.of} on PR #${f.pr}, already open on your branch: the "Protected files try" section of your briefing lists the protected files its check wants an approval for. ` +
       `Drop each change to them that the ticket's acceptance criteria do not need, and nothing else. If you dropped any, verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), push to the same branch with git push origin <your branch>${afterReview}. If every change is needed, change nothing and push nothing. ` +
-      `Open no new PR, leave the PR out of draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status> said=<for each file, dropped, or needed and the criterion that needs it>.`;
+      `Open no new PR, leave the PR ${f.draft ? 'in' : 'out of'} draft, and leave the ticket's Jira as it is. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status> said=<for each file, dropped, or needed and the criterion that needs it>.`;
   }
   if (f.kind === 'capture') {
     return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
@@ -1003,7 +1041,8 @@ export function fixTask(t, review = null) {
         : `fix each ${findingKinds(f.findings)} finding it quotes${f.findings?.some((x) => x.sev === 'P2') ? ', or carry one in your review of the new head where fixing it would mean another round' : ''}, and nothing else`)
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
-  const after = reviewed ? afterReview : '';
+  // A worker that pushed nothing left the head the last review read, so another review there changes nothing.
+  const after = reviewed ? `${afterReview}. If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one` : '';
   // A conflict try's DONE line is the reason a PR stuck after its last try gives (stillInConflict).
   const said = f.kind === 'conflict' && f.check ? ' said=<one line: what you renumbered, or what still fails the check and why>'
     : f.kind === 'conflict' ? ' said=<one line: what you resolved, or what is still in conflict and why>'

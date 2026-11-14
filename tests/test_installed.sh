@@ -122,6 +122,30 @@ check "DS-313 AC1: it keeps its own repo root and state" 'grep -qx "DESK_REPO_DI
 kill "$new" 2>/dev/null; pkill -P "$new"
 i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 
+# ---- DS-670: a process list over Node's 1 MB default cap, and ps failing --------------------------
+# A stub ps prints over 2 MB of rows (a dozen workers' prompts) ahead of the real list, or fails.
+REALPS="$(command -v ps)"
+node -e 'let s = ""; for (let i = 0; i < 2200; i++) s += `${9000000 + i} 1 node ${"x".repeat(1000)}\n`; process.stdout.write(s)' > "$T/ps.pad"
+cat > "$T/fakes/ps" <<EOF
+#!/bin/sh
+[ -f "$T/ps.fail" ] && { echo "ps: cannot read the process table" >&2; exit 1; }
+[ -f "$T/ps.big" ] && cat "$T/ps.pad"
+exec "$REALPS" "\$@"
+EOF
+chmod +x "$T/fakes/ps"
+touch "$T/ps.big"
+driver --tickets "A" --log
+old="$(held)"
+out=$(restart)
+new="$(held)"
+check "DS-670 AC1: with over 1 MB of ps rows ahead of it, the idle driver is restarted" '[ -n "$new" ] && [ "$new" != "$old" ] && grep -q "^merge driver for acme__widgets: restarted on the new code (pid $old -> $new) for A$" <<< "$out"'
+touch "$T/ps.fail"
+out=$(restart)
+check "DS-670 AC4: when ps fails, the driver is left running and the line says ps could not be read" '[ "$(held)" = "$new" ] && grep -q "^merge driver for acme__widgets (pid $new): left running on the old code, ps could not be read (ps: cannot read the process table)$" <<< "$out"'
+rm -f "$T/ps.fail" "$T/ps.big"
+kill "$new" 2>/dev/null; pkill -P "$new"
+i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+
 # ---- AC2: a driver mid-loop is left running ------------------------------------------------------
 touch "$T/busy"; driver --tickets "A" --log; rm -f "$T/busy"
 busy="$(held)"; n=$(count "$T/driver.calls")
@@ -200,6 +224,61 @@ console.log(JSON.stringify([
   driverArgs('node /x/other.mjs --tickets A'),
 ]));")
 check "driverArgs reads comma or space separated tickets, keeps each deps entry, and needs tickets" '[ "$out" = "[{\"tickets\":[\"A\",\"B\",\"C\"],\"deps\":[\"D:A,B\"]},null,null]" ]'
+
+# ---- install.sh installs only desk's release: the default branch, not behind origin ----------------
+# A scratch origin and a checkout cloned from it. guard <dir> [args] runs install.sh's checkout guard,
+# taken from install.sh, as that checkout's installer: it prints INSTALLING once the guard lets it on.
+SRCSH="$S/../install.sh"
+gc(){ git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
+GUARD="$T/guard.sh"
+{ echo 'set -euo pipefail; SRC="$1"; shift; WARNINGS=0'
+  sed -n '/^YES=0$/,/^done$/p; /^has()  /p; /^warn()  /p' "$SRCSH"
+  sed -n '/^# checkout_problem —/,/^# end checkout guard$/p' "$SRCSH"
+  echo 'echo INSTALLING'; } > "$GUARD"
+guard(){ "${BASH:-bash}" "$GUARD" "$@" 2>&1; }
+O="$T/origin.git"; git init -q --bare -b main "$O"
+C="$T/desk-src"; git init -q -b main "$C"; git -C "$C" remote add origin "$O"
+gc "$C" commit -q --allow-empty -m one; gc "$C" push -q origin main
+U="$T/upstream"; git clone -q "$O" "$U"
+ahead(){ for _ in $(seq "$1"); do gc "$U" commit -q --allow-empty -m more; done; gc "$U" push -q origin main; }
+
+out=$(guard "$C"); rc=$?
+check "AC3: on the default branch level with origin, it installs as today, with no warning" '[ $rc -eq 0 ] && [ "$out" = INSTALLING ]'
+gc "$C" switch -q -c docs/roadmap; ahead 2
+out=$(guard "$C"); rc=$?
+check "AC1: on another branch, it installs nothing and names the branch, the commits behind and the flag" \
+  '[ $rc -eq 3 ] && ! grep -q INSTALLING <<< "$out" && grep -q "^Nothing installed: $C is on docs/roadmap, not main, and is 2 commit(s) behind origin/main\.$" <<< "$out" && grep -q "./install.sh --any-branch$" <<< "$out"'
+out=$(guard "$C" --any-branch); rc=$?
+check "AC4: with the flag, it installs and warns naming the branch and the commits behind" \
+  '[ $rc -eq 0 ] && grep -q "WARN  installing anyway (--any-branch): $C is on docs/roadmap, not main, and is 2 commit(s) behind origin/main$" <<< "$out" && [ "$(tail -n 1 <<< "$out")" = INSTALLING ]'
+gc "$C" checkout -q --detach main
+out=$(guard "$C"); rc=$?
+check "AC1: a detached HEAD is not the default branch" '[ $rc -eq 3 ] && grep -q "is on a detached HEAD, not main, and is 2 commit(s) behind" <<< "$out"'
+gc "$C" switch -q main; ahead 1
+out=$(guard "$C"); rc=$?
+check "AC2: on the default branch but behind origin, it installs nothing and says how far behind" \
+  '[ $rc -eq 3 ] && ! grep -q INSTALLING <<< "$out" && grep -q "^Nothing installed: $C is on main but 3 commit(s) behind origin/main\.$" <<< "$out"'
+gc "$C" pull -q --ff-only origin main
+out=$(guard "$C"); rc=$?
+check "AC3: once pulled level, it installs" '[ $rc -eq 0 ] && [ "$out" = INSTALLING ]'
+gc "$C" commit -q --allow-empty -m unpushed
+out=$(guard "$C"); rc=$?
+check "on the default branch ahead of origin (unpushed commits), it installs with no warning" '[ $rc -eq 0 ] && [ "$out" = INSTALLING ]'
+gc "$C" remote set-url origin "$T/gone.git"
+out=$(guard "$C"); rc=$?
+check "AC5: with no origin to fetch, it says the check could not run and installs nothing" \
+  '[ $rc -eq 3 ] && ! grep -q INSTALLING <<< "$out" && grep -q "^Nothing installed: could not fetch origin/main, so the branch check could not run\.$" <<< "$out"'
+out=$(guard "$C" --any-branch); rc=$?
+check "AC5: with the flag, it installs and warns that the check could not run" \
+  '[ $rc -eq 0 ] && grep -q "WARN  installing anyway (--any-branch): could not fetch origin/main" <<< "$out" && [ "$(tail -n 1 <<< "$out")" = INSTALLING ]'
+gc "$C" remote set-url origin "$O"
+out=$(guard "$T/repo"); rc=$?
+check "a directory that is not a git checkout is a check that could not run" '[ $rc -eq 3 ] && grep -q "$T/repo is not a git checkout, so the branch check could not run" <<< "$out"'
+# The real installer, copied into the checkout on another branch: it stops before writing anything.
+cp "$SRCSH" "$C/install.sh"; gc "$C" switch -q -c feat
+out=$(HOME="$T/fresh-home" "${BASH:-bash}" "$C/install.sh" </dev/null 2>&1); rc=$?
+check "AC1: install.sh itself exits 3 on another branch and writes nothing to HOME" \
+  '[ $rc -eq 3 ] && grep -q "^Nothing installed: $C is on feat, not main, and is 0 commit(s) behind origin/main\.$" <<< "$out" && [ ! -e "$T/fresh-home" ] && ! grep -q "^== Dependencies" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

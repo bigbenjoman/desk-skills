@@ -224,8 +224,15 @@ function moveDriver(state, s) {
   if (busy) return null;
   const from = logSize(driverLog(state));
   let line;
-  try { line = restartDriver({ slug: E.repoSlug(), batch: E.batchName(), dir: state, pid, queue: E.queueFile() }, processes()); }
-  finally { dropLock(state); }
+  const d = { slug: E.repoSlug(), batch: E.batchName(), dir: state, pid, queue: E.queueFile() };
+  try {
+    let ps;
+    try { ps = processes(); } catch (e) { ps = e; }
+    // A partial list could miss the driver's tickets, so a ps that fails leaves it running, as restart() does.
+    line = ps instanceof Error
+      ? `merge driver for ${d.batch ? `${d.slug} batch ${d.batch}` : d.slug} (pid ${pid}): left running on the old code, ${ps.message}`
+      : restartDriver(d, ps);
+  } finally { dropLock(state); }
   const now = driverHolder(state);
   if (now !== pid) {
     // The driver this supervisor started carries on under its new pid, so its stop is still read, from
