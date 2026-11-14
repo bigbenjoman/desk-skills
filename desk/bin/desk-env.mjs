@@ -539,6 +539,29 @@ export function configuredRepos(root = deskConfigRoot()) {
     .map((r) => ({ ...r, ghRepo: repoConfigValue(r.slug, 'gh-repo', root) ?? r.slug.replace('__', '/') }));
 }
 
+// Where a ticket's Jira Repository field (ticket-facts.mjs `repository`) sends it, matched against each
+// configured repo's GitHub repo by its name, or whole where the field is `owner/name`, case aside:
+// null when the field is empty or names this repo; {repository, slug, ghRepo, root} for one other
+// configured repo (root its §2 Primary repo root, or null); {repository, unknown: true, slugs} where
+// no configured repo has that name, or several do.
+export function repoPlacement(repository, root = deskConfigRoot()) {
+  const want = String(repository ?? '').trim().toLowerCase();
+  if (!want) return null;
+  const names = (g) => {
+    const s = String(g ?? '').trim().toLowerCase();
+    return !!s && (want.includes('/') ? s === want : s.split('/').pop() === want);
+  };
+  const self = currentRepo();
+  let own = null;
+  try { own = configValue('gh-repo'); } catch { /* no config here: the remote decides */ }
+  const repos = configuredRepos(root);
+  if (names(self.ownerRepo) || names(own) || repos.some((r) => r.slug === self.slug && names(r.ghRepo))) return null;
+  const hits = repos.filter((r) => r.slug !== self.slug && names(r.ghRepo));
+  if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
+  const dir = String(repoConfigValue(hits[0].slug, 'repo-root', root) ?? '').trim();
+  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null };
+}
+
 // The per-computer files' write: the previous copy kept beside it as <path>.bak.
 function writeWithBackup(path, text) {
   mkdirSync(dirname(path), { recursive: true });

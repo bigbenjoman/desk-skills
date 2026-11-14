@@ -19,6 +19,8 @@
 //   own_epic_blockers  [key] — those links to its own epic, ignored; absent when there are none
 //   other_links  how many links of another type (not Blocks, not Relates) were ignored
 //   size         XS|S|M|L|XL from the field named "Size", else a first description line "Size: M", else null
+//   repository   the field named "Repository", as text, else null: plan-batch sends a ticket that names
+//                another configured repo there (desk-env.mjs repoPlacement)
 //   epic         {key, summary, children: [{key, done}]} when its Jira parent is an epic, else null; the
 //                children list is left out, with epic_error, when it could not be read
 //   labels       the issue's labels, as written (a feature-mode batch promotes when a `milestone` merges)
@@ -106,7 +108,7 @@ if (!kind.ok) { console.error(kind.error); process.exit(2); }
 const path = join(stateDir(), 'triage', `${key}.json`);
 if (!existsSync(path)) { console.error(`no triage record at ${path}`); process.exit(1); }
 const rec = JSON.parse(readFileSync(path, 'utf8'));
-for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'labels', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
+for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'repository', 'labels','epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
 
 // The design fact, read against the base a worker branches from, as origin has it where fetched.
 function design(text) {
@@ -120,6 +122,12 @@ const asSize = (v) => {
   const s = String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim().toUpperCase();
   return SIZES.includes(s) ? s : null;
 };
+// A text, select or multi-select field's value as one string, or null when it is empty.
+const asText = (v) => {
+  const s = Array.isArray(v) ? v.map(asText).filter(Boolean).join(', ') : String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim();
+  return s || null;
+};
+const fieldNamed = (issue, re) => Object.entries(issue.names ?? {}).find(([, n]) => re.test(String(n).trim()))?.[0];
 
 if (kind.kind !== 'tracker') {
   rec.links = 'n/a';
@@ -143,10 +151,12 @@ if (kind.kind !== 'tracker') {
     const links = issue.fields?.issuelinks ?? [];
     setBlockers(rec, issue);
     rec.other_links = links.filter((l) => !/block/i.test(l.type?.name ?? '') && !/^relates$/i.test(l.type?.name ?? '')).length;
-    const sizeField = Object.entries(issue.names ?? {}).find(([, n]) => /^(t-shirt )?size$/i.test(String(n).trim()))?.[0];
+    const sizeField = fieldNamed(issue, /^(t-shirt )?size$/i);
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';
     rec.size = (sizeField && asSize(issue.fields?.[sizeField]))
       ?? asSize(SIZE_LINE.exec(firstLine)?.[1]);
+    const repoField = fieldNamed(issue, /^repository$/i);
+    rec.repository = repoField ? asText(issue.fields?.[repoField]) : null;
     rec.labels = Array.isArray(issue.fields?.labels) ? issue.fields.labels.map(String) : [];
     Object.assign(rec, epicOf(issue));
     design(issue.fields?.description);
