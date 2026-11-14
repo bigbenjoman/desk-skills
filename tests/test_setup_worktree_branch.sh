@@ -72,9 +72,11 @@ check "AC2 setup fails"                                         '[ $rc -ne 0 ] &
 check "AC2 names the folder and its changes"                    '[[ "$out" == *"$H"*"uncommitted changes"*"a.txt"* ]]'
 check "AC2 the other worktree keeps the branch and the change"  'on_branch "$H" fix/T-2 && grep -qx two "$H/a.txt"'
 
-# AC3: untracked files there.
+# AC3: untracked files there, found even where the person's git config hides them from status.
 held 3; H="$T/other-3"; : > "$H/new.txt"
+git config --global status.showUntrackedFiles no
 out=$(bash "$B/setup-worktree.sh" --for-worker T-3 fix/T-3 2>&1); rc=$?
+git config --global --unset status.showUntrackedFiles
 check "AC3 setup fails"                                         '[ $rc -ne 0 ] && [ ! -e "$T/wt/T-3" ]'
 check "AC3 names the folder and its untracked files"            '[[ "$out" == *"$H"*"untracked files"*"new.txt"* ]]'
 check "AC3 the other worktree keeps the branch"                 'on_branch "$H" fix/T-3'
