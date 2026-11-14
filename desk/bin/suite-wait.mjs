@@ -4,6 +4,7 @@
 import { readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { psRows } from './desk-env.mjs';
 
 // Every process's working directory, as [{pid, cmd, cwd}], read once: lsof, else Linux's /proc.
 // Null when neither can be read.
@@ -56,11 +57,7 @@ export const usersText = (users) => users.map((p) => `pid ${p.pid}${p.cmd ? ` ($
 let PROCS;
 export function processList() {
   if (PROCS !== undefined) return PROCS;
-  const r = spawnSync('ps', ['-ww', '-axo', 'pid=,ppid=,args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  PROCS = r.error || r.status !== 0 ? null : r.stdout.split('\n').flatMap((l) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l);
-    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), args: m[3] }] : [];
-  });
+  try { PROCS = psRows('pid=,ppid=,args=').filter((p) => Number.isInteger(p.pid) && Number.isInteger(p.ppid)); } catch { PROCS = null; }
   return PROCS;
 }
 
@@ -86,9 +83,11 @@ const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|
 // 'suite' when a process working in the worktree holds the test lock, 'lock' when one waits for it,
 // else null. flock(1) runs its command as a child, so a single-slot flock with a child holds the lock.
 // A holder file's pid counts only for a process still working in the worktree, so a stale file whose
-// pid has been reused elsewhere names nothing here.
+// pid has been reused elsewhere names nothing here. 'unknown' when ps cannot be read: no list is not
+// an empty one, so the pass holds the worker as it would a suite, up to the same ceiling.
 export function suiteWait(worktree, { procs, cwds, holders }) {
-  if (!worktree || !procs || !cwds) return null;
+  if (!worktree || !cwds) return null;
+  if (!procs) return 'unknown';
   const here = new Set(dirUsers(worktree, [], cwds).map((c) => c.pid));
   let waiting = false;
   for (const p of procs) {
@@ -103,4 +102,4 @@ export function suiteWait(worktree, { procs, cwds, holders }) {
 }
 
 // What the pass says of each, in its quiet list and in a wedged park's reason.
-export const SUITE_WAIT_TEXT = { suite: 'running its suite', lock: 'waiting on the test lock' };
+export const SUITE_WAIT_TEXT = { suite: 'running its suite', lock: 'waiting on the test lock', unknown: 'ps could not be read, so whether it is running its suite is unknown' };

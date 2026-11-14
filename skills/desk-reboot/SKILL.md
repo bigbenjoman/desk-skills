@@ -47,7 +47,7 @@ Two sources, in one turn:
   repo it lists each worktree with uncommitted changes (and how many untracked) or commits on no
   remote, with counts; then every heavy process (`desk-env heavy`: test suites, typechecks, dev
   servers), then FileVault (`fdesetup status`). Its last line is `summary: dirty=<n> unpushed=<n>
-  heavy=<n> filevault=<on|off|unknown|n/a>`. With FileVault on (or `unknown`: the status could not
+  heavy=<n|unknown> filevault=<on|off|unknown|n/a>`. With FileVault on (or `unknown`: the status could not
   be read), a restarted Mac waits at the disk unlock screen and nothing runs until someone logs in,
   so say so in the report. A repo whose root is unset or not a checkout here is printed as not
   checked: carry that into the report.

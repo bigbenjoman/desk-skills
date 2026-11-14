@@ -122,6 +122,30 @@ check "DS-313 AC1: it keeps its own repo root and state" 'grep -qx "DESK_REPO_DI
 kill "$new" 2>/dev/null; pkill -P "$new"
 i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 
+# ---- DS-670: a process list over Node's 1 MB default cap, and ps failing --------------------------
+# A stub ps prints over 2 MB of rows (a dozen workers' prompts) ahead of the real list, or fails.
+REALPS="$(command -v ps)"
+node -e 'let s = ""; for (let i = 0; i < 2200; i++) s += `${9000000 + i} 1 node ${"x".repeat(1000)}\n`; process.stdout.write(s)' > "$T/ps.pad"
+cat > "$T/fakes/ps" <<EOF
+#!/bin/sh
+[ -f "$T/ps.fail" ] && { echo "ps: cannot read the process table" >&2; exit 1; }
+[ -f "$T/ps.big" ] && cat "$T/ps.pad"
+exec "$REALPS" "\$@"
+EOF
+chmod +x "$T/fakes/ps"
+touch "$T/ps.big"
+driver --tickets "A" --log
+old="$(held)"
+out=$(restart)
+new="$(held)"
+check "DS-670 AC1: with over 1 MB of ps rows ahead of it, the idle driver is restarted" '[ -n "$new" ] && [ "$new" != "$old" ] && grep -q "^merge driver for acme__widgets: restarted on the new code (pid $old -> $new) for A$" <<< "$out"'
+touch "$T/ps.fail"
+out=$(restart)
+check "DS-670 AC4: when ps fails, the driver is left running and the line says ps could not be read" '[ "$(held)" = "$new" ] && grep -q "^merge driver for acme__widgets (pid $new): left running on the old code, ps could not be read (ps: cannot read the process table)$" <<< "$out"'
+rm -f "$T/ps.fail" "$T/ps.big"
+kill "$new" 2>/dev/null; pkill -P "$new"
+i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+
 # ---- AC2: a driver mid-loop is left running ------------------------------------------------------
 touch "$T/busy"; driver --tickets "A" --log; rm -f "$T/busy"
 busy="$(held)"; n=$(count "$T/driver.calls")
