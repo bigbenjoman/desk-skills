@@ -4,7 +4,7 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync } from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -52,7 +52,7 @@ import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, 
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
-import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
@@ -2904,13 +2904,8 @@ function busyWorktree(t) {
   const resumed = toResume(t) || toHandoff(t) || !!t.login_move;
   const wt = resumed ? t.worktree : join(WORKTREES, t.key);
   if (!wt || !existsSync(wt)) return null;
-  let real = wt;
-  try { real = realpathSync(wt); } catch { /* as recorded */ }
-  const inside = (p) => [wt, real].some((w) => p === w || p.startsWith(`${w}/`));
-  const users = (processCwds() ?? []).filter((p) => inside(p.cwd) && p.pid !== process.pid && p.pid !== process.ppid);
-  if (users.length) {
-    return `its worktree ${wt} is the working directory of ${users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ')}, which the pass did not start`;
-  }
+  const users = dirUsers(wt, [process.pid, process.ppid]) ?? [];
+  if (users.length) return `its worktree ${wt} is the working directory of ${usersText(users)}, which the pass did not start`;
   if (!(t.fix && !t.fix.finished) || resumed) return null;
   // A worktree git cannot read is not held: setup-worktree.sh says so.
   return gitHold(wt, (args) => { const o = shOut('git', ['-C', wt, ...args]); return o.ok ? o.out : null; }) ?? null;
