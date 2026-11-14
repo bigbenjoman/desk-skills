@@ -80,8 +80,8 @@ import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
 import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
-import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
-import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
+import { answer, override, readDecisions, PRODUCTION_BROKEN } from './digest.mjs';
+import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
 import { followOnPending } from './harvest.mjs';
 
@@ -502,13 +502,22 @@ function outsideHolds(r, t) {
     return { key: b.key, category: b.category ?? 'new', batch: at ? (at.name ?? 'standing') : null };
   });
 }
-const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}, ${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
-// Every blocker a ticket names, in its batch or outside it, with its state: a put-off item's input, so a
-// blocker that moves brings it back.
+const batchWords = (o) => (o.batch ? `in batch ${o.batch}` : 'in no batch');
+const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}, ${batchWords(o)})`;
+// A blocker's state as a put-off input: done (in the batch, or Done in Jira), none (in neither the batch
+// nor the recorded outside blockers), else open. A blocker moving between in-flight stages (triaged,
+// running, parked, a Jira status short of Done) is not a change, or every pass would bring it back.
+// Reads both this form and the one entries recorded before it: a batch stage, or `<category>@<batch>`.
+const settledOf = (s) => { const v = String(s).split('@')[0]; return v === 'done' || v === 'none' ? v : 'open'; };
+const blockerList = (pairs) => pairs.map(([b, s]) => [b, settledOf(s)]).sort(([a], [b]) => a.localeCompare(b)).map(([b, s]) => `${b}:${s}`).join(',');
+// Every blocker a ticket names, in its batch or outside it, with its settled state: a put-off item's
+// input, so a blocker added, removed or done brings it back.
 function blockerStates(r, t) {
-  const out = new Map(outsideHolds(r, t).map((o) => [o.key, `${o.category}@${o.batch ?? 'none'}`]));
-  return [...new Set([...keysOf(t.held_by), ...out.keys()])].map((b) => `${b}:${r.q.tickets?.[b]?.state ?? out.get(b) ?? 'none'}`).join(',');
+  const out = new Map(outsideOf(t).map((o) => [o.key, o.category ?? 'new']));
+  return blockerList([...new Set([...keysOf(t.held_by), ...out.keys()])].map((b) => [b, r.q.tickets?.[b]?.state ?? out.get(b) ?? 'none']));
 }
+// An outside hold put off as its need without the Jira status of each blocker, which moves in flight.
+const LEGACY_HOLD = /\((?:[^,()]+), (in batch [^()]*|in no batch)\)/g;
 // An item's action names, once each: what a put-off entry records, so one it gains brings it back.
 const verbsOf = (item) => [...new Set(item.actions.map(([a]) => a.split(' ')[0]))];
 
@@ -702,6 +711,7 @@ function itemOf(r, x) {
     const admit = free.length ? [['admit', `${andList(free)} ${one1 ? 'is' : 'are'} in no batch, so nothing works ${one1 ? 'it' : 'them'}: admitting queues ${one1 ? 'it' : 'them'} for a worker`]] : [];
     const answerWhy = 'say whether it can start without the tickets outside; the next pass can then start it';
     return { kind: 'held', need: `held by ${andList(outside.map(holdWords))}, outside this batch`,
+      putOffNeed: `held by ${andList(outside.map((o) => `${o.key} (${batchWords(o)})`))}, outside this batch`,
       actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] };
   }
   // A held ticket with a question of its own is asked that question, below.
@@ -735,16 +745,32 @@ function itemOf(r, x) {
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
     return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
   }
-  // Its questions as the digest page words them, so a put-off entry keys to the same text.
-  const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
-  return { kind: 'triage', need, actions: [['answer', 'answering clears its questions, so the next pass can start it'], ['not-now']] };
+  return { kind: 'triage', need: triageNeed(r, t), actions: [['answer', 'answering clears its questions, so the next pass can start it'], ['not-now']] };
+}
+
+// A triage item's need: its open questions as its triage record words them (`unknowns`), numbered
+// when there are several, so the person can answer them from the list. A held ticket's question is
+// asked here too, which the digest's open questions leave out. Questions plan-batch asked that the
+// record does not hold are counted; with none recorded, the count alone.
+const countNeed = (n) => `${n} triage question(s) open`;
+function triageQuestions(r, t) {
+  const u = triageOf(r.stateDir, t.key)?.unknowns;
+  return Array.isArray(u) ? u.map((x) => one(x?.question ?? x)).filter(Boolean) : [];
+}
+function triageNeed(r, t) {
+  const qs = triageQuestions(r, t), n = t.open_questions ?? 0;
+  if (!qs.length) return countNeed(n);
+  const more = n > qs.length ? ` (and ${n - qs.length} more not in its triage record)` : '';
+  return `${qs.length === 1 ? qs[0] : qs.map((q, i) => `(${i + 1}) ${q}`).join(' ')}${more}`;
 }
 
 // The question and inputs an item is put off under. A park is keyed as answer.mjs records it, to its
 // question and park inputs; anything else to its ticket and kind, since several tickets share a need's
-// words, with its need, PR head and the states of any blockers it names as inputs, so a moved head or
-// a blocker that went done brings it back. A PR's need is left out: it carries the age of its running
-// checks.
+// words, with its need, PR head and the settled states of any blockers it names as inputs, so a moved
+// head or a blocker added, removed or done brings it back. A PR's need is left out: it carries the age
+// of its running checks. An outside hold's need is keyed without its blockers' Jira statuses.
+// `legacy` reads an entry's inputs as recorded before blockers were settled and triage needs named
+// their questions, so an older entry stays put off while what it keys to is unchanged.
 const PARK_KINDS = ['parked', 'session', 'spine', 'plan'];
 function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
@@ -753,13 +779,30 @@ function putOffKey(r, t, item) {
   if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
-  else inputs.need = item.need;
+  else inputs.need = item.putOffNeed ?? item.need;
   if (item.approval) inputs.approvals = (t.pr_status?.approvals ?? []).join(', ') || 'none';
   // A worktree item led by its park's reason holds the worktree's state in its note: a new hold brings it back.
   if (item.kind === 'worktree' && item.note) inputs.hold = item.note;
   const blockers = blockerStates(r, t);
   if (blockers || item.kind === 'held') inputs.blockers = blockers;
-  return { question: `${t.key} ${item.kind}`, inputs };
+  const legacy = (was) => {
+    const out = { ...was };
+    if (typeof out.blockers === 'string') out.blockers = blockerList(out.blockers.split(',').filter(Boolean).map((p) => { const i = p.lastIndexOf(':'); return [p.slice(0, i), p.slice(i + 1)]; }));
+    if (item.kind === 'triage' && typeof out.need === 'string') {
+      const qs = triageQuestions(r, t);
+      if (out.need === countNeed(t.open_questions ?? 0) || (qs.length && one(out.need) === qs.join(' · '))) out.need = inputs.need;
+    }
+    if (item.putOffNeed && typeof out.need === 'string') out.need = out.need.replace(LEGACY_HOLD, '($1)');
+    return out;
+  };
+  return { question: `${t.key} ${item.kind}`, inputs, legacy };
+}
+// lookup, with an entry recorded in an older form read through the key's `legacy`.
+function lookupItem(register, key) {
+  const l = lookup(register, key);
+  if (l.status !== 'changed' || !key.legacy) return l;
+  const was = key.legacy(l.entry.inputs ?? {});
+  return inputsHash(was) === inputsHash(key.inputs) ? { status: 'put_off', entry: l.entry } : { ...l, line: changedLine(l.entry, changes(was, key.inputs)) };
 }
 
 // A needs row as an item, and what the not-now register says of it: the one rule desk-q's count and
@@ -790,7 +833,7 @@ function stillListed(r, key) {
 }
 function judged(r, x, register) {
   const item = itemOf(r, x);
-  const l = lookup(register, putOffKey(r, x.t, item));
+  const l = lookupItem(register, putOffKey(r, x.t, item));
   if (l.status !== 'put_off') return { item, l };
   const behind = heldBehind(r, x.t.key);
   const shown = behind >= HOLDS_BACK ? { ...item, need: `${item.need} (${holdingWords(behind)})`, behind } : item;
@@ -812,7 +855,7 @@ export function stampActions({ stateDir, ticket, question, now = Date.now(), rep
   return item && questionKey(putOffKey(r, x.t, item).question) === questionKey(question) ? stampItem(r, x, item) : null;
 }
 function stampItem(r, x, item) {
-  const l = lookup(readRegister(r.stateDir), putOffKey(r, x.t, item));
+  const l = lookupItem(readRegister(r.stateDir), putOffKey(r, x.t, item));
   if (l.status !== 'put_off') return null;
   const actions = verbsOf(item);
   if (l.entry.actions?.join() !== actions.join()) addPutOff({ ...l.entry, actions }, r.stateDir);

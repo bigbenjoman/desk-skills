@@ -116,7 +116,7 @@ t('AC12 the list is one script call that exits 0', list.code, 0);
 t('AC12 one line per item', itemLines.length, c.items.length);
 t('AC3 each line names its repo and ticket, then what is needed, then the recommendation first',
   itemLines.every((l) => /^[a-z]+ [A-Z]-\d+ (parked|session|triage|held|spine)\b[^|]* \| .+ \| 1\. [a-z-]+ \(recommended: [^)]+\)/.test(l)), true);
-t('AC3 a triage item asks its unknowns', itemLines.some((l) => l.startsWith('alpha A-3 triage') && l.includes('| What is the cap? · Which page? |')), true);
+t('AC3 a triage item asks its unknowns, numbered when there are several', itemLines.some((l) => l.startsWith('alpha A-3 triage') && l.includes('| (1) What is the cap? (2) Which page? |')), true);
 t('AC3 (DS-279 AC16) a hold only you can let start recommends start, never release', itemLines.some((l) => l.startsWith('alpha A-4 held') && l.includes('A-9 is not in this queue') && l.includes('1. start (recommended:') && !/releas/.test(l)), true);
 t('AC12 each repo with items says who runs it', ['@ alpha: run by the supervisor', '@ beta: run by a live session (beta-batch)', '@ gamma: passes stopped'].every((s) => list.out.includes(s)), true);
 t('AC5 a parked item offers to override its worker\'s decision', itemLines.some((l) => l.startsWith('alpha A-1 parked') && l.includes('override d1 (took "h2" on "Which heading level?")')), true);
@@ -307,8 +307,10 @@ N.record({ word: 'theta', ticket: 'H-2', action: 'not-now' });
 t('DS-401 AC4 put off as a held row, with nothing changed, it stays put off', theta()['H-2'], undefined);
 const moveBlocker = (category) => { const q = queueOf('theta'); q.tickets['H-2'].outside_blockers = [{ key: 'X-9', category }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__theta', 'queue.json'), JSON.stringify(q)); };
 moveBlocker('indeterminate');
-t('DS-401 AC2 once its outside blocker\'s state changes it is listed again, saying what changed',
-  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:running,X-9:new@none → H-1:running,X-9:indeterminate@none; need .*\)$/.test(theta()['H-2']?.need ?? ''), true);
+t('DS-401 AC2 an outside blocker moving in flight (To Do to In Progress) leaves it put off', theta()['H-2'], undefined);
+moveBlocker('done');
+t('DS-401 AC2 once its outside blocker is Done it is listed again, saying what changed',
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:open,X-9:open → H-1:open,X-9:done\.\)$/.test(theta()['H-2']?.need ?? ''), true);
 const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
@@ -1899,6 +1901,57 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-580 a call, a product role or a passing "only" is not person-only',
     [DECIDE, 'The diff touches only user-facing copy, so could I skip the E2E run?', 'Only admins can delete invoices today. Should managers also be able to?',
       'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?', 'Only you can decide whether I can push this change. Should I proceed?'].map(personOnlyStep).join(), ',,,,,');
+}
+
+// A held ticket's own triage question is its need, word for word, not a count of them; and its put-off
+// comes back when a blocker is added, removed or done, not when one moves between in-flight stages.
+{
+  put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
+    'I-1': { state: 'running', lane: 'A' },
+    'I-2': { state: 'parked', lane: 'A', held_by: 'I-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by I-1 — starts once their PRs merge' } },
+    'I-3': { state: 'parked', lane: 'A', held_by: 'I-1', open_questions: 3, park: { question: 'held by orchestrator: blocked by I-1 — starts once their PRs merge' } },
+    'I-4': { state: 'parked', lane: 'A', held_by: 'I-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by I-1 — starts once their PRs merge' } },
+    'I-5': { state: 'queued', lane: 'A' },
+  }, triage: {
+    'I-2': { summary: 'levers', unknowns: ['What is the cost of one blind audit run? Its Verification says to keep it out of batches until recorded.'] },
+    'I-3': { summary: 'two asked', unknowns: ['Which cap?', { question: 'Which page?' }] },
+    'I-4': { summary: 'old entry', unknowns: ['Which colour?'] },
+  } });
+  const iq = join(env.DESK_HOME, 'repos', 'acme__iota', 'queue.json');
+  const iotaState = join(env.HOME, '.desk-autopilot', 'acme__iota');
+  const iota = () => Object.fromEntries(N.collect({ word: 'iota' }).items.map((i) => [i.t.key, i]));
+  const setQ = (f) => { const q = JSON.parse(readFileSync(iq, 'utf8')); f(q.tickets); writeFileSync(iq, JSON.stringify(q)); };
+  // An entry written before blockers were settled and held triage needs named their questions.
+  NN.addPutOff(NN.putOffEntry({ question: 'I-4 triage', ticket: 'I-4', at: new Date(NOW).toISOString(), actions: ['answer', 'not-now'],
+    inputs: { ticket: 'I-4', need: '1 triage question(s) open', blockers: 'I-1:parked' } }), iotaState);
+  const i0 = iota();
+  t('needs-you a held ticket\'s triage item names its question, not a count', `${i0['I-2']?.kind} | ${i0['I-2']?.need}`,
+    'triage | What is the cost of one blind audit run? Its Verification says to keep it out of batches until recorded.');
+  t('needs-you several triage questions are numbered on one line, with those its record lacks counted', i0['I-3']?.need,
+    '(1) Which cap? (2) Which page? (and 1 more not in its triage record)');
+  t('needs-you an entry put off the old way (count need, blocker stage) stays put off while its blockers are the same', i0['I-4'], undefined);
+  const listed = cli('list', 'iota').out.split('\n').find((l) => l.startsWith('iota I-2 triage'));
+  t('needs-you the list line carries the question itself', listed?.includes('| What is the cost of one blind audit run?'), true);
+  N.record({ word: 'iota', ticket: 'I-2', action: 'not-now' });
+  t('needs-you not-now hides the triage item', iota()['I-2'], undefined);
+  for (const st of ['parked', 'triaged', 'running', 'failed', 'queued']) setQ((ts) => { ts['I-1'].state = st; });
+  t('needs-you a blocker moving between in-flight stages leaves it put off', `${iota()['I-2']} ${iota()['I-4']}`, 'undefined undefined');
+  setQ((ts) => { ts['I-2'].held_by = 'I-1|I-5'; });
+  t('needs-you a blocker added brings it back, saying what changed',
+    /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers I-1:open → I-1:open,I-5:open\.\)$/.test(iota()['I-2']?.need ?? ''), true);
+  N.record({ word: 'iota', ticket: 'I-2', action: 'not-now' });
+  setQ((ts) => { ts['I-5'].state = 'running'; });
+  t('needs-you put off again, the new blocker starting leaves it put off', iota()['I-2'], undefined);
+  setQ((ts) => { ts['I-2'].held_by = 'I-1'; });
+  t('needs-you a blocker removed brings it back', /blockers I-1:open,I-5:open → I-1:open\.\)$/.test(iota()['I-2']?.need ?? ''), true);
+  N.record({ word: 'iota', ticket: 'I-2', action: 'not-now' });
+  setQ((ts) => { ts['I-1'].state = 'done'; });
+  t('needs-you a blocker done brings it back', /blockers I-1:open → I-1:done\.\)$/.test(iota()['I-2']?.need ?? ''), true);
+  t('needs-you the old-style entry comes back too once its blocker is done, in the settled form', /blockers I-1:open → I-1:done\.\)$/.test(iota()['I-4']?.need ?? ''), true);
+  setQ((ts) => { ts['I-1'].state = 'running'; });
+  NN.addPutOff(NN.putOffEntry({ question: 'I-4 triage', ticket: 'I-4', at: new Date(NOW).toISOString(), actions: ['answer', 'not-now'],
+    inputs: { ticket: 'I-4', need: '1 triage question(s) open', blockers: 'I-1:running,I-9:parked' } }), iotaState);
+  t('needs-you an old-style entry whose blocker set differs is asked again', iota()['I-4'] != null, true);
 }
 
 // Refusals.
