@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet } from '../desk/bin/review-threads.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
@@ -363,6 +363,8 @@ const briefDc = fixBrief(tk({ fix: dc.fix }));
 t('DS-316 AC4 its brief names the draft\'s red check, its run and how to read its log', briefDc.includes('is a draft on this branch, and these required checks are red') && briefDc.includes('- tests-i18n: https://github.com/acme/widgets/actions/runs/931') && briefDc.includes('gh run view <run id> --log-failed') && !briefDc.includes('two reruns'), true);
 const taskDc = fixTask(tk({ fix: dc.fix }));
 t('DS-316 AC4 its task fixes the cause, keeps the draft and reviews the new head', taskDc.includes('fix the cause, never the check') && taskDc.includes('leave the PR in draft') && taskDc.includes('review the new head with desk-review'), true);
+t('DS-579 AC5 a worker that pushes nothing is told to post no review at the unchanged head', taskDc.includes('If you pushed nothing, post no review: the head is unchanged'), true);
+t('DS-579 AC6 one that pushes a new head still reviews it and posts that review', taskDc.includes('push to the same branch with git push origin <your branch>, then review the new head with desk-review and post that review on the PR (desk-review Phase 7).'), true);
 t('DS-316 AC4 a check only an operator fixes is the person\'s, with its command', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [red('Flows image missing', '9')] }, { repo: 'acme/widgets', operator })?.why, 'Flows image missing · build it: ensure-flows-image.sh');
 t('DS-316 AC5 still red at a head a fix try was made for: the person\'s', draftChecksFix(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'checks' }] }), { pr: 702, head: HEAD, failing: ucheck.failing }, { repo: 'acme/widgets', operator })?.why, 'still red after 1 fix try: tests-i18n');
 t('DS-316 a review try at this head does not count as a fix of its checks', draftChecksFix(tk({ fix_tries: rvTried }), { pr: 702, head: HEAD, failing: ucheck.failing }, { repo: 'acme/widgets', operator })?.call, 'requeue');
@@ -816,6 +818,27 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-500 AC2 beside another red check a worker can fix, the verdict is left to that check\'s fix try', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx()), null);
   t('DS-500 AC2 which fixCall makes a red-checks fix', fixCall(tk(), pr([red('tests', '8'), gateRed(staleLine)]), ctx({ reruns: () => 2, required: ['tests'], stateChecks: STATE_BARE }))?.fix.kind, 'checks');
   t('DS-500 AC2 beside a red check only a person runs, the review try still goes', gateTry(tk(), pr([red('tests', '8'), gateRed(staleLine)]), gctx({ operator: [{ name: 'tests', command: 'run the suite' }] }))?.fix.kind, 'rereview');
+
+  // DS-579: a draft's red §4 State check is no fix worker's, and its protected files get the try a
+  // ready PR's do.
+  const APPROVAL_ROW = [{ name: GATE, kind: 'approval' }];
+  const dctx = { repo: 'acme/widgets', stateChecks: APPROVAL_ROW, steps: (f) => (f.name === GATE ? ['Check approvals'] : []) };
+  const s1 = draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [red(GATE, '7')], checks: [ok('tests'), gateRed(pkgLine)] }, dctx);
+  t('DS-579 AC1 a draft red only on an approval state check: no fix try, stuck', s1?.call, 'stuck');
+  t('DS-579 AC1 naming the check and the step it failed at', s1?.why, `${GATE} (failed step: Check approvals) · a §4 State check, which reads the PR's reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads`);
+  const s2 = draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [red('tests', '8'), red(GATE, '7')], checks: [red('tests', '8'), gateRed(pkgLine)] }, dctx);
+  t('DS-579 AC2 beside a red test, the try lists only the test', `${s2?.call} ${s2?.fix.checks.map((c) => c.name).join(',')}`, 'requeue tests');
+  const s2b = fixBrief(tk({ fix: s2.fix }));
+  t('DS-579 AC2 and its brief names the state check as not the worker\'s', s2b.includes(`- ${GATE} is red too, and it is not yours to fix: a §4 State check`) && s2b.includes('Leave it red.') && !s2b.includes('A person runs that'), true);
+  t('DS-579 a state check §4 does not list is still a fix worker\'s', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [red(GATE, '7')] }, { repo: 'acme/widgets' })?.call, 'requeue');
+  const dpr = (checks, o = {}) => pr(checks, { isDraft: true, ...o });
+  const d3 = draftGateTry(tk(), dpr([ok('tests'), gateRed(pkgLine)]), gctx({ stateChecks: APPROVAL_ROW }));
+  t('DS-579 AC3 a draft whose state check asks an approval for a protected file gets a protected-files try', `${d3?.call} ${d3?.fix.kind} ${d3?.fix.paths.join()} ${d3?.fix.draft} ${d3?.fix.ready}`, 'requeue protected apps/portal/apps/web/package.json true undefined');
+  t('DS-579 AC3 its brief says the PR is a draft', fixBrief(tk({ fix: d3.fix })).includes('Your PR #697 is a draft on this branch, and its'), true);
+  t('DS-579 AC3 and its task leaves it in draft', fixTask(tk({ fix: d3.fix })).includes('leave the PR in draft'), true);
+  t('DS-579 AC4 every file judged: no protected-files try', draftGateTry(tk({ fix_tries: [{ ...d3.fix, head: OLD }] }), dpr([ok('tests'), gateRed(pkgLine)]), gctx({ stateChecks: APPROVAL_ROW })), null);
+  t('DS-579 AC4 and the draft goes to the person as before', draftChecksFix(tk({ fix_tries: [d3.fix] }), { pr: 697, head: HEAD, failing: [red(GATE, '7')], checks: [gateRed(pkgLine)] }, dctx)?.call, 'stuck');
+  t('DS-579 a ready PR is gateTry\'s, not this', draftGateTry(tk(), pr([ok('tests'), gateRed(pkgLine)]), gctx()), null);
 }
 
 // Fix tries spent on a red check whose log names its cause earn one worker quoting it.

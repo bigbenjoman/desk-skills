@@ -764,7 +764,9 @@ export function undraftCall(t, pr, cfg) {
     const notGreen = person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
     // A cancelled or timed-out run tested no code, so a fix worker has nothing to fix until its reruns are spent.
     if (!spent && codeRed.length && codeRed.every((f) => INTERRUPTED.has(f.conclusion))) return notGreen;
-    return { ...notGreen, call: 'checks', failing: codeRed };
+    // The red §4 State checks go with it, for the fix try to name as not its worker's.
+    const state = gate.failing.filter((f) => (cfg.stateChecks ?? []).some((x) => x.name === f.name));
+    return { ...notGreen, call: 'checks', failing: codeRed, ...(state.length ? { state } : {}) };
   }
   if (!v.clean && !v.settle) return { ...person(v.why, `review #${n} at its head`), call: 'review', ...(targeted ? { targeted } : {}) };
   if (!v.clean) return person(v.why, `settle the findings or gaps on #${n}`);

@@ -1954,6 +1954,7 @@ else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'workflow' && a[1] === 'run' && fs.existsSync('$T/wf-refuse-' + a[a.length - 1].replace('pr=', ''))) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
 else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
 else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
+else if (a[0] === 'api' && /check-runs\/\d+\/annotations$/.test(a[1] ?? '')) { try { process.stdout.write(fs.readFileSync('$T/fr/notes-' + a[1].match(/check-runs\/(\d+)\//)[1] + '.json', 'utf8')); } catch { process.exit(1); } }
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"
@@ -2310,6 +2311,31 @@ check "DS-316 AC2 the review worker's task is to review the head and post it, ch
   'grep -q "^C-2 .*Your task is review try 1 of 2 on PR #752.*Review its head with desk-review and post that review on the PR (desk-review Phase 7), and change no code" "$T/spawns"'
 check "DS-316 AC4 the fix worker's briefing names the failing check, its run and how to read its log" \
   'grep -q "^- tests: https://github.com/acme/widgets/actions/runs/953$" "$T/state-c/briefings/C-3.md" && grep -q "gh run view <run id> --log-failed" "$T/state-c/briefings/C-3.md"'
+
+# ---- DS-579: a draft red on a test and on §4 State checks' approval check sends only the test to its fix
+# worker, and one whose approval check names a protected file goes to a protected-files try, in draft.
+# statered <n> <run> <job> [<error line>]: its tests check failed in <run>, and its approval check in job <job>.
+statered(){ node -e 'const fs = require("fs"); const [f, run, job] = process.argv.slice(1); const j = JSON.parse(fs.readFileSync(f, "utf8"));
+  j.statusCheckRollup = [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/widgets/actions/runs/${run}/job/1` },
+    { __typename: "CheckRun", name: "protected-path approval", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/widgets/actions/runs/${job}/job/${job}` }]; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json" "$2" "$3"
+  if [ -n "${4:-}" ]; then jq -n --arg m "$4" '[{ annotation_level: "failure", message: $m }]' > "$T/fr/notes-$3.json"; else echo '[]' > "$T/fr/notes-$3.json"; fi; }
+was579="$DESK_QUEUE|$DESK_AUTOPILOT_STATE"
+export DESK_QUEUE="$T/queue-s579.json" DESK_AUTOPILOT_STATE="$T/state-s579"
+mkdir -p "$T/state-s579/logs"; q init s579; q set-batch concurrency=6
+for k in 1 2; do q add "S-$k"; q set "S-$k" state=done lane=A "branch=fix/S-$k" "result.pr=77$k"; done
+frx 771 "$H1" "$H1" 'p0=0 p1=0 p2=0'; statered 771 971 9710
+frx 772 "$H1" "$H1" 'p0=0 p1=0 p2=0'; statered 772 972 9720 'Approval required — 1 protected file(s): `package.json`.'
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-579 AC2 §4 State checks reach the draft's fix try: only the test is its worker's, the state check named as not" \
+  '[ "$(field S-1 fix | jq -c "[.kind, .draft, [.checks[].name], .not_mine]")" = "[\"checks\",true,[\"tests\"],[{\"name\":\"protected-path approval\",\"command\":\"a §4 State check, which reads the PR'"'"'s reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads\",\"state\":true}]]" ]'
+check "DS-579 AC3 a draft whose approval check names a protected file goes to a protected-files try, in draft" \
+  '[ "$(field S-2 fix | jq -c "[.kind, .draft, .ready, .paths]")" = "[\"protected\",true,null,[\"package.json\"]]" ] && echo "$out" | grep -q "protected files try 1 of 2: S-2 requeued for PR #772"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-579 AC2 the fix worker's briefing names the state check as not its to fix" \
+  'grep -q "^- protected-path approval is red too, and it is not yours to fix: a §4 State check, .* Leave it red.$" "$T/state-s579/briefings/S-1.md"'
+check "DS-579 AC3 the protected-files worker's briefing says the PR is a draft, and its task leaves it in draft" \
+  'grep -q "^Your PR #772 is a draft on this branch, and its \"protected-path approval\" check asks" "$T/state-s579/briefings/S-2.md" && grep -q "^S-2 .*Your task is protected files try 1 of 2 on PR #772.*leave the PR in draft" "$T/spawns"'
+IFS='|' read -r DESK_QUEUE DESK_AUTOPILOT_STATE <<< "$was579"; export DESK_QUEUE DESK_AUTOPILOT_STATE
 
 # ---- with the review-reuse lever on, the carry rests on the files the review recorded. Both PRs
 # moved by the same clean merge of main, which changed c.txt: R-1's review rests on b.txt, R-2's on c.txt.

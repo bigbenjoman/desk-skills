@@ -693,6 +693,7 @@ t('DS-316 beside a red code check, only the code check goes to the fix worker', 
   t('DS-578 AC2 pr-ready ask with the batch approval: ready', st('approval', { perm: 'ask', approved: true })?.call, 'ready');
   const mixed = st('approval', { checks: [redTests, gateCheck] });
   t('DS-578 AC3 beside a red code check: a checks call naming only the code check', `${mixed?.call} ${mixed?.failing?.map((f) => f.name).join(',')}`, 'checks tests');
+  t('DS-579 AC2 and the red state check goes with it, for the fix try to name', mixed?.state?.map((f) => f.name).join(), 'Review gate');
   t('DS-578 AC4 a P1 at the head: findings, not undrafted', st('approval', { reviews: [review(marker(ALL_ZERO.replace('p1=0', 'p1=1')))] })?.call, 'findings');
   t('DS-578 AC4 no verdict at the head: a review worker', st('approval', { reviews: [review(marker(ALL_ZERO, OLD), OLD)] })?.call, 'review');
   t('DS-578 AC5 a bare state check: ready', st(null)?.call, 'ready');
