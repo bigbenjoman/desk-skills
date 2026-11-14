@@ -70,7 +70,8 @@ export function samePark(a, b, ticket = '') {
 // whose label is no queue ticket (`BASE GATE`, `base sync`) is the batch's, with no ticket to answer.
 // A park carries its round (which park in a row this is, counted by queue.mjs requeue), the park the
 // last requeue cleared, whether this one asks the same thing, and the clears-when it had when listed.
-export function deciderItems(v, q = {}) {
+// A triaged ticket's line carries its open questions word for word (openQuestionsOf).
+export function deciderItems(v, q = {}, state = null) {
   const tickets = q.tickets ?? {};
   const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => {
     const prev = tickets[p.key]?.prev_park ?? null;
@@ -84,9 +85,20 @@ export function deciderItems(v, q = {}) {
   });
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
     const label = String(line).split(':')[0];
-    return { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null };
+    const item = { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null };
+    const questions = item.state === 'triaged' ? openQuestionsOf(state, label, tickets[label]) : [];
+    return questions.length ? { ...item, questions } : item;
   });
   return [...parked, ...waiting];
+}
+
+// A triaged ticket's open questions, each once: its triage record's unknowns (read from `state`, so
+// none without it), then the ones plan-batch added when it seeded the queue entry `t` (`plan_questions`).
+export function openQuestionsOf(state, key, t = {}) {
+  const unknowns = state ? readJson(join(state, 'triage', `${key}.json`), {})?.unknowns : null;
+  const list = (a) => (Array.isArray(a) ? a : []);
+  const all = [...list(unknowns), ...list(t?.plan_questions)].map((s) => String(s).replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean);
+  return [...new Set(all)];
 }
 
 // Items the rules hand on without a session: {hand: [{item, why}], ask: [item], waits: [item]}. A §3
@@ -224,6 +236,8 @@ export function deciderSettings({ bin, state, judgement = null }) {
         'Bash(desk-jira get:*)',
         'Bash(gh pr view:*)',
         `Read(/${state}/**)`,
+        `Grep(/${state}/**)`,
+        `Glob(/${state}/**)`,
       ],
       deny: ['Edit', 'Write', 'WebFetch', 'WebSearch', 'Agent'],
       additionalDirectories: [state],
@@ -231,10 +245,11 @@ export function deciderSettings({ bin, state, judgement = null }) {
   };
 }
 
-export function deciderPrompt({ slug, report, items, rules, bin, webRead = false, targets = [], judgement = null }) {
+export function deciderPrompt({ slug, report, items, rules, bin, state = null, webRead = false, targets = [], judgement = null }) {
   const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
   const prevLines = (i) => (i.prev?.question ? [`  - park ${i.round}; the last requeue cleared park ${i.round - 1}: ${i.prev.question.replace(/\n/g, ' ')}`] : []);
-  const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...prevLines(i), ...answerLines(i)]).join('\n');
+  const questionLines = (i) => (i.questions ?? []).map((x) => `  - open question: ${x}`);
+  const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...questionLines(i), ...prevLines(i), ...answerLines(i)]).join('\n');
   // Only when an item has a previous park, so a prompt without any reads as it always has.
   const onRepeats = items.some((i) => i.prev?.question) ? [
     '- an item whose last requeue cleared a park asking the same thing in other words, with no answer under it, would only park again: hand it on, naming both parks in its `why`, rather than requeue it',
@@ -267,7 +282,7 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
     'What you may do, and nothing else:',
     `- requeue a ticket whose worker parked asking for more agent work, on lane A, B, D or E:\`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
     ...onMove,
-    `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory`,
+    `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory${state ? ` (${state})` : ''} with the Read, Grep and Glob tools only. Run each allowed command on its own: no \`cd\`, pipe or \`;\`, which are refused`,
     `- never requeue a lane C ticket or a park that starts \`lane C\` or \`lane D\` (parked at triage on its lane), never requeue or record a clears-when for a park that starts \`${LEFT_PREFIX}\` (left in a finished feature batch), never answer a ${takes ? 'product, design or copy question other than by taking its recommended option as below' : 'product, design or copy question'}, and never act on anything that needs a config §3 row that is not \`yes\`: hand those on`,
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
     ...onAnswers,
@@ -304,7 +319,7 @@ export function startDecider({ state, slug, bin, report, items, rules, webRead =
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
   const settings = join(dir, `${id}.settings.json`);
   writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state, judgement }), null, 2)}\n`);
-  const prompt = deciderPrompt({ slug, report, items, rules, bin, webRead, targets, judgement });
+  const prompt = deciderPrompt({ slug, report, items, rules, bin, state, webRead, targets, judgement });
   writeFileSync(join(dir, `${id}.prompt.md`), prompt);
   const out = join(dir, `${id}.json`);
   const fd = openSync(out, 'w');

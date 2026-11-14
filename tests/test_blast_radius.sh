@@ -97,6 +97,12 @@ check "AC5: the plan names each contradiction, sharing files or not" \
 check "AC5: no merge-chain hold is added the other way, so there is no cycle" \
   '! printf "%s" "$out" | grep -q "dependency cycle" && [ "$(qg KAN-32 .state)" = triaged ]'
 
+# ---- the questions plan-batch adds are seeded on the ticket, where the decider reads them ---------
+rec KAN-41 surface src/q "$(nb KAN-99)"; rec KAN-42 surface src/r
+plan KAN-41 KAN-42
+check "a question plan-batch adds is on its ticket's queue entry word for word; a ticket with none has none" \
+  '[ "$(qg KAN-41 ".plan_questions | join(\"|\")")" = "KAN-41 is blocked by KAN-99 (not started), which is not in this batch: add KAN-99 to the batch, or confirm KAN-41 can start without it" ] && [ "$(qg KAN-41 .open_questions)" = 1 ] && [ "$(qg KAN-42 .plan_questions)" = null ]'
+
 # A link that agrees with the kinds is no contradiction.
 rec KAN-41 surface src/p "$(nb KAN-42)"; rec KAN-42 relocate src/p
 plan KAN-41 KAN-42

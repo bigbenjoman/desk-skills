@@ -43,7 +43,8 @@
 //       built-<board>-<w>.png; a board with no story is listed as not compared. Exit 3 when there
 //       is no Storybook index there, 4 (nothing written) when a board or story fails, 6 as render
 // `--boards` binds to the `--key` before it; a key with none uses every board. compare's
-// `--boards` names the boards to shoot, every board without it. Usage errors exit 2.
+// `--boards` names the boards to shoot, every board without it. A board is named by its title, which
+// may hold commas, or its file name; a name matching no board exits 2. Usage errors exit 2.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -297,7 +298,8 @@ export function canonicalUrl(u) {
   } catch { return String(u ?? '').trim().replace(/[#?].*$/, '').replace(/\/+$/, ''); }
 }
 
-// [{key, boards}] from argv: each --boards applies to the --key before it.
+// [{key, boards, boardsArg}] from argv: each --boards applies to the --key before it. Its value
+// stays whole until withBoards reads it against the canvas, since a board's title may hold commas.
 function ticketsFromArgs(args) {
   const out = [];
   for (let i = 0; i < args.length; i++) {
@@ -308,11 +310,36 @@ function ticketsFromArgs(args) {
     } else if (args[i] === '--boards') {
       const t = out.at(-1);
       if (!t) fail('--boards must follow the --key it belongs to');
-      t.boards = (args[++i] ?? '').split(',').map((b) => b.trim()).filter(Boolean);
+      t.boardsArg = args[++i] ?? '';
     }
   }
   return out;
 }
+
+// The board titles one --boards value names. A board is named by its title or its file name
+// (`Main.dc.html`), and a title may hold commas, so the longest run of comma-separated pieces that
+// names a board is taken before a comma splits it. A name matching no board is refused (exit 2),
+// listing the boards; with no boards to match (a single page, a deck, an export) it splits on commas.
+export function resolveBoards(value, boards, where = 'canvas.json') {
+  const pieces = String(value ?? '').split(',');
+  if (!boards.length) return pieces.map((b) => b.trim()).filter(Boolean);
+  const find = (n) => boards.find((b) => b.name === n) ?? boards.find((b) => b.file && (b.file === n || basename(b.file) === n));
+  const out = []; const unknown = [];
+  for (let i = 0; i < pieces.length;) {
+    let j = pieces.length; let b = null;
+    for (; j > i && !(b = find(pieces.slice(i, j).join(',').trim())); j--);
+    if (b) { if (!out.includes(b.name)) out.push(b.name); i = j; continue; }
+    if (pieces[i].trim()) unknown.push(pieces[i].trim());
+    i++;
+  }
+  if (unknown.length) {
+    fail(`${where} has no board named ${unknown.map((n) => `"${n}"`).join(', ')}; its boards are:\n${boards.map((b) => `board: ${b.name}${b.file ? ` (${b.file})` : ''}`).join('\n')}`);
+  }
+  return out;
+}
+
+// Each ticket's --boards value read against the canvas's boards, so only titles are recorded.
+const withBoards = (tickets, boards, where) => tickets.map(({ boardsArg, ...t }) => (boardsArg === undefined ? t : { ...t, boards: resolveBoards(boardsArg, boards, where) }));
 
 function opt(args, name) {
   const i = args.indexOf(name);
@@ -479,9 +506,6 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   if (!url || version === undefined || version === null || version === '') {
     fail('need the artifact URL and version: pass --url and --version, or save from a snapshot whose source.json has them');
   }
-  // A batch snapshot lists every ticket sharing the canvas, so parallel workers write identical files.
-  const all = [...(meta?.tickets ?? [])];
-  for (const t of tickets) { const i = all.findIndex((p) => p.key === t.key); if (i < 0) all.push(t); else if (t.boards.length) all[i] = t; }
   const existing = findSaved(root, dir, url);
   const name = existing ? basename(existing.path.replace(/\/$/, '')) : (epic ?? meta?.dir ?? tickets[0].key);
   if (!safeId(name)) fail(`not a folder name for a canvas: ${name}`);
@@ -493,6 +517,9 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   const { canvas, deck, kind, slides, home, files, missing, remote, blobs, copyFrom } = collect(src);
   if (missing.length) fail(`not saved: the snapshot lacks files the boards reference; read them from the artifact too:\n${missing.map((m) => `missing: ${m}`).join('\n')}`, 4);
   const boards = canvas ? parseBoards(readJson(join(src, canvas)) ?? {}) : [];
+  // A batch snapshot lists every ticket sharing the canvas, so parallel workers write identical files.
+  const all = [...(meta?.tickets ?? [])];
+  for (const t of withBoards(tickets, boards, canvas)) { const i = all.findIndex((p) => p.key === t.key); if (i < 0) all.push(t); else if (t.boards.length) all[i] = t; }
   // A deck is read through the viewer save writes beside its project folder.
   const viewer = deck ? 'index.html' : null;
   const saved = viewer ? [...new Set([...files, viewer])].sort() : files;
@@ -826,15 +853,15 @@ async function storybookAt(target) {
 // board no story matches is listed, not shot. A board that fails to load a file, or a story that
 // shows Storybook's error screen, fails the run and writes nothing. Requests a story makes that fail
 // are returned as notes: a story may load what its mocks do not serve.
-export async function compare(dir, { chromium, storybook, out, widths = breakpoints(), boards: only = [], height = 900 }) {
+export async function compare(dir, { chromium, storybook, out, widths = breakpoints(), boards = [], height = 900 }) {
   const source = readJson(join(dir, 'source.json'));
   if (!source?.url) fail(`no saved canvas at ${dir}: compare a folder desk-design save wrote`);
   const { canvas, home } = collect(dir);
   if (!canvas) fail(`${dir} is a single page with no boards: compare it with the build by hand`);
   const all = parseBoards(readJson(join(dir, canvas)) ?? {});
   const names = screenNames(all);
-  const unknown = only.filter((n) => !all.some((b) => b.name === n));
-  if (unknown.length) fail(`${canvas} has no board named ${unknown.join(', ')}`);
+  // `boards` is the --boards value, or a list of board names: each read as resolveBoards reads it.
+  const only = [...new Set([boards].flat().flatMap((n) => resolveBoards(n, all, canvas)))];
   const chosen = all.map((b, i) => ({ ...b, screen: names[i] })).filter((b) => !only.length || only.includes(b.name));
   if (!chosen.length) fail(`${canvas} names no boards: nothing to compare`);
   const sb = await storybookAt(storybook);
@@ -1077,15 +1104,16 @@ if (isMain) {
   try {
     if (cmd === 'write') {
       if (!target) fail('usage: desk-design write <dir> --url <u> --version <v> --key <K> [--boards <a,b>]');
-      const tickets = ticketsFromArgs(rest);
+      const args = ticketsFromArgs(rest);
       const url = opt(rest, '--url'); const version = opt(rest, '--version');
-      if (!url || !version || !tickets.length) fail('write needs --url, --version and at least one --key');
+      if (!url || !version || !args.length) fail('write needs --url, --version and at least one --key');
       const prev = readJson(join(target, 'source.json'));
       const shape = (() => { try { return collect(target); } catch { return null; } })();
+      const boards = shape ? (shape.canvas ? parseBoards(readJson(join(target, shape.canvas)) ?? {}) : []) : prev?.boards ?? [];
+      const tickets = withBoards(args, boards, shape?.canvas ?? join(target, 'source.json'));
       const s = writeRecord(target, {
         url, version, fetched_at: opt(rest, '--fetched-at') ?? new Date().toISOString(),
-        dir: opt(rest, '--epic') ?? prev?.dir ?? tickets[0].key, tickets, kind: shape?.kind,
-        boards: shape ? (shape.canvas ? parseBoards(readJson(join(target, shape.canvas)) ?? {}) : []) : prev?.boards ?? [],
+        dir: opt(rest, '--epic') ?? prev?.dir ?? tickets[0].key, tickets, kind: shape?.kind, boards,
         ...(shape?.deck ? { slides: shape.slides } : {}),
         ...(shape ? { home: shape.home.split(sep).join('/'), remote: shape.remote } : {}),
       });
@@ -1105,7 +1133,7 @@ if (isMain) {
       console.log(`design: ${r.source.url} · ${r.path}`);
     } else if (cmd === 'import') {
       if (!target) fail('usage: desk-design import <file> --url <u> --key <K> [--key ...] [--epic <E>]');
-      const r = importExport(resolve(target), { state: E.stateDir(), url: opt(rest, '--url'), tickets: ticketsFromArgs(rest), epic: opt(rest, '--epic') });
+      const r = importExport(resolve(target), { state: E.stateDir(), url: opt(rest, '--url'), tickets: withBoards(ticketsFromArgs(rest), [], ''), epic: opt(rest, '--epic') });
       const was = r.previous && String(r.previous) !== String(r.source.version) ? `, replacing version ${r.previous}` : '';
       console.log(`imported: ${r.path} (version ${r.source.version}${was}; sha256 ${r.source.sha256}; tickets ${r.source.tickets.map((t) => t.key).join(' ')})`);
     } else if (cmd === 'propose') {
@@ -1146,8 +1174,9 @@ if (isMain) {
     } else if (cmd === 'compare') {
       const storybook = opt(rest, '--storybook'); const out = opt(rest, '--out');
       if (!target || !storybook || !out) fail('usage: desk-design compare <saved dir> --storybook <built folder> --out <dir> [--boards <a,b>]');
-      const boards = (opt(rest, '--boards') ?? '').split(',').map((b) => b.trim()).filter(Boolean);
-      const r = await compare(resolve(target), { chromium: await playwrightChromium(), storybook: resolve(storybook), out: resolve(out), boards });
+      // Playwright loads at launch, so a --boards name matching no board exits 2 even with none installed.
+      const chromium = { launch: async (...a) => (await playwrightChromium()).launch(...a) };
+      const r = await compare(resolve(target), { chromium, storybook: resolve(storybook), out: resolve(out), boards: opt(rest, '--boards') ?? [] });
       for (const p of r.pairs) {
         console.log(`pair: ${p.board} = story ${p.story.id} (${p.by === 'story' ? 'its id or title and name' : 'its title'} matches the board)`);
         for (const s of p.shots) console.log(`  ${s.width}px${s.drawn ? ' (drawn)' : ''}: ${s.canvas} ${s.built}`);

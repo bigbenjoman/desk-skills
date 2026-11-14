@@ -26,19 +26,30 @@ import { windowEvents, probeLog } from './usage-pace.mjs';
 import { readInstalled } from './installed.mjs';
 import { digestDir } from './digest.mjs';
 import { triesMade } from './fix-tries.mjs';
+import { leverFingerprints } from './lever-registry.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
 
 // ---- what spawn-worker.sh records ----------------------------------------------------------------
+// The first line `claude --version` prints, or null when it fails or prints nothing.
+export function claudeVersion(run = () => spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] })) {
+  try {
+    const r = run();
+    return (r?.status === 0 && String(r.stdout ?? '').trim().split('\n')[0].trim()) || null;
+  } catch { return null; }
+}
+
 // One worker start: when, which session and stage, its model and effort, the desk commit installed,
-// the levers on, and the bytes of the system prompt and first message it was handed.
+// the levers on, the claude version, a hash of each lever's installed code (and any listed file that
+// was missing), and the bytes of the system prompt and first message it was handed.
 export function spawnLine({ ticket, session, stage = null, model = null, effort = null, systemBytes = null, promptBytes = null, now = new Date(),
-  installed = readInstalled(), levers = E.levers() }) {
+  installed = readInstalled(), levers = E.levers(), claude = claudeVersion(), fingerprints = leverFingerprints() }) {
   const n = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
   return JSON.stringify({
     at: now.toISOString(), ticket, session, ...startFields({ stage, model, effort }),
     desk_commit: installed?.commit ?? null, levers: levers.on, unknown_levers: levers.unknown,
+    claude_version: claude, lever_fp: fingerprints.fp, lever_fp_missing: fingerprints.missing,
     system_bytes: n(systemBytes), prompt_bytes: n(promptBytes),
   });
 }
