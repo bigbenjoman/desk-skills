@@ -2202,7 +2202,7 @@ check "KAN-629 negative control: a running worker with no marker may still be ca
   '! grep -q "^783 " "$T/uploads" && [ "$(field K-3 images_uploaded)" = null ]'
 check "KAN-629 a done draft whose cells desk holds the files for goes to the pass's upload, not the person" \
   'grep -qx "784 $T/state-s/images/K-4" "$T/uploads" && [ "$(field K-4 undraft.call)" = "\"upload\"" ] && [ "$(field K-4 images_uploaded)" = true ] && ! echo "$out" | grep -q "K-4: DRAFT"'
-check "KAN-629 a partial upload is never sent again, and stays the person'"'"'s as before" \
+check "KAN-629 a partial upload is never sent again, and its cells stay with the person as before" \
   '! grep -q "^785 " "$T/uploads" && [ "$(field K-5 undraft.call)" = "\"person\"" ] && echo "$out" | grep -qF "K-5: DRAFT — PR #785 stays draft: 1 screenshot cell(s) left: k-5.png, whose files desk holds but could not put in the body"'
 check "KAN-629 one upload a pass: the undraft step does not send K-1 again" '[ "$(grep -c "^781 " "$T/uploads")" = 1 ]'
 : > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
