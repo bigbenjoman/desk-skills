@@ -778,6 +778,12 @@ const HOOK = join(E.HOME, '.claude', 'hooks', 'deny-ai-attribution.py');
 if (existsSync(HOOK)) {
   settings.hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${HOOK}"`, timeout: 10 }] }] };
 }
+// Where §5 AI attribution is forbidden, /desk-setup turns Claude Code's trailer instruction off in the
+// repo's .claude/settings.local.json, which --setting-sources "" drops too. Without this a worker is
+// told to add the trailer and the hook above blocks its commit. Read as the hook reads it.
+if (mode === 'worker' && /^`?forbidden/i.test(String(cfg('ai-attribution') ?? '').trim())) {
+  settings.attribution = { commit: '', pr: '', sessionUrl: false };
+}
 // Blocks a worker's first attempt to end its turn with a background task running (claude -p kills
 // it). It acts only under DESK_AUTOPILOT_WORKER=1, so triage sessions are untouched.
 const STOP_HOOK = join(E.HOME, '.claude', 'hooks', 'desk-worker-stop.py');

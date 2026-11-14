@@ -665,4 +665,19 @@ check "DS-576 AC8 a GH_CONFIG_DIR or gh token prefix is still refused" \
 settings '`bash tests/run.sh`' '' "$(rows3 pr-self-review-comment=no)"
 check "DS-576 AC8 review-post.mjs is refused where §3 pr-self-review-comment is not yes" 'no "node $B/review-post.mjs $RP" "$B/review-post.mjs $RP"'
 
+# DS-610: workers drop the repo's .claude/settings.local.json, so a §5 AI attribution of forbidden
+# turns Claude Code's trailer off in the worker's own settings.
+attr5(){ printf '\n## 5. Conventions\n| Field | Value |\n|---|---|\n| AI attribution | %s |\n' "$1"; }
+settings '`bash tests/run.sh`' '' "$(attr5 '`forbidden`')"
+check "DS-610 AC1 forbidden: attribution has empty commit and PR text and no session URL" \
+  '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = "{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}" ]'
+triage
+check "DS-610 forbidden: a triage session's settings are unchanged" '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = null ]'
+settings '`bash tests/run.sh`' '' "$(attr5 '`allowed`')"
+check "DS-610 AC2 allowed: no attribution key" '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = null ]'
+settings '`bash tests/run.sh`' '' "$(attr5 '`TODO` (`forbidden` or `allowed`)')"
+check "DS-610 AC3 TODO: no attribution key" '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = null ]'
+settings '`bash tests/run.sh`'
+check "DS-610 AC3 unset: no attribution key" '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = null ]'
+
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

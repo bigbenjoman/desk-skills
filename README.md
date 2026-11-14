@@ -826,7 +826,7 @@ The point of per-repo config, with examples of what setup found in real repos:
 | §5 AI attribution | `allowed` (commits carry Co-Authored-By) | `allowed` | `allowed` |
 
 A repo whose history must stay free of AI attribution sets §5 AI attribution to `forbidden`; the
-hook then refuses Claude trailers in that repo only.
+hook then refuses Claude trailers in that repo only, and autopilot workers there are not told to add one.
 
 ## Checking a repo's setup
 
