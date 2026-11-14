@@ -4,6 +4,10 @@
 // to a change in desk.
 //
 //   node phase0-report.mjs [--days <n>] [--no-ci]     the report (7 days unless --days says)
+//   node phase0-report.mjs --per-ticket [--json] [--days <n> | --since <iso> [--until <iso>]] [--no-ci]
+//       one JSON row per ticket admitted in the window, across every batch, archived ones included,
+//       each costing the ticket's whole spend; `carried_in` is the in-window spend of tickets
+//       admitted earlier, so rows plus carried_in equal the report's total for the same --days
 //   node phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>]
 //       [--effort <e>] [--system-bytes <n>] [--prompt-bytes <n>] [--log <worker log>]
 //       one JSON line for spawn-worker.sh to append to $DESK_STATE/workers/<KEY>.runs.jsonl, and with
@@ -27,6 +31,8 @@ import { readInstalled } from './installed.mjs';
 import { digestDir } from './digest.mjs';
 import { triesMade } from './fix-tries.mjs';
 import { leverFingerprints } from './lever-registry.mjs';
+import { parkClass } from './failure-class.mjs';
+import { sizeOf } from './desk-q-eta.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
@@ -95,7 +101,7 @@ const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) 
 // start it holds (one init event per `claude -p` start, a resume's under the same session), and
 // whether anything but preflights ran in it at all.
 export function logFacts(text) {
-  const out = { parks: 0, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0, starts: [], ran: false };
+  const out = { parks: 0, parkClasses: {}, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0, starts: [], ran: false };
   const tools = new Map();
   const denied = new Set();
   const deny = (id, tool) => {
@@ -117,7 +123,11 @@ export function logFacts(text) {
         const said = saidIn(c);
         if (said == null) continue;
         for (const [k, v] of markersIn([said])) {
-          if (k === 'AUTOPILOT_PARK') out.parks += 1;
+          if (k === 'AUTOPILOT_PARK') {
+            out.parks += 1;
+            const cls = parkClass(v).class;
+            out.parkClasses[cls] = (out.parkClasses[cls] ?? 0) + 1;
+          }
           if (k === 'AUTOPILOT_STAGE' && /^4b\b/i.test(v.trim())) out.reviewRounds += 1;
         }
       }
@@ -152,6 +162,39 @@ const emptyFigures = () => ({
   parks: 0, answered: 0, denials: {}, reviewRounds: 0, quota: {}, badReadings: 0, starts: 0, spawns: [], ci: {},
 });
 
+// What one queue ticket's logs from `from` show: its spend (`cost` is every run that left a result
+// event plus every preflight), parks, review rounds, denials and readings, and each start as its
+// session (empty when its log has no init event) and the record of that session, or null for none. The batch figures and the per-ticket
+// rows both read a ticket through this, so the rows and their carried-in spend add up to the batch.
+function ticketFacts(state, t, from, records) {
+  const logs = workerLogs(state, t.key, from);
+  const c = logs.length ? ticketCost(state, { ...t, added_at: from }) : null;
+  const x = { logs, c, input: 0, output: 0, cost: c?.preflight.cost ?? 0, parks: 0, parkClasses: {}, reviewRounds: 0, denials: {},
+    readings: [], badReadings: 0, starts: [] };
+  const starts = {};
+  for (const file of logs) {
+    let text = '';
+    try { text = readLogFile(file); } catch { continue; }
+    const u = logUsage(text);
+    if (u) for (const k of ['input', 'output', 'cost']) x[k] += u[k];
+    const l = logFacts(text);
+    x.parks += l.parks;
+    add(x.parkClasses, l.parkClasses);
+    x.reviewRounds += l.reviewRounds;
+    add(x.denials, l.denials);
+    x.readings.push(...l.readings);
+    x.badReadings += l.badReadings;
+    // A log that ran with no init event (one cut off at once) is still a start, of no known session.
+    for (const s of l.starts.length ? l.starts : l.ran ? [null] : []) add(starts, { [s ?? '']: 1 });
+  }
+  // A start counts as recorded only against a record of its own session, one record per start.
+  for (const [sid, n] of Object.entries(starts)) {
+    const mine = sid ? records.filter((r) => r.ticket === t.key && r.session === sid).slice(-n) : [];
+    x.starts.push(...mine.map((record) => ({ sid, record })), ...Array(n - mine.length).fill({ sid, record: null }));
+  }
+  return x;
+}
+
 // One batch's figures for the window from `since` (epoch ms). `answered` is the digest's answered
 // record ({ "<slug>/<ticket>/<hash>": ISO time }). A queue that cannot be read is { unreadable }.
 export function batchFigures({ queue, state, slug, since, answered = {} }) {
@@ -164,39 +207,27 @@ export function batchFigures({ queue, state, slug, since, answered = {} }) {
   const records = spawnRecords(state);
   for (const t of Object.values(q.tickets ?? {})) {
     const from = t.added_at && Date.parse(t.added_at) > since ? t.added_at : sinceIso;
-    const logs = workerLogs(state, t.key, from);
     const merged = inWindow(t.merged_at);
-    if (!logs.length && !merged) continue;
+    const x = ticketFacts(state, t, from, records);
+    const { c } = x;
+    if (!x.logs.length && !merged) continue;
     keys.add(t.key);
     f.tickets += 1;
     if (merged) f.accepted += 1;
-    const c = logs.length ? ticketCost(state, { ...t, added_at: from }) : null;
-    if (c) { f.runs += c.runs; f.unknownRuns += c.unknown; f.cost += c.preflight.cost; }
-    const tries = (t.fix_tries ?? []).filter((x) => inWindow(x.at));
-    for (const x of tries) add(f.repairs, { [x.kind ?? 'unknown']: 1 });
+    if (c) { f.runs += c.runs; f.unknownRuns += c.unknown; }
+    const tries = (t.fix_tries ?? []).filter((y) => inWindow(y.at));
+    for (const y of tries) add(f.repairs, { [y.kind ?? 'unknown']: 1 });
     // Per accepted ticket counts only accepted tickets' tries, as fix-tries.mjs counts a try.
     if (merged) f.fixTries += triesMade(tries);
-    const spent = { input: 0, output: 0, cost: c?.preflight.cost ?? 0 };
-    const starts = {};
-    for (const file of logs) {
-      let text = '';
-      try { text = readLogFile(file); } catch { continue; }
-      const u = logUsage(text);
-      if (u) for (const k of Object.keys(spent)) { spent[k] += u[k]; f[k] += u[k]; }
-      const l = logFacts(text);
-      f.parks += l.parks;
-      f.reviewRounds += l.reviewRounds;
-      add(f.denials, l.denials);
-      addQuota(f.quota, l.readings);
-      f.badReadings += l.badReadings;
-      // A log that ran with no init event (one cut off at once) is still a start, of no known session.
-      for (const s of l.starts.length ? l.starts : l.ran ? [null] : []) add(starts, { [s ?? '']: 1 });
-    }
-    // A start counts as recorded only against a record of its own session, one record per start.
-    for (const [sid, n] of Object.entries(starts)) {
-      f.starts += n;
-      if (sid) f.spawns.push(...records.filter((r) => r.ticket === t.key && r.session === sid).slice(-n));
-    }
+    const spent = { input: x.input, output: x.output, cost: x.cost };
+    for (const k of Object.keys(spent)) f[k] += spent[k];
+    f.parks += x.parks;
+    f.reviewRounds += x.reviewRounds;
+    add(f.denials, x.denials);
+    addQuota(f.quota, x.readings);
+    f.badReadings += x.badReadings;
+    f.starts += x.starts.length;
+    f.spawns.push(...x.starts.map((s) => s.record).filter(Boolean));
     // Spend fully recorded: a worker ran here, every run left a result event, and it is not a cloud
     // worker, which reports none. Anything less leaves the ticket out of the per-ticket figure.
     if (merged && c && !c.cloud && !c.unknown) {
@@ -252,6 +283,92 @@ export function failedRuns({ repo, since, gh = runGh }) {
 }
 
 const ciCounts = (runs) => { const c = {}; for (const r of runs) for (const j of r.jobs) add(c, { [j]: 1 }); return c; };
+
+// Red CI for the window, as the report and the per-ticket rows both read it: { ciRuns, ciNote },
+// `ciRuns` failedRuns()'s list or null, and `ciNote` why it is null (null when it was read).
+function readCi({ ci, repo, since, gh }) {
+  if (!ci) return { ciRuns: null, ciNote: 'not read (--no-ci)' };
+  if (!repo) return { ciRuns: null, ciNote: 'unreadable: no GitHub repo for this checkout' };
+  const r = failedRuns({ repo, since, gh });
+  return r.unreadable ? { ciRuns: null, ciNote: `unreadable: ${r.unreadable}` } : { ciRuns: r.runs, ciNote: null };
+}
+const repoOrNull = () => { try { return E.ghRepo(); } catch { return null; } };
+
+// ---- one row per admitted ticket -----------------------------------------------------------------
+// The levers pin a ticket was admitted with (its queue `levers` object), as the set, arm per trial and
+// trial ids; null for a ticket admitted with no pin.
+const pinOf = (l) => (l && typeof l === 'object' && !Array.isArray(l)
+  ? { set: l.set ?? null, arms: l.arms ?? null, trial_ids: l.trial_ids ?? null } : null);
+
+// One row per ticket in a batch whose `added_at` falls in [since, until) (epoch ms), with every run
+// it made since, runs after `until` included: a row is the ticket's whole outcome. `cost` is what its
+// runs recorded plus its preflights, never an estimate: `cost_complete` is false when a run left no
+// result event or it ran in the cloud. `ciRuns` is failedRuns()'s list, or null when red CI was not
+// read, which leaves `ci_reds` null. -> { rows, carriedIn }: `carriedIn` is each ticket admitted
+// before `since` (or with no readable `added_at`) that spent in the window, with that spend as
+// batchFigures() counts it, so the rows' costs plus these equal the batch's `cost` for a window
+// ending now. A queue that cannot be read is { unreadable }.
+export function ticketRows({ queue, state, slug, batch = null, since, until = Infinity, ciRuns = null }) {
+  let q;
+  try { q = JSON.parse(readFileSync(queue, 'utf8')); } catch (e) { return { unreadable: e.message }; }
+  const records = spawnRecords(state);
+  const rows = [];
+  const carriedIn = [];
+  const sinceIso = new Date(since).toISOString();
+  for (const t of Object.values(q.tickets ?? {})) {
+    const at = Date.parse(t.added_at);
+    if (!(at >= since)) {
+      const x = ticketFacts(state, t, sinceIso, records);
+      if (x.logs.length) carriedIn.push({ batch, key: t.key, cost: x.cost });
+      continue;
+    }
+    if (!(at < until)) continue;
+    const x = ticketFacts(state, t, t.added_at, records);
+    // A cloud worker leaves no log here, so its run is read from the queue entry.
+    x.c ??= t.location === 'cloud' && t.cloud ? ticketCost(state, t) : null;
+    const size = sizeOf(state, t.key);
+    const reds = ciRuns && t.branch ? ciRuns.filter((r) => r.branch === t.branch) : [];
+    const starts = x.starts.map(({ sid, record: s }) => ({
+      at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
+      levers: Array.isArray(s?.levers) ? s.levers : null, claude_version: s?.claude_version ?? null,
+    }));
+    rows.push({
+      slug, batch, key: t.key, type: t.type ?? null, lane: t.lane ?? null, size: size === 'unknown' ? null : size,
+      admitted_at: t.added_at, merged_at: t.merged_at ?? null, state: t.state ?? null,
+      cost: x.cost, cost_complete: !x.c || (!x.c.cloud && !x.c.unknown), input: x.input, output: x.output,
+      preflight_cost: x.c?.preflight.cost ?? 0, runs: x.c?.runs ?? 0, unknown_runs: x.c?.unknown ?? 0,
+      starts: starts.length, fix_tries: triesMade(t.fix_tries), parks: x.parks, parks_by_class: x.parkClasses,
+      review_rounds: x.reviewRounds, denials: Object.values(x.denials).reduce((n, v) => n + v, 0), denials_by_command: x.denials,
+      ci_reds: ciRuns ? reds.length : null, ci_reds_by_job: ciRuns ? ciCounts(reds) : null,
+      desk_commits: [...new Set(starts.map((s) => s.desk_commit).filter(Boolean))],
+      start_records: starts, login: t.login?.name ?? null, pin: pinOf(t.levers),
+    });
+  }
+  return { rows, carriedIn };
+}
+
+// Every batch's rows for the window, and how red CI was read: { slug, since, until, ci, rows,
+// carried_in: { cost, tickets: [{ batch, key, cost }] }, unreadable: [{ batch, why }] }. Each input
+// is a parameter so a test can point it at fixtures.
+export function perTicket({
+  slug = E.repoSlug(), batches = allBatches(slug), since, until = Date.now(), ci = true, gh = runGh, repo = repoOrNull(),
+} = {}) {
+  const { ciRuns, ciNote } = readCi({ ci, repo, since, gh });
+  const rows = [];
+  const carried = [];
+  const unreadable = [];
+  for (const b of batches) {
+    const got = existsSync(b.queue)
+      ? ticketRows({ queue: b.queue, state: b.state, slug, batch: b.name ?? null, since, until, ciRuns })
+      : { unreadable: `no queue at ${b.queue}` };
+    if (got.unreadable) unreadable.push({ batch: b.name ?? null, why: got.unreadable });
+    else { rows.push(...got.rows); carried.push(...got.carriedIn); }
+  }
+  return {
+    slug, since: new Date(since).toISOString(), until: new Date(until).toISOString(), ci: ciNote ?? 'read', rows,
+    carried_in: { cost: carried.reduce((n, c) => n + c.cost, 0), tickets: carried }, unreadable,
+  };
+}
 
 // ---- versions and the checkout -------------------------------------------------------------------
 const git = (dir, ...args) => {
@@ -370,7 +487,7 @@ export const allBatches = (slug) => {
 // The whole report, as lines. Every input is a parameter so a test can point it at fixtures.
 export function report({
   slug = E.repoSlug(), batches = allBatches(slug), days = 7, now = Date.now(), ci = true, gh = runGh,
-  repo = (() => { try { return E.ghRepo(); } catch { return null; } })(),
+  repo = repoOrNull(),
   root = (() => { try { return E.repoRoot(); } catch { return null; } })(),
   defaultBranch = (() => { try { return E.defaultBranch(); } catch { return 'main'; } })(),
   installed = readInstalled(), levers = E.levers(), answered = readJson(join(digestDir(), 'answered.json')),
@@ -386,15 +503,7 @@ export function report({
   out.push(`instructions a worker loads now: worker contract core ${cb == null ? 'not found' : `${num(cb)} bytes`}, memory index ${mb == null ? 'none' : `${num(mb)} bytes`}`);
   out.push(`levers row now: on ${levers.on.join(', ') || 'none'}${levers.unknown.length ? `; unknown, read as off: ${levers.unknown.join(', ')}` : ''}`);
 
-  let ciRuns = null;
-  let ciNote = null;
-  if (!ci) ciNote = 'not read (--no-ci)';
-  else if (!repo) ciNote = 'unreadable: no GitHub repo for this checkout';
-  else {
-    const r = failedRuns({ repo, since, gh });
-    if (r.unreadable) ciNote = `unreadable: ${r.unreadable}`;
-    else ciRuns = r.runs;
-  }
+  const { ciRuns, ciNote } = readCi({ ci, repo, since, gh });
 
   const figures = batches.map((b) => {
     const f = existsSync(b.queue) ? batchFigures({ queue: b.queue, state: b.state, slug, since, answered }) : { unreadable: `no queue at ${b.queue}` };
@@ -439,9 +548,20 @@ if (isMain()) {
       const start = { session, stage: opt('--stage'), model: opt('--model'), effort: opt('--effort') };
       if (opt('--log')) { try { appendFileSync(opt('--log'), spawnEvent(start)); } catch { /* a record that cannot be written never stops a spawn */ } }
       console.log(spawnLine({ ticket, ...start, systemBytes: opt('--system-bytes'), promptBytes: opt('--prompt-bytes') }));
+    } else if (args.includes('--per-ticket')) {
+      const usage = 'usage: phase0-report.mjs --per-ticket [--json] [--days <n> | --since <iso> [--until <iso>]] [--no-ci]';
+      const until = opt('--until') == null ? Date.now() : Date.parse(opt('--until'));
+      const days = opt('--days') == null ? 7 : Number(opt('--days'));
+      const since = opt('--since') == null ? until - days * DAY_MS : Date.parse(opt('--since'));
+      if (!(days > 0) || !Number.isFinite(since) || !Number.isFinite(until) || since >= until || (opt('--since') != null && opt('--days') != null)) {
+        console.error(usage); process.exit(2);
+      }
+      console.log(JSON.stringify(perTicket({ since, until, ci: !args.includes('--no-ci') }), null, 2));
     } else {
       const days = opt('--days') == null ? 7 : Number(opt('--days'));
-      if (!(days > 0)) { console.error('usage: phase0-report.mjs [--days <n>] [--no-ci]'); process.exit(2); }
+      if (!(days > 0) || args.some((a) => ['--json', '--since', '--until'].includes(a))) {
+        console.error('usage: phase0-report.mjs [--days <n>] [--no-ci]   (--json, --since and --until go with --per-ticket)'); process.exit(2);
+      }
       for (const l of report({ days, ci: !args.includes('--no-ci'), usageFiles: [probeLog()] })) console.log(l);
     }
   } catch (e) {

@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, claudeVersion, DAY_MS } from '../desk/bin/phase0-report.mjs';
+import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, claudeVersion, DAY_MS, perTicket, ticketRows, batchFigures } from '../desk/bin/phase0-report.mjs';
+import { preflightLine } from '../desk/bin/worker-cost.mjs';
 import { parseLevers, LEVERS, HOME } from '../desk/bin/desk-env.mjs';
 import { REGISTRY, leverFingerprints, installedPath } from '../desk/bin/lever-registry.mjs';
 let fails = 0;
@@ -255,6 +256,125 @@ t('AC3: nothing in the checkout, its .git included, is changed', moved.join(', '
 has('AC3: behind origin and uncommitted files are reported', checked, /^main checkout: .* on main, 1 behind and 0 ahead of origin\/main as last fetched, 2 uncommitted file\(s\) \(reported only: nothing is fetched, reset or checked out\)$/);
 has('AC2: each live worktree\'s base', checked, /^ {2}worktree .*wt \(feat\/W-1\): base [0-9a-f]{12}, 1 behind origin\/main$/);
 has('AC2: the main checkout\'s commit', checked, new RegExp(`^main checkout: .* at ${git(main, 'rev-parse', 'HEAD').slice(0, 12)} `));
+
+// ---- per-ticket rows: one per admitted ticket, across a live and an archived batch ---------
+// 36 tickets admitted in the last 7 days, 24 merged and 12 not, split over a live batch (P-1..P-20)
+// and an archived one (P-21..P-36), plus two admitted before the window whose work is all older.
+const PR_ROOT = join(T, 'per-ticket');
+const liveQ = join(PR_ROOT, 'q', 'batches', 'E-7', 'queue.json');
+const liveS = join(PR_ROOT, 's', 'batches', 'E-7');
+const archQ = join(PR_ROOT, 'q', 'batches', '.done', 'E-8', 'queue.json');
+const archS = join(PR_ROOT, 's', 'batches', '.done', 'E-8');
+const tickets = { [liveQ]: {}, [archQ]: {} };
+const stateOf = { [liveQ]: liveS, [archQ]: archS };
+for (const s of [liveS, archS]) for (const d of ['logs', 'workers', 'triage']) mkdirSync(join(s, d), { recursive: true });
+mkdirSync(dirname(liveQ), { recursive: true });
+mkdirSync(dirname(archQ), { recursive: true });
+const PIN = { set: ['codex', 'memory'], arms: { codex: 'on', memory: 'off' }, trial_ids: { codex: 'T-1', memory: 'T-2' }, fp: { codex: 'abc' }, at: iso(DAY_MS) };
+for (let i = 1; i <= 36; i++) {
+  const key = `P-${i}`;
+  const q = i <= 20 ? liveQ : archQ;
+  const s = stateOf[q];
+  // Admitted between 1 and 6 days ago, by i, so a narrower window holds a known subset.
+  const added = iso(DAY_MS * (1 + (i % 6)) + i * 60_000);
+  const merged = i % 3 !== 0;
+  tickets[q][key] = { key, type: i % 2 ? 'Story' : 'Bug', lane: 'A', state: merged ? 'done' : i % 9 === 0 ? 'failed' : 'running',
+    added_at: added, ...(merged ? { merged_at: iso(DAY_MS / 2) } : {}), branch: `feat/${key}`,
+    login: { name: i % 2 ? 'work' : 'personal', config_dir: null }, ...(i === 1 ? { levers: PIN } : {}),
+    fix_tries: i === 1 ? [{ try: 1, kind: 'checks', at: iso(DAY_MS) }, { kind: 'capture', at: iso(DAY_MS) }] : [] };
+  if (i !== 2) writeFileSync(join(s, 'triage', `${key}.json`), JSON.stringify({ size: i % 2 ? 'M' : 's' }));
+  const lines = [init(`ps-${i}`), result(1 + i * 0.37 + 0.002, 100 * i, 10 * i)];
+  if (i === 1) lines.splice(1, 0, say('AUTOPILOT_STAGE: 4b/9 self-review'), say('AUTOPILOT_PARK: approve the pricing call?'),
+    say('AUTOPILOT_PARK: worktree setup failed'), use('pd', 'Bash', { command: 'gh api x' }), deniedEvent('pd', 'Bash'));
+  if (i % 4 === 0) lines.unshift(preflightLine({ usd: 0.05 * i, turns: 1 }).trim());
+  if (i !== 36) writeFileSync(join(s, 'logs', `${key}.log`), `${lines.join('\n')}\n`);
+  // P-5's second run left no result event.
+  if (i === 5) writeFileSync(join(s, 'logs', `${key}.log.round1`), `${init('ps-5b')}\n${say('AUTOPILOT_STAGE: 3/9 implement')}\n`);
+  if (i === 1) writeFileSync(join(s, 'workers', `${key}.runs.jsonl`), `${spawnLine({ ticket: key, session: 'ps-1', installed: { commit: 'feedface00112233' }, levers: { on: ['codex'], unknown: [] }, claude: '2.1.0 (Claude Code)' })}\n`);
+  // P-3's start was recorded before starts carried a claude version.
+  if (i === 3) writeFileSync(join(s, 'workers', `${key}.runs.jsonl`), `${JSON.stringify({ at: iso(DAY_MS), ticket: key, session: 'ps-3', stage: '0', desk_commit: 'feedface00112233', levers: [] })}\n`);
+}
+// Two tickets admitted before the window, merged and last worked before it.
+tickets[liveQ]['OLD-1'] = { key: 'OLD-1', state: 'done', added_at: iso(20 * DAY_MS), merged_at: iso(15 * DAY_MS), branch: 'feat/OLD-1' };
+tickets[archQ]['OLD-2'] = { key: 'OLD-2', state: 'failed', added_at: iso(9 * DAY_MS), branch: 'feat/OLD-2' };
+for (const [k, s] of [['OLD-1', liveS], ['OLD-2', archS]]) {
+  writeFileSync(join(s, 'logs', `${k}.log`), `${result(50, 1, 1)}\n`);
+  utimesSync(join(s, 'logs', `${k}.log`), (NOW - 12 * DAY_MS) / 1000, (NOW - 12 * DAY_MS) / 1000);
+}
+for (const q of [liveQ, archQ]) writeFileSync(q, JSON.stringify({ tickets: tickets[q] }));
+const ptBatches = [{ name: 'E-7', queue: liveQ, state: liveS }, ...archivedBatches({ queueRoot: join(PR_ROOT, 'q'), stateRoot: join(PR_ROOT, 's') })];
+const ptGh = (args) => {
+  if (args[1] === 'list') return { status: 0, stdout: JSON.stringify([{ databaseId: 71, headBranch: 'feat/P-1', workflowName: 'CI' }, { databaseId: 72, headBranch: 'feat/P-1', workflowName: 'CI' }, { databaseId: 73, headBranch: 'main', workflowName: 'CI' }]) };
+  return { status: 0, stdout: JSON.stringify({ jobs: [{ name: 'test', conclusion: 'failure' }] }) };
+};
+const SINCE = NOW - 7 * DAY_MS;
+const pt = perTicket({ slug: 'o__r', batches: ptBatches, since: SINCE, until: NOW, gh: ptGh, repo: 'o/r' });
+const rowOf = (k) => pt.rows.find((r) => r.key === k);
+t('per-ticket AC1: one row per admitted ticket across a live and an archived batch', pt.rows.length, 36);
+t('per-ticket AC1: 24 merged, 12 not', `${pt.rows.filter((r) => r.merged_at).length} ${pt.rows.filter((r) => !r.merged_at).length}`, '24 12');
+t('per-ticket AC1: every key once', new Set(pt.rows.map((r) => r.key)).size, 36);
+t('per-ticket AC1: the archived batch\'s tickets are there', rowOf('P-30')?.batch, 'E-8 (archived)');
+const aggregateOf = () => ptBatches.map((b) => batchFigures({ queue: b.queue, state: b.state, slug: 'o__r', since: SINCE })).reduce((n, f) => n + f.cost, 0);
+const printedTotal = () => {
+  const printed = report({ ...base, batches: ptBatches, ci: false });
+  return printed.slice(printed.findIndex((l) => l.startsWith('total'))).find((l) => /spent in the window/.test(l)).match(/\$([\d,.]+) API-equivalent/)?.[1];
+};
+const rowSum = pt.rows.reduce((n, r) => n + r.cost, 0);
+t('per-ticket AC2: the rows\' costs sum to the aggregate\'s, to the cent', rowSum.toFixed(2), aggregateOf().toFixed(2));
+t('per-ticket AC2: and to the total the report prints', printedTotal(), rowSum.toFixed(2));
+t('per-ticket AC2: no ticket admitted earlier spent in the window', JSON.stringify(pt.carried_in), '{"cost":0,"tickets":[]}');
+// OLD-1, admitted before the window, runs again inside it: the aggregate counts that run and no row
+// may, so it is carried in, and rows plus carried_in still reconcile to the cent.
+const old1 = join(liveS, 'logs', 'OLD-1.log');
+utimesSync(old1, (NOW - DAY_MS) / 1000, (NOW - DAY_MS) / 1000);
+const carry = perTicket({ slug: 'o__r', batches: ptBatches, since: SINCE, until: NOW, ci: false });
+const carryRows = carry.rows.reduce((n, r) => n + r.cost, 0);
+t('per-ticket AC2: a ticket admitted earlier that spent in the window has no row and is carried in',
+  `${carry.rows.length} ${carryRows.toFixed(2)} ${JSON.stringify(carry.carried_in)}`, `36 ${rowSum.toFixed(2)} {"cost":50,"tickets":[{"batch":"E-7","key":"OLD-1","cost":50}]}`);
+t('per-ticket AC2: rows plus carried_in equal the aggregate and the printed total', `${(carryRows + carry.carried_in.cost).toFixed(2)} ${printedTotal()}`, `${aggregateOf().toFixed(2)} ${aggregateOf().toFixed(2)}`);
+utimesSync(old1, (NOW - 12 * DAY_MS) / 1000, (NOW - 12 * DAY_MS) / 1000);
+const p1 = rowOf('P-1');
+const FIELDS = ['slug', 'batch', 'key', 'type', 'lane', 'size', 'admitted_at', 'merged_at', 'state', 'cost', 'cost_complete', 'input', 'output',
+  'preflight_cost', 'runs', 'unknown_runs', 'starts', 'fix_tries', 'parks', 'parks_by_class', 'review_rounds', 'denials', 'denials_by_command',
+  'ci_reds', 'ci_reds_by_job', 'desk_commits', 'start_records', 'login', 'pin'];
+t('per-ticket AC3: every row holds every field', pt.rows.every((r) => FIELDS.every((k) => k in r)), true);
+t('per-ticket AC3: identity, type, lane, size, admitted and login', `${p1.slug} ${p1.key} ${p1.type} ${p1.lane} ${p1.size} ${p1.admitted_at === tickets[liveQ]['P-1'].added_at} ${p1.login}`, 'o__r P-1 Story A M true work');
+t('per-ticket AC3: a size recorded in lower case reads as its size', rowOf('P-4').size, 'S');
+t('per-ticket AC3: merged_at, or the terminal state for one not merged', `${p1.merged_at != null} ${rowOf('P-9').merged_at} ${rowOf('P-9').state}`, 'true null failed');
+t('per-ticket AC3: cost, tokens and starts', `${p1.cost.toFixed(3)} ${p1.input} ${p1.output} ${p1.starts} ${p1.cost_complete}`, '1.372 100 10 1 true');
+t('per-ticket AC3: preflight dollars are in the cost and on their own', `${rowOf('P-4').preflight_cost.toFixed(2)} ${rowOf('P-4').cost.toFixed(3)}`, '0.20 2.682');
+t('per-ticket AC3: fix tries, a capture not a try', p1.fix_tries, 1);
+t('per-ticket AC3: parks by class', JSON.stringify(p1.parks_by_class), '{"missing decision":1,"runner or resource":1}');
+t('per-ticket AC3: Stage 4b rounds and permission denials', `${p1.review_rounds} ${p1.denials} ${JSON.stringify(p1.denials_by_command)}`, '1 1 {"gh api":1}');
+t('per-ticket AC3: CI reds on its own branch only', `${p1.ci_reds} ${JSON.stringify(p1.ci_reds_by_job)} ${rowOf('P-2').ci_reds}`, '2 {"test":2} 0');
+t('per-ticket AC3: distinct desk commits and the levers and claude version of each start',
+  `${JSON.stringify(p1.desk_commits)} ${JSON.stringify(p1.start_records.map((s) => [s.session, s.levers, s.claude_version]))}`,
+  '["feedface00112233"] [["ps-1",["codex"],"2.1.0 (Claude Code)"]]');
+t('per-ticket AC3: a start with no record is there with nothing filled in', JSON.stringify(rowOf('P-7').start_records), '[{"at":null,"session":"ps-7","stage":null,"desk_commit":null,"levers":null,"claude_version":null}]');
+const p5 = rowOf('P-5');
+t('per-ticket AC4: a run with no result event leaves the cost incomplete', `${p5.cost_complete} ${p5.unknown_runs} ${p5.runs}`, 'false 1 2');
+t('per-ticket AC4: and no estimate is filled in: the recorded run alone', p5.cost.toFixed(3), (1 + 5 * 0.37 + 0.002).toFixed(3));
+t('per-ticket AC5: no triage size is null and the row is still printed', rowOf('P-2')?.size, null);
+t('per-ticket AC6: a start that recorded no claude version is null', JSON.stringify(rowOf('P-3').start_records.map((s) => [s.desk_commit, s.claude_version])), '[["feedface00112233",null]]');
+t('per-ticket AC8: a pinned ticket holds the pin\'s set, arms and trial ids', JSON.stringify(p1.pin), JSON.stringify({ set: PIN.set, arms: PIN.arms, trial_ids: PIN.trial_ids }));
+t('per-ticket AC9: a ticket with no pin holds null', rowOf('P-2').pin, null);
+t('per-ticket: a ticket no worker ran has a row, costing nothing, complete', `${rowOf('P-36')?.cost} ${rowOf('P-36')?.starts} ${rowOf('P-36')?.cost_complete}`, '0 0 true');
+// A cloud worker writes no log here: its row is one run of unrecorded spend, never a complete zero.
+const cloudQ = join(PR_ROOT, 'cloud-queue.json');
+writeFileSync(cloudQ, JSON.stringify({ tickets: { 'C-1': { key: 'C-1', added_at: iso(DAY_MS), location: 'cloud', cloud: { url: 'https://claude.ai/code/s1', started_at: iso(DAY_MS) } } } }));
+const cloudRow = ticketRows({ queue: cloudQ, state: liveS, slug: 'o__r', since: SINCE }).rows[0];
+t('per-ticket AC4: a cloud worker\'s row is incomplete, not a complete zero', `${cloudRow.key} ${cloudRow.cost_complete} ${cloudRow.runs} ${cloudRow.cost}`, 'C-1 false 1 0');
+t('per-ticket: red CI not read is null, never zero', perTicket({ slug: 'o__r', batches: ptBatches, since: SINCE, until: NOW, ci: false }).rows[0].ci_reds, null);
+const nineIso = new Date(NOW - 5 * DAY_MS).toISOString();
+const twoIso = new Date(NOW - 2 * DAY_MS).toISOString();
+const exitOf = (...a) => { try { execFileSync(process.execPath, [join(ROOT, 'desk', 'bin', 'phase0-report.mjs'), ...a], { env: env(noRow), stdio: 'ignore' }); return 0; } catch (e) { return e.status; } };
+t('per-ticket AC7: the window flags are refused without --per-ticket', `${exitOf('--since', nineIso)} ${exitOf('--json')}`, '2 2');
+t('per-ticket AC10: a window that is not one is refused', `${exitOf('--per-ticket', '--since', 'soon')} ${exitOf('--per-ticket', '--since', twoIso, '--until', nineIso)}`, '2 2');
+const want = Object.values({ ...tickets[liveQ], ...tickets[archQ] }).filter((x) => Date.parse(x.added_at) >= Date.parse(nineIso) && Date.parse(x.added_at) < Date.parse(twoIso)).map((x) => x.key).sort();
+const win = perTicket({ slug: 'o__r', batches: ptBatches, since: Date.parse(nineIso), until: Date.parse(twoIso), ci: false });
+t('per-ticket AC10: a --since/--until window holds exactly the tickets admitted in it', JSON.stringify(win.rows.map((r) => r.key).sort()), JSON.stringify(want));
+t('per-ticket AC10: the window is a proper subset', want.length > 0 && want.length < 36, true);
+t('per-ticket AC10: the window is printed with the rows', `${win.since} ${win.until}`, `${nineIso} ${twoIso}`);
 
 // ---- spawn-worker.sh appends the line for every start -------------------------------------
 const spawn = readFileSync(join(ROOT, 'desk', 'bin', 'spawn-worker.sh'), 'utf8');
