@@ -429,7 +429,7 @@ rm -f "$T/queue.json" "$T/logins" "$T/subs.md"; rm -rf "$T/home/.claude-logins"
 
 # DS-649 AC1: both passes ask for the 5-minute prompt cache.
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/cache"
-out=$(FORCE_PROMPT_CACHING_5M= STUB_CACHE="$T/cache" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+out=$(FORCE_PROMPT_CACHING_5M='' STUB_CACHE="$T/cache" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-649 AC1: the first pass and the challenge each run with FORCE_PROMPT_CACHING_5M=1" \
   '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/cache")" = "1 1 " ]'
 rm -f "$T/cache"
