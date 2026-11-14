@@ -151,8 +151,8 @@ t('DS-596 AC1 every option breaking a criterion parks before the PR, quoting it'
 
 // A worker in a repo with no committed pre-push script runs the row's items itself; the script stays first.
 const stage4 = norm(read('worker-contract-stage-4.md'));
-t('DS-611 AC3 the pre-push script is still the first choice', stage4.includes('"Before every push": `bash scripts/desk/pre-push.sh --head`, or where your tree lacks it,'), true);
-t('DS-611 AC1 with no script, each item desk-env cmds pre-push-checks prints runs under its lock before the push', stage4.includes('or where your tree lacks it, each item `desk-env cmds pre-push-checks` prints, under its lock; push only once all pass.'), true);
+t('DS-611 AC3 the pre-push script is still the first choice', stage4.includes('"Before every push": `bash scripts/desk/pre-push.sh --head`, or if absent'), true);
+t('DS-611 AC1 with no script, each item desk-env cmds pre-push-checks prints runs under its lock before the push', stage4.includes('or if absent each `desk-env cmds pre-push-checks` item, locked, all passed.'), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
