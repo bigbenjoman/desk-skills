@@ -37,9 +37,9 @@ cat > "$T/config.md" <<EOF
 EOF
 
 # desk-skills: a scratch origin and the checkout cloned from it on main. Its install.sh records each
-# run with how much it read on stdin, and writes installed.json as the real one does.
+# run with its arguments and how much it read on stdin, and writes installed.json as the real one does.
 git init -q -b main "$T/seed"
-printf '#!/bin/sh\necho "installed stdin=$(wc -c | tr -d " ")" >> "%s/install.calls"\nprintf %s "$(git rev-parse HEAD)" > "%s/desk/installed.json"\n' \
+printf '#!/bin/sh\necho "installed args=$* stdin=$(wc -c | tr -d " ")" >> "%s/install.calls"\nprintf %s "$(git rev-parse HEAD)" > "%s/desk/installed.json"\n' \
   "$T" "'{\"commit\": \"%s\"}\n'" "$T" > "$T/seed/install.sh"
 chmod +x "$T/seed/install.sh"
 git -C "$T/seed" add install.sh; git -C "$T/seed" commit -q -m one
@@ -139,7 +139,7 @@ mkdir -p "$T/desk-src/.playwright-mcp" "$T/desk-src/docs/brand"
 echo a > "$T/desk-src/.playwright-mcp/log.txt"; echo b > "$T/desk-src/docs/brand/logo.svg"
 step 2026-10-27T09:26:00Z
 check "AC1 the checkout is fast-forwarded to origin/main's head" '[ "$(srchead)" = "$new" ]'
-check "AC1 install.sh runs once with nothing on stdin"      '[ "$(calls install)" = 1 ] && grep -qx "installed stdin=0" "$T/install.calls"'
+check "AC1 install.sh runs once with nothing on stdin"      '[ "$(calls install)" = 1 ] && grep -qx "installed args=--any-branch stdin=0" "$T/install.calls"'
 check "AC1 installed.json names the new commit"             '[ "$(installed)" = "$new" ]'
 check "AC1 the report and the log say so"                   'grep -q "release: desk-skills ${old:0:12} -> ${new:0:12} (3 commit(s)) installed" <<< "$out" && mlog | grep -q "release: desk-skills ${old:0:12} -> ${new:0:12}"'
 check "AC5 the unrelated untracked files are left"          '[ -f "$T/desk-src/.playwright-mcp/log.txt" ] && [ -f "$T/desk-src/docs/brand/logo.svg" ]'
