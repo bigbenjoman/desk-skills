@@ -7,13 +7,15 @@
 // A request is one assistant line's usage, counted once by requestId however many lines repeat it. A
 // transcript is one session, attributed by how it started: its first prompt names the usage probe,
 // the decider or a triage pass; an interactive session is entrypoint `cli`; any other headless one in
-// a `*-worktrees/` folder is a worker; anything else is `other`. Sidechain requests are `subagent`,
-// whoever called them.
+// a configured repo's worktrees folder is a worker; anything else is `other`. Sidechain requests are
+// `subagent`, whoever called them.
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { localDay } from './batch-state.mjs';
 import { projectsDirs } from './claude-logins.mjs';
 import { DECIDER_OPENING } from './decider.mjs';
+import { configuredRepos, expandHome, isNone, repoConfigValue } from './desk-env.mjs';
 import { PROBE_ARGS } from './usage-probe.mjs';
 import { MODEL_PRICES, modelFamily } from './worker-cost.mjs';
 
@@ -22,13 +24,26 @@ const PROBE_PROMPT = PROBE_ARGS[PROBE_ARGS.indexOf('-p') + 1];
 // How triage.sh's first pass and its challenge pass start their prompts.
 const TRIAGE_OPENINGS = ['Triage ticket ', 'A first triage pass put ticket '];
 
-// The caller of a session from its first prompt, working folder and entrypoint.
-export function callerOf({ prompt = '', cwd = '', entrypoint = null }) {
+// The worktrees folder of every configured repo, where spawn-worker.sh runs its sessions: §2
+// Worktrees directory, else `<repo root>-worktrees` beside the repo root, as desk-env's worktreesDir.
+export function worktreeDirs(root) {
+  const trim = (p) => expandHome(p).replace(/\/+$/, '');
+  return configuredRepos(root).flatMap(({ slug }) => {
+    const set = repoConfigValue(slug, 'worktrees-dir', root);
+    if (set && !isNone(set)) return [trim(set)];
+    const repo = trim(repoConfigValue(slug, 'repo-root', root) ?? '');
+    return repo ? [join(dirname(repo), `${basename(repo)}-worktrees`)] : [];
+  });
+}
+
+// The caller of a session from its first prompt, working folder and entrypoint, `worktrees` the folders
+// workers run in.
+export function callerOf({ prompt = '', cwd = '', entrypoint = null }, worktrees = []) {
   if (prompt.trim() === PROBE_PROMPT) return 'usage probe';
   if (prompt.startsWith(DECIDER_OPENING)) return 'decider';
   if (TRIAGE_OPENINGS.some((o) => prompt.startsWith(o))) return 'triage';
   if (entrypoint === 'cli') return 'interactive';
-  if (entrypoint && /-worktrees\//.test(`${cwd}/`)) return 'worker';
+  if (entrypoint && worktrees.some((d) => `${cwd}/`.startsWith(`${d}/`))) return 'worker';
   return 'other';
 }
 
@@ -73,11 +88,12 @@ const emptyRow = () => ({ sessions: new Set(), requests: 0, uncached: 0, w1h: 0,
 
 // windows: [{ name, from, to }] in epoch ms, `to` exclusive. -> { windows: [{ name, from, to, rows: { <caller>: row } }],
 // skipped, other } where `skipped` counts lines that are not JSON and `other` the sessions no caller claimed.
-export function cacheReport({ dirs = projectsDirs(), windows }) {
+// Claude Code logs a request once per content block, each line with the same usage but the output
+// so far, so a repeated request keeps its largest output (as worker-cost.mjs stageUsage does).
+export function cacheReport({ dirs = projectsDirs(), windows, worktrees = worktreeDirs() }) {
   const out = windows.map((w) => ({ ...w, rows: Object.fromEntries(CALLERS.map((c) => [c, emptyRow()])) }));
   const earliest = Math.min(...windows.map((w) => w.from));
-  const seen = new Set();
-  const otherSessions = new Set();
+  const requests = new Map();
   let skipped = 0;
   for (const file of [...new Set(dirs)].flatMap(transcripts)) {
     try { if (statSync(file).mtimeMs < earliest) continue; } catch { continue; }
@@ -90,23 +106,28 @@ export function cacheReport({ dirs = projectsDirs(), windows }) {
     }
     const main = lines.filter((d) => d && !d.isSidechain);
     const first = main.find((d) => d.type === 'user' && textOf(d.message?.content));
-    const caller = callerOf({ prompt: textOf(first?.message?.content), cwd: main.find((d) => d.cwd)?.cwd ?? '', entrypoint: main.find((d) => d.entrypoint)?.entrypoint ?? null });
+    const caller = callerOf({ prompt: textOf(first?.message?.content), cwd: main.find((d) => d.cwd)?.cwd ?? '', entrypoint: main.find((d) => d.entrypoint)?.entrypoint ?? null }, worktrees);
     for (const d of lines) {
       const r = requestOf(d);
       if (!r || !Number.isFinite(r.at)) continue;
-      if (r.id) { if (seen.has(r.id)) continue; seen.add(r.id); }
-      const who = r.sidechain ? 'subagent' : caller;
-      const usd = requestUsd(r);
-      for (const w of out) {
-        if (r.at < w.from || r.at >= w.to) continue;
-        const row = w.rows[who];
-        row.sessions.add(file);
-        row.requests += 1;
-        for (const k of ['uncached', 'w1h', 'w5m', 'read', 'output']) row[k] += r[k];
-        for (const t of r.ttls) row.ttls.add(t);
-        if (usd) { row.usd += usd.total; row.writeUsd += usd.write; } else row.unpriced += 1;
-        if (who === 'other') otherSessions.add(file);
-      }
+      const key = r.id ?? `line-${requests.size}`;
+      const had = requests.get(key);
+      if (had) had.r.output = Math.max(had.r.output, r.output);
+      else requests.set(key, { r, who: r.sidechain ? 'subagent' : caller, file });
+    }
+  }
+  const otherSessions = new Set();
+  for (const { r, who, file } of requests.values()) {
+    const usd = requestUsd(r);
+    for (const w of out) {
+      if (r.at < w.from || r.at >= w.to) continue;
+      const row = w.rows[who];
+      row.sessions.add(file);
+      row.requests += 1;
+      for (const k of ['uncached', 'w1h', 'w5m', 'read', 'output']) row[k] += r[k];
+      for (const t of r.ttls) row.ttls.add(t);
+      if (usd) { row.usd += usd.total; row.writeUsd += usd.write; } else row.unpriced += 1;
+      if (who === 'other') otherSessions.add(file);
     }
   }
   return { windows: out, skipped, other: otherSessions.size };
@@ -116,8 +137,7 @@ const tokens = (n) => Math.round(n).toLocaleString('en-US');
 const usd = (n, places = 2) => `$${n.toFixed(places)}`;
 const hit = (r) => { const all = r.uncached + r.w1h + r.w5m + r.read; return all ? `${((100 * r.read) / all).toFixed(1)}%` : '-'; };
 const mixed = (r) => (r.ttls.has('5m') && r.ttls.has('1h') ? 'mixed TTL' : '');
-const day = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-const span = (w) => `${day(w.from)}..${day(w.to - 1)}`;
+const span = (w) => `${localDay(new Date(w.from))}..${localDay(new Date(w.to - 1))}`;
 
 function table(head, rows) {
   const width = head.map((h, i) => Math.max(h.length, ...rows.map((r) => String(r[i] ?? '').length)));
@@ -176,14 +196,19 @@ export function compareText(rep) {
     ...notes(rep).map((n) => `  (${n})`)].join('\n');
 }
 
-// A local day, `YYYY-MM-DD`, as the epoch ms it starts at, or NaN.
-const dayStart = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(s ?? '') ? new Date(`${s}T00:00:00`).getTime() : NaN);
-const NEXT_DAY = 24 * 3600 * 1000;
+// A local day, `YYYY-MM-DD`, as the epoch ms it starts at, or NaN; `after` days later for the start
+// of a later day, by the calendar, so a clock-change day is its 23 or 25 hours.
+const dayStart = (s, after = 0) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s ?? '')) return NaN;
+  const d = new Date(`${s}T00:00:00`);
+  d.setDate(d.getDate() + after);
+  return d.getTime();
+};
 // `<from>..<to>`, both days counted, as a window.
 export function rangeWindow(name, s) {
   const [a, b] = String(s ?? '').split('..');
   const from = dayStart(a);
-  const to = dayStart(b) + NEXT_DAY;
+  const to = dayStart(b, 1);
   return Number.isFinite(from) && Number.isFinite(to) && to > from ? { name, from, to } : null;
 }
 
@@ -197,7 +222,7 @@ export function windowsFromArgs(argv, now = Date.now()) {
   }
   if (opt('--since') === undefined) return null;
   const from = dayStart(opt('--since'));
-  const to = opt('--until') === undefined ? now + 1 : dayStart(opt('--until')) + NEXT_DAY;
+  const to = opt('--until') === undefined ? now + 1 : dayStart(opt('--until'), 1);
   return Number.isFinite(from) && Number.isFinite(to) && to > from ? [{ name: 'window', from, to }] : null;
 }
 

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cacheReport, callerOf, requestOf, requestUsd, rangeWindow, windowsFromArgs, windowText, compareText } from '../desk/bin/cache-report.mjs';
+import { cacheReport, callerOf, requestOf, requestUsd, rangeWindow, windowsFromArgs, windowText, compareText, worktreeDirs } from '../desk/bin/cache-report.mjs';
 import { DECIDER_OPENING } from '../desk/bin/decider.mjs';
 
 let fails = 0;
@@ -23,6 +23,15 @@ mkdirSync(A, { recursive: true });
 mkdirSync(B, { recursive: true });
 const SUBS = join(T, 'subs.md');
 writeFileSync(SUBS, '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `in rotation` |\n');
+// Two repo configs: one whose worktrees sit beside its root (`/x/repo-worktrees`), one with its own folder.
+const CONFIG = join(T, 'config');
+const repoConfig = (slug, rows) => {
+  mkdirSync(join(CONFIG, 'repos', slug), { recursive: true });
+  writeFileSync(join(CONFIG, 'repos', slug, 'config.md'), ['## 2. Paths', '| Field | Value |', '|---|---|', ...rows, ''].join('\n'));
+};
+repoConfig('acme__widgets', ['| Primary repo root | `/x/repo` |']);
+repoConfig('acme__gadgets', ['| Primary repo root | `/y/gadgets` |', '| Worktrees directory | `/y/trees/` |']);
+const WORKTREES = worktreeDirs(CONFIG);
 
 const at = (d, h = 10) => new Date(2026, 10, d, h).toISOString();
 const user = (prompt, { cwd = '/x/repo', entrypoint = 'sdk-cli' } = {}) => ({ type: 'user', cwd, entrypoint, message: { role: 'user', content: prompt } });
@@ -36,7 +45,8 @@ const session = (dir, name, lines) => writeFileSync(join(dir, `${name}.jsonl`), 
 
 // In the window 1 to 14 Nov.
 const r1 = req('t1', { ttl: '5m', w5m: 1000, output: 50 });
-session(A, 'triage', [user('Triage ticket DS-1 in acme/widgets.'), r1, r1, '{not json']);
+// The same request on two lines, the first with the output so far.
+session(A, 'triage', [user('Triage ticket DS-1 in acme/widgets.'), { ...r1, message: { ...r1.message, usage: { ...r1.message.usage, output_tokens: 3 } } }, r1, '{not json']);
 session(A, 'challenge', [user('A first triage pass put ticket DS-1 in lane C, which means'), req('t2', { w1h: 400 })]);
 session(A, 'worker', [user('You are desk-ticket', { cwd: '/x/repo-worktrees/DS-1' }), req('w1', { model: 'claude-sonnet-5-5', w1h: 2000, read: 8000 }),
   req('s1', { model: 'claude-haiku-5-5', w5m: 100, side: true })]);
@@ -49,13 +59,17 @@ session(A, 'triage-later', [user('Triage ticket DS-2 in acme/widgets.'), req('t3
 session(B, 'decider-later', [user(`${DECIDER_OPENING}acme__widgets.`), req('d2', { day: 20, ttl: '5m', w5m: 300 }), req('d3', { day: 20, ttl: '5m', w5m: 300 })]);
 
 const WINDOW = rangeWindow('window', '2026-11-01..2026-11-14');
-const rep = cacheReport({ dirs: [join(HOME, '.claude', 'projects'), join(HOME, '.claude-logins', 'b', 'projects')], windows: [WINDOW] });
+const DIRS = [join(HOME, '.claude', 'projects'), join(HOME, '.claude-logins', 'b', 'projects')];
+const rep = cacheReport({ dirs: DIRS, windows: [WINDOW], worktrees: WORKTREES });
 const row = (c, r = rep) => { const x = r.windows[0].rows[c]; return [x.sessions.size, x.requests, x.uncached, x.w1h, x.w5m, x.read]; };
 
 // ---- attribution
-t('a probe prompt is the usage probe', callerOf({ prompt: 'Reply with: ok', entrypoint: 'sdk-cli' }), 'usage probe');
-t('an interactive session in a worktree is interactive, not a worker', callerOf({ prompt: 'x', cwd: '/x/a-worktrees/K', entrypoint: 'cli' }), 'interactive');
-t('a headless session in a worktree is a worker', callerOf({ prompt: 'x', cwd: '/x/a-worktrees/K', entrypoint: 'sdk-cli' }), 'worker');
+t('the worktrees folders: beside the repo root, or the configured one', WORKTREES, ['/y/trees', '/x/repo-worktrees']);
+t('a probe prompt is the usage probe', callerOf({ prompt: 'Reply with: ok', entrypoint: 'sdk-cli' }, WORKTREES), 'usage probe');
+t('an interactive session in a worktree is interactive, not a worker', callerOf({ prompt: 'x', cwd: '/x/repo-worktrees/K', entrypoint: 'cli' }, WORKTREES), 'interactive');
+t('a headless session in a worktree is a worker', callerOf({ prompt: 'x', cwd: '/x/repo-worktrees/K', entrypoint: 'sdk-cli' }, WORKTREES), 'worker');
+t('so is one in a configured worktrees folder of another name', callerOf({ prompt: 'x', cwd: '/y/trees/K', entrypoint: 'sdk-cli' }, WORKTREES), 'worker');
+t('a headless session in a folder no repo runs workers in is other', callerOf({ prompt: 'x', cwd: '/z/other-worktrees/K', entrypoint: 'sdk-cli' }, WORKTREES), 'other');
 
 // ---- AC5: a row per caller, from both logins
 t('AC5 triage: both passes, the 1h and 5m writes apart', row('triage'), [2, 2, 20, 400, 1000, 0]);
@@ -84,11 +98,17 @@ t('AC8 the line that is not JSON is skipped', rep.skipped, 1);
 t('AC8 the unknown session is other', [rep.other, row('other')[1]], [1, 1]);
 t('AC8 both counts are printed', text.includes('skipped 1 line(s) that are not JSON; 1 session(s) not attributed to a caller, counted as other'), true);
 
-// ---- AC9: a request logged twice counts once
+// ---- AC9: a request logged twice counts once, with its final output
 t('AC9 the repeated triage request counts once', rep.windows[0].rows.triage.uncached, 20);
+t('AC9 at the output of its last line, not its first', rep.windows[0].rows.triage.output, 50);
+
+// ---- windows are whole local days, a clock-change day's 23 or 25 hours included
+const autumn = rangeWindow('w', '2026-10-25..2026-10-25');
+t('a one-day window ends at the next local midnight', [autumn.from, autumn.to], [new Date(2026, 9, 25).getTime(), new Date(2026, 9, 26).getTime()]);
+t('--until ends at the next local midnight too', windowsFromArgs(['--since', '2026-03-29', '--until', '2026-03-29'])[0].to, new Date(2026, 2, 30).getTime());
 
 // ---- AC6: before and after
-const both = cacheReport({ dirs: [join(HOME, '.claude', 'projects'), join(HOME, '.claude-logins', 'b', 'projects')], windows: windowsFromArgs(['--before', '2026-11-01..2026-11-14', '--after', '2026-11-15..2026-11-28']) });
+const both = cacheReport({ dirs: DIRS, worktrees: WORKTREES, windows: windowsFromArgs(['--before', '2026-11-01..2026-11-14', '--after', '2026-11-15..2026-11-28']) });
 const cmp = compareText(both);
 t('AC6 the decider\'s after window: one session, two requests', [both.windows[1].rows.decider.sessions.size, both.windows[1].rows.decider.requests], [1, 2]);
 t('AC6 per request: each caller has a before and an after row', /^ {2}decider\s+before\s+1\s+1 .*\n {2}\s+after\s+1\s+2 /m.test(cmp), true);
@@ -100,9 +120,10 @@ t('AC6 per session: the decider\'s is unchanged', /^ {2}decider\s+before .*\n {2
 t('AC6 a caller with no session in a window has no change', /^ {2}worker\s+before .*\n {2}\s+after .* -$/m.test(perSession), true);
 
 // ---- the CLI reads every login, and refuses a malformed window
-const cli = (args) => spawnSync('node', [join(BIN, 'cache-report.mjs'), ...args], { env: { ...process.env, HOME, DESK_SUBSCRIPTIONS: SUBS, CLAUDE_CONFIG_DIR: '' }, encoding: 'utf8' });
+const cli = (args) => spawnSync('node', [join(BIN, 'cache-report.mjs'), ...args], { env: { ...process.env, HOME, DESK_SUBSCRIPTIONS: SUBS, CLAUDE_CONFIG_DIR: '', DESK_CONFIG_ROOT: CONFIG }, encoding: 'utf8' });
 const out = cli(['--since', '2026-11-01', '--until', '2026-11-14']);
 t('AC5 the CLI prints the window\'s rows, the second login\'s decider included', [out.status, /^ {2}decider\s+1\s+1 /m.test(out.stdout)], [0, true]);
+t('AC5 and finds the worker by the repo configs\' worktrees folders', /^ {2}worker\s+1\s+1 /m.test(out.stdout), true);
 t('a window that does not parse is a usage error', cli(['--since', 'last week']).status, 2);
 t('neither --since nor --before is a usage error', cli([]).status, 2);
 
