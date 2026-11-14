@@ -755,7 +755,14 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
   const state = [...new Map(stateFailing(failing, ctx.stateChecks, lineOf).map((f) => [f.name, { name: f.name, runId: f.runId, state: true, command: stateClears(f.kind) }])).values()];
   const split = splitFailing((failing ?? []).filter((f) => !state.some((x) => x.name === f.name)), ctx);
   const mine = split.mine, notMine = [...split.notMine, ...state];
-  if (!mine.length) return notMine.length ? operatorStuck(notMine, ctx) : null;
+  // A stuck answer names a state check in its reason only: its record's checks are those a worker or an
+  // off-GitHub step clears, and a record left with none holds at this head, as fixCall's does.
+  const unstated = (c) => {
+    if (c?.call !== 'stuck' || !state.length || !Array.isArray(c.checks)) return c;
+    const kept = c.checks.filter((x) => !state.some((s) => s.name === x.name));
+    return kept.length ? { ...c, checks: kept } : { call: 'stuck', why: c.why };
+  };
+  if (!mine.length) return notMine.length ? unstated(operatorStuck(notMine, ctx)) : null;
   const base = againstBase(t, head, mine, notMine, ctx);
   if (base?.held) return base.held;
   const classed = classedRerun(base?.mine ?? mine, checks, ctx);
@@ -763,7 +770,7 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
   const done = t.fix_tries ?? [];
   const fix = { ...checksFix(base?.mine ?? mine, notMine, ctx.repo, base), draft: true };
   const c = spent(done, fixedAt(done, head)) ? spentOnRed(done, { pr, head, draft: true }, base?.mine ?? mine, base?.notMine ?? notMine, ctx, checks, base) : withRecord(nextTry(done, pr, head, fix), base?.record);
-  return classed ? withRerunNote(c, classed.note) : c;
+  return unstated(classed ? withRerunNote(c, classed.note) : c);
 }
 
 // A draft PR in conflict with its base, which undraft.mjs sends on (`conflict`) under §3

@@ -826,6 +826,7 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   const s1 = draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [red(GATE, '7')], checks: [ok('tests'), gateRed(pkgLine)] }, dctx);
   t('DS-579 AC1 a draft red only on an approval state check: no fix try, stuck', s1?.call, 'stuck');
   t('DS-579 AC1 naming the check and the step it failed at', s1?.why, `${GATE} (failed step: Check approvals) · a §4 State check, which reads the PR's reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads`);
+  t('DS-579 AC1 its record keeps no checks list, so nothing reads the state check as an off-GitHub step', s1?.checks, undefined);
   const s2 = draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [red('tests', '8'), red(GATE, '7')], checks: [red('tests', '8'), gateRed(pkgLine)] }, dctx);
   t('DS-579 AC2 beside a red test, the try lists only the test', `${s2?.call} ${s2?.fix.checks.map((c) => c.name).join(',')}`, 'requeue tests');
   const s2b = fixBrief(tk({ fix: s2.fix }));
