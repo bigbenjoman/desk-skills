@@ -332,7 +332,10 @@ function stuckPlain(r, n, s, t) {
     const said = /; the last try said: (.+)$/.exec(why)?.[1];
     const k = /after (\d+) review tr(?:y|ies) at it/.exec(why)?.[1];
     const ran = k ? `: desk's review ran on it ${k === '1' ? 'once' : k === '2' ? 'twice' : `${k} times`} and posted none it can read${said ? `, and the last one said "${plainWords(said)}"` : ''}` : '';
-    return `${n} has no code review desk can read for its latest commit${ran}. Post one (run /desk-review on it); the next pass then takes it on.`;
+    // The verdict step the check failed at, as gateTry quotes it.
+    const step = /: its ("[^"]+") check says: (.+?)(?:; the last try said: .+)?$/.exec(why);
+    const failed = step ? ` Its ${step[1]} check failed its verdict step: "${one(step[2])}".` : '';
+    return `${n} has no code review desk can read for its latest commit${ran}.${failed} Post one (run /desk-review on it); the next pass then takes it on.`;
   }
   if (/conflict/.test(why)) return conflictPlain(r, t, n, r.ctx?.base, why);
   const red = /^still red[^:]*:\s*(.+)$/.exec(why);
