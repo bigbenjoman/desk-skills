@@ -44,7 +44,7 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { loginState } from './find-playwright.mjs';
 import { parseDfAvailableGB } from './machine.mjs';
-import { isDir, loginEnv, readSubscriptions, signInCommand } from './logins.mjs';
+import { isDir, loginEnv, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { inUse, loginKey, workLoginDirs } from './claude-logins.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
@@ -269,7 +269,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   // sign-outs. A folder the file does not list counts only once signed in, so it is not told as signed out.
   const listed = (() => { try { return readSubscriptions(E.subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.configDir && inUse(l)); } catch { return []; } })();
   const missing = listed.filter((l) => !isDir(l.dir));
-  const pinned = (() => { try { return workLoginDirs([env.DESK_SUBSCRIPTION?.trim() || E.configValue('subscription')]); } catch { return new Set(); } })();
+  const pinned = (() => { try { return workLoginDirs((subs) => [E.thisRepoSubscription({ repoSubscription }, subs, env)]); } catch { return new Set(); } })();
   const others = listed.filter((l) => isDir(l.dir) && pinned.has(l.dir));
   const reusedLogins = others.every((l) => prev?.logins?.[loginKey(l)]?.ok);
   const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins;

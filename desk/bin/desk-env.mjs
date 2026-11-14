@@ -1745,6 +1745,12 @@ function setRowValue(config, section, row, value) {
 export function repoSubscriptions(L, subs, root = deskConfigRoot()) {
   return configuredRepos(root).map(({ slug }) => ({ slug, ...L.repoSubscription(subs, { value: repoConfigValue(slug, 'subscription', root), source: 'row' }) }));
 }
+// This repo's subscription: DESK_SUBSCRIPTION, one caller's override, else its own row.
+//   -> { email, login, source }
+export function thisRepoSubscription(L, subs, env = process.env) {
+  const v = env.DESK_SUBSCRIPTION?.trim();
+  return v ? L.repoSubscription(subs, { value: v, source: 'DESK_SUBSCRIPTION' }) : L.repoSubscription(subs, { value: configValue('subscription'), source: 'row' });
+}
 
 // Writes another repo's Subscription row: `default`, or an email one of this computer's Claude logins is
 // signed in to (stored lowercase). An unknown email or repo is refused with the config unchanged.
@@ -2317,8 +2323,7 @@ if (isMain) {
         }
         if (sub === undefined || (sub === '--json' && !rest.length)) {
           const env = process.env.DESK_SUBSCRIPTION?.trim();
-          const r = env ? L.repoSubscription(subs, { value: env, source: 'DESK_SUBSCRIPTION' })
-            : L.repoSubscription(subs, { value: configValue('subscription'), source: 'row' });
+          const r = thisRepoSubscription(L, subs);
           if (!r.login) {
             const from = env ? 'DESK_SUBSCRIPTION' : `this repo's config §3b "${CONFIG_ROWS.subscription.row}" row`;
             throw new DeskConfigError(`desk-env subscription: ${from} names ${r.email}, which is not one of this computer's subscriptions, so this repo has none (it never falls back to the default): sign that account in and add it in desk-q view 6 (Usage), or change ${env ? 'DESK_SUBSCRIPTION' : 'the row'}`);

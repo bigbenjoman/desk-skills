@@ -154,7 +154,7 @@ const pin = (slug, value) => {
 };
 account(B, 'b@example.com');
 pin('acme__pin', 'b@example.com');
-const repos =(running) => [{ rows: running.map((key) => ({ k: 'running', t: { key } })), prs: [], stateDir: S, q: {} }];
+const repos = (running) => [{ rows: running.map((key) => ({ k: 'running', t: { key } })), prs: [], stateDir: S, q: {} }];
 const now = Date.now();
 const due = (r) => Q.probesDue(r, { now }).map((x) => x.login.name).join() || 'none';
 t('AC11 no worker running: the default and login B are each due', due(repos([])), 'default,b');
@@ -310,6 +310,9 @@ t('AC2 a repo just pinned to the unused login: the next probe covers it', day([]
 rmSync(join(process.env.DESK_CONFIG_ROOT, 'repos', 'acme__pin2'), { recursive: true });
 pin('acme__pin', 'default');
 t('a login no repo is pinned to any longer is not probed', day([]), 'default');
+writeFileSync(E0.loginFile(S, 'W-2'), JSON.stringify({ login: 'c', config_dir: join(H, '.claude-logins', 'c') }));
+t('a worker on a login no repo is pinned to does not hold the default\'s probe', day(repos(['W-2'])), 'default');
+rmSync(E0.loginFile(S, 'W-2'));
 
 // AC6: one login. Every worker log is its, with no login file, and the line is the one it always was.
 rmSync(join(H, '.claude-logins'), { recursive: true });

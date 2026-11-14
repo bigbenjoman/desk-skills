@@ -45,11 +45,12 @@ const FIXED = new Date(2026, 9, 24, 9, 0).getTime();
 const at = (d, h, m) => Math.round(new Date(2026, 9, d, h, m).getTime() / 1000);
 const MIN = 60000;
 
-function repo(benched = {}) {
+// The repo, its Subscription row naming `sub` when given.
+function repo(benched = {}, sub = null) {
   const slug = 'acme__solo';
   mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
-    '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `3100` |\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n');
+    `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`3100\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n${sub ? `| Subscription | \`default\` | \`${sub}\` |\n` : ''}`);
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(q), { recursive: true });
   writeFileSync(q, JSON.stringify({ version: 1, batch: 'solo', concurrency: 2, tickets: { 'S-1': { key: 'S-1', state: 'triaged' } }, benched }));
@@ -271,8 +272,9 @@ t('AC5 the 5H cell says the plan has no 5-hour window, never 0% or no reading ye
   row(0, 'codexmain', 'prolite', '● in rotation', 'no 5h limit', '███······· 27% Mon 09:00', '—'));
 W.done();
 
-// ---- AC12: a login with no reading yet
+// ---- AC12: a login with no reading yet, one the repo is pinned to
 rmSync(join(env.DESK_USAGE_DIR, 'probe.work.log'));
+repo({}, 'work@example.test');
 const N = open();
 await sleep(20);
 await N.press('6');
@@ -281,6 +283,15 @@ t('AC12 a login with no reading yet says so in its 5H and 7D cells', rowOf(f, 'w
   row(0, 'work@example.test', 'Max 5x', '● in rotation', 'no reading yet', 'no reading yet', '0'));
 t('AC12 and a note says when it will be read', f.some((l) => /^note {2}no reading {5}Logins with no reading yet are read in the next 5 minutes\./.test(l)), true);
 N.done();
+// No repo pinned to it: the scheduled probe does not read it, and the note does not promise it will.
+repo();
+const N2 = open();
+await sleep(20);
+await N2.press('6');
+f = N2.frame();
+t('a login no repo is pinned to, with no reading: the note says it is read once one is', f.some((l) => /^note {2}no reading {5}A login no repo is pinned to is read only once one is/.test(l)), true);
+t('and does not promise a read in 5 minutes', f.some((l) => /read in the next 5 minutes/.test(l)), false);
+N2.done();
 
 // ---- AC13: every Codex login at its limit
 codexReading(join(H, '.codex'), [100, at(24, 16, 40)], [27, at(26, 9, 0)]);
