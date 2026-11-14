@@ -122,7 +122,7 @@ t('DS-356 AC1 the Stage 5 file sends a Stage 7 session asking for a run to the S
 t('DS-356 AC1 the Stage 3 workflow-dispatch rule points at the Stage 4 rule',
   stage3.replace(/\s+/g, ' ').includes('follow the Stage 4 file\'s "A CI or end-to-end run you ask for is the narrowest one that covers your change": read it first.'), true);
 
-// DS-587: a run the busy test lock has not started in 20 minutes is skipped and logged, never parked.
+// A run the busy test lock has not started in 20 minutes is skipped and logged, never parked.
 const lockRule = stage4.split('**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.**')[1]?.split(' The typecheck takes the same lock')[0] ?? '';
 t('DS-587 AC1 the Stage 4 file skips a run the lock has not started in 20 minutes, and never parks on it', lockRule !== '' && !/\bpark/.test(lockRule), true);
 t('DS-587 AC1 it stops the queued run and records the suite as not run locally because the lock was busy',
@@ -132,9 +132,9 @@ t('DS-587 AC2 it logs one engineering decision naming the suites and the lock ho
 t('DS-587 AC3 it commits its work before stopping the run and carrying on', /commit all your work, `TaskStop` it/.test(lockRule), true);
 t('DS-587 AC4 a run that started is not skipped: its failures are fixed', lockRule.includes('A started run is yours: fix what fails.'), true);
 t('DS-587 AC4 silence is not proof of a queued run: it has not started only while the wrapper or its flock has no child running the command',
-  lockRule.includes('Silence is not proof: it has not started while `ps -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its `flock … desk-test.lock`, with no child running your command.') && !lockRule.includes('no suite output'), true);
+  lockRule.includes('Silence is not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its `flock … desk-test.lock`, with no child running your command.') && !lockRule.includes('no suite output'), true);
 t('DS-587 AC2 the holder is found on every lock path: a live holder file, else the single-slot flock with a child',
-  lockRule.includes('a live pid in `desk-test.lock*.pid` or `*.d/pid` in `DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child.'), true);
+  lockRule.includes('a live pid in `desk-test.lock*{.pid,.d/pid}` in `DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child.') && !lockRule.includes('or `*.d/pid`'), true);
 t('DS-587 the typecheck and lint follow the same rule', lockRule.includes('A typecheck or lint does the same.'), true);
 t('DS-587 AC5 the refused with-lock.sh rule is unchanged',
   stage4.includes('If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you ran unlocked**.'), true);

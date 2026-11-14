@@ -37,9 +37,9 @@ feature.** If `with-lock.sh` is refused, check headroom, drop to the lower cap, 
 output that you ran unlocked**.
 
 **A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** Silence is
-not proof: it has not started while `ps -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its
+not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its
 `flock … desk-test.lock`, with no child running your command. At 20 minutes (`etime`) so, commit all
-your work, `TaskStop` it, and note the holder: a live pid in `desk-test.lock*.pid` or `*.d/pid` in
+your work, `TaskStop` it, and note the holder: a live pid in `desk-test.lock*{.pid,.d/pid}` in
 `DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child. Record each suite
 in your verification and the PR's Testing as `not run locally: test lock busy (<holder>); CI's
 required tests cover it`, print one `engineering` `AUTOPILOT_DECISION` naming them and the holder,
