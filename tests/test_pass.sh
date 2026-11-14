@@ -1404,14 +1404,16 @@ fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
 const n = a[2]; const has = (f) => fs.existsSync('$T/u/' + n + f);
 const fields = a[a.indexOf('--json') + 1] ?? '';
 const green = [{ __typename: 'CheckRun', name: 'tests', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+// #712 is also red on "Review gate", which reads the PR's reviews rather than its code.
+const checks = n === '712' ? [...green, { __typename: 'CheckRun', name: 'Review gate', status: 'COMPLETED', conclusion: 'FAILURE' }] : green;
 const mergeable = n === '705' ? 'CONFLICTING' : n === '708' ? 'UNKNOWN' : 'MERGEABLE';
 const verdict ='<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=$HEAD_A p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\n**desk-review, round 1: clean at \`aaaaaaa\`**';
 if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('state,')) {
   console.log(JSON.stringify({ state: 'OPEN', url: 'https://github.com/acme/widgets/pull/' + n, isDraft: !has('.ready'), mergeable,
-    statusCheckRollup: green }));
+    statusCheckRollup: checks }));
 } else if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('headRefOid,')) {
   console.log(JSON.stringify({ headRefOid: n === '704' ? '$HEAD_B' : '$HEAD_A', mergeable, mergeStateStatus: n === '705' ? 'DIRTY' : n === '708' ? 'UNKNOWN' : 'DRAFT', body: '## Summary',
-    reviews: [{ author: { login: 'ben' }, body: verdict }], statusCheckRollup: green }));
+    reviews: [{ author: { login: 'ben' }, body: verdict }], statusCheckRollup: checks }));
 } else if (a[0] === 'pr' && a[1] === 'ready') {
   if (has('.fail')) { console.error('GraphQL: Something went wrong while executing your query.'); process.exit(1); }
   fs.writeFileSync('$T/u/' + n + '.ready', '');
@@ -1529,6 +1531,14 @@ check "DS-314 AC1 a draft whose events hold a convert_to_draft is held, naming w
 check "DS-314 AC4 a worker's draft nobody put back is undrafted as before" '[ "$(readied 710)" = 1 ] && [ "$(field U-10 undraft.call)" = "\"ready\"" ]'
 check "DS-314 a draft whose events cannot be read stays draft until a later pass reads them" \
   '[ "$(readied 711)" = 0 ] && echo "$out" | grep -q "PR #711 (U-11) stays draft for now: its events, which say whether a person put it back to draft, could not be read (HTTP 502: Bad Gateway)"'
+# DS-578: #712 is clean and red only on "Review gate". Unlisted, it is a code check; listed in §4
+# State checks, it reaches the undraft step, which undrafts the PR as it would a green one.
+q add U-12; q set U-12 state=done result.pr=712
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-578 a red check §4 State checks does not name keeps the draft" '[ "$(readied 712)" = 0 ] && [ "$(field U-12 undraft.call)" = "\"checks\"" ]'
+printf '| State checks | `Review gate: approval` |\n' >> "$T/config-u.md"
+q set U-12 undraft=null; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-578 AC1 a clean draft red only on a §4 State check is undrafted" '[ "$(readied 712)" = 1 ] && [ "$(field U-12 undraft.call)" = "\"ready\"" ]'
 
 # ---- DS-415: evidence runs that failed the same way on three drafts start one fix, not three items
 # The fake gh: #801-#803 are clean, green drafts with two screenshot cells and an evidence block. Each
