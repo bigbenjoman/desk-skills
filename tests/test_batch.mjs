@@ -429,12 +429,13 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     'T-7': { key: 'T-7', ...held('GONE-1') },
     'T-8': { key: 'T-8', ...held('M-1|B-1') },
     'T-9': { key: 'T-9', ...held('B-2') },
+    'T-10': { key: 'T-10', state: 'triaged', held_by: null, park: null, held_outside: 'OUT-1' },
   } });
   const yState = (...p) => join(namedS('Y-1'), ...p);
   mkdirSync(yState('triage'), { recursive: true });
   const onB1 = [{ key: 'B-1', category: 'indeterminate' }];
   const recs = { 'T-1': { blockers: onB1 }, 'T-4': { blockers: onB1, size: 'XL' }, 'T-8': { blockers: onB1 }, 'T-9': { blockers: [{ key: 'B-2', category: 'done' }] } };
-  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6', 'T-7', 'T-8', 'T-9']) {
+  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6', 'T-7', 'T-8', 'T-9', 'T-10']) {
     writeFileSync(yState('triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Bug', lane: 'A', lane_reason: 'r', summary: 's', branch: `fix/${k}`, files_in_scope: [`f/${k}`], unknowns: [], blockers: [], ...recs[k] }));
   }
   const answer = (text) => `\n## Answer from the user (2026-11-14T10:00:00Z)\n\n${text}\n`;
@@ -497,6 +498,10 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   r = moveTo('T-9');
   const t9 = sq()['T-9'] ?? {};
   t('DS-665 a Done blocker left in this batch is held outside, not refused', `${r.code} ${t9.state} ${t9.held_by} ${t9.held_outside}`, '0 parked B-2 B-2');
+  // A release clears held_by and leaves held_outside: the hold the person lifted stays lifted.
+  r = moveTo('T-10');
+  const t10 = sq()['T-10'] ?? {};
+  t('DS-665 a ticket the person released arrives unheld, its old outside hold not reinstated', `${r.code} ${t10.state} ${t10.held_by} ${'held_outside' in t10}`, '0 triaged null false');
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.

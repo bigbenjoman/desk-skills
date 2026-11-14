@@ -566,14 +566,15 @@ function transfer(q, key, to) {
   // Jira and on its base (a key its triage record does not list as a blocker, Done or not, is lifted at
   // once, so only those go). A hold on this batch's own files or spine means nothing there and stays
   // behind, as does one on a ticket here already finished. Any other hold is the person's, a key no
-  // longer in any batch included, and refuses the move.
+  // longer in any batch included, and refuses the move. Only held_by holds: a release clears it and
+  // leaves held_outside behind, so held_outside only says which of its keys were outside.
   const blocking = new Set((Array.isArray(r.blockers) ? r.blockers : []).map((b) => b.key));
   const local = new Set([...String(t.collides_with ?? '').split('|'), q.spine, q.batch, q.epic].filter(Boolean));
   const wasOutside = String(t.held_outside ?? '').split('|').filter(Boolean);
   const outside = [];
   const stays = [];
   const theirs = [];
-  for (const p of [...String(t.held_by ?? '').split('|'), ...wasOutside]) {
+  for (const p of String(t.held_by ?? '').split('|')) {
     if (!p || p === key || [holds, outside, stays, theirs].some((l) => l.includes(p))) continue;
     if (tq.tickets[p]) { if (!childDone(tq.tickets[p])) holds.push(p); }
     else if (wasOutside.includes(p) || blocking.has(p)) outside.push(p);
