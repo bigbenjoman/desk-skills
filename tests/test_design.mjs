@@ -411,6 +411,40 @@ const nofile = runNone('check', 'no-such-ticket');
 t('cli check: a slug with no ticket file says so', nofile.status === 2 && nofile.stderr.includes('no ticket file'), true);
 t('cli save: a key with .. is refused', run('save', s1, '--key', 'a..b').status, 2);
 t('cli save: --boards before --key is a usage error', run('save', s1, '--boards', 'x', '--key', 'DS-82').status, 2);
+
+// --boards names a board by its title, commas and all, or its file name, and refuses a name
+// matching no board.
+const LEVERS = 'Opening Levers, home-screen line';
+const commaSnap = (name, titles) => {
+  const d = join(T, name);
+  put(join(d, 'project/canvas.json'), JSON.stringify({ boards: titles.map((title, i) => ({ title, width: 390 + i, file: `b${i}.dc.html` })) }));
+  titles.forEach((_, i) => put(join(d, `project/b${i}.dc.html`), `<main>${i}</main>`));
+  return d;
+};
+const COMMA_URL = 'https://claude.ai/design/p/comma1';
+const writeBoards = (d, boards) => spawnSync('node', [BIN, 'write', d, '--url', COMMA_URL, '--version', '1', '--key', 'DS-1', '--boards', boards], { encoding: 'utf8' });
+const boardsOf = (d) => JSON.stringify(json(join(d, 'source.json')).tickets.find((x) => x.key === 'DS-1').boards);
+const cw1 = commaSnap('comma-1', [LEVERS, 'Main', 'Other']);
+t('DS-659 AC1 write: a title with a comma is recorded whole', `${writeBoards(cw1, LEVERS).status} ${boardsOf(cw1)}`, `0 ${JSON.stringify([LEVERS])}`);
+t('DS-659 AC1 write: beside another board', `${writeBoards(cw1, `${LEVERS},Main`).status} ${boardsOf(cw1)}`, `0 ${JSON.stringify([LEVERS, 'Main'])}`);
+t('DS-659 AC1 write: the README lists it with its width', read(join(cw1, 'README.md')).includes(`| DS-1 | ${LEVERS} (390px), Main (391px) |`), true);
+t('DS-659 AC2 write: a file name records its board\'s title', `${writeBoards(cw1, 'b0.dc.html, b2.dc.html').status} ${boardsOf(cw1)}`, `0 ${JSON.stringify([LEVERS, 'Other'])}`);
+const cw3 = commaSnap('comma-3', [LEVERS, 'Main']);
+const cw3r = writeBoards(cw3, 'Opening Levers');
+t('DS-659 AC3 write: a name matching no board exits 2, writing nothing', `${cw3r.status} ${existsSync(join(cw3, 'source.json'))}`, '2 false');
+t('DS-659 AC3 write: lists the canvas\'s boards', cw3r.stderr.includes('no board named "Opening Levers"') && cw3r.stderr.includes(`board: ${LEVERS} (b0.dc.html)`) && cw3r.stderr.includes('board: Main (b1.dc.html)'), true);
+const cs = commaSnap('comma-save', [LEVERS, 'Main']);
+const csr = run('save', cs, '--key', 'DS-2', '--url', COMMA_URL, '--version', '1', '--boards', 'b1.dc.html');
+t('DS-659 AC2 save: a file name records its board\'s title', `${csr.status} ${JSON.stringify(json(join(r6, 'design/canvases/DS-2/source.json')).tickets[0].boards)}`, '0 ["Main"]');
+const r659 = repo('r659');
+const csBad = spawnSync('node', [BIN, 'save', cs, '--key', 'DS-3', '--url', COMMA_URL, '--version', '1', '--boards', 'Nope'], { cwd: r659, env, encoding: 'utf8' });
+t('DS-659 AC3 save: a name matching no board exits 2, saving nothing', `${csBad.status} ${csBad.stderr.includes('board: Main (b1.dc.html)')} ${existsSync(join(r659, 'design'))}`, '2 true false');
+const cmpBad = await compare(join(r6, 'design/canvases/DS-2'), { chromium: null, storybook: join(T, 'nothing'), out: join(T, 'shots-659'), boards: 'Nope' }).then(() => 'no error', (e) => `${e.code} ${e.message.includes(`board: ${LEVERS} (b0.dc.html)`)}`);
+t('DS-659 AC3 compare: a name matching no board exits 2, writing nothing', `${cmpBad} ${existsSync(join(T, 'shots-659'))}`, '2 true false');
+const cmpCliBad = spawnSync('node', [BIN, 'compare', join(r6, 'design/canvases/DS-2'), '--storybook', join(T, 'nothing'), '--out', join(T, 'shots-659-cli'), '--boards', 'Nope'], { env: { ...env, DESK_HOME: join(T, 'no-desk-home'), DESK_PLAYWRIGHT: '' }, encoding: 'utf8' });
+t('DS-659 AC3 compare cli: refuses the name before loading Playwright, so exits 2 with none installed', `${cmpCliBad.status} ${cmpCliBad.stderr.includes(`board: ${LEVERS} (b0.dc.html)`)} ${existsSync(join(T, 'shots-659-cli'))}`, '2 true false');
+const cw4 = commaSnap('comma-4', ['A', 'B']);
+t('DS-659 AC4 write: titles with no commas still split on them', `${writeBoards(cw4, 'A,B').status} ${boardsOf(cw4)}`, '0 ["A","B"]');
 const runState = (...args) => spawnSync('node', [BIN, ...args], { cwd: r6, env: { ...env, DESK_AUTOPILOT_STATE: join(T, 'cli-import-state') }, encoding: 'utf8' });
 put(join(T, 'downloads', 'cli.html'), '<h1>cli</h1>');
 const cliImp = runState('import', join(T, 'downloads', 'cli.html'), '--url', 'https://claude.ai/artifact/CLI1', '--epic', 'KAN-1', '--key', 'KAN-2');
