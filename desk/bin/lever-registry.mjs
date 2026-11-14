@@ -5,7 +5,7 @@
 // lever and the key, rather than letting a half-declared lever reach a trial. The lever names are
 // desk-env's LEVERS: the registry declares an entry for each of them and no other.
 //
-//   import { REGISTRY, trialable, preconditions, repoValues } from './lever-registry.mjs'
+//   import { REGISTRY, trialable, preconditions, repoValues, REASON_CODES, reasonWording } from './lever-registry.mjs'
 import { workerLocation, LEVERS, parseLevers } from './desk-env.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
@@ -100,6 +100,32 @@ export const ENTRIES = Object.freeze({
     preconditions: [Object.freeze({ id: 'worker-location', want: 'local', why: 'effort is set on the local claude launch; a cloud worker never takes it' })],
   },
 });
+
+// The closed list of reason codes a lever log event may carry (lever-log.mjs refuses any other), each
+// with the sentence fragment the Levers page, the digest and desk-q word it from. A trip's code is its
+// trip id above in snake_case, a guardrail breach's is `guardrail_` and its key in snake_case.
+export const REASON_CODES = Object.freeze({
+  adopt_all_conditions: 'every adopt condition held',
+  below_min_sample: 'too few tickets on an arm to decide',
+  window_tight: 'the evidence window was too short to decide',
+  weekly_cap: 'the weekly cap on lever changes was reached',
+  skipped_preflight_failure: 'a worker that skipped its preflight failed on something the preflight checks',
+  stale_wait: 'a ticket waited more than 48 hours after its blocker settled',
+  post_merge_revert: 'a ticket on the lever\'s arm was reverted after merging',
+  own_step_error: 'the lever\'s own step exited non-zero on an on-arm start',
+  guardrail_acceptance: 'acceptance dropped past its margin',
+  guardrail_fix_tries_parks: 'fix tries and parks per ticket rose past their margin',
+  guardrail_ci_reds: 'CI reds per ticket rose past their margin',
+  guardrail_review_p0_p1: 'review P0 and P1 findings per ticket rose past their margin',
+  guardrail_post_merge: 'post-merge reverts or red main rose past their margin',
+  ben_override: 'Ben set it by hand',
+  freeze: 'trials were frozen',
+  thaw: 'trials were thawed',
+  row_change: 'the repo\'s levers row changed',
+});
+
+// The wording for a reason code, or null for a code not in the list.
+export const reasonWording = (code) => (Object.hasOwn(REASON_CODES, code) ? REASON_CODES[code] : null);
 
 export class LeverRegistryError extends Error {}
 
