@@ -156,6 +156,9 @@ if [ -n "$READ_REPOS" ]; then
 fi
 
 ADD_DIRS=(--add-dir "$DESK_SKILLS_DIR" --add-dir "$STATE")
+# A named batch's worker reads the repo's design snapshots, read only (worker-settings.mjs).
+DESIGNS_DIR="$(printf '%s\n' "$WS_OUT" | sed -n 's/^CONFIG_READ_DESIGNS: //p')"
+[ -n "$DESIGNS_DIR" ] && ADD_DIRS+=(--add-dir "$DESIGNS_DIR")
 # The model checks below need no tool; the worker and its preflight get the same list (worker-tools.mjs).
 desk_tool_args none || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
 NO_TOOL_ARGS=(${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"})

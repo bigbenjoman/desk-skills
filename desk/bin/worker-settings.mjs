@@ -515,6 +515,15 @@ if (mode === 'triage') {
   if (readRepoLines.length) deny.push(...bash('git', ...[' clone', ' remote -v *add*', ' remote -v *set-url*', ' remote -v *rename*'].flatMap((s) => [s, ...OWN_CS.map((c) => `${c}${s}`)])));
   opt.readRepoLines = readRepoLines;
 
+  // Design snapshots live once, in the repo's own state folder: a named batch's worker may read them
+  // there and edit none of them. Nothing else at the repo level is granted.
+  const designs = join(E.repoStateOf(STATE), 'designs');
+  if (E.repoStateOf(STATE) !== STATE && existsSync(designs)) {
+    dirs.add(designs);
+    deny.push(`Edit(${abs(designs)}/**)`);
+    opt.readRepoLines.push(`CONFIG_READ_DESIGNS: ${designs}`);
+  }
+
   // A package manager's one-off runner fetches and executes an arbitrary package. Denied in every
   // form this repo's config does not itself use (deny beats allow, so a used form is left to the
   // allow-list, which permits only the exact configured command).
