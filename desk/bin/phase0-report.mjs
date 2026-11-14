@@ -5,7 +5,9 @@
 //
 //   node phase0-report.mjs [--days <n>] [--no-ci]     the report (7 days unless --days says)
 //   node phase0-report.mjs --per-ticket [--json] [--days <n> | --since <iso> [--until <iso>]] [--no-ci]
-//       one JSON row per ticket admitted in the window, across every batch, archived ones included
+//       one JSON row per ticket admitted in the window, across every batch, archived ones included,
+//       each costing the ticket's whole spend; `carried_in` is the in-window spend of tickets
+//       admitted earlier, so rows plus carried_in equal the report's total for the same --days
 //   node phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>]
 //       [--effort <e>] [--system-bytes <n>] [--prompt-bytes <n>] [--log <worker log>]
 //       one JSON line for spawn-worker.sh to append to $DESK_STATE/workers/<KEY>.runs.jsonl, and with
@@ -163,7 +165,7 @@ const emptyFigures = () => ({
 // What one queue ticket's logs from `from` show: its spend (`cost` is every run that left a result
 // event plus every preflight), parks, review rounds, denials and readings, and each start as its
 // session (empty when its log has no init event) and the record of that session, or null for none. The batch figures and the per-ticket
-// rows both read a ticket through this, so the rows add up to the batch.
+// rows both read a ticket through this, so the rows and their carried-in spend add up to the batch.
 function ticketFacts(state, t, from, records) {
   const logs = workerLogs(state, t.key, from);
   const c = logs.length ? ticketCost(state, { ...t, added_at: from }) : null;
@@ -282,6 +284,16 @@ export function failedRuns({ repo, since, gh = runGh }) {
 
 const ciCounts = (runs) => { const c = {}; for (const r of runs) for (const j of r.jobs) add(c, { [j]: 1 }); return c; };
 
+// Red CI for the window, as the report and the per-ticket rows both read it: { ciRuns, ciNote },
+// `ciRuns` failedRuns()'s list or null, and `ciNote` why it is null (null when it was read).
+function readCi({ ci, repo, since, gh }) {
+  if (!ci) return { ciRuns: null, ciNote: 'not read (--no-ci)' };
+  if (!repo) return { ciRuns: null, ciNote: 'unreadable: no GitHub repo for this checkout' };
+  const r = failedRuns({ repo, since, gh });
+  return r.unreadable ? { ciRuns: null, ciNote: `unreadable: ${r.unreadable}` } : { ciRuns: r.runs, ciNote: null };
+}
+const repoOrNull = () => { try { return E.ghRepo(); } catch { return null; } };
+
 // ---- one row per admitted ticket -----------------------------------------------------------------
 // The levers pin a ticket was admitted with (its queue `levers` object), as the set, arm per trial and
 // trial ids; null for a ticket admitted with no pin.
@@ -289,19 +301,31 @@ const pinOf = (l) => (l && typeof l === 'object' && !Array.isArray(l)
   ? { set: l.set ?? null, arms: l.arms ?? null, trial_ids: l.trial_ids ?? null } : null);
 
 // One row per ticket in a batch whose `added_at` falls in [since, until) (epoch ms), with every run
-// it made since. `cost` is what its runs recorded plus its preflights, never an estimate:
-// `cost_complete` is false when a run left no result event or it ran in the cloud. `ciRuns` is
-// failedRuns()'s list, or null when red CI was not read, which leaves `ci_reds` null. A queue that
-// cannot be read is { unreadable }.
+// it made since, runs after `until` included: a row is the ticket's whole outcome. `cost` is what its
+// runs recorded plus its preflights, never an estimate: `cost_complete` is false when a run left no
+// result event or it ran in the cloud. `ciRuns` is failedRuns()'s list, or null when red CI was not
+// read, which leaves `ci_reds` null. -> { rows, carriedIn }: `carriedIn` is each ticket admitted
+// before `since` (or with no readable `added_at`) that spent in the window, with that spend as
+// batchFigures() counts it, so the rows' costs plus these equal the batch's `cost` for a window
+// ending now. A queue that cannot be read is { unreadable }.
 export function ticketRows({ queue, state, slug, batch = null, since, until = Infinity, ciRuns = null }) {
   let q;
   try { q = JSON.parse(readFileSync(queue, 'utf8')); } catch (e) { return { unreadable: e.message }; }
   const records = spawnRecords(state);
   const rows = [];
+  const carriedIn = [];
+  const sinceIso = new Date(since).toISOString();
   for (const t of Object.values(q.tickets ?? {})) {
     const at = Date.parse(t.added_at);
-    if (!(at >= since && at < until)) continue;
+    if (!(at >= since)) {
+      const x = ticketFacts(state, t, sinceIso, records);
+      if (x.logs.length) carriedIn.push({ batch, key: t.key, cost: x.cost });
+      continue;
+    }
+    if (!(at < until)) continue;
     const x = ticketFacts(state, t, t.added_at, records);
+    // A cloud worker leaves no log here, so its run is read from the queue entry.
+    x.c ??= t.location === 'cloud' && t.cloud ? ticketCost(state, t) : null;
     const size = sizeOf(state, t.key);
     const reds = ciRuns && t.branch ? ciRuns.filter((r) => r.branch === t.branch) : [];
     const starts = x.starts.map(({ sid, record: s }) => ({
@@ -320,34 +344,30 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
       start_records: starts, login: t.login?.name ?? null, pin: pinOf(t.levers),
     });
   }
-  return rows;
+  return { rows, carriedIn };
 }
 
 // Every batch's rows for the window, and how red CI was read: { slug, since, until, ci, rows,
-// unreadable: [{ batch, why }] }. Each input is a parameter so a test can point it at fixtures.
+// carried_in: { cost, tickets: [{ batch, key, cost }] }, unreadable: [{ batch, why }] }. Each input
+// is a parameter so a test can point it at fixtures.
 export function perTicket({
-  slug = E.repoSlug(), batches = allBatches(slug), since, until = Date.now(), ci = true, gh = runGh,
-  repo = (() => { try { return E.ghRepo(); } catch { return null; } })(),
+  slug = E.repoSlug(), batches = allBatches(slug), since, until = Date.now(), ci = true, gh = runGh, repo = repoOrNull(),
 } = {}) {
-  let ciRuns = null;
-  let ciNote = 'read';
-  if (!ci) ciNote = 'not read (--no-ci)';
-  else if (!repo) ciNote = 'unreadable: no GitHub repo for this checkout';
-  else {
-    const r = failedRuns({ repo, since, gh });
-    if (r.unreadable) ciNote = `unreadable: ${r.unreadable}`;
-    else ciRuns = r.runs;
-  }
+  const { ciRuns, ciNote } = readCi({ ci, repo, since, gh });
   const rows = [];
+  const carried = [];
   const unreadable = [];
   for (const b of batches) {
     const got = existsSync(b.queue)
       ? ticketRows({ queue: b.queue, state: b.state, slug, batch: b.name ?? null, since, until, ciRuns })
       : { unreadable: `no queue at ${b.queue}` };
     if (got.unreadable) unreadable.push({ batch: b.name ?? null, why: got.unreadable });
-    else rows.push(...got);
+    else { rows.push(...got.rows); carried.push(...got.carriedIn); }
   }
-  return { slug, since: new Date(since).toISOString(), until: new Date(until).toISOString(), ci: ciNote, rows, unreadable };
+  return {
+    slug, since: new Date(since).toISOString(), until: new Date(until).toISOString(), ci: ciNote ?? 'read', rows,
+    carried_in: { cost: carried.reduce((n, c) => n + c.cost, 0), tickets: carried }, unreadable,
+  };
 }
 
 // ---- versions and the checkout -------------------------------------------------------------------
@@ -467,7 +487,7 @@ export const allBatches = (slug) => {
 // The whole report, as lines. Every input is a parameter so a test can point it at fixtures.
 export function report({
   slug = E.repoSlug(), batches = allBatches(slug), days = 7, now = Date.now(), ci = true, gh = runGh,
-  repo = (() => { try { return E.ghRepo(); } catch { return null; } })(),
+  repo = repoOrNull(),
   root = (() => { try { return E.repoRoot(); } catch { return null; } })(),
   defaultBranch = (() => { try { return E.defaultBranch(); } catch { return 'main'; } })(),
   installed = readInstalled(), levers = E.levers(), answered = readJson(join(digestDir(), 'answered.json')),
@@ -483,15 +503,7 @@ export function report({
   out.push(`instructions a worker loads now: worker contract core ${cb == null ? 'not found' : `${num(cb)} bytes`}, memory index ${mb == null ? 'none' : `${num(mb)} bytes`}`);
   out.push(`levers row now: on ${levers.on.join(', ') || 'none'}${levers.unknown.length ? `; unknown, read as off: ${levers.unknown.join(', ')}` : ''}`);
 
-  let ciRuns = null;
-  let ciNote = null;
-  if (!ci) ciNote = 'not read (--no-ci)';
-  else if (!repo) ciNote = 'unreadable: no GitHub repo for this checkout';
-  else {
-    const r = failedRuns({ repo, since, gh });
-    if (r.unreadable) ciNote = `unreadable: ${r.unreadable}`;
-    else ciRuns = r.runs;
-  }
+  const { ciRuns, ciNote } = readCi({ ci, repo, since, gh });
 
   const figures = batches.map((b) => {
     const f = existsSync(b.queue) ? batchFigures({ queue: b.queue, state: b.state, slug, since, answered }) : { unreadable: `no queue at ${b.queue}` };

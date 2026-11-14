@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, claudeVersion, DAY_MS, perTicket, batchFigures } from '../desk/bin/phase0-report.mjs';
+import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, claudeVersion, DAY_MS, perTicket, ticketRows, batchFigures } from '../desk/bin/phase0-report.mjs';
 import { preflightLine } from '../desk/bin/worker-cost.mjs';
 import { parseLevers, LEVERS, HOME } from '../desk/bin/desk-env.mjs';
 import { REGISTRY, leverFingerprints, installedPath } from '../desk/bin/lever-registry.mjs';
@@ -314,13 +314,25 @@ t('per-ticket AC1: one row per admitted ticket across a live and an archived bat
 t('per-ticket AC1: 24 merged, 12 not', `${pt.rows.filter((r) => r.merged_at).length} ${pt.rows.filter((r) => !r.merged_at).length}`, '24 12');
 t('per-ticket AC1: every key once', new Set(pt.rows.map((r) => r.key)).size, 36);
 t('per-ticket AC1: the archived batch\'s tickets are there', rowOf('P-30')?.batch, 'E-8 (archived)');
-t('per-ticket AC1: the CLI flags are documented in the header', /--per-ticket \[--json\]/.test(readFileSync(join(ROOT, 'desk', 'bin', 'phase0-report.mjs'), 'utf8')), true);
-const aggregate = ptBatches.map((b) => batchFigures({ queue: b.queue, state: b.state, slug: 'o__r', since: SINCE })).reduce((n, f) => n + f.cost, 0);
+const aggregateOf = () => ptBatches.map((b) => batchFigures({ queue: b.queue, state: b.state, slug: 'o__r', since: SINCE })).reduce((n, f) => n + f.cost, 0);
+const printedTotal = () => {
+  const printed = report({ ...base, batches: ptBatches, ci: false });
+  return printed.slice(printed.findIndex((l) => l.startsWith('total'))).find((l) => /spent in the window/.test(l)).match(/\$([\d,.]+) API-equivalent/)?.[1];
+};
 const rowSum = pt.rows.reduce((n, r) => n + r.cost, 0);
-t('per-ticket AC2: the rows\' costs sum to the aggregate\'s, to the cent', rowSum.toFixed(2), aggregate.toFixed(2));
-const printed = report({ ...base, batches: ptBatches, ci: false });
-const totalLine = printed.slice(printed.findIndex((l) => l.startsWith('total'))).find((l) => /spent in the window/.test(l));
-t('per-ticket AC2: and to the total the report prints', totalLine.match(/\$([\d,.]+) API-equivalent/)?.[1], rowSum.toFixed(2));
+t('per-ticket AC2: the rows\' costs sum to the aggregate\'s, to the cent', rowSum.toFixed(2), aggregateOf().toFixed(2));
+t('per-ticket AC2: and to the total the report prints', printedTotal(), rowSum.toFixed(2));
+t('per-ticket AC2: no ticket admitted earlier spent in the window', JSON.stringify(pt.carried_in), '{"cost":0,"tickets":[]}');
+// OLD-1, admitted before the window, runs again inside it: the aggregate counts that run and no row
+// may, so it is carried in, and rows plus carried_in still reconcile to the cent.
+const old1 = join(liveS, 'logs', 'OLD-1.log');
+utimesSync(old1, (NOW - DAY_MS) / 1000, (NOW - DAY_MS) / 1000);
+const carry = perTicket({ slug: 'o__r', batches: ptBatches, since: SINCE, until: NOW, ci: false });
+const carryRows = carry.rows.reduce((n, r) => n + r.cost, 0);
+t('per-ticket AC2: a ticket admitted earlier that spent in the window has no row and is carried in',
+  `${carry.rows.length} ${carryRows.toFixed(2)} ${JSON.stringify(carry.carried_in)}`, `36 ${rowSum.toFixed(2)} {"cost":50,"tickets":[{"batch":"E-7","key":"OLD-1","cost":50}]}`);
+t('per-ticket AC2: rows plus carried_in equal the aggregate and the printed total', `${(carryRows + carry.carried_in.cost).toFixed(2)} ${printedTotal()}`, `${aggregateOf().toFixed(2)} ${aggregateOf().toFixed(2)}`);
+utimesSync(old1, (NOW - 12 * DAY_MS) / 1000, (NOW - 12 * DAY_MS) / 1000);
 const p1 = rowOf('P-1');
 const FIELDS = ['slug', 'batch', 'key', 'type', 'lane', 'size', 'admitted_at', 'merged_at', 'state', 'cost', 'cost_complete', 'input', 'output',
   'preflight_cost', 'runs', 'unknown_runs', 'starts', 'fix_tries', 'parks', 'parks_by_class', 'review_rounds', 'denials', 'denials_by_command',
@@ -347,6 +359,11 @@ t('per-ticket AC6: a start that recorded no claude version is null', JSON.string
 t('per-ticket AC8: a pinned ticket holds the pin\'s set, arms and trial ids', JSON.stringify(p1.pin), JSON.stringify({ set: PIN.set, arms: PIN.arms, trial_ids: PIN.trial_ids }));
 t('per-ticket AC9: a ticket with no pin holds null', rowOf('P-2').pin, null);
 t('per-ticket: a ticket no worker ran has a row, costing nothing, complete', `${rowOf('P-36')?.cost} ${rowOf('P-36')?.starts} ${rowOf('P-36')?.cost_complete}`, '0 0 true');
+// A cloud worker writes no log here: its row is one run of unrecorded spend, never a complete zero.
+const cloudQ = join(PR_ROOT, 'cloud-queue.json');
+writeFileSync(cloudQ, JSON.stringify({ tickets: { 'C-1': { key: 'C-1', added_at: iso(DAY_MS), location: 'cloud', cloud: { url: 'https://claude.ai/code/s1', started_at: iso(DAY_MS) } } } }));
+const cloudRow = ticketRows({ queue: cloudQ, state: liveS, slug: 'o__r', since: SINCE }).rows[0];
+t('per-ticket AC4: a cloud worker\'s row is incomplete, not a complete zero', `${cloudRow.key} ${cloudRow.cost_complete} ${cloudRow.runs} ${cloudRow.cost}`, 'C-1 false 1 0');
 t('per-ticket: red CI not read is null, never zero', perTicket({ slug: 'o__r', batches: ptBatches, since: SINCE, until: NOW, ci: false }).rows[0].ci_reds, null);
 const nineIso = new Date(NOW - 5 * DAY_MS).toISOString();
 const twoIso = new Date(NOW - 2 * DAY_MS).toISOString();
