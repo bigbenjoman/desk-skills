@@ -568,9 +568,10 @@ function transfer(q, key, to) {
   const there = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
   const holds = there.filter((k) => !stepThere(k));
   const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p))), ...there.filter(stepThere)])];
-  // Its holds go with it. One on a ticket in that batch is held behind there until it merges (or, on the
-  // person's step there, merges after it, as above). A blocker
-  // left in this batch, or one in no batch, is held outside it, lifted by that batch's pass once Done in
+  // Its holds go with it. One on a ticket in that batch is held behind there until it merges. A blocker
+  // parked there as the person's step is a merge_after step already (above), or holds nothing once Done;
+  // a hold on such a step that is no blocker stays a hold, since pass.mjs lifts an unlinked merge_after
+  // step at once. A blocker left in this batch, or one in no batch, is held outside it, lifted by that batch's pass once Done in
   // Jira and on its base (a key its triage record does not list as a blocker, Done or not, is lifted at
   // once, so only those go). A hold on this batch's own files or spine means nothing there and stays
   // behind, as does one on a ticket here already finished. Any other hold is the person's, a key no
@@ -584,10 +585,7 @@ function transfer(q, key, to) {
   const theirs = [];
   for (const p of String(t.held_by ?? '').split('|')) {
     if (!p || p === key || [holds, outside, stays, theirs, mergeAfter].some((l) => l.includes(p))) continue;
-    if (tq.tickets[p]) {
-      if (stepThere(p)) mergeAfter.push(p);
-      else if (!childDone(tq.tickets[p])) holds.push(p);
-    }
+    if (tq.tickets[p]) { if (!(stepThere(p) && blocking.has(p)) && !childDone(tq.tickets[p])) holds.push(p); }
     else if (wasOutside.includes(p) || blocking.has(p)) outside.push(p);
     else if (q.tickets[p] && childDone(q.tickets[p])) continue;
     else (local.has(p) ? stays : theirs).push(p);
