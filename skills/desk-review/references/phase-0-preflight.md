@@ -44,11 +44,11 @@ workers deny it, and it is the pattern that posts to the wrong PR when a placeho
   answers `CODEX_OK` from a passing probe or codex call under an hour old without running a new
   one, and probes again after any failure. `desk-codex settings` prints the model and effort each
   role runs at (config §3b Codex review, `desk-env get codex-models`): record them in the results file's `codex` (the core's
-  *The verdict*). With more than one Codex login, each call runs on the one with the most room and
-  names it on stderr (`desk-codex: on Codex login <name>`), and the probe runs on the login the next
-  call would use. Where its calls printed that line, add `"login": "<name>"` to the results file's
-  `codex`, or every name the run's calls printed, comma-separated (`"default, login-2"`). Exit 75 means every Codex login is at its limit (it names the earliest reset) or
-  none is usable: codex is unusable for this run (below).
+  *The verdict*). With more than one Codex login, each call and the probe run on this computer's Codex
+  default and name it on stderr (`desk-codex: on Codex login <name>`); a default at its limit fails
+  as a sole login does, and no call moves to another login. Where its calls printed that line, add `"login": "<name>"` to the results file's
+  `codex`, or every name the run's calls printed, comma-separated (`"default, login-2"`). Exit 75 means no Codex login can take the call (the
+  default is off or not signed in, or the only login is off): codex is unusable for this run (below).
   Off, everything here and in Phases 3 and 4 runs exactly as written.
 
 **If codex is unusable, or §3 says `no`, stop and ask** (a worker does not ask; it falls back and
