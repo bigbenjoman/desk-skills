@@ -2138,10 +2138,9 @@ function stallNotes(r, quiet, allOut = false) {
     const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
     out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
   }
-  if (s.oldCode) {
-    const who = s.oldCode.supervisor && s.oldCode.driver ? 'the supervisor and its merge driver run' : s.oldCode.supervisor ? 'the supervisor runs' : 'the merge driver runs';
-    out.push(note(`${who} old desk code. `, 'Run ./install.sh in desk-skills.'));
-  }
+  if (s.oldCode?.supervisor) out.push(note('the supervisor runs old desk code. ', 'Run ./install.sh in desk-skills.'));
+  // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
+  if (s.oldCode?.driver) out.push(note('the merge driver runs old desk code. It moves to the installed code when it next waits between loops.'));
   return out;
 }
 

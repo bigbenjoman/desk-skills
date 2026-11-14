@@ -44,8 +44,9 @@ EOF
 config yes yes
 
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
-cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs usage-limit.mjs borrow.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+# installed.mjs is copied too: it restarts the merge driver beside it, which must be the fake.
+cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs run-by.mjs usage-limit.mjs borrow.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
@@ -83,6 +84,13 @@ case "\$(cat "$T/driver.mode" 2>/dev/null)" in
         echo "00:00:01Z merge driver exited 1"; echo "\$@" >> "$T/driver.calls"; exit 1 ;;
   hang) mkdir -p "$T/state/merge-driver.lock.d"; echo \$\$ > "$T/state/merge-driver.lock.d/pid"
         echo "\$@" >> "$T/driver.calls"; exec sleep 30 ;;
+  # loop: as the real one at rest, it records the installed version in its lock, sleeps between loops
+  # (or, with $T/busy, is mid-loop: its child is not sleep), and on TERM drops the lock.
+  loop) D="\$DESK_AUTOPILOT_STATE/merge-driver.lock.d"; mkdir -p "\$D"; echo \$\$ > "\$D/pid"
+        node "$T/bin/installed.mjs" version > "\$D/version"
+        echo "\$@" >> "$T/driver.calls"
+        trap 'rm -rf "\$D"; exit 143' TERM
+        while true; do if [ -f "$T/busy" ]; then tail -f /dev/null; else sleep 30; fi; done ;;
 esac
 echo "00:00:01Z merge driver exited 0"; echo "\$@" >> "$T/driver.calls"
 EOF
@@ -390,6 +398,43 @@ out=$(DESK_AGENT_VERSION=new1 tick)
 check "DS-224 AC5: so does a tick whose queue is unreadable" '[ "$(code)" = "new1 new1 false new1 false" ]'
 mv "$T/queue.away" "$DESK_QUEUE"
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d"
+
+# ---- DS-666: a merge driver on old code moves to the installed code once it waits between loops ----
+held(){ cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null; }
+# A driver an earlier tick left, detached, that started before the install (its lock says old0). It
+# waits for the driver's sleep (or, mid-loop, tail): the node writing its version has finished by then.
+olddriver(){
+  kid='sleep'; [ -f "$T/busy" ] && kid='tail'
+  echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"
+  (cd "$T/repo" && "$T/bin/merge-driver.sh" --tickets "A B" --deps "B:A" --log </dev/null >/dev/null 2>&1 &)
+  i=0; while { [ -z "$(held)" ] || ! pgrep -x -P "$(held)" "$kid" >/dev/null; } && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  echo old0 > "$T/state/merge-driver.lock.d/version"
+}
+# setdriver <pid> <from>: supervisor.json's record of the driver the supervisor itself started.
+setdriver(){ node -e 'const f = process.argv[1]; const s = JSON.parse(require("fs").readFileSync(f, "utf8")); s.driver = { failures: 0, notified: false, pid: Number(process.argv[2]), started: "then", from: Number(process.argv[3]) }; require("fs").writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json" "$1" "$2"; }
+driverrec(){ node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).driver; console.log(`${d.pid} ${d.started === "then"} ${d.from}`)' "$T/state/supervisor.json"; }
+stopdriver(){ p="$(held)"; [ -n "$p" ] && { kill "$p" 2>/dev/null; pkill -P "$p" 2>/dev/null; }; i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; rm -rf "$T/state/merge-driver.lock.d"; }
+olddriver; old="$(held)"; n=$(count "$T/driver.calls")
+# A pass running holds supervisor.lock: the driver is not moved under it.
+sleep 30 & PASSPID=$!; printf '{"pid":%s}\n' "$PASSPID" > "$T/state/supervisor.lock"
+out=$(DESK_AGENT_VERSION=new1 tick)
+check "DS-666 AC1: no driver is moved while a pass holds the lock" '[ "$(held)" = "$old" ] && [ "$(count "$T/driver.calls")" = "$n" ] && ! grep -q "restarted on the new code" "$LOG"'
+kill "$PASSPID" 2>/dev/null; wait "$PASSPID" 2>/dev/null; rm -f "$T/state/supervisor.lock"
+setdriver "$old" 0; from=0; [ -f "$T/state/merge-driver.log" ] && from=$(wc -c < "$T/state/merge-driver.log" | tr -d ' ')
+out=$(DESK_AGENT_VERSION=new1 tick); new="$(held)"
+check "DS-666 AC1: the supervisor's own driver is followed to its new pid, its stop read from the new one's output" '[ "$(driverrec)" = "$new false $from" ]'
+check "DS-666 AC1: the tick stops a driver on old code that waits between loops" '[ -n "$old" ] && ! kill -0 "$old" 2>/dev/null'
+check "DS-666 AC1: and starts it again with the same tickets and deps" '[ -n "$new" ] && [ "$new" != "$old" ] && kill -0 "$new" && [ "$(count "$T/driver.calls")" = $((n + 1)) ] && [ "$(tail -1 "$T/driver.calls")" = "--tickets A B --deps B:A --log" ]'
+check "DS-666 AC1: its lock records the installed commit, and supervisor.json says it is current" '[ "$(cat "$T/state/merge-driver.lock.d/version")" = new1 ] && [ "$(code)" = "new1 new1 false new1 false" ]'
+check "DS-666 AC1: the log says it was restarted on the new code" 'grep -q "merge driver for acme__widgets: restarted on the new code (pid $old -> $new) for A B$" "$LOG"'
+out=$(DESK_AGENT_VERSION=new1 tick)
+check "DS-666 AC1: a driver on the installed code is left alone" '[ "$(held)" = "$new" ] && [ "$(grep -c "restarted on the new code" "$LOG")" = 1 ]'
+stopdriver
+touch "$T/busy"; olddriver; busy="$(held)"; n=$(count "$T/driver.calls")
+out=$(DESK_AGENT_VERSION=new1 tick); out=$(DESK_AGENT_VERSION=new1 tick)
+check "DS-666 AC2: a driver on old code that is mid-loop is left running" 'kill -0 "$busy" && [ "$(held)" = "$busy" ] && [ "$(count "$T/driver.calls")" = "$n" ]'
+check "DS-666 AC2: the log says, once, it was left because it is mid-loop" '[ "$(grep -c "merge driver for acme__widgets (pid $busy): left running on the old code, it is mid-loop and may be merging" "$LOG")" = 1 ]'
+rm -f "$T/busy"; stopdriver; rm -f "$T/driver.mode"
 
 # ---- DS-309: a tick runs every batch in the repo, each on its own base ---------------------------
 # No explicit queue or state here: the repo's own paths, the standing batch and batches/<name>/ under it.
