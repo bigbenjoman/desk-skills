@@ -180,7 +180,8 @@ t('AC8 desk-q printed rather than open runs none', `${existsSync(join(env.DESK_U
 
 // ---- AC9: never billed to an API key
 t('AC9 the probe runs with ANTHROPIC_API_KEY unset', calls()[0].split('|')[0], 'unset');
-t('AC9 its environment is the caller\'s less that key', JSON.stringify([P.probeEnv({ A: '1', ANTHROPIC_API_KEY: 'k' })]), '[{"A":"1"}]');
+t('AC9 its environment is the caller\'s less that key, on the 5-minute prompt cache', JSON.stringify([P.probeEnv({ A: '1', ANTHROPIC_API_KEY: 'k' })]), '[{"A":"1","FORCE_PROMPT_CACHING_5M":"1"}]');
+t('DS-649 AC3 a probe on another login is on the 5-minute prompt cache too', P.probeEnv({ A: '1' }, { tool: 'claude', configDir: '/x/b' }).FORCE_PROMPT_CACHING_5M, '1');
 
 // ---- AC10: two windows reaching a probe together start one, and none starts within the minute
 rmSync(env.DESK_USAGE_DIR, { recursive: true, force: true });

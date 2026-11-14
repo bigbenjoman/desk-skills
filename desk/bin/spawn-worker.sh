@@ -93,6 +93,8 @@ MODEL_ARGS=()
 if [ -n "${AUTOPILOT_LOGIN_DIR+set}" ]; then
   if [ -n "$AUTOPILOT_LOGIN_DIR" ]; then export CLAUDE_CONFIG_DIR="$AUTOPILOT_LOGIN_DIR"; else unset CLAUDE_CONFIG_DIR; fi
 fi
+# Workers keep the 1-hour prompt cache: they often pause longer than 5 minutes between requests.
+unset FORCE_PROMPT_CACHING_5M
 
 # What this session starts as, and the effort config §3b Worker effort names for it. With the effort
 # lever off it is `default` and no --effort is passed. A malformed row is refused here, before the
