@@ -163,8 +163,8 @@ claudeIn(join(H, '.claude-logins', 'login-3'), 'three@example.com', 'Pro');
 const nw = checkLogins(parseSubscriptions(NEW), { ...fakes, tools: ['claude'] });
 const nwOut = checkLines(nw, SUBS);
 t('default and unused: both signed in and usable', nw.usable.filter((l) => l.source === 'file').map((l) => l.name).join(), 'login-2,login-3');
-t('default and unused: login-2 checked as in rotation', nwOut.some((l) => /^claude\s+login-2\s.*signed in.*in rotation$/.test(l)), true);
-t('default and unused: login-3 checked as standby', nwOut.some((l) => /^claude\s+login-3\s.*signed in.*standby$/.test(l)), true);
+t('default and unused: login-2 checked as default', nwOut.some((l) => /^claude\s+login-2\s.*signed in.*default$/.test(l)), true);
+t('default and unused: login-3 checked as unused', nwOut.some((l) => /^claude\s+login-3\s.*signed in.*unused$/.test(l)), true);
 t('default and unused: the file round-trips in its own words', renderSubscriptions(parseSubscriptions(NEW).logins), renderSubscriptions(parseSubscriptions(renderSubscriptions(parseSubscriptions(NEW).logins)).logins));
 t('default and unused: rendered as written', /\| `login-2` \| `~\/\.claude-logins\/login-2` \| `default` \|[\s\S]*\| `login-3` \| `~\/\.claude-logins\/login-3` \| `unused` \|/.test(renderSubscriptions(parseSubscriptions(NEW).logins)), true);
 const ruleOf = (name) => (/\| `([^`]+)` \|$/m.exec(readFileSync(SUBS, 'utf8').split('\n').find((l) => l.includes(`\`${name}\``)) ?? '') ?? [])[1];
@@ -251,7 +251,8 @@ t('default AC9 and the file is unchanged', readFileSync(SUBS, 'utf8'), held);
 c = await new Promise((res) => execFile('node', [join(BIN, 'desk-env.mjs'), 'logins', 'default', 'claude', 'login-2'], { env: workerEnv, cwd: T, encoding: 'utf8' }, (err, stdout, stderr) => res({ rc: err ? err.code ?? 1 : 0, out: stdout + stderr })));
 t('default AC10 refused to a worker as set is', `${c.rc} ${readFileSync(SUBS, 'utf8') === held}`, '4 true');
 
-// AC11: a signed-in folder the file does not list is unused.
+// AC11: a signed-in folder the file does not list is unused (login-9 was signed out for AC10 above).
+claudeIn(join(H, '.claude-logins', 'login-9'), 'nine@example.com', 'Pro');
 c = await cli('check');
 t('default AC11 a found folder is listed as unused', `${/^claude\s+login-9\s.*unused$/m.test(c.out)} ${/standby/.test(c.out)}`, 'true false');
 // AC12: no file and one Claude login: ~/.claude is the default, and nothing is written.
