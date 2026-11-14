@@ -186,6 +186,12 @@ check "a blocker stops the restart, and spawning resumes"    '[ "$(calls restart
 check "the blocker is named in the check-in digest"         'grep -q "not restarted: config §3 machine-reboot is \"yes\", but the reboot check found 2 heavy process(es) running" <<< "$(digest 3)"'
 q set M-6 state=done
 
+# A heavy count the check could not read (ps failed) blocks, never reads as nothing running.
+checkout_says unknown
+out=$(node --input-type=module -e "import { rebootCheck } from '$B/maintenance.mjs'; console.log(rebootCheck().blockers.join(' | '))" 2>&1)
+check "heavy=unknown is a blocker, saying ps could not be read" 'grep -q "could not tell whether anything heavy is running (heavy=unknown: ps could not be read)" <<< "$out"'
+checkout_says 0
+
 # ---- AC8: machine-reboot no --------------------------------------------------------------------
 config "Mon 06:30 UTC" no
 checkout_says 0

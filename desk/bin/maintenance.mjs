@@ -210,6 +210,7 @@ export function rebootCheck({ selfQueue = null } = {}) {
   if (!summary) blockers.push(`the reboot check gave no summary (${said(r)})`);
   const heavy = Number(field('heavy') ?? 0);
   if (heavy > 0) blockers.push(`${heavy} heavy process(es) running (test suites, typechecks, dev servers)`);
+  else if (!Number.isFinite(heavy)) blockers.push(`could not tell whether anything heavy is running (heavy=${field('heavy')}: ps could not be read)`);
   const o = othersRunning(selfQueue);
   if (o.running.length) blockers.push(`${o.running.length} worker(s) running in another repo (${o.running.join(', ')})`);
   blockers.push(...o.unreadable);
