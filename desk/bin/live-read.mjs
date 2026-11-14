@@ -191,6 +191,10 @@ export function pathsIn(text, home = homedir()) {
 }
 
 const inside = (p, dir) => { const rel = relative(resolve(dir), p); return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel)); };
+// Where the disk ignores case (macOS and Windows by default), `~/library` and `/users/me` are the same
+// folders as `~/Library` and `/Users/me`, so a path is judged in one case.
+const fold = (p) => (['darwin', 'win32'].includes(process.platform) ? p.toLowerCase() : p);
+const realOf = (p) => fold(realpathSync.native(p));
 
 // Copies each existing file or folder an answer names into <state>/fixtures/<key>/, where the pass
 // copies a ticket's fixtures into its worktree. A folder gives its own visible regular files, not its
@@ -210,13 +214,13 @@ export function saveNamedFixtures({ state, key, text, home = homedir(), max = NA
     if (states.some((s) => inside(path, s))) continue;
     if (!existsSync(path)) { res.notFound.push(path); continue; }
     // Judged where a symlink leads, so a link cannot carry a hidden folder's files out.
-    const real = realpathSync(path), realHome = existsSync(home) ? realpathSync(home) : resolve(home);
-    if (states.some((s) => existsSync(s) && inside(real, realpathSync(s)))) continue;
+    const real = realOf(path), realHome = existsSync(home) ? realOf(home) : fold(resolve(home));
+    if (states.some((s) => existsSync(s) && inside(real, realOf(s)))) continue;
     if (inside(realHome, real)) { res.refused.push({ path, why: 'it is your home folder or above it' }); continue; }
     const segs = relative(inside(real, realHome) ? realHome : '/', real).split(sep);
     if (segs.some((s) => s.startsWith('.'))) { res.refused.push({ path, why: 'it is in a hidden folder' }); continue; }
-    if (inside(real, realHome) && segs[0] === 'Library') { res.refused.push({ path, why: 'it is in ~/Library, where apps keep keychains, cookies and mail' }); continue; }
-    const st = statSync(real);
+    if (inside(real, realHome) && segs[0] === fold('Library')) { res.refused.push({ path, why: 'it is in ~/Library, where apps keep keychains, cookies and mail' }); continue; }
+    const st = statSync(path);
     let files;
     if (st.isFile()) files = [{ from: path, name: basename(path), size: st.size }];
     else if (st.isDirectory()) {
@@ -235,10 +239,10 @@ export function saveNamedFixtures({ state, key, text, home = homedir(), max = NA
     mkdirSync(dir, { recursive: true });
     const names = [];
     for (const f of files) {
-      if (given.has(f.name)) { res.refused.push({ path: f.from, why: `a file named ${f.name} was already copied from ${given.get(f.name)}: rename one and record it again` }); continue; }
+      if (given.has(fold(f.name))) { res.refused.push({ path: f.from, why: `a file named ${f.name} was already copied from ${given.get(fold(f.name))}: rename one and record it again` }); continue; }
       if (existsSync(join(dir, f.name))) res.replaced.push(f.name);
       writeNew(join(dir, f.name), readFileSync(f.from));
-      given.set(f.name, path);
+      given.set(fold(f.name), path);
       names.push(f.name);
       if (f.size > MAX_BYTES) res.over.push(f.name);
     }

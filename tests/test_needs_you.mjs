@@ -2010,6 +2010,11 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const fxb = (k) => join(env.HOME, '.desk-autopilot', 'acme__ds609b', 'fixtures', k);
   const f7 = N.record({ word: 'ds609b', ticket: 'F-7', action: 'resume', text: `It is in "${spaced}", not ~/Library/Cookies` });
   t('DS-609 a quoted folder with a space is copied, and ~/Library never is', `${f7.ok} ${ls(fxb('F-7'))} ${f7.line.includes('/Library/Cookies was not copied: it is in ~/Library')}`, 'true meet.json true');
+  if (['darwin', 'win32'].includes(process.platform)) {
+    const { saveNamedFixtures } = await import('../desk/bin/live-read.mjs');
+    const odd = saveNamedFixtures({ state: join(T, 'ds609-case-state'), key: 'F-8', text: `~/library/cookies and ${join(env.HOME, 'Library', 'Cookies').toUpperCase()}`, home: env.HOME });
+    t('DS-609 ~/Library spelled in another case is never copied either', `${odd.copied.length} ${odd.refused.filter((x) => x.why.startsWith('it is in ~/Library')).length}`, '0 2');
+  }
 
   const [ca, cb] = [join(T, 'cap-a'), join(T, 'cap-b')];
   for (const d of [ca, cb]) { mkdirSync(d); writeFileSync(join(d, 'data.csv'), d); }
