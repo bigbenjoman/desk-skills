@@ -102,27 +102,25 @@ function clearFound(dir, missing) {
   for (const n of names) if (!keep.has(n)) { try { unlinkSync(join(dir, n)); } catch { /* another pass took it */ } }
 }
 
-// The Postgres container §4 Local database names, as setup-worktree.sh reads it (DESK_PG_CONTAINER
-// stands in for the name it gives), or null when the row names none.
-export function pgContainer(env = process.env) {
-  const m = /^postgres\s+container\s+([A-Za-z0-9_.-]+)\s*$/i.exec(String(E.configValue('local-db') ?? '').trim());
-  return m ? env.DESK_PG_CONTAINER || m[1] : null;
-}
-
-// Why setup-worktree.sh makes no per-ticket database here, or null when it makes one: then a container
-// that does not answer fails every new worktree.
-function noDatabase() {
-  const raw = E.configValue('local-db');
-  if (raw == null || E.isNone(raw)) return `§4 Local database is "${raw ?? 'unset'}"`;
-  if (!pgContainer()) return `§4 Local database is "${raw}", not a postgres container`;
-  if (E.permission('db-per-ticket') !== 'yes') return `config §3 ${E.permissionKey('db-per-ticket')} is "${E.permission('db-per-ticket')}"`;
+// Whether setup-worktree.sh makes a per-ticket database, by its rules: `container` is the Postgres
+// container §4 Local database names (DESK_PG_CONTAINER stands in for the name it gives), or null;
+// `none` is why no per-ticket database is made, or null when one is, so a container that does not
+// answer fails every new worktree. plan-batch.mjs reads it too.
+export function perTicketDb(env = process.env) {
+  const raw = String(E.configValue('local-db') ?? '').trim();
+  const m = /^postgres\s+container\s+([A-Za-z0-9_.-]+)$/i.exec(raw);
+  const container = m ? env.DESK_PG_CONTAINER || m[1] : null;
+  const why = (none) => ({ container, none });
+  if (!raw || E.isNone(raw)) return why(`config §4 Local database is ${raw ? 'none' : 'unset'}`);
+  if (!m) return why(`config §4 Local database is "${raw}", which is not \`postgres container <name>\``);
+  if (E.permission('db-per-ticket') !== 'yes') return why(`config §3 ${E.permissionKey('db-per-ticket')} is ${E.permission('db-per-ticket')}`);
   const vars = [].concat(E.configValues('db-url-var') ?? []).filter((v) => !E.isNone(v) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(v));
-  return vars.length ? null : '§4 Database URL variable names none';
+  return why(vars.length ? null : 'config §4 Database URL variable names none');
 }
 
 // Why a check is not required here, or null when it is.
 export function notRequired(id) {
-  if (id === 'database') return noDatabase();
+  if (id === 'database') return perTicketDb().none;
   const off = (perm) => ['no', 'never'].includes(E.permission(perm));
   if (id === 'jira') {
     const t = (E.configValue('tracker') ?? '').trim().toLowerCase();
@@ -213,10 +211,10 @@ function readRecord(state) {
   try { return JSON.parse(readFileSync(healthFile(state), 'utf8')); } catch { return null; }
 }
 
-const dbCmd = (env = process.env) => ['docker', 'exec', pgContainer(env), 'pg_isready'];
+const dbCmd = (env = process.env) => ['docker', 'exec', perTicketDb(env).container, 'pg_isready'];
 const fixOf = (id, r) => {
   if (id === 'disk') return `free space on ${r.path ?? 'the worktrees disk'}`;
-  if (id === 'database') return `start Docker and the container ${pgContainer()}; the queued tickets spawn on the first pass it answers`;
+  if (id === 'database') return `start Docker and the container ${perTicketDb().container}; the queued tickets spawn on the first pass it answers`;
   if (r.kind === 'network') return `check this machine's connection to ${byId[id].name}; it is not reaching it, which is not a sign-in`;
   return byId[id].fix;
 };
@@ -317,7 +315,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   if (recovered.length) notes.push(`recovered: ${recovered.join(', ')}`);
   if (unconfirmed.length) notes.push(`rechecking before telling you: ${unconfirmed.join(', ')}`);
   // A repo with no Postgres container has no database to check, so it is not named as skipped.
-  const skipped = Object.entries(skip).filter(([id]) => id !== 'database' || pgContainer(env)).map(([id, why]) => `${byId[id].name} (${why})`);
+  const skipped = Object.entries(skip).filter(([id]) => id !== 'database' || perTicketDb(env).container).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
   if (loginsOut.length) notes.push(`claude login${loginsOut.length > 1 ? 's' : ''} ${loginsOut.map((l) => l.name).join(', ')} failing, not holding spawns`);
   const missingFix = (l) => `remove its row (desk-env logins remove claude ${l.name}) or sign it in (${signInCommand(l)})`;

@@ -356,7 +356,10 @@ check "DS-589 AC2 once it answers the ticket spawns, no answer needed" '[ "$(fie
 q set H-7 state=done
 mv "$T/stub/docker" "$T/docker.off"
 rm -f "$T/state/health.json"
-json=$(PATH="$T/stub:/usr/bin:/bin" "$(command -v node)" --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs" 2>&1)
+# The system folders' tools, but not a docker either of them holds (a Linux runner has /usr/bin/docker).
+mkdir -p "$T/sysbin"
+for f in /usr/bin/* /bin/*; do n="${f##*/}"; [ "$n" = docker ] || [ -e "$T/sysbin/$n" ] || ln -s "$f" "$T/sysbin/$n"; done
+json=$(PATH="$T/stub:$T/sysbin" "$(command -v node)" --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs" 2>&1)
 out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json")
 check "DS-589 AC6 no docker on PATH: the check fails saying so" 'grep -qF "health: local database (docker exec acme-pg pg_isready) failed: docker not found" <<< "$out"'
 mv "$T/docker.off" "$T/stub/docker"
