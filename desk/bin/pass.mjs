@@ -46,7 +46,7 @@ import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver,
 import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
-import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, dragCells, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
+import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
@@ -585,6 +585,12 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
 // A round whose log names its screenshots is always uploaded: the cap holds back only the retries.
 // The shared profile in use (the uploader's exit 2) is a wait, so it spends no try.
 const uploadedThisPass = new Set();
+// How many of `shots` (file names) PR #prNo's body still has a `_drag <file>_` cell for: 0 with none,
+// null where the body could not be read.
+function cellsFor(prNo, shots) {
+  const view = shOut('gh', ['pr', 'view', String(prNo), '--repo', GH_REPO, '--json', 'body']);
+  try { return view.ok ? dragFiles(String(JSON.parse(view.out).body ?? '')).filter((f) => shots.includes(f)).length : null; } catch { return null; }
+}
 function uploadShots(t, prNo, imgDir) {
   const was = crashOf(t, prNo);
   if (uploadedThisPass.has(t.key)) return;
@@ -876,7 +882,11 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // A session started from a handoff may open the PR for screenshots an earlier session captured: the
   // directory that session printed is kept on the ticket (images_dir) when it hands off.
   const logImgDir = [...h.matchAll(/AUTOPILOT_IMAGES:\s*(\S+)/g)].pop()?.[1];
-  const imgDir = E.expandHome(logImgDir ?? t.images_dir ?? undefined);
+  // Where neither names one, the directory every worker is briefed to capture into (the spawn's
+  // "Screenshot directory"), since a worker can save its screenshots there and never print the marker
+  // (KAN-629: five PNGs, five rounds, no AUTOPILOT_IMAGES, and its cells went to the person).
+  const namedImgDir = E.expandHome(logImgDir ?? t.images_dir ?? undefined);
+  const imgDir = namedImgDir ?? ticketShotDir(t, STATE);
   // A park that waits only on a check §4 Check builds names, once its worker has exited (buildParkOf):
   // recorded done below, so its screenshots go to its PR here as a DONE worker's do.
   const built = park && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id)) ? buildParkOf(t, park.trim()) : null;
@@ -894,6 +904,13 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     try { shots = readdirSync(imgDir).filter((f) => E.SCREENSHOT_FILE.test(f)); } catch { /* missing */ }
     if (!shots.length) {
       if (done || built || mergeOnly) q('set', t.key, 'images_uploaded=none');
+    } else if (!namedImgDir && (crashOf(t, prNo) || !((done || built || mergeOnly) && cellsFor(prNo, shots)))) {
+      // The briefed directory, unnamed this round, is uploaded only once its worker is finished (with no
+      // marker, nothing says its screenshots are all taken) and only while the PR's body still has a
+      // `_drag <file>_` cell naming one of them. It keeps every round's screenshots and the uploader
+      // sends the whole directory, so a later round's PR whose cells were filled would get each asset
+      // again. A body that could not be read waits for the undraft step, which reads it again. An
+      // upload of it that crashed is the crashed-uploads step's, which keeps to UPLOAD_TRIES.
     } else if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
       uploadShots(t, prNo, imgDir);
     } else if (!t.images_reported) {
@@ -3612,7 +3629,7 @@ const baseReads = (head) => (FAILURE_CLASS && head ? { baseRead: {
 } } : {});
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
-const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'sync', 'rerun', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture'];
+const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'sync', 'rerun', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture', 'upload'];
 // Whether a person put a draft back: { hold } as personHold gives it, or { unread } with why the PR's events could not say.
 const draftHold = (t, n) => {
   const ev = shOut('gh', ['api', '--paginate', `repos/${GH_REPO}/issues/${n}/events?per_page=100`, '--jq', REDRAFT_JQ]);
@@ -3645,6 +3662,8 @@ if (drafts.length) {
     conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
     handle: conflictHandle,
     ...gateLists(), builds: buildRow.checks, evidence: evidenceRow?.workflow ? evidenceRow : null,
+    // Cells whose files desk holds and never tried to upload go to uploadShots (cellCall `upload`).
+    upload: uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED ? 'yes' : uploadPerm,
   };
   cfg.untriggered = untriggeredOf;
   cfg.runOf = runOf;
@@ -3670,7 +3689,7 @@ if (drafts.length) {
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
     // A verdict for an older head holds at this one when only clean merges of the base came since.
     const { carry, scope, baseMerge, behind } = baseMoves(t, v.headRefOid);
-    const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), behind, evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, ticketShots(t, STATE)) });
+    const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), behind, evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, ticketShots(t, STATE)), shotDir: ticketShotDir(t, STATE) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
@@ -3713,6 +3732,11 @@ if (drafts.length) {
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) { applyFix(t, n, v.headRefOid, rf); if (rf.call === 'rerun' || rf.call === 'wait') rec = { ...rec, call: rf.call, why: rf.why, action: null }; }
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
+    else if (c.call === 'upload' && DRY) out.push(`undraft (dry run): would upload ${c.dir} to PR #${n} (${t.key}): ${c.why}`);
+    else if (c.call === 'upload') {
+      out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
+      uploadShots(t, String(n), c.dir);
+    }
     else if (c.call === 'rerun' && DRY) out.push(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else if (c.call === 'rerun') rerunDraft(t, n, v.headRefOid, c);
     else if (c.call === 'cancel') rec = cancelStuck(t, n, v.headRefOid, c, rec);
@@ -4061,7 +4085,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   const ctx = {
     // Out of draft, a §4 Check builds check is built as a draft's is, where §3 ci-rerun lets the pass.
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows, stateChecks: stateRow.checks,
-    build: (failing) => buildCall({ pending: [], failing }, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), built: (head) => buildRecord(BUILD_DIR, n, head), behind }, n, s.head, t),
+    build: (failing, gate) => buildCall({ pending: gate?.pending ?? [], running: gate?.running, failing }, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), built: (head) => buildRecord(BUILD_DIR, n, head), behind }, n, s.head, t),
     ...driverReruns(n, s.head),
     // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
     waived: (names) => {

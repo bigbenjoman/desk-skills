@@ -8,7 +8,8 @@
 //   - an epic's feature-plan park, a lane C park, a lane D one parked at triage on its design, and anything naming a config §3 row
 //     that is not `yes`, is handed straight on, as is a waiting line for a done ticket, which no
 //     decider tool acts on, and a park asking again what the park its last requeue cleared asked,
-//     with no answer since (queue.mjs requeue keeps that park as `prev_park`);
+//     with no answer since (queue.mjs requeue keeps that park as `prev_park`), and a park on a step only a
+//     person or another account takes (batch-state.mjs personOnlyStep), with no answer since it parked;
 //   - a park with a recorded clears-when waits on it, neither handed on nor given to a session;
 //   - the rest go to the session, unless already handed and not answered since (an answer through
 //     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
@@ -21,7 +22,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS, describeCond, personClears } from './clears-when.mjs';
-import { needsSession, planPark, leftPark, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
+import { needsSession, planPark, leftPark, personOnlyStep, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 import { callLogin } from './call-login.mjs';
@@ -91,6 +92,7 @@ export function deciderItems(v, q = {}) {
 // Items the rules hand on without a session: {hand: [{item, why}], ask: [item], waits: [item]}. A §3
 // row is read as the pass's line gives it. A park that asks again what the park its last requeue
 // cleared asked, with no answer since that one, is handed on: another worker would park the same way.
+// So is a park on a step only a person or another account takes, with no answer since it parked.
 // With no `state` to read answers from, none is counted. A park with a recorded clears-when waits on
 // it: each pass checks it and settles the park, so it needs neither a session nor the person.
 export function presort(items, state = null) {
@@ -113,6 +115,8 @@ export function presort(items, state = null) {
       hand.push({ item, why: 'waits on issue links only the person makes: a pass records it done again once each is on Jira' });
     } else if (item.kind === 'parked' && item.clears) {
       waits.push(item);
+    } else if (item.kind === 'parked' && personOnlyStep(item.text) && !(state && item.since && answered(state, { ticket: item.ticket, at: item.since }))) {
+      hand.push({ item, why: `its step is one only a person or another account takes, with no answer since it parked: a requeue would park again ("${short(personOnlyStep(item.text))}")` });
     } else if (item.kind === 'parked' && item.repeat && !(state && prevAt && answered(state, { ticket: item.ticket, at: prevAt }))) {
       hand.push({ item, why: `park ${item.round} asks what park ${item.round - 1} asked, with no answer since: a requeue would park again (last park: "${short(item.prev.question)}")` });
     } else if (item.kind === 'parked' && item.takenOnce && !(state && item.since && answered(state, { ticket: item.ticket, at: item.since }))) {

@@ -38,6 +38,7 @@ const REWRITTEN = [
   ['DS-405', 'letting CI judge the body', 1],
   ['DS-405', "Merging with `--squash` because it's the usual", 1],
   ['DS-460', 'see "Editing the body later" in §4). Keep', 1], // names opening.md, the file holding it
+  ['DS-611', 'committed here. Say so, push as before, and offer', 1], // the items run under their locks instead
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 23, minRows: 35, rewritten: REWRITTEN });
 
@@ -130,6 +131,16 @@ t(`AC4 the citations by a section name in backticks were read (${count.backtick}
 t(`AC4 the citations of desk-pr's canvas table were read (${count.alias})`, count.alias >= 2, true);
 t(`AC4 the citations by path were read (${count.path})`, count.path >= 5, true);
 t(`AC4 desk-pr's own citations of its sections were read (${count.inner})`, count.inner >= 1, true);
+
+// With §4 Pre-push checks set and no committed script, the items run under their locks rather than
+// the push going out unchecked; where the script is in the tree it is still what runs.
+const pushing = norm(core);
+t('DS-611 AC2 with no script, each item runs in its DIR under its lock', pushing.includes('Never push unchecked: run each item `desk-env cmds pre-push-checks` prints yourself, in order, in its `DIR`, under its lock'), true);
+t('DS-611 AC2 an item that is a locked row\'s, extends it or is extended by it takes the lock a worker is granted for that row', pushing.includes('`<lock>` is that of the §4 row the item is, or shares a command with where either one adds arguments to the other: `tsc` for Typecheck, `test` for Unit, Related or Integration tests, `browser` for E2E tests or Storybook.'), true);
+t('DS-611 AC2 any other item takes tsc for a typecheck, else nolock', pushing.includes('Any other item takes `tsc` where it names `typecheck`, and `nolock` otherwise.'), true);
+t('DS-611 AC2 and the push waits for every item to pass', pushing.includes('Push only when every item passes, as above. Say the script is missing'), true);
+t('DS-611 AC2 the missing script no longer means pushing as before', pushing.includes('Say so, push as before, and offer `/desk-setup`'), false);
+t('DS-611 AC3 the committed script is still run first where it is in the tree', pushing.includes("run the repo's committed script on HEAD **yourself before every push of the branch**"), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

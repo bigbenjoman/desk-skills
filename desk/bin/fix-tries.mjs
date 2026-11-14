@@ -265,7 +265,7 @@ const treeTry = (base, held, at) => ({ ...conflictTry(base, null, false, at), wh
 // the step names its run failed at, reruns(name) -> reruns tried at s.head, cooledDown (the last rerun
 // has had its gap to report), waived(names) -> the driver merges past these as known flaky checks,
 // conflictFiles() -> [file] | null, baseRead (failure-class.mjs baseSplit's reads, only with the
-// failure-class lever on), build(failing) -> undraft.mjs buildCall's answer for the red §4 Check builds
+// failure-class lever on), build(failing, gate) -> undraft.mjs buildCall's answer for the red §4 Check builds
 // checks, or null where the pass builds none }. Besides the calls above it answers buildCall's `build`,
 // `rebuilt` and `wait` for a ready PR the pass builds, and a stuck answer may carry a `build` to start.
 export function fixCall(t, s, ctx) {
@@ -281,13 +281,19 @@ export function fixCall(t, s, ctx) {
     fix = tree ? treeTry(ctx.base, tree, at) : conflictTry(ctx.base, ctx.conflictFiles?.(), false, at);
   } else {
     const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
-    if (gate.state !== 'fail' || gate.pending.length) return null;
+    if (gate.state !== 'fail') return null;
     // A §4 State check is no worker's code to fix and the driver never reruns it: verdictTry and the
     // driver's approval note take it.
     const state = stateFailing(gate.failing, ctx.stateChecks);
     const rest = gate.failing.filter((f) => !state.some((x) => x.name === f.name));
     // A §4 Check builds check the pass builds (ctx.build) is neither a worker's nor the person's.
-    built = buildRead(rest, ctx);
+    built = buildRead(rest, ctx, gate);
+    // With checks still running, only the build of a PR red on nothing else goes ahead: it needs
+    // none of them, and buildCall holds its re-run while a check in its own run is still running.
+    if (gate.pending.length) {
+      const only = built && rest.every((f) => built.names.includes(f.name));
+      return only && (built.call.call === 'build' || built.call.call === 'rebuilt') ? built.call : null;
+    }
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     const { mine, notMine } = split;
     if (built && !mine.length) return buildStep(t, s, built, notMine, ctx);
@@ -318,12 +324,12 @@ export function fixCall(t, s, ctx) {
 const withRecord = (c, record) => (record === undefined ? c : { ...c, base_red: record });
 
 // A ready PR's red §4 Check builds checks, as the pass would build them: { names, call }, `call` being
-// undraft.mjs buildCall's answer for them alone (ctx.build). null with no such check red, or where the
+// undraft.mjs buildCall's answer for them alone (ctx.build, given the gate's pending checks). null with no such check red, or where the
 // pass builds none (no ctx.build, or §3 ci-rerun not yes), so each stays the person's, with its command.
-function buildRead(failing, ctx) {
+function buildRead(failing, ctx, gate) {
   const rows = new Set((ctx.builds ?? []).map((b) => b.name));
   const names = [...new Set(failing.filter((f) => rows.has(f.name)).map((f) => f.name))];
-  const call = names.length && ctx.build ? ctx.build(failing.filter((f) => rows.has(f.name))) : null;
+  const call = names.length && ctx.build ? ctx.build(failing.filter((f) => rows.has(f.name)), gate) : null;
   return call ? { names, call } : null;
 }
 // A stuck answer for the checks a ready PR's build left red (`names`), each kept with `each`: a failed

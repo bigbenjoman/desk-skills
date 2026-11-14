@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDecision, parseCheck, decisionEntry, appendDecisions, decisionsPath, ASK_CATEGORIES, prLink } from '../desk/bin/decisions.mjs';
+import { parseDecision, parseCheck, decisionEntry, appendDecisions, decisionsPath, ASK_CATEGORIES, prLink, triageCalls } from '../desk/bin/decisions.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -19,6 +19,18 @@ t('an unknown category is refused', parseDecision(raw({ category: 'vibes' })).ok
 for (const c of ASK_CATEGORIES) t(`AC3 the ask category ${c} is never logged as taken`, parseDecision(raw({ category: c })).why, `${c} is an ask category: ask, never take it`);
 t('a PR number becomes its link', prLink(7, 'acme/widgets'), 'https://github.com/acme/widgets/pull/7');
 t('no PR is null', prLink(null, 'acme/widgets'), null);
+
+// A call an acceptance criterion reserves for the person's record stays a question.
+const effort = { question: 'Which Opus drafting effort?', category: 'scope', options: ['high', 'medium'], recommended: 'high' };
+const split = (o) => triageCalls({ unknowns: [{ ...effort, ...o }] });
+const reservedSplit = split({ reserved: true });
+t('DS-613 AC1 a reserved call with a recommendation is asked, with it', JSON.stringify(reservedSplit.ask), '["Which Opus drafting effort? (recommended: high)"]');
+t('DS-613 AC1 and is not taken', reservedSplit.taken.length, 0);
+t('DS-613 AC1 a split record splits the same again', JSON.stringify(triageCalls({ unknowns: reservedSplit.ask, decided: reservedSplit.taken })), JSON.stringify(reservedSplit));
+const takenSplit = split({ reserved: false });
+t('DS-613 AC2 an unreserved call with a recommendation is taken, as today', `${takenSplit.ask.length} ${JSON.stringify(takenSplit.taken)}`, '0 [{"question":"Which Opus drafting effort?","options":["high","medium"],"chose":"high","category":"scope"}]');
+t('DS-613 AC2 and with no reserved field', split({}).taken.length, 1);
+for (const v of ['yes', 1, null, {}]) t(`DS-613 AC4 reserved ${JSON.stringify(v)} keeps the call asked`, `${JSON.stringify(split({ reserved: v }).ask)} ${split({ reserved: v }).taken.length}`, '["Which Opus drafting effort? (recommended: high)"] 0');
 
 const dir = mkdtempSync(join(tmpdir(), 'desk-decisions-'));
 const e = decisionEntry({ decision: parseDecision(raw()).decision, ticket: 'D-1', run: 'run-1', repo: 'acme/widgets', pr: 7, source: 'worker' });

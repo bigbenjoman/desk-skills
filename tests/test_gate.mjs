@@ -300,4 +300,16 @@ t('DS-503 AC1 hold-kind sorts the items it is given', gcli(['a/**: legal sign-of
 const update = readFileSync(new URL('../skills/desk-update/references/repo-drift.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
 t('DS-503 AC2 desk-update proposes a routine for each agent line hold-kind prints', /gate\.mjs hold-kind/.test(update) && /\*\*Each `agent` line gets a routine proposed\*\*/.test(update), true);
 rmSync(gtmp, { recursive: true, force: true });
+// DS-647: each pending check carries its run, so a check build's re-run waits only on its own run.
+{
+  const g = evaluateGate([
+    { name: 'tests', status: 'completed', conclusion: 'success', runId: 1 },
+    { name: 'Flows image', status: 'completed', conclusion: 'failure', runId: 21 },
+    { name: 'Lint', status: 'in_progress', conclusion: null, runId: 31 },
+    { name: 'e2e', status: 'queued', conclusion: null },
+  ], { required: ['tests', 'Lint'], runs: [{ name: 'Deploy', status: 'in_progress', databaseId: 41 }] });
+  t('DS-647 the gate lists each pending check with its run, null where none is named', JSON.stringify(g.running),
+    '[{"name":"Lint","runId":31},{"name":"e2e","runId":null},{"name":"run Deploy","runId":41}]');
+  t('DS-647 running matches pending one for one', g.running.map((r) => r.name).join(',') === g.pending.join(','), true);
+}
 process.exit(fails ? 1 : 0);
