@@ -355,7 +355,7 @@ pj
 check "DS-589 AC2 once it answers the ticket spawns, no answer needed" '[ "$(field H-7 state)" = running ] && grep -q "health: all checks pass (checked now; recovered: database)" <<< "$out" && [ -z "$(pushes)" ]'
 q set H-7 state=done
 mv "$T/stub/docker" "$T/docker.off"
-json=$(PATH="$T/stub" "$(command -v node)" --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs" 2>&1)
+json=$(PATH="$T/stub:/usr/bin:/bin" "$(command -v node)" --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs" 2>&1)
 out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json")
 check "DS-589 AC6 no docker on PATH: the check fails saying so" 'grep -qF "health: local database (docker exec acme-pg pg_isready) failed: docker not found" <<< "$out"'
 mv "$T/docker.off" "$T/stub/docker"
