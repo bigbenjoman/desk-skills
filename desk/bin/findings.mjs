@@ -19,6 +19,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MARKER, readLog } from './harvest.mjs';
+import { latestReview } from './undraft.mjs';
 
 const REVIEWERS = ['self', 'pr', 'audit'];
 const COUNTS = ['p0', 'p1', 'p2', 'fixed'];
@@ -132,12 +133,14 @@ export function recordFindings(state, key, log, run = null, at = new Date().toIS
 }
 
 // Records a desk-review verdict the pass carried from an older head to `head` with no round run there
-// (undraft.mjs reviewCarries) from commit `from`: one pr line at `head` with the verdict's counts
-// (`verdict` as parseVerdict reads it, values strings; anything but the verdict posted on `from` writes
-// nothing), fixed 0, carried true, refuter_vendor null (nothing was refuted at this head) and `from`.
-// Once per head and round, however many passes read the carry. Never throws; returns the line added, or null.
-export function recordCarry(state, key, { head, from, verdict }, at = new Date().toISOString()) {
+// (undraft.mjs reviewCarries) from commit `from`: one pr line at `head` with the counts of the latest
+// verdict `handle` posted among the PR's `reviews` (gh pr view --json reviews; anything but a verdict
+// posted on `from` writes nothing), fixed 0, carried true, refuter_vendor null (nothing was refuted at
+// this head) and `from`. Once per head and round, however many passes read the carry. Never throws;
+// returns the line added, or null.
+export function recordCarry(state, key, { head, from, reviews, handle }, at = new Date().toISOString()) {
   try {
+    const verdict = latestReview(reviews, handle)?.verdict;
     if (!from || verdict?.sha !== from || !head || head === from) return null;
     const p = parseFindings(JSON.stringify({ round: Number(verdict.round), reviewer: 'pr', head, p0: Number(verdict.p0), p1: Number(verdict.p1),
       p2: Number(verdict.p2), fixed: 0, carried: true, refuter_vendor: null }));

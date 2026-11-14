@@ -100,12 +100,14 @@ harvest('AC-5', findingsLine(targeted, 'pr'))
 t('AC5 its recorded line has carried true', jsonl(findingsPath(dir, 'AC-5'))[0]?.carried, true)
 // The pass carrying a verdict to a rebased head with no round run there.
 const HEAD2 = '89abcdef0123456789abcdef0123456789abcdef'
-const posted = { sha: PREV, p0: '0', p1: '0', p2: '0', deferred: '0', gaps: '0', unrefuted: '0', partial: '0', vendor: 'codex-cross', round: '2' }
-const carriedLine = recordCarry(dir, 'AC-5c', { head: HEAD2, from: PREV, verdict: posted })
-t('AC5 a carry the pass reads writes a pr line at the new head', [carriedLine?.reviewer, carriedLine?.head, carriedLine?.round, carriedLine?.fixed, carriedLine?.carried, carriedLine?.from].join(), `pr,${HEAD2},2,0,true,${PREV}`)
-recordCarry(dir, 'AC-5c', { head: HEAD2, from: PREV, verdict: posted })
+const reviews = [{ author: { login: 'me' }, body: render(base({ sha: PREV })) }]
+const carry = (key, from = PREV) => recordCarry(dir, key, { head: HEAD2, from, reviews, handle: 'me' })
+const carriedLine = carry('AC-5c')
+t('AC5 a carry the pass reads writes a pr line at the new head', [carriedLine?.reviewer, carriedLine?.head, carriedLine?.round, carriedLine?.fixed, carriedLine?.carried, carriedLine?.from].join(), `pr,${HEAD2},1,0,true,${PREV}`)
+carry('AC-5c')
 t('AC5 the same carry read on the next pass adds nothing', jsonl(findingsPath(dir, 'AC-5c')).length, 1)
-t('AC5 a verdict not posted on the carried commit writes nothing', recordCarry(dir, 'AC-5d', { head: HEAD2, from: SHA, verdict: posted }), null)
+t('AC5 a verdict not posted on the carried commit writes nothing', carry('AC-5d', SHA), null)
+t('AC5 a verdict someone else posted writes nothing', recordCarry(dir, 'AC-5e', { head: HEAD2, from: PREV, reviews, handle: 'other' }), null)
 
 // ---- refuter vendor and what fixed may mark
 t('refuter_vendor: codex refuted every finding', line(base({ findings: [f()] }), 'self').refuter_vendor, 'codex')
