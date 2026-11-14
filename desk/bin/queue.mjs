@@ -6,11 +6,11 @@
 // workers never touch it — their state is derived from their own logs plus `claude agents --json`.
 // Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, dateHeld, badLabelText, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
-import { ANSWER_HEAD } from './briefing.mjs';
+import { saveAnswer } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
@@ -24,6 +24,7 @@ import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
+import { takeDirLock, releaseDirLock, alive } from './dir-lock.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -80,58 +81,18 @@ const LOCK = `${QUEUE}.lock`;
 // number of milliseconds there is ignored rather than turning the wait into forever or nothing.
 const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
 const held = [];
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
-// A holder that has exited never lets go. One with no pid yet is between its mkdir and its write,
-// unless it has sat that way for a minute (with-lock.sh's rule).
-function stale(dir) {
-  const pid = lockPid(dir);
-  try { return pid ? !alive(pid) : Date.now() - statSync(dir).mtimeMs > 60_000; } catch { return false; } // already gone
-}
-
-// Clear a stale lock. Writers that all saw the same stale lock must not each remove "the lock", or a
-// slower one removes the fresh lock a faster one has just taken. So clearing takes its own lock and
-// looks again under it: only a clearer can remove the queue lock while it exists, so a lock still
-// stale under the clearing lock is the one that was seen. A clearing lock older than 5 seconds is a
-// clearer that died mid-clear (clearing takes microseconds), and is removed for the next attempt.
-function clearStale(dir) {
-  const clearing = `${dir}.clearing`;
-  try { mkdirSync(clearing); } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    try { if (Date.now() - statSync(clearing).mtimeMs > 5_000) rmSync(clearing, { recursive: true, force: true }); } catch { /* gone */ }
-    return false;
-  }
-  try { if (stale(dir)) rmSync(dir, { recursive: true, force: true }); }
-  finally { rmSync(clearing, { recursive: true, force: true }); }
-  return true;
-}
-
+// The lock itself, its stale clearing and its wait, are dir-lock.mjs's.
 function lock(dir = LOCK) {
-  mkdirSync(dirname(dir), { recursive: true });
-  const until = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      mkdirSync(dir);
-      writeFileSync(join(dir, 'pid'), `${process.pid}\n`);
-      held.push(dir);
-      return;
-    } catch (e) { if (e.code !== 'EEXIST') throw e; }
-    if (stale(dir) && clearStale(dir)) continue; // another writer clearing it: wait like any other holder
-    const pid = lockPid(dir);
-    if (Date.now() >= until) {
-      throw new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${dir})`);
-    }
-    sleep(50);
-  }
+  takeDirLock(dir, {
+    waitMs: LOCK_WAIT_MS,
+    timeoutError: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${dir})`),
+  });
+  held.push(dir);
 }
 
 function unlock() {
-  while (held.length) {
-    const dir = held.pop();
-    if (lockPid(dir) === process.pid) rmSync(dir, { recursive: true, force: true });
-  }
+  while (held.length) releaseDirLock(held.pop());
 }
 process.on('exit', unlock);
 
@@ -382,7 +343,7 @@ function handback(q, key, note) {
   try { msg = requeue(q, key, { handedBack: true }); } catch (e) { Object.assign(t, was); throw e; }
   // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
-  appendBriefing(key, `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`);
+  saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
   return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
 }
 
@@ -395,17 +356,8 @@ function stepDone(q, key) {
   delete t.park.session_step;
   let msg;
   try { msg = requeue(q, key); } catch (e) { t.park.session_step = s; throw e; }
-  appendBriefing(key, `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.\n`);
+  saveAnswer(stateDir(), key, `The person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.`, new Date().toISOString());
   return `${key}: the approved step is recorded done (${s.step}); ${msg}`;
-}
-
-// A binding answer for a ticket's next worker, appended to its briefing (pass.mjs writeBrief keeps it).
-function appendBriefing(key, entry) {
-  const dir = join(stateDir(), 'briefings');
-  mkdirSync(dir, { recursive: true });
-  const brief = join(dir, `${key}.md`);
-  if (existsSync(brief)) appendFileSync(brief, entry);
-  else writeFileSync(brief, `# Briefing for ${key}\n${entry}`);
 }
 
 // What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
@@ -883,10 +835,10 @@ switch (cmd) {
     const t = ticket(q, key);
     if (!spinePark(t)) throw new Error(`${key} is not a feature spine parked for approval (state ${t.state})`);
     const pr = t.result?.pr;
-    const entry = `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person sent this spine's acceptance specs back: ${note}\n` +
-      (pr != null ? `Your PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.\n` : '');
+    const text = `The person sent this spine's acceptance specs back: ${note}` +
+      (pr != null ? `\nYour PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.` : '');
     const msg = requeue(q, key);
-    appendBriefing(key, entry);
+    saveAnswer(stateDir(), key, text, new Date().toISOString());
     console.log(`${key} sent back with the note in its briefing; ${msg}`);
     break;
   }
