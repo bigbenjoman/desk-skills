@@ -1,13 +1,13 @@
-// The Codex login a desk-codex call runs on. With one Codex login, or no subscriptions file, there is
-// nothing to choose and the call keeps the caller's environment, unless the file sets every Codex
-// login it lists off, when no call runs. With more, it runs on the usable login (signed in, in rotation
-// or on standby) with the most room, ranked as a Claude login's is (login-choice.mjs) on whichever
-// windows its plan has. A login whose newest reading is at a limit is benched until that window
-// resets; with every usable login benched, or none usable, no call runs and `dead` says why.
+// The Codex login a desk-codex call runs on. With no subscriptions file, or a Codex default of ~/.codex
+// and no other Codex folder, the call keeps the caller's environment, unless the file sets every Codex
+// login it lists off, when no call runs. Otherwise it runs on the tool's default (logins.mjs), and
+// only there: a default at its limit, signed out or with its folder gone is not swapped for another
+// login. At its limit its call fails as a sole login's would; off or not signed in, no call runs and
+// `dead` says why.
 import { subscriptionsPath } from './desk-env.mjs';
 import { codexLogins, readCodexUsage } from './codex-usage.mjs';
 import { chooseLogin } from './login-choice.mjs';
-import { checkLogins, loginEnv, readSubscriptions } from './logins.mjs';
+import { checkLogin, defaultOf, loginEnv, readSubscriptions } from './logins.mjs';
 
 // A Codex window in the shape login-choice reads a Claude one in.
 const asClaude =(w) => (w ? { utilization: w.used / 100, resetsAt: w.resetsAt } : null);
@@ -21,26 +21,19 @@ export function benchedUntil(reading) {
 
 // -> { login, env, dead }: the login chosen (null when the caller's own is kept), the environment the
 // call runs in, and, when no call may run, the reason.
-export function codexCallLogin({ env = process.env, now = Date.now() } = {}) {
+export function codexCallLogin({ env = process.env } = {}) {
   const keep = { login: null, env, dead: null };
-  const none = { login: null, env, dead: 'no Codex login is signed in with a rule of in rotation or standby (desk-env logins check)' };
   // With no subscriptions file desk has one login per tool, whatever folders exist (logins.mjs).
   const subs = readSubscriptions(subscriptionsPath());
   if (!subs.exists) return keep;
-  // The one login found runs only if it is not off and the file has a Codex row that is not off: an
-  // off row whose folder is gone leaves ~/.codex found with no rule of its own.
-  const found = codexLogins();
-  if (found.length <= 1) {
-    const anyOn = subs.logins.some((l) => l.tool === 'codex' && l.rule !== 'off');
-    return found[0]?.rule === 'off' || !anyOn ? none : keep;
-  }
-  const { usable } = checkLogins(subs, { tools: ['codex'], env });
-  if (!usable.length) return none;
-  const { login, read } = codexChoice(usable, now);
-  if (!login) {
-    const first = [...read].sort((a, b) => a.until - b.until)[0];
-    return { login: null, env, dead: `every Codex login is at its usage limit: the earliest to reset is ${first.login.name}, at ${new Date(first.until * 1000).toISOString()}` };
-  }
+  // The file's default, or in the older rules its first login in rotation. A file whose Codex rows
+  // are all off picks an off one, and no call runs until a person names a default.
+  const login = defaultOf(subs.logins, 'codex');
+  if (login.rule === 'off') return { login: null, env, dead: `the Codex default, ${login.name}, is off (desk-env logins default codex <name>)` };
+  // A default of ~/.codex with no other Codex folder found runs as a sole login always has, unchecked.
+  if (!login.configDir && codexLogins().every((l) => l.dir === login.dir)) return keep;
+  const { state, why } = checkLogin(login, { env });
+  if (state !== 'signed in') return { login: null, env, dead: `the Codex default, ${login.name}, is ${state === 'error' ? `not checked: ${why}` : 'not signed in'} (desk-env logins check)` };
   return { login, env: loginEnv(login, env), dead: null };
 }
 
