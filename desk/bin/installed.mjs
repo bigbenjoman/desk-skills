@@ -137,6 +137,8 @@ export function restartDriver({ slug, batch = null, dir, pid, queue = null }, ps
   } catch (e) { return `${name}: stopped, but could not be started again: ${e.message}`; }
   finally { if (fd !== undefined) closeSync(fd); }
   const now = waitFor(() => { const p = lockPid(dir); return Boolean(p && p !== pid && alive(p)); }) ? lockPid(dir) : null;
+  // It writes its version just after its pid, so what reads the lock next reads it as current.
+  if (now) waitFor(() => Boolean(lockVersion(dir)) || lockPid(dir) !== now);
   return now
     ? `merge driver for ${who}: restarted on the new code (pid ${pid} -> ${now}) for ${args.tickets.join(' ')}`
     : `${name}: stopped and started again, but no new driver holds the lock yet; see ${join(dir, 'merge-driver.log')}`;

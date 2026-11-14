@@ -401,16 +401,28 @@ kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$T/state/merge-d
 
 # ---- DS-666: a merge driver on old code moves to the installed code once it waits between loops ----
 held(){ cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null; }
-# A driver an earlier tick left, detached, that started before the install (its lock says old0).
+# A driver an earlier tick left, detached, that started before the install (its lock says old0). It
+# waits for the driver's sleep (or, mid-loop, tail): the node writing its version has finished by then.
 olddriver(){
+  kid=sleep; [ -f "$T/busy" ] && kid=tail
   echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"
   (cd "$T/repo" && "$T/bin/merge-driver.sh" --tickets "A B" --deps "B:A" --log </dev/null >/dev/null 2>&1 &)
-  i=0; while { [ -z "$(held)" ] || ! pgrep -P "$(held)" >/dev/null; } && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  i=0; while { [ -z "$(held)" ] || ! pgrep -x "$kid" -P "$(held)" >/dev/null; } && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
   echo old0 > "$T/state/merge-driver.lock.d/version"
 }
+# setdriver <pid> <from>: supervisor.json's record of the driver the supervisor itself started.
+setdriver(){ node -e 'const f = process.argv[1]; const s = JSON.parse(require("fs").readFileSync(f, "utf8")); s.driver = { failures: 0, notified: false, pid: Number(process.argv[2]), started: "then", from: Number(process.argv[3]) }; require("fs").writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json" "$1" "$2"; }
+driverrec(){ node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).driver; console.log(`${d.pid} ${d.started === "then"} ${d.from}`)' "$T/state/supervisor.json"; }
 stopdriver(){ p="$(held)"; [ -n "$p" ] && { kill "$p" 2>/dev/null; pkill -P "$p" 2>/dev/null; }; i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; rm -rf "$T/state/merge-driver.lock.d"; }
 olddriver; old="$(held)"; n=$(count "$T/driver.calls")
+# A pass running holds supervisor.lock: the driver is not moved under it.
+sleep 30 & PASSPID=$!; printf '{"pid":%s}\n' "$PASSPID" > "$T/state/supervisor.lock"
+out=$(DESK_AGENT_VERSION=new1 tick)
+check "DS-666 AC1: no driver is moved while a pass holds the lock" '[ "$(held)" = "$old" ] && [ "$(count "$T/driver.calls")" = "$n" ] && ! grep -q "restarted on the new code" "$LOG"'
+kill "$PASSPID" 2>/dev/null; wait "$PASSPID" 2>/dev/null; rm -f "$T/state/supervisor.lock"
+setdriver "$old" 0; from=0; [ -f "$T/state/merge-driver.log" ] && from=$(wc -c < "$T/state/merge-driver.log" | tr -d ' ')
 out=$(DESK_AGENT_VERSION=new1 tick); new="$(held)"
+check "DS-666 AC1: the supervisor's own driver is followed to its new pid, its stop read from the new one's output" '[ "$(driverrec)" = "$new false $from" ]'
 check "DS-666 AC1: the tick stops a driver on old code that waits between loops" '[ -n "$old" ] && ! kill -0 "$old" 2>/dev/null'
 check "DS-666 AC1: and starts it again with the same tickets and deps" '[ -n "$new" ] && [ "$new" != "$old" ] && kill -0 "$new" && [ "$(count "$T/driver.calls")" = $((n + 1)) ] && [ "$(tail -1 "$T/driver.calls")" = "--tickets A B --deps B:A --log" ]'
 check "DS-666 AC1: its lock records the installed commit, and supervisor.json says it is current" '[ "$(cat "$T/state/merge-driver.lock.d/version")" = new1 ] && [ "$(code)" = "new1 new1 false new1 false" ]'

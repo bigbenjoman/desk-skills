@@ -46,7 +46,8 @@
 // this agent and the running merge driver started at an older one (`old_code`). It records what that
 // tick saw; desk-q judges old code for itself, from the loaded agent's plist and the driver's lock.
 // For a handed-over batch, a driver on old code that waits between loops is restarted on the installed
-// code with the same tickets and deps (installed.mjs restartDriver); one mid-loop is left, logged once.
+// code with the same tickets and deps (installed.mjs restartDriver); one mid-loop is left, logged once,
+// and none is moved while a pass runs (it holds supervisor.lock for the restart).
 //
 // After intake, each tick runs repo-templates.mjs check, which at most hourly records in the standing
 // batch's templates.json which of the repo's committed copies of desk's templates are behind them.
@@ -218,11 +219,18 @@ function moveDriver(state, s) {
     if (s.driver_left) { delete s.driver_left; writeState(state, s); }
     return null;
   }
-  const line = restartDriver({ slug: E.repoSlug(), batch: E.batchName(), dir: state, pid, queue: E.queueFile() }, processes());
+  // A pass running now reads the driver, and its own copy of supervisor.json would undo this one's.
+  const busy = takeLock(state);
+  if (busy) return null;
+  const from = logSize(driverLog(state));
+  let line;
+  try { line = restartDriver({ slug: E.repoSlug(), batch: E.batchName(), dir: state, pid, queue: E.queueFile() }, processes()); }
+  finally { dropLock(state); }
   const now = driverHolder(state);
   if (now !== pid) {
-    // The driver this supervisor started carries on under its new pid, so its stop is still read.
-    if (s.driver?.pid === pid && typeof now === 'number') s.driver.pid = now;
+    // The driver this supervisor started carries on under its new pid, so its stop is still read, from
+    // where the new one's output starts.
+    if (s.driver?.pid === pid && typeof now === 'number') Object.assign(s.driver, { pid: now, started: new Date().toISOString(), from });
     delete s.driver_left;
     s.code = codeRecord(state);
     writeState(state, s);
