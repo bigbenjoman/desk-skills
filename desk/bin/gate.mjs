@@ -48,7 +48,8 @@
 //   staleVerdict(line)       an error line saying the review verdict is missing, stale or in a form it cannot read
 //   skippedOnly(checks)      every check finished, at least one was skipped, and the rest passed
 //   isBot(author)            a PR author, reviewer or commenter ({ login, __typename? }) that is a bot
-//   isHuman(author, self)    one that is neither a bot nor `self`
+//   isHuman(author, self)    one that is neither a bot nor `self` (a login or a list of them)
+//   loginIn(login, logins)   whether a login is one of a login, a comma-separated list or an array
 //   PENDING_LIMIT_MS         how long a check may stay pending before it is taken as stuck
 //   since(ms)                a span as "4m", "3h 24m" or "3d 4h" (desk-q's ages, the pass's stuck-check log)
 //
@@ -94,8 +95,11 @@ const lc = (s) => String(s ?? '').toLowerCase();
 // for desk-clearance and the pass alike.
 export const BOT_LOGINS = new Set(['github-actions', 'vercel', 'chromatic', 'codecov', 'dependabot', 'renovate']);
 export const isBot = (a) => !a?.login || a.__typename === 'Bot' || /\[bot\]$/.test(a.login) || BOT_LOGINS.has(lc(a.login));
-// A person other than `self` (a login, in any case; with none, every person counts).
-export const isHuman = (a, self) => !isBot(a) && !(self && lc(a.login) === lc(self));
+// Whether `login` is one of `logins`: one login, a comma-separated list of them, or an array, in any case.
+export const loginIn = (login, logins) => !!lc(login)
+  && (Array.isArray(logins) ? logins : String(logins ?? '').split(',')).some((l) => lc(l).trim() === lc(login));
+// A person other than `self` (a login or a list of them, as loginIn takes; with none, every person counts).
+export const isHuman = (a, self) => !isBot(a) && !loginIn(a.login, self);
 
 // One check or status context, whatever API it came from, to { name, status, conclusion, runId }.
 //   CheckRun (GraphQL / gh --json statusCheckRollup): name, status, conclusion, detailsUrl

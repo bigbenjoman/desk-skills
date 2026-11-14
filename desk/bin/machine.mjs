@@ -53,7 +53,7 @@ export function benchSettingError(key, raw) {
 // The thresholds and ratios the proposal uses. Changing one changes every new proposal, never a
 // profile already written.
 export const RULES = Object.freeze({
-  osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3, minTestWorkers: 4, memoryPerLockSlotGB: 16,
+  osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3, minTestWorkers: 3, memoryPerLockSlotGB: 16,
   typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
 });
 

@@ -1321,6 +1321,18 @@ printf '%s\n' '{"epic":null,"blockers":[]}' > "$T/state-j/triage/J-7.json"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-391 AC1 a blocker in no batch whose link was removed no longer holds the ticket" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-8 no longer linked as a blocker; RELEASED"'
+# A ticket plan-batch held behind a blocker in no batch that triage found it needs is
+# released the same way, once the blocker is Done and on the base.
+{ cat "$T/config.md"; printf '\n## 1. Who you are\n| Field | Value |\n|---|---|\n| Jira display name | `Me` |\n\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `[A-Z]+-[0-9]+` |\n'; } > "$T/config-pb.md"
+printf '%s\n' '{"ticket":"J-7","type":"Task","lane":"A","size":"S","summary":"s","branch":"feat/J-7","change_kind":"surface","files_in_scope":["src/j7"],"unknowns":[],"epic":null,"blockers":[{"key":"X-7","category":"indeterminate"}],"blocker_needs":{"X-7":{"needs":true,"why":"builds what it calls"}}}' > "$T/state-j/triage/J-7.json"
+x7 indeterminate OPEN; out=$(AUTOPILOT_WRITE_QUEUE=1 DESK_CONFIG="$T/config-pb.md" node "$B/plan-batch.mjs" J-7 2>&1); rc=$?
+check "DS-598 AC3: plan-batch holds a ticket behind a needed blocker in no batch, with no question" \
+  '[ $rc -eq 0 ] && [ "$(field J-7 state)" = "\"parked\"" ] && [ "$(field J-7 held_outside)" = "\"X-7\"" ] && [ "$(field J-7 open_questions)" = 0 ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-598 AC5: while the blocker is in progress the ticket stays held, and not STUCK" '[ "$(field J-7 state)" = "\"parked\"" ] && ! echo "$out" | grep -q "J-7: STUCK"'
+x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-598 AC5: once the blocker is Done and on the base, the pass releases it and it can start" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
 q drop J-7
 # A link to the ticket's own epic, the batch's or its Jira parent, never holds it: an epic is Done only
 # once its children are. The record here predates ticket-facts.mjs leaving such a link out.

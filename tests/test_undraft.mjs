@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
-import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
+import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
@@ -842,5 +842,32 @@ const acReady = call(DESK_REVIEW_CLEAN, [acGap, acAccepted]);
 t('DS-317 AC3 then accepted at the same head, it is undrafted', acReady?.call, 'ready');
 t('DS-317 AC3 reading gaps=0', acReady?.verdict?.gaps, '0');
 t('DS-317 AC3 under a plain-text row too', call('no findings', [acGap, acAccepted])?.call, 'ready');
+
+// DS-576: a verdict posted by §4 Review account is read as desk's own, as one by the §1 handle is.
+const asAccount = (reviews, handle, clean = DESK_REVIEW_CLEAN) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks: green },
+  { perm: 'yes', localReview: '/desk-review', clean, handle, required: ['tests'] });
+const byAccount = [review(marker(ALL_ZERO), HEAD, 'agent-pullbot')];
+t('DS-576 AC5 a clean verdict at the head by the review account undrafts it', asAccount(byAccount, 'ben,agent-pullbot')?.call, 'ready');
+t('DS-576 AC5 under a plain-text row too', asAccount(byAccount, 'ben,agent-pullbot', 'no findings')?.call, 'ready');
+t('DS-576 AC5 in any case', asAccount([review(marker(ALL_ZERO), HEAD, 'Agent-PullBot')], 'ben,agent-pullbot')?.call, 'ready');
+t('DS-576 AC5 with the handle alone it is not read', asAccount(byAccount, 'ben')?.call, 'review');
+t('DS-576 AC7 a clean verdict by neither login is not desk\'s own', asAccount([review(marker(ALL_ZERO), HEAD, 'mallory')], 'ben,agent-pullbot')?.call, 'review');
+t('DS-576 AC7 nor one by a login that only contains one of them', asAccount([review(marker(ALL_ZERO), HEAD, 'agent-pullbot2')], 'ben,agent-pullbot')?.call, 'review');
+t('DS-576 the review account is not a person who reviewed', humanReviewed({ reviews: byAccount, comments: [] }, 'ben,agent-pullbot'), false);
+t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks off', HEAD, 'mallory')], comments: [] }, 'ben,agent-pullbot'), true);
+{
+  const ra = mkdtempSync(join(tmpdir(), 'desk-review-account-'));
+  const logins = (row) => {
+    writeFileSync(join(ra, 'config.md'), `## 4. Tracker\n\n| Field | Value |\n|---|---|\n${row ? `| Review account | ${row} |\n` : ''}`);
+    const r = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mjs', import.meta.url)), 'verdict-logins'],
+      { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(ra, 'config.md'), DESK_MACHINE: join(ra, 'none.md'), HOME: ra, DESK_GITHUB_HANDLE: 'ben' } });
+    return `${r.status} ${r.stdout.trim()}`;
+  };
+  t('DS-576 verdict-logins: the handle and the review account', logins('`agent-pullbot: ~/.config/gh-agent-pullbot`'), '0 ben,agent-pullbot');
+  t('DS-576 verdict-logins: the handle alone with the row none', logins('`none`'), '0 ben');
+  t('DS-576 verdict-logins: the handle alone with no row', logins(''), '0 ben');
+  t('DS-576 verdict-logins: the handle alone with a malformed row', logins('`agent pullbot`'), '0 ben');
+  rmSync(ra, { recursive: true, force: true });
+}
 
 process.exit(fails ? 1 : 0);

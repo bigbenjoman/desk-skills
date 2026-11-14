@@ -4,7 +4,7 @@
 // in, resolves the threads `resolve` names, and holds the PR on what is `left`:
 //
 //   review-threads.mjs query      the GraphQL query the payload answers
-//   review-threads.mjs read --handle <§1 GitHub handle> --clean "<§4 Clean review verdict>" < payload.json
+//   review-threads.mjs read --handle <§1 GitHub handle[,§4 Review account]> --clean "<§4 Clean review verdict>" < payload.json
 //   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> < payload.json
 //   review-threads.mjs approved --handle <handle> --clean "<row>" < payload.json   (approvedAt)
 //
@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, markerClean } from './undraft.mjs';
 import { pairs, leverOn } from './desk-env.mjs';
 import { LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
+import { loginIn } from './gate.mjs';
 
 export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
   headRefOid reviewDecision
@@ -41,7 +42,7 @@ export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){reposi
 const rowSet = (row) => { const s = String(row ?? '').trim(); return !!s && !/^(todo|none)\b/i.test(s); };
 const firstLine = (s) => String(s ?? '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
 
-// payload: the GraphQL response. handle: §1 GitHub handle. clean: the §4 Clean review verdict row; a
+// payload: the GraphQL response. handle: §1 GitHub handle, or desk-env's verdictLogins list. clean: the §4 Clean review verdict row; a
 // plain-text row is read against every count the verdict's marker writes, and an unset one settles nothing.
 // `review` is the handle's latest desk-review when its verdict is at the head and not clean
 // ({ id, verdict, body }), else null.
@@ -57,7 +58,7 @@ export function readThreads(payload, { handle, clean }) {
   const review = atHead?.settle ? { id: latest.id, verdict: latest.verdict, body: latest.body } : null;
   const index = new Map(reviews.map((r, i) => [r.id, i]));
   const at = latest ? index.get(latest.id) ?? -1 : -1;
-  const own = (login) => !!handle && String(login ?? '').toLowerCase() === handle.toLowerCase();
+  const own = (login) => loginIn(login, handle);
   const resolve = [], left = [];
   for (const t of pr.reviewThreads?.nodes ?? []) {
     if (t.isResolved) continue;

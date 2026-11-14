@@ -222,15 +222,14 @@ exception is a requirement gap the person accepted after the verdict posted (des
 `phase-5-requirements.md`, *A gap the person accepted*).
 
 ```bash
-gh pr review <n> --repo <repo> --comment --body-file <report>
+node ~/.claude/desk/bin/review-post.mjs <n> --repo <repo> --body-file <report>
 ```
 
-**Use the plain form above: never a `GH_TOKEN=… gh pr review …` prefix.** Any `VAR=value cmd`
-prefix is denied by the worker permission policy, so the token-prefixed form a review skill may print
-is refused *before it runs*. Plain `gh` already authenticates as the user (config §1 "GitHub
-handle"). The prefixed form leaves a draft PR carrying **no** review while its `AUTOPILOT_DONE`
-reports the review as run. **A refused `gh` call is not a finding about your permissions: strip the
-`VAR=` prefix and retry before concluding anything.** If the retry also fails, that is a park.
+**Post it with that command, never `gh pr review` or a `GH_TOKEN=…`/`GH_CONFIG_DIR=…` prefix.** It
+posts as §4 Review account (`desk-env get review-account`), the login a repo's review gate may count
+alone, and as §1 GitHub handle where that row is `none`. A `VAR=value` prefix is refused before it
+runs, leaving a draft with **no** review while `AUTOPILOT_DONE` reports one. Its refusal (a missing
+config directory, a malformed row) or a gh failure is a park naming its message.
 
 The code reviewer (config §4 People) reads findings on the PR. A clean run posts too: absence of a
 review has to mean *not reviewed*. **Never `--approve` or `--request-changes`**, and never post a P0
