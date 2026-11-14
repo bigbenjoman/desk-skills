@@ -409,7 +409,8 @@ $DIGEST"
   fi
 fi
 
-# The desk commit and levers this start runs on, and the bytes it is handed, one line per start for
+# The desk commit and levers this start runs on, its claude version and lever-code hashes, and the
+# bytes it is handed, one line per start for
 # phase0-report.mjs, and its start, model and effort into the log for worker-cost.mjs. A record that
 # cannot be written never stops a spawn.
 node "$BIN/phase0-report.mjs" spawn-line --ticket "$TICKET" --session "$SID" --stage "$START" --model "${MODEL:-default}" \

@@ -1,5 +1,5 @@
 // suite: phase 0 baseline report and levers row (phase0-report.mjs, desk-env levers)
-// covers: desk/bin/phase0-report.mjs desk/bin/desk-env.mjs desk/bin/spawn-worker.sh
+// covers: desk/bin/phase0-report.mjs desk/bin/desk-env.mjs desk/bin/spawn-worker.sh desk/bin/lever-registry.mjs
 // The report on fixture worker logs (stream-json), fix tries, digest answers, usage readings, spawn
 // records and a stub gh; a main checkout behind origin with uncommitted files that the report leaves
 // exactly as it found it; and the §3b Phase 0 levers row read through desk-env, with no row, known
@@ -9,8 +9,9 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, DAY_MS } from '../desk/bin/phase0-report.mjs';
-import { parseLevers, LEVERS } from '../desk/bin/desk-env.mjs';
+import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, claudeVersion, DAY_MS } from '../desk/bin/phase0-report.mjs';
+import { parseLevers, LEVERS, HOME } from '../desk/bin/desk-env.mjs';
+import { REGISTRY, leverFingerprints, installedPath } from '../desk/bin/lever-registry.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const has = (name, lines, re) => t(name, lines.some((l) => re.test(l)), true);
@@ -104,6 +105,41 @@ t('AC8: an empty byte count is null', `${line.system_bytes} ${line.prompt_bytes}
 t('AC8: records are read back', spawnRecords(S).length, 2);
 t('the spawn line records the effort', JSON.parse(spawnLine({ ticket: 'Z-1', session: 's', effort: 'high', installed: null, levers: { on: [], unknown: [] } })).effort, 'high');
 t('the spawn line reads default with no effort passed', line.effort, 'default');
+
+// ---- the claude version and lever-code fingerprints on the spawn line ------------------------
+const TREE = join(T, 'tree');
+const put = (p, body) => { mkdirSync(dirname(join(TREE, p)), { recursive: true }); writeFileSync(join(TREE, p), body); };
+const paths = [...new Set(Object.values(REGISTRY).flatMap((l) => l.code.map((c) => c.path)))];
+for (const p of paths) put(p, `${p} v1\n`);
+const inTree = (p) => join(TREE, p);
+const fpLine = (o = {}) => JSON.parse(spawnLine({ ticket: 'F-1', session: 's', installed: null, levers: { on: [], unknown: [] },
+  claude: '2.1.0 (Claude Code)', fingerprints: leverFingerprints(REGISTRY, inTree), ...o }));
+const first = fpLine();
+t('AC1: the spawn line carries the claude version', first.claude_version, '2.1.0 (Claude Code)');
+t('AC1: one hash per lever the registry declares', JSON.stringify(Object.keys(first.lever_fp)), JSON.stringify(Object.keys(REGISTRY)));
+t('AC1: every hash is set when every file exists', Object.values(first.lever_fp).every((h) => /^[0-9a-f]{16}$/.test(h)), true);
+t('AC3: two starts on the same code hash the same', JSON.stringify(fpLine().lever_fp), JSON.stringify(first.lever_fp));
+put('hooks/desk-worker-hints.py', 'hooks/desk-worker-hints.py v2\n');
+const second = fpLine();
+t('AC2: a changed hints hook changes the wrappers hash', second.lever_fp.wrappers !== first.lever_fp.wrappers, true);
+t('AC2: and no other lever\'s', Object.keys(REGISTRY).filter((n) => n !== 'wrappers').every((n) => second.lever_fp[n] === first.lever_fp[n]), true);
+t('AC4: a failing claude --version is null', claudeVersion(() => ({ status: 1, stdout: '' })), null);
+t('AC4: a claude that cannot be run is null', claudeVersion(() => { throw new Error('ENOENT'); }), null);
+t('AC4: the version is the first line, trimmed', claudeVersion(() => ({ status: 0, stdout: ' 2.1.0 (Claude Code)\n' })), '2.1.0 (Claude Code)');
+const noClaude = JSON.parse(execFileSync(process.execPath, [join(ROOT, 'desk', 'bin', 'phase0-report.mjs'), 'spawn-line', '--ticket', 'F-2', '--session', 's'],
+  { encoding: 'utf8', env: { ...env(noRow), PATH: join(T, 'no-bin'), DESK_HOME: join(T, 'no-desk') }, stdio: ['ignore', 'pipe', 'pipe'] }));
+t('AC4: with no claude on PATH the spawn line is still written, version null', `${noClaude.ticket} ${noClaude.claude_version}`, 'F-2 null');
+const FIX = { a: { code: [{ path: 'desk/bin/a.mjs' }, { path: 'desk/bin/gone.mjs' }] }, b: { code: [{ path: 'desk/bin/gone-too.mjs' }] } };
+put('desk/bin/a.mjs', 'a\n');
+const partial = leverFingerprints(FIX, inTree);
+t('AC5: a lever with a missing file hashes the files that exist', partial.fp.a, leverFingerprints({ a: { code: [{ path: 'desk/bin/a.mjs' }] } }, inTree).fp.a);
+t('AC5: a lever with no file that exists is null', partial.fp.b, null);
+t('AC5: the spawn line names each missing file', JSON.stringify(fpLine({ fingerprints: partial }).lever_fp_missing), '["desk/bin/gone.mjs","desk/bin/gone-too.mjs"]');
+const savedDeskHome = process.env.DESK_HOME;
+process.env.DESK_HOME = join(T, 'desk-home');
+t('the installed copy is hashed: desk/ under DESK_HOME', installedPath('desk/bin/x.mjs'), join(T, 'desk-home', 'bin', 'x.mjs'));
+t('the installed copy is hashed: hooks/ under ~/.claude', installedPath('hooks/h.py'), join(HOME, '.claude', 'hooks', 'h.py'));
+if (savedDeskHome === undefined) delete process.env.DESK_HOME; else process.env.DESK_HOME = savedDeskHome;
 
 const ghCalls = [];
 const gh = (args) => {
@@ -243,6 +279,8 @@ t('the line and the worker\'s log both record the effort', `${w1.effort} ${JSON.
 t('AC8: the line records the levers on and the unknown ones', `${JSON.stringify(w1.levers)} ${JSON.stringify(w1.unknown_levers)}`, '["codex","effort","memory"] ["turbo"]');
 t('AC8: the bytes handed over, counted in bytes', `${w1.system_bytes} ${w1.prompt_bytes}`, '6 3');
 t('AC8: the record is read back by the report', spawnRecords(S3).length, 2);
+t('AC1: spawn-worker\'s line carries the claude version and a hash per declared lever',
+  `${'claude_version' in w1} ${JSON.stringify(Object.keys(w1.lever_fp ?? {}))}`, `true ${JSON.stringify(Object.keys(REGISTRY))}`);
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');
