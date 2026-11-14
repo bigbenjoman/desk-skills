@@ -3703,8 +3703,12 @@ if (drafts.length) {
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
     // and the call would act.
+    // A red check asking an approval for protected files goes to a protected-files try first, as out of
+    // draft, where the draft would otherwise go to a fix worker or the person over its checks. That try
+    // acts on the draft whatever the call, so it too is checked against the PR's events.
+    const gateFix = ['checks', 'person'].includes(c.call) && s.head === v.headRefOid ? draftGateTry(t, s, { ...gateLists(), stateChecks: stateRow.checks }) : null;
     let hold = personHold(t, n);
-    if (!hold && UNDRAFT_ACTS.includes(c.call)) {
+    if (!hold && (UNDRAFT_ACTS.includes(c.call) || gateFix)) {
       const ev = draftHold(t, n);
       if (ev.unread != null) { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: its events, which say whether a person put it back to draft, could not be read (${ev.unread}); the next pass tries again`); continue; }
       hold = ev.hold;
@@ -3719,11 +3723,8 @@ if (drafts.length) {
       if (r.error) out.push(`undraft: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     };
-    // A red check asking an approval for protected files goes to a protected-files try first, as out of
-    // draft, where the draft would otherwise go to a fix worker or the person over its checks.
-    const gt = hold || !['checks', 'person'].includes(c.call) || s.head !== v.headRefOid ? null : draftGateTry(t, s, { ...gateLists(), stateChecks: stateRow.checks });
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
-    const rf = hold ? null : gt ? gt : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
+    const rf = hold ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(v.headRefOid), ...(FAILURE_CLASS ? { classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid) } } : {}) })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge, targeted: c.targeted })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch), baseAt: baseAtOf(v.headRefOid) })

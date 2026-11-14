@@ -149,7 +149,8 @@ const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tr
 // A red check's error lines, as pr_status keeps them: its job's annotations, else what its failed log
 // names. One asking a person's approval is no cause a worker can clear.
 const LINE_CHARS = 300, LINES_PER_CHECK = 5;
-const errorLines = (c) => (c?.errors?.length ? c.errors : c?.log_errors ?? []).filter((l) => !approvalFiles(l));
+const checkLines = (c) => (c?.errors?.length ? c.errors : c?.log_errors ?? []);
+const errorLines = (c) => checkLines(c).filter((l) => !approvalFiles(l));
 // A red §4 State check, as what clears it: it reads the PR's state, not its code, so no fix try turns it green.
 const stateClears = (kind) => (kind === 'verdict'
   ? 'a §4 State check, which reads the review verdict at the head and not the code, so only a review of a new head turns it green'
@@ -751,7 +752,7 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
   // A §4 State check (ctx.stateChecks) is no worker's code to fix: beside checks a worker fixes it is
   // named in the brief as not theirs, and on its own it is stuck with the step it failed at.
   const latest = latestPerCheck(checks ?? []);
-  const lineOf = (f) => { const c = latest.find((x) => x.name === f.name); return (c?.errors?.length ? c.errors : c?.log_errors ?? [])[0] ?? null; };
+  const lineOf = (f) => checkLines(latest.find((x) => x.name === f.name))[0] ?? null;
   const state = [...new Map(stateFailing(failing, ctx.stateChecks, lineOf).map((f) => [f.name, { name: f.name, runId: f.runId, state: true, command: stateClears(f.kind) }])).values()];
   const split = splitFailing((failing ?? []).filter((f) => !state.some((x) => x.name === f.name)), ctx);
   const mine = split.mine, notMine = [...split.notMine, ...state];

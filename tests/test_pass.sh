@@ -2318,6 +2318,7 @@ check "DS-316 AC4 the fix worker's briefing names the failing check, its run and
 statered(){ node -e 'const fs = require("fs"); const [f, run, job] = process.argv.slice(1); const j = JSON.parse(fs.readFileSync(f, "utf8"));
   j.statusCheckRollup = [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/widgets/actions/runs/${run}/job/1` },
     { __typename: "CheckRun", name: "protected-path approval", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/widgets/actions/runs/${job}/job/${job}` }]; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json" "$2" "$3"
+  [ "${TESTS_GREEN:-}" = 1 ] && node -e 'const fs = require("fs"); const f = process.argv[1]; const j = JSON.parse(fs.readFileSync(f, "utf8")); j.statusCheckRollup[0].conclusion = "SUCCESS"; fs.writeFileSync(f, JSON.stringify(j));' "$T/fr/$1.json"
   if [ -n "${4:-}" ]; then jq -n --arg m "$4" '[{ annotation_level: "failure", message: $m }]' > "$T/fr/notes-$3.json"; else echo '[]' > "$T/fr/notes-$3.json"; fi; }
 was579="$DESK_QUEUE|$DESK_AUTOPILOT_STATE"
 export DESK_QUEUE="$T/queue-s579.json" DESK_AUTOPILOT_STATE="$T/state-s579"
@@ -2335,6 +2336,20 @@ check "DS-579 AC2 the fix worker's briefing names the state check as not its to 
   'grep -q "^- protected-path approval is red too, and it is not yours to fix: a §4 State check, .* Leave it red.$" "$T/state-s579/briefings/S-1.md"'
 check "DS-579 AC3 the protected-files worker's briefing says the PR is a draft, and its task leaves it in draft" \
   'grep -q "^Your PR #772 is a draft on this branch, and its \"protected-path approval\" check asks" "$T/state-s579/briefings/S-2.md" && grep -q "^S-2 .*Your task is protected files try 1 of 2 on PR #772.*leave the PR in draft" "$T/spawns"'
+# Under pr-ready no, a clean draft red only on that approval check is the person's call, and its
+# protected-files try still reads the PR's events first: S-4 a person put back to draft is held.
+node -e 'const fs = require("fs"); const [a, b] = process.argv.slice(1); fs.writeFileSync(b, fs.readFileSync(a, "utf8").replace("| `pr-ready` | Undraft PRs | `yes` | `yes` |", "| `pr-ready` | Undraft PRs | `yes` | `no` |"));' "$T/config-c.md" "$T/config-s579n.md"
+export DESK_CONFIG="$T/config-s579n.md" DESK_QUEUE="$T/queue-s579n.json" DESK_AUTOPILOT_STATE="$T/state-s579n"
+mkdir -p "$T/state-s579n/logs"; q init s579n; q set-batch concurrency=6
+for k in 3 4; do q add "S-$k"; q set "S-$k" state=done lane=A "branch=fix/S-$k" "result.pr=77$k"; done
+for n in 773 774; do frx "$n" "$H1" "$H1" 'p0=0 p1=0 p2=0'; TESTS_GREEN=1 statered "$n" "97${n: -1}" "97${n: -1}0" 'Approval required — 1 protected file(s): `package.json`.'; done
+printf '2026-11-14T09:00:00Z\tben\n' > "$T/fr/774.events"
+: > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-579 AC3 a person's call over a draft's approval check still sends its protected-files try, in draft" \
+  '[ "$(field S-3 fix | jq -c "[.kind, .draft, .paths]")" = "[\"protected\",true,[\"package.json\"]]" ]'
+check "DS-579 a draft a person put back to draft gets no protected-files try: it is held" \
+  '[ "$(field S-4 fix)" = null ] && [ "$(field S-4 undraft.call)" = "\"held\"" ] && echo "$out" | grep -q "S-4: HELD — PR #774 stays draft: it was put back to draft by ben"'
+export DESK_CONFIG="$T/config-c.md"
 IFS='|' read -r DESK_QUEUE DESK_AUTOPILOT_STATE <<< "$was579"; export DESK_QUEUE DESK_AUTOPILOT_STATE
 
 # ---- with the review-reuse lever on, the carry rests on the files the review recorded. Both PRs
