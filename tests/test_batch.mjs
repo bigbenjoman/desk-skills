@@ -409,6 +409,64 @@ a = res(archiveStop('X-4', { 9: 'MERGED' }));
 t('DS-525 AC1 the next tick archives it', a.archived === true && !existsSync(namedQ('X-4')), true);
 t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(' ').includes(`its merge driver (pid ${process.pid}) was stopped for it`), true);
 
+// A ticket moved to another batch takes its holds and its answers with it (queue.mjs transfer).
+{
+  const standingS = join(HOME, '.desk-autopilot', SLUG);
+  writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 'standing-3', supervised: true, tickets: {
+    'S-1': { key: 'S-1', state: 'running' }, 'S-2': { key: 'S-2', state: 'parked', park: { question: 'which copy?' } },
+  } }));
+  const held = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')}`, since: MERGED_AT } });
+  writeQ('Y-1', { base: 'feat/y-1', supervised: true, tickets: {
+    'B-1': { key: 'B-1', state: 'triaged' },
+    'T-1': { key: 'T-1', ...held('B-1|OUT-1'), held_outside: 'OUT-1' },
+    'T-2': { key: 'T-2', state: 'triaged' },
+    'T-3': { key: 'T-3', ...held('S-2') },
+    'T-4': { key: 'T-4', ...held('B-1') },
+  } });
+  const yState = (...p) => join(namedS('Y-1'), ...p);
+  mkdirSync(yState('triage'), { recursive: true });
+  for (const k of ['T-1', 'T-2', 'T-3', 'T-4']) {
+    writeFileSync(yState('triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Bug', lane: 'A', lane_reason: 'r', summary: 's', branch: `fix/${k}`, files_in_scope: [`f/${k}`], unknowns: [], blockers: [], ...(k === 'T-4' ? { size: 'XL' } : {}) }));
+  }
+  const answer = (text) => `\n## Answer from the user (2026-11-14T10:00:00Z)\n\n${text}\n`;
+  mkdirSync(yState('briefings'), { recursive: true });
+  mkdirSync(yState('answers'), { recursive: true });
+  writeFileSync(yState('briefings', 'T-1.md'), `# Briefing for T-1\n${answer('use the blue one')}`);
+  writeFileSync(yState('answers', 'T-1.txt'), 'use the blue one\n');
+  writeFileSync(yState('briefings', 'T-3.md'), `# Briefing for T-3\n${answer('ship it on Friday')}`);
+  writeFileSync(yState('briefings', 'T-4.md'), `# Briefing for T-4\n${answer('split it')}`);
+  mkdirSync(join(standingS, 'briefings'), { recursive: true });
+  writeFileSync(join(standingS, 'briefings', 'T-3.md'), `# Briefing for T-3\n${answer('the copy is final')}`);
+  const moveTo = (k) => cli('queue.mjs', ['--batch', 'Y-1', 'transfer', k, 'standing']);
+  const sq = () => JSON.parse(readFileSync(standingQ, 'utf8')).tickets;
+
+  r = moveTo('T-1');
+  const t1 = sq()['T-1'] ?? {};
+  t('DS-665 AC1 a ticket held behind one left in its batch is moved', r.code === 0 && !('T-1' in readQ('Y-1').tickets), true);
+  t('DS-665 AC1 it arrives held, its blocker left behind recorded as outside', `${t1.state} ${t1.held_by} ${t1.held_outside} ${String(t1.park?.question).startsWith('held by orchestrator: blocked by B-1, OUT-1')}`, 'parked B-1|OUT-1 B-1|OUT-1 true');
+  t('DS-665 AC1 the output says it is held', r.out.includes('held behind B-1, OUT-1'), true);
+  t('DS-665 AC2 its blocker in no batch is still held outside', String(t1.held_outside).split('|').includes('OUT-1'), true);
+  t('DS-665 AC3 its briefing goes with it, answers and all', readFileSync(join(standingS, 'briefings', 'T-1.md'), 'utf8'), readFileSync(yState('briefings', 'T-1.md'), 'utf8'));
+  t('DS-665 AC3 an answer no worker has read yet goes with it', readFileSync(join(standingS, 'answers', 'T-1.txt'), 'utf8'), 'use the blue one\n');
+
+  r = moveTo('T-2');
+  const t2 = sq()['T-2'] ?? {};
+  t('DS-665 AC4 a ticket with no holds and no briefing arrives as before', `${r.code} ${t2.state} ${t2.held_by} ${'held_outside' in t2} ${existsSync(join(standingS, 'briefings', 'T-2.md'))}`, '0 triaged null false false');
+
+  r = moveTo('T-3');
+  const t3 = sq()['T-3'] ?? {};
+  t('DS-665 a hold on a ticket already in the destination stays an ordinary hold there', `${r.code} ${t3.state} ${t3.held_by} ${'held_outside' in t3}`, '0 parked S-2 false');
+  const b3 = readFileSync(join(standingS, 'briefings', 'T-3.md'), 'utf8');
+  t('DS-665 AC3 a briefing already in the destination keeps its answers and gains the moved ones', b3.includes('the copy is final') && b3.includes('ship it on Friday'), true);
+
+  const files = () => [standingQ, namedQ('Y-1'), join(standingS, 'triage', 'T-4.json'), join(standingS, 'briefings', 'T-4.md'), yState('triage', 'T-4.json'), yState('briefings', 'T-4.md')]
+    .map((f) => (existsSync(f) ? readFileSync(f, 'utf8') : '(none)')).join('\n--\n');
+  const before = files();
+  r = moveTo('T-4');
+  t('DS-665 AC5 a move the destination refuses fails, naming why', r.code !== 0 && r.out.includes('cannot be held as well'), true);
+  t('DS-665 AC5 and neither batch\'s queue, triage record or briefing changed', files(), before);
+}
+
 // The standing batch is never archived, even with a promotion that would archive a named one.
 writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 's1', promotion: { pr: 9 }, tickets: {} }));
 t('the standing batch is never archived', res(run(`console.log(JSON.stringify(A.archiveCheck(B.listBatches()[0], { state: () => 'MERGED', mergedAt: () => '${MERGED_AT}' })))`)).archived === false && existsSync(standingQ), true);
