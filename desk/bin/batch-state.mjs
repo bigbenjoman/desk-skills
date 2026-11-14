@@ -337,6 +337,15 @@ export const sessionPark = (question) => LANE_C.test(question) || (LANE_D.test(q
 const NO_WORKER_WORK = /\bno (?:more |further )?worker work\b|\bnothing (?:left )?for (?:a |the |any )?worker\b|\b(?:take|drop|remove) (?:it|this(?: ticket)?|[A-Z][A-Z0-9]*-\d+) (?:off|out of|from) (?:the |its |this )?(?:autopilot )?(?:queue|batch)\b/i;
 export const noWorkerWork = (question) => NO_WORKER_WORK.test(String(question ?? ''));
 
+// The step a park says only a person or another account takes ("No worker can run it", "only a person
+// with org access can do this", "only agent-pullbot can post it"), as the sentence that says so, or
+// null. A requeue with no answer since only parks it again, and no action on it is the recommendation.
+// It needs a step taken ("can run it"), never a call made ("only you can decide"), and no product role
+// ("only admins can delete invoices"): a question the worker acts on once answered is not one.
+const PERSON_ONLY = /\bno (?:headless |autopilot )?worker (?:can|could|is able to|is allowed to) (?:run|clear|do|post|finish|merge|push)\b|\bonly (?:an? |the )?(?:person|human|you|someone|another (?:account|login|user|person)|[\w-]+bot|bot account)(?![\w-])(?:(?!\b(?:can|could|whether|if|i|we)\b)[^.?!;\n]){0,80}?\b(?:can|could) (?:run|post|grant|merge|push|trigger|dispatch|clear|do|install|sign|log in)\b/i;
+export const personOnlyStep = (question) => String(question ?? '').split(/(?<=[.?!;])\s+|\n+/)
+  .find((c) => PERSON_ONLY.test(c))?.replace(/\s+/g, ' ').trim() ?? null;
+
 // A queue ticket only an interactive session takes on: lane C, one parked at triage on its lane, or
 // one whose worker parked it in lane C or a canvas-less lane D, or one whose park's step the person
 // approved where no worker can run it (park.session_step, answer.mjs). Any other lane D park is requeued.
