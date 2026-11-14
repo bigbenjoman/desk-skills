@@ -45,6 +45,9 @@
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
 // this agent and the running merge driver started at an older one (`old_code`). It records what that
 // tick saw; desk-q judges old code for itself, from the loaded agent's plist and the driver's lock.
+// For a handed-over batch, a driver on old code that waits between loops is restarted on the installed
+// code with the same tickets and deps (installed.mjs restartDriver); one mid-loop is left, logged once,
+// and none is moved while a pass runs (it holds supervisor.lock for the restart).
 //
 // After intake, each tick runs repo-templates.mjs check, which at most hourly records in the standing
 // batch's templates.json which of the repo's committed copies of desk's templates are behind them.
@@ -72,7 +75,7 @@ import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { postMergeDue } from './post-merge.mjs';
-import { readInstalled, oldCode, lockVersion, AGENTS, plistPath } from './installed.mjs';
+import { readInstalled, oldCode, lockVersion, AGENTS, plistPath, restartDriver } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
@@ -206,6 +209,38 @@ function noteCode(state) {
   const s = readState(state);
   const code = codeRecord(state);
   if (JSON.stringify(s.code ?? null) !== JSON.stringify(code)) writeState(state, { ...s, code });
+}
+
+// A running merge driver on old code is restarted on the installed one once it waits between loops,
+// as install.sh's restart does (installed.mjs restartDriver); one mid-loop is left for a later tick.
+// -> the line to log, or null. A driver left for the same reason as last tick is not logged again.
+function moveDriver(state, s) {
+  const pid = driverHolder(state);
+  if (typeof pid !== 'number' || !oldCode(lockVersion(state))) {
+    if (s.driver_left) { delete s.driver_left; writeState(state, s); }
+    return null;
+  }
+  // A pass running now reads the driver, and its own copy of supervisor.json would undo this one's.
+  const busy = takeLock(state);
+  if (busy) return null;
+  const from = logSize(driverLog(state));
+  let line;
+  try { line = restartDriver({ slug: E.repoSlug(), batch: E.batchName(), dir: state, pid, queue: E.queueFile() }); }
+  finally { dropLock(state); }
+  const now = driverHolder(state);
+  if (now !== pid) {
+    // The driver this supervisor started carries on under its new pid, so its stop is still read, from
+    // where the new one's output starts.
+    if (s.driver?.pid === pid && typeof now === 'number') Object.assign(s.driver, { pid: now, started: new Date().toISOString(), from });
+    delete s.driver_left;
+    s.code = codeRecord(state);
+    writeState(state, s);
+    return line;
+  }
+  if (s.driver_left === line) return null;
+  s.driver_left = line;
+  writeState(state, s);
+  return line;
 }
 
 // Tickets whose PR is still to merge: one still to start or running, one held behind a merge or a
@@ -363,6 +398,8 @@ function batchInterval(intake) {
     }
     return;
   }
+  const moved = moveDriver(state, s);
+  if (moved) log([`== ${stamp()} ${moved}`]);
   // An answer leaves its ticket parked, so it does not change the fingerprint: an answer to an item
   // handed on, or to any park since the batch went idle, ends idle by itself, so a pass lists it and a
   // decider can act on the answer.
