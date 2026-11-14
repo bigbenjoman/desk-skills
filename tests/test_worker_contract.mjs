@@ -189,7 +189,8 @@ const REWRITTEN = [
   // cut or shortened to fit the busy-lock rule in the Stage 4 file's cap; batch-notes-header keeps the why
   ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
   ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
-  ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],];
+  ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
+];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));
 t(`AC4 every paragraph of the old contract survives the split (${paras.length} read)`, dropped.length, 0);
