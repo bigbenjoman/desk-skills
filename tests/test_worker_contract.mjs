@@ -79,7 +79,7 @@ t('DS-328 AC2 a hand-written resolution gets a fresh desk-review before the push
 t('DS-328 AC3 it parks only when both sides cannot stand, naming the files and the decision', n5.includes('**Park only when the two sides cannot both stand**') && n5.includes('Park naming the files and the decision needed'), true);
 t('DS-328 AC3 the core keeps only that park', core.includes('- **A merge conflict only a product or design call settles** (Stage 5 file, §4).'), true);
 t('DS-571 AC1 a screenshot park checks the whole app with drift --app first', n5.includes('Before any park on it, run `desk-env drift --app <its directory>`: it prints every §4 row the app lacks, `NODEV` (Dev server) and `NOENV` (Env files), each with the value to add'), true);
-t('DS-571 AC1 and parks once naming every row drift printed, each with its value', n5.includes('park once naming every row `drift --app` printed, and only those, each with its value') && n5.includes('"config:env-files": "<what desk-env list env-files prints>"'), true);
+t('DS-571 AC1 and parks once naming every row drift printed, each with its value', n5.includes('park once naming every row `drift --app` printed, and only those, each with its value') && n5.includes('"config:env-files": "<what desk-env get env-files prints>"'), true);
 t('DS-571 AC2 an app missing only its env files names that row alone', n5.includes('parks the same way, naming the Env files row alone.'), true);
 t('DS-328 AC4 without git-force-with-lease a pushed branch merges the default branch in', n5.includes('with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase, no force push.'), true);
 

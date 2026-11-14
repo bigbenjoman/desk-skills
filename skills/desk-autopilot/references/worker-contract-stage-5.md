@@ -128,7 +128,8 @@ rule): it was not retried, so fix it or park on it as for any failed step.
   "apps/portal: pnpm run dev"; §4 Env files "apps/portal/.env.local">: add them (/desk-setup;
   desk-env drift --app <dir> checks it) and requeue me, or capture them yourself`, then
   `AUTOPILOT_PARK_INPUTS: {"config:dev-cmd": "<what desk-env get dev-cmd prints>", "config:env-files":
-  "<what desk-env list env-files prints>"}`. An app whose dev server runs but fails for want of its env
+  "<what desk-env get env-files prints>"}` (`get`, never `list`: the pass re-reads each input
+  with `get`, so a `list` value reads as changed on every pass). An app whose dev server runs but fails for want of its env
   files parks the same way, naming the Env files row alone.
 - **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head
   <your branch> --body-file <file> --title "<title>"`, in that order: the allow rule matches only a
