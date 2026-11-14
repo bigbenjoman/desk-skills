@@ -1011,11 +1011,11 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   if (!allowed.includes(verb)) return { ok: false, line: `${r.name} ${ticket}: ${verb} is not an action for a ${item.kind} item (${[...new Set(allowed)].join(', ')}).` };
   const w = runner(r);
   const tail = w.by === 'stopped' ? ` Passes are stopped in ${r.name}: nothing acts on it until they resume.` : '';
-  let named = '';
-  const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${named}`, message });
+  let copiedNote = '';
+  const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${copiedNote}`, message });
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
   // A file the answer names is copied where the ticket's next worker reads it, before any requeue.
-  if (['answer', 'resume'].includes(verb)) named = namedFixturesText(r, ticket, text);
+  if (['answer', 'resume'].includes(verb)) copiedNote = namedFixturesText(r, ticket, text);
   if (verb === 'move' && !text.trim()) return say(false, 'move needs the batch to move it to.');
   const ans = () => answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
