@@ -74,6 +74,9 @@
 //                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
 //                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
+//   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
+//                                             with the value to add: Dev server (NODEV) and the .env* files
+//                                             its primary-checkout directory holds (NOENV); exit 1 if any
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
 //                                             value; prints ADDED, and a §3 row's perm read back
@@ -1494,13 +1497,8 @@ export function configDrift({ config, template = templatePath(), root = null, ho
 export function devServerGaps(parsed, root) {
   const dev = configValuesIn(parsed, 'dev-cmd');
   if (!dev || isNone(dev)) return [];
-  const served = new Set();
-  for (const item of dev) {
-    const { dir, cmd } = parseCommandItem(item);
-    served.add(dir);
-    for (const m of cmd.matchAll(/(?:--filter[=\s]|-F\s)\s*['"]?([^\s'"]+)/g)) served.add(m[1].replace(/^\.\//, '').replace(/\/+$/, ''));
-  }
-  const pkg = (dir) => { try { return JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')); } catch { return null; } };
+  const served = devServed(dev);
+  const pkg = (dir) => readPackage(root, dir);
   const named = new Map();
   for (const id of WORKER_COMMAND_IDS.filter((x) => x !== 'dev-cmd')) {
     const values = configValuesIn(parsed, id);
@@ -1516,6 +1514,50 @@ export function devServerGaps(parsed, root) {
     .map(([dir, rows]) => ({ dir, rows, p: pkg(dir) }))
     .filter(({ p }) => p?.scripts?.dev && !served.has(p.name))
     .map(({ dir, rows }) => ({ dir, rows }));
+}
+
+// The directories and package names §4 Dev server items serve: each item's own directory, and any
+// `--filter`/`-F` it passes.
+function devServed(items) {
+  const served = new Set();
+  for (const item of items) {
+    const { dir, cmd } = parseCommandItem(item);
+    served.add(dir);
+    for (const m of cmd.matchAll(/(?:--filter[=\s]|-F\s)\s*['"]?([^\s'"]+)/g)) served.add(m[1].replace(/^\.\//, '').replace(/\/+$/, ''));
+  }
+  return served;
+}
+const readPackage = (root, dir) => { try { return JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')); } catch { return null; } };
+
+// Every §4 row one app needs before a worker can run it for screenshots, that the config lacks for
+// it, each with the value to add: a Dev server item where its package.json has a dev script, and the
+// `.env*` files its directory holds in the primary checkout (`root`) where Env files names none under
+// it. A row unset is drift's MISSING, and `none` is a decision: neither is a gap here.
+// -> [{ row, dir, value: [item], have?: [file] }]
+export function appSetupGaps(parsed, root, dir) {
+  const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+  const gaps = [];
+  const dev = configValuesIn(parsed, 'dev-cmd');
+  const p = readPackage(root, app);
+  if (dev && !isNone(dev) && p?.scripts?.dev && !devServed(dev).has(app) && !devServed(dev).has(p.name)) {
+    const pm = configValuesIn(parsed, 'package-manager');
+    gaps.push({ row: 'Dev server', dir: app, value: [`${app === '.' ? '' : `${app}: `}${TS.packageManager(root, pm && !isNone(pm) ? pm[0] : null)} run dev`] });
+  }
+  const env = configValuesIn(parsed, 'env-files');
+  if (env && !isNone(env) && !env.some((f) => (app === '.' ? !f.includes('/') : f.startsWith(`${app}/`)))) {
+    let have = [];
+    try { have = readdirSync(join(root, app), { withFileTypes: true }).filter((e) => e.isFile() && /^\.env/.test(e.name) && !/\.(example|sample|template|dist)$/.test(e.name)).map((e) => e.name).sort(); } catch { /* no such directory */ }
+    if (have.length) gaps.push({ row: 'Env files', dir: app, value: have.map((f) => (app === '.' ? f : `${app}/${f}`)), have });
+  }
+  return gaps;
+}
+
+export function appGapLines(gaps, dir) {
+  const spans = (xs) => xs.map((x) => `\`${x}\``).join(' ');
+  const lines = gaps.map((g) => (g.row === 'Dev server'
+    ? `NODEV    §4 Dev server has no item for ${g.dir}, whose package.json has a dev script: add ${spans(g.value)}`
+    : `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`));
+  return lines.length ? lines : [`no setup gaps for ${dir}`];
 }
 
 // A §4 Pre-merge steps item named after a job of several steps (workflow-yaml.mjs jobKeyedPremerge): the
@@ -1903,6 +1945,21 @@ if (isMain) {
         break;
       }
       case 'drift': {
+        const ai = args.indexOf('--app');
+        if (ai >= 0) {
+          // One app's setup gaps, for the one screenshot park that names them all.
+          const dir = args[ai + 1];
+          if (!dir || dir.startsWith('-') || args.includes('--all')) { console.error('usage: desk-env.mjs drift --app <app dir>'); process.exit(2); }
+          const config = configPathOrNull();
+          if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
+          const parsed = parseConfigFile(config);
+          const rootRow = configValueIn(parsed, 'repo-root');
+          const root = rootRow ? expandHome(rootRow) : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || process.cwd();
+          const gaps = appSetupGaps(parsed, root, dir);
+          for (const l of appGapLines(gaps, dir)) console.log(l);
+          process.exitCode = gaps.length ? 1 : 0;
+          break;
+        }
         // One repo's config (the cwd's), or with --all every config under ~/.config/desk/repos/.
         const repos = args.includes('--all') ? configuredRepos() : [{ slug: null, config: configPathOrNull() }];
         if (!repos.length) { console.log(`no repo configs under ${join(deskConfigRoot(), 'repos')}`); break; }

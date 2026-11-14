@@ -173,6 +173,25 @@ t('DS-437 AC1 the root is never a gap, though its package.json has a dev script'
 rmSync(join(repoDir, 'package.json'), { force: true });
 rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 
+// One app's setup gaps, each §4 row it lacks with the value to add, in one call.
+mkdirSync(join(repoDir, 'apps/portal'), { recursive: true });
+writeFileSync(join(repoDir, 'apps/portal/package.json'), JSON.stringify({ name: 'portal', scripts: { dev: 'next dev' } }));
+for (const f of ['.env.local', '.env', '.env.example']) writeFileSync(join(repoDir, 'apps/portal', f), '');
+const appRows = (dev, env) => `${conf()}| Package manager | \`pnpm\` |\n| Dev server | ${dev} |\n| Env files | ${env} |\n`;
+d = drift(appRows('`apps/web: pnpm dev`', '`apps/web/.env.local`'), '--app', 'apps/portal');
+t('DS-571 AC1 an app missing from Dev server and Env files gets both rows, each with its value', d.out, [
+  'NODEV    §4 Dev server has no item for apps/portal, whose package.json has a dev script: add `apps/portal: pnpm run dev`',
+  'NOENV    §4 Env files has no item under apps/portal, whose primary checkout holds .env, .env.local: add `apps/portal/.env` `apps/portal/.env.local`',
+].join('\n'));
+t('DS-571 AC1 and exits 1', d.code, 1);
+d = drift(appRows('`apps/web: pnpm dev` `apps/portal: pnpm dev`', '`apps/web/.env.local`'), '--app', 'apps/portal');
+t('DS-571 AC2 an app missing only from Env files gets that row only', d.out,
+  'NOENV    §4 Env files has no item under apps/portal, whose primary checkout holds .env, .env.local: add `apps/portal/.env` `apps/portal/.env.local`');
+t('DS-571 an app with both rows has no gaps', drift(appRows('`pnpm --filter portal dev`', '`apps/portal/.env.local`'), '--app', './apps/portal/').out, 'no setup gaps for ./apps/portal/');
+t('a row of none is a decision, not a gap', drift(appRows('`none`', '`none`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
+t('no env files in the checkout proposes none', drift(appRows('`none`', '`apps/web/.env.local`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+
 // A §4 Pre-merge steps item keyed to a job of several steps is named JOBKEY, with the step it is for.
 mkdirSync(join(repoDir, '.github/workflows'), { recursive: true });
 writeFileSync(join(repoDir, '.github/workflows/ci.yml'), [
