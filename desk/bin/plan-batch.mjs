@@ -603,13 +603,14 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     `spine_ids=${spineIds ? JSON.stringify(spineIds) : 'null'}`, `owners=${feature?.on ? JSON.stringify(feature.plan.owners ?? {}) : 'null'}`], { stdio: 'ignore' });
   // An epic's children are in this queue before its plan is seeded (epic-plan.mjs startEpic): one that
   // runs in another repo is taken out, or its dependants here would wait on it as an in-batch blocker.
+  // One handed to another repo is taken out only once that repo admits it (below).
   let queued = {};
   try { queued = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets ?? {}; } catch { /* no queue to take it out of */ }
   const takenOut = [];
   for (const r of order) {
     const t = r.ticket;
     if (elsewhere(r)) {
-      if (queued[t]) { execFileSync('node', [QUEUE, 'drop', t], { stdio: 'ignore' }); takenOut.push(t); }
+      if (queued[t] && !handedOff(t)) { execFileSync('node', [QUEUE, 'drop', t], { stdio: 'ignore' }); takenOut.push(t); }
       continue;
     }
     execFileSync('node', [QUEUE, 'add', t, r.type ?? 'Bug', r.lane], { stdio: 'ignore' });
@@ -640,16 +641,30 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     appendDecisions(taken.map(({ ticket, decision }) => decisionEntry({ decision, ticket, run: 'plan-batch', repo, source: 'triage' })), STATE);
   }
   say('\nqueue seeded.');
-  if (takenOut.length) say(`taken out of this queue, since each runs in another repo: ${takenOut.join(', ')}`);
-  if (handed.length) say(`\nELSEWHERE — ${handed.length} ticket(s) admitted into the repo their Jira Repository names, not this queue:`);
+  const handLines = [];
+  const keptParked = [];
   for (const r of handed) {
     const h = handOver(r);
-    if (h.ok) say(`  ${r.ticket} → ${elsewhere(r).ghRepo}: ${h.line}`);
-    else {
-      say(`  ${r.ticket} → ${elsewhere(r).ghRepo}: NOT ADMITTED (${h.why}). Admit it there: ${h.cmd}`);
-      handFailed.push({ ticket: r.ticket, why: 'question', detail: `${r.ticket} was not admitted in ${elsewhere(r).ghRepo} (${h.why}): admit it there with ${h.cmd}` });
+    if (h.ok) {
+      handLines.push(`  ${r.ticket} → ${elsewhere(r).ghRepo}: ${h.line}`);
+      if (queued[r.ticket]) { execFileSync('node', [QUEUE, 'drop', r.ticket], { stdio: 'ignore' }); takenOut.push(r.ticket); }
+      continue;
+    }
+    const detail = `${r.ticket} was not admitted in ${elsewhere(r).ghRepo} (${h.why}): admit it there with ${h.cmd}`;
+    handLines.push(`  ${r.ticket} → ${elsewhere(r).ghRepo}: NOT ADMITTED (${h.why}). Admit it there: ${h.cmd}`);
+    handFailed.push({ ticket: r.ticket, why: 'question', detail });
+    // Already in this queue (an epic's child, seeded with no session to read the verdict): it stays,
+    // parked on the failure, so the person sees it in needs-you and the digest. Its dependants here are
+    // held on it outside the batch (held_outside) either way, and no worker here builds it.
+    if (queued[r.ticket]) {
+      execFileSync('node', [QUEUE, 'park', r.ticket, `${detail}, then take it out of this queue: no worker here has work on it, since it runs in ${elsewhere(r).ghRepo}`], { stdio: 'ignore' });
+      keptParked.push(r.ticket);
     }
   }
+  if (takenOut.length) say(`taken out of this queue, since each runs in another repo: ${takenOut.join(', ')}`);
+  if (keptParked.length) say(`kept in this queue, parked until the person admits each in its own repo: ${keptParked.join(', ')}`);
+  if (handed.length) say(`\nELSEWHERE — ${handed.length} ticket(s) admitted into the repo their Jira Repository names, not this queue:`);
+  for (const l of handLines) say(l);
 }
 
 // ---- verdict -------------------------------------------------------------

@@ -580,7 +580,11 @@ function startPlan({ epic, state, env, children }) {
   const stale = Object.values(after.tickets ?? {}).filter((t) => t.key !== epic && t.state === 'triaged' && t.park);
   const why = stale.reduce((w, t) => w ?? q(['set', t.key, 'park=null']), null) ?? q(['drop', epic]);
   if (why) return { why: `its queue could not be written (${why})` };
-  return { lines: [`${epic}'s feature batch started on ${after.base ?? 'its feature branch'}${spine ? `, with its spine ${spine} first` : ''}: ${children.length} ${children.length === 1 ? 'child' : 'children'} seeded by plan-batch`] };
+  // What the seed still puts to the person (a child its own repo did not admit, say) is parked in this
+  // queue, which needs-you and the digest read; the log names it too.
+  const parkedNow = (sv.needs_person ?? []).filter((n) => after.tickets?.[n.ticket]?.state === 'parked' && n.ticket !== epic);
+  return { lines: [`${epic}'s feature batch started on ${after.base ?? 'its feature branch'}${spine ? `, with its spine ${spine} first` : ''}: ${children.length} ${children.length === 1 ? 'child' : 'children'} seeded by plan-batch`,
+    ...parkedNow.map((n) => `${n.ticket} is parked for you in /desk-needs-you: ${n.detail}`)] };
 }
 
 // Applies an edit to the plan, then starts the batch: -> {lines} or {why} (asked again).

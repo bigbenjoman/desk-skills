@@ -151,6 +151,15 @@ seed SV-3994 SV-3995
 check "AC6: this queue still leaves it out, and the blocked child is still held" '[ "$(qg SV-3994 "")" = null ] && [ "$(qg SV-3995 .held_outside)" = SV-3994 ]'
 check "AC6: the plan names the failure and the command to admit it there, and shows the person" \
   '[ $rc -eq 11 ] && printf "%s\n" "$out" | grep -qF "  SV-3994 → acme/studia-web: NOT ADMITTED (not admitted SV-3994: the queue is locked). Admit it there: cd $T/studia-web && node $T/desk/bin/intake.mjs admit SV-3994 --by plan-batch"'
+rm -f "$DESK_QUEUE" "$T/intake.log"; node "$B/queue.mjs" init "t$RANDOM" >/dev/null
+node "$B/queue.mjs" add SV-3994 Task A >/dev/null; node "$B/queue.mjs" park SV-3994 "held behind epic SV-3983" >/dev/null
+node "$B/queue.mjs" add SV-3995 Task A >/dev/null; node "$B/queue.mjs" park SV-3995 "held behind epic SV-3983" >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" --json SV-3994 SV-3995 2>&1); rc=$?
+check "AC6: an epic's child the other repo refuses stays in this queue, parked on the failure for the person" \
+  '[ $rc -eq 11 ] && [ "$(qg SV-3994 .state)" = parked ] && [ "$(qg SV-3994 .park.question)" = "SV-3994 was not admitted in acme/studia-web (not admitted SV-3994: the queue is locked): admit it there with cd $T/studia-web && node $T/desk/bin/intake.mjs admit SV-3994 --by plan-batch, then take it out of this queue: no worker here has work on it, since it runs in acme/studia-web" ] && printf "%s" "$out" | jq -e ".needs_person | any(.ticket == \"SV-3994\")" >/dev/null'
+check "AC6: the parked child reads as no worker work (drop is its recommendation, not a requeue)" \
+  'node --input-type=module -e "import { noWorkerWork } from \"$B/batch-state.mjs\"; process.exit(noWorkerWork(process.argv[1]) ? 0 : 1)" "$(qg SV-3994 .park.question)"'
+check "AC6: its dependant here is still held outside the batch on it" '[ "$(qg SV-3995 .held_outside)" = SV-3994 ] && [ "$(qg SV-3995 .state)" = parked ]'
 mv "$T/studia-web" "$T/studia-web-moved"
 seed SV-3994
 check "AC6: a checkout that is not where its config says is named, and intake is not run" \
