@@ -18,6 +18,21 @@
       "x": 0,
       "y": 0
     },
+    "Phone.dc.html": {
+      "expand": "fill",
+      "h": 2680,
+      "title": "Levers · today at phone width (375px)",
+      "w": 375,
+      "x": 0,
+      "y": 3240
+    },
+    "States.dc.html": {
+      "h": 1580,
+      "title": "Levers · page age, too-early results, empty and unreadable sections",
+      "w": 1280,
+      "x": 455,
+      "y": 3240
+    },
     "Today.dc.html": {
       "expand": "fill",
       "h": 1700,
@@ -51,13 +66,23 @@
       "w": 240,
       "x": 0,
       "y": -300
+    },
+    "s": {
+      "kind": "title1",
+      "maxW": 1735,
+      "text": "Phone width and states",
+      "w": 240,
+      "x": 0,
+      "y": 2940
     }
   },
   "order": [
     "Main.dc.html",
     "Views.dc.html",
     "Today.dc.html",
-    "DeskQ.dc.html"
+    "DeskQ.dc.html",
+    "Phone.dc.html",
+    "States.dc.html"
   ],
   "pages": [],
   "title": "Lever Analytics"

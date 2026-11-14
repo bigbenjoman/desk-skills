@@ -1,17 +1,25 @@
 {
   "url": "https://claude.ai/artifact/WieQ5tc4zB6UWXkGe5P5Ee",
-  "version": "1794642341-01d3",
-  "fetched_at": "2026-11-14T08:02:41.667Z",
+  "version": "1794658719-df5f",
+  "fetched_at": "2026-11-14T12:21:07.236Z",
   "kind": "canvas",
   "dir": "DS-631",
   "tickets": [
     {
       "key": "DS-653",
-      "boards": []
+      "boards": [
+        "Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative)",
+        "Levers · Trends switched to Last 30 days",
+        "Levers · today, 13 Nov (real numbers)",
+        "Levers · today at phone width (375px)",
+        "Levers · page age, too-early results, empty and unreadable sections"
+      ]
     },
     {
       "key": "DS-654",
-      "boards": []
+      "boards": [
+        "Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab"
+      ]
     }
   ],
   "boards": [
@@ -24,6 +32,16 @@
       "name": "Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative)",
       "width": 1280,
       "file": "Main.dc.html"
+    },
+    {
+      "name": "Levers · today at phone width (375px)",
+      "width": 375,
+      "file": "Phone.dc.html"
+    },
+    {
+      "name": "Levers · page age, too-early results, empty and unreadable sections",
+      "width": 1280,
+      "file": "States.dc.html"
     },
     {
       "name": "Levers · today, 13 Nov (real numbers)",
@@ -39,57 +57,11 @@
   "files": [
     "project/DeskQ.dc.html",
     "project/Main.dc.html",
+    "project/Phone.dc.html",
+    "project/States.dc.html",
     "project/Today.dc.html",
     "project/Views.dc.html",
     "project/canvas.json",
     "project/support.js"
-  ],
-  "screens": {
-    "version": "1794642341-01d3",
-    "rendered_at": "2026-11-14T08:15:51.418Z",
-    "breakpoints": [],
-    "widths": [
-      {
-        "width": 1280,
-        "label": "drawn",
-        "breakpoint": false,
-        "boards": [
-          "Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab",
-          "Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative)",
-          "Levers · today, 13 Nov (real numbers)",
-          "Levers · Trends switched to Last 30 days"
-        ]
-      }
-    ],
-    "images": [
-      {
-        "board": "Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab",
-        "screen": "opening-levers-from-desk-q-real-desk-q-frames-home-screen-line-recommended-vs-a-7th-tab",
-        "width": 1280,
-        "file": "screens/opening-levers-from-desk-q-real-desk-q-frames-home-screen-line-recommended-vs-a-7th-tab@1280.png",
-        "drawn": true
-      },
-      {
-        "board": "Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative)",
-        "screen": "levers-six-weeks-in-trends-on-6-weeks-12-months-illustrative",
-        "width": 1280,
-        "file": "screens/levers-six-weeks-in-trends-on-6-weeks-12-months-illustrative@1280.png",
-        "drawn": true
-      },
-      {
-        "board": "Levers · today, 13 Nov (real numbers)",
-        "screen": "levers-today-13-nov-real-numbers",
-        "width": 1280,
-        "file": "screens/levers-today-13-nov-real-numbers@1280.png",
-        "drawn": true
-      },
-      {
-        "board": "Levers · Trends switched to Last 30 days",
-        "screen": "levers-trends-switched-to-last-30-days",
-        "width": 1280,
-        "file": "screens/levers-trends-switched-to-last-30-days@1280.png",
-        "drawn": true
-      }
-    ]
-  }
+  ]
 }
