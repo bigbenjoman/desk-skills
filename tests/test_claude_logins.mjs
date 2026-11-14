@@ -292,6 +292,20 @@ rmSync(E0.loginFile(U, 'B-1'));
 t('AC6 one login: every worker log reads as its own', lines(P.usageByLogin({ now: nowU })).length, 1);
 t('AC6 one login: the newest log wins, as it always did', Q.usageOf([], nowU).reading.seven_day.utilization, 0.4);
 
+// ---- DS-531: with accounts pinned, ~/.claude is never probed, and its workers are still read
+agents(B, [{ sessionId: 'S-B', pid: 22 }]);
+writeFileSync(process.env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `b` | `~/.claude-logins/b` | `b@example.com` | `in rotation` |\n');
+resetCalls();
+const pinnedLive = L.readRegistry();
+t('DS-531 AC8 the registry still reads ~/.claude with accounts pinned', calls().includes('unset|agents'), true);
+t('DS-531 AC8 so a worker still running there is live', pinnedLive.live.map((a) => `${a.sessionId}:${a.login}`).join(), 'S-A:default,S-B:b');
+t('DS-531 AC7 probeLogins leaves out ~/.claude', L.probeLogins().map((l) => l.name).join(), 'b');
+t('DS-531 AC7 desk-q probes each account folder and never ~/.claude', Q.probesDue([], { now: nowU + 86400000 }).map((x) => x.login.name).join(), 'b');
+t('DS-531 AC7 nor with no account in use', (() => {
+  writeFileSync(process.env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `b` | `~/.claude-logins/b` | `b@example.com` | `off` |\n');
+  return Q.probesDue([], { now: nowU + 86400000 }).length;
+})(), 0);
+
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all checks passed');
 process.exit(fails ? 1 : 0);

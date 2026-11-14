@@ -253,8 +253,15 @@ blocker_needs is {} when the ticket has no open blocker.
 PROMPT_END
 
 # Both passes run on a Claude login that is not benched (call-login.mjs), as a new worker would. With one
-# login, or every login benched, they run on this shell's own, as they always have.
-CALL_LOGIN="$(node "$DESK_BIN/call-login.mjs" dir 2>/dev/null)" || CALL_LOGIN=keep
+# login, or every login benched, they run on this shell's own, as they always have. With accounts
+# pinned and none with room (exit 3), nothing runs: triage waits, as it does at a usage limit.
+CALL_RC=0
+CALL_LOGIN="$(node "$DESK_BIN/call-login.mjs" dir 2>/dev/null)" || CALL_RC=$?
+if [ "$CALL_RC" -eq 3 ]; then
+  echo "USAGE LIMIT: $TICKET triage waits: every Claude account is at its limit or signed out, so triage waits for one with room" >&2
+  exit 3
+fi
+[ "$CALL_RC" -eq 0 ] || CALL_LOGIN=keep
 case "$CALL_LOGIN" in
   keep|all|'') ;;
   default) unset CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
