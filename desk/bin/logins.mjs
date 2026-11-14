@@ -366,7 +366,9 @@ export function setDefault(subs, { tool, who }) {
     const on = toolLogins(tool, moved).filter((l) => isDir(l.dir) && claudeAccount(l).email?.toLowerCase() === key.toLowerCase());
     if (on.length > 1) throw new Error(`logins: ${on.map((l) => l.name).join(' and ')} are all signed in to ${key}: name the login instead`);
     if (!on.length) throw new Error(`logins: no claude login is signed in to ${key}: the logins are ${moved.logins.filter((l) => l.tool === tool).map((l) => l.name).join(', ')}`);
-    const clash = moved.logins.find((l) => l.tool === tool && l.name === on[0].name && l.dir !== on[0].dir);
+    // setRule finds a login by name, a listed or removed one before a folder, so a name another
+    // folder holds would make that folder the default.
+    const clash = [...moved.logins, ...moved.removed].find((l) => l.tool === tool && l.name === on[0].name && l.dir !== on[0].dir);
     if (clash) throw new Error(`logins: ${key} is signed in at ${on[0].folder}, but the file's claude ${clash.name} is ${clash.folder}: give one of them another name in the subscriptions file first`);
     name = on[0].name;
   }

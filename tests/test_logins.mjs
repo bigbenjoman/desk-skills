@@ -266,6 +266,11 @@ claudeIn(join(H, '.claude-logins', 'login-5'), 'five@example.com', 'Pro');
 held = readFileSync(SUBS, 'utf8');
 c = await cli('default', 'claude', 'five@example.com');
 t('default an account signed in at a folder sharing a listed login\'s name is refused, the file unchanged', `${c.rc} ${/give one of them another name/.test(c.out)} ${readFileSync(SUBS, 'utf8') === held}`, '1 true true');
+writeFileSync(SUBS, `${ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `default` |'])}\n## Removed\n\n| Tool | Name | Folder |\n|---|---|---|\n| \`claude\` | \`login-6\` | \`~/elsewhere/login-6\` |\n`);
+claudeIn(join(H, '.claude-logins', 'login-6'), 'six@example.com', 'Pro');
+held = readFileSync(SUBS, 'utf8');
+c = await cli('default', 'claude', 'six@example.com');
+t('default an account signed in at a folder sharing a removed login\'s name is refused, the file unchanged', `${c.rc} ${/give one of them another name/.test(c.out)} ${readFileSync(SUBS, 'utf8') === held}`, '1 true true');
 
 // AC11: a signed-in folder the file does not list is unused (login-9 was signed out for AC10 above).
 claudeIn(join(H, '.claude-logins', 'login-9'), 'nine@example.com', 'Pro');

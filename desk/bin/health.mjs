@@ -318,7 +318,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const skipped = Object.entries(skip).filter(([id]) => id !== 'database' || perTicketDb(env).container).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
   if (loginsOut.length) notes.push(`claude login${loginsOut.length > 1 ? 's' : ''} ${loginsOut.map((l) => l.name).join(', ')} failing, not holding spawns`);
-  const missingFix = (l) => `remove its row (desk-env logins remove claude ${l.name}) or sign it in (${signInCommand(l)})`;
+  // The default is removed only once another login is the default.
+  const missingFix = (l) => `${l.stored === 'default' ? 'make another login the default (desk-env logins default claude <name>) and then ' : ''}remove its row (desk-env logins remove claude ${l.name}) or sign it in (${signInCommand(l)})`;
   for (const l of missing) notes.push(`claude login ${l.name} listed at ${l.folder}, which does not exist: ${missingFix(l)}`);
   const line = failing.length
     ? `health: ${failing.length} check(s) failing — ${failing.join(', ')}${network ? ', every remote check: the network' : ''} — holding new spawns (${notes.join('; ')})`
