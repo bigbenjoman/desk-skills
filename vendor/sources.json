@@ -498,12 +498,12 @@
         "path": "skills/product-marketing"
       },
       "pin": {
-        "commit": "0e59abb7f",
-        "date": "2026-10-15"
+        "commit": "6d123b4fa",
+        "date": "2026-11-09"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 2 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx ski",
-      "tree_sha256": "382f60ee6c56f4dbe4e753eae35c9ad8038fbe3c73abc0009af462446abd7854"
+      "tree_sha256": "da993fa90d6e6a65ebaf695fc1bbc1b3cbda4e0bd234050ab0a65894373c9df0"
     },
     "python-configuration": {
       "source": {
