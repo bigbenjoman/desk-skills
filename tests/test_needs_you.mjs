@@ -2006,7 +2006,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const lib = join(env.HOME, 'Library', 'Cookies');
   mkdirSync(lib, { recursive: true });
   writeFileSync(join(lib, 'Cookies.binarycookies'), 'secret');
-  put('ds609b', { port: 3610, beat: 1, supervised: true, tickets: Object.fromEntries(['F-6', 'F-7'].map((k) => [k, parked('A', 30, 'I need a real capture from a test Meet')])) });
+  put('ds609b', { port: 3610, beat: 1, supervised: true, tickets: Object.fromEntries(['F-6', 'F-7', 'F-9'].map((k) => [k, parked('A', 30, 'I need a real capture from a test Meet')])) });
   const fxb = (k) => join(env.HOME, '.desk-autopilot', 'acme__ds609b', 'fixtures', k);
   const f7 = N.record({ word: 'ds609b', ticket: 'F-7', action: 'resume', text: `It is in "${spaced}", not ~/Library/Cookies` });
   t('DS-609 a quoted folder with a space is copied, and ~/Library never is', `${f7.ok} ${ls(fxb('F-7'))} ${f7.line.includes('/Library/Cookies was not copied: it is in ~/Library')}`, 'true meet.json true');
