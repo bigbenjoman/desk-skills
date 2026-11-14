@@ -310,6 +310,27 @@ const moveBlocker = (category) => { const q = queueOf('theta'); q.tickets['H-2']
 moveBlocker('indeterminate');
 t('DS-401 AC2 once its outside blocker\'s state changes it is listed again, saying what changed',
   /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:running,X-9:new@none → H-1:running,X-9:indeterminate@none; need .*\)$/.test(theta()['H-2']?.need ?? ''), true);
+// DS-669: a ticket held inside its batch with a triage question of its own is asked that question.
+put('zeta', { port: 3850, beat: 1, supervised: true, tickets: {
+  'Z-1': { state: 'running', lane: 'A' },
+  'Z-2': { state: 'parked', lane: 'A', held_by: 'Z-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by Z-1 — starts once their PRs merge' } },
+  'Z-3': { state: 'parked', lane: 'A', held_by: 'Z-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by Z-1 — starts once their PRs merge' } },
+}, triage: { 'Z-2': { summary: 'Audit runs', unknowns: ['What is the cost of one blind audit run?'] } } });
+const zeta = () => Object.fromEntries(N.collect({ word: 'zeta' }).items.map((i) => [i.t.key, i]));
+t('DS-669 AC1 a held, parked ticket\'s item is its triage question word for word', `${zeta()['Z-2']?.kind} | ${zeta()['Z-2']?.need}`, 'triage | What is the cost of one blind audit run?');
+t('DS-669 AC3 with no triage record it still reads as a count', zeta()['Z-3']?.need, '1 triage question(s) open');
+N.record({ word: 'zeta', ticket: 'Z-2', action: 'not-now' });
+t('DS-669 put off, it stays put off while nothing changes', zeta()['Z-2'], undefined);
+const zq = queueOf('zeta');
+zq.tickets['Z-1'].state = 'parked';
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__zeta', 'queue.json'), JSON.stringify(zq));
+const { openQuestions: digestQuestions } = await import('../desk/bin/digest.mjs');
+const zetaRepo = { slug: 'acme__zeta', state: join(env.HOME, '.desk-autopilot', 'acme__zeta'), queue: join(env.DESK_HOME, 'repos', 'acme__zeta', 'queue.json') };
+const zDigest = digestQuestions(zetaRepo).find((q) => q.ticket === 'Z-2');
+const zEntry = [...NN.readRegister(zetaRepo.state).entries.values()].find((x) => x.ticket === 'Z-2');
+t('DS-669 AC4 once a blocker\'s status changes it comes back quoting the question', /^What is the cost of one blind audit run\? \(Changed since it was put off/.test(zeta()['Z-2']?.need ?? ''), true);
+t('DS-669 AC4 its not-now entry is keyed to the digest\'s text for the same question', `${zDigest?.kind} | ${zEntry?.inputs?.need === zDigest?.text}`, 'triage | true');
+
 const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
@@ -1960,7 +1981,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
-t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
+t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 11);
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);
