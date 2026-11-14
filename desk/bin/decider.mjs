@@ -252,7 +252,7 @@ export function deciderPrompt({ slug, report, items, rules, bin, webRead = false
     `  \`node ${join(bin, 'answer.mjs')} --taken <TICKET> <CALL>\`, which gives the worker "${recommendedAnswer({ chose: '<the recommended option>', category: '<category>' }, 'the decider')}"`,
     `  \`node ${join(bin, 'decisions.mjs')} log --source decider <TICKET> <CALL>\``,
     '  Keep the shell quoting whole: inside the single-quoted JSON write an apostrophe as `\'\\\'\'`, and leave `` ` `` and `$` out of it',
-    '  A park with no option marked recommended, one a session has claimed, one in an ask category, one naming a config §3 row that is not `yes`, one asking what its last requeue\'s park asked, or one either command refuses: hand it on',
+    '  A park with no option marked recommended, one in an ask category, one a session has claimed, one naming a config §3 row that is not `yes`, one asking what its last requeue\'s park asked, or one either command refuses: hand it on',
   ] : [];
   return [
     `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
