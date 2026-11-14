@@ -521,8 +521,9 @@ const needs = [...(plan?.spine && keys.includes(plan.spine) ? [] : [{ ticket: ep
 if (seed) {
   const q = (...a) => execFileSync(process.execPath, ['$T/bin/queue.mjs', ...a], { stdio: 'ignore' });
   for (const k of refused) q('drop', k);
-  for (const k of keys.filter((x) => !refused.includes(x))) { q('add', k, 'Story', 'A'); q('set', k, 'state=triaged', 'held_by=null'); }
-  for (const k of keys) if (plan?.spine && k !== plan.spine) q('hold', k, plan.spine);
+  const here = keys.filter((x) => !refused.includes(x));
+  for (const k of here) { q('add', k, 'Story', 'A'); q('set', k, 'state=triaged', 'held_by=null'); }
+  for (const k of here) if (plan?.spine && k !== plan.spine) q('hold', k, plan.spine);
 }
 console.log(JSON.stringify({ status: needs.length ? 'show_person' : 'go_on', code: needs.length ? 11 : 0, message, needs_person: needs }));
 process.exitCode = needs.length ? 11 : 0;
@@ -705,7 +706,7 @@ cat > "$T/claude.out" <<'EOF'
 EOF
 out=$(admit E-91 --by ben); touch "$T/refused.E-93"
 answer E-91 start; out=$(btick); rm -f "$T/refused.E-93"
-check "DS-591: a start whose seed refused a child starts the rest, and the refused child is out of the queue" '[ "$(eget E-91 base)" = feat/E-91-split ] && [ "$(eget E-91 tickets.E-92.state)" = triaged ] && [ "$(eget E-91 tickets.E-93)" = undefined ]'
+check "DS-591: a start whose seed refused a child starts the rest, and the refused child is out of the queue" '[ "$(eget E-91 base)" = feat/E-91-split ] && [ "$(eget E-91 tickets.E-11.state)" = triaged ] && [ "$(eget E-91 tickets.E-92.held_by)" = E-11 ] && [ "$(eget E-91 tickets.E-93)" = undefined ]'
 check "DS-591: the epic stays parked on the refusal, with the command, for needs-you and the digest" '[ "$(eget E-91 tickets.E-91.state)" = parked ] && [ "$(pq E-91)" = "E-91'"'"'s feature batch started without E-93, which needs you: E-93 was not admitted in acme/web (the queue is locked): admit it there with node intake.mjs admit E-93. Once settled, take E-91 out of this queue: no worker has work on it" ]'
 check "DS-591: that park is no plan answer to act on again, and reads as no worker work" 'node --input-type=module -e "import { planPark, noWorkerWork } from \"$B/batch-state.mjs\"; const t = JSON.parse(process.argv[1]); process.exit(!planPark(t) && noWorkerWork(t.park.question) ? 0 : 1)" "$(eget E-91 tickets.E-91)"'
 check "DS-591: the batch's log names it" 'grep -q "^E-91 stays parked for you in /desk-needs-you: E-91.s feature batch started without E-93" "$ES/E-91/supervisor.log"'
