@@ -29,6 +29,9 @@ node ~/.claude/desk/bin/desk-design.mjs write <state>/designs/<TICKET> --url <ar
   --version <its version> --epic <EPIC, or the first ticket> --key <KEY> [--boards '<a>,<b>'] --key <KEY2> …
 ```
 
+`--boards` takes board titles, commas and all, or file names (`Main.dc.html`); a name matching no
+board exits 2, writing nothing, and lists the canvas's boards.
+
 Each worker runs `desk-design.mjs save` on its snapshot (desk-ticket `design-canvas.md`, "A Claude Design canvas is saved
 into the repo"), which commits it under `<§2 Design canvases directory>/<EPIC or KEY>/` on the
 ticket's branch, once per artifact. `canvas.json` names each board and its width; each board holds
