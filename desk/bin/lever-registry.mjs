@@ -5,8 +5,12 @@
 // lever and the key, rather than letting a half-declared lever reach a trial. The lever names are
 // desk-env's LEVERS: the registry declares an entry for each of them and no other.
 //
-//   import { REGISTRY, trialable, preconditions, repoValues, REASON_CODES, reasonWording } from './lever-registry.mjs'
-import { workerLocation, LEVERS, parseLevers } from './desk-env.mjs';
+//   import { REGISTRY, trialable, preconditions, repoValues, REASON_CODES, reasonWording,
+//            leverFingerprints } from './lever-registry.mjs'
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { workerLocation, LEVERS, parseLevers, HOME, deskHome } from './desk-env.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
 
@@ -176,6 +180,32 @@ export function trialable(items, registry = REGISTRY) {
 
 // The config values the preconditions read, from this repo's config.
 export const repoValues = () => ({ 'worker-location': workerLocation() });
+
+// Where install.sh puts a registry code path: `desk/<rest>` under DESK_HOME, anything else (`hooks/…`)
+// under ~/.claude.
+export const installedPath = (path) => (path.startsWith('desk/') ? join(deskHome(), path.slice(5)) : join(HOME, '.claude', path));
+
+// A hash per lever of the installed copies of the code files it declares, whole files in registry order,
+// so evidence from before a lever's code changed can be told from evidence after. A listed file that
+// cannot be read is left out of its lever's hash and named in `missing`; a lever with none readable is
+// null.
+//   -> { fp: { <lever>: hex | null }, missing: [path] }
+export function leverFingerprints(registry = REGISTRY, resolve = installedPath) {
+  const fp = {};
+  const missing = [];
+  for (const [name, l] of Object.entries(registry)) {
+    const h = createHash('sha256');
+    let read = 0;
+    for (const { path } of l.code) {
+      let body;
+      try { body = readFileSync(resolve(path)); } catch { if (!missing.includes(path)) missing.push(path); continue; }
+      h.update(`${path}\0${body.length}\0`).update(body);
+      read++;
+    }
+    fp[name] = read ? h.digest('hex').slice(0, 16) : null;
+  }
+  return { fp, missing };
+}
 
 // Whether a lever is eligible in a repo, given its config values (repoValues() for this one). A lever
 // the registry does not declare is never eligible.
