@@ -7,7 +7,8 @@
 //
 // install.sh replaces scripts by rename, so a running merge driver keeps its old copy until it is
 // started again. A driver is restarted only while it waits between loops (its one child is `sleep`):
-// one mid-loop may be merging, so it is left, and moves when it is next started. Each one is
+// one mid-loop may be merging, so it is left, and a supervisor tick restarts it the same way once it
+// waits between loops (supervisor.mjs moveDriver). Each one is
 // started again with the tickets and deps it was given, from its repo's §2 Primary repo root.
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, openSync, closeSync, realpathSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
@@ -102,16 +103,20 @@ export function driverEnv(env = process.env) {
   return out;
 }
 
-// One line saying what became of a running driver.
-function restartDriver({ slug, batch = null, dir, pid }, ps) {
+// One line saying what became of a running driver. `queue`, where given, is the queue it is started on
+// again; a named batch's is otherwise that batch's, the standing batch's the repo's own. It reads a
+// fresh ps: a partial list could miss its tickets, so a ps that fails leaves it running.
+export function restartDriver({ slug, batch = null, dir, pid, queue = null }) {
   const who = batch ? `${slug} batch ${batch}` : slug;
   const name = `merge driver for ${who} (pid ${pid})`;
+  let ps;
+  try { ps = processes(); } catch (e) { return `${name}: left running on the old code, ${e.message}`; }
   const me = ps.find((p) => p.pid === pid);
   const args = me && driverArgs(me.args);
   if (!args) return `${name}: left running on the old code, its command line names no tickets to start it again with`;
   const kids = ps.filter((p) => p.ppid === pid);
   if (!kids.length || kids.some((k) => k.comm !== 'sleep')) {
-    return `${name}: left running on the old code, it is mid-loop and may be merging; it moves to the new code when the supervisor next starts it`;
+    return `${name}: left running on the old code, it is mid-loop and may be merging; a supervisor tick moves it to the new code once it waits between loops`;
   }
   const raw = E.repoConfigValue(slug, 'repo-root');
   const root = raw && E.expandHome(raw).replace(/\/+$/, '');
@@ -122,6 +127,7 @@ function restartDriver({ slug, batch = null, dir, pid }, ps) {
   const env = { ...driverEnv(), DESK_REPO_DIR: root, DESK_AUTOPILOT_STATE: dir };
   // A named batch's driver acts on that batch's queue, and reads its base as the batch does.
   if (batch) Object.assign(env, { DESK_BATCH: batch, DESK_QUEUE: E.batchPaths(slug, batch).queue });
+  if (queue) env.DESK_QUEUE = queue;
   const argv = ['--tickets', args.tickets.join(' '), ...(args.deps.length ? ['--deps', args.deps.join(' ')] : []), '--log'];
   let fd;
   try {
@@ -132,6 +138,8 @@ function restartDriver({ slug, batch = null, dir, pid }, ps) {
   } catch (e) { return `${name}: stopped, but could not be started again: ${e.message}`; }
   finally { if (fd !== undefined) closeSync(fd); }
   const now = waitFor(() => { const p = lockPid(dir); return Boolean(p && p !== pid && alive(p)); }) ? lockPid(dir) : null;
+  // It writes its version just after its pid, so what reads the lock next reads it as current.
+  if (now) waitFor(() => Boolean(lockVersion(dir)) || lockPid(dir) !== now);
   return now
     ? `merge driver for ${who}: restarted on the new code (pid ${pid} -> ${now}) for ${args.tickets.join(' ')}`
     : `${name}: stopped and started again, but no new driver holds the lock yet; see ${join(dir, 'merge-driver.log')}`;
@@ -174,13 +182,7 @@ function reloadAgents(dir) {
 
 export function restart({ stateRoot = join(E.HOME, '.desk-autopilot'), agents = AGENTS } = {}) {
   // A fresh ps for each driver: restarting the one before can take seconds, in which this one wakes.
-  const lines = [...runningDrivers(stateRoot).map((d) => {
-    let ps;
-    try { ps = processes(); } catch (e) {
-      return `merge driver for ${d.batch ? `${d.slug} batch ${d.batch}` : d.slug} (pid ${d.pid}): left running on the old code, ${e.message}`;
-    }
-    return restartDriver(d, ps);
-  }), ...reloadAgents(agents)];
+  const lines = [...runningDrivers(stateRoot).map((d) => restartDriver(d)), ...reloadAgents(agents)];
   return lines.length ? lines : ['nothing to restart: no merge driver or supervisor agent is running'];
 }
 
