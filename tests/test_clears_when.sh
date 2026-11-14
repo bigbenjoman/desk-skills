@@ -49,7 +49,8 @@ printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
 case "\$1 \$2" in
-  "pr view") [ -f "$T/gh/pr-\$3.json" ] && { cat "$T/gh/pr-\$3.json"; exit 0; }; echo "gh: HTTP 502 for PR \$3" >&2; exit 1 ;;
+  "pr view") if [ "\$7" = headRefOid,reviews ]; then [ -f "$T/gh/reviews-\$3.json" ] && { cat "$T/gh/reviews-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading reviews of PR \$3" >&2; exit 1; fi
+    [ -f "$T/gh/pr-\$3.json" ] && { cat "$T/gh/pr-\$3.json"; exit 0; }; echo "gh: HTTP 502 for PR \$3" >&2; exit 1 ;;
   "pr list") h=""; while [ \$# -gt 0 ]; do [ "\$1" = --head ] && h="\$2"; shift; done
     [ -n "\$h" ] || { echo "[]"; exit 0; }
     f="$T/gh/merged-\$(echo "\$h" | tr / _)"; [ -f "\$f" ] && cat "\$f"; exit 0 ;;
@@ -156,14 +157,14 @@ say "AUTOPILOT_PARK: needs a force-push of feat/F-3. Approve?" "AUTOPILOT_PARK_I
 say "AUTOPILOT_PARK: should I merge rather than force-push?" > "$T/state/logs/F-4.log"
 say "AUTOPILOT_PARK: needs a force-push of feat/F-5, which my settings deny. Approve?" > "$T/state/logs/F-5.log"
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
-check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, base contains <branch>, or none" <<< "$out"'
+check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, base contains <branch>, pr <n> reviewed by <login> at head, file <path> exists, ticket <KEY> in <repo> batch, or none" <<< "$out"'
 # DS-542 AC5: a park waiting on main being merged into the batch base.
 parked B-1 A "requeue me once main has been merged into the base"
 out=$(node "$B/queue.mjs" clears-when B-1 "base contains main" 2>&1); rc=$?
 check "DS-542 AC5 queue.mjs clears-when records base contains main on the park" \
   '[ $rc -eq 0 ] && [ "$(field B-1 park.clears_when)" = "{\"kind\":\"base-contains\",\"branch\":\"main\"}" ] && grep -q "B-1: its park clears when the batch base contains main" <<< "$out"'
 out=$(node "$B/queue.mjs" clears-when B-1 "base contains main and the hotfix" 2>&1); rc=$?
-check "DS-542 AC5 an unknown form is still refused, listing the forms" '[ $rc -ne 0 ] && grep -q "is not one of: .*base contains <branch>, or none" <<< "$out"'
+check "DS-542 AC5 an unknown form is still refused, listing the forms" '[ $rc -ne 0 ] && grep -q "is not one of: .*base contains <branch>, .*or none" <<< "$out"'
 q drop B-1
 check "DS-496 queue.mjs clears-when stores a push" '[ "$(field P-1 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-1\"}" ]'
 check "DS-496 and a lease push, with the SHA it may overwrite" '[ "$(field P-4 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-4\",\"lease\":\"$PIN\"}" ]'
@@ -173,6 +174,53 @@ out=$(node "$B/queue.mjs" clears-when E-2 "git push --force-with-lease=feat/othe
 check "DS-496 and one whose lease names another branch" '[ $rc -ne 0 ]'
 out=$(node "$B/queue.mjs" clears-when E-2 "run abc completed" 2>&1); rc=$?
 check "DS-349 AC10 a run id that is not a number is refused, naming the forms" '[ $rc -ne 0 ] && grep -q "\"run abc completed\" is not one of: .*run <id> completed, .*or none" <<< "$out"'
+# DS-581: a review by a named account at the PR's head, a file appearing, a ticket queued in another repo's batch.
+HEAD_SHA=$(printf b%.0s {1..40}); OLD_SHA=$(printf c%.0s {1..40})
+reviews(){ printf '{"headRefOid":"%s","reviews":[{"author":{"login":"%s"},"state":"COMMENTED","commit":{"oid":"%s"}}]}\n' "$HEAD_SHA" "$2" "$3" > "$T/gh/reviews-$1.json"; }
+parked RV-1 A "waiting on pullbot's verdict on #3063" "pr 3063 reviewed by agent-pullbot at head"; reviews 3063 agent-pullbot "$HEAD_SHA"
+parked RV-2 A "waiting on pullbot's verdict on #3064" "pr 3064 reviewed by agent-pullbot at head"; reviews 3064 agent-pullbot "$OLD_SHA"
+parked RV-3 A "waiting on pullbot's verdict on #3065" "pr 3065 reviewed by agent-pullbot at head"
+mkdir -p "$T/files/AA-48-recall-capture"; : > "$T/files/AA-48-recall-capture/meet.json"
+parked FE-1 A "waiting on the recall capture" "file $T/files/AA-48-recall-capture/meet.json exists"
+parked FE-2 A "waiting on the second capture" "file $T/files/AA-48-recall-capture/later.json exists"
+mkdir -p "$T/desk/repos/acme__studia-web"; echo '{"tickets":{"SV-3994":{"key":"SV-3994","state":"triaged"}}}' > "$T/desk/repos/acme__studia-web/queue.json"
+node --input-type=module -e "import { writeBeat } from '$B/borrow.mjs'; writeBeat('$T/home/.desk-autopilot/acme__studia-web', '$T/desk/repos/acme__studia-web/queue.json');"
+parked TQ-1 A "SV-3994 belongs in a studia-web batch" "ticket SV-3994 in studia-web batch"
+parked TQ-2 A "SV-3995 belongs in a studia-zendesk batch" "ticket SV-3995 in studia-zendesk batch"
+out=$(node "$B/queue.mjs" clears-when E-2 "file ../elsewhere/meet.json exists" 2>&1); rc=$?
+check "DS-581 AC5 a relative file path outside the worktree and \$DESK_STATE is refused, naming the paths allowed" \
+  '[ $rc -ne 0 ] && grep -q "is outside the ticket.s worktree and \$DESK_STATE: name an absolute path, a path relative to the ticket.s worktree, or \$DESK_STATE/<path>" <<< "$out"'
+check "DS-581 AC1 queue.mjs clears-when records a review at the head" '[ "$(field RV-1 park.clears_when)" = "{\"kind\":\"pr-reviewed\",\"pr\":3063,\"login\":\"agent-pullbot\"}" ]'
+r=$(node --input-type=module -e "
+import { parseClearsWhen, checkCond, condPath, queuedIn } from '$B/clears-when.mjs';
+const p = (s) => JSON.stringify(parseClearsWhen(s).cond ?? parseClearsWhen(s).why);
+const rv = { reviews: () => ({ headRefOid: 'h1', reviews: [{ author: { login: 'agent-pullbot[bot]' }, commit: { oid: 'h1' } }] }) };
+const web = (batch, tickets) => ({ slug: 'acme__studia-web', batch, path: '/q/' + batch, q: { tickets } });
+const qi = (queues, live = () => true) => JSON.stringify(checkCond({ kind: 'ticket-queued', ticket: 'SV-1', repo: 'studia-web' }, { queued: (k, r) => queuedIn(k, r, queues, live) }));
+console.log([
+  p('pr #3063 reviewed by agent-pullbot at head'),
+  p('file \$DESK_STATE/fixtures/AA-48/meet.json exists'), p('file out/meet.json exists'), p('file ~/meet.json exists'), p('file \$DESK_STATE/../x exists'),
+  p('SV-3994 is queued in a studia-web batch'), p('ticket SV-3994 in acme/studia-web batch'),
+  JSON.stringify(checkCond({ kind: 'pr-reviewed', pr: 1, login: 'agent-pullbot' }, rv)),
+  JSON.stringify(checkCond({ kind: 'pr-reviewed', pr: 1, login: 'agent-pullbot' }, { reviews: () => { throw new Error('gh pr view 1: HTTP 502'); } })),
+  condPath({ kind: 'file-exists', path: 'a/b', root: 'state' }, { worktree: '/w', state: '/s' }), condPath({ kind: 'file-exists', path: 'a/b', root: 'worktree' }, { worktree: '/w', state: '/s' }),
+  qi([web('a', {}), web('b', { 'SV-1': {} })]), qi([web('b', { 'SV-1': {} })], () => false), qi([{ slug: 'acme__studia-zendesk', q: { tickets: { 'SV-1': {} } } }]),
+  qi([web('a', {}), { slug: 'acme__studia-web', batch: 'c', error: 'torn' }]), qi([web('b', { 'SV-1': {} }), { slug: 'acme__studia-web', batch: 'c', error: 'torn' }]),
+].join('|'));
+")
+check "DS-581 AC6 a ticket in a running batch of the repo holds" '[ "$(cut -d"|" -f12 <<< "$r")" = "{\"holds\":true,\"note\":\"in acme__studia-web batch b\"}" ]'
+check "DS-581 in a batch whose orchestrator is not running, it does not" '[ "$(cut -d"|" -f13 <<< "$r")" = "{\"holds\":false,\"note\":\"in acme__studia-web batch b, whose orchestrator is not running\"}" ]'
+check "DS-581 AC7 with no queue of the repo, it does not hold, saying so" '[ "$(cut -d"|" -f14 <<< "$r")" = "{\"holds\":false,\"note\":\"no studia-web queue was found on this computer\"}" ]'
+check "DS-581 an unreadable queue of the repo is an error, unless another running batch holds it" \
+  '[ "$(cut -d"|" -f15 <<< "$r")" = "{\"error\":\"acme__studia-web batch c'"'"'s queue cannot be read (torn)\"}" ] && [[ "$(cut -d"|" -f16 <<< "$r")" == "{\"holds\":true"* ]]'
+check "DS-581 AC1 the review form reads, # optional" '[ "$(cut -d"|" -f1 <<< "$r")" = "{\"kind\":\"pr-reviewed\",\"pr\":3063,\"login\":\"agent-pullbot\"}" ]'
+check "DS-581 file paths under \$DESK_STATE and the worktree read, and ~ or a climb out of \$DESK_STATE is refused" \
+  '[ "$(cut -d"|" -f2,3 <<< "$r")" = "{\"kind\":\"file-exists\",\"path\":\"fixtures/AA-48/meet.json\",\"root\":\"state\"}|{\"kind\":\"file-exists\",\"path\":\"out/meet.json\",\"root\":\"worktree\"}" ] && [[ "$(cut -d"|" -f4,5 <<< "$r")" == *"is outside the ticket"*"is outside the ticket"* ]]'
+check "DS-581 the queued form reads as SV-3994 wrote it, and as owner/name" \
+  '[ "$(cut -d"|" -f6,7 <<< "$r")" = "{\"kind\":\"ticket-queued\",\"ticket\":\"SV-3994\",\"repo\":\"studia-web\"}|{\"kind\":\"ticket-queued\",\"ticket\":\"SV-3994\",\"repo\":\"acme/studia-web\"}" ]'
+check "DS-581 an app's review, written with its [bot] suffix, counts at the head" '[ "$(cut -d"|" -f8 <<< "$r")" = "{\"holds\":true}" ]'
+check "DS-581 AC8 a failed reviews read is an error, not holding" '[ "$(cut -d"|" -f9 <<< "$r")" = "{\"error\":\"gh pr view 1: HTTP 502\"}" ]'
+check "DS-581 a file path is read under \$DESK_STATE or the worktree" '[ "$(cut -d"|" -f10,11 <<< "$r")" = "/s/a/b|/w/a/b" ]'
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
 
@@ -230,6 +278,18 @@ check "DS-514 AC3 a park that only mentions a force-push is recorded and not ref
   '[ "$(field F-4 state)" = "\"parked\"" ] && [ "$(field F-4 lease_refused)" = null ]'
 check "DS-514 a lane C park is left for a person, not sent to a worker" \
   '[ "$(field F-5 state)" = "\"parked\"" ] && [ "$(field F-5 lease_refused)" = null ]'
+check "DS-581 AC2 a review by that account on the head settles the park" \
+  '[ "$(field RV-1 state)" = "\"triaged\"" ] && grep -q "RV-1: \"PR #3063 reviewed by agent-pullbot at its head\" holds: requeued" <<< "$out"'
+check "DS-581 AC3 a review only on an older commit does not hold" \
+  '[ "$(field RV-2 state)" = "\"parked\"" ] && grep -q "RV-2: waiting on \"PR #3064 reviewed by agent-pullbot at its head\" (agent-pullbot.s review is on an older commit than the head bbbbbbbbb): left parked" <<< "$out"'
+check "DS-581 AC8 a failed reviews read leaves the park and is named" \
+  '[ "$(field RV-3 state)" = "\"parked\"" ] && grep -q "RV-3: could not check \"PR #3065 reviewed by agent-pullbot at its head\" (gh pr view 3065: gh: HTTP 502 reading reviews of PR 3065): left parked" <<< "$out"'
+check "DS-581 AC4 a file that is there settles the park, one not there yet leaves it" \
+  '[ "$(field FE-1 state)" = "\"triaged\"" ] && grep -q "FE-1: \"file $T/files/AA-48-recall-capture/meet.json exists\" holds: requeued" <<< "$out" && [ "$(field FE-2 state)" = "\"parked\"" ]'
+check "DS-581 AC6 a ticket in a running studia-web batch settles the park" \
+  '[ "$(field TQ-1 state)" = "\"triaged\"" ] && grep -q "TQ-1: \"SV-3994 in a running studia-web batch, in acme__studia-web\" holds: requeued" <<< "$out"'
+check "DS-581 AC7 with no studia-zendesk queue it does not hold, and the report says the queue was not found" \
+  '[ "$(field TQ-2 state)" = "\"parked\"" ] && grep -q "TQ-2: waiting on \"SV-3995 in a running studia-zendesk batch\" (no studia-zendesk queue was found on this computer): left parked" <<< "$out"'
 
 # ---- AC3: a lane A ticket waiting on something else is requeued ------------------------------------
 pr 41 MERGED false
