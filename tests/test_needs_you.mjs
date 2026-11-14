@@ -380,6 +380,15 @@ t('DS-327 AC1 a draft whose check build runs, or whose check was re-run after it
 t('DS-327 AC2 one whose build failed is, with the command, its exit code and its output', N.collect({ word: 'flows' }).items.find((i) => i.t.key === 'FL-4')?.need,
   'PR #84 is a draft: check build `./scripts/ensure-flows-image.sh` exited 1: no Docker context. Fix the build, run it at the head of #84, then re-run "Flows image"; the next pass then picks it up.');
 
+// ---- KAN-629: a draft whose held screenshots the pass is uploading (undraft.mjs cellCall `upload`) is not the person's.
+put('shots', { port: 4779, beat: 1, supervised: true, tickets: {
+  'SH-1': draftPr(86, passed, { call: 'upload', why: '1 screenshot cell(s) left: a.png, whose files desk holds in /s/images/SH-1, and the pass uploads them' }),
+  'SH-2': draftPr(87, passed, { call: 'person', why: '1 screenshot cell(s) left: a.png, whose files desk holds but could not put in the body', action: 'edit the body of #87 so no `_drag <file>_` cell is left' }),
+} });
+const shotKeys = N.collect({ word: 'shots' }).items.map((i) => i.t.key).join();
+t('KAN-629 a draft whose screenshots the pass is uploading is not listed', shotKeys.includes('SH-1'), false);
+t('KAN-629 negative control: one whose cells nothing fills still is', shotKeys.includes('SH-2'), true);
+
 // ---- DS-498: a draft whose check the runner ended (undraft.mjs rerunCall's person calls, as test_undraft.mjs pins them).
 const oomRed = [{ name: 'Type-check', status: 'completed', conclusion: 'failure' }, ...passed];
 put('runner', { port: 4778, beat: 1, supervised: true, tickets: {

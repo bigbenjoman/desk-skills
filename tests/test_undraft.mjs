@@ -486,6 +486,24 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   const stuckCell = shotDraft(part, 'x _drag a.png_ _drag b.png_', { evidence: null, ...have(['a.png', 'b.png']) });
   t('DS-492 AC3 a cell nothing fills is named, with why', stuckCell?.why, '2 screenshot cell(s) left: a.png, b.png, whose files desk holds but could not put in the body');
   t('DS-492 AC3 and the person is not asked to upload', stuckCell?.action, LEFT);
+  // KAN-629: files desk holds for every cell, with no upload tried (the worker never printed
+  // AUTOPILOT_IMAGES), go to the pass's own upload while §3 pr-images is yes, never to the person.
+  const up = { upload: 'yes', shotDir: '/s/images/T-1' };
+  const two = 'x _drag a.png_ _drag b.png_';
+  const sent = shotDraft({}, two, { evidence: null, ...have(['a.png', 'b.png']), ...up });
+  t('KAN-629 files held and never uploaded: the pass uploads them from the ticket\'s directory', `${sent?.call} ${sent?.dir} ${sent?.action}`, 'upload /s/images/T-1 null');
+  t('KAN-629 and its why names the cells and the directory', sent?.why, '2 screenshot cell(s) left: a.png, b.png, whose files desk holds in /s/images/T-1, and the pass uploads them');
+  t('KAN-629 a stale `none` (the directory was empty when the round ended) allows the upload', shotDraft({ images_uploaded: 'none' }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.call, 'upload');
+  t('KAN-629 a stale `partial` does not: its assets are on GitHub already, so it stays the person\'s', shotDraft(part, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.why, stuckCell?.why);
+  t('KAN-629 nor does a stale `true`', shotDraft({ images_uploaded: true }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.call, 'person');
+  t('KAN-629 negative control: §3 pr-images not yes, it is not uploaded', shotDraft({}, two, { evidence: null, ...have(['a.png', 'b.png']), ...up, upload: 'ask' })?.call, 'person');
+  t('KAN-629 negative control: no screenshot directory given, no upload', shotDraft({}, two, { evidence: null, ...have(['a.png', 'b.png']), upload: 'yes' })?.call, 'person');
+  t('KAN-629 a file still missing goes to capture first', shotDraft({}, two, { evidence: null, ...have(['a.png']), ...up })?.call, 'capture');
+  t('KAN-629 a crash with a retry to come still waits on it', shotDraft({ upload_crash: { pr: 740, dir: '/d', tries: 1, log: 'l' } }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.call, 'wait');
+  t('KAN-629 a spent crash still goes to the person, never a third upload', shotDraft({ upload_crash: { pr: 740, dir: '/d', tries: 2, log: 'l' } }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.call, 'person');
+  t('KAN-629 held for approval, the approval stays the person\'s', shotDraft({ images_reported: true }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.unapproved, true);
+  t('KAN-629 cells an evidence run left with their files held are uploaded, not put to the person', shotDraft({}, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']), ...up })?.call, 'upload');
+  t('KAN-629 and done says desk uploads them', plan({}, two, { evidence: null, ...have(['a.png', 'b.png']), ...up }), 'a.png: desk holds its file and uploads it at the next pass; b.png: desk holds its file and uploads it at the next pass');
   const ranAll = shotDraft(part, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) });
   t('DS-492 AC3 cells an evidence run left with their files held are named', `${ranAll?.call} ${/left 2 screenshot cell\(s\): a-before\.png, a-after\.png$/.test(ranAll?.why)} ${/upload/.test(ranAll?.action)}`, 'person true false');
   t('EV cells filled: it is undrafted', ev(EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)'))?.call, 'ready');

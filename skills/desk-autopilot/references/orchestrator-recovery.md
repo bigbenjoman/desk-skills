@@ -102,6 +102,15 @@ any log or park record still in place to the next free `.round<n>`, so the new r
 go to the new round's PR rather than the last one's, and no earlier question reads as the new
 worker's.
 
+Screenshots a worker saved in its briefed directory (`<state>/images/<TICKET>/`) without printing
+`AUTOPILOT_IMAGES:` are still uploaded where §3 `pr-images` is `yes`: a finished round with no marker
+uploads that directory while the PR body still has a `_drag <file>_` cell naming one of its files,
+and a draft whose cells all have files there, with no upload tried (`images_uploaded` unset or
+`none`), is uploaded by the undraft step (`undraft.mjs` `cellCall` `upload`). After a `true` or
+`partial` upload it is not: those assets already exist on GitHub, and the uploader sends the whole
+directory, so the cells left are the person's. To put them in by hand:
+`node ~/.claude/desk/bin/upload-images.mjs <pr> <state>/images/<TICKET>`.
+
 Remove the old worktree first (`git worktree remove --force`, under §3 `worktree-remove`) if the
 follow-up needs a fresh branch off current `<default>` (§0 Default branch); otherwise
 `setup-worktree.sh` reuses it on the same recorded branch. Keep the queue's `branch` as it is: the
