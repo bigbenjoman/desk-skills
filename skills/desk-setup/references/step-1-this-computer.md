@@ -88,7 +88,8 @@ rounds. A subscription is a Claude login the check above found signed in, and no
 - **One subscription, no row**: ask nothing, and save `default`. Say "This repo follows this
   computer's default, <its email>. desk-q view 6 changes it."
 - **Two or more subscriptions, no row**: ask one question, "Which subscription runs <repo name>?",
-  with "Workers, triage and the decider for this repo all use it. Change it later in desk-q, view 6."
+  where `<repo name>` is the repo's name without its owner, the part of the detection round's
+  `nameWithOwner` after the `/`, with "Workers, triage and the decider for this repo all use it. Change it later in desk-q, view 6."
   as the text above the options, and these options, in this order:
   1. `Use this computer's default` (Recommended), described as `<the default's email> · follows
      changes`. The default's email is the `SUBSCRIPTION` `desk-env subscription` prints while the row

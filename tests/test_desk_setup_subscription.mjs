@@ -26,6 +26,7 @@ t('both sections are found', [computer.length > 0, repo.length > 0], [true, true
 // AC1 and AC2: the question, the text above the options, then the options and descriptions in order.
 const ask = bullet(repo, 'Two or more subscriptions, no row');
 t('AC1 the question is asked with the repo name and ends in a question mark', ask.includes('"Which subscription runs <repo name>?"'), true);
+t('AC1 the repo name is asked without its owner', ask.includes("where `<repo name>` is the repo's name without its owner, the part of the detection round's `nameWithOwner` after the `/`"), true);
 t('AC2 the text above the options', ask.includes('with "Workers, triage and the decider for this repo all use it. Change it later in desk-q, view 6." as the text above the options'), true);
 t('AC1 the default first, marked Recommended, then one pin per subscription, each with its description', inOrder(ask, [
   "1. `Use this computer's default` (Recommended), described as `<the default's email> · follows changes`",
