@@ -71,7 +71,8 @@
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run (UNLISTED), an app directory other command rows
-//                                             name with no Dev server item (NODEV), a dontAsk settings file (DONTASK);
+//                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
+//                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
@@ -113,6 +114,7 @@ import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
+import { jobKeyedPremerge } from './workflow-yaml.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -1516,12 +1518,22 @@ export function devServerGaps(parsed, root) {
     .map(({ dir, rows }) => ({ dir, rows }));
 }
 
-export function driftLines({ missing, stalls, unlisted = [], noDev = [], dontAsk }) {
+// A §4 Pre-merge steps item named after a job of several steps (workflow-yaml.mjs jobKeyedPremerge): the
+// step it is for, in its place, where one step fits it, else the job's named steps to choose from.
+const jobKeyedLine = (j) => {
+  const quoted = (xs) => xs.map((s) => `"${s}"`).join(', ');
+  const fix = j.fits.length === 1 ? `name the step instead: "${j.fits[0]}: ${j.command}"`
+    : (j.fits.length ? j.fits : j.named).length ? `name the step it is for instead, one of ${quoted(j.fits.length ? j.fits : j.named)}` : 'name the step it is for instead';
+  return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
+};
+
+export function driftLines({ missing, stalls, unlisted = [], noDev = [], jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
+    ...jobKeyed.map(jobKeyedLine),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
   return lines.length ? lines : ['no drift'];
@@ -1900,7 +1912,9 @@ if (isMain) {
           // A repo's settings live in its main checkout (§2 Primary repo root); this repo's, failing that, in the cwd's.
           const rootRow = configValueIn(parseConfigFile(config), 'repo-root');
           const root = rootRow ? expandHome(rootRow) : slug ? null : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
-          const lines = driftLines(configDrift({ config, root }));
+          const premerge = configValuesIn(parseConfigFile(config), 'pre-merge-steps');
+          const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
+          const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;
           if (slug) console.log(`== ${slug}`);
           for (const l of lines) console.log(slug ? `  ${l}` : l);
