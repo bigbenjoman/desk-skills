@@ -45,6 +45,9 @@ node ~/.claude/desk/bin/desk-design.mjs save $DESK_STATE/designs/<TICKET> --key 
   [--boards '<board>,<board>'] [--epic <EPIC>] --url <artifact URL> --version <its version>
 ```
 
+`--boards` names a board by its title, commas and all, or its file name (`Main.dc.html`). A name
+that matches no board exits 2, saving nothing, and lists the boards the canvas has.
+
 In a batch the orchestrator's snapshot already records the URL and version, so `--url` and
 `--version` are left off. It copies those files into `<§2 Design canvases directory>/<EPIC or KEY>/`, or into the folder
 already holding the same artifact, so a canvas several tickets share is saved once and each ticket is
