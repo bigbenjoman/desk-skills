@@ -118,6 +118,24 @@ function assetExt(path) {
 const isRemote = (r) => /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(r);
 const isInline = (r) => /^(?:data|blob|about|javascript|mailto|tel):/i.test(r) || r.startsWith('#');
 const TEXT = new Set(['.html', '.htm', '.css']);
+
+// Every URL a script names that is a script, stylesheet or font it loads. A script names other URLs
+// that load nothing (an XML namespace, an error page), so only those paths count.
+export function scriptLoads(text) {
+  const out = [];
+  for (const [u] of text.matchAll(/https?:\/\/[^\s"'`\\()<>]+/gi)) {
+    let path;
+    try { path = new URL(u).pathname; } catch { continue; }
+    if (/\.(?:m?js|css|woff2?|ttf|otf)$/i.test(path) && !out.includes(u)) out.push(u);
+  }
+  return out;
+}
+
+// The hosts a list of remote URLs loads from, in order, each once.
+export const remoteHosts = (urls) => [...new Set(urls.map((u) => {
+  try { return new URL(u.startsWith('//') ? `https:${u}` : u).host.toLowerCase(); } catch { return null; }
+}).filter(Boolean))];
+
 // The DC runtime a board loads as ./support.js: the artifact serves it at runtime rather than
 // publishing it, so a snapshot carries it under the type's own name.
 const RUNTIME = 'dc-runtime.js';
@@ -134,7 +152,8 @@ function walkFiles(dir, base = dir) {
 // each slide deck.json orders is slides/<id>.html beside it. A single-page artifact has neither
 // (`canvas` and `deck` null): its pages are the HTML files beside the shallowest one. `kind` says
 // which of the three it is. A reference that leaves <src> or names a file the
-// snapshot lacks is `missing`; one to another host is `remote` (it needs the network to render).
+// snapshot lacks is `missing`; one to another host, or a file a saved script loads from one, is
+// `remote` (it needs the network to render).
 // `blobs` maps each asset id the boards use to its saved path, and `copyFrom` maps a saved path to
 // the snapshot file it comes from where the two differ: an asset, or support.js from dc-runtime.js.
 export function collect(src) {
@@ -196,6 +215,11 @@ export function collect(src) {
       files.add(rel);
       if (TEXT.has(extname(rel).toLowerCase())) queue.push(rel);
     }
+  }
+  // A script loads files too: the runtime saved as support.js fetches React, ReactDOM and Babel from a CDN.
+  for (const f of files) {
+    if (extname(f).toLowerCase() !== '.js') continue;
+    for (const u of scriptLoads(readFileSync(join(src, copyFrom[f] ?? f), 'utf8'))) if (!remote.includes(u)) remote.push(u);
   }
   return { canvas: canvasRel, deck: deckRel, kind, slides, home, files: [...files].sort(), missing, remote, blobs, copyFrom };
 }
@@ -319,13 +343,17 @@ export function mergeSource(prev, next) {
   // What the artifact is (canvas, deck or page), which check reads to decide whether a link blocks.
   const kind = next.kind ?? prev?.kind;
   const slides = next.slides ?? prev?.slides;
+  // The boards' folder beside the README, and what the saved files load from other hosts: the
+  // README's paths and its offline claim. A write that does not know `remote` keeps it at the same version only.
+  const home = next.home ?? prev?.home;
+  const remote = next.remote ?? (String(prev?.version) === String(next.version) ? prev?.remote : undefined);
   return {
     url: next.url, version: String(next.version), fetched_at: next.fetched_at,
     ...(from ? { from: from.from, file: from.file, sha256: from.sha256 } : {}),
     ...(kind ? { kind } : {}),
     dir: next.dir ?? prev?.dir ?? null, tickets,
     boards: next.boards ?? prev?.boards ?? [], ...(kind === 'deck' && slides ? { slides } : {}),
-    files: next.files ?? prev?.files ?? [], screens,
+    files: next.files ?? prev?.files ?? [], ...(home ? { home } : {}), ...(remote ? { remote } : {}), screens,
   };
 }
 
@@ -339,6 +367,14 @@ export function readme(source) {
     return t.boards.map((n) => { const b = boards.find((x) => x.name === n); return b ? label(b) : n; }).join(', ');
   };
   const deck = source.kind === 'deck';
+  // A board's file is relative to its canvas.json, which sits in `home` (project/) beside the README.
+  const home = source.home && source.home !== '.' ? source.home.replace(/\/+$/, '') : null;
+  const at = (f) => (home ? `${home}/${f}` : f);
+  // A record saved before `remote` was kept says nothing about the network rather than guess.
+  const hosts = Array.isArray(source.remote) ? remoteHosts(source.remote) : null;
+  const network = hosts === null ? '.'
+    : hosts.length ? `. The boards need the network: they load files from ${hosts.map((h) => `\`${h}\``).join(', ')}.`
+      : ': it renders offline with the files saved beside it.';
   return [
     `# ${deck ? 'Slides deck' : 'Design canvas'}${source.dir ? ` ${source.dir}` : ''}`,
     '',
@@ -348,7 +384,7 @@ export function readme(source) {
       : [`Saved by \`desk-design\` from <${source.url}>, version ${source.version}, fetched ${source.fetched_at}.`]),
     deck
       ? 'Open index.html from this folder: every slide in order at 1920×1080, offline, with its speaker notes hidden.'
-      : 'Open any board\'s HTML from this folder: it renders offline with the files saved beside it.',
+      : `Open any board's HTML from ${home ? `\`${home}/\`` : 'this folder'}${network}`,
     source.from === 'export'
       ? 'Do not edit these files by hand. For a newer export, run `desk-design import` on it, then'
       : 'Do not edit these files by hand. When the artifact has a newer version, re-save it with',
@@ -361,7 +397,7 @@ export function readme(source) {
     ...(deck
       ? ['## Slides', '', ...(source.slides?.length ? source.slides.map((id, i) => `${i + 1}. ${id}`) : ['deck.json orders no slides.'])]
       : ['## Boards', '', ...(boards.length
-        ? ['| Board | Width | File |', '|---|---|---|', ...boards.map((b) => `| ${cell(b.name)} | ${b.width}px | ${b.file ? cell(b.file) : '-'} |`)]
+        ? ['| Board | Width | File |', '|---|---|---|', ...boards.map((b) => `| ${cell(b.name)} | ${b.width}px | ${b.file ? cell(at(b.file)) : '-'} |`)]
         : ['canvas.json names no boards.'])]),
     '',
     ...screensSection(source.screens),
@@ -484,7 +520,7 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   const fromExport = meta?.from && String(meta.version) === String(version) ? { from: meta.from, file: meta.file, sha256: meta.sha256 } : {};
   const source = writeRecord(dest, {
     url, version, fetched_at: fetchedAt ?? meta?.fetched_at ?? now, dir: name, kind, tickets: all, boards, files: saved,
-    ...(deck ? { slides } : {}), ...fromExport,
+    home: home.split(sep).join('/'), remote, ...(deck ? { slides } : {}), ...fromExport,
   });
   return { path: destRel, source, files: saved, remote, reused: !!existing, previous: prev?.version ?? null };
 }
@@ -580,6 +616,7 @@ export function importExport(file, { state, url, tickets, epic, now = new Date()
   writeFileSync(join(dest, 'project', 'index.html'), bytes);
   const source = writeRecord(dest, {
     url, version, fetched_at: now, dir: prev?.dir ?? name, kind: 'page', tickets, from: 'export', file: basename(file), sha256, boards: [], files: ['project/index.html'],
+    home: 'project', remote: [],
   });
   return { path: dest, source, previous: prev?.version ?? null };
 }
@@ -704,7 +741,7 @@ const servedAt = (origin, rel) => origin + rel.split(sep).map(encodeURIComponent
 export async function render(dir, { chromium, bps = breakpoints(), now = new Date().toISOString(), height = 900 }) {
   const source = readJson(join(dir, 'source.json'));
   if (!source?.url) fail(`no saved canvas at ${dir}: render a folder desk-design save wrote`);
-  const { canvas, deck, home, files } = collect(dir);
+  const { canvas, deck, home, files, remote } = collect(dir);
   if (deck) fail(`${dir} is a Slides deck, drawn at a fixed 1920×1080: open its index.html rather than rendering it`);
   // A single-page artifact's pages render at every breakpoint, with no width of their own.
   const boards = canvas ? parseBoards(readJson(join(dir, canvas)) ?? {})
@@ -743,7 +780,8 @@ export async function render(dir, { chromium, bps = breakpoints(), now = new Dat
     version: String(source.version), rendered_at: now, breakpoints: bps, widths: plan.widths,
     images: images.map(({ png, ...s }) => s),
   };
-  return writeRecord(dir, { ...source, screens });
+  // Read off the saved files, so a canvas saved before source.json kept them gets a true README.
+  return writeRecord(dir, { ...source, home: home.split(sep).join('/'), remote, screens });
 }
 
 // ---- compare (each board beside its Storybook story) ---------------------------------------------
@@ -1049,6 +1087,7 @@ if (isMain) {
         dir: opt(rest, '--epic') ?? prev?.dir ?? tickets[0].key, tickets, kind: shape?.kind,
         boards: shape ? (shape.canvas ? parseBoards(readJson(join(target, shape.canvas)) ?? {}) : []) : prev?.boards ?? [],
         ...(shape?.deck ? { slides: shape.slides } : {}),
+        ...(shape ? { home: shape.home.split(sep).join('/'), remote: shape.remote } : {}),
       });
       console.log(`wrote: ${join(target, 'source.json')} (version ${s.version}; ${s.kind ?? 'unknown kind'}; tickets ${s.tickets.map((t) => t.key).join(' ')})`);
     } else if (cmd === 'save') {
