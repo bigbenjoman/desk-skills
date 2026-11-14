@@ -289,7 +289,9 @@ to a human skimming and to any regex over the summary.
 ### The round's findings line
 
 **When a round ends, print its findings line.** A round ends once its fixes are committed, or at once
-with none to make. Mark each finding you fixed `"fixed": true` in that round's results file, then:
+with none to make. A round that stops instead (a park, or a round-3 P0 or P1 left for the person or a
+fix try) prints its line before it stops, with what it has fixed so far. Mark each finding you fixed
+`"fixed": true` in that round's results file, then:
 
 ```bash
 node ~/.agents/skills/desk-review/bin/verdict.mjs --findings <results> --reviewer <self|pr>
@@ -300,7 +302,8 @@ included). It prints one `AUTOPILOT_FINDINGS: {…}` line: the round, the review
 counts the verdict attests, how many were fixed, whether it was a targeted round carried past a base
 move, and who refuted. Copy it into your reply verbatim, at the start of a line and never in a code
 fence: an autopilot pass harvests it into the ticket's findings file, and records a round whose
-verdict it saw with no line as missing. Never write the line by hand.
+verdict it saw with no line as missing. Never write the line by hand. A verdict the pass carries to a
+rebased head without a round is recorded by the pass itself, `carried` true.
 
 ## Guardrails
 

@@ -328,7 +328,7 @@ export function methodLine(r) {
 }
 
 // Who ran a round: desk-ticket's Stage 4b self-review, a review of the PR, or the blind audit.
-export const REVIEWERS = ['self', 'pr', 'audit']
+const REVIEWERS = ['self', 'pr', 'audit']
 
 // The round's findings as one marker line the pass records in the ticket's findings file: the counts
 // the verdict attests, how many of them the round then fixed, whether it carried a clean review past a

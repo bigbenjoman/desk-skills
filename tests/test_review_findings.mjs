@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findingsLine, render, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
-import { reviewRounds, recordFindings, parseFindings, findingsPath, runsPath } from '../desk/bin/findings.mjs'
+import { reviewRounds, recordFindings, recordCarry, parseFindings, findingsPath, runsPath } from '../desk/bin/findings.mjs'
 import { spawnRecords } from '../desk/bin/phase0-report.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -80,6 +80,14 @@ harvest('AC-4d', 'AUTOPILOT_STAGE: 4b/9 self-review', 'AUTOPILOT_PARK: waiting o
 t('AC4 a Stage 4b still being worked is not missing', jsonl(runsPath(dir, 'AC-4d')).length, 0)
 harvest('AC-4e', 'AUTOPILOT_STAGE: 4b/9 self-review', 'AUTOPILOT_FINDINGS: {"round": 1}', 'AUTOPILOT_STAGE: 5/9 evidence')
 t('AC4 a line that does not read is noted, never written', [jsonl(findingsPath(dir, 'AC-4e')).length, jsonl(runsPath(dir, 'AC-4e')).some((r) => r.findings_unreadable)].join(), '0,true')
+harvest('AC-4f', 'AUTOPILOT_STAGE: 4b/9 self-review', 'SELF-REVIEW skipped: §4 Local review command is none', 'AUTOPILOT_STAGE: 5/9 evidence')
+t('AC4 a Stage 4b stated as skipped is not missing', jsonl(runsPath(dir, 'AC-4f')).length, 0)
+harvest('AC-4g', 'AUTOPILOT_STAGE: 4b/9 self-review', 'AUTOPILOT_STAGE: 5/9 evidence', 'AUTOPILOT_DONE: pr=3 jira=Review review=SKIPPED (none configured)')
+t('AC4 a Stage 4b its DONE says was skipped is not missing', jsonl(runsPath(dir, 'AC-4g')).length, 0)
+// A round that parked at its verdict and printed its line in a later session's log.
+harvest('AC-4h', marker({ reviewer: 'pr', round: 3, p1: 1 }))
+harvest('AC-4h', render(base({ round: 3, since: PREV, findings: [f()] })))
+t('AC4 a verdict an earlier log recorded the line for is not missing', jsonl(runsPath(dir, 'AC-4h')).length, 0)
 const toolOnly = join(dir, 'tool.log')
 writeFileSync(toolOnly, `${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: marker({}) }] } })}\n`)
 t('AC4 a marker only in a tool result is not the worker printing it', reviewRounds(readFileSync(toolOnly, 'utf8')).lines.length, 0)
@@ -90,6 +98,14 @@ t('AC5 a targeted round prints carried true', line(targeted, 'pr').carried, true
 t('AC5 a full round prints carried false', line(base(), 'pr').carried, false)
 harvest('AC-5', findingsLine(targeted, 'pr'))
 t('AC5 its recorded line has carried true', jsonl(findingsPath(dir, 'AC-5'))[0]?.carried, true)
+// The pass carrying a verdict to a rebased head with no round run there.
+const HEAD2 = '89abcdef0123456789abcdef0123456789abcdef'
+const posted = { sha: PREV, p0: '0', p1: '0', p2: '0', deferred: '0', gaps: '0', unrefuted: '0', partial: '0', vendor: 'codex-cross', round: '2' }
+const carriedLine = recordCarry(dir, 'AC-5c', { head: HEAD2, from: PREV, verdict: posted })
+t('AC5 a carry the pass reads writes a pr line at the new head', [carriedLine?.reviewer, carriedLine?.head, carriedLine?.round, carriedLine?.fixed, carriedLine?.carried, carriedLine?.from].join(), `pr,${HEAD2},2,0,true,${PREV}`)
+recordCarry(dir, 'AC-5c', { head: HEAD2, from: PREV, verdict: posted })
+t('AC5 the same carry read on the next pass adds nothing', jsonl(findingsPath(dir, 'AC-5c')).length, 1)
+t('AC5 a verdict not posted on the carried commit writes nothing', recordCarry(dir, 'AC-5d', { head: HEAD2, from: SHA, verdict: posted }), null)
 
 // ---- refuter vendor and what fixed may mark
 t('refuter_vendor: codex refuted every finding', line(base({ findings: [f()] }), 'self').refuter_vendor, 'codex')
