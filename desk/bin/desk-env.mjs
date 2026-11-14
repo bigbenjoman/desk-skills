@@ -1518,7 +1518,7 @@ export function devServerGaps(parsed, root) {
     .map(({ dir, rows }) => ({ dir, rows }));
 }
 
-// A §4 Pre-merge steps item named after a job of several steps (desk-ci.mjs jobKeyedPremerge): the
+// A §4 Pre-merge steps item named after a job of several steps (workflow-yaml.mjs jobKeyedPremerge): the
 // step it is for, in its place, where one step fits it, else the job's named steps to choose from.
 const jobKeyedLine = (j) => {
   const quoted = (xs) => xs.map((s) => `"${s}"`).join(', ');
