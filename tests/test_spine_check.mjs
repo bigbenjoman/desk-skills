@@ -1,5 +1,8 @@
 // suite: spine check (a feature child's owned specs, and the specs it must leave alone)
-import { declarations, scanChild, specsCommand } from '../desk/bin/spine-check.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { declarations, scanChild, specsCommand, runSpecs } from '../desk/bin/spine-check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const S = (xs) => JSON.stringify(xs);
@@ -60,6 +63,29 @@ t('a test defined inside another stays part of its body', S(child('K-3', 'test_f
 
 // One id per run: runners join several differently.
 t('the command takes one id', specsCommand('pnpm vitest run tests/acceptance -t "{ids}"', 'AC1'), 'pnpm vitest run tests/acceptance -t "AC1"');
+
+// The base gate and a finished child's check both run an id's specs with runSpecs. A stub with-lock.sh
+// records the lock, the directory it ran in and the command, and exits 3.
+const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'spine-run-')));
+const bin = join(tmp, 'bin');
+const root = join(tmp, 'wt');
+mkdirSync(bin);
+mkdirSync(join(root, 'packages', 'app'), { recursive: true });
+writeFileSync(join(bin, 'with-lock.sh'), `#!/bin/sh
+lock=$1; shift
+[ "$1" = --cwd ] && { cd "$2" || exit 9; shift 2; }
+[ "$1" = -- ] && shift
+printf '%s|%s|%s\\n' "$lock" "$(pwd -P)" "$3"
+exit 3
+`, { mode: 0o755 });
+const ran = (item, id) => { const r = runSpecs({ bin, root, item, id }); return `${r.out.trim()} exit=${r.code} ok=${r.ok} command=${r.command}`; };
+t('AC1/AC2: a row naming a directory runs the substituted command there, under the test lock, with its own exit',
+  ran('packages/app: bunx vitest run specs -t "{ids}"', 'DoD1'),
+  `test|${root}/packages/app|bunx vitest run specs -t "DoD1" exit=3 ok=false command=packages/app: bunx vitest run specs -t "DoD1"`);
+t('AC4: a row with no directory runs in the worktree root as before',
+  ran('pnpm vitest run tests/acceptance -t "{ids}"', 'AC2'),
+  `test|${root}|pnpm vitest run tests/acceptance -t "AC2" exit=3 ok=false command=pnpm vitest run tests/acceptance -t "AC2"`);
+rmSync(tmp, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'all passed');
 process.exit(fails ? 1 : 0);

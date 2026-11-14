@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { EXIT, Refusal, crashShowsPerson, describeCrash, readQueue, readJsonOrRefuse } from './batch-state.mjs';
-import { ownedSpecs, spineSpecFiles, specsCommand } from './spine-check.mjs';
+import { ownedSpecs, spineSpecFiles, specsRun } from './spine-check.mjs';
 import { useTicketBatch } from './batches.mjs';
 
 // What the reviewer looks for, by the `kind` it reports.
@@ -44,6 +44,7 @@ export function specsForReview(files, ids, criteria = []) {
 
 // Pure: the reviewer's prompt. It reports and changes nothing.
 export function reviewBrief(specs, { worktree, command } = {}) {
+  const run = command ? specsRun(command, '<ID>') : null;
   const lines = [
     'Review these acceptance specs against their criteria before a person approves them. READ-ONLY: no Edit or Write, no git',
     'state changes, no gh writes. Describe problems in prose; never fix them.',
@@ -52,7 +53,7 @@ export function reviewBrief(specs, { worktree, command } = {}) {
     'passes once a child ticket builds its criterion. Read each spec in full, and every file it imports.',
     'A run reports an expected failure as expected and usually hides its error, so judge wrong_failure by reading: find the first',
     'statement that would throw before the assertion (an import that does not resolve, a misspelt name, a fixture nobody defines).',
-    command && worktree ? `To see the error, run one criterion's specs under the test lock with the runner's option that shows expected-failure errors: ~/.claude/desk/bin/with-lock.sh test sh -c 'cd ${worktree} && ${specsCommand(command, '<ID>')}'` : null,
+    run && worktree ? `To see the error, run one criterion's specs under the test lock with the runner's option that shows expected-failure errors: ~/.claude/desk/bin/with-lock.sh test sh -c 'cd ${run.dir === '.' ? worktree : join(worktree, run.dir)} && ${run.cmd}'` : null,
     '',
     'Report, per spec, each of these you find:',
     ...Object.entries(KINDS).map(([k, v]) => `- ${k}: ${v}`),
