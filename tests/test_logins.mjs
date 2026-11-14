@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, loginEnv, normRule,
+  readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, removeLogin, loginEnv, normRule,
 } from '../desk/bin/logins.mjs';
 
 let fails = 0;
@@ -143,7 +143,8 @@ c = await cli('set', 'claude', 'nobody', 'off');
 t('an unknown login is refused, naming the logins', /^logins: no claude login "nobody": the logins are default, login-2, login-3, login-4/.test(c.out), true);
 
 // AC10: only the default Claude login is usable (login-4, found, is the same account).
-writeFileSync(SUBS, ROWS(['| `claude` | `default` | `~/.claude` | `in rotation` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `standby` |']));
+// login-2, signed out below, is the default list shows, so ~/.claude is not: the default is never turned off.
+writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |', '| `claude` | `default` | `~/.claude` | `standby` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `standby` |']));
 for (const n of ['login-2', 'login-9']) writeFileSync(join(H, '.claude-logins', n, 'status.json'), '{"loggedIn": false}');
 const lastFile = readFileSync(SUBS, 'utf8');
 c = await cli('set', 'claude', 'default', 'off');
@@ -179,14 +180,25 @@ const legacy = setRule(parseSubscriptions(FILE), { tool: 'claude', name: 'login-
 t('today\'s rules alone: set in rotation still writes in rotation and leaves the others', parseSubscriptions(legacy.text).logins.filter((l) => l.tool === 'claude').map((l) => `${l.name}:${l.rule}`).join(), 'default:in rotation,login-2:in rotation,login-3:in rotation,login-4:in rotation');
 t('today\'s rules alone: nothing written as default or unused', /`(default|unused)` \|$/m.test(legacy.text), false);
 
-// No file: setting the default login writes the file with the defaults.
+// No file: the default list shows is refused as one the file marks default, and setting another login
+// writes the file with the defaults.
 const fresh = join(T, 'fresh');
 mkdirSync(fresh);
-const r2 = setRule(readSubscriptions(join(fresh, 'subscriptions.md')), { tool: 'codex', name: 'default', rule: 'standby', check: () => { throw new Error('not called'); } });
-t('no file: set writes both default logins, with the change', parseSubscriptions(r2.text).logins.map((l) => `${l.tool}:${l.name}:${l.rule}`).join(), 'claude:default:in rotation,codex:default:standby');
+let refused = '';
+try { setRule(readSubscriptions(join(fresh, 'subscriptions.md')), { tool: 'codex', name: 'default', rule: 'standby', check: () => { throw new Error('not called'); } }); } catch (e) { refused = e.message; }
+t('no file: the default list shows cannot be set standby', /^logins: codex default is the Codex default: make another subscription the default first/.test(refused), true);
 const r3 = setRule(readSubscriptions(join(fresh, 'subscriptions.md')), { tool: 'claude', name: 'login-9', rule: 'in rotation', check: () => null });
 t('a found folder is added by its name', parseSubscriptions(r3.text).logins.map((l) => `${l.name}:${l.folder}`).join(), 'default:~/.claude,login-9:~/.claude-logins/login-9,default:~/.codex');
-let refused = '';
+// A file in today's rules, not yet listed: its first login in rotation is the default list shows.
+const unlisted = parseSubscriptions(ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `in rotation` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `in rotation` |']));
+refused = '';
+try { setRule(unlisted, { tool: 'claude', name: 'login-2', rule: 'off', check: () => null }); } catch (e) { refused = e.message; }
+t('today\'s rules: the first login in rotation cannot be turned off', /is the Claude default: make another/.test(refused), true);
+refused = '';
+try { removeLogin(unlisted, { tool: 'claude', name: 'login-2', check: () => null }); } catch (e) { refused = e.message; }
+t('today\'s rules: nor removed', /is the Claude default: make another/.test(refused), true);
+t('today\'s rules: another login in rotation can be', setRule(unlisted, { tool: 'claude', name: 'login-3', rule: 'standby', check: () => null }).login.rule, 'standby');
+refused = '';
 try { setRule(bad, { tool: 'claude', name: 'default', rule: 'standby', check: () => null }); } catch (e) { refused = e.message; }
 t('set is refused while the file has rows desk cannot read', /^logins: the subscriptions file has rows desk cannot read/.test(refused), true);
 refused = '';

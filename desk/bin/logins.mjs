@@ -148,6 +148,8 @@ export function migrateLogins(logins) {
 export const needsMigration = (subs) => subs.exists
   && TOOLS.some((tool) => wantsWords(subs.logins.filter((l) => l.tool === tool && l.source === 'file')));
 export const migrateSubscriptions = (subs) => ({ ...subs, logins: migrateLogins(subs.logins) });
+// The login `logins list` shows as a tool's default, whether or not the file says default yet.
+const shownDefault = (subs, tool) => defaultOf(migrateLogins(subs.logins), tool);
 
 const cell = (v) => `\`${String(v).replace(/\|/g, '\\|')}\``;
 export function renderSubscriptions(logins, removed = []) {
@@ -327,7 +329,7 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
     const names = subs.logins.filter((l) => l.tool === tool).map((l) => l.name);
     throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
   }
-  if (target.stored === 'default' && rule !== 'in rotation') throw notDefault(tool, name);
+  if (rule !== 'in rotation' && shownDefault(subs, tool)?.dir === target.dir) throw notDefault(tool, name);
   if (rule === 'off') lastUsable(tool, name, target, check, 'turning this one off');
   // In place, so the order (which name keeps a shared account) stays; an added login goes last, and
   // leaves the Removed table. Where the tool's rows say default and unused, the rule is written in
@@ -407,7 +409,7 @@ export function removeLogin(subs, { tool, name, check }) {
     throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
   }
   if (!target.configDir) throw new Error(`logins: ${tool} ${name} is ${tilde(TOOL[tool].dir())}, ${tool === 'claude' ? 'Claude' : 'Codex'}'s own folder, which desk always knows: turn it off instead (desk-env logins set ${tool} ${name} off)`);
-  if (target.stored === 'default') throw notDefault(tool, name);
+  if (shownDefault(subs, tool)?.dir === target.dir) throw notDefault(tool, name);
   lastUsable(tool, name, target, check, 'removing this one');
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
   return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };

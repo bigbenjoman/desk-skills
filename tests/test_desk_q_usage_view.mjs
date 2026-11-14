@@ -114,7 +114,8 @@ const subsText = () => readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8');
 const deskEnv = (...args) => spawnSync(process.execPath, [join(BIN, 'desk-env.mjs'), 'logins', ...args], { encoding: 'utf8', env: process.env });
 
 repo();
-subscriptions(ROWS);
+// work is listed first, so it is the default list shows and space can move personal's rule on.
+subscriptions([ROWS[1], ROWS[0], ROWS[2], ROWS[3]]);
 
 // ---- AC1: 6 opens Usage
 const S = open();
@@ -216,7 +217,7 @@ for (const argv of [['logins', 'set', 'claude', 'spare', 'off'], ['--batch', 'x'
 t('desk-env logins remove refuses the default login', deskEnv('remove', 'claude', 'personal').stderr.trim().startsWith('logins: claude personal is ~/.claude'), true);
 // The set u runs puts a removed login back in its own folder, though its name is not its folder's; and
 // space on a default login the file does not list (no rule) gives it the rule.
-subscriptions([['claude', 'office', '~/.claude-logins/work', 'in rotation'], ['claude', 'spare', '~/.claude-logins/spare', 'standby'], ROWS[2]]);
+subscriptions([['claude', 'spare', '~/.claude-logins/spare', 'in rotation'], ['claude', 'office', '~/.claude-logins/work', 'standby'], ROWS[2]]);
 deskEnv('remove', 'claude', 'office');
 const back = deskEnv('set', 'claude', 'office', 'in rotation');
 t('AC8 u after x on a login named apart from its folder puts back that folder', `${back.status} ${/^\| `claude` \| `office` \| `~\/.claude-logins\/work` \| `in rotation` \|$/m.test(subsText())} ${/^## Removed/m.test(subsText())}`, '0 true false');
