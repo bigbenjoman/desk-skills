@@ -6,7 +6,7 @@
 // busy, waiting or idle state.
 //   node reboot-check.mjs
 //   node reboot-check.mjs --filevault   only the filevault line (what /desk-setup reads)
-// The last line is `summary: dirty=<n> unpushed=<n> heavy=<n> filevault=<on|off|unknown|n/a>`. DESK_FDESETUP_CMD (run with sh -c)
+// The last line is `summary: dirty=<n> unpushed=<n> heavy=<n|unknown> filevault=<on|off|unknown|n/a>`. DESK_FDESETUP_CMD (run with sh -c)
 // stands in for `fdesetup status` in tests; without it, FileVault is n/a anywhere but macOS.
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -100,11 +100,14 @@ for (const { slug, config } of configs) {
 console.log(`worktrees: ${configs.length} configured repo${configs.length === 1 ? '' : 's'}, ${total} worktrees; ${dirty} with uncommitted changes, ${unpushed} with unpushed commits, ${clean} clean`);
 for (const l of lines) console.log(l);
 
-const heavy = heavyProcesses();
-console.log(`heavy: ${heavy.length} (test suites, typechecks, dev servers)`);
-for (const p of heavy) console.log(`  ${p.pid} ${p.args}`);
+let heavy = null;
+try { heavy = heavyProcesses(); } catch (e) { console.log(`heavy: unknown, ${e.message}`); }
+if (heavy) {
+  console.log(`heavy: ${heavy.length} (test suites, typechecks, dev servers)`);
+  for (const p of heavy) console.log(`  ${p.pid} ${p.args}`);
+}
 
 const fv = fileVault();
 console.log(fv.line);
 
-console.log(`summary: dirty=${dirty} unpushed=${unpushed} heavy=${heavy.length} filevault=${fv.state}`);
+console.log(`summary: dirty=${dirty} unpushed=${unpushed} heavy=${heavy ? heavy.length : 'unknown'} filevault=${fv.state}`);

@@ -1058,7 +1058,7 @@ check "DS-158 AC5 the sixth parks it as wedged, as before" '[ "$(field P-1 state
 export DESK_QUEUE="$T/queue-w.json" DESK_AUTOPILOT_STATE="$T/state-w" DESK_LOCK_DIR="$T/locks"
 mkdir -p "$T/state-w/logs" "$T/locks/desk-test.lock.d" "$T/locks/desk-test.lock.2.d" "$T/elsewhere"
 # The process table the pass reads: what $T/ps.out says, else the real ps.
-printf '#!/bin/sh\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
+printf '#!/bin/sh\n[ -f "%s/ps.fail" ] && exit 1\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
 # W-1 holds a mkdir slot (wrapper and suite); W-2's wrapper waits, polling with sleep; W-3's worktree
 # runs only a dev server and its worker, whose prompt quotes the lock commands, while another
 # session's suite holds slot 2; W-4's suite holds a flock slot.
@@ -1086,7 +1086,13 @@ check "DS-109 AC1 a quiet worker running its own suite is not stopped, and is qu
 check "DS-109 AC2 a quiet worker waiting on the test lock is not stopped, and says so" '[ "$(field W-2 state)" = "\"running\"" ] && echo "$out" | grep -q "W-2: quiet for 6 passes, waiting on the test lock"'
 check "DS-109 AC3 a quiet worker with no suite and no wait of its own is stopped as wedged" '[ "$(field W-3 state)" = "\"parked\"" ] && field W-3 park | grep -q "wedged — no output for 6 passes, worker stopped"'
 check "DS-109 AC4 one exempted past the ceiling is stopped as wedged, naming the ceiling" '[ "$(field W-4 state)" = "\"parked\"" ] && field W-4 park | grep -q "wedged — no output for 6 passes, running its suite for over the 30-minute ceiling"'
-rm -f "$T/ps.out" "$T/lsof.out"; unset DESK_LOCK_DIR
+# With ps unreadable, a quiet worker is held as one running its suite would be, and the pass says why.
+q add W-5; say "AUTOPILOT_STAGE: 4/9 verify" > "$T/state-w/logs/W-5.log"; mkdir -p "$T/wt/W-5"
+q set W-5 state=running lane=A branch=feat/W-5 session_id=live-1 "worktree=$T/wt/W-5" idle_passes=5 "log_bytes=$(wc -c < "$T/state-w/logs/W-5.log" | tr -d ' ')"
+touch "$T/ps.fail"
+out=$(node "$B/pass.mjs" 2>&1)
+check "a quiet worker is not stopped while ps cannot be read, and the pass says ps could not be read" '[ "$(field W-5 state)" = "\"running\"" ] && echo "$out" | grep -q "W-5: quiet for 6 passes, ps could not be read, so whether it is running its suite is unknown"'
+rm -f "$T/ps.fail" "$T/ps.out" "$T/lsof.out"; unset DESK_LOCK_DIR
 
 # ---- DS-194: each done ticket's PR state and checks are recorded as pr_status, until it merges or closes
 export DESK_QUEUE="$T/queue-g.json" DESK_AUTOPILOT_STATE="$T/state-g"
