@@ -43,5 +43,53 @@
     "project/Views.dc.html",
     "project/canvas.json",
     "project/support.js"
-  ]
+  ],
+  "screens": {
+    "version": "1794642341-01d3",
+    "rendered_at": "2026-11-14T08:15:51.418Z",
+    "breakpoints": [],
+    "widths": [
+      {
+        "width": 1280,
+        "label": "drawn",
+        "breakpoint": false,
+        "boards": [
+          "Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab",
+          "Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative)",
+          "Levers · today, 13 Nov (real numbers)",
+          "Levers · Trends switched to Last 30 days"
+        ]
+      }
+    ],
+    "images": [
+      {
+        "board": "Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab",
+        "screen": "opening-levers-from-desk-q-real-desk-q-frames-home-screen-line-recommended-vs-a-7th-tab",
+        "width": 1280,
+        "file": "screens/opening-levers-from-desk-q-real-desk-q-frames-home-screen-line-recommended-vs-a-7th-tab@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative)",
+        "screen": "levers-six-weeks-in-trends-on-6-weeks-12-months-illustrative",
+        "width": 1280,
+        "file": "screens/levers-six-weeks-in-trends-on-6-weeks-12-months-illustrative@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "Levers · today, 13 Nov (real numbers)",
+        "screen": "levers-today-13-nov-real-numbers",
+        "width": 1280,
+        "file": "screens/levers-today-13-nov-real-numbers@1280.png",
+        "drawn": true
+      },
+      {
+        "board": "Levers · Trends switched to Last 30 days",
+        "screen": "levers-trends-switched-to-last-30-days",
+        "width": 1280,
+        "file": "screens/levers-trends-switched-to-last-30-days@1280.png",
+        "drawn": true
+      }
+    ]
+  }
 }

@@ -18,3 +18,19 @@ Do not edit these files by hand. When the artifact has a newer version, re-save 
 | Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative) | 1280px | Main.dc.html |
 | Levers · today, 13 Nov (real numbers) | 1280px | Today.dc.html |
 | Levers · Trends switched to Last 30 days | 1280px | Views.dc.html |
+
+## Screens
+
+Rendered by `desk-design render` from version 1794642341-01d3 on 2026-11-14T08:15:51.418Z, at the
+Breakpoints (none) and each board's own width.
+
+| Width | Label | Boards drawn at it |
+|---|---|---|
+| 1280px | drawn (not a breakpoint) | Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab, Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative), Levers · today, 13 Nov (real numbers), Levers · Trends switched to Last 30 days |
+
+| Board | 1280px |
+|---|---|
+| Opening Levers from desk-q · real desk-q frames, home-screen line (recommended) vs a 7th tab | [drawn](screens/opening-levers-from-desk-q-real-desk-q-frames-home-screen-line-recommended-vs-a-7th-tab@1280.png) |
+| Levers · six weeks in, Trends on 6 weeks & 12 months (illustrative) | [drawn](screens/levers-six-weeks-in-trends-on-6-weeks-12-months-illustrative@1280.png) |
+| Levers · today, 13 Nov (real numbers) | [drawn](screens/levers-today-13-nov-real-numbers@1280.png) |
+| Levers · Trends switched to Last 30 days | [drawn](screens/levers-trends-switched-to-last-30-days@1280.png) |
