@@ -25,6 +25,7 @@ import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { slotFor } from './batches.mjs';
+import { lockPid, releaseDirLock, alive } from './dir-lock.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
@@ -36,7 +37,6 @@ const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number
 
 const refuse = (msg) => { throw new Refusal(msg); };
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 // The live process other than this one holding a `{pid}` lock file, or null.
 const holder = (file) => {
   try { const { pid } = JSON.parse(readFileSync(file, 'utf8')); return pid && pid !== process.pid && alive(pid) ? pid : null; } catch { return null; }
@@ -67,17 +67,17 @@ const queueLock = `${from.queue}.lock`;
 const busy = holder(passLock) ?? holder(join(from.state, 'supervisor.lock'));
 if (busy) refuse(`a pass is running in the standing batch (pid ${busy}): run this again once it finishes. Nothing was moved`);
 writeFileSync(passLock, JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
-const lockPid = () => { try { return Number(readFileSync(join(queueLock, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
 process.on('exit', () => {
-  if (lockPid() === process.pid) rmSync(queueLock, { recursive: true, force: true });
+  releaseDirLock(queueLock);
   try { if (JSON.parse(readFileSync(passLock, 'utf8')).pid === process.pid) unlinkSync(passLock); } catch { /* gone */ }
 });
 
-// queue.mjs's lock, taken the way it takes it: one mkdir, never over a lock that is there. A lock a
-// dead writer left is cleared by queue.mjs's next write, under its own clearing lock.
+// queue.mjs's lock (dir-lock.mjs), taken with the same mkdir but refused at once rather than waited
+// for, and never over a lock that is there. A lock a dead writer left is cleared by queue.mjs's next
+// write, under dir-lock.mjs's clearing lock.
 try { mkdirSync(queueLock); } catch (e) {
   if (e.code !== 'EEXIST') throw e;
-  const pid = lockPid();
+  const pid = lockPid(queueLock);
   refuse(`${pid && !alive(pid) ? `a queue write that has exited (pid ${pid}) left ${queueLock}: the next queue.mjs write clears it` : `a queue write holds ${queueLock}${pid ? ` (pid ${pid})` : ''}`}: run this again in a moment. Nothing was moved`);
 }
 writeFileSync(join(queueLock, 'pid'), `${process.pid}\n`);
