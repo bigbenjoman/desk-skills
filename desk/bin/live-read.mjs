@@ -174,13 +174,15 @@ export function copyFixtures({ state, key, worktree, max = MAX_BYTES }) {
 // The most an answer's named files may total to be copied into a ticket's fixtures.
 export const NAMED_MAX_BYTES = 50 * 1024 * 1024;
 
-// The absolute paths an answer names (`~/` expanded against `home`), each once, in order: a path
-// starts a word or follows a quote or bracket, and loses a sentence's trailing punctuation. One slash
-// and a word (`/pullbot`) is a slash command, not a path.
+// The absolute paths an answer names (`~/` expanded against `home`), each once, in order. A path in
+// quotes or backticks runs to the closing one, spaces and all; otherwise it starts a word or follows a
+// bracket, runs to the first unescaped space (`Screen\ Recording`, as a dragged-in path is written),
+// and loses a sentence's trailing punctuation. One slash and a word (`/pullbot`) is a slash command.
+const PATH = /(?<=^|[\s(<[{])(["'`])((?:~\/|\/)[^\n]*?)\1(?=$|[\s.,;:!?)>\]}])|(?<=^|[\s"'`(<[{])((?:~\/|\/)(?:\\ |[^\s"'`)<>\]}])*)/g;
 export function pathsIn(text, home = homedir()) {
   const out = [];
-  for (const m of String(text ?? '').matchAll(/(?:^|[\s"'`(<[{])((?:~\/|\/)[^\s"'`)<>\]}]*)/g)) {
-    const p = m[1].replace(/[.,;:!?]+$/, '');
+  for (const m of String(text ?? '').matchAll(PATH)) {
+    const p = m[2]?.trimEnd() ?? m[3].replace(/[.,;:!?]+$/, '').replace(/\\ /g, ' ');
     if (!/^(~\/|\/[^/]+\/)/.test(p)) continue;
     const abs = resolve(p.startsWith('~/') ? join(home, p.slice(2)) : p);
     if (!out.includes(abs)) out.push(abs);
@@ -192,14 +194,18 @@ const inside = (p, dir) => { const rel = relative(resolve(dir), p); return rel =
 
 // Copies each existing file or folder an answer names into <state>/fixtures/<key>/, where the pass
 // copies a ticket's fixtures into its worktree. A folder gives its own visible regular files, not its
-// subfolders. Nothing is copied from the state folders, from home or above it, from a hidden folder
-// (credentials live there), or from a git checkout's root, and a path whose files total over `max`
-// bytes copies nothing. { dir, copied: [{ path, names }], notFound: [path], tooLarge: [{ path, bytes }],
-// refused: [{ path, why }], over: [name] }, where `over` names copied files a worker's copy refuses.
+// subfolders. Nothing is copied from the state folders, from home or above it, from a hidden folder or
+// ~/Library (credentials, keychains and cookies live there), or from a git checkout's root, and a path
+// whose files total over `max` bytes copies nothing. A file whose name an earlier path in the answer
+// already gave is not copied, so one never silently replaces another. { dir, copied: [{ path, names }],
+// notFound: [path], tooLarge: [{ path, bytes }], refused: [{ path, why }], over: [name], replaced:
+// [name] }, where `over` names copied files a worker's copy refuses and `replaced` the files that were
+// already in the fixtures folder before this answer.
 export function saveNamedFixtures({ state, key, text, home = homedir(), max = NAMED_MAX_BYTES }) {
   const dir = join(state, 'fixtures', key);
-  const res = { dir, copied: [], notFound: [], tooLarge: [], refused: [], over: [] };
+  const res = { dir, copied: [], notFound: [], tooLarge: [], refused: [], over: [], replaced: [] };
   const states = [...new Set([state, repoStateOf(state)])];
+  const given = new Map();
   for (const path of pathsIn(text, home)) {
     if (states.some((s) => inside(path, s))) continue;
     if (!existsSync(path)) { res.notFound.push(path); continue; }
@@ -207,7 +213,9 @@ export function saveNamedFixtures({ state, key, text, home = homedir(), max = NA
     const real = realpathSync(path), realHome = existsSync(home) ? realpathSync(home) : resolve(home);
     if (states.some((s) => existsSync(s) && inside(real, realpathSync(s)))) continue;
     if (inside(realHome, real)) { res.refused.push({ path, why: 'it is your home folder or above it' }); continue; }
-    if (relative(inside(real, realHome) ? realHome : '/', real).split(sep).some((s) => s.startsWith('.'))) { res.refused.push({ path, why: 'it is in a hidden folder' }); continue; }
+    const segs = relative(inside(real, realHome) ? realHome : '/', real).split(sep);
+    if (segs.some((s) => s.startsWith('.'))) { res.refused.push({ path, why: 'it is in a hidden folder' }); continue; }
+    if (inside(real, realHome) && segs[0] === 'Library') { res.refused.push({ path, why: 'it is in ~/Library, where apps keep keychains, cookies and mail' }); continue; }
     const st = statSync(real);
     let files;
     if (st.isFile()) files = [{ from: path, name: basename(path), size: st.size }];
@@ -225,11 +233,16 @@ export function saveNamedFixtures({ state, key, text, home = homedir(), max = NA
     if (bytes > max) { res.tooLarge.push({ path, bytes }); continue; }
     if (!files.length) continue;
     mkdirSync(dir, { recursive: true });
+    const names = [];
     for (const f of files) {
+      if (given.has(f.name)) { res.refused.push({ path: f.from, why: `a file named ${f.name} was already copied from ${given.get(f.name)}: rename one and record it again` }); continue; }
+      if (existsSync(join(dir, f.name))) res.replaced.push(f.name);
       writeNew(join(dir, f.name), readFileSync(f.from));
-      if (f.size > MAX_BYTES && !res.over.includes(f.name)) res.over.push(f.name);
+      given.set(f.name, path);
+      names.push(f.name);
+      if (f.size > MAX_BYTES) res.over.push(f.name);
     }
-    res.copied.push({ path, names: files.map((f) => f.name) });
+    if (names.length) res.copied.push({ path, names });
   }
   return res;
 }

@@ -984,6 +984,7 @@ function namedFixturesText(r, ticket, text) {
   const mb = (n) => `${Math.ceil(n / 1048576)} MB`;
   return [
     ...f.copied.map((c) => `Copied ${c.path} into ${f.dir}/ for its next worker: ${c.names.join(', ')}.`),
+    ...(f.replaced.length ? [`That replaced the copies already there of ${f.replaced.join(', ')}.`] : []),
     ...(f.over.length ? [`Over the ${mb(MAX_BYTES)} a worktree copy takes, so its worker cannot read: ${f.over.join(', ')}.`] : []),
     ...f.notFound.map((p) => `${p} was not found, so nothing was copied from it.`),
     ...f.tooLarge.map((x) => `${x.path} is too large to copy (${mb(x.bytes)}, over ${mb(NAMED_MAX_BYTES)}), so nothing was copied from it.`),

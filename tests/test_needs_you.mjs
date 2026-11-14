@@ -1998,6 +1998,27 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const { pathsIn } = await import('../desk/bin/live-read.mjs');
   t('DS-609 a slash command or URL in an answer is not a path', pathsIn('ran /pullbot and /desk-ticket A-1, see https://x.io/a/b or (/tmp/cap/a.json).', '/h').join(), '/tmp/cap/a.json');
   t('DS-609 a file in a hidden folder, or home itself, is never copied', `${f5.ok} ${ls(fx('F-5'))} ${f5.line.includes('was not copied: it is in a hidden folder.')} ${f5.line.includes('was not copied: it is your home folder or above it.')}`, 'true - true true');
+  t('DS-609 a quoted or escaped path keeps its spaces', JSON.stringify(pathsIn('In "/tmp/Meet capture" and `/tmp/b c/d.json`, /tmp/Screen\\ Recording.mov, and it\'s at \'/tmp/x y\'.', '/h')), JSON.stringify(['/tmp/Meet capture', '/tmp/b c/d.json', '/tmp/Screen Recording.mov', '/tmp/x y']));
+
+  const spaced = join(T, 'Meet capture');
+  mkdirSync(spaced);
+  writeFileSync(join(spaced, 'meet.json'), '{}');
+  const lib = join(env.HOME, 'Library', 'Cookies');
+  mkdirSync(lib, { recursive: true });
+  writeFileSync(join(lib, 'Cookies.binarycookies'), 'secret');
+  put('ds609b', { port: 3610, beat: 1, supervised: true, tickets: Object.fromEntries(['F-6', 'F-7'].map((k) => [k, parked('A', 30, 'I need a real capture from a test Meet')])) });
+  const fxb = (k) => join(env.HOME, '.desk-autopilot', 'acme__ds609b', 'fixtures', k);
+  const f7 = N.record({ word: 'ds609b', ticket: 'F-7', action: 'resume', text: `It is in "${spaced}", not ~/Library/Cookies` });
+  t('DS-609 a quoted folder with a space is copied, and ~/Library never is', `${f7.ok} ${ls(fxb('F-7'))} ${f7.line.includes('/Library/Cookies was not copied: it is in ~/Library')}`, 'true meet.json true');
+
+  const [ca, cb] = [join(T, 'cap-a'), join(T, 'cap-b')];
+  for (const d of [ca, cb]) { mkdirSync(d); writeFileSync(join(d, 'data.csv'), d); }
+  writeFileSync(join(ca, 'notes.txt'), 'new');
+  mkdirSync(fxb('F-6'), { recursive: true });
+  writeFileSync(join(fxb('F-6'), 'notes.txt'), 'old');
+  const f6 = N.record({ word: 'ds609b', ticket: 'F-6', action: 'resume', text: `old is ${ca} and new is ${cb}` });
+  t('DS-609 a second file of the same name is not copied over the first, and says so', `${readFileSync(join(fxb('F-6'), 'data.csv'), 'utf8') === ca} ${f6.line.includes(`${join(cb, 'data.csv')} was not copied: a file named data.csv was already copied from ${ca}`)} ${f6.line.includes(`Copied ${cb}`)}`, 'true true false');
+  t('DS-609 a file already in the fixtures folder that a copy replaces is named', `${readFileSync(join(fxb('F-6'), 'notes.txt'), 'utf8')} ${f6.line.includes('That replaced the copies already there of notes.txt.')}`, 'new true');
 }
 
 // Refusals.
