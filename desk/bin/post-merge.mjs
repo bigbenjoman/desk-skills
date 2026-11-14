@@ -1,6 +1,6 @@
 // The post-merge watch. For WATCH_DAYS after a ticket's PR merges, a revert of it on the default
 // branch, or a default-branch run that fails within RED_HOURS of the merge, is recorded against the
-// ticket in <state>/post-merge.jsonl, where the levers' post-merge guardrail and revert trip read it.
+// ticket in <state>/post-merge.jsonl.
 // The queue maps a PR to its ticket and its merge time. Appended only, one line per record:
 //   {kind: 'revert',   ticket, pr, merged_at, commit, subject, at}
 //   {kind: 'red_main', ticket, pr, merged_at, run: {id, name, url, created_at}, at}
@@ -15,7 +15,7 @@ export const WATCH_DAYS = 14;
 export const RED_HOURS = 24;
 export const SCAN_EVERY_MS = 86_400_000;
 const DAY_MS = 86_400_000;
-const RUN_LIMIT = 200;
+const RUN_LIMIT = 1000;
 const FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
 
 export const postMergePath = (state) => join(state, FILE);
@@ -75,22 +75,30 @@ export function findRecords({ merges, commits, runs, at }) {
   return found;
 }
 
-// One scan, if one is due: `log(sinceIso)` gives the default branch's commits and `runs()` its runs,
-// each throwing when it cannot read. -> {ran, written: [records], complete, why, line}
-export function postMergeScan({ state, queue, log, runs, now = Date.now(), force = false }) {
+const lastScan = (have) => Math.max(-Infinity, ...have.filter((r) => r.kind === 'scan').map((r) => Date.parse(r.at)).filter(Number.isFinite));
+// A merge a day older than the watch is still read, so a scan a day late misses nothing in it.
+const watched = (queue, now) => mergedTickets(queue).filter((m) => now - Date.parse(m.merged_at) <= (WATCH_DAYS + 1) * DAY_MS);
+
+// Whether a scan is due and has a merge to watch: the supervisor runs a pass for it on an idle batch,
+// which would otherwise run none, so the watch lasts its WATCH_DAYS after the batch's last merge.
+export function postMergeDue({ state, queue, now = Date.now() }) {
+  return now - lastScan(readPostMerge(state)) >= SCAN_EVERY_MS && watched(queue, now).length > 0;
+}
+
+// One scan, if one is due: `log(sinceIso)` gives the default branch's commits and `runs(sinceIso)` its
+// runs since then, each throwing when it cannot read all of them. -> {ran, written: [records], line}
+export function postMergeScan({ state, queue, log, runs, now = Date.now() }) {
   const have = readPostMerge(state);
-  const last = Math.max(-Infinity, ...have.filter((r) => r.kind === 'scan').map((r) => Date.parse(r.at)).filter(Number.isFinite));
-  if (!force && now - last < SCAN_EVERY_MS) return { ran: false, written: [], complete: true, why: null, line: null };
+  if (now - lastScan(have) < SCAN_EVERY_MS) return { ran: false, written: [], line: null };
   const at = new Date(now).toISOString();
-  // A merge a day older than the watch is still read, so a scan a day late misses nothing in it.
-  const merges = mergedTickets(queue).filter((m) => now - Date.parse(m.merged_at) <= (WATCH_DAYS + 1) * DAY_MS);
+  const merges = watched(queue, now);
   const why = [];
   let commits = [];
   let runList = null;
   if (merges.length) {
     const since = new Date(Math.min(...merges.map((m) => Date.parse(m.merged_at)))).toISOString();
     try { commits = log(since); } catch (e) { why.push(`default-branch log not read: ${firstLine(e)}`); }
-    try { runList = runs(); } catch (e) { why.push(`default-branch runs not read: ${firstLine(e)}`); }
+    try { runList = runs(since); } catch (e) { why.push(`default-branch runs not read: ${firstLine(e)}`); }
   }
   const seen = new Set(have.map(recordKey).filter(Boolean));
   const written = findRecords({ merges, commits, runs: runList, at }).filter((r) => !seen.has(recordKey(r)) && seen.add(recordKey(r)));
@@ -102,7 +110,7 @@ export function postMergeScan({ state, queue, log, runs, now = Date.now(), force
   const line = written.length || !complete
     ? `post-merge watch: ${named.length ? named.join(', ') : 'nothing recorded'}${complete ? '' : `; scan incomplete (${why.join('; ')})`}`
     : null;
-  return { ran: true, written, complete, why: complete ? null : why.join('; '), line };
+  return { ran: true, written, line };
 }
 
 function firstLine(e) { return String(e?.stderr || e?.message || e).trim().split('\n')[0]; }
@@ -113,24 +121,27 @@ export function gitLog(cwd, ref, since) {
   return out.split('\n').filter(Boolean).map((l) => { const [sha, at, ...s] = l.split('\t'); return { sha, at, subject: s.join('\t') }; });
 }
 
-// The default branch's latest workflow runs on GitHub.
-export function ghRuns(repo, branch) {
-  const out = execFileSync('gh', ['run', 'list', '--repo', repo, '--branch', branch, '--limit', String(RUN_LIMIT), '--json', 'databaseId,workflowName,conclusion,createdAt,url'],
+// The default branch's workflow runs on GitHub created since the day of `since`. A list that fills
+// RUN_LIMIT may have dropped older runs, so it throws rather than pass for a complete read.
+export function ghRuns(repo, branch, since) {
+  const out = execFileSync('gh', ['run', 'list', '--repo', repo, '--branch', branch, '--created', `>=${since.slice(0, 10)}`, '--limit', String(RUN_LIMIT), '--json', 'databaseId,workflowName,conclusion,createdAt,url'],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  return JSON.parse(out).map((r) => ({ id: r.databaseId, name: r.workflowName, url: r.url, conclusion: r.conclusion, created_at: r.createdAt }));
+  const list = JSON.parse(out);
+  if (list.length >= RUN_LIMIT) throw new Error(`more than ${RUN_LIMIT} runs since ${since.slice(0, 10)}, list truncated`);
+  return list.map((r) => ({ id: r.databaseId, name: r.workflowName, url: r.url, conclusion: r.conclusion, created_at: r.createdAt }));
 }
 
 // The scan as a pass runs it, once a day: the default branch fetched in `cwd`, then read from origin.
 // -> the line for the pass's report, or null when there is nothing to say.
-export function postMergeWatch({ state, queue, repo, branch, cwd, now = Date.now() }) {
+export function postMergeWatch({ state, queue, repo, branch, cwd }) {
   try {
     return postMergeScan({
-      state, queue, now,
+      state, queue,
       log: (since) => {
         execFileSync('git', ['-C', cwd, 'fetch', '-q', 'origin', branch], { stdio: 'ignore' });
         return gitLog(cwd, `origin/${branch}`, since);
       },
-      runs: () => ghRuns(repo, branch),
+      runs: (since) => ghRuns(repo, branch, since),
     }).line;
   } catch (e) { return `post-merge watch: not run (${firstLine(e)})`; }
 }

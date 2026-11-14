@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { postMergeScan, readPostMerge, revertedPr, gitLog, postMergePath } from '../desk/bin/post-merge.mjs';
+import { postMergeScan, postMergeDue, readPostMerge, revertedPr, gitLog, postMergePath } from '../desk/bin/post-merge.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -75,6 +75,16 @@ t('AC6 and records the scan as incomplete', recs6.find((r) => r.kind === 'scan')
 t('AC6 saying why', /runs not read: gh: HTTP 502/.test(recs6.find((r) => r.kind === 'scan')?.why), true);
 t('AC6 the revert is still recorded from the log', recs6.filter((r) => r.kind === 'revert').length, 1);
 t('AC6 the pass line says the scan was incomplete', /scan incomplete/.test(r6.line), true);
+
+let asked = null;
+postMergeScan({ state: join(tmp, 'state7'), queue, log, runs: (since) => { asked = since; return []; }, now: NOW });
+t('the runs are read from the earliest watched merge', asked, iso(mergedD));
+
+// The supervisor runs a pass on an idle batch when a scan falls due, so the watch outlives the batch's last pass.
+t('a scan is due with no scan yet and a merge watched', postMergeDue({ state: join(tmp, 'state8'), queue, now: NOW }), true);
+t('a scan is not due within a day of the last', postMergeDue({ state, queue, now: NOW + 26 * H }), false);
+t('a scan is due a day after the last', postMergeDue({ state, queue, now: NOW + 50 * H }), true);
+t('a scan is not due once every merge is past the watch', postMergeDue({ state, queue, now: mergedA + 17 * 24 * H }), false);
 
 rmSync(tmp, { recursive: true, force: true });
 if (fails) { console.log(`${fails} failed`); process.exit(1); }
