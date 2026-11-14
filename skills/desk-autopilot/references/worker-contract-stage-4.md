@@ -10,17 +10,13 @@ typecheck, lint or build you run at any stage. It binds exactly as the core does
 This rule lives here as well as in `batch-notes.md` because that file gets reset and this one does
 not. Where the two disagree, the stricter wins.
 
-A parallel test runner (Jest, Vitest and most others) sizes itself at `cpus - 1` workers by default,
-~0.7GB each, with no awareness of the sibling worker, the second batch, or the user's own session
-starting the same run a second later. One uncapped run can take the machine from 6GB to nearly 18GB.
-
 **Cap it and lock it every time. Never the bare §4 Unit tests command.** Each item of
 `desk-env cmds test-cmd` (and `typecheck-cmd`, `integration-cmd`) is a `DIR<TAB>CMD` pair; run it
 under the lock **in its directory with `--cwd`**, never as `cd <dir> && …` (a compound command is
 refused and would run unlocked). The cap is config §3b "Test worker cap under the test lock"
 (`desk-env get test-cap`), appended as `--maxWorkers=<cap>` **only when the command is Jest or Vitest**, in the form §4 Unit
 tests gives for passing arguments. Never append it to pytest or any other runner: pytest rejects it
-and the suite fails before running (pytest is single-process unless the repo configures otherwise).
+and the run fails at once.
 
 ```bash
 ~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> --maxWorkers=<cap> [<spec files>]   # Jest / Vitest only
@@ -29,19 +25,25 @@ and the suite fails before running (pytest is single-process unless the repo con
 ~/.claude/desk/bin/with-lock.sh tsc  --cwd <DIR> -- <typecheck CMD>
 ```
 
-For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well. The `--` is
-optional, and `<DIR>` may also be written as your worktree's absolute path. Write the command
-exactly as the row gives it, then your arguments: the allow rule matches that prefix and nothing
-else.
+An item at the root (`<DIR>` `.`) may drop `--cwd`, and `<DIR>` may be your worktree's absolute path.
+Write the command exactly as the row gives it, then your arguments: the allow rule matches that
+prefix and nothing else.
 
 Use the lower cap §3b gives (by default half) while `desk-env mem status` shows `avail=` in the hold
 band (config §3b "Spawn gate (available memory)", `desk-env get spawn-gate`; by default 4–8 GiB), and `1` for a database-backed
-integration suite in that band. The lock is what stops two suites landing in the same minute, which
-is the case that actually kills the machine. It blocks until it frees and releases on exit,
+integration suite in that band. The lock blocks until it frees and releases on exit,
 including on a crash: **do not add a timeout and do not work around a wait; waiting is the
-feature.** Blocked over ~20 minutes: say so in your output rather than bypassing it. If
-`with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you
-ran unlocked**.
+feature.** If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your
+output that you ran unlocked**.
+
+**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** Silence is
+not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its
+`flock … desk-test.lock`, with no child running your command. At 20 minutes (`etime`) so, commit all
+your work, `TaskStop` it, and note the holder: a live pid in `desk-test.lock*{.pid,.d/pid}` in
+`DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child. Record each suite
+in your verification and the PR's Testing as `not run locally: test lock busy (<holder>); CI's
+required tests cover it`, print one `engineering` `AUTOPILOT_DECISION` naming them and the holder,
+and carry on. A typecheck or lint does the same. A started run is yours: fix what fails.
 
 The typecheck takes the same lock, so typecheck and tests never overlap. Screenshot capture uses
 `with-lock.sh browser`: a dev server plus Chromium is hundreds of MB, not ten GB, and should not
@@ -57,8 +59,7 @@ desk-env mem status   # gate on avail=, never on vmmem= or free's used
 ```
 
 Under ~4 GiB available, wait and retry rather than starting a suite; a sibling mid-suite will drain.
-A brief spike is fine: sustained time up there is what hurts. Never raise the worker count because
-the machine looks idle: it looks idle right until two workers hit Stage 4 together, and an OOM takes
+Never raise the worker count because the machine looks idle: it looks idle until two workers hit Stage 4 together, and an OOM takes
 every worker, worktree, database and port with it. Your port is assigned in your briefing; never
 kill a server you did not start, it is likely another session's.
 
