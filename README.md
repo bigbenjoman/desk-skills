@@ -249,7 +249,8 @@ close. A merge driver still running for such a batch has nothing left to merge, 
 reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting
 between loops on the new code with the same tickets (one mid-loop is left, and named). Each tick
 keeps `code` in `<state>/supervisor.json`, saying whether the agent or the running merge driver
-started at an older version.
+started at an older version, and restarts a handed-over batch's driver on old code the same way once
+it waits between loops.
 
 ```
 node ~/.claude/desk/bin/supervisor.mjs install [--interval <s>]   write and load the agent (default 180s)
