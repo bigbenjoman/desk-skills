@@ -68,8 +68,7 @@ agents, scripts and the skill index are copies made by `install.sh`. After any p
 ```
 
 and report its warning count. It installs nothing (exit 3) from a checkout off `main` or behind
-`origin/main`, or when it cannot fetch to check: report its `Nothing installed:` line verbatim (the
-branch and the commits behind) and never re-run it with `--any-branch` for the user. Its output ends with a `Skipped (no terminal): <n> prompt(s)` block
+`origin/main`, or when it cannot fetch to check: report its `Nothing installed:` line verbatim and never re-run it with `--any-branch` for the user. Its output ends with a `Skipped (no terminal): <n> prompt(s)` block
 listing every prompt it skipped, each as a `SKIP  <question>` line followed by an
 `apply: <command>` line (the exact command that does it, or `run in a terminal: cd … && ./install.sh`
 where there is none). Each one becomes a SETTING row in §2 and an option in §3, never applied

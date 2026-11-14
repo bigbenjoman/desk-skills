@@ -680,8 +680,9 @@ the expected skill, and Claude opened the index on the 3 ambiguous ones. To undo
 ./install.sh --any-branch   # install a checkout off main or behind origin/main, which it otherwise refuses
 ```
 
-It fetches `origin/main` first and installs nothing from another branch, a detached HEAD, a `main`
-behind `origin/main`, or when the fetch fails, saying the branch and how many commits behind.
+It fetches `origin/main` first and installs nothing from another branch, a detached HEAD or a `main`
+behind `origin/main`, saying the branch and how many commits behind; nor when the fetch fails,
+saying the check could not run.
 
 What it does:
 
