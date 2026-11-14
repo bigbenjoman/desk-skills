@@ -884,7 +884,7 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   const failed = { ...built, code: 1, tail: 'step 7 / ECR denied the push' };
   // ctx.build as pass.mjs gives it: buildCall on the red build checks alone, with the record at HEAD.
   const bctx = (rec, { behind = () => null, rerun = 'yes', ...o } = {}) => ctx({ operator: [], builds: rows,
-    build: (failing) => buildCall({ pending: [], failing }, { builds: rows, rerun, built: (h) => (h === HEAD ? rec : null), behind }, 697, HEAD, tk()), ...o });
+    build: (failing, gate) => buildCall({ pending: gate?.pending ?? [], running: gate?.running, failing }, { builds: rows, rerun, built: (h) => (h === HEAD ? rec : null), behind }, 697, HEAD, tk()), ...o });
   const only = pr([ok('tests'), red('Flows image', '903')]);
   const a1 = fixCall(tk(), only, bctx(null));
   t('DS-548 AC1 ready and red only on a check build not run at its head: the build runs', `${a1?.call} | ${a1?.command} | ${a1?.checks} | ${a1?.runs}`, 'build | ./scripts/ensure-flows-image.sh | Flows image | 903');
@@ -920,6 +920,14 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-548 AC4 negative control: still red after a build that passed and its re-run, a plain red check, not a failed build', `${still?.call} | ${JSON.stringify(still?.checks)}`, 'stuck | [{"name":"Flows image"}]');
   const refused = fixCall(tk(), only, bctx({ ...built, reran: { ok: false, out: 'HTTP 403' } }));
   t('DS-548 AC4 negative control: a refused re-run is the person\'s step, not a failed build', `${refused?.call} | ${JSON.stringify(refused?.checks)}`, 'stuck | [{"name":"Flows image","command":"re-run \\"Flows image\\" on #697"}]');
+  // DS-647: with checks still running in another run, a ready PR red only on a check build is built at once.
+  const busy = (runId) => ({ name: 'Lint', status: 'in_progress', conclusion: null, runId });
+  const p647 = pr([ok('tests'), red('Flows image', '903'), busy('902')]);
+  t('DS-647 AC4 ready, red only on a check build beside another run still running: the build runs', `${fixCall(tk(), p647, bctx(null))?.call}`, 'build');
+  t('DS-647 AC4 built, with only another run running, the check is re-run', fixCall(tk(), p647, bctx(built))?.call, 'rebuilt');
+  t('DS-647 AC4 built, with its own run still running, nothing yet', fixCall(tk(), pr([ok('tests'), red('Flows image', '903'), busy('903')]), bctx(built)), null);
+  t('DS-647 AC4 negative control: a red check a worker fixes beside it still waits for the running check', fixCall(tk(), pr([ok('tests'), red('Flows image', '903'), red('Lint2', '904'), busy('902')]), bctx(null)), null);
+  t('DS-647 AC4 negative control: with ci-rerun not yes, nothing while checks run, as before', fixCall(tk(), p647, bctx(null, { rerun: 'ask' })), null);
   const steps = { premerge: [{ name: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' }], steps: () => [] };
   const both = pr([ok('tests'), red('Flows image', '903'), red('Check portal schema mirror', '905')]);
   const a5 = fixCall(tk(), both, bctx(null, steps));
