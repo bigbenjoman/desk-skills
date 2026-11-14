@@ -501,7 +501,7 @@ t('DS-440 AC5 the conflict reason still ignores a sync try\'s summary', conflict
 const jobs375 = JSON.parse(readFileSync(new URL('./fixtures/gh-run-view-jobs.json', import.meta.url), 'utf8'));
 t('DS-375 AC2 the failed step is read from the run, by its job\'s name', failedSteps(jobs375, 'tests').join(), 'Run tests');
 t('DS-375 AC2 a check with no job in the run, or a payload of another shape, names none',
-  [failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: 'x' }, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [{ conclusion: 'failure' }] }] }, 'tests')].map((x) => x.length).join(), '0,0,0,0');
+  [failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: 'x' }, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [{ conclusion: 'failure' }] }] }, 'tests')].map((x) => (x ?? []).length).join(), '0,0,0,0');
 const steps375 = (f) => (f.name === 'Lint' ? ['Run eslint'] : []);
 const c375 = fixCall(tk({ fix_tries: two }), both, ctx({ steps: steps375 }));
 t('DS-375 AC2 still red after both tries: each check with the step its run failed at', c375?.why, 'still red after 2 fix tries: Backend tests, Lint (failed step: Run eslint)');
@@ -522,6 +522,26 @@ t('DS-375 AC5 a check failing at a §4 Pre-merge steps step: never requeued, stu
 t('DS-375 AC5 the same check failing at another step is a worker\'s', fixCall(tk(), lint375, ctx({ operator: [], premerge, steps: () => ['Run eslint'] }))?.call, 'requeue');
 t('DS-375 AC5 a draft reads the row the same way', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [{ name: 'Lint, Type Check & Build', runId: '904' }] }, { repo: 'acme/widgets', premerge, steps: () => ['Check portal schema mirror'] })?.call, 'stuck');
 t('DS-375 the reason with no worker\'s check left names only what a person clears', stuckWhy({ lead: 'still red after 1 fix try', checks: [{ name: 'Flows image', command: 'x.sh' }] }), 'Flows image · x.sh');
+
+// A §4 Pre-merge steps item named after a whole job is the person's only for the step it describes:
+// a failed step sharing a word with the item's text. Any other failed step in that job is a worker's.
+const fast = [{ name: 'Fast checks', command: 'apply the PR\'s migrations to the staging schema first, then re-run the job' }];
+const fast567 = pr([ok('tests'), red('Fast checks', '906')]);
+const scan567 = fixCall(tk(), fast567, ctx({ operator: [], premerge: fast, steps: () => ['Diff Sanity Scan'] }));
+t('DS-567 AC1 a job-keyed item, its job red only at another step: the failure goes to a fix worker', `${scan567?.call} | ${scan567?.fix?.what} | ${scan567?.fix?.not_mine.length}`, 'requeue | red: Fast checks | 0');
+t('DS-567 AC1 a draft reads the item the same way', draftChecksFix(tk(), { pr: 702, head: HEAD, failing: [{ name: 'Fast checks', runId: '906' }] }, { repo: 'acme/widgets', premerge: fast, steps: () => ['Run eslint'] })?.call, 'requeue');
+const ack567 = fixCall(tk(), fast567, ctx({ operator: [], premerge: fast, steps: () => ['Migration Staging Ack'], reruns: () => 0 }));
+t('DS-567 AC2 the same item, its job red at the step it describes: the person\'s step, naming it', `${ack567?.call} | ${ack567?.why}`,
+  'stuck | Fast checks (failed step: Migration Staging Ack) · apply the PR\'s migrations to the staging schema first, then re-run the job');
+t('DS-567 AC2 red at both, the person\'s step', fixCall(tk(), fast567, ctx({ operator: [], premerge: fast, steps: () => ['Diff Sanity Scan', 'Migration Staging Ack'], reruns: () => 0 }))?.call, 'stuck');
+const unread567 = fixCall(tk(), fast567, ctx({ operator: [], premerge: fast, steps: () => null, reruns: () => 0 }));
+t('DS-567 AC3 the job\'s steps cannot be read: the person\'s step, saying so', `${unread567?.call} | ${unread567?.why}`,
+  'stuck | Fast checks (failed step not readable) · apply the PR\'s migrations to the staging schema first, then re-run the job');
+t('DS-567 AC3 and the check carries that for needs-you', JSON.stringify(unread567?.checks?.[0]), JSON.stringify({ name: 'Fast checks', unread: true, command: fast[0].command }));
+t('DS-567 AC3 a check with no run to read is the same', fixCall(tk(), pr([ok('tests'), red('Fast checks', null)]), ctx({ operator: [], premerge: fast, steps: () => ['Diff Sanity Scan'], reruns: () => 0 }))?.why,
+  'Fast checks (failed step not readable) · apply the PR\'s migrations to the staging schema first, then re-run the job');
+t('DS-567 a run with no such job, or a job with no steps, is unreadable; one read with none failed names none',
+  JSON.stringify([failedSteps(jobs375, 'Lint'), failedSteps(null, 'tests'), failedSteps({ jobs: [{ name: 'tests', steps: [] }] }, 'tests'), failedSteps(jobs375, 'tests')]), JSON.stringify([null, null, [], ['Run tests']]));
 
 // DS-379: a draft's screenshots nobody took go to a capture worker, once per PR, outside the fix tries.
 const cp = captureTry(tk(), { pr: 761, head: HEAD, files: ['a-before.png', 'a-after.png'] });
@@ -745,6 +765,17 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-500 a stale, missing or old-format verdict line reads stale', [staleLine, oldFormatLine].map(staleVerdict).join(), 'true,true');
   t('DS-500 one that is there and not clean, or an approval line, does not', [dirtyLine, studiaLine, limitLine].map(staleVerdict).join(), 'false,false,false');
 
+  // A gate listed as approval that failed its verdict step goes to a review try, then to the person
+  // named as that step.
+  const noReviewLine = 'No PullBot review at f93b2f8a0 yet';
+  const APPROVAL = gctx({ stateChecks: [{ name: GATE, kind: 'approval' }] });
+  t('DS-583 a line saying no review is at the head reads stale, and desk\'s own approval line does not', [noReviewLine, deskLine].map(staleVerdict).join(), 'true,false');
+  const r1 = gateTry(tk(), pr([ok('tests'), gateRed(noReviewLine)]), APPROVAL);
+  t('DS-583 AC2 a gate listed as approval red on its verdict step goes to a review try', `${r1?.call} ${r1?.fix.kind} ${r1?.fix.try}/${r1?.fix.of} ${r1?.fix.ready}`, 'requeue rereview 1/2 true');
+  t('DS-583 AC2 once the review tries at its head are spent, it is stuck naming the verdict step',
+    gateTry(tk({ fix_tries: [r1.fix, r1.fix] }), pr([ok('tests'), gateRed(noReviewLine)]), APPROVAL)?.why,
+    `no review verdict readable at its head after 2 review tries at it: its "${GATE}" check says: ${noReviewLine}`);
+
   // AC1: a protected file the criteria may not need goes to a worker, with the files in its brief.
   const p1 = gateTry(tk(), pr([ok('tests'), gateRed(pkgLine)]), gctx());
   t('DS-500 AC1 a protected file goes to a protected-files try', `${p1?.call} ${p1?.fix.kind} ${p1?.fix.try}/${p1?.fix.of} ${p1?.fix.ready}`, `requeue protected 1/${FIX_TRIES_MAX} true`);
@@ -864,7 +895,7 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   const failed = { ...built, code: 1, tail: 'step 7 / ECR denied the push' };
   // ctx.build as pass.mjs gives it: buildCall on the red build checks alone, with the record at HEAD.
   const bctx = (rec, { behind = () => null, rerun = 'yes', ...o } = {}) => ctx({ operator: [], builds: rows,
-    build: (failing) => buildCall({ pending: [], failing }, { builds: rows, rerun, built: (h) => (h === HEAD ? rec : null), behind }, 697, HEAD, tk()), ...o });
+    build: (failing, gate) => buildCall({ pending: gate?.pending ?? [], running: gate?.running, failing }, { builds: rows, rerun, built: (h) => (h === HEAD ? rec : null), behind }, 697, HEAD, tk()), ...o });
   const only = pr([ok('tests'), red('Flows image', '903')]);
   const a1 = fixCall(tk(), only, bctx(null));
   t('DS-548 AC1 ready and red only on a check build not run at its head: the build runs', `${a1?.call} | ${a1?.command} | ${a1?.checks} | ${a1?.runs}`, 'build | ./scripts/ensure-flows-image.sh | Flows image | 903');
@@ -900,6 +931,14 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-548 AC4 negative control: still red after a build that passed and its re-run, a plain red check, not a failed build', `${still?.call} | ${JSON.stringify(still?.checks)}`, 'stuck | [{"name":"Flows image"}]');
   const refused = fixCall(tk(), only, bctx({ ...built, reran: { ok: false, out: 'HTTP 403' } }));
   t('DS-548 AC4 negative control: a refused re-run is the person\'s step, not a failed build', `${refused?.call} | ${JSON.stringify(refused?.checks)}`, 'stuck | [{"name":"Flows image","command":"re-run \\"Flows image\\" on #697"}]');
+  // DS-647: with checks still running in another run, a ready PR red only on a check build is built at once.
+  const busy = (runId) => ({ name: 'Lint', status: 'in_progress', conclusion: null, runId });
+  const p647 = pr([ok('tests'), red('Flows image', '903'), busy('902')]);
+  t('DS-647 AC4 ready, red only on a check build beside another run still running: the build runs', `${fixCall(tk(), p647, bctx(null))?.call}`, 'build');
+  t('DS-647 AC4 built, with only another run running, the check is re-run', fixCall(tk(), p647, bctx(built))?.call, 'rebuilt');
+  t('DS-647 AC4 built, with its own run still running, nothing yet', fixCall(tk(), pr([ok('tests'), red('Flows image', '903'), busy('903')]), bctx(built)), null);
+  t('DS-647 AC4 negative control: a red check a worker fixes beside it still waits for the running check', fixCall(tk(), pr([ok('tests'), red('Flows image', '903'), red('Lint2', '904'), busy('902')]), bctx(null)), null);
+  t('DS-647 AC4 negative control: with ci-rerun not yes, nothing while checks run, as before', fixCall(tk(), p647, bctx(null, { rerun: 'ask' })), null);
   const steps = { premerge: [{ name: 'Check portal schema mirror', command: 'apply the PR\'s migrations to staging first' }], steps: () => [] };
   const both = pr([ok('tests'), red('Flows image', '903'), red('Check portal schema mirror', '905')]);
   const a5 = fixCall(tk(), both, bctx(null, steps));

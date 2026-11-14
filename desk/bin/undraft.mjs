@@ -435,7 +435,9 @@ function stuckCall(gate, checks, cfg, n) {
 
 // A red gate whose every failing check §4 Check builds names (cfg.builds, [{ name, command }]), while
 // §3 ci-rerun is yes: the build that clears it, once per head (cfg.built(head), check-build.mjs
-// buildRecord). `build` starts it, `wait` while it or another check runs, `rebuilt` re-runs the checks with --failed once
+// buildRecord). `build` starts it at once, whatever else is still running, `wait` while it runs, or
+// while a check in a failing check's own run does once it succeeded (gate.running; a pending check whose run
+// is unknown counts as one), `rebuilt` re-runs the checks with --failed once
 // it succeeded, `sync` when it failed at a head behind its base (cfg.behind(head) -> the base's name, or
 // null when the head has it or git cannot say), and `person` when it failed at a head up to date with its base,
 // its re-run was refused, or the checks are still red after it. Anything else is null, handled as any red check.
@@ -449,13 +451,22 @@ export function buildCall(gate, cfg, n, head, t) {
   if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
   const names = [...new Set(failing.map((f) => f.name))];
   const checks = names.map((x) => `"${x}"`).join(', ');
-  if (gate.pending.length) return { call: 'wait', why: `checks still running (${gate.pending.join(', ')}) beside ${checks}, which §4 Check builds clears once they finish` };
   const at = String(head ?? '?').slice(0, 9);
   const rec = cfg.built?.(head) ?? null;
   const command = rec?.command ?? [...new Set(names.map((x) => builds.get(x)))].join(' && ');
   const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
+  // The build needs nothing else to finish: it starts on the first pass that sees the check red.
   if (!rec) return { call: 'build', why: `${checks} red at ${at}, which §4 Check builds clears: \`${command}\` runs at the head, then the check is re-run`, command, checks: names, runs };
   if (rec.state === 'running') return { call: 'wait', why: `its check build \`${command}\` is running at ${at}, then ${checks} is re-run` };
+  // GitHub refuses `gh run rerun --failed` on a run still in progress, so the re-run waits on the failing
+  // checks' own runs alone; a pending check in another workflow's run does not hold it.
+  const toRerun = rec.code === 0 && !rec.reran;
+  if (toRerun) {
+    const own = new Set(runs);
+    const busy = (gate.running ?? gate.pending.map((name) => ({ name, runId: null })))
+      .filter((p) => !own.size || p.runId == null || own.has(String(p.runId))).map((p) => p.name);
+    if (busy.length) return { call: 'wait', why: `its check build \`${command}\` ran at ${at}; ${checks} is re-run once ${busy.join(', ')} finishes, as GitHub re-runs no run still in progress` };
+  } else if (gate.pending.length) return { call: 'wait', why: `checks still running (${gate.pending.join(', ')}) beside ${checks}, which §4 Check builds clears once they finish` };
   if (rec.code !== 0) {
     const exit = rec.code == null ? 'stopped before it finished' : `exited ${rec.code}`;
     const failed = `its check build \`${command}\` ${exit} at ${at}${rec.tail ? `: ${rec.tail}` : ''}`;
@@ -464,7 +475,7 @@ export function buildCall(gate, cfg, n, head, t) {
     if (base) return { call: 'sync', why: `${failed}; its head is behind ${base}`, action: `merge ${base} into #${n}'s branch, fix what the merge breaks and push; its check build then runs at the new head`, base, ...said };
     return { call: 'person', why: `${failed}${syncSaid(t ?? {})}`, action: `fix the build, run it at the head of #${n}, then re-run ${checks}`, ...said };
   }
-  if (!rec.reran) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
+  if (toRerun) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
   if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}`, lead: `its check build \`${command}\` ran, but the re-run was refused: ${rec.reran.out}`, each: { command: `re-run ${checks} on #${n}` } };
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
 }
@@ -571,7 +582,8 @@ export const crashOf = (t, n) => (t.upload_crash && Number(t.upload_crash.pr) ==
 // The call for a draft's `_drag <file>_` cells, or null with none left: only the cells hold it here,
 // however its upload ended. Each goes to what can fill it: §4 Evidence workflow, then for any it left
 // with no file a capture worker (fix-tries.mjs captureTry), then for files desk holds the §3 pr-images
-// upload, and the person only once none can. cfg as undraftCall's (evidence, evidenceRun, missingShots).
+// upload, and the person only once none can. cfg as undraftCall's (evidence, evidenceRun, missingShots,
+// upload, shotDir).
 export function cellCall(t, pr, cfg) {
   const cells = dragCells(pr.body);
   if (!cells) return null;
@@ -598,6 +610,18 @@ export function cellCall(t, pr, cfg) {
   if (t.images_reported === true && t.images_uploaded !== true) {
     return { ...person(`${left}, whose files are saved, but config §3 pr-images leaves their upload to you`, `approve it with \`DESK_UPLOAD_APPROVED=1 node ~/.claude/desk/bin/upload-images.mjs ${n} <its screenshot directory>\``), unapproved: true };
   }
+  // Files desk holds for every cell (cfg.missingShots found none missing) that no upload was tried for:
+  // the pass's own upload puts them in (KAN-629: a worker that captured but never printed
+  // AUTOPILOT_IMAGES left its cells to the person while desk held every file). cfg.upload is §3
+  // pr-images as the pass reads it, cfg.shotDir the ticket's screenshot directory (evidence.mjs
+  // ticketShotDir). Only `none` of the recorded outcomes allows it: `none` is recorded where the
+  // directory held no screenshot, so no asset of these files exists on GitHub and one upload duplicates
+  // nothing. `true` and `partial` mean the uploader already put assets on GitHub, which it cannot list
+  // or reuse, so uploading the directory again would duplicate them (uploadShots); those cells stay
+  // the person's, as before. A spawn clears the flag, so a later round's own screenshots are not held back.
+  if (cfg.upload === 'yes' && cfg.shotDir && cfg.missingShots && (t.images_uploaded == null || t.images_uploaded === 'none')) {
+    return { call: 'upload', why: `${left}, whose files desk holds in ${cfg.shotDir}, and the pass uploads them`, action: null, dir: cfg.shotDir };
+  }
   if (evidence) return evidence;
   return person(`${left}, whose files desk holds but could not put in the body`, noCellsLeft(n));
 }
@@ -616,6 +640,7 @@ export function cellPlan(t, pr, cfg) {
     if (c.call === 'evidence-failed') return `${wf} ${c.conclusion === 'failure' ? 'failed' : 'filled none of its cells'}, so desk fixes the workflow for the repo and runs it again`;
     if (c.call === 'capture' && c.files.includes(file)) return spent ? "desk's capture try could not take it" : 'a capture worker takes it at the next pass';
     if (c.unapproved) return 'its file is saved, and config §3 pr-images leaves its upload to you';
+    if (c.call === 'upload') return 'desk holds its file and uploads it at the next pass';
     if (/^its evidence workflow/.test(c.why ?? '')) return `${wf} ran and could not take it`;
     return 'desk holds its file but could not put it in the body';
   };
@@ -647,11 +672,12 @@ export function personHold(t, n, redrafts = []) {
 // (checks as pr_status keeps them; carry(sha), when given, says whether a verdict posted on sha holds at
 // the head, as verdictCarries does, and scope(sha, body) what a head it does not hold at still needs
 // read, as reviewScope does). cfg: { spine, perm, approved, localReview, clean, handle, required,
-// advisory, permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
+// advisory, stateChecks (§4 State checks, gate.mjs parseStateChecks's checks), permKey, judgement, rerun (§3 ci-rerun), reruns(name) -> reruns tried at the head,
 // cooledDown (the last rerun has had its gap), builds (§4 Check builds, parsed), built(head) -> the
 // check build recorded at that head, behind(head) -> the base's name when the head is behind it, evidence (§4 Evidence workflow, parsed), evidenceRun(head) -> the
 // evidence run recorded at that head, missingShots(body) -> the files its `_drag <file>_` cells name that
-// the ticket's screenshot directory does not hold, conflictUnreviewed, conflictReviewed (§3
+// the ticket's screenshot directory does not hold, upload (§3 pr-images, `yes` where the pass may
+// upload) and shotDir (that directory) for cellCall's `upload` call, conflictUnreviewed, conflictReviewed (§3
 // pr-conflict-unreviewed and -reviewed), untriggered(base, head, branch) -> gate.mjs untriggeredChecks's map
 // for a required check that never reported, stale(base, head, branch, baseHead) -> staleTriggers's
 // { behind, reopen } for one the pass's base sync or reopen starts, runOf(runId), cancels(name) and now
@@ -720,13 +746,20 @@ export function undraftCall(t, pr, cfg) {
     const bc = buildCall(gate, cfg, n, pr.head, t);
     if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
-  const codeRed = gate.failing.filter((f) => f.name !== VERDICT_CHECK);
+  // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
+  const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
+  const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
+  const stateRed = gate.failing.filter((f) => stateNames.has(f.name)).map((f) => f.name);
+  // Red on state checks alone: the gate passes once they are set aside as advisory, with nothing else
+  // missing or failing. Kept in the list, a green one still counts as the gate's one success.
+  const stateOnly = stateRed.length > 0 && evaluateGate(pr.checks ?? [],
+    { required: (cfg.required ?? []).filter((c) => !stateNames.has(c)), advisory: [...(cfg.advisory ?? []), ...stateNames] }).state === 'pass';
   // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.
   if (red && gate.untriggered?.length && !codeRed.length) {
     return person(`its checks are not green: ${gate.reasons.join('; ')}`,
       `add ${pr.base} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${gate.untriggered.map((c) => `"${c}"`).join(', ')}, a change to the repo; once #${n}'s branch has it, its next push runs the check (re-running cannot, as no run exists)`);
   }
-  if (red && (codeRed.length || !gate.failing.length)) {
+  if (red && (codeRed.length || !gate.failing.length || (!stateOnly && !stateRed.includes(VERDICT_CHECK)))) {
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
     const notGreen = person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
     // A cancelled or timed-out run tested no code, so a fix worker has nothing to fix until its reruns are spent.
@@ -735,7 +768,9 @@ export function undraftCall(t, pr, cfg) {
   }
   if (!v.clean && !v.settle) return { ...person(v.why, `review #${n} at its head`), call: 'review', ...(targeted ? { targeted } : {}) };
   if (!v.clean) return person(v.why, `settle the findings or gaps on #${n}`);
-  if (red) {
+  // Red on any other state check alone, a clean draft leaves draft as a green one does: the reviewer
+  // that turns it green reads only ready PRs, and the merge driver holds a ready PR until it is green.
+  if (red && stateRed.includes(VERDICT_CHECK)) {
     const why = `its ${VERDICT_CHECK} check reads only a verdict posted on the head${carried ? `, and its verdict is carried from ${carried.slice(0, 9)}` : ''}`;
     return withCarried({ ...person(why, `review #${n} at its head`), call: 'review' });
   }
@@ -747,5 +782,6 @@ export function undraftCall(t, pr, cfg) {
   if (cfg.perm === 'ask' && cfg.approved) {
     return withCarried({ call: 'ready', why: null, verdict: read, note: `- [${t.key}] undrafted #${n} at ${pr.head}: §3 ${cfg.permKey} is ask, batch approval given at Stage 3` });
   }
-  return withCarried(person(`it is clean and green, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`));
+  const state = red ? `clean, red only on §4 State checks (${stateRed.join(', ')})` : 'clean and green';
+  return withCarried(person(`it is ${state}, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`));
 }

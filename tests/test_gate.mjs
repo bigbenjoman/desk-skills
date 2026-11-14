@@ -267,6 +267,18 @@ t('DS-422 none names none', sc(['none']), JSON.stringify({ checks: [], errors: [
 t('DS-422 an unknown kind is an error, never a guess', parseStateChecks(['Review gate: approve']).errors.join(), '`Review gate: approve`');
 t('DS-422 stateFailing keeps only the state checks, with their kinds', JSON.stringify(stateFailing([{ name: 'tests', runId: '1' }, { name: '🔐 Review gate', runId: '2' }], parseStateChecks(['🔐 Review gate: approval']).checks)),
   JSON.stringify([{ name: '🔐 Review gate', runId: '2', kind: 'approval' }]));
+{
+  const gateRow = parseStateChecks(['🔐 Review gate: approval', '🏁 CI gate']).checks;
+  const kindOf = (line, name = '🔐 Review gate') => stateFailing([{ name, runId: '2' }], gateRow, () => line)[0]?.kind ?? null;
+  t('DS-583 AC1 a check listed as approval whose line says no review is at the head takes kind verdict', kindOf('No PullBot review at f93b2f8a0 yet'), 'verdict');
+  t('DS-583 AC1 so does one whose verdict is for an older head', kindOf('The latest desk-review verdict is at 135ce1536, not the head f93b2f8a0. Review this head.'), 'verdict');
+  t('DS-583 AC3 one asking an approval for protected files keeps kind approval',
+    kindOf('Approval required — 2 protected file(s): `packages/db/prisma/schema.prisma`, `apps/web/package.json`'), 'approval');
+  t('DS-583 AC3 so does one asking an approval at the head', kindOf('It touches `package.json` with a `feat` change. One approval at the head from someone with write access clears it.'), 'approval');
+  t('DS-583 AC4 one whose line could not be read keeps its §4 kind', `${kindOf(null)} ${kindOf(undefined)}`, 'approval approval');
+  t('DS-583 a verdict that is there and not clean keeps kind approval', kindOf('The desk-review verdict at f93b2f8a0 is not clean: p1=1.'), 'approval');
+  t('DS-583 a bare state check is never given a kind by its line', kindOf('No PullBot review at f93b2f8a0 yet', '🏁 CI gate'), null);
+}
 // ---- DS-503: a hold whose step an agent can check is told from one only a person takes.
 const kinds = (items) => parseHolds(items).map(holdKind).join();
 const dryRun = 'frontend/e2e/**: skim the Confluence Sync dry-run comment first (AGENTS.md)';
@@ -300,4 +312,16 @@ t('DS-503 AC1 hold-kind sorts the items it is given', gcli(['a/**: legal sign-of
 const update = readFileSync(new URL('../skills/desk-update/references/repo-drift.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
 t('DS-503 AC2 desk-update proposes a routine for each agent line hold-kind prints', /gate\.mjs hold-kind/.test(update) && /\*\*Each `agent` line gets a routine proposed\*\*/.test(update), true);
 rmSync(gtmp, { recursive: true, force: true });
+// DS-647: each pending check carries its run, so a check build's re-run waits only on its own run.
+{
+  const g = evaluateGate([
+    { name: 'tests', status: 'completed', conclusion: 'success', runId: 1 },
+    { name: 'Flows image', status: 'completed', conclusion: 'failure', runId: 21 },
+    { name: 'Lint', status: 'in_progress', conclusion: null, runId: 31 },
+    { name: 'e2e', status: 'queued', conclusion: null },
+  ], { required: ['tests', 'Lint'], runs: [{ name: 'Deploy', status: 'in_progress', databaseId: 41 }] });
+  t('DS-647 the gate lists each pending check with its run, null where none is named', JSON.stringify(g.running),
+    '[{"name":"Lint","runId":31},{"name":"e2e","runId":null},{"name":"run Deploy","runId":41}]');
+  t('DS-647 running matches pending one for one', g.running.map((r) => r.name).join(',') === g.pending.join(','), true);
+}
 process.exit(fails ? 1 : 0);

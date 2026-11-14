@@ -49,10 +49,12 @@ export const dragFiles = (body) => [...new Set([...outsideCode(body).matchAll(/_
 // The files a body's cells name that `shots` (the file names in the ticket's screenshot directory)
 // does not hold: screenshots nobody took, which a capture try (fix-tries.mjs captureTry) takes.
 export const missingShots = (body, shots) => dragFiles(body).filter((f) => !(shots ?? []).includes(f));
-// The screenshot files a ticket's directory holds: the one its worker was briefed with, or the one a
-// handed-off session printed (images_dir).
+// A ticket's screenshot directory: the one its worker was briefed with, or the one a handed-off session
+// printed (images_dir). The pass also uploads from it where no round's log names one.
+export const ticketShotDir = (t, stateDir) => expandHome(t.images_dir ?? join(stateDir, 'images', t.key));
+// The screenshot files that directory holds.
 export const ticketShots = (t, stateDir) => {
-  try { return readdirSync(expandHome(t.images_dir ?? join(stateDir, 'images', t.key))).filter((f) => SCREENSHOT_FILE.test(f)); } catch { return []; }
+  try { return readdirSync(ticketShotDir(t, stateDir)).filter((f) => SCREENSHOT_FILE.test(f)); } catch { return []; }
 };
 // The run id in gh workflow run's output (it prints the run's URL), or null.
 export function runIdFrom(out) {

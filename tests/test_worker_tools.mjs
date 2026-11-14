@@ -5,7 +5,7 @@
 // off switch set. Two tickets' workers send the same appended system prompt, drop the per-machine
 // sections, and carry their own briefing in the first message, at a later stage too, and never again
 // on a resume. A stub claude on PATH records each call's argv. Scratch HOME and repo only.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, statSync, chmodSync, cpSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, statSync, chmodSync, cpSync, rmSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -236,6 +236,19 @@ const memResumed = launch('fix-one', 'memresumed', { DESK_CONFIG: leverCfg, AUTO
 t('memory a resumed worker gets no second digest', [memResumed.prompt, digestLines().length], [RESUME, 1]);
 const memOff = launch('fix-two', 'memoff');
 t('memory AC5 lever off: the worker is given the memory folder, with no digest', [memOff.status, addsMem(memOff), memOff.prompt.includes('# Memory digest')], [0, true, false]);
+
+// A named batch's worker is given the repo's design snapshots folder; a standing batch's is not.
+const BATCH = join(T, 'state', 'batches', 'b1');
+const DESIGNS = join(T, 'state', 'designs');
+mkdirSync(join(DESIGNS, 'EPIC-1'), { recursive: true });
+mkdirSync(BATCH, { recursive: true });
+const addsDesigns = (w) => w.argv.some((x, i) => x === DESIGNS && w.argv[i - 1] === '--add-dir');
+const inBatch = launch('fix-one', 'designsbatch', { DESK_STATE: BATCH, DESK_AUTOPILOT_STATE: BATCH });
+const standing = launch('fix-two', 'designsstanding');
+t('designs a named batch\'s worker is given the repo\'s designs folder, a standing batch\'s is not',
+  [inBatch.status, addsDesigns(inBatch), standing.status, addsDesigns(standing)], [0, true, 0, false]);
+rmSync(join(T, 'state', 'batches'), { recursive: true, force: true });
+rmSync(DESIGNS, { recursive: true, force: true });
 
 // The effort lever (config §3b Phase 0 levers and Worker effort): on, each session is launched at the
 // effort named for how it starts, or medium; off, with no --effort. Either way its log records it.

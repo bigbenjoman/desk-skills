@@ -27,9 +27,9 @@ export function parkRecommends(raw, question) {
 // May the pass take this call for the worker?
 export const takeable = (decision, judgement) => !!decision && (!JUDGEMENT.includes(decision.category) || judgement === 'yes');
 
-// The answer the next worker reads in its briefing.
-export const recommendedAnswer = (d) => `${d.chose}. This was the option the last worker recommended when it parked on this ${d.category} call, `
-  + 'which is a worker\'s to take (worker contract, Ask or take): the pass took it, not the person. Build it and carry on rather than park on it again.';
+// The answer the next worker reads in its briefing; `by` is who took it (the pass, or the decider).
+export const recommendedAnswer = (d, by = 'the pass') => `${d.chose}. This was the option the last worker recommended when it parked on this ${d.category} call, `
+  + `which is a worker's to take (worker contract, Ask or take): ${by} took it, not the person. Build it and carry on rather than park on it again.`;
 
 // A park saying its push or draft PR did not happen. A force-push, or a step no worker is ever
 // allowed, is not one: a plain push cannot finish it.

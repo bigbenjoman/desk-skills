@@ -4,7 +4,7 @@
 // `AUTOPILOT_DECISION: <json>` and pass.mjs appends it when it harvests the run; an interactive
 // session appends through this file's CLI:
 //
-//   decisions.mjs log <TICKET> '<json>' [--pr <number or URL>]
+//   decisions.mjs log [--source decider] <TICKET> '<json>' [--pr <number or URL>]
 //   decisions.mjs check <TICKET> '{"question", "checked", "showed"}' [--pr <number or URL>]
 //
 // A check is a question the session settled by checking instead of asking (`AUTOPILOT_CHECKED:` from a
@@ -23,6 +23,10 @@ import { stateDir, ghRepo, SAFE_ID } from './desk-env.mjs';
 export const ASK_CATEGORIES = ['money', 'legal', 'production', 'customer-copy', 'user-fact'];
 // Everything else is taken on the recommendation and logged, under one of these.
 export const TAKE_CATEGORIES = ['product', 'design', 'wording', 'review', 'engineering', 'scope', 'tracker'];
+
+// Who logs through the CLI: an interactive session, or the supervisor's decider taking a call a
+// worker parked on (decider.mjs, which may run only `log --source decider`).
+export const CLI_SOURCES = ['session', 'decider'];
 
 export const decisionsPath = (dir = stateDir()) => join(dir, 'decisions.jsonl');
 
@@ -46,17 +50,21 @@ export function parseDecision(raw) {
 
 // A triage record's questions, split: `ask` (strings) waits for the person, `taken` (decisions) is
 // each call triage made on its recommendation. An unknown is a string, asked, or
-// {question, category, options, recommended}: taken when parseDecision accepts it with `recommended`
-// as the choice, asked otherwise. Entries already in `decided` are taken, so a split record splits
-// the same again.
+// {question, category, options, recommended, reserved}: taken when parseDecision accepts it with
+// `recommended` as the choice, asked otherwise. One whose `reserved` is anything but false or absent
+// (an acceptance criterion wants the person's own record of it) is asked whatever its category, as
+// "<question> (recommended: <option>)" where it has a recommendation. Entries already in `decided`
+// are taken, so a split record splits the same again.
 export function triageCalls(rec) {
   const ask = [];
   const taken = [];
   const asDecision = (u) => parseDecision(JSON.stringify({ question: u.question, options: u.options, chose: u.recommended ?? u.chose, category: u.category }));
   for (const u of Array.isArray(rec?.unknowns) ? rec.unknowns : []) {
     const obj = u && typeof u === 'object' && !Array.isArray(u);
+    const reserved = obj && u.reserved !== undefined && u.reserved !== false;
     const d = obj ? asDecision(u) : null;
-    if (d?.ok) taken.push(d.decision);
+    if (reserved && text(u.question)) ask.push(`${u.question.trim()}${text(u.recommended) ? ` (recommended: ${u.recommended.trim()})` : ''}`);
+    else if (d?.ok && !reserved) taken.push(d.decision);
     else if (obj) ask.push(text(u.question) ? u.question.trim() : JSON.stringify(u));
     else if (text(String(u ?? ''))) ask.push(String(u).trim());
   }
@@ -104,6 +112,33 @@ export function decisionEntry({ decision, ticket, run, repo, pr, at = new Date()
   return { id, at, repo, ticket, ...decision, pr: prLink(pr, repo), source, run: run ?? null };
 }
 
+// The calls and checks a worker printed (`AUTOPILOT_DECISION`, `AUTOPILOT_CHECKED`), from its
+// [name, value] markers: `entries` to append, and `unreadable` [{what, why, raw}], once per raw value.
+export function workerCalls(markers, { ticket, run, repo, pr }) {
+  const entries = [];
+  const unreadable = [];
+  for (const [k, v] of markers) {
+    if (k !== 'AUTOPILOT_DECISION' && k !== 'AUTOPILOT_CHECKED') continue;
+    const d = k === 'AUTOPILOT_CHECKED' ? parseCheck(v) : parseDecision(v);
+    const what = k === 'AUTOPILOT_CHECKED' ? 'check' : 'decision';
+    if (d.ok) entries.push(decisionEntry({ decision: d.check ?? d.decision, ticket, run, repo, pr, source: 'worker' }));
+    else if (!unreadable.some((u) => u.raw === v)) unreadable.push({ what, why: d.why, raw: v });
+  }
+  return { entries, unreadable };
+}
+
+// A worker's `AUTOPILOT_NOTE` as its line in the batch notes.
+export const noteLine = (ticket, note) => `- [${ticket}] ${note.trim()}`;
+
+// Appends to <dir>/batch-notes.md the note lines it does not already hold, each once: a harvest can
+// see one note twice (in the assistant text and echoed in the result).
+export function appendNotes(lines, dir = stateDir()) {
+  const path = join(dir, 'batch-notes.md');
+  const seen = new Set(existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []);
+  const fresh = lines.filter((n) => !seen.has(n) && seen.add(n));
+  if (fresh.length) appendFileSync(path, `${fresh.join('\n')}\n`);
+}
+
 const loggedIds = (path) => {
   if (!existsSync(path)) return new Set();
   const ids = new Set();
@@ -135,21 +170,27 @@ if (isMain) {
   const { EXIT, crashShowsPerson } = await import('./batch-state.mjs');
   crashShowsPerson();
   const args = process.argv.slice(2);
-  const prAt = args.indexOf('--pr');
-  const pr = prAt >= 0 ? args[prAt + 1] : null;
-  const [cmd, ticket, raw] = prAt >= 0 ? [...args.slice(0, prAt), ...args.slice(prAt + 2)] : args;
+  const flags = {};
+  for (const f of ['--pr', '--source']) {
+    const at = args.indexOf(f);
+    if (at >= 0) { flags[f] = args[at + 1] ?? ''; args.splice(at, 2); }
+  }
+  const pr = flags['--pr'] ?? null;
+  const [cmd, ticket, raw] = args;
   const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
   if (!['log', 'check'].includes(cmd) || !ticket || !raw) {
-    refuse('usage: decisions.mjs log <TICKET> \'{"question","options":[…],"chose","category"}\' [--pr <number or URL>]\n' +
+    refuse('usage: decisions.mjs log [--source decider] <TICKET> \'{"question","options":[…],"chose","category"}\' [--pr <number or URL>]\n' +
       '       decisions.mjs check <TICKET> \'{"question","checked","showed"}\' [--pr <number or URL>]');
   }
+  const source = flags['--source'] ?? 'session';
+  if (!CLI_SOURCES.includes(source)) refuse(`--source takes ${CLI_SOURCES.join(' or ')}, not '${source}'`);
   if (!SAFE_ID.test(ticket) || ticket.includes('..')) refuse(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
   const repo = ghRepo();
-  if (prAt >= 0 && !prLink(pr, repo)) refuse(`--pr takes a PR number or URL, not '${pr ?? ''}'`);
+  if (pr != null && !prLink(pr, repo)) refuse(`--pr takes a PR number or URL, not '${pr}'`);
   const parsed = cmd === 'check' ? parseCheck(raw) : parseDecision(raw);
   if (!parsed.ok) refuse(`not logged: ${parsed.why}`);
   const entry = decisionEntry({
-    decision: parsed.check ?? parsed.decision, ticket, run: process.env.CLAUDE_CODE_SESSION_ID ?? 'session', repo, pr, source: 'session',
+    decision: parsed.check ?? parsed.decision, ticket, run: process.env.CLAUDE_CODE_SESSION_ID ?? source, repo, pr, source,
   });
   const added = appendDecisions([entry]);
   console.log(`${added.length ? 'logged' : 'already logged'}: ${entry.id} in ${decisionsPath()}`);

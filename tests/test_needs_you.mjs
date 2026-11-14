@@ -56,6 +56,7 @@ function put(name, r) {
   spawnSync('git', ['-C', root, 'remote', 'add', 'origin', `https://github.com/acme/${name}.git`]);
   mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
+    (r.handle ? `## 1. Who you are\n\n| Field | Value |\n|---|---|\n| GitHub handle | \`${r.handle}\` |\n\n` : '') +
     `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${root}\` |\n\n` +
     `## 3. Permissions\n\n| Key | Action | Recommended | Your setting |\n|---|---|---|---|\n| \`pr-ready\` | Undraft | \`ask\` | \`${r.prReady ?? 'no'}\` |\n` +
     `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n\n` +
@@ -351,7 +352,7 @@ put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
 } });
 const iota = N.collect({ word: 'iota' }).items;
 const i1 = iota.find((i) => i.t.key === 'I-1');
-t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
+t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Desk could not read the review to quote the gaps, so read them on the PR. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
 t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
 const i2 = iota.find((i) => i.t.key === 'I-2');
 t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72 is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; then merge it on GitHub once its checks are green.');
@@ -379,6 +380,15 @@ const flows = N.collect({ word: 'flows' }).items.map((i) => i.t.key).join();
 t('DS-327 AC1 a draft whose check build runs, or whose check was re-run after it, is not listed', flows.includes('FL-1') || flows.includes('FL-2') || flows.includes('FL-3'), false);
 t('DS-327 AC2 one whose build failed is, with the command, its exit code and its output', N.collect({ word: 'flows' }).items.find((i) => i.t.key === 'FL-4')?.need,
   'PR #84 is a draft: check build `./scripts/ensure-flows-image.sh` exited 1: no Docker context. Fix the build, run it at the head of #84, then re-run "Flows image"; the next pass then picks it up.');
+
+// ---- KAN-629: a draft whose held screenshots the pass is uploading (undraft.mjs cellCall `upload`) is not the person's.
+put('shots', { port: 4779, beat: 1, supervised: true, tickets: {
+  'SH-1': draftPr(86, passed, { call: 'upload', why: '1 screenshot cell(s) left: a.png, whose files desk holds in /s/images/SH-1, and the pass uploads them' }),
+  'SH-2': draftPr(87, passed, { call: 'person', why: '1 screenshot cell(s) left: a.png, whose files desk holds but could not put in the body', action: 'edit the body of #87 so no `_drag <file>_` cell is left' }),
+} });
+const shotKeys = N.collect({ word: 'shots' }).items.map((i) => i.t.key).join();
+t('KAN-629 a draft whose screenshots the pass is uploading is not listed', shotKeys.includes('SH-1'), false);
+t('KAN-629 negative control: one whose cells nothing fills still is', shotKeys.includes('SH-2'), true);
 
 // ---- DS-498: a draft whose check the runner ended (undraft.mjs rerunCall's person calls, as test_undraft.mjs pins them).
 const oomRed = [{ name: 'Type-check', status: 'completed', conclusion: 'failure' }, ...passed];
@@ -412,6 +422,29 @@ const m1q = queueOf('mu').tickets['M-1'];
 t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 81 --repo acme/mu --body')}`, '0 true');
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
 t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
+
+// ---- DS-586: a draft whose review left gaps quotes them from that review, as a ready PR's item does.
+const SHA586 = '65ad4e75a1b2c3d4e5f60718293a4b5c6d7e8f90';
+const review586 = (login, sha, lines) => ({ author: { login }, body: `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${sha} p0=0 p1=0 p2=0 deferred=0 gaps=${lines.length} unrefuted=0 partial=0 vendor=codex round=1 -->\n## desk-review: ${lines.length} requirement gaps\n\n### Requirement gaps\n${lines.map((l) => `- ${l}`).join('\n')}\n` });
+const GAP1 = 'PERSON\'S CALL · AC1: "the export lists every order" — the ticket does not say whether refunded orders count.';
+const GAP2 = 'PERSON\'S CALL · AC2: "totals match the invoice" — rounding differs by a cent on multi-currency orders.\n  Recommended: round per line, as the invoice does.';
+put('gq', { handle: 'me', port: 4207, beat: 1, supervised: true, tickets: {
+  'GQ-1': draftPr(301, passed, { call: 'person', why: `its review verdict at ${SHA586.slice(0, 9)} is not clean (gaps=2)`, action: 'settle the findings or gaps on #301' }),
+  'GQ-2': draftPr(302, passed, { call: 'person', why: `its review verdict at ${SHA586.slice(0, 9)} is not clean (gaps=2)`, action: 'settle the findings or gaps on #302' }),
+} });
+onGitHub(301, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: SHA586, reviews: [
+  review586('me', '1111111aaaaaaa', ['PERSON\'S CALL · AC9: an older round\'s gap']),
+  review586('me', SHA586, [GAP1, GAP2]),
+  review586('stranger', SHA586, ['PERSON\'S CALL · AC1: a gap someone else posted']),
+] });
+const gq = Object.fromEntries(N.collect({ word: 'gq' }).items.map((i) => [i.t.key, i]));
+t('DS-586 AC1 a draft\'s two gaps are quoted, each criterion with what is open', /AC1: "the export lists every order" — the ticket does not say whether refunded orders count; PERSON'S CALL · AC2: "totals match the invoice" — rounding differs by a cent/.test(gq['GQ-1']?.need ?? ''), true);
+t('DS-586 AC1 negative: an older round\'s gaps and another login\'s review are not quoted', /AC9|someone else/.test(gq['GQ-1']?.need ?? ''), false);
+t('DS-586 AC2 a gap\'s recommendation is shown beside it', gq['GQ-1']?.need,
+  'PR #301 is a draft, and its code review left 2 requirement gaps: PERSON\'S CALL · AC1: "the export lists every order" — the ticket does not say whether refunded orders count; PERSON\'S CALL · AC2: "totals match the invoice" — rounding differs by a cent on multi-currency orders. Recommended: round per line, as the invoice does. Say how to settle them; a worker on the PR carries out your call.');
+t('DS-586 AC3 a review that cannot be read gives the count and says so', gq['GQ-2']?.need,
+  'PR #302 is a draft, and its code review left 2 requirement gaps. Desk could not read the review to quote the gaps, so read them on the PR. Say how to settle them; a worker on the PR carries out your call.');
+t('DS-586 the item still offers answer first', gq['GQ-1']?.actions.map((a) => a[0]).join(), 'answer,done,resume,not-now');
 
 // ---- An open PR takes the person's instruction for a worker on it; a merged or closed one says why not.
 const readyPr = (pr, extra = {}) => { const d = draftPr(pr, passed); return { ...d, ...extra, pr_status: { ...d.pr_status, isDraft: false } }; };
@@ -945,6 +978,11 @@ t('DS-378 AC4 a PR with no readable review says what to do and what follows', p0
 t('DS-558 AC3 a last review try that said "conflict" is still named as a review that did not post', (() => { const q = queueOf('psi'); const was = q.tickets['Q-4'].stuck.why; q.tickets['Q-4'].stuck.why = 'no review verdict readable at its head after 2 review tries at it: x; the last try said: pr=144 review=NOT POSTED, desk-review saw a conflict with main';
   writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); const need = psi()['Q-4']?.need; q.tickets['Q-4'].stuck.why = was;
   writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); return /^PR #144 has no code review desk can read for its latest commit: desk's review ran on it twice/.test(need ?? ''); })(), true);
+t('DS-583 AC7 a gate listed as approval stuck on its verdict step names that step, not a person\'s approval', (() => { const q = queueOf('psi'); const was = q.tickets['Q-4'].stuck.why;
+  q.tickets['Q-4'].stuck.why = 'no review verdict readable at its head after 2 review tries at it: its "🔐 Review gate" check says: No PullBot review at f93b2f8a0 yet';
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); const need = psi()['Q-4']?.need; q.tickets['Q-4'].stuck.why = was;
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(q)); return need; })(),
+  'PR #144 has no code review desk can read for its latest commit: desk\'s review ran on it twice and posted none it can read. Its "🔐 Review gate" check failed its verdict step: "No PullBot review at f93b2f8a0 yet". Post one (run /desk-review on it); the next pass then takes it on.');
 t('DS-378 AC4 a draft with findings counts them in words', p0['Q-5']?.need,
   'PR #145 is a draft, and its code review found 2 P1 findings, which it does not list with a file:line a worker can fix, so desk sends no worker to them. Fix them on its branch and post a fresh review; the next pass then takes it out of draft.');
 t('DS-378 AC4 a conflict names the base', p0['Q-6']?.need,
@@ -1516,6 +1554,59 @@ const s5 = queueOf('sigma').tickets['S-5'];
 t('DS-399 a lane C ticket handed back goes on as lane B, so a later requeue or park treats it as a worker\'s', `${sgC.ok} ${s5.state} ${s5.lane} ${BSs.needsSession(s5)}`, 'true triaged B false');
 t('DS-399 its handoff briefing still names the lane it was', H.readHandoff(sigmaState, 'S-5').data?.lane.startsWith('C, handed back'), true);
 
+// ---- DS-566: approving a step a park says no worker can run makes a session item naming it, never a
+// requeue; done on it sends the ticket back to a worker with the step recorded done. VPL-759's shape.
+const VPL = 'Ben approved building the Grader image, but `ensure-grader-image.sh` is refused to this worker, and so are the staging deletes. Can you run it?';
+const PROD = 'Ben approved the provisioning, but this worker cannot run it: it needs staging credentials no worker is given. Can you do it?';
+put('stepper', { port: 5500, beat: 1, supervised: true, tickets: {
+  'V-1': parked('A', 30, VPL),
+  'V-2': parked('A', 30, 'Which copy for the banner?'),
+  'V-3': parked('A', 30, PROD),
+  'V-4': parked('A', 30, VPL),
+} });
+const D = await import('../desk/bin/decider.mjs');
+const stQ = () => queueOf('stepper').tickets;
+const stItem = (k) => N.collect({ word: 'stepper' }).items.find((i) => i.t.key === k);
+t('DS-566 a park saying a named script is refused to its worker names that step', BS.workerRefusedStep(VPL), 'ensure-grader-image.sh');
+t('DS-566 one with no code span names the refusing sentence', BS.workerRefusedStep(PROD), 'Ben approved the provisioning, but this worker cannot run it: it needs staging credentials no worker is given.');
+t('DS-566 not one: a grantable force-push, a refused push or draft PR, a step no worker is ever allowed, a plain question',
+  [KAN636, 'git push origin fix/x was refused (§3 git-push is ask); the PR body is above', 'Opening the draft PR was denied: `gh pr create --draft` is refused', AWS, 'Which copy?'].map(BS.workerRefusedStep).join('|'), '||||');
+t('DS-566 approving a step: a yes, or a yes that holds nothing back',
+  ['yes', 'Approved, go ahead and build it and delete the rows', 'ok do it', 'Yes, but only the image', 'No, skip the deletes', 'Sure, merge instead', 'Use the short copy'].map(BS.approvesStep).join(), 'true,true,true,false,false,false,false');
+const st1 = N.record({ word: 'stepper', ticket: 'V-1', action: 'resume', text: 'Approved, go ahead and build it' });
+const stV1 = stQ()['V-1'];
+t('DS-566 AC1 approving the refused step is not requeued: it stays parked with the step recorded', `${st1.ok} ${stV1.state} ${stV1.park.session_step?.step}`, 'true parked ensure-grader-image.sh');
+t('DS-566 AC1 the line says why and what comes next', /not requeued, because no worker can run the step you approved \(ensure-grader-image\.sh\).*say done/.test(st1.line), true);
+const stI1 = stItem('V-1');
+t('DS-566 AC1 it is a session item naming the approved step, offering open, done, answer, drop and not-now', `${stI1?.kind} | ${stI1?.need} | ${stI1?.actions.map((a) => a[0]).join()}`, 'session | you approved a step no worker can run: ensure-grader-image.sh | open,done,answer,drop,not-now');
+t('DS-566 AC1 no worker is spawned: the pass and the decider take it for a session', `${BS.needsSession(stV1)} ${D.presort(D.deciderItems({ parked: [{ key: 'V-1', question: VPL }] }, queueOf('stepper'))).hand.length}`, 'true 1');
+const stRq = spawnSync(process.execPath, [join(REAL_BIN, 'queue.mjs'), 'requeue', 'V-1'], { env: { ...process.env, DESK_QUEUE: join(env.DESK_HOME, 'repos', 'acme__stepper', 'queue.json'), DESK_AUTOPILOT_STATE: join(env.HOME, '.desk-autopilot', 'acme__stepper') }, encoding: 'utf8' });
+t('DS-566 AC1 queue.mjs requeue itself refuses it, naming step-done', `${stRq.status !== 0} ${/queue\.mjs step-done V-1/.test(stRq.stderr)} ${stQ()['V-1'].state}`, 'true true parked');
+t('DS-566 open names the session and says why', /not requeued \(a step you approved that no worker can run\).*\/desk-ticket V-1/.test(N.record({ word: 'stepper', ticket: 'V-1', action: 'open' }).line), true);
+const st3 = N.record({ word: 'stepper', ticket: 'V-3', action: 'resume', text: 'yes' });
+t('DS-566 AC1 a refused credential, approved, is a session item too', `${st3.ok} ${stQ()['V-3'].state} ${stItem('V-3')?.kind}`, 'true parked session');
+const st3b = N.record({ word: 'stepper', ticket: 'V-3', action: 'answer', text: 'No, leave the provisioning to the next ticket' });
+t('DS-566 answering such an item again with no approval makes it an ordinary park again', `${st3b.ok} ${stQ()['V-3'].state} ${stQ()['V-3'].park?.session_step ?? null} ${stItem('V-3')?.kind}`, 'true parked null parked');
+const SEED = 'The worker was refused `scripts/seed-staging.sh`, a staging write. Shall I leave the seed out of this PR?';
+t('DS-566 not one: a park offering to go on without the refused step', BS.workerRefusedStep(SEED), null);
+t('DS-566 still one: a park that says "without" but offers no way round the step',
+  BS.workerRefusedStep('`ensure-grader-image.sh` is refused to this worker, and the specs cannot pass without the image. Can you run it?'), 'ensure-grader-image.sh');
+t('DS-566 still one: a park asking to continue once the person has run the step',
+  ['Once you have built it, shall I continue?', 'Can we continue after you run it?', 'Shall I carry on when it is done?'].map((s) => BS.workerRefusedStep(`\`ensure-grader-image.sh\` is refused to this worker. ${s}`)).join(), 'ensure-grader-image.sh,ensure-grader-image.sh,ensure-grader-image.sh');
+t('DS-566 not one: a park offering to carry on without the step', BS.workerRefusedStep('`ensure-grader-image.sh` is refused to this worker. Shall I carry on without it?'), null);
+put('stepper2', { port: 5510, beat: 1, supervised: true, tickets: { 'V-5': parked('A', 30, SEED) } });
+const st5 = N.record({ word: 'stepper2', ticket: 'V-5', action: 'resume', text: 'ok, leave it out' });
+t('DS-566 AC2 a yes to leaving the refused step out is requeued as today', `${st5.ok} ${queueOf('stepper2').tickets['V-5'].state}`, 'true triaged');
+const st2 = N.record({ word: 'stepper', ticket: 'V-2', action: 'resume', text: 'Use the short copy' });
+t('DS-566 AC2 an ordinary park answered is requeued as today', `${st2.ok} ${stQ()['V-2'].state} ${stQ()['V-2'].park ?? null}`, 'true triaged null');
+const st4 = N.record({ word: 'stepper', ticket: 'V-4', action: 'resume', text: 'No, skip the image and leave staging alone' });
+t('DS-566 AC2 an answer that approves nothing on such a park is requeued as today', `${st4.ok} ${stQ()['V-4'].state}`, 'true triaged');
+const stDone = N.record({ word: 'stepper', ticket: 'V-1', action: 'done' });
+const stV1d = stQ()['V-1'];
+t('DS-566 AC3 done sends it back to a worker', `${stDone.ok} ${stV1d.state} ${stV1d.park ?? null} ${stV1d.prev_park?.question === VPL}`, 'true triaged null true');
+t('DS-566 AC3 with the step recorded done in its briefing', /The person ran the step you approved and no worker can run, and it is done: ensure-grader-image\.sh/.test(readFileSync(join(env.HOME, '.desk-autopilot', 'acme__stepper', 'briefings', 'V-1.md'), 'utf8')), true);
+t('DS-566 AC3 and it is off the list', stItem('V-1') === undefined, true);
+
 // ---- A supervised batch whose base sync waits on §3 batch-base-push `ask` is one item for the
 // batch, and its approve records the approval on the queue the supervisor passes to each later pass.
 put('rho2', { port: 3830, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
@@ -1777,8 +1868,98 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-600 AC4 waiting on a PR with 3 held behind it says it stays listed, and it is', `${wait.ok} ${wait.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')} ${keysIn('ds600d')[0]}`, 'true true V-1');
 }
 
+// ---- DS-580: a park on a step only a person or another account takes recommends nothing, and its resume
+// reads the PR on GitHub (stubbed here) and requeues only once it changed since the park.
+{
+  const PO = 'There is no review from agent-pullbot at all. No worker can run it: only a person with Mac mini or org access can do this.';
+  const STEP = 'No worker can run it: only a person with Mac mini or org access can do this.';
+  const HEAD = 'a'.repeat(40);
+  // As a worker leaves it: a draft PR and a park, and no PR state recorded (pass.mjs records that only once done).
+  const po = (m, pr) => ({ ...parked('B', m, PO), draft_pr: pr });
+  const DECIDE = 'Only you can decide between A and B. Which should I use? I recommend A.';
+  put('ds580', { port: 4580, beat: 1, supervised: true, tickets: {
+    'PO-1': po(60, 951), 'PO-2': po(50, 952), 'PO-3': po(40, 953), 'PO-4': po(30, 954),
+    'Q-1': parked('B', 20, 'Retry or fail? I recommend retry.'), 'Q-2': { ...parked('B', 15, DECIDE), draft_pr: 955 },
+  } });
+  const before = minsAgo(600);
+  const later = new Date(NOW).toISOString();
+  const red = (at) => [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE', completedAt: at }];
+  const green = (at) => [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: at }];
+  const old = { commits: [{ oid: HEAD, committedDate: before }], reviews: [{ state: 'COMMENTED', submittedAt: before }] };
+  const gh = {
+    951: { state: 'OPEN', isDraft: true, headRefOid: HEAD, ...old, statusCheckRollup: red(before) },
+    952: { state: 'OPEN', isDraft: true, headRefOid: HEAD, ...old, reviews: [{ state: 'COMMENTED', author: { login: 'agent-pullbot' }, submittedAt: later }], statusCheckRollup: red(before) },
+    954: { state: 'OPEN', isDraft: true, headRefOid: 'b'.repeat(40), commits: [{ oid: 'b'.repeat(40), committedDate: later }], reviews: [], statusCheckRollup: [] },
+    955: { state: 'OPEN', isDraft: true, headRefOid: HEAD, ...old, statusCheckRollup: [] },
+  };
+  const reads = { pr: (_r, n, more) => (gh[n] ? { v: more.includes('commits') ? gh[n] : { state: gh[n].state }, err: '' } : { v: null, err: 'HTTP 502' }), ticket: () => null, git: () => null };
+  const items = () => Object.fromEntries(N.collect({ word: 'ds580' }).items.map((i) => [i.t.key, i]));
+  const p1 = items()['PO-1'];
+  t('DS-580 AC3 a person-only park marks no action recommended', `${p1?.kind} ${p1?.actions.map((a) => a[0]).join()} ${p1?.actions.some((a) => a[1])}`, 'parked resume,drop,not-now false');
+  t('DS-580 AC3 its need names the step only a person or another account takes', p1?.need, `a step only you or another account takes: ${STEP} (${PO})`);
+  t('DS-580 AC7 a park asking the worker a question still recommends resume', `${items()['Q-1']?.actions[0][0]} ${!!items()['Q-1']?.actions[0][1]}`, 'resume true');
+  t('DS-580 AC7 a call only the person makes ("only you can decide") still recommends resume', `${items()['Q-2']?.actions[0][0]} ${!!items()['Q-2']?.actions[0][1]}`, 'resume true');
+  const rq = N.record({ word: 'ds580', ticket: 'Q-2', action: 'resume', text: 'use A', reads });
+  t('DS-580 AC7 its answer requeues it with its PR unchanged', `${rq.ok} ${queueOf('ds580').tickets['Q-2'].state}`, 'true triaged');
+
+  const r1 = N.record({ word: 'ds580', ticket: 'PO-1', action: 'resume', text: 'agent-pullbot has run /pullbot', reads });
+  t('DS-580 AC4 resume on a PR unchanged since the park requeues nothing, and names what GitHub shows',
+    `${r1.ok} ${r1.line} ${queueOf('ds580').tickets['PO-1'].state}`,
+    'false ds580 PO-1: GitHub shows PR #951 unchanged since the park (head aaaaaaa, no commit, review or passing check since it parked, and a failing check, "ci"), so nothing was recorded or requeued: a worker would park again. Resume once the step shows on the PR. parked');
+  const r2 = N.record({ word: 'ds580', ticket: 'PO-2', action: 'resume', text: 'agent-pullbot has run /pullbot', reads });
+  t('DS-580 AC5 resume on a PR with a review since the park requeues it as today', `${r2.ok} ${queueOf('ds580').tickets['PO-2'].state}`, 'true triaged');
+  const r3 = N.record({ word: 'ds580', ticket: 'PO-3', action: 'resume', text: 'done', reads });
+  t('DS-580 AC6 resume on a PR GitHub cannot read requeues nothing, saying so', `${r3.ok} ${r3.line} ${queueOf('ds580').tickets['PO-3'].state}`,
+    'false ds580 PO-3: could not read PR #953 from GitHub (HTTP 502), so nothing was recorded or requeued, and it stays on your list. parked');
+  const r4 = N.record({ word: 'ds580', ticket: 'PO-4', action: 'resume', text: 'pushed the fix', reads });
+  t('DS-580 a draft PR with no recorded state and a commit since the park is requeued', `${r4.ok} ${queueOf('ds580').tickets['PO-4'].state}`, 'true triaged');
+  const since = (rollup) => N.prSincePark(po(10, 9), { headRefOid: HEAD, ...old, statusCheckRollup: rollup }).changed;
+  t('DS-580 a red check gone green since the park counts as a change', since(green(later)), true);
+  t('DS-580 a check rerun since the park and still red does not', since(red(later)), false);
+  t('DS-580 a park with no time to compare against resumes as before', N.prSincePark({ park: {} }, gh[951]).changed, true);
+  const { personOnlyStep } = await import('../desk/bin/batch-state.mjs');
+  t('DS-580 each branch alone reads as person-only', [personOnlyStep('No worker can run it.'), personOnlyStep('Only agent-pullbot can post its review.')].join('|'),
+    'No worker can run it.|Only agent-pullbot can post its review.');
+  t('DS-580 a call, a product role or a passing "only" is not person-only',
+    [DECIDE, 'The diff touches only user-facing copy, so could I skip the E2E run?', 'Only admins can delete invoices today. Should managers also be able to?',
+      'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?', 'Only you can decide whether I can push this change. Should I proceed?'].map(personOnlyStep).join(), ',,,,,');
+}
+
+// DS-601: an answer for a ticket a pass moved on since it was listed is kept for its next worker.
+{
+  // A running worker with a session, and a queued ticket requeued with a one-off grant: answer.mjs
+  // would write the mailbox and take the grant back.
+  const grant = { branch: 'fix/m-2', lease: 'abc123', at: minsAgo(10) };
+  put('moved', { port: 3601, beat: 1, supervised: true, tickets: {
+    'M-1': { state: 'running', lane: 'A', stage: '3/9', session_id: 'sess-m1' },
+    'M-2': { state: 'queued', lane: 'A', grant },
+    'M-3': { state: 'done', lane: 'A', merged_at: minsAgo(5), result: { pr: 70 }, pr_status: { pr: 70, state: 'MERGED' } },
+  } });
+  const dir = join(env.HOME, '.desk-autopilot', 'acme__moved');
+  const brief = (k) => { const f = join(dir, 'briefings', `${k}.md`); return existsSync(f) ? readFileSync(f, 'utf8') : ''; };
+  const queueText = () => JSON.stringify(queueOf('moved'));
+  const q0 = queueText(), before = answers().length;
+  const m1 = N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: 'keep the gap as it is' });
+  t('DS-601 AC1 an answer for a ticket no longer listed is saved in its briefing, and the reply says so',
+    `${m1.ok} ${m1.line} ${brief('M-1').includes('## Answer from the user') && brief('M-1').includes('keep the gap as it is')}`,
+    'true moved M-1: no longer waiting on you; your answer is saved in its briefing for its next worker. true');
+  t('DS-601 AC1 a running worker gets no mailbox answer for a park it has not made', existsSync(join(dir, 'answers', 'M-1.txt')), false);
+  const m2 = N.record({ word: 'moved', ticket: 'M-2', action: 'resume', text: 'use the short copy' });
+  t('DS-601 AC2 a resume with text is saved the same way, and its queue entry is unchanged, grant included',
+    `${m2.ok} ${brief('M-2').includes('## Answer from the user') && brief('M-2').includes('use the short copy')} ${queueText() === q0} ${answers().length - before}`, 'true true true 0');
+  const b1 = brief('M-1');
+  const m3 = N.record({ word: 'moved', ticket: 'M-1', action: 'requeue', text: 'try again' });
+  t('DS-601 AC3 requeue is refused as today and writes nothing',
+    `${m3.ok} ${m3.line} ${brief('M-1') === b1} ${queueText() === q0}`, 'false moved M-1: desk-q does not count it as needing you, so nothing was recorded. true true');
+  const m4 = N.record({ word: 'moved', ticket: 'M-9', action: 'answer', text: 'x' });
+  t('DS-601 AC4 a ticket in no queue of the repo is refused as today and writes nothing', `${m4.ok} ${brief('M-9')} ${queueText() === q0}`, 'false  true');
+  const m5 = N.record({ word: 'moved', ticket: 'M-3', action: 'answer', text: 'x' });
+  t('DS-601 a ticket whose PR merged can spawn no worker, so it is refused and writes nothing', `${m5.ok} ${brief('M-3')} ${queueText() === q0}`, 'false  true');
+  t('DS-601 an answer with no text is refused', `${N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: ' ' }).ok} ${brief('M-1') === b1}`, 'false true');
+}
+
 // Refusals.
-t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
+t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');

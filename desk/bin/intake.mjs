@@ -23,9 +23,10 @@
 //     routed to that batch the same way;
 //   - triaged (triage.sh), then handed to the digest for lane C or D, a blocking lint finding (or a
 //     lint that did not run), open triage questions (or Jira facts that could not be read), size L
-//     or XL, or a blocker that failed in the batch. A question is open only on a reserved topic or
-//     with no recommendation: each call triage took on its recommendation is logged as a decision
-//     when the ticket is admitted (decisions.mjs triageCalls);
+//     or XL, or a blocker that failed in the batch. A question is open only on a reserved topic,
+//     with no recommendation, or when a criterion reserves its value for the person's record:
+//     each call triage took on its recommendation is logged as a decision when the ticket is
+//     admitted (decisions.mjs triageCalls);
 //   - otherwise admitted (queue.mjs admit --by intake), held in the same write behind every open
 //     blocker in the batch, and every blocker in no batch until it is Done and its code is on the
 //     batch's base (--hold-outside, lifted by pass.mjs). An open blocker in no batch that is a step

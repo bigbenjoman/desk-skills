@@ -1417,14 +1417,16 @@ fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
 const n = a[2]; const has = (f) => fs.existsSync('$T/u/' + n + f);
 const fields = a[a.indexOf('--json') + 1] ?? '';
 const green = [{ __typename: 'CheckRun', name: 'tests', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+// #712 is also red on "Review gate", which reads the PR's reviews rather than its code.
+const checks = n === '712' ? [...green, { __typename: 'CheckRun', name: 'Review gate', status: 'COMPLETED', conclusion: 'FAILURE' }] : green;
 const mergeable = n === '705' ? 'CONFLICTING' : n === '708' ? 'UNKNOWN' : 'MERGEABLE';
 const verdict ='<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=$HEAD_A p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\n**desk-review, round 1: clean at \`aaaaaaa\`**';
 if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('state,')) {
   console.log(JSON.stringify({ state: 'OPEN', url: 'https://github.com/acme/widgets/pull/' + n, isDraft: !has('.ready'), mergeable,
-    statusCheckRollup: green }));
+    statusCheckRollup: checks }));
 } else if (a[0] === 'pr' && a[1] === 'view' && fields.startsWith('headRefOid,')) {
   console.log(JSON.stringify({ headRefOid: n === '704' ? '$HEAD_B' : '$HEAD_A', mergeable, mergeStateStatus: n === '705' ? 'DIRTY' : n === '708' ? 'UNKNOWN' : 'DRAFT', body: '## Summary',
-    reviews: [{ author: { login: 'ben' }, body: verdict }], statusCheckRollup: green }));
+    reviews: [{ author: { login: 'ben' }, body: verdict }], statusCheckRollup: checks }));
 } else if (a[0] === 'pr' && a[1] === 'ready') {
   if (has('.fail')) { console.error('GraphQL: Something went wrong while executing your query.'); process.exit(1); }
   fs.writeFileSync('$T/u/' + n + '.ready', '');
@@ -1542,6 +1544,14 @@ check "DS-314 AC1 a draft whose events hold a convert_to_draft is held, naming w
 check "DS-314 AC4 a worker's draft nobody put back is undrafted as before" '[ "$(readied 710)" = 1 ] && [ "$(field U-10 undraft.call)" = "\"ready\"" ]'
 check "DS-314 a draft whose events cannot be read stays draft until a later pass reads them" \
   '[ "$(readied 711)" = 0 ] && echo "$out" | grep -q "PR #711 (U-11) stays draft for now: its events, which say whether a person put it back to draft, could not be read (HTTP 502: Bad Gateway)"'
+# DS-578: #712 is clean and red only on "Review gate". Unlisted, it is a code check; listed in §4
+# State checks, it reaches the undraft step, which undrafts the PR as it would a green one.
+q add U-12; q set U-12 state=done result.pr=712
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-578 a red check §4 State checks does not name keeps the draft" '[ "$(readied 712)" = 0 ] && [ "$(field U-12 undraft.call)" = "\"checks\"" ]'
+printf '| State checks | `Review gate: approval` |\n' >> "$T/config-u.md"
+q set U-12 undraft=null; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-578 AC1 a clean draft red only on a §4 State check is undrafted" '[ "$(readied 712)" = 1 ] && [ "$(field U-12 undraft.call)" = "\"ready\"" ]'
 
 # ---- DS-415: evidence runs that failed the same way on three drafts start one fix, not three items
 # The fake gh: #801-#803 are clean, green drafts with two screenshot cells and an evidence block. Each
@@ -2194,6 +2204,35 @@ check "DS-429 AC3 a spent upload is not tried again" '! grep -q "^772 " "$T/uplo
 check "DS-429 a round that names its screenshots is uploaded though earlier tries were spent" \
   'grep -qx "774 $T/state-s/images/P-4/" "$T/uploads" && [ "$(field P-4 upload_crash)" = null ] && grep -q "^pr ready 774" "$T/gh-calls"'
 rm -f "$T/upload-fills" "$T/upload-busy-775"
+
+# ---- KAN-629: screenshots saved in the ticket's briefed directory by a worker that never printed
+# AUTOPILOT_IMAGES are uploaded from that directory, not left to the person as files desk holds.
+# K-1: a finished round with no marker; its body has the cell. K-2: the same, but its cells were filled
+# by an earlier round's upload. K-3: a running worker with no marker yet. K-4: done before this fix, its
+# draft's cells still left. K-5: done, its earlier upload partial (assets already on GitHub).
+for k in 1 2 3 4 5; do mkdir -p "$T/state-s/images/K-$k"; : > "$T/state-s/images/K-$k/k-$k.png"; frx "78$k" "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody "78$k" "_drag k-$k.png_"; done
+dragbody 782 '<img alt="k-2" src="https://github.com/user-attachments/assets/2">'
+for k in 1 2; do q add "K-$k"; q set "K-$k" state=running session_id=gone lane=A "branch=fix/K-$k"; say "AUTOPILOT_DONE: pr=78$k jira=Done" > "$T/state-s/logs/K-$k.log"; done
+q add K-3; q set K-3 state=running session_id=live-1 lane=A branch=fix/K-3 result.pr=783 log_bytes=0; say "working" > "$T/state-s/logs/K-3.log"
+q add K-4; q set K-4 state=done lane=A branch=fix/K-4 result.pr=784
+q add K-5; q set K-5 state=done lane=A branch=fix/K-5 result.pr=785 images_uploaded=partial
+: > "$T/upload-fills"; : > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "KAN-629 a finished round with no AUTOPILOT_IMAGES uploads the briefed screenshot directory" \
+  'grep -qx "781 $T/state-s/images/K-1" "$T/uploads" && [ "$(field K-1 images_uploaded)" = true ] && ! echo "$out" | grep -q "K-1: DRAFT"'
+check "KAN-629 negative control: a body with no cell left is not uploaded again from that directory" \
+  '! grep -q "^782 " "$T/uploads" && [ "$(field K-2 images_uploaded)" = null ]'
+check "KAN-629 negative control: a running worker with no marker may still be capturing, so nothing is uploaded" \
+  '! grep -q "^783 " "$T/uploads" && [ "$(field K-3 images_uploaded)" = null ]'
+check "KAN-629 a done draft whose cells desk holds the files for goes to the pass's upload, not the person" \
+  'grep -qx "784 $T/state-s/images/K-4" "$T/uploads" && [ "$(field K-4 undraft.call)" = "\"upload\"" ] && [ "$(field K-4 images_uploaded)" = true ] && ! echo "$out" | grep -q "K-4: DRAFT"'
+check "KAN-629 a partial upload is never sent again, and its cells stay with the person as before" \
+  '! grep -q "^785 " "$T/uploads" && [ "$(field K-5 undraft.call)" = "\"person\"" ] && echo "$out" | grep -qF "K-5: DRAFT — PR #785 stays draft: 1 screenshot cell(s) left: k-5.png, whose files desk holds but could not put in the body"'
+check "KAN-629 one upload a pass: the undraft step does not send K-1 again" '[ "$(grep -c "^781 " "$T/uploads")" = 1 ]'
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "KAN-629 its cells filled, the next pass takes it out of draft with no second upload" \
+  'grep -q "^pr ready 784" "$T/gh-calls" && ! grep -q "^784 " "$T/uploads"'
+rm -f "$T/upload-fills"
+for k in 1 2 3 4 5; do q set "K-$k" state=done session_id=null; dragbody "78$k" "no cell"; done
 
 # ---- DS-493: a base that renumbers a migration sends the child naming it to a worker, before any other
 # fix try, and leaves a child naming none of it. A real clone, since the pass asks git.

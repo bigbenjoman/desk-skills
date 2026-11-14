@@ -6,11 +6,11 @@
 // workers never touch it — their state is derived from their own logs plus `claude agents --json`.
 // Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, dateHeld, badLabelText, spinePark, planPark, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
-import { ANSWER_HEAD } from './briefing.mjs';
+import { saveAnswer } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
@@ -19,9 +19,10 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
-import { followOnPending } from './harvest.mjs';
+import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
+import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
-import { projectsDirs } from './claude-logins.mjs';
+import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
@@ -44,7 +45,7 @@ function setBase(q, v) {
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -234,9 +235,71 @@ function refuseLeft(t, key, what) {
   throw new Error(`${key} was left in finished batch ${name} (${t.park.question}), so it is not ${what} there: move it (node queue.mjs --batch ${name} transfer ${key} standing) or drop it`);
 }
 
+// A ticket still recorded running whose worker has exited on a park, before a pass harvested it:
+// { question, since, stage, markers, notes } from its log, or null. Its worker is gone when a recorded
+// pid is dead and the agent registry, read across every login, lacks its session; a registry that
+// cannot be read, or a ticket with neither, is never taken as gone. Its park is the last ending marker
+// the worker said after the log's last `desk_spawn` line, so a park an earlier session answered is not
+// it; a log with no such line is never read as one. Its calls, notes and link requests are read from
+// the whole log, as the pass reads them: a session resumed after a kill or a usage limit appends to
+// the same log, and nothing harvested what it printed before. A log that asked for issue links, or a
+// pass running now (its lock unreadable included), is left to the pass, which makes the links and
+// would otherwise park it again behind this requeue.
+function exitedOnPark(t) {
+  if (t.pid == null && !t.session_id) return null;
+  if (t.pid != null && alive(Number(t.pid))) return null;
+  if (t.session_id) {
+    const reg = readRegistry();
+    if (!reg.ok || reg.live.some((a) => a.sessionId === t.session_id)) return null;
+  }
+  const log = join(stateDir(), 'logs', `${t.key}.log`);
+  const stamp = logStamp(log);
+  let text;
+  try { text = readFileSync(log, 'utf8'); } catch { return null; }
+  const lines = text.split('\n');
+  const spawned = lines.findLastIndex((l) => l.startsWith('{"type":"desk_spawn"'));
+  if (spawned < 0) return null;
+  const round = lines.slice(spawned + 1).join('\n');
+  const end = workerMarkers(round).findLast(([k]) => ['AUTOPILOT_PARK', 'AUTOPILOT_DONE', 'AUTOPILOT_HANDOFF', 'AUTOPILOT_REBOOT'].includes(k));
+  const markers = workerMarkers(text);
+  if (end?.[0] !== 'AUTOPILOT_PARK' || !end[1].trim() || markers.some(([k]) => k === 'AUTOPILOT_LINK')) return null;
+  if (passRunning()) return null;
+  const notes = markers.filter(([k, v]) => k === 'AUTOPILOT_NOTE' && v.trim()).map(([, v]) => noteLine(t.key, v));
+  return { question: end[1].trim(), since: statSync(log).mtime.toISOString(), stage: lastStage(round)?.stage ?? t.stage ?? null, markers, notes, log, logStamp: stamp };
+}
+
+const logStamp = (log) => { try { const s = statSync(log); return `${s.size}:${s.mtimeMs}`; } catch { return null; } };
+function passRunning() {
+  const passLock = join(stateDir(), 'orchestrator.lock');
+  if (!existsSync(passLock)) return false;
+  try {
+    const { pid } = JSON.parse(readFileSync(passLock, 'utf8'));
+    return pid !== process.ppid && alive(pid);
+  } catch { return true; }
+}
+
+// Read before the queue lock (the registry read can outlast another writer's wait for it), for the
+// ticket `requeue` names on the command line, as { key, session, park }.
+let exitedPark = null;
+
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
-  if (t.state === 'running') throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+  // Recorded parked as a pass's harvest records it, with the round a fresh spawn may resume and the
+  // calls and notes the worker logged, before the requeue moves its log aside.
+  let harvested = '';
+  let calls = null;
+  let p = null;
+  if (t.state === 'running') {
+    // Read again under the lock: a resume of the same session since appends to the log, and a pass
+    // started since would harvest it too.
+    p = exitedPark?.key === key && exitedPark.session === (t.session_id ?? null) ? exitedPark.park : null;
+    if (p && (logStamp(p.log) !== p.logStamp || passRunning())) p = null;
+    if (!p) throw new Error(`${key} is running: stop its worker first, or it gets a second one`);
+    calls = workerCalls(p.markers, { ticket: key, run: t.session_id, repo: ghRepo(), pr: null });
+    Object.assign(t, { state: 'parked', park: newPark(p.question, p.since), last_round: { stage: p.stage, question: p.question, at: p.since } });
+    harvested = `; its worker had exited on a park no pass had recorded yet, kept as prev_park: ${p.question}`
+      + `${calls.unreadable.map((u) => `; unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`).join('')}`;
+  }
   if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
   refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
@@ -246,6 +309,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
   if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
   if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
+  if (t.state === 'parked' && t.park?.session_step) throw new Error(`${key} waits on a step the person approved that no worker can run (${t.park.session_step.step}): do it in an interactive session, then \`queue.mjs step-done ${key}\` sends it back to a worker`);
   // A lane D ticket handed back (handback) had its session step done by the person, so its design park
   // no longer keeps it from a worker. A lane C one is moved to lane B first.
   if (!handedBack && t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
@@ -288,8 +352,10 @@ function requeue(q, key, { handedBack = false } = {}) {
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
+  if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
+  if (p?.notes.length) appendNotes(p.notes, stateDir());
   save(q);
-  return `${key} requeued: ${placed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+  return `${key} requeued: ${placed}${harvested}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 // A lane C or D park whose step the person has done (desk-needs-you's resume on a session item), handed
@@ -316,17 +382,21 @@ function handback(q, key, note) {
   try { msg = requeue(q, key, { handedBack: true }); } catch (e) { Object.assign(t, was); throw e; }
   // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
-  appendBriefing(key, `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`);
+  saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
   return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
 }
 
-// A binding answer for a ticket's next worker, appended to its briefing (pass.mjs writeBrief keeps it).
-function appendBriefing(key, entry) {
-  const dir = join(stateDir(), 'briefings');
-  mkdirSync(dir, { recursive: true });
-  const brief = join(dir, `${key}.md`);
-  if (existsSync(brief)) appendFileSync(brief, entry);
-  else writeFileSync(brief, `# Briefing for ${key}\n${entry}`);
+// A step the person approved that no worker can run (park.session_step, answer.mjs), done by them:
+// the ticket goes back to a worker as a requeue sends it, with the step in its briefing as done.
+function stepDone(q, key) {
+  const t = ticket(q, key);
+  const s = t.park?.session_step;
+  if (t.state !== 'parked' || !s?.step) throw new Error(`${key} is not waiting on an approved step no worker can run, so there is no step to record done`);
+  delete t.park.session_step;
+  let msg;
+  try { msg = requeue(q, key); } catch (e) { t.park.session_step = s; throw e; }
+  saveAnswer(stateDir(), key, `The person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.`, new Date().toISOString());
+  return `${key}: the approved step is recorded done (${s.step}); ${msg}`;
 }
 
 // What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
@@ -490,9 +560,13 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
+if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
+  const t = readQueue(QUEUE).tickets?.[args[0]];
+  if (t?.state === 'running') exitedPark = { key: args[0], session: t.session_id ?? null, park: exitedOnPark(t) };
+}
 if (WRITES.includes(cmd)) lock();
 const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
 
@@ -740,6 +814,13 @@ switch (cmd) {
     break;
   }
 
+  case 'step-done': {
+    const [key] = args;
+    if (!key) throw new Error('usage: queue.mjs step-done <TICKET>');
+    console.log(stepDone(q, key));
+    break;
+  }
+
   // A finished feature spine whose specs passed pass.mjs's check, approved by the person: the spine is
   // done, its PR leaves draft (§3 pr-ready), and it merges under the batch's merge rules, after which
   // what is held behind it is released. answer.mjs never un-parks; this is the orchestrator's decision.
@@ -793,10 +874,10 @@ switch (cmd) {
     const t = ticket(q, key);
     if (!spinePark(t)) throw new Error(`${key} is not a feature spine parked for approval (state ${t.state})`);
     const pr = t.result?.pr;
-    const entry = `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person sent this spine's acceptance specs back: ${note}\n` +
-      (pr != null ? `Your PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.\n` : '');
+    const text = `The person sent this spine's acceptance specs back: ${note}` +
+      (pr != null ? `\nYour PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.` : '');
     const msg = requeue(q, key);
-    appendBriefing(key, entry);
+    saveAnswer(stateDir(), key, text, new Date().toISOString());
     console.log(`${key} sent back with the note in its briefing; ${msg}`);
     break;
   }
@@ -956,7 +1037,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

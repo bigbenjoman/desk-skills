@@ -6,7 +6,7 @@
 //   review-threads.mjs query      the GraphQL query the payload answers
 //   review-threads.mjs read --handle <§1 GitHub handle[,§4 Review account]> --clean "<§4 Clean review verdict>" < payload.json
 //   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> < payload.json
-//   review-threads.mjs approved --handle <handle> --clean "<row>" < payload.json   (approvedAt)
+//   review-threads.mjs approved --clean "<row>" < payload.json   (approvedAt)
 //
 // prints one JSON line: { decision, head, verdict, resolve: [thread], left: [thread] }, where a thread is
 // { id, path, line, first, text }: `first` is the first line of its opening comment, `text` the two as
@@ -95,26 +95,31 @@ export function readVerdict(payload, { handle, clean, carry, scope }) {
   return { head, clean: false, carried: null, why: v.why, settle: !!v.settle && !carried, person: false, ...(targeted ? { targeted } : {}) };
 }
 
-// When the PR last had an approval at its head: the newest of an APPROVED review of the head and the
-// handle's clean verdict at it (never one carried from an older head). { head, at, by }, `at` null when
-// there is neither, for the driver to weigh against when a red approval check's run started.
-export function approvedAt(payload, { handle, clean }) {
+// When the PR last had an approval at its head: the newest of an APPROVED review of the head and a clean
+// verdict at it, whichever account posted it (never one carried from an older head). { head, at, by,
+// verdict: { at, by } }, `at` null when there is neither and `verdict` the newest clean verdict alone, for
+// the driver to weigh against when a red state check's run started.
+export function approvedAt(payload, { clean }) {
   const pr = payload?.data?.repository?.pullRequest;
   if (!pr) return null;
   const head = pr.headRefOid ?? '';
   const reviews = pr.reviews?.nodes ?? [];
-  const hits = reviews.filter((r) => r.state === 'APPROVED' && head && r.commit?.oid === head && r.submittedAt)
+  const newest = (hits) => hits.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))[0];
+  const approved = reviews.filter((r) => r.state === 'APPROVED' && head && r.commit?.oid === head && r.submittedAt)
     .map((r) => ({ at: r.submittedAt, by: `an APPROVED review by ${r.author?.login ?? 'someone'}` }));
+  const verdicts = [];
   if (rowSet(clean)) {
-    const { plain, v, review } = verdictAtHead(reviews, handle, head, String(clean).trim());
-    // The review the verdict was read from: under a plain-text row the one plainVerdictAt judged, else
-    // the latest carrying a verdict marker.
-    const id = plain ? v.review?.id : review?.id;
-    const r = v.clean && id ? reviews.find((x) => x.id === id) : null;
-    if (r?.submittedAt) hits.push({ at: r.submittedAt, by: 'a clean review verdict' });
+    for (const login of new Set(reviews.map((r) => r.author?.login).filter(Boolean))) {
+      const { plain, v, review } = verdictAtHead(reviews, login, head, String(clean).trim());
+      // The review the verdict was read from: under a plain-text row the one plainVerdictAt judged, else
+      // the latest carrying a verdict marker.
+      const id = plain ? v.review?.id : review?.id;
+      const r = v.clean && id ? reviews.find((x) => x.id === id) : null;
+      if (r?.submittedAt) verdicts.push({ at: r.submittedAt, by: 'a clean review verdict' });
+    }
   }
-  const best = hits.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))[0];
-  return { head, at: best?.at ?? null, by: best?.by ?? null };
+  const best = newest([...approved, ...verdicts]), verdict = newest(verdicts);
+  return { head, at: best?.at ?? null, by: best?.by ?? null, verdict: { at: verdict?.at ?? null, by: verdict?.by ?? null } };
 }
 
 // A thread as one line names it: `path:line "first line"`, cut to a readable length.
@@ -153,9 +158,9 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   console.log(JSON.stringify(r));
 } else if (a[0] === 'approved') {
   let r = null;
-  try { r = approvedAt(JSON.parse(readFileSync(0, 'utf8')), { handle: at('--handle'), clean: at('--clean') }); } catch { /* unreadable: null */ }
+  try { r = approvedAt(JSON.parse(readFileSync(0, 'utf8')), { clean: at('--clean') }); } catch { /* unreadable: null */ }
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
   console.log(JSON.stringify(r));
 } else {
-  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> < payload.json | approved --handle <login> --clean "<row>" < payload.json'); process.exit(2);
+  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> < payload.json | approved --clean "<row>" < payload.json'); process.exit(2);
 }

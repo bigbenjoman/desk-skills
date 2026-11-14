@@ -75,8 +75,10 @@ approvals or title, so a rerun reads the same state and fails the same way. The 
 one with the error its run gave and reruns only the rest, so a PR red on nothing else gets no rerun
 and no cooldown. A red `approval` check is recorded as `merge_blocked` `approval: … needs approval
 from a human reviewer`, which desk-q and needs-you put to the person, unless its run started before
-the head's newest APPROVED review or clean verdict: that run read the PR before the approval, so its
-job is rerun once per head, and only a second red goes to the person. A red `verdict` check with no
+the head's newest APPROVED review or clean verdict (from any account): that run read the PR before the
+approval, so its job is rerun once per head, and only a second red goes to the person. One whose error
+line says no verdict or review is at the head failed its verdict step, so it is read as a `verdict`
+check; a `verdict` check is rerun the same way once per head for a newer clean verdict. A red `verdict` check with no
 unclean review at the head (a review missing, for an older head, or in a form the gate rejects) goes
 to a review worker that reviews the head and posts it, two review tries at each head outside the fix
 tries below; the person gets it once a head has had both, named as a review that did not post. A
@@ -283,7 +285,8 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   PR rather than undrafting it. A clean verdict on a conflicted head is spent the moment the conflict
   is resolved. Workers are denied `gh pr ready`, so every pass checks these facts for each done
   ticket's draft PR (`undraft.mjs`, whoever runs the pass, the supervisor included), with its checks
-  green too, then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
+  green too (a red §4 State check other than `desk-review verdict` does not hold it: its reviewer
+  reads only ready PRs, and the driver holds the ready PR until it is green), then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
   are still running, or whose mergeability GitHub has not worked out yet, waits for a later pass; any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
   ticket as `undraft`; a feature spine is left to `queue.mjs approve`. **A draft the person put back
@@ -319,8 +322,9 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   there, an ignored one included, makes it dirty for every later check build and live read. Where
   either checkout cannot be made (a failed fetch, a dirty checkout), nothing runs and the draft goes
   to the person with the reason. It runs detached so a pass that ends leaves it running,
-  with its output and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
-  `--failed`. A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
+  with its output and exit code under `<state>/check-builds/`. It starts on the first pass that sees the
+  check red, whatever else is still running. Once it succeeds, the pass re-runs those checks with
+  `--failed`, after any check still running in their own run finishes (GitHub re-runs no run in progress). A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
   `syncFix`, one of the fix tries): its worker merges the base, fixes what the merge breaks in a commit
   of its own and pushes, and the pass builds the new head. A command that fails at a head up to date
   with its base, or a check still red after the re-run, goes to the person with the command, its exit

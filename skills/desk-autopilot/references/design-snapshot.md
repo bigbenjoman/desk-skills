@@ -13,7 +13,8 @@ snapshot **at Stage 1, before its triage**, taken by you. Find them with
 in the repo yet). List the artifact's files (`Artifact action:list scope:files`), then read
 `project/canvas.json`, every `project/*.dc.html`, and the `support.js`, stylesheets and fonts they
 load, with `paths` and `out_dir: <state>/designs/<TICKET>/` (they land under
-`<state>/designs/<TICKET>/project/`; triage and workers can read `<state>`). Read too what the
+`<state>/designs/<TICKET>/project/`; triage and workers can read `<state>`, and a named batch's
+workers the repo's own `designs/`, read only). Read too what the
 published files leave out: each `/_blob/<id>` asset a board names, in its attributes or script, one
 `read` with `path: "/_blob/<id>"` apiece (a `paths` read refuses asset ids), and
 `artifact-type/dc-runtime.js` when a board loads a `support.js` the artifact does not publish

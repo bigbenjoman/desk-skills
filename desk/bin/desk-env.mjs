@@ -71,8 +71,12 @@
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run (UNLISTED), an app directory other command rows
-//                                             name with no Dev server item (NODEV), a dontAsk settings file (DONTASK);
+//                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
+//                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
+//   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
+//                                             with the value to add: Dev server (NODEV) and the .env* files
+//                                             its primary-checkout directory holds (NOENV); exit 1 if any
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
 //                                             value; prints ADDED, and a §3 row's perm read back
@@ -113,6 +117,7 @@ import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
+import { jobKeyedPremerge } from './workflow-yaml.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -983,13 +988,20 @@ export function gitAuthor() {
 // §1 GitHub handle). A value in another shape throws rather than posting from a guessed account.
 export function reviewAccount() {
   const v = String(configValue('review-account') ?? '').trim();
-  if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
-  const m = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:\s*(\S.*)$/.exec(v);
-  if (!m) {
+  const acct = reviewAccountIn(v);
+  if (acct === undefined) {
     const r = CONFIG_ROWS['review-account'];
     throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${v}) is not \`<login>: <gh config directory>\` or \`none\` in ${configPathHint()}. Refusing to guess.`);
   }
-  return { login: m[1], dir: expandHome(m[2].trim()) };
+  return acct;
+}
+// A §4 Review account value as { login, dir }, null where it is unset, a TODO or `none`, and
+// undefined where it is malformed.
+function reviewAccountIn(value) {
+  const v = String(value ?? '').trim();
+  if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
+  const m = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:\s*(\S.*)$/.exec(v);
+  return m ? { login: m[1], dir: expandHome(m[2].trim()) } : undefined;
 }
 // The logins whose review verdicts are desk's own, comma-separated as loginIn reads them: the §1
 // GitHub handle, and the §4 Review account's login where it is set (a malformed row adds none: the
@@ -997,10 +1009,18 @@ export function reviewAccount() {
 export function verdictLogins() {
   let handle = null, acct = null;
   try { handle = githubHandle(); } catch { return null; }
-  if (!handle) return null;
   try { acct = reviewAccount(); } catch { /* malformed: the handle alone */ }
-  return acct && acct.login.toLowerCase() !== handle.toLowerCase() ? `${handle},${acct.login}` : handle;
+  return loginsOf(handle, acct);
 }
+// Another repo's, by slug, as verdictLogins reads this repo's: $DESK_GITHUB_HANDLE, else its §1 row.
+export function repoVerdictLogins(slug, root = deskConfigRoot()) {
+  const parsed = parseConfigFile(join(root, 'repos', slug, 'config.md'));
+  const env = process.env.DESK_GITHUB_HANDLE;
+  const handle = unset(env) ? configValueIn(parsed, 'github-handle') : env;
+  return loginsOf(handle == null ? null : expandHome(handle), reviewAccountIn(configValueIn(parsed, 'review-account')));
+}
+const loginsOf = (handle, acct) => (!handle ? null
+  : acct && acct.login.toLowerCase() !== handle.toLowerCase() ? `${handle},${acct.login}` : handle);
 export const repoRoot = () => resolve({ env: 'DESK_REPO_ROOT', id: 'repo-root', identity: true }).replace(/\/+$/, '');
 // reviewPlan on this repo's rows.
 export const reviewRows = () => reviewPlan(configValues('local-review'), configValue('clean-verdict'), repoRoot());
@@ -1515,13 +1535,8 @@ export function configDrift({ config, template = templatePath(), root = null, ho
 export function devServerGaps(parsed, root) {
   const dev = configValuesIn(parsed, 'dev-cmd');
   if (!dev || isNone(dev)) return [];
-  const served = new Set();
-  for (const item of dev) {
-    const { dir, cmd } = parseCommandItem(item);
-    served.add(dir);
-    for (const m of cmd.matchAll(/(?:--filter[=\s]|-F\s)\s*['"]?([^\s'"]+)/g)) served.add(m[1].replace(/^\.\//, '').replace(/\/+$/, ''));
-  }
-  const pkg = (dir) => { try { return JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')); } catch { return null; } };
+  const served = devServed(dev);
+  const pkg = (dir) => readPackage(root, dir);
   const named = new Map();
   for (const id of WORKER_COMMAND_IDS.filter((x) => x !== 'dev-cmd')) {
     const values = configValuesIn(parsed, id);
@@ -1539,12 +1554,66 @@ export function devServerGaps(parsed, root) {
     .map(({ dir, rows }) => ({ dir, rows }));
 }
 
-export function driftLines({ missing, stalls, unlisted = [], noDev = [], dontAsk }) {
+// The directories and package names §4 Dev server items serve: each item's own directory, and any
+// `--filter`/`-F` it passes.
+function devServed(items) {
+  const served = new Set();
+  for (const item of items) {
+    const { dir, cmd } = parseCommandItem(item);
+    served.add(dir);
+    for (const m of cmd.matchAll(/(?:--filter[=\s]|-F\s)\s*['"]?([^\s'"]+)/g)) served.add(m[1].replace(/^\.\//, '').replace(/\/+$/, ''));
+  }
+  return served;
+}
+const readPackage = (root, dir) => { try { return JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')); } catch { return null; } };
+
+// Every §4 row one app needs before a worker can run it for screenshots, that the config lacks for
+// it, each with the value to add: a Dev server item where its package.json has a dev script, and the
+// `.env*` files its directory holds in the primary checkout (`root`) where Env files names none under
+// it. A row unset is drift's MISSING, and `none` is a decision: neither is a gap here.
+// -> [{ row, dir, value: [item], have?: [file] }]
+export function appSetupGaps(parsed, root, dir) {
+  const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
+  const gaps = [];
+  const dev = configValuesIn(parsed, 'dev-cmd');
+  const p = readPackage(root, app);
+  if (dev && !isNone(dev) && p?.scripts?.dev && !devServed(dev).has(app) && !devServed(dev).has(p.name)) {
+    const pm = configValuesIn(parsed, 'package-manager');
+    gaps.push({ row: 'Dev server', dir: app, value: [`${app === '.' ? '' : `${app}: `}${TS.packageManager(root, pm && !isNone(pm) ? pm[0] : null)} run dev`] });
+  }
+  const env = configValuesIn(parsed, 'env-files');
+  if (env && !isNone(env) && !env.some((f) => (app === '.' ? !f.includes('/') : f.startsWith(`${app}/`)))) {
+    let have = [];
+    try { have = readdirSync(join(root, app), { withFileTypes: true }).filter((e) => e.isFile() && /^\.env/.test(e.name) && !/\.(example|sample|template|dist)$/.test(e.name)).map((e) => e.name).sort(); } catch { /* no such directory */ }
+    if (have.length) gaps.push({ row: 'Env files', dir: app, value: have.map((f) => (app === '.' ? f : `${app}/${f}`)), have });
+  }
+  return gaps;
+}
+
+export function appGapLines(gaps, dir) {
+  const spans = (xs) => xs.map((x) => `\`${x}\``).join(' ');
+  const lines = gaps.map((g) => (g.row === 'Dev server'
+    ? `NODEV    §4 Dev server has no item for ${g.dir}, whose package.json has a dev script: add ${spans(g.value)}`
+    : `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`));
+  return lines.length ? lines : [`no setup gaps for ${dir}`];
+}
+
+// A §4 Pre-merge steps item named after a job of several steps (workflow-yaml.mjs jobKeyedPremerge): the
+// step it is for, in its place, where one step fits it, else the job's named steps to choose from.
+const jobKeyedLine = (j) => {
+  const quoted = (xs) => xs.map((s) => `"${s}"`).join(', ');
+  const fix = j.fits.length === 1 ? `name the step instead: "${j.fits[0]}: ${j.command}"`
+    : (j.fits.length ? j.fits : j.named).length ? `name the step it is for instead, one of ${quoted(j.fits.length ? j.fits : j.named)}` : 'name the step it is for instead';
+  return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
+};
+
+export function driftLines({ missing, stalls, unlisted = [], noDev = [], jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
+    ...jobKeyed.map(jobKeyedLine),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
   return lines.length ? lines : ['no drift'];
@@ -1914,6 +1983,21 @@ if (isMain) {
         break;
       }
       case 'drift': {
+        const ai = args.indexOf('--app');
+        if (ai >= 0) {
+          // One app's setup gaps, for the one screenshot park that names them all.
+          const dir = args[ai + 1];
+          if (!dir || dir.startsWith('-') || args.includes('--all')) { console.error('usage: desk-env.mjs drift --app <app dir>'); process.exit(2); }
+          const config = configPathOrNull();
+          if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
+          const parsed = parseConfigFile(config);
+          const rootRow = configValueIn(parsed, 'repo-root');
+          const root = rootRow ? expandHome(rootRow) : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || process.cwd();
+          const gaps = appSetupGaps(parsed, root, dir);
+          for (const l of appGapLines(gaps, dir)) console.log(l);
+          process.exitCode = gaps.length ? 1 : 0;
+          break;
+        }
         // One repo's config (the cwd's), or with --all every config under ~/.config/desk/repos/.
         const repos = args.includes('--all') ? configuredRepos() : [{ slug: null, config: configPathOrNull() }];
         if (!repos.length) { console.log(`no repo configs under ${join(deskConfigRoot(), 'repos')}`); break; }
@@ -1923,7 +2007,9 @@ if (isMain) {
           // A repo's settings live in its main checkout (§2 Primary repo root); this repo's, failing that, in the cwd's.
           const rootRow = configValueIn(parseConfigFile(config), 'repo-root');
           const root = rootRow ? expandHome(rootRow) : slug ? null : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
-          const lines = driftLines(configDrift({ config, root }));
+          const premerge = configValuesIn(parseConfigFile(config), 'pre-merge-steps');
+          const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
+          const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;
           if (slug) console.log(`== ${slug}`);
           for (const l of lines) console.log(slug ? `  ${l}` : l);

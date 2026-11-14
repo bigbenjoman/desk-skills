@@ -86,7 +86,10 @@ It moves `<state>/logs/<TICKET>.log`, `<state>/parks/<TICKET>.json` and
 `alreadyFinished()` refuse the respawn, a kept park file shows the last round's question as "needs
 you", and a kept mailbox answers the next park instantly), sets `state=triaged open_questions=0
 park=null session_id=null pid=null idle_passes=0 log_bytes=0`, and moves the ticket to the front of
-the spawn order (`.tickets` key order). It refuses a running ticket, a held one (release it
+the spawn order (`.tickets` key order). It refuses a running ticket, unless its worker has
+exited (its session is not in the agent registry, and no pass is running) and its log, after its
+last spawn, ends on a park and asks for no issue link: that park, with the worker's decisions and
+notes, is recorded and kept as `prev_park`. It refuses a held one (release it
 instead), one never triaged, one with triage questions still open (answer them instead), one
 parked at triage for its size or a dependency cycle, and any lane but A, B or E, because `pass.mjs`
 spawns whatever is triaged without reading the lane.
@@ -101,6 +104,15 @@ respawns is the tell. It also clears `result`, `images_uploaded` and `images_rep
 any log or park record still in place to the next free `.round<n>`, so the new round's screenshots
 go to the new round's PR rather than the last one's, and no earlier question reads as the new
 worker's.
+
+Screenshots a worker saved in its briefed directory (`<state>/images/<TICKET>/`) without printing
+`AUTOPILOT_IMAGES:` are still uploaded where §3 `pr-images` is `yes`: a finished round with no marker
+uploads that directory while the PR body still has a `_drag <file>_` cell naming one of its files,
+and a draft whose cells all have files there, with no upload tried (`images_uploaded` unset or
+`none`), is uploaded by the undraft step (`undraft.mjs` `cellCall` `upload`). After a `true` or
+`partial` upload it is not: those assets already exist on GitHub, and the uploader sends the whole
+directory, so the cells left are the person's. To put them in by hand:
+`node ~/.claude/desk/bin/upload-images.mjs <pr> <state>/images/<TICKET>`.
 
 Remove the old worktree first (`git worktree remove --force`, under §3 `worktree-remove`) if the
 follow-up needs a fresh branch off current `<default>` (§0 Default branch); otherwise

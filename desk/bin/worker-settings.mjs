@@ -515,6 +515,15 @@ if (mode === 'triage') {
   if (readRepoLines.length) deny.push(...bash('git', ...[' clone', ' remote -v *add*', ' remote -v *set-url*', ' remote -v *rename*'].flatMap((s) => [s, ...OWN_CS.map((c) => `${c}${s}`)])));
   opt.readRepoLines = readRepoLines;
 
+  // Design snapshots live once, in the repo's own state folder: a named batch's worker may read them
+  // there and edit none of them. Nothing else at the repo level is granted.
+  const designs = join(E.repoStateOf(STATE), 'designs');
+  if (E.repoStateOf(STATE) !== STATE && existsSync(designs)) {
+    dirs.add(designs);
+    deny.push(`Edit(${abs(designs)}/**)`);
+    opt.readRepoLines.push(`CONFIG_READ_DESIGNS: ${designs}`);
+  }
+
   // A package manager's one-off runner fetches and executes an arbitrary package. Denied in every
   // form this repo's config does not itself use (deny beats allow, so a used form is left to the
   // allow-list, which permits only the exact configured command).
@@ -768,6 +777,12 @@ settings.skillOverrides = Object.fromEntries(BUNDLED_UNUSED.filter((n) => !revie
 const HOOK = join(E.HOME, '.claude', 'hooks', 'deny-ai-attribution.py');
 if (existsSync(HOOK)) {
   settings.hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${HOOK}"`, timeout: 10 }] }] };
+}
+// Where §5 AI attribution is forbidden, /desk-setup turns Claude Code's trailer instruction off in the
+// repo's .claude/settings.local.json, which --setting-sources "" drops too. Without this a worker is
+// told to add the trailer and the hook above blocks its commit. Read as the hook reads it.
+if (mode === 'worker' && /^`?forbidden/i.test(String(cfg('ai-attribution') ?? '').trim())) {
+  settings.attribution = { commit: '', pr: '', sessionUrl: false };
 }
 // Blocks a worker's first attempt to end its turn with a background task running (claude -p kills
 // it). It acts only under DESK_AUTOPILOT_WORKER=1, so triage sessions are untouched.

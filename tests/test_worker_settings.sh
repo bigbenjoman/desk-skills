@@ -554,6 +554,24 @@ out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --
 check "DS-594 a base fix worker may push HEAD to the base, and nothing else" \
   'ok "git push origin HEAD:refs/heads/feat/x" && no "git push origin feat/x" "git push origin HEAD:refs/heads/main" "git push origin HEAD" "git push --force origin HEAD:refs/heads/feat/x"'
 rm -f "$DESK_QUEUE"
+
+# ---- a named batch's worker reads the repo's design snapshots ----
+BATCH="$T/state/batches/b1"; mkdir -p "$BATCH" "$T/state/triage"
+settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-standing.json"; standing_out=$out
+DESK_AUTOPILOT_STATE="$BATCH" DESK_STATE="$BATCH" settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-batch-nodesigns.json"; nodesigns_out=$out
+mkdir -p "$T/state/designs/EPIC-1"
+DESK_AUTOPILOT_STATE="$BATCH" DESK_STATE="$BATCH" settings '`bash tests/run.sh`'
+check "DS-608 AC1 a named batch's worker may read the repo's designs, and its path is named for the spawn" \
+  'readable "$T/state/designs" && [[ "$out" == *"CONFIG_READ_DESIGNS: $T/state/designs"* ]]'
+check "DS-608 AC1 an edit there is refused" 'denies "Edit(/$T/state/designs/**)" && ! allows "Edit(/$T/state/designs/**)"'
+check "DS-608 AC2 nothing else under the repo state folder outside the batch is readable" \
+  '[ "$(jq --arg s "$T/state" --arg b "$BATCH" "[.permissions.additionalDirectories[] | select(startswith(\$s) and (startswith(\$b) | not))] | length" "$T/ws.json")" = 1 ] && ! readable "$T/state" && ! readable "$T/state/triage"'
+settings '`bash tests/run.sh`'
+check "DS-608 AC3 a standing batch's worker is unchanged" 'diff -q "$T/ws.json" "$T/ws-standing.json" >/dev/null && [ "$out" = "$standing_out" ]'
+rm -rf "$T/state/designs"
+check "DS-608 AC4 with no designs folder, a named batch's worker gets no grant" \
+  '[[ "$nodesigns_out" != *CONFIG_READ_DESIGNS* ]] && [ "$(jq "[.permissions.additionalDirectories[] | select(endswith(\"/designs\"))] | length" "$T/ws-batch-nodesigns.json")" = 0 ] && ! jq -e "[.permissions.deny[] | select(contains(\"/designs/\"))] | length > 0" "$T/ws-batch-nodesigns.json" >/dev/null'
+
 settings '`bash tests/run.sh`' '| Worker measuring commands | `npm exec measure` |'
 check "DS-431 a measuring command in a runner form is allowed, and the runner stays closed to anything else" 'ok "npm exec measure" && no "npm exec other" "npm exec measure --more"'
 settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |' "$(rows3 pr-open=yes pr-edit=yes pr-reply=yes pr-self-review-comment=yes)"
@@ -646,5 +664,20 @@ check "DS-576 AC8 a GH_CONFIG_DIR or gh token prefix is still refused" \
       "GH_CONFIG_DIR=/x node $B/review-post.mjs $RP" "export GH_CONFIG_DIR=/x"'
 settings '`bash tests/run.sh`' '' "$(rows3 pr-self-review-comment=no)"
 check "DS-576 AC8 review-post.mjs is refused where §3 pr-self-review-comment is not yes" 'no "node $B/review-post.mjs $RP" "$B/review-post.mjs $RP"'
+
+# Workers drop the repo's .claude/settings.local.json, so a §5 AI attribution of forbidden turns
+# Claude Code's trailer off in the worker's own settings.
+attr5(){ printf '\n## 5. Conventions\n| Field | Value |\n|---|---|\n| AI attribution | %s |\n' "$1"; }
+settings '`bash tests/run.sh`' '' "$(attr5 '`forbidden`')"
+check "DS-610 AC1 forbidden: attribution has empty commit and PR text and no session URL" \
+  '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = "{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}" ]'
+triage
+check "DS-610 forbidden: a triage session's settings are unchanged" '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = null ]'
+settings '`bash tests/run.sh`' '' "$(attr5 '`allowed`')"
+check "DS-610 AC2 allowed: no attribution key" '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = null ]'
+settings '`bash tests/run.sh`' '' "$(attr5 '`TODO` (`forbidden` or `allowed`)')"
+check "DS-610 AC3 TODO: no attribution key" '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = null ]'
+settings '`bash tests/run.sh`'
+check "DS-610 AC3 unset: no attribution key" '[ $rc -eq 0 ] && [ "$(jq -c .attribution "$T/ws.json")" = null ]'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

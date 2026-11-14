@@ -34,6 +34,24 @@ export function processCwds() {
   return CWDS;
 }
 
+// Whether a path is a directory or inside it, matched by the directory as given and by its real path.
+export function insideOf(dir) {
+  let real = dir;
+  try { real = realpathSync(dir); } catch { /* as given */ }
+  return (p) => [dir, real].some((d) => p === d || p.startsWith(`${d}/`));
+}
+
+// The processes working in a directory, as [{pid, cmd, cwd}], leaving out the pids in skip. Null when
+// no process's working directory can be read.
+export function dirUsers(dir, skip = [], cwds = processCwds()) {
+  if (!cwds) return null;
+  const inDir = insideOf(dir);
+  return cwds.filter((p) => !skip.includes(p.pid) && inDir(p.cwd));
+}
+
+// Each as `pid <n> (<command>)`, comma-separated.
+export const usersText = (users) => users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ');
+
 // Every process as [{pid, ppid, args}], read once. Null when ps cannot be read.
 let PROCS;
 export function processList() {
@@ -71,10 +89,7 @@ const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|
 // pid has been reused elsewhere names nothing here.
 export function suiteWait(worktree, { procs, cwds, holders }) {
   if (!worktree || !procs || !cwds) return null;
-  let real = worktree;
-  try { real = realpathSync(worktree); } catch { /* as recorded */ }
-  const inside = (p) => [worktree, real].some((w) => p === w || p.startsWith(`${w}/`));
-  const here = new Set(cwds.filter((c) => inside(c.cwd)).map((c) => c.pid));
+  const here = new Set(dirUsers(worktree, [], cwds).map((c) => c.pid));
   let waiting = false;
   for (const p of procs) {
     if (!here.has(p.pid)) continue;

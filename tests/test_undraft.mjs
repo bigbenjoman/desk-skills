@@ -6,7 +6,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
 import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
-import { untriggeredChecks, runnerFault } from '../desk/bin/gate.mjs';
+import { untriggeredChecks, runnerFault, DEFAULT_STATE_CHECKS } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
 import { parseEvidenceRow, dispatchCall, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
@@ -310,7 +310,23 @@ t('DS-327 AC3 a build at another head is not this head\'s', buildPr([FLOWS], nul
 t('DS-327 AC4 a red check the row does not name beside it is handled as before', buildPr([FLOWS, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.why,
   'its checks are not green: "Flows image" failure; "lint" failure');
 t('DS-327 AC4 so is any red check with no row', buildPr([FLOWS], null, { builds: [] })?.call, 'checks');
-t('DS-327 a named check still pending beside another waits', buildPr([FLOWS, { name: 'lint', status: 'in_progress', conclusion: null }])?.call, 'wait');
+// DS-647: the build starts whatever else is running; only its re-run waits, and only on its own run.
+const LINT_OTHER = { name: 'Lint, Type Check & Build', status: 'in_progress', conclusion: null, runId: 31 };
+const LINT_SAME = { ...LINT_OTHER, runId: 21 };
+const LINT_UNKNOWN = { ...LINT_OTHER, runId: undefined };
+const c647 = buildPr([FLOWS, LINT_OTHER]);
+t('DS-647 AC1 a check build red beside a check running in another run is built at once', `${c647?.call} | ${c647?.runs}`, 'build | 21');
+t('DS-647 AC1 so is one beside a check running in its own run', buildPr([FLOWS, LINT_SAME])?.call, 'build');
+const w647 = buildPr([FLOWS, LINT_SAME], ok);
+t('DS-647 AC2 built, with a check still running in its own run, the re-run waits', `${w647?.call} | ${w647?.why}`,
+  `wait | its check build \`./scripts/ensure-flows-image.sh\` ran at ${HEAD.slice(0, 9)}; "Flows image" is re-run once Lint, Type Check & Build finishes, as GitHub re-runs no run still in progress`);
+const r647 = buildPr([FLOWS, LINT_OTHER], ok);
+t('DS-647 AC3 built, with only another run\'s check running, it is re-run', `${r647?.call} | ${r647?.runs}`, 'rebuilt | 21');
+t('DS-647 AC5 built, beside a running check whose run is unknown, the re-run waits as before', buildPr([FLOWS, LINT_UNKNOWN], ok)?.call, 'wait');
+t('DS-647 built, with no run id on the failing check, every running check holds the re-run', rerunPr([{ name: 'tests', status: 'completed', conclusion: 'success' }, { ...FLOWS, runId: undefined }, LINT_OTHER], { builds, built: (h) => (h === HEAD ? ok : null) })?.call, 'wait');
+t('DS-647 a failed build beside a running check waits for it, as before', buildPr([FLOWS, LINT_OTHER], { ...ok, code: 3, tail: 'x' })?.call, 'wait');
+t('DS-647 a build still running beside one waits on itself', buildPr([FLOWS, LINT_OTHER], { state: 'running', command: b0.command })?.why, `its check build \`./scripts/ensure-flows-image.sh\` is running at ${HEAD.slice(0, 9)}, then "Flows image" is re-run`);
+t('DS-647 negative control: a red check the row does not name beside a running one is not built', buildPr([FLOWS, LINT_OTHER, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.call === 'build', false);
 for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'checks');
 
 // DS-440: a check build that failed at a head behind its base goes to a worker that merges the base.
@@ -470,6 +486,24 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   const stuckCell = shotDraft(part, 'x _drag a.png_ _drag b.png_', { evidence: null, ...have(['a.png', 'b.png']) });
   t('DS-492 AC3 a cell nothing fills is named, with why', stuckCell?.why, '2 screenshot cell(s) left: a.png, b.png, whose files desk holds but could not put in the body');
   t('DS-492 AC3 and the person is not asked to upload', stuckCell?.action, LEFT);
+  // KAN-629: files desk holds for every cell, with no upload tried (the worker never printed
+  // AUTOPILOT_IMAGES), go to the pass's own upload while §3 pr-images is yes, never to the person.
+  const up = { upload: 'yes', shotDir: '/s/images/T-1' };
+  const two = 'x _drag a.png_ _drag b.png_';
+  const sent = shotDraft({}, two, { evidence: null, ...have(['a.png', 'b.png']), ...up });
+  t('KAN-629 files held and never uploaded: the pass uploads them from the ticket\'s directory', `${sent?.call} ${sent?.dir} ${sent?.action}`, 'upload /s/images/T-1 null');
+  t('KAN-629 and its why names the cells and the directory', sent?.why, '2 screenshot cell(s) left: a.png, b.png, whose files desk holds in /s/images/T-1, and the pass uploads them');
+  t('KAN-629 a stale `none` (the directory was empty when the round ended) allows the upload', shotDraft({ images_uploaded: 'none' }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.call, 'upload');
+  t('KAN-629 a stale `partial` does not: its assets are on GitHub already, so it stays the person\'s', shotDraft(part, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.why, stuckCell?.why);
+  t('KAN-629 nor does a stale `true`', shotDraft({ images_uploaded: true }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.call, 'person');
+  t('KAN-629 negative control: §3 pr-images not yes, it is not uploaded', shotDraft({}, two, { evidence: null, ...have(['a.png', 'b.png']), ...up, upload: 'ask' })?.call, 'person');
+  t('KAN-629 negative control: no screenshot directory given, no upload', shotDraft({}, two, { evidence: null, ...have(['a.png', 'b.png']), upload: 'yes' })?.call, 'person');
+  t('KAN-629 a file still missing goes to capture first', shotDraft({}, two, { evidence: null, ...have(['a.png']), ...up })?.call, 'capture');
+  t('KAN-629 a crash with a retry to come still waits on it', shotDraft({ upload_crash: { pr: 740, dir: '/d', tries: 1, log: 'l' } }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.call, 'wait');
+  t('KAN-629 a spent crash still goes to the person, never a third upload', shotDraft({ upload_crash: { pr: 740, dir: '/d', tries: 2, log: 'l' } }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.call, 'person');
+  t('KAN-629 held for approval, the approval stays the person\'s', shotDraft({ images_reported: true }, two, { evidence: null, ...have(['a.png', 'b.png']), ...up })?.unapproved, true);
+  t('KAN-629 cells an evidence run left with their files held are uploaded, not put to the person', shotDraft({}, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']), ...up })?.call, 'upload');
+  t('KAN-629 and done says desk uploads them', plan({}, two, { evidence: null, ...have(['a.png', 'b.png']), ...up }), 'a.png: desk holds its file and uploads it at the next pass; b.png: desk holds its file and uploads it at the next pass');
   const ranAll = shotDraft(part, EVB, { ...ranSome, ...have(['a-before.png', 'a-after.png']) });
   t('DS-492 AC3 cells an evidence run left with their files held are named', `${ranAll?.call} ${/left 2 screenshot cell\(s\): a-before\.png, a-after\.png$/.test(ranAll?.why)} ${/upload/.test(ranAll?.action)}`, 'person true false');
   t('EV cells filled: it is undrafted', ev(EVB.replace(/_drag \S+_/g, '![x](https://img/x.png)'))?.call, 'ready');
@@ -642,6 +676,36 @@ t('DS-316 and its reason names the check and the carry', gc?.why, `its desk-revi
 t('DS-316 a stale verdict whose verdict check is red goes to a review worker, not a fix worker', withCarry(older, () => false, 'p0=0 p1=0 gaps=0', [...green, gateRed])?.call, 'review');
 const both = withCarry(older, () => true, 'p0=0 p1=0 gaps=0', [{ ...green[0], conclusion: 'failure', runId: '77' }, gateRed]);
 t('DS-316 beside a red code check, only the code check goes to the fix worker', `${both?.call} ${both?.failing?.map((f) => f.name).join(',')}`, 'checks tests');
+
+// DS-578: a §4 State check other than the verdict check reads reviews a reviewer posts only on a ready
+// PR, so a clean draft red on such checks alone leaves draft under §3 pr-ready as a green one does.
+{
+  const gateCheck = { name: 'Review gate', status: 'completed', conclusion: 'failure', runId: '79' };
+  const redTests = { ...green[0], conclusion: 'failure', runId: '77' };
+  const st = (kind, { checks = [...green, gateCheck], perm = 'yes', approved = false, reviews = [review(marker(ALL_ZERO))], stateChecks = [{ name: 'Review gate', kind }, ...DEFAULT_STATE_CHECKS] } = {}) =>
+    undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews, checks },
+      { perm, permKey: 'pr-ready', approved, localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], stateChecks });
+  t('DS-578 AC1 red only on an approval state check, clean at the head, pr-ready yes: ready', st('approval')?.call, 'ready');
+  t('DS-578 AC1 and on a verdict state check', st('verdict')?.call, 'ready');
+  const ask = st('approval', { perm: 'ask' });
+  t('DS-578 AC2 pr-ready ask with no batch approval: the person undrafts it', `${ask?.call} | ${ask?.action}`, 'person | undraft #701');
+  t('DS-578 AC2 and the reason names the state check', ask?.why, 'it is clean, red only on §4 State checks (Review gate), and config §3 pr-ready is "ask" with no batch approval');
+  t('DS-578 AC2 pr-ready ask with the batch approval: ready', st('approval', { perm: 'ask', approved: true })?.call, 'ready');
+  const mixed = st('approval', { checks: [redTests, gateCheck] });
+  t('DS-578 AC3 beside a red code check: a checks call naming only the code check', `${mixed?.call} ${mixed?.failing?.map((f) => f.name).join(',')}`, 'checks tests');
+  t('DS-578 AC4 a P1 at the head: findings, not undrafted', st('approval', { reviews: [review(marker(ALL_ZERO.replace('p1=0', 'p1=1')))] })?.call, 'findings');
+  t('DS-578 AC4 no verdict at the head: a review worker', st('approval', { reviews: [review(marker(ALL_ZERO, OLD), OLD)] })?.call, 'review');
+  t('DS-578 AC5 a bare state check: ready', st(null)?.call, 'ready');
+  t('DS-578 AC5 under pr-ready ask, the person', st(null, { perm: 'ask' })?.call, 'person');
+  t('DS-578 AC6 red only on the verdict check: a review worker', st('approval', { checks: [...green, { ...gateRed }] })?.call, 'review');
+  t('DS-578 AC6 beside another red state check too', st('approval', { checks: [...green, gateCheck, gateRed] })?.call, 'review');
+  t('DS-578 a check §4 State checks does not name is still a checks call', st('approval', { stateChecks: DEFAULT_STATE_CHECKS })?.call, 'checks');
+  t('DS-578 a required check that never reported keeps it draft beside a red state check', st('approval', { checks: [gateCheck] })?.call, 'checks');
+  const onlyState = undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))],
+    checks: [{ name: VERDICT_CHECK, status: 'completed', conclusion: 'success' }, { name: 'protected-path approval', status: 'completed', conclusion: 'failure', runId: '80' }] },
+  { perm: 'yes', permKey: 'pr-ready', approved: false, localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: [], stateChecks: DEFAULT_STATE_CHECKS });
+  t('DS-578 with no check but state checks, a green verdict check is the success the gate needs: ready', onlyState?.call, 'ready');
+}
 
 // verdictCarries, against a real repository: the reviewed commit A, the base merged in to make B.
 const dir = mkdtempSync(join(tmpdir(), 'undraft-carry-'));

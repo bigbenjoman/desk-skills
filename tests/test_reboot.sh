@@ -64,7 +64,7 @@ rm -rf "$T/cfg/repos"
 out=$(cd "$T" && node "$B/reboot-check.mjs" 2>&1); rc=$?
 check "no configured repos: still reports, exits 0" '[ $rc -eq 0 ] && grep -q "^worktrees: 0 configured repos, 0 worktrees" <<< "$out"'
 
-mkdir -p "$T/bin"; cp "$B/reboot-check.mjs" "$B/desk-env.mjs" "$B/machine.mjs" "$B/test-scope.mjs" "$T/bin/"
+mkdir -p "$T/bin"; cp "$B/reboot-check.mjs" "$B/desk-env.mjs" "$B/machine.mjs" "$B/test-scope.mjs" "$B/workflow-yaml.mjs" "$T/bin/"
 
 # FileVault: on, off, and anything that cannot be read as either counts as unknown.
 fv on; out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1)

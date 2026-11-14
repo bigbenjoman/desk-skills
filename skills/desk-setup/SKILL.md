@@ -197,6 +197,9 @@ location: a path only, never the token.
   asked unless the user names it.
 - A `NODEV` line from `desk-env drift` is offered as a §4 Dev server item for that directory, as
   step 1's *Dev server* proposes it, whether or not the user asked to change the row.
+- A `JOBKEY` line from `desk-env drift` names a §4 Pre-merge steps item keyed to a CI job that runs
+  several steps. Offer the item it proposes, keyed to the step instead, whether or not the user asked
+  to change the row.
 - Re-detect §4 GitHub and CI on every re-run (protection and required checks change) and show any
   difference as a before/after.
 - Run §4 step 1 (the deny-only plan) on every re-run; it is a no-op when nothing is missing.

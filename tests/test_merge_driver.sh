@@ -841,10 +841,29 @@ check "DS-561 AC3: no approval at the head (only a comment, and one approving an
 check "DS-561 AC4: a red verdict check is not rerun for an approval, as DS-422 has it" '! grep -q "run rerun.*\(9281\|98101\)" "$T/gh.log" &&echo "$out" | grep -qF "#198 \"🌿 Local Adversarial Code Review\" failed (verdict state)" && [ ! -e "$SD/approval-rerun-198-$SHA98" ]'
 : > "$T/gh.log"
 saloop
-check "DS-561 AC2: still red at that head after its rerun, it is not rerun again and waits on a person as today" '! grep -q "run rerun" "$T/gh.log" && echo "$out" | grep -qF "#195 \"🔐 Review gate\" was rerun once at c95555555 for the approval its run started before, and is red again — not rerunning it a second time" && [ "$(qf T-95 .merge_blocked)" = "approval: \"🔐 Review gate\" needs approval from a human reviewer at c95555555: a person approves it before desk merges it" ]'
+check "DS-561 AC2: still red at that head after its rerun, it is not rerun again" '! grep -q "run rerun" "$T/gh.log" && echo "$out" | grep -qF "#195 \"🔐 Review gate\" was rerun once at c95555555 for the review its run started before, and is red again — not rerunning it a second time"'
+check "DS-583 AC1: its line says no PullBot review is at the head, so it takes the verdict route, not a person's approval" '[ "$(qf T-95 .merge_blocked)" = null ] && ! echo "$out" | grep -q "#195 at c95555555 waits on an approval" && echo "$out" | grep -qF "#195 \"🔐 Review gate\" failed (verdict state): No PullBot review at c95555555 yet"'
+check "DS-561 AC2: a check with no such line, red again after its rerun, waits on a person as today" '[ "$(qf T-99 .merge_blocked)" = "approval: \"🔐 Review gate\" needs approval from a human reviewer at c99999999: a person approves it before desk merges it" ]'
 : > "$T/gh.log"
 out=$(DESK_CONFIG="$T/config-stale-plain.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-94" 2>&1)
 check "DS-561: under a plain-text clean row, a clean plain review at the head newer than the run reruns it, not an older marker review" 'grep -q "run rerun --job 94101 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -qF "#194 \"🔐 Review gate\" failed in a run started $RAN, before a clean review verdict at c94444444 (2026-11-10T22:02:33Z)"'
+
+# ---- DS-583: a gate listed as approval that failed its verdict step takes the verdict route ---------
+SHA583=d583000000000000000000000000000000000000; SHA584=d584000000000000000000000000000000000000
+ap 1583 "agent-pullbot|COMMENTED|2026-11-10T22:02:40Z|$SHA583|verdict"
+ap 1584 "tester|COMMENTED|2026-11-10T22:01:00Z|$SHA584"
+printf '{ %s, %s }\n' "$(gate_pr 1583 "$SHA583" '🔐 Review gate' 9583 58301)" "$(gate_pr 1584 "$SHA584" '🔐 Review gate' 9584 58401)" > "$T/prs.json"
+echo '{ "58301": "No PullBot review at d58300000 yet", "58401": "No PullBot review at d58400000 yet" }' > "$T/annotations.json"
+q init merge-verdict-step
+for k in T-583 T-584; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+: > "$T/gh.log"
+vsloop(){ out=$(DESK_CONFIG="$T/config-stale.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-583 T-584" 2>&1); rc=$?; }
+vsloop
+check "DS-583 AC1: a ready PR red only on its verdict step records no approval note, and its log names the verdict step" '[ "$(qf T-584 .merge_blocked)" = null ] && ! echo "$out" | grep -q "#1584 at d58400000 waits on an approval" && echo "$out" | grep -qF "#1584 \"🔐 Review gate\" failed (verdict state): No PullBot review at d58400000 yet" && ! grep -q "run rerun.*\(9584\|58401\)" "$T/gh.log"'
+check "DS-583 AC5: a clean verdict another account posted at the head after the run started reruns that check's job once" 'grep -q "run rerun --job 58301 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -qF "#1583 \"🔐 Review gate\" failed in a run started $RAN, before a clean review verdict at d58300000 (2026-11-10T22:02:40Z): rerunning it once at this head"'
+: > "$T/gh.log"
+vsloop
+check "DS-583 AC6: red again after its one rerun at that head, it is not rerun a second time" '! grep -q "run rerun" "$T/gh.log" && echo "$out" | grep -qF "#1583 \"🔐 Review gate\" was rerun once at d58300000 for the review its run started before, and is red again — not rerunning it a second time" && [ "$(qf T-583 .merge_blocked)" = null ]'
 
 # ---- DS-433: every PR merges on a clean desk-review at its head, whatever its title, with no approval --
 cp "$T/config.md" "$T/config-rv.md"
