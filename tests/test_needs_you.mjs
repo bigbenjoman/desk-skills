@@ -1884,7 +1884,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'No worker can run it.|Only agent-pullbot can post its review.');
   t('DS-580 a call, a product role or a passing "only" is not person-only',
     [DECIDE, 'The diff touches only user-facing copy, so could I skip the E2E run?', 'Only admins can delete invoices today. Should managers also be able to?',
-      'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?'].map(personOnlyStep).join(), ',,,,');
+      'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?', 'Only you can decide whether I can push this change. Should I proceed?'].map(personOnlyStep).join(), ',,,,,');
 }
 
 // Refusals.

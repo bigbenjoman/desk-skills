@@ -342,7 +342,7 @@ export const noWorkerWork = (question) => NO_WORKER_WORK.test(String(question ??
 // null. A requeue with no answer since only parks it again, and no action on it is the recommendation.
 // It needs a step taken ("can run it"), never a call made ("only you can decide"), and no product role
 // ("only admins can delete invoices"): a question the worker acts on once answered is not one.
-const PERSON_ONLY = /\bno (?:headless |autopilot )?worker (?:can|could|is able to|is allowed to) (?:run|clear|do|post|finish|merge|push)\b|\bonly (?:an? |the )?(?:person|human|you|someone|another (?:account|login|user|person)|[\w-]+bot|bot account)(?![\w-])[^.?!;\n]{0,80}?\b(?:can|could) (?:run|post|grant|merge|push|trigger|dispatch|clear|do|install|sign|log in)\b/i;
+const PERSON_ONLY = /\bno (?:headless |autopilot )?worker (?:can|could|is able to|is allowed to) (?:run|clear|do|post|finish|merge|push)\b|\bonly (?:an? |the )?(?:person|human|you|someone|another (?:account|login|user|person)|[\w-]+bot|bot account)(?![\w-])(?:(?!\b(?:can|could|whether|if|i|we)\b)[^.?!;\n]){0,80}?\b(?:can|could) (?:run|post|grant|merge|push|trigger|dispatch|clear|do|install|sign|log in)\b/i;
 export const personOnlyStep = (question) => String(question ?? '').split(/(?<=[.?!;])\s+|\n+/)
   .find((c) => PERSON_ONLY.test(c))?.replace(/\s+/g, ' ').trim() ?? null;
 
