@@ -1551,6 +1551,8 @@ const st3b = N.record({ word: 'stepper', ticket: 'V-3', action: 'answer', text: 
 t('DS-566 answering such an item again with no approval makes it an ordinary park again', `${st3b.ok} ${stQ()['V-3'].state} ${stQ()['V-3'].park?.session_step ?? null} ${stItem('V-3')?.kind}`, 'true parked null parked');
 const SEED = 'The worker was refused `scripts/seed-staging.sh`, a staging write. Shall I leave the seed out of this PR?';
 t('DS-566 not one: a park offering to go on without the refused step', BS.workerRefusedStep(SEED), null);
+t('DS-566 still one: a park that says "without" but offers no way round the step',
+  BS.workerRefusedStep('`ensure-grader-image.sh` is refused to this worker, and the specs cannot pass without the image. Can you run it?'), 'ensure-grader-image.sh');
 put('stepper2', { port: 5510, beat: 1, supervised: true, tickets: { 'V-5': parked('A', 30, SEED) } });
 const st5 = N.record({ word: 'stepper2', ticket: 'V-5', action: 'resume', text: 'ok, leave it out' });
 t('DS-566 AC2 a yes to leaving the refused step out is requeued as today', `${st5.ok} ${queueOf('stepper2').tickets['V-5'].state}`, 'true triaged');
