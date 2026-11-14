@@ -14,19 +14,17 @@ import { fileURLToPath } from 'node:url';
 import { levers, queueFile } from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 
-export class LeverPinError extends Error {}
-
 // The pin a ticket is admitted with: the row's levers now, whatever DESK_LEVERS the admitting process
 // carries. Trial arms are drawn elsewhere.
 export const pinAtAdmission = (l = levers({}), now = new Date()) => ({ set: [...l.on], at: now.toISOString() });
 
-// The levers ticket `t` is pinned to, or null when it has no pin. Throws LeverPinError on a pin that
+// The levers ticket `t` is pinned to, or null when it has no pin. Throws on a pin that
 // is not { set: [name...] }, so a mangled pin never reads as the row.
 export function pinnedSet(t) {
   const l = t?.levers;
   if (l == null) return null;
   if (typeof l !== 'object' || Array.isArray(l) || !Array.isArray(l.set) || l.set.some((x) => typeof x !== 'string')) {
-    throw new LeverPinError(`${t.key ?? 'the ticket'}'s levers pin is not { set: [lever, ...] }: ${JSON.stringify(l)}`);
+    throw new Error(`${t.key ?? 'the ticket'}'s levers pin is not { set: [lever, ...] }: ${JSON.stringify(l)}`);
   }
   return l.set;
 }
