@@ -185,7 +185,7 @@ worker gives it the approval, though a red one is still rerun and repaired. The 
 once that no longer holds the PR. A §4 Merge holds path still waits for a person whatever its review says.
 
 Before a red check's approval goes to the person, a worker tries what a change on the branch can
-clear (`fix-tries.mjs` `gateTry`), read from the error lines the check's job gave. Protected files the
+clear (`fix-tries.mjs` `gateTry`, and `draftGateTry` for a draft, which stays one), read from the error lines the check's job gave. Protected files the
 line names go to a protected-files try: its worker drops each change the ticket's criteria do not need,
 or changes nothing and says which criterion needs it. One goes per head, only for a file no earlier one
 judged, two at most per PR, outside the fix tries. A file still in the diff after its try is the
@@ -306,6 +306,9 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   readable at its head goes to a review worker, two review tries at each head and never one of the
   fix tries (`fix-tries.mjs` `reviewTry`), and one with a red required check to a fix worker with
   each check's name and run, within the same two tries as a ready PR's fixes (`draftChecksFix`).
+  A red §4 State check is never that worker's: its brief names it as one to leave red, and beside
+  only checks a person runs it is stuck, naming each and the step it failed at. A fix worker that
+  pushed nothing posts no review, since the head it would review is unchanged.
   desk-gate's own verdict check reads only the head, so a draft red on it alone goes to a review
   worker. Such a draft is under WAITING ON YOU only once those tries are
   spent, or when its red check is one §4 Checks workers can't fix names. With the `failure-class`

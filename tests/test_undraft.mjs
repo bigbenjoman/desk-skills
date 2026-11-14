@@ -693,6 +693,7 @@ t('DS-316 beside a red code check, only the code check goes to the fix worker', 
   t('DS-578 AC2 pr-ready ask with the batch approval: ready', st('approval', { perm: 'ask', approved: true })?.call, 'ready');
   const mixed = st('approval', { checks: [redTests, gateCheck] });
   t('DS-578 AC3 beside a red code check: a checks call naming only the code check', `${mixed?.call} ${mixed?.failing?.map((f) => f.name).join(',')}`, 'checks tests');
+  t('DS-579 AC2 and the red state check goes with it, for the fix try to name', mixed?.state?.map((f) => f.name).join(), 'Review gate');
   t('DS-578 AC4 a P1 at the head: findings, not undrafted', st('approval', { reviews: [review(marker(ALL_ZERO.replace('p1=0', 'p1=1')))] })?.call, 'findings');
   t('DS-578 AC4 no verdict at the head: a review worker', st('approval', { reviews: [review(marker(ALL_ZERO, OLD), OLD)] })?.call, 'review');
   t('DS-578 AC5 a bare state check: ready', st(null)?.call, 'ready');
@@ -701,6 +702,8 @@ t('DS-316 beside a red code check, only the code check goes to the fix worker', 
   t('DS-578 AC6 beside another red state check too', st('approval', { checks: [...green, gateCheck, gateRed] })?.call, 'review');
   t('DS-578 a check §4 State checks does not name is still a checks call', st('approval', { stateChecks: DEFAULT_STATE_CHECKS })?.call, 'checks');
   t('DS-578 a required check that never reported keeps it draft beside a red state check', st('approval', { checks: [gateCheck] })?.call, 'checks');
+  const unreported = st('approval', { checks: [gateCheck] });
+  t('DS-579 with no red code check, the state check is not handed on, so its why still names the check that never reported', `${unreported?.state} ${unreported?.failing?.length} ${/tests/.test(unreported?.why)}`, 'undefined 0 true');
   const onlyState = undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))],
     checks: [{ name: VERDICT_CHECK, status: 'completed', conclusion: 'success' }, { name: 'protected-path approval', status: 'completed', conclusion: 'failure', runId: '80' }] },
   { perm: 'yes', permKey: 'pr-ready', approved: false, localReview: '/desk-review', clean: ALL_ZERO, handle: 'ben', required: [], stateChecks: DEFAULT_STATE_CHECKS });
