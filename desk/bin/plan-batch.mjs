@@ -19,6 +19,7 @@ import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { placement } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
+import { perTicketDb } from './health.mjs';
 
 const AS_JSON = process.argv.includes('--json');
 const plan = [];
@@ -366,17 +367,11 @@ const topo = (list) => {
 const order = topo(ours);
 const merging = topo(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)));
 
-// What a ticket that needs a database will actually get, from the same rules setup-worktree.sh applies.
-const localDb = (configValue('local-db') ?? '').trim();
-const DB_NOTE = !localDb
-  ? 'config §4 Local database is unset, so no per-ticket database is made and its database variables are blanked — a database-backed check will park'
-  : /^none\b/i.test(localDb)
-    ? 'config §4 Local database is none, so it gets NO database: every §4 Database URL variable is blanked in its worktree, and a database-backed check parks'
-    : !/^postgres container\s+\S+$/i.test(localDb)
-      ? `config §4 Local database is "${localDb}", which is not \`postgres container <name>\`, so no per-ticket database is made and its database variables are blanked — a database-backed check will park`
-      : permission('db-per-ticket') !== 'yes'
-        ? `config §3 db-per-ticket is ${permission('db-per-ticket')}, so no per-ticket database is made and its database variables are blanked — a database-backed check will park`
-        : 'its own per-ticket database will be created in the local Postgres, or the worktree is not set up';
+// What a ticket that needs a database will actually get.
+const noDb = perTicketDb().none;
+const DB_NOTE = noDb
+  ? `${noDb}, so no per-ticket database is made and its database variables are blanked — a database-backed check will park`
+  : 'its own per-ticket database will be created in the local Postgres, or the worktree is not set up';
 
 const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b === t ? [c.a] : []));
 // desk-jira lint's blocking findings (ticket-facts.mjs): each is something a worker would park on.
