@@ -404,7 +404,7 @@ held(){ cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null; }
 # A driver an earlier tick left, detached, that started before the install (its lock says old0). It
 # waits for the driver's sleep (or, mid-loop, tail): the node writing its version has finished by then.
 olddriver(){
-  kid=sleep; [ -f "$T/busy" ] && kid=tail
+  kid='sleep'; [ -f "$T/busy" ] && kid='tail'
   echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"
   (cd "$T/repo" && "$T/bin/merge-driver.sh" --tickets "A B" --deps "B:A" --log </dev/null >/dev/null 2>&1 &)
   i=0; while { [ -z "$(held)" ] || ! pgrep -x -P "$(held)" "$kid" >/dev/null; } && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
