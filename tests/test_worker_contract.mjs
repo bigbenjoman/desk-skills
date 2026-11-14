@@ -122,6 +122,28 @@ t('DS-356 AC1 the Stage 5 file sends a Stage 7 session asking for a run to the S
 t('DS-356 AC1 the Stage 3 workflow-dispatch rule points at the Stage 4 rule',
   stage3.replace(/\s+/g, ' ').includes('follow the Stage 4 file\'s "A CI or end-to-end run you ask for is the narrowest one that covers your change": read it first.'), true);
 
+// A run the busy test lock has not started in 20 minutes is skipped and logged, never parked.
+const lockRule = stage4.split('**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.**')[1]?.split(' The typecheck takes the same lock')[0] ?? '';
+t('DS-587 AC1 the Stage 4 file skips a run the lock has not started in 20 minutes, and never parks on it', lockRule !== '' && !/\bpark/.test(lockRule), true);
+t('DS-587 AC1 it stops the queued run and records the suite as not run locally because the lock was busy',
+  lockRule.includes('`TaskStop` it') && lockRule.includes('Record each suite in your verification and the PR\'s Testing as `not run locally: test lock busy (<holder>); CI\'s required tests cover it`') && lockRule.includes('and carry on.'), true);
+t('DS-587 AC2 it logs one engineering decision naming the suites and the lock holder',
+  lockRule.includes('note the holder') && lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
+t('DS-587 AC3 it commits its work before stopping the run and carrying on', /commit all your work, `TaskStop` it/.test(lockRule), true);
+t('DS-587 AC4 a run that started is not skipped: its failures are fixed', lockRule.includes('A started run is yours: fix what fails.'), true);
+t('DS-587 AC4 silence is not proof of a queued run: it has not started only while the wrapper or its flock has no child running the command',
+  lockRule.includes('Silence is not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its `flock … desk-test.lock`, with no child running your command.') && !lockRule.includes('no suite output'), true);
+t('DS-587 AC2 the holder is found on every lock path: a live holder file, else the single-slot flock with a child',
+  lockRule.includes('a live pid in `desk-test.lock*{.pid,.d/pid}` in `DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child.') && !lockRule.includes('or `*.d/pid`'), true);
+t('DS-587 the typecheck and lint follow the same rule', lockRule.includes('A typecheck or lint does the same.'), true);
+t('DS-587 AC5 the refused with-lock.sh rule is unchanged',
+  stage4.includes('If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you ran unlocked**.'), true);
+t('DS-587 the Stage 4 file no longer only says to report a long wait', /Blocked (over|more than) ~20 minutes/.test(stage4), false);
+const notes = read('batch-notes-header.md').replace(/\s+/g, ' ');
+t('DS-587 batch-notes-header states the same rule, so the stricter-wins reading agrees',
+  notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, commit your work, stop it (`TaskStop`), record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
+t('DS-587 AC5 batch-notes-header keeps its refused with-lock.sh rule', notes.includes('**If `with-lock.sh` is itself refused, say so explicitly** ("ran unlocked") and drop to the lower cap.'), true);
+
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
 const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
@@ -164,6 +186,10 @@ const REWRITTEN = [
   ['DS-576', '**Use the plain form above: never a `GH_TOKEN=… gh pr review …` prefix.**', 1], // as §4 Review account
   ['DS-564', '**A fix that grows parks**', 1], // under autopilot-judgement it is a scope call taken
   ['DS-564', 'the orchestrator routes it.', 1], // a gap a sibling ticket owns goes to ask-or-take
+  // cut or shortened to fit the busy-lock rule in the Stage 4 file's cap; batch-notes-header keeps the why
+  ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
+  ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
+  ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));
