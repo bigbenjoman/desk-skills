@@ -25,6 +25,7 @@ import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
 import { takeDirLock, releaseDirLock, alive } from './dir-lock.mjs';
+import { pinAtAdmission } from './lever-pin.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -373,7 +374,8 @@ const spineHolds = (q, key) => [
 // `holdCollisions` is. `outside`, its blockers in no batch, are held too and recorded as held_outside:
 // pass.mjs lifts each once it is Done and on the batch's base. `mergeAfter`, the person's steps in no
 // batch, hold nothing until its PR is ready: recorded as merge_after, they hold only its merge.
-function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, holdCollisions = false }) {
+// `pin` is its levers pin (lever-pin.mjs): the row's levers now, unless it carries one already.
+function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, holdCollisions = false, pin = pinAtAdmission() }) {
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   const park = lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
@@ -407,6 +409,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     ...(outside.length ? { held_outside: outside.join('|') } : {}),
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
+    ...(pin ? { levers: pin } : {}),
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
@@ -543,7 +546,7 @@ function transfer(q, key, to) {
     else (local.has(p) ? stays : theirs).push(p);
   }
   if (theirs.length) throw new Error(`${key} is held behind ${theirs.join(', ')}, which ${theirs.length === 1 ? 'is not a blocker' : 'are not blockers'} of it in Jira, so ${batchWord(dest)} could not keep the hold: release it first. Nothing was moved`);
-  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, outside, mergeAfter, holdSpine: true, holdCollisions: true });
+  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, outside, mergeAfter, holdSpine: true, holdCollisions: true, pin: t.levers ?? null });
   const removed = dropStaleWorktree(key, baseOf(q));
   // Its triage record goes with it: admit and every pass read a ticket's record from their own batch.
   mkdirSync(join(dest.state, 'triage'), { recursive: true });
@@ -654,7 +657,7 @@ switch (cmd) {
       key, type, lane, state: 'queued',
       worktree: null, branch: null, database: null, port: null,
       session_id: null, pid: null, base_sha: null, stage: null,
-      park: null, log: null, result: null,
+      park: null, log: null, result: null, levers: pinAtAdmission(),
       added_at: new Date().toISOString(),
     };
     save(q);
