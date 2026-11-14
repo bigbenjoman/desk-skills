@@ -58,6 +58,7 @@ import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
+import { postMergeWatch } from './post-merge.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -4248,6 +4249,8 @@ if (!DRY && readHistory(STATE) === null) {
   const built = buildHistory({ state: STATE, queue: queue(), mergedPrs: () => ghMergedPrs(GH_REPO) });
   out.push(`eta history built: ${describeHistory(built).split('\n').join('; ')}`);
 }
+// Merged PRs are watched for reverts and a red default branch, once a day (post-merge.mjs).
+if (!DRY) { const pm = postMergeWatch({ state: STATE, queue: queue(), repo: GH_REPO, branch: DEFAULT_BRANCH, cwd: MAIN }); if (pm) out.push(pm); }
 const readPr = (n) => {
   if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
   return prStates[n];
