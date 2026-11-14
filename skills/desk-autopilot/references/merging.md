@@ -319,8 +319,9 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   there, an ignored one included, makes it dirty for every later check build and live read. Where
   either checkout cannot be made (a failed fetch, a dirty checkout), nothing runs and the draft goes
   to the person with the reason. It runs detached so a pass that ends leaves it running,
-  with its output and exit code under `<state>/check-builds/`. Once it succeeds, the pass re-runs those checks with
-  `--failed`. A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
+  with its output and exit code under `<state>/check-builds/`. It starts on the first pass that sees the
+  check red, whatever else is still running. Once it succeeds, the pass re-runs those checks with
+  `--failed`, after any check still running in their own run finishes (GitHub re-runs no run in progress). A command that fails at a head behind its base goes to a sync try (`fix-tries.mjs`
   `syncFix`, one of the fix tries): its worker merges the base, fixes what the merge breaks in a commit
   of its own and pushes, and the pass builds the new head. A command that fails at a head up to date
   with its base, or a check still red after the re-run, goes to the person with the command, its exit
