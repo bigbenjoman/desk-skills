@@ -1995,6 +1995,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   mkdirSync(hidden);
   writeFileSync(join(hidden, 'id_rsa'), 'secret');
   const f5 = N.record({ word: 'ds609', ticket: 'F-5', action: 'resume', text: `the key is ${join(hidden, 'id_rsa')}, and ~/ is home` });
+  const { pathsIn } = await import('../desk/bin/live-read.mjs');
+  t('DS-609 a slash command or URL in an answer is not a path', pathsIn('ran /pullbot and /desk-ticket A-1, see https://x.io/a/b or (/tmp/cap/a.json).', '/h').join(), '/tmp/cap/a.json');
   t('DS-609 a file in a hidden folder, or home itself, is never copied', `${f5.ok} ${ls(fx('F-5'))} ${f5.line.includes('was not copied: it is in a hidden folder.')} ${f5.line.includes('was not copied: it is your home folder or above it.')}`, 'true - true true');
 }
 

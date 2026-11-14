@@ -175,13 +175,15 @@ export function copyFixtures({ state, key, worktree, max = MAX_BYTES }) {
 export const NAMED_MAX_BYTES = 50 * 1024 * 1024;
 
 // The absolute paths an answer names (`~/` expanded against `home`), each once, in order: a path
-// starts a word or follows a quote or bracket, and loses a sentence's trailing punctuation.
+// starts a word or follows a quote or bracket, and loses a sentence's trailing punctuation. One slash
+// and a word (`/pullbot`) is a slash command, not a path.
 export function pathsIn(text, home = homedir()) {
   const out = [];
   for (const m of String(text ?? '').matchAll(/(?:^|[\s"'`(<[{])((?:~\/|\/)[^\s"'`)<>\]}]*)/g)) {
     const p = m[1].replace(/[.,;:!?]+$/, '');
+    if (!/^(~\/|\/[^/]+\/)/.test(p)) continue;
     const abs = resolve(p.startsWith('~/') ? join(home, p.slice(2)) : p);
-    if (p.length > 1 && !out.includes(abs)) out.push(abs);
+    if (!out.includes(abs)) out.push(abs);
   }
   return out;
 }
