@@ -28,6 +28,8 @@
 //     the exact §4 Worker workflows commands on the ticket's own branch. `gh api` (any method) and
 //     `gh alias` are denied: a GET cannot be told from a write by prefix. `desk-gh read` is the
 //     read-only `gh api`: it parses its arguments and refuses a mutation or a non-GET method itself.
+//     `review-post.mjs` posts the self-review as §4 Review account under §3 pr-self-review-comment, and
+//     a `GH_CONFIG_DIR=` or gh token variable anywhere in a command is denied.
 //   - the toolchain: the exact §4 command items (and their `<pm> run <script>` twins), behind §4
 //     Command prefix where there is one; never the package manager, the prefix binary, node or python
 //     by name. Each item also runs as `with-lock.sh <lock> [--cwd <dir>] -- <cmd>` (`nolock` for a
@@ -513,6 +515,15 @@ if (mode === 'triage') {
   if (readRepoLines.length) deny.push(...bash('git', ...[' clone', ' remote -v *add*', ' remote -v *set-url*', ' remote -v *rename*'].flatMap((s) => [s, ...OWN_CS.map((c) => `${c}${s}`)])));
   opt.readRepoLines = readRepoLines;
 
+  // Design snapshots live once, in the repo's own state folder: a named batch's worker may read them
+  // there and edit none of them. Nothing else at the repo level is granted.
+  const designs = join(E.repoStateOf(STATE), 'designs');
+  if (E.repoStateOf(STATE) !== STATE && existsSync(designs)) {
+    dirs.add(designs);
+    deny.push(`Edit(${abs(designs)}/**)`);
+    opt.readRepoLines.push(`CONFIG_READ_DESIGNS: ${designs}`);
+  }
+
   // A package manager's one-off runner fetches and executes an arbitrary package. Denied in every
   // form this repo's config does not itself use (deny beats allow, so a used form is left to the
   // allow-list, which permits only the exact configured command).
@@ -583,7 +594,11 @@ if (mode === 'triage') {
   grant('pr-open', bash('gh', ...draftForms), bash('gh', ' pr create'));
   grant('pr-edit', bash('gh', ' pr edit'));
   // The self-review post is a COMMENTED review; --approve / --request-changes stay denied above.
-  const selfReview = grant('pr-self-review-comment', bash('gh', ' pr review', ' pr comment'), bash('gh', ' pr review'));
+  // review-post.mjs posts as §4 Review account, setting GH_CONFIG_DIR itself; it refuses a verdict flag.
+  const reviewPost = BIN_FORMS.flatMap((b) => [`Bash(${b}/review-post.mjs:*)`, `Bash(node ${b}/review-post.mjs:*)`]);
+  const selfReview = grant('pr-self-review-comment', [...bash('gh', ' pr review', ' pr comment'), ...reviewPost], [...bash('gh', ' pr review'), ...reviewPost]);
+  // gh's login is the handle's or review-post.mjs's choice, never one the worker names.
+  deny.push(...['GH_CONFIG_DIR', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'].map((v) => `Bash(*${v}=*)`));
   // Replies go in as PR comments: resolving a thread needs `gh api graphql`, which no worker has.
   if (!grant('pr-reply', bash('gh', ' pr comment'), []) && !selfReview) deny.push(...bash('gh', ' pr comment', ' issue comment'));
   grant('pr-update-branch', bash('gh', ' pr update-branch'));

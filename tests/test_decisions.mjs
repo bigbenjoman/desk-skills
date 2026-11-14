@@ -46,6 +46,16 @@ t('an ask-category call is refused with exit 11', refused.code, 11);
 t('a bad ticket id is refused with exit 11', run(['log', '../x', call]).code, 11);
 t('nothing else reached the log', readFileSync(decisionsPath(sdir), 'utf8').trim().split('\n').length, 1);
 
+// DS-565: the decider logs the calls it takes as its own, in the one form its settings allow.
+const ddir = join(dir, 'decider');
+const drun = (args) => { try { return { code: 0, out: execFileSync('node', [cli, ...args], { env: { ...env, DESK_AUTOPILOT_STATE: ddir }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: dir }) }; } catch (x) { return { code: x.status, out: `${x.stdout}${x.stderr}` }; } };
+const scope = raw({ question: 'Merge as foundation or split?', options: ['Merge as foundation', 'Split'], chose: 'Merge as foundation', category: 'scope' });
+t('DS-565 AC1 log --source decider logs the call', /^logged: /.test(drun(['log', '--source', 'decider', 'K-1', scope]).out), true);
+t('DS-565 AC1 with source decider', JSON.parse(readFileSync(decisionsPath(ddir), 'utf8').trim()).source, 'decider');
+t('DS-565 a source that is neither session nor decider is refused', drun(['log', '--source', 'worker', 'K-1', scope]).code, 11);
+t('DS-565 AC3 the decider cannot log an ask category', drun(['log', '--source', 'decider', 'K-1', raw({ category: 'money' })]).code, 11);
+t('DS-565 nothing else reached the decider\'s log', readFileSync(decisionsPath(ddir), 'utf8').trim().split('\n').length, 1);
+
 // A question settled by checking instead of asking: what was checked and what it showed.
 const chk = JSON.stringify({ question: 'Is STRIPE_KEY set on production?', checked: 'vercel env ls production', showed: 'STRIPE_KEY is set' });
 t('a check parses', parseCheck(chk).ok, true);

@@ -4,14 +4,14 @@
 // This is deliberately a script rather than model instructions: the orchestrator's
 // context must stay flat whether the batch has 2 tickets or 20, so the per-ticket
 // detail lives here and only a summary reaches the conversation.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync, statSync, mkdirSync, openSync, closeSync, renameSync, readdirSync } from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold } from './batch-state.mjs';
-import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
+import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume, renderMoved } from './handoff.mjs';
@@ -52,7 +52,7 @@ import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, 
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
-import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
@@ -367,8 +367,7 @@ function checkOwned(t, pr) {
   // Under the test lock like any suite, in the child's worktree at the head it pushed.
   const run = (id) => {
     if (!cmd) return { ok: false, out: 'config §4 Acceptance specs has no command taking {ids}' };
-    const command = specsCommand(cmd, id);
-    return { ...shOut(join(BIN, 'with-lock.sh'), ['test', 'sh', '-c', command], { cwd: t.worktree, timeout: SPEC_RUN_MS }), command };
+    return runSpecs({ bin: BIN, root: t.worktree, item: cmd, id, timeout: SPEC_RUN_MS });
   };
   const c = checkChild({ worktree: t.worktree, base: DEFAULT_BRANCH, specDir, owners: Q.owners, key: t.key, run });
   q('set', t.key, `spec_check=${JSON.stringify({ ok: c.ok, problems: c.problems, at: new Date().toISOString() })}`);
@@ -711,8 +710,9 @@ function buildParkOf(t, question) {
   return b ? { ...b, pr: pr.number, head: pr.headRefOid } : null;
 }
 
-// §1 GitHub handle, whose desk-review verdicts and reviews count as the user's own, or null unread.
-const conflictHandle = (() => { try { return E.githubHandle(); } catch { return null; } })();
+// §1 GitHub handle, with the §4 Review account desk posts verdicts from, whose desk-review verdicts
+// and reviews count as the user's own (E.verdictLogins), or null unread.
+const conflictHandle = E.verdictLogins();
 // A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when `cond` is
 // its own open PR merging, and that PR is green with a clean review at its head. Null when it is not,
 // or unread. `grantedOnly` reads nothing from GitHub unless desk may undraft and merge it.
@@ -2904,13 +2904,8 @@ function busyWorktree(t) {
   const resumed = toResume(t) || toHandoff(t) || !!t.login_move;
   const wt = resumed ? t.worktree : join(WORKTREES, t.key);
   if (!wt || !existsSync(wt)) return null;
-  let real = wt;
-  try { real = realpathSync(wt); } catch { /* as recorded */ }
-  const inside = (p) => [wt, real].some((w) => p === w || p.startsWith(`${w}/`));
-  const users = (processCwds() ?? []).filter((p) => inside(p.cwd) && p.pid !== process.pid && p.pid !== process.ppid);
-  if (users.length) {
-    return `its worktree ${wt} is the working directory of ${users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ')}, which the pass did not start`;
-  }
+  const users = dirUsers(wt, [process.pid, process.ppid]) ?? [];
+  if (users.length) return `its worktree ${wt} is the working directory of ${usersText(users)}, which the pass did not start`;
   if (!(t.fix && !t.fix.finished) || resumed) return null;
   // A worktree git cannot read is not held: setup-worktree.sh says so.
   return gitHold(wt, (args) => { const o = shOut('git', ['-C', wt, ...args]); return o.ok ? o.out : null; }) ?? null;
@@ -3566,9 +3561,9 @@ const stateRow = parseStateChecks(E.configValues('state-checks'));
 // The rows the fix tries read: one that does not parse makes none this pass.
 const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <what fixes it>`'], ['§4 Pre-merge steps', preMergeRow, '`<check>: <what fixes it>`'], ['§4 State checks', stateRow, '`<check>` or `<check>: verdict|approval`']]
   .filter(([, r]) => r.errors.length).map(([row, r, want]) => `${row} does not parse: ${r.errors.join(', ')} (want ${want})`);
-// The steps a red check's run failed at (fix-tries.mjs failedSteps), read once per run; none when gh cannot read it.
+// The steps a red check's run failed at (fix-tries.mjs failedSteps), read once per run; null when gh cannot read them.
 const runJobs = (id) => cached(`jobs:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'jobs']); return r.ok ? JSON.parse(r.out) : null; });
-const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return []; } };
+const checkSteps = (f) => { try { return failedSteps(runJobs(f.runId), f.name); } catch { return null; } };
 // A run's status, start and jobs, for a draft's check stuck pending (undraft.mjs stuckCall); null when unread.
 const runOf = (id) => cached(`run:${id}`, () => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', 'status,startedAt,jobs']); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } });
 // Why the runner killed or lost a red check rather than its code (gate.mjs runnerFault), from its job's
@@ -3648,7 +3643,7 @@ if (drafts.length) {
     perm: E.permission('pr-ready'), permKey, approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
     localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
     conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
-    handle: (() => { try { return E.githubHandle(); } catch { return null; } })(),
+    handle: conflictHandle,
     ...gateLists(), builds: buildRow.checks, evidence: evidenceRow?.workflow ? evidenceRow : null,
   };
   cfg.untriggered = untriggeredOf;

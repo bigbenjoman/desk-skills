@@ -12,30 +12,69 @@ import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } fr
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
-import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor } from './batch-state.mjs';
+import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
 import { readRegistry } from './claude-logins.mjs';
+import { parseDecision } from './decisions.mjs';
+import { recommendedAnswer } from './recoveries.mjs';
 
 crashShowsPerson();
 const QUEUE = join(binDir(), 'queue.mjs');
 
-const [ticket, ...args] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+// --taken, before the ticket, is the decider taking the option a worker's park recommended
+// (decider.mjs may run answer.mjs only in this form). It takes the call as decisions.mjs log does,
+// '{"question","options","chose","category"}', and refuses an ask category before writing anything,
+// so the category is checked at the write and not only by the log that follows it. Such an answer
+// approves no step, so it never records a grant, and a park on a refused step is refused outright.
+const taken = argv[0] === '--taken';
+const [ticket, ...args] = taken ? argv.slice(1) : argv;
 // --approve says outright that the answer approves the step its park asks for (batch-state.mjs grantFor).
 const approveFlag = args[0] === '--approve';
 const rest = approveFlag ? args.slice(1) : args;
-const text = rest.join(' ').trim();
-if (!ticket || !text) {
-  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"');
+const given = rest.join(' ').trim();
+if (!ticket || !given) {
+  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"\n       answer.mjs --taken <TICKET> \'{"question","options":[…],"chose","category"}\'');
   process.exit(EXIT.SHOW_PERSON);
 }
+const call = taken ? parseDecision(given) : null;
+if (call && !call.ok) {
+  console.error(`not taken: ${call.why}. Nothing recorded`);
+  process.exit(EXIT.SHOW_PERSON);
+}
+const text = call ? recommendedAnswer(call.decision, 'the decider') : given;
 if (!SAFE_ID.test(ticket) || ticket.includes('..')) {
   console.error(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
+  process.exit(EXIT.SHOW_PERSON);
+}
+if (taken && approveFlag) {
+  console.error('--taken takes a recommended call and approves no step, so it never goes with --approve');
   process.exit(EXIT.SHOW_PERSON);
 }
 // The answer goes to the batch holding the ticket, and the queue.mjs it runs follows (DESK_BATCH).
 useTicketBatch(ticket);
 const STATE = stateDir();
+let takenQuestion = null;
+if (taken) {
+  let t = null;
+  try { t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null; } catch { /* no queue */ }
+  if (t?.state !== 'parked' || isHeld(t)) {
+    console.error(`${ticket} is not parked, so there is no recommended call to take: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+  // A park a session has claimed is that session's, as the pass's own take leaves it (pass.mjs
+  // takeRecommended): a take would requeue a worker beside the session that owns the ticket.
+  if (t.park?.claim?.session) {
+    console.error(`${ticket} is claimed by session ${t.park.claim.session}, so its call is that session's: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+  if (refusedStep(t.park?.question)) {
+    console.error(`${ticket} parked on a refused step, which only the person approves: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+  takenQuestion = String(t.park?.question ?? '');
+}
 
 mkdirSync(join(STATE, 'answers'), { recursive: true });
 mkdirSync(join(STATE, 'briefings'), { recursive: true });
@@ -94,6 +133,17 @@ const entry = `\n## Answer from the user (${stamp})\n\n${text}\n`;
 if (existsSync(brief)) appendFileSync(brief, entry);
 else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
 
+// A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same
+// park asked again goes to the person, not to another take.
+if (taken) {
+  try {
+    execFileSync('node', [QUEUE, 'set', ticket, `auto_answered=${JSON.stringify({ question: takenQuestion, chose: call.decision.chose, at: stamp, by: 'decider' })}`], { stdio: 'ignore' });
+  } catch (e) {
+    console.error(`${ticket}: answer recorded in the briefing, but not as taken once: ${e.message}`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+}
+
 // A "not now" answer to a park puts its question off: it goes in the register with the inputs it
 // depends on, and is not asked again until they change (not-now.mjs). Any other answer to it ends an
 // earlier deferral, so the same question parked again is asked. Only a park is put off: a running
@@ -143,6 +193,25 @@ try {
   }
 } catch (e) {
   console.error(`${ticket}: answer recorded in the briefing, but its grant was not: ${e.message}`);
+}
+
+// An answer approving a step its park says no worker can run makes the ticket a session item naming
+// that step (park.session_step): a requeue would only park it again. Once the person has run it, done
+// on that item hands the ticket back to a worker with the step recorded done (queue.mjs step-done).
+// Any later answer that approves nothing takes it back to an ordinary park.
+try {
+  const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
+  const live = t?.state === 'parked' && !isHeld(t) && !putOffAnswer;
+  const step = live ? workerRefusedStep(t.park?.question) : null;
+  if (step && (approveFlag || approvesStep(text))) {
+    execFileSync('node', [QUEUE, 'set', ticket, `park.session_step=${JSON.stringify({ step, at: stamp })}`], { stdio: 'ignore' });
+    console.log(`${ticket}: you approved a step no worker can run (${step}), so it is a session item now, not a requeue: do it in an interactive session (/desk-ticket ${ticket}), then record done and it goes back to a worker with the step recorded done.`);
+  } else if (live && t.park?.session_step) {
+    execFileSync('node', [QUEUE, 'set', ticket, 'park.session_step=null'], { stdio: 'ignore' });
+    console.log(`${ticket}: this answer approves no step, so it is no longer a session item for the step approved earlier (${t.park.session_step.step}).`);
+  }
+} catch (e) {
+  console.error(`${ticket}: answer recorded in the briefing, but whether it approved a step no worker can run was not: ${e.message}`);
 }
 
 // A triaged ticket's questions are its triage unknowns: clearing the count is what makes it eligible

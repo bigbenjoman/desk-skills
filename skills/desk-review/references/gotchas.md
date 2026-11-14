@@ -4,7 +4,9 @@ Read this when a command in `SKILL.md` or a phase file misbehaves. Each entry ex
 rather than loud: it produces a plausible report, not an error.
 
 Every block below may run in its own shell and inherits nothing. Substitute `<owner>`, `<repo>`,
-`<me>`, `<n>` and SHAs **literally**; never `$N` or `$REPO`.
+`<me>`, `<poster>`, `<n>` and SHAs **literally**; never `$N` or `$REPO`. `<poster>` is §4 Review
+account's login (`desk-env get review-account`, before the colon), or `<me>` where it is `none`.
+A worker posts as `<poster>` and an interactive run as `<me>`, so the sweep counts both.
 
 ## The sweep query
 
@@ -23,13 +25,13 @@ query($owner:String!, $name:String!) {
         reviews(last:50) { nodes { author { login } commit { oid } submittedAt body } } }
     }
   }
-}' | jq --arg me '<me>' '
+}' | jq --arg me '<me>' --arg by '<poster>' '
   .data.repository.pullRequests.pageInfo.hasNextPage                as $pr_page_truncated
   | .data.repository.pullRequests.nodes
   | map(select(.isDraft | not))                                    as $nd
   | ($nd | map(. as $pr
       | ([$pr.reviews.nodes[]
-          | select(.author.login == $me
+          | select((.author.login == $me or .author.login == $by)
                    and (.body // "" | startswith("<!-- desk-review:local -->")))]) as $mine
       | . + {
           reviewedAt:      ([$mine[] | select(.commit.oid == $pr.headRefOid) | .commit.oid] | last),
@@ -190,6 +192,6 @@ gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input <scratchpa
 - **`commit_id` pins the review to the reviewed SHA.** If the head moved during the run, the
   comments land on the old commit, which is correct: the verdict attests that SHA.
 
-Worker, or when `gh api` is not allowed: `gh pr review <n> --repo <owner>/<repo> --comment
---body-file <file>`, with every finding in the body. `--repo` is required, or the PR resolves from
+Worker, or when `gh api` is not allowed: `node ~/.claude/desk/bin/review-post.mjs <n> --repo
+<owner>/<repo> --body-file <file>` (it posts from §4 Review account, `desk-env get review-account`, where set), with every finding in the body. `--repo` is required, or the PR resolves from
 the current directory's remote. An empty `<n>` does not fail; it posts to the current branch's PR.

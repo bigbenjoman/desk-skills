@@ -1516,6 +1516,59 @@ const s5 = queueOf('sigma').tickets['S-5'];
 t('DS-399 a lane C ticket handed back goes on as lane B, so a later requeue or park treats it as a worker\'s', `${sgC.ok} ${s5.state} ${s5.lane} ${BSs.needsSession(s5)}`, 'true triaged B false');
 t('DS-399 its handoff briefing still names the lane it was', H.readHandoff(sigmaState, 'S-5').data?.lane.startsWith('C, handed back'), true);
 
+// ---- DS-566: approving a step a park says no worker can run makes a session item naming it, never a
+// requeue; done on it sends the ticket back to a worker with the step recorded done. VPL-759's shape.
+const VPL = 'Ben approved building the Grader image, but `ensure-grader-image.sh` is refused to this worker, and so are the staging deletes. Can you run it?';
+const PROD = 'Ben approved the provisioning, but this worker cannot run it: it needs staging credentials no worker is given. Can you do it?';
+put('stepper', { port: 5500, beat: 1, supervised: true, tickets: {
+  'V-1': parked('A', 30, VPL),
+  'V-2': parked('A', 30, 'Which copy for the banner?'),
+  'V-3': parked('A', 30, PROD),
+  'V-4': parked('A', 30, VPL),
+} });
+const D = await import('../desk/bin/decider.mjs');
+const stQ = () => queueOf('stepper').tickets;
+const stItem = (k) => N.collect({ word: 'stepper' }).items.find((i) => i.t.key === k);
+t('DS-566 a park saying a named script is refused to its worker names that step', BS.workerRefusedStep(VPL), 'ensure-grader-image.sh');
+t('DS-566 one with no code span names the refusing sentence', BS.workerRefusedStep(PROD), 'Ben approved the provisioning, but this worker cannot run it: it needs staging credentials no worker is given.');
+t('DS-566 not one: a grantable force-push, a refused push or draft PR, a step no worker is ever allowed, a plain question',
+  [KAN636, 'git push origin fix/x was refused (§3 git-push is ask); the PR body is above', 'Opening the draft PR was denied: `gh pr create --draft` is refused', AWS, 'Which copy?'].map(BS.workerRefusedStep).join('|'), '||||');
+t('DS-566 approving a step: a yes, or a yes that holds nothing back',
+  ['yes', 'Approved, go ahead and build it and delete the rows', 'ok do it', 'Yes, but only the image', 'No, skip the deletes', 'Sure, merge instead', 'Use the short copy'].map(BS.approvesStep).join(), 'true,true,true,false,false,false,false');
+const st1 = N.record({ word: 'stepper', ticket: 'V-1', action: 'resume', text: 'Approved, go ahead and build it' });
+const stV1 = stQ()['V-1'];
+t('DS-566 AC1 approving the refused step is not requeued: it stays parked with the step recorded', `${st1.ok} ${stV1.state} ${stV1.park.session_step?.step}`, 'true parked ensure-grader-image.sh');
+t('DS-566 AC1 the line says why and what comes next', /not requeued, because no worker can run the step you approved \(ensure-grader-image\.sh\).*say done/.test(st1.line), true);
+const stI1 = stItem('V-1');
+t('DS-566 AC1 it is a session item naming the approved step, offering open, done, answer, drop and not-now', `${stI1?.kind} | ${stI1?.need} | ${stI1?.actions.map((a) => a[0]).join()}`, 'session | you approved a step no worker can run: ensure-grader-image.sh | open,done,answer,drop,not-now');
+t('DS-566 AC1 no worker is spawned: the pass and the decider take it for a session', `${BS.needsSession(stV1)} ${D.presort(D.deciderItems({ parked: [{ key: 'V-1', question: VPL }] }, queueOf('stepper'))).hand.length}`, 'true 1');
+const stRq = spawnSync(process.execPath, [join(REAL_BIN, 'queue.mjs'), 'requeue', 'V-1'], { env: { ...process.env, DESK_QUEUE: join(env.DESK_HOME, 'repos', 'acme__stepper', 'queue.json'), DESK_AUTOPILOT_STATE: join(env.HOME, '.desk-autopilot', 'acme__stepper') }, encoding: 'utf8' });
+t('DS-566 AC1 queue.mjs requeue itself refuses it, naming step-done', `${stRq.status !== 0} ${/queue\.mjs step-done V-1/.test(stRq.stderr)} ${stQ()['V-1'].state}`, 'true true parked');
+t('DS-566 open names the session and says why', /not requeued \(a step you approved that no worker can run\).*\/desk-ticket V-1/.test(N.record({ word: 'stepper', ticket: 'V-1', action: 'open' }).line), true);
+const st3 = N.record({ word: 'stepper', ticket: 'V-3', action: 'resume', text: 'yes' });
+t('DS-566 AC1 a refused credential, approved, is a session item too', `${st3.ok} ${stQ()['V-3'].state} ${stItem('V-3')?.kind}`, 'true parked session');
+const st3b = N.record({ word: 'stepper', ticket: 'V-3', action: 'answer', text: 'No, leave the provisioning to the next ticket' });
+t('DS-566 answering such an item again with no approval makes it an ordinary park again', `${st3b.ok} ${stQ()['V-3'].state} ${stQ()['V-3'].park?.session_step ?? null} ${stItem('V-3')?.kind}`, 'true parked null parked');
+const SEED = 'The worker was refused `scripts/seed-staging.sh`, a staging write. Shall I leave the seed out of this PR?';
+t('DS-566 not one: a park offering to go on without the refused step', BS.workerRefusedStep(SEED), null);
+t('DS-566 still one: a park that says "without" but offers no way round the step',
+  BS.workerRefusedStep('`ensure-grader-image.sh` is refused to this worker, and the specs cannot pass without the image. Can you run it?'), 'ensure-grader-image.sh');
+t('DS-566 still one: a park asking to continue once the person has run the step',
+  ['Once you have built it, shall I continue?', 'Can we continue after you run it?', 'Shall I carry on when it is done?'].map((s) => BS.workerRefusedStep(`\`ensure-grader-image.sh\` is refused to this worker. ${s}`)).join(), 'ensure-grader-image.sh,ensure-grader-image.sh,ensure-grader-image.sh');
+t('DS-566 not one: a park offering to carry on without the step', BS.workerRefusedStep('`ensure-grader-image.sh` is refused to this worker. Shall I carry on without it?'), null);
+put('stepper2', { port: 5510, beat: 1, supervised: true, tickets: { 'V-5': parked('A', 30, SEED) } });
+const st5 = N.record({ word: 'stepper2', ticket: 'V-5', action: 'resume', text: 'ok, leave it out' });
+t('DS-566 AC2 a yes to leaving the refused step out is requeued as today', `${st5.ok} ${queueOf('stepper2').tickets['V-5'].state}`, 'true triaged');
+const st2 = N.record({ word: 'stepper', ticket: 'V-2', action: 'resume', text: 'Use the short copy' });
+t('DS-566 AC2 an ordinary park answered is requeued as today', `${st2.ok} ${stQ()['V-2'].state} ${stQ()['V-2'].park ?? null}`, 'true triaged null');
+const st4 = N.record({ word: 'stepper', ticket: 'V-4', action: 'resume', text: 'No, skip the image and leave staging alone' });
+t('DS-566 AC2 an answer that approves nothing on such a park is requeued as today', `${st4.ok} ${stQ()['V-4'].state}`, 'true triaged');
+const stDone = N.record({ word: 'stepper', ticket: 'V-1', action: 'done' });
+const stV1d = stQ()['V-1'];
+t('DS-566 AC3 done sends it back to a worker', `${stDone.ok} ${stV1d.state} ${stV1d.park ?? null} ${stV1d.prev_park?.question === VPL}`, 'true triaged null true');
+t('DS-566 AC3 with the step recorded done in its briefing', /The person ran the step you approved and no worker can run, and it is done: ensure-grader-image\.sh/.test(readFileSync(join(env.HOME, '.desk-autopilot', 'acme__stepper', 'briefings', 'V-1.md'), 'utf8')), true);
+t('DS-566 AC3 and it is off the list', stItem('V-1') === undefined, true);
+
 // ---- A supervised batch whose base sync waits on §3 batch-base-push `ask` is one item for the
 // batch, and its approve records the approval on the queue the supervisor passes to each later pass.
 put('rho2', { port: 3830, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
@@ -1743,6 +1796,38 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('ds562off', { port: 4651, beat: 120, tickets: { 'W-6': waits('Hold W-6 for PR #994?', { kind: 'pr-merged', pr: 994 }) } });
   const off = ticketScreen(loadRepos().find((r) => r.name === 'ds562off'), 'W-6', { width: 200 });
   t('DS-562 passes stopped: its page says it will not move until they resume, waiting on PR #994', off.includes('Will not move until passes resume: waiting on PR #994 merged: a pass requeues it then.'), true);
+}
+
+// ---- A put-off item with 3 or more held tickets behind it, directly or through another, is listed first.
+{
+  const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
+  const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
+  put('ds600a', { port: 4650, beat: 1, supervised: true, tickets: { 'O-1': parked('A', 300, 'Older question?'), 'P-1': parked('A', 60, 'Which price?'),
+    'H-1': behind('H-1', 'P-1'), 'H-2': behind('H-2', 'P-1'), 'H-3': behind('H-3', 'P-1') } });
+  const off1 = N.record({ word: 'ds600a', ticket: 'P-1', action: 'not-now' });
+  t('DS-600 AC4 not-now on it says it stays listed while 3 or more wait behind it', `${off1.ok} ${off1.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')}`, 'true true');
+  const a = N.collect({ word: 'ds600a' });
+  t('DS-600 AC1 a put-off park with 3 held behind it is listed first, saying so',
+    `${a.items[0]?.t.key} ${a.items[0]?.need} ${a.putOff}`, 'P-1 Which price? (3 tickets wait behind it, so it is listed though you put it off) 0');
+  t('DS-600 AC1 desk-q counts it as needing you', N.needsCount(loadRepos().find((r) => r.slug === 'acme__ds600a')).putOff, 0);
+  const off2 = N.record({ word: 'ds600a', ticket: 'P-1', action: 'not-now' });
+  t('DS-600 AC4 put off again, it is still listed on the next run, and the answer says so', `${off2.ok} ${/still listed/.test(off2.line)} ${keysIn('ds600a')[0]}`, 'true true P-1');
+
+  put('ds600b', { port: 4651, beat: 1, supervised: true, tickets: { 'P-1': parked('A', 60, 'Which price?'), 'H-1': behind('H-1', 'P-1'), 'H-2': behind('H-2', 'P-1') } });
+  const off3 = N.record({ word: 'ds600b', ticket: 'P-1', action: 'not-now' });
+  const b = N.collect({ word: 'ds600b' });
+  t('DS-600 AC2 with 2 held behind it, it stays left out and counted put off, as today',
+    `${off3.line.includes('still listed')} ${b.items.some((i) => i.t.key === 'P-1')} ${b.putOff}`, 'false false 1');
+
+  put('ds600c', { port: 4652, beat: 1, supervised: true, tickets: { 'P-1': parked('A', 60, 'Which price?'), 'H-1': behind('H-1', 'P-1'), 'H-2': behind('H-2', 'H-1'), 'H-3': behind('H-3', 'H-1') } });
+  N.record({ word: 'ds600c', ticket: 'P-1', action: 'not-now' });
+  const c = N.collect({ word: 'ds600c' }).items.find((i) => i.t.key === 'P-1');
+  t('DS-600 AC3 one held ticket holding 2 more counts 3 behind it, and it is listed', `${c?.behind} ${/3 tickets wait behind it/.test(c?.need ?? '')}`, '3 true');
+
+  put('ds600d', { port: 4653, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)' },
+    tickets: { 'V-1': gateStuck(121, protectedLine), 'H-1': behind('H-1', 'V-1'), 'H-2': behind('H-2', 'V-1'), 'H-3': behind('H-3', 'V-1') } });
+  const wait = N.record({ word: 'ds600d', ticket: 'V-1', action: 'waiting' });
+  t('DS-600 AC4 waiting on a PR with 3 held behind it says it stays listed, and it is', `${wait.ok} ${wait.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')} ${keysIn('ds600d')[0]}`, 'true true V-1');
 }
 
 // Refusals.

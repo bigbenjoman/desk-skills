@@ -554,6 +554,24 @@ out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --
 check "DS-594 a base fix worker may push HEAD to the base, and nothing else" \
   'ok "git push origin HEAD:refs/heads/feat/x" && no "git push origin feat/x" "git push origin HEAD:refs/heads/main" "git push origin HEAD" "git push --force origin HEAD:refs/heads/feat/x"'
 rm -f "$DESK_QUEUE"
+
+# ---- a named batch's worker reads the repo's design snapshots ----
+BATCH="$T/state/batches/b1"; mkdir -p "$BATCH" "$T/state/triage"
+settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-standing.json"; standing_out=$out
+DESK_AUTOPILOT_STATE="$BATCH" DESK_STATE="$BATCH" settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-batch-nodesigns.json"; nodesigns_out=$out
+mkdir -p "$T/state/designs/EPIC-1"
+DESK_AUTOPILOT_STATE="$BATCH" DESK_STATE="$BATCH" settings '`bash tests/run.sh`'
+check "DS-608 AC1 a named batch's worker may read the repo's designs, and its path is named for the spawn" \
+  'readable "$T/state/designs" && [[ "$out" == *"CONFIG_READ_DESIGNS: $T/state/designs"* ]]'
+check "DS-608 AC1 an edit there is refused" 'denies "Edit(/$T/state/designs/**)" && ! allows "Edit(/$T/state/designs/**)"'
+check "DS-608 AC2 nothing else under the repo state folder outside the batch is readable" \
+  '[ "$(jq --arg s "$T/state" --arg b "$BATCH" "[.permissions.additionalDirectories[] | select(startswith(\$s) and (startswith(\$b) | not))] | length" "$T/ws.json")" = 1 ] && ! readable "$T/state" && ! readable "$T/state/triage"'
+settings '`bash tests/run.sh`'
+check "DS-608 AC3 a standing batch's worker is unchanged" 'diff -q "$T/ws.json" "$T/ws-standing.json" >/dev/null && [ "$out" = "$standing_out" ]'
+rm -rf "$T/state/designs"
+check "DS-608 AC4 with no designs folder, a named batch's worker gets no grant" \
+  '[[ "$nodesigns_out" != *CONFIG_READ_DESIGNS* ]] && [ "$(jq "[.permissions.additionalDirectories[] | select(endswith(\"/designs\"))] | length" "$T/ws-batch-nodesigns.json")" = 0 ] && ! jq -e "[.permissions.deny[] | select(contains(\"/designs/\"))] | length > 0" "$T/ws-batch-nodesigns.json" >/dev/null'
+
 settings '`bash tests/run.sh`' '| Worker measuring commands | `npm exec measure` |'
 check "DS-431 a measuring command in a runner form is allowed, and the runner stays closed to anything else" 'ok "npm exec measure" && no "npm exec other" "npm exec measure --more"'
 settings '`bash tests/run.sh`' '| Worker read-only repos | `studia/web` |' "$(rows3 pr-open=yes pr-edit=yes pr-reply=yes pr-self-review-comment=yes)"
@@ -628,5 +646,23 @@ check "DS-470 AC7 a codex call with a CODEX_HOME of the worker's own choosing is
       "export CODEX_HOME=/x" "CODEX_HOME=/x codex exec --sandbox read-only --skip-git-repo-check '"'x'"'" "CODEX_HOME=/x node $B/desk-codex.mjs finder '"'x'"'"'
 settings '`bash tests/run.sh`' '' "$(rows3 codex-review=yes)"
 check "DS-470 AC7 with the codex lever off too" 'codexHome "CODEX_HOME=/x codex exec --sandbox read-only '"'x'"'"'
+
+# DS-576: the self-review posts through review-post.mjs, under §3 pr-self-review-comment, and a
+# gh login variable in front of anything is refused by its own deny rule.
+RP="42 --repo acme/widgets --body-file desk-review.md"
+settings '`bash tests/run.sh`' '' "$(rows3 pr-self-review-comment=yes)"
+check "DS-576 AC8 review-post.mjs is allowed by module and by node, granted" 'ok "node $B/review-post.mjs $RP" "$B/review-post.mjs $RP" "gh pr review $RP --comment"'
+ghLogin(){ local c w="$T/ws-wide.json" o="$T/ws-wide-nodeny.json"
+  jq '.permissions.allow += ["Bash(*gh pr review*)", "Bash(*review-post.mjs*)", "Bash(export *)"]' "$T/ws.json" > "$w"
+  jq '.permissions.deny -= [.permissions.deny[] | select(test("^Bash\\(\\*(GH|GITHUB)_[A-Z_]*=\\*\\)$"))]' "$w" > "$o"
+  no "$@" || return 1
+  for c in "$@"; do
+    [ "$(node "$T/match.mjs" "$w" bash "$c")" = refused ] && [ "$(node "$T/match.mjs" "$o" bash "$c")" = allow ] || { out="not refused by a gh login rule: $c"; return 1; }
+  done; }
+check "DS-576 AC8 a GH_CONFIG_DIR or gh token prefix is still refused" \
+  'ghLogin "GH_CONFIG_DIR=/x gh pr review $RP --comment" "GH_TOKEN=x gh pr review $RP --comment" "env GITHUB_TOKEN=x gh pr review $RP --comment" \
+      "GH_CONFIG_DIR=/x node $B/review-post.mjs $RP" "export GH_CONFIG_DIR=/x"'
+settings '`bash tests/run.sh`' '' "$(rows3 pr-self-review-comment=no)"
+check "DS-576 AC8 review-post.mjs is refused where §3 pr-self-review-comment is not yes" 'no "node $B/review-post.mjs $RP" "$B/review-post.mjs $RP"'
 
 echo "worker-settings: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

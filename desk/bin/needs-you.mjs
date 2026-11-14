@@ -39,13 +39,16 @@
 //       waiting             a PR held only by a person's approval: put off the same way, with the PR's head
 //                           and who approved it as its inputs, so it is back once it gets one or its head moves
 //       open                a lane C or D park, or one on a step no worker is allowed (aws, curl, gh
-//                           api, …): names the desk-ticket session to open; records nothing
+//                           api, …) or on a step the person approved that no worker can run: names
+//                           the desk-ticket session to open; records nothing
 //       admit               a ticket held by open tickets outside its batch that no batch holds: names
 //                           the /desk-admit to run for them; records nothing
 //       done                the person did the step themselves. On a PR it reads the PR from GitHub:
 //                           merged is recorded and leaves the list; unmerged is said, and noted on the
 //                           item until its head moves. On a session item, the ticket finished outside
-//                           desk: its PR merged, or no PR, records it done; an unmerged PR is refused
+//                           desk: its PR merged, or no PR, records it done; an unmerged PR is refused.
+//                           On a step the person approved that no worker can run, that step is done:
+//                           the ticket goes back to a worker with it in its briefing (queue.mjs step-done)
 //   needs-you.mjs move <repo> <TICKET> <batch>        record's move alone: the one action the decider is
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
@@ -56,8 +59,9 @@
 // checks them again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
-// first, then the longest waiting, less any put off with not-now whose inputs are unchanged and, where
-// its entry recorded the actions it offered, that offers none it did not offer then. Exits 0, or 11
+// first, then any put off with three or more held tickets behind it, then the longest waiting, less any
+// other put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
+// offered, that offers none it did not offer then. Exits 0, or 11
 // (show the person) on anything it refuses.
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -113,6 +117,11 @@ function withDrop(r, t, actions) {
 }
 // A session item the person finished themselves, outside desk: done records it, once its PR has merged.
 const SESSION_DONE = ['done', null, 'if you finished the ticket yourself, done reads its PR and records it done once the PR has merged, or where it has none'];
+// A step the person approved that its park says no worker can run (park.session_step, answer.mjs):
+// they run it in a session, and done sends the ticket back to a worker with it recorded done.
+const STEP_WHY = 'no worker can run the step you approved, so a requeue would only park it again: run it in an interactive session';
+const STEP_DONE = ['done', null, 'once you have run the step, done sends the ticket back to a worker with it recorded as done'];
+const STEP_ANSWER = ['answer', null, 'if you did not mean to approve running it, answer again: an answer approving no step makes it an ordinary park you can resume'];
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
 // A draft the pass left for the person because the review verdict at its head has gaps (undraft.mjs
 // verdictAt's `not clean (… gaps=N …)`), whatever its call: one whose fix tries ran out keeps `findings`.
@@ -267,7 +276,7 @@ function conflictPlain(r, t, n, base, why = '') {
 function stuckPlain(r, n, s, t) {
   const checks = s?.checks ?? [];
   if (checks.length) {
-    const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : ''}`;
+    const label = (c) => `"${c.name}"${c.step ? ` (failed at "${c.step}")` : c.unread ? ' (desk could not read which step failed)' : ''}`;
     // A check desk builds (§4 Check builds) whose build failed: a worker fixes the build on its branch.
     const built = checks.filter((c) => c.build);
     const mine = checks.filter((c) => !c.command && !c.build), theirs = checks.filter((c) => c.command);
@@ -685,6 +694,7 @@ function itemOf(r, x) {
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
     if (sp === 'specs') return { kind: 'spine', need, note, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
+    if (t.park?.session_step) return { kind: 'session', need: `you approved a step no worker can run: ${one(t.park.session_step.step)}`, note, actions: withDrop(r, t, [['open', STEP_WHY], STEP_DONE, STEP_ANSWER, ['not-now']]) };
     if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
     if (needsSession(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
     if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], SESSION_DONE, ['not-now']]) };
@@ -729,13 +739,34 @@ function putOffKey(r, t, item) {
 // since without them is an item no batch listed when it was put off: it stays put off on its inputs.
 const ACTIONS_SINCE = Date.parse('2026-11-01T15:00:00Z');
 const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
+// A put-off item is listed anyway, first, while this many tickets of its batch are held behind it.
+export const HOLDS_BACK = 3;
+// How many held tickets of r's batch wait behind `key`: held by it, or by a ticket held behind it.
+export function heldBehind(r, key) {
+  const held = Object.values(r.q?.tickets ?? {}).filter((o) => o.key !== key && isHeld(o));
+  const behind = new Set();
+  for (let edge = new Set([key]); edge.size;) {
+    const next = held.filter((o) => !behind.has(o.key) && keysOf(o.held_by).some((k) => edge.has(k))).map((o) => o.key);
+    next.forEach((k) => behind.add(k));
+    edge = new Set(next);
+  }
+  return behind.size;
+}
+const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
+// What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
+function stillListed(r, key) {
+  const n = heldBehind(r, key);
+  return n >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${n} do now).` : '';
+}
 function judged(r, x, register) {
   const item = itemOf(r, x);
   const l = lookup(register, putOffKey(r, x.t, item));
   if (l.status !== 'put_off') return { item, l };
+  const behind = heldBehind(r, x.t.key);
+  const shown = behind >= HOLDS_BACK ? { ...item, need: `${item.need} (${holdingWords(behind)})`, behind } : item;
   const was = Array.isArray(l.entry.actions) ? l.entry.actions : null, now = verbsOf(item);
-  if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return { item, l };
-  return { item, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
+  if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return shown === item ? { item, l } : { item: shown, l: { status: 'holding', entry: l.entry } };
+  return { item: shown, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
 }
 
 // Records on a ticket's put-off entry the actions its item offers now, so one it gains later brings it
@@ -834,7 +865,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now) 
     const item = r && !r.error ? templatesItem(r, templatesRecord(slug)) : null;
     if (item) repoItem(r, { key: TEMPLATES }, item, item.since);
   }
-  items.sort((a, b) => (b.broken - a.broken) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
+  items.sort((a, b) => (b.broken - a.broken) || ((b.behind ?? 0) - (a.behind ?? 0)) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   return { repos, scope, items, named, putOff };
 }
 
@@ -1016,6 +1047,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       const a = ans();
       if (!a.ok) return say(false, a.why);
       if (item.kind === 'worktree') return say(true, 'recorded for its next worker; the next pass that finds the worktree clean starts it.');
+      // Approving a step no worker can run makes it a session item (answer.mjs), never a requeue.
+      const step = readQueue(r.queuePath).tickets?.[ticket]?.park?.session_step;
+      if (step) return say(true, `answer recorded; not requeued, because no worker can run the step you approved (${one(step.step)}): run it in an interactive session, then say done and it goes back to a worker with the step recorded done.`);
       if (w.by === 'session') {
         // Marked answered, so desk-q shows it waiting on that session rather than needing the person.
         const m = queueCmd(r, ['set', ticket, `park.answered=${new Date(now).toISOString()}`]);
@@ -1061,18 +1095,19 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'not-now': {
       // A park is put off by answer.mjs, keyed to its inputs, and its entry then records the actions it
       // offers; anything else here, as putOffKey keys it.
+      const still = stillListed(r, ticket);
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
         if (!a.ok) return say(false, a.why);
         stampItem(r, x, item);
-        return say(true, 'put off (not-now register).');
+        return say(true, `put off (not-now register).${still}`);
       }
       putOff();
-      return say(true, `put off (${notNowPath(r.stateDir)}).`);
+      return say(true, `put off (${notNowPath(r.stateDir)}).${still}`);
     }
     case 'waiting': {
       putOff();
-      return say(true, `waiting on its approval (${notNowPath(r.stateDir)}): not listed again until it gets one or its head moves.`);
+      return say(true, `waiting on its approval (${notNowPath(r.stateDir)}): not listed again until it gets one or its head moves.${stillListed(r, ticket)}`);
     }
     // Into another running batch of the repo, by its name, `<repo>:<name>`, or `standing`. Made here
     // whoever runs either batch: the move holds both queue locks, and the next pass there spawns it.
@@ -1098,7 +1133,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, `${q.out} (queue.mjs drop); Jira is left as it is.`) : say(false, `drop refused: ${q.out}`); }
     case 'open': {
       const root = repoConfigValue(r.slug, 'repo-root');
-      return say(true, `not requeued (${neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
+      return say(true, `not requeued (${x.t.park?.session_step ? 'a step you approved that no worker can run' : neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
     }
     // Admission runs its own checks on each blocker, so it is the person's /desk-admit, not made here.
     case 'admit': {
@@ -1107,6 +1142,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
+      if (x.t.park?.session_step) {
+        const d = queueCmd(r, ['step-done', ticket]);
+        return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);
+      }
       if (x.pr || heldDraft(x.t)) return prDone();
       if (item.kind === 'session') return sessionDone();
       if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');

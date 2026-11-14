@@ -49,6 +49,7 @@ const REWRITTEN = [
   ['DS-542', 'and pushes it before a pass that spawns;', 1], // a base behind syncs on every pass
   ['DS-542', 'Before a pass that will spawn, and only then, it merges', 1],
   ['DS-542', 'Actions run to finish, or `none`), or', 1], // base contains <branch> is a clears-when form
+  ['DS-565', 'needs more agent work) and hands the rest', 1], // under autopilot-judgement yes the decider takes a recommended call
   ['DS-598', 'outside the batch and not done; in the batch but parked', 1], // a blocker triage judged is held or started on
   // the rule as it stands, not against an earlier behaviour
   ...[
@@ -140,6 +141,13 @@ t(`AC4 other skills' citations of desk-autopilot sections were read (${outer})`,
 let byPath = 0;
 for (const f of files) for (const m of norm(read(f)).matchAll(/(?<![\w-]`?'s )`references\/([\w.-]+\.md)`/g)) { byPath++; t(`AC4 ${f} names references/${m[1]}: it exists`, existsSync(join(refs, m[1])), true); }
 t(`AC4 the citations by path were read (${byPath})`, byPath >= 25, true);
+
+// DS-596: a worker's call may pick a reading of a criterion but never leave one unmet.
+const contract = norm(read('autopilot-worker-contract.md'));
+const section1 = contract.split('## 1. ')[1]?.split(' ## 2. ')[0] ?? '';
+t('DS-596 the rule is in the contract\'s section 1', section1.includes('**A call never leaves an acceptance criterion unmet.**'), true);
+t('DS-596 AC2 a call picks a reading, and builds the option that meets the criterion as worded', section1.includes('It may pick a reading of one, or keep a later-merged ticket\'s behaviour as review directs; where one option meets it as worded, build and log that one.'), true);
+t('DS-596 AC1 every option breaking a criterion parks before the PR, quoting it', section1.includes('Where every option breaks one, park before the PR, quoting it.'), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

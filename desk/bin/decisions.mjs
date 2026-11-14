@@ -4,7 +4,7 @@
 // `AUTOPILOT_DECISION: <json>` and pass.mjs appends it when it harvests the run; an interactive
 // session appends through this file's CLI:
 //
-//   decisions.mjs log <TICKET> '<json>' [--pr <number or URL>]
+//   decisions.mjs log [--source decider] <TICKET> '<json>' [--pr <number or URL>]
 //   decisions.mjs check <TICKET> '{"question", "checked", "showed"}' [--pr <number or URL>]
 //
 // A check is a question the session settled by checking instead of asking (`AUTOPILOT_CHECKED:` from a
@@ -23,6 +23,10 @@ import { stateDir, ghRepo, SAFE_ID } from './desk-env.mjs';
 export const ASK_CATEGORIES = ['money', 'legal', 'production', 'customer-copy', 'user-fact'];
 // Everything else is taken on the recommendation and logged, under one of these.
 export const TAKE_CATEGORIES = ['product', 'design', 'wording', 'review', 'engineering', 'scope', 'tracker'];
+
+// Who logs through the CLI: an interactive session, or the supervisor's decider taking a call a
+// worker parked on (decider.mjs, which may run only `log --source decider`).
+export const CLI_SOURCES = ['session', 'decider'];
 
 export const decisionsPath = (dir = stateDir()) => join(dir, 'decisions.jsonl');
 
@@ -135,21 +139,27 @@ if (isMain) {
   const { EXIT, crashShowsPerson } = await import('./batch-state.mjs');
   crashShowsPerson();
   const args = process.argv.slice(2);
-  const prAt = args.indexOf('--pr');
-  const pr = prAt >= 0 ? args[prAt + 1] : null;
-  const [cmd, ticket, raw] = prAt >= 0 ? [...args.slice(0, prAt), ...args.slice(prAt + 2)] : args;
+  const flags = {};
+  for (const f of ['--pr', '--source']) {
+    const at = args.indexOf(f);
+    if (at >= 0) { flags[f] = args[at + 1] ?? ''; args.splice(at, 2); }
+  }
+  const pr = flags['--pr'] ?? null;
+  const [cmd, ticket, raw] = args;
   const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
   if (!['log', 'check'].includes(cmd) || !ticket || !raw) {
-    refuse('usage: decisions.mjs log <TICKET> \'{"question","options":[…],"chose","category"}\' [--pr <number or URL>]\n' +
+    refuse('usage: decisions.mjs log [--source decider] <TICKET> \'{"question","options":[…],"chose","category"}\' [--pr <number or URL>]\n' +
       '       decisions.mjs check <TICKET> \'{"question","checked","showed"}\' [--pr <number or URL>]');
   }
+  const source = flags['--source'] ?? 'session';
+  if (!CLI_SOURCES.includes(source)) refuse(`--source takes ${CLI_SOURCES.join(' or ')}, not '${source}'`);
   if (!SAFE_ID.test(ticket) || ticket.includes('..')) refuse(`'${ticket}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
   const repo = ghRepo();
-  if (prAt >= 0 && !prLink(pr, repo)) refuse(`--pr takes a PR number or URL, not '${pr ?? ''}'`);
+  if (pr != null && !prLink(pr, repo)) refuse(`--pr takes a PR number or URL, not '${pr}'`);
   const parsed = cmd === 'check' ? parseCheck(raw) : parseDecision(raw);
   if (!parsed.ok) refuse(`not logged: ${parsed.why}`);
   const entry = decisionEntry({
-    decision: parsed.check ?? parsed.decision, ticket, run: process.env.CLAUDE_CODE_SESSION_ID ?? 'session', repo, pr, source: 'session',
+    decision: parsed.check ?? parsed.decision, ticket, run: process.env.CLAUDE_CODE_SESSION_ID ?? source, repo, pr, source,
   });
   const added = appendDecisions([entry]);
   console.log(`${added.length ? 'logged' : 'already logged'}: ${entry.id} in ${decisionsPath()}`);

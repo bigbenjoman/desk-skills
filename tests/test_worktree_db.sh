@@ -11,7 +11,7 @@ S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"; T="$(mktemp -d)"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mkdir -p "$HOME" "$T/stub"
 : > "$GIT_CONFIG_GLOBAL"; git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
-  DESK_PG_CONTAINER DESK_PSQL_TIMEOUT DATABASE_URL DIRECT_DATABASE_URL
+  DESK_PG_CONTAINER DESK_PSQL_TIMEOUT DESK_PSQL_RETRY_S DESK_GH_REPO DATABASE_URL DIRECT_DATABASE_URL
 PASS=0; FAIL=0
 check(){ if [ -n "${2:-}" ] && eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -70,8 +70,13 @@ cat > "$T/stub/docker" <<EOF
 case "\$1" in
   port) [ "\$2 \$3" = "pg 5432/tcp" ] || { echo "Error: No such container or port: \$2 \$3" >&2; exit 1; }
     cat "$T/port.line" 2>/dev/null; [ -s "$T/port.line" ] ;;
+  container) [ -f "$T/pg.missing" ] && { echo "Error: No such container: \$5" >&2; exit 1; }; echo running ;;
   exec) case "\$*" in
-    *"pg_database"*) echo 1 ;;
+    *"pg_database"*)
+      [ -f "$T/pg.missing" ] && { echo "Error: No such container: \$2" >&2; exit 1; }
+      n=\$(cat "$T/pg.fails" 2>/dev/null || echo 0)
+      if [ "\$n" -gt 0 ]; then echo \$((n - 1)) > "$T/pg.fails"; echo "psql: could not connect to server" >&2; exit 2; fi
+      echo 1 ;;
     *"information_schema"*) cat "$T/tables" ;;
     *) : ;;
   esac ;;
@@ -129,5 +134,22 @@ check "kept, table count unknown: not migrated"                   '[ $rc -eq 0 ]
 sed -i.bak 's/localhost:5433/localhost:5432/' "$T/wt/T-1/.env"; echo 12 > "$T/tables"
 out=$(bash "$B/setup-worktree.sh" T-1 fix/T-1 2>&1); rc=$?
 check "kept, URL on the old port: repointed"                      '[ $rc -eq 0 ] && [[ "$(url T-1 DATABASE_URL)" == *"@localhost:5433/widgets_t_1"* ]]'
+
+# A Postgres that does not answer at first is tried again, within DESK_PSQL_RETRY_S.
+echo 1 > "$T/pg.fails"
+out=$(DESK_PSQL_RETRY_S=4 bash "$B/setup-worktree.sh" T-5 fix/T-5 2>&1); rc=$?
+check "AC1 slow Postgres: setup succeeds after a retry"           '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-5"* ]] && [[ "$out" == *"database=widgets_t_5"* ]]'
+check "AC1 slow Postgres: it says it retried and then answered"   '[[ "$out" == *"Postgres in pg did not answer"*"trying again in "* ]] && [[ "$out" == *"Postgres in pg answered after a retry (try 2"* ]]'
+
+echo 99 > "$T/pg.fails"
+out=$(DESK_PSQL_RETRY_S=2 bash "$B/setup-worktree.sh" T-6 fix/T-6 2>&1); rc=$?
+check "AC2 Postgres down past the limit: setup fails"             '[ $rc -ne 0 ] && [ ! -d "$T/wt/T-6" ]'
+check "AC2 the failure names the container and how long it waited" '[[ "$out" == *"FAIL: cannot reach Postgres in container pg"*"exited 2, after "*" tries over "*"s (is it running"* ]]'
+
+touch "$T/pg.missing"; t0=$SECONDS
+out=$(DESK_PSQL_RETRY_S=60 bash "$B/setup-worktree.sh" T-7 fix/T-7 2>&1); rc=$?; took=$((SECONDS - t0))
+check "AC5 missing container: fails at once, naming it"           '[ $rc -ne 0 ] && [ $took -lt 10 ] && [[ "$out" == *"FAIL: container pg does not exist"* ]]'
+check "AC5 missing container: not retried, worktree removed"      '[[ "$out" != *"trying again"* ]] && [ ! -d "$T/wt/T-7" ]'
+rm -f "$T/pg.missing" "$T/pg.fails"
 
 echo "worktree database: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

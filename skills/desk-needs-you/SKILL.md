@@ -90,14 +90,14 @@ line on what it recorded.
 - **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the
   `/desk-ticket` or `/desk-admit` to run.
 - **`not-now`**: puts it in the not-now register; `list` and `left` hide it until its
-  question, blocker or PR head changes or it gains an action.
+  question, blocker or PR head changes, it gains an action, or 3 or more held tickets wait behind
+  it (listed first, saying how many).
 - **`waiting`**: as `not-now`, until the PR gets an approval or its head moves.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
 
 Where the supervisor runs the batch, its next pass picks the answer up.
 
-Never run `queue.mjs`, `answer.mjs` or `digest.mjs` yourself, and never edit a queue: `record` runs
-them against the right repo.
+Never run `queue.mjs`, `answer.mjs` or `digest.mjs` yourself, or edit a queue: `record` does.
 
 ## 4. Until nothing is left
 
@@ -113,5 +113,5 @@ node ~/.claude/desk/bin/needs-you.mjs left
 node ~/.claude/desk/bin/needs-you.mjs left <repo>
 ```
 
-Print its output last. Its first line is the desk-q count still left. A line follows for each repo
-whose passes stopped, saying how to resume them.
+Print its output last: the desk-q count still left, then how to resume each repo whose passes
+stopped.

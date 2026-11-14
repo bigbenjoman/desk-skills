@@ -57,7 +57,7 @@ t('desktop: sizes nothing for a CI runner', Object.keys(mini).filter((k) => k.st
 t('desktop: ceiling is memory less the OS', `${mini['memory-ceiling-gb'].value} ${mini['memory-ceiling-gb'].why}`, '56 64 GB - 8 for the OS');
 t('desktop: workers at 3 GB each', mini['autopilot-concurrency'].value, '9 / 18');
 t('desktop: test cap = performance cores shared by the lock slots', `${mini['test-cap'].value} ${mini['test-cap'].why}`, '4 the 8 performance cores, shared by 2 test lock slots');
-t('desktop: 2 test lock slots (56 GB / 16 = 3, 8 P-cores / 4 = 2)', mini['test-lock-slots'].value, '2');
+t('desktop: 2 test lock slots (56 GB / 16 = 3, 8 P-cores / 3 = 2)', mini['test-lock-slots'].value, '2');
 t('desktop: slots x test cap stays within the P-cores', Number(mini['test-lock-slots'].value) * Number(mini['test-cap'].value) <= 8, true);
 t('desktop: typecheck lock timeout', mini['typecheck-lock-timeout-min'].value, '20');
 t('desktop: pre-push lock timeout', mini['pre-push-lock-timeout-s'].value, '60');
@@ -124,6 +124,14 @@ t('wsl: ceiling 16', ws['memory-ceiling-gb'].value, '16');
 t('wsl: test cap = P-cores', ws['test-cap'].value, '16');
 t('wsl: test lock slots bound by the 16 GB ceiling', ws['test-lock-slots'].value, '1');
 t('cpu list', countCpuList('0-7,16-23'), 16);
+
+// ---- test lock slots on 6 and 4 performance cores, and with the core count unknown
+const slotsOf = (hw) => { const s = sized(hw); return `${s['test-lock-slots'].value} ${s['test-cap'].value}`; };
+const box = (mem, perf) => ({ 'memory-gb': mem, 'cpu-cores': perf === 'unknown' ? 'unknown' : perf + 4, 'performance-cores': perf, wsl: 'no' });
+t('64 GB, 6 P-cores: 2 slots of 3 test workers', slotsOf(box(64, 6)), '2 3');
+t('16 GB, 6 P-cores: 1 slot keeps all 6', slotsOf(box(16, 6)), '1 6');
+t('64 GB, 4 P-cores: 1 slot of 4', slotsOf(box(64, 4)), '1 4');
+t('64 GB, cores unknown: 1 slot', sized(box(64, 'unknown'))['test-lock-slots'].value, '1');
 
 // ---- the file round-trips, and detect reports only real hardware changes
 const doc = renderProfile(macMini, propose(macMini), '2026-10-17');

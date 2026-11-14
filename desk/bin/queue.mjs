@@ -44,7 +44,7 @@ function setBase(q, v) {
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -246,6 +246,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it`);
   if ((t.open_questions ?? 0) > 0) throw new Error(`${key} has ${t.open_questions} triage question(s) open: answer them first`);
   if (t.state === 'parked' && /^(size |dependency cycle:)/.test(String(t.park?.question ?? ''))) throw new Error(`${key} was parked at triage (${t.park.question}): split it or fix the links, not requeue it`);
+  if (t.state === 'parked' && t.park?.session_step) throw new Error(`${key} waits on a step the person approved that no worker can run (${t.park.session_step.step}): do it in an interactive session, then \`queue.mjs step-done ${key}\` sends it back to a worker`);
   // A lane D ticket handed back (handback) had its session step done by the person, so its design park
   // no longer keeps it from a worker. A lane C one is moved to lane B first.
   if (!handedBack && t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
@@ -318,6 +319,19 @@ function handback(q, key, note) {
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
   appendBriefing(key, `\n${ANSWER_HEAD} (${at})\n\nThe person did the step this ticket parked for an interactive session on, and handed it back: ${note}\n`);
   return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
+}
+
+// A step the person approved that no worker can run (park.session_step, answer.mjs), done by them:
+// the ticket goes back to a worker as a requeue sends it, with the step in its briefing as done.
+function stepDone(q, key) {
+  const t = ticket(q, key);
+  const s = t.park?.session_step;
+  if (t.state !== 'parked' || !s?.step) throw new Error(`${key} is not waiting on an approved step no worker can run, so there is no step to record done`);
+  delete t.park.session_step;
+  let msg;
+  try { msg = requeue(q, key); } catch (e) { t.park.session_step = s; throw e; }
+  appendBriefing(key, `\n${ANSWER_HEAD} (${new Date().toISOString()})\n\nThe person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.\n`);
+  return `${key}: the approved step is recorded done (${s.step}); ${msg}`;
 }
 
 // A binding answer for a ticket's next worker, appended to its briefing (pass.mjs writeBrief keeps it).
@@ -490,7 +504,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (WRITES.includes(cmd)) lock();
@@ -740,6 +754,13 @@ switch (cmd) {
     break;
   }
 
+  case 'step-done': {
+    const [key] = args;
+    if (!key) throw new Error('usage: queue.mjs step-done <TICKET>');
+    console.log(stepDone(q, key));
+    break;
+  }
+
   // A finished feature spine whose specs passed pass.mjs's check, approved by the person: the spine is
   // done, its PR leaves draft (§3 pr-ready), and it merges under the batch's merge rules, after which
   // what is held behind it is released. answer.mjs never un-parks; this is the orchestrator's decision.
@@ -956,7 +977,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
