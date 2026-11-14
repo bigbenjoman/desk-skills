@@ -555,7 +555,7 @@ check "DS-594 a base fix worker may push HEAD to the base, and nothing else" \
   'ok "git push origin HEAD:refs/heads/feat/x" && no "git push origin feat/x" "git push origin HEAD:refs/heads/main" "git push origin HEAD" "git push --force origin HEAD:refs/heads/feat/x"'
 rm -f "$DESK_QUEUE"
 
-# ---- DS-608: a named batch's worker reads the repo's design snapshots ----
+# ---- a named batch's worker reads the repo's design snapshots ----
 BATCH="$T/state/batches/b1"; mkdir -p "$BATCH" "$T/state/triage"
 settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-standing.json"; standing_out=$out
 DESK_AUTOPILOT_STATE="$BATCH" DESK_STATE="$BATCH" settings '`bash tests/run.sh`'; cp "$T/ws.json" "$T/ws-batch-nodesigns.json"; nodesigns_out=$out
