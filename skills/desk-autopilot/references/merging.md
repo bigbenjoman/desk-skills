@@ -285,7 +285,8 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   PR rather than undrafting it. A clean verdict on a conflicted head is spent the moment the conflict
   is resolved. Workers are denied `gh pr ready`, so every pass checks these facts for each done
   ticket's draft PR (`undraft.mjs`, whoever runs the pass, the supervisor included), with its checks
-  green too, then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
+  green too (a red §4 State check other than `desk-review verdict` does not hold it: its reviewer
+  reads only ready PRs, and the driver holds the ready PR until it is green), then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
   are still running, or whose mergeability GitHub has not worked out yet, waits for a later pass; any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
   ticket as `undraft`; a feature spine is left to `queue.mjs approve`. **A draft the person put back
