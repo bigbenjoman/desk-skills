@@ -38,7 +38,8 @@
 //   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` -> { flaky, errors }
 //   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
 //   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
-//   stateFailing(failing, stateChecks) -> the failing checks that are state checks, each with its kind
+//   stateFailing(failing, stateChecks[, lineOf]) -> the failing checks that are state checks, each with its
+//                            kind (an approval one whose error line is staleVerdict's takes verdict)
 //   failureLines(notes)      a job's annotations -> every error its run gave, in order
 //   jobAnnotations(repo, jobId) -> a job's annotations read from GitHub; undefined when they cannot be read
 //   failureMessages(repo, jobId) -> failureLines read from GitHub; undefined when they cannot be read
@@ -58,8 +59,8 @@
 //     head, mergeState, reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory
 //     checks that are not §4 State checks, failedJobs: [{ runId, jobId, name }] for the one in a run that
 //     also holds a failing state check, rerun by job instead, and stateFailing: the failing state checks,
-//     each { name, kind, runId, jobId, startedAt, why, rerunWith? } with why the first error its run
-//     annotated, or null),
+//     each { name, kind, listed?, runId, jobId, startedAt, why, rerunWith? } with why the first error its
+//     run annotated, or null),
 //     holds (each { glob, why, routine, files, count }), holdsMet (the code-owner holds `merger` alone
 //     owns, so not holding it),
 //     defaultBranch (§0), holdsApply (the PR's base is that branch, so its holds hold it),
@@ -556,10 +557,13 @@ export function parseStateChecks(items) {
   }
   return { checks, errors };
 }
-// The gate's failing checks that are state checks, each with its kind.
-export const stateFailing = (failing, stateChecks) => (failing ?? []).flatMap((f) => {
+// The gate's failing checks that are state checks, each with its kind. lineOf(f) is the run's error
+// line, where it was read: one listed as approval whose line says no verdict it accepts is at the head
+// failed its verdict step, so it takes kind verdict, with `listed` the kind §4 gives it.
+export const stateFailing = (failing, stateChecks, lineOf = () => null) => (failing ?? []).flatMap((f) => {
   const s = (stateChecks ?? []).find((x) => x.name === f.name);
-  return s ? [{ ...f, kind: s.kind }] : [];
+  if (!s) return [];
+  return [s.kind === 'approval' && staleVerdict(lineOf(f)) ? { ...f, kind: 'verdict', listed: s.kind } : { ...f, kind: s.kind }];
 });
 
 // Whether a red head may merge past its failures because each is a §4 Known flaky check. null when
@@ -696,13 +700,16 @@ export function approvalFiles(line) {
   const more = listed ? Number(listed[1]) - files.length : Number(/ and (\d+) more$/.exec(touches[1])?.[1] ?? 0);
   return { files, more: Math.max(0, more) };
 }
-// An error line saying the gate reads no review verdict it accepts at the head: none posted, one for an
-// older commit, or one in a form it does not parse (an old marker format). A verdict that is there and
-// not clean is not one: that is a fix worker's.
+// An error line saying the gate reads no review verdict it accepts at the head: none posted (`No
+// PullBot review at <sha> yet` too), one for an older commit, or one in a form it does not parse (an
+// old marker format). A verdict that is there and not clean is not one: that is a fix worker's. Nor is
+// a line asking an approval.
 export const staleVerdict = (line) => {
   const s = String(line ?? '');
-  return /\bverdict\b/i.test(s) && !/\bnot clean\b/i.test(s)
+  if (/\bnot clean\b|approv/i.test(s)) return false;
+  const verdict = /\bverdict\b/i.test(s)
     && /\bno\b[^.]*\bverdict\b|\bnot (?:at )?the head\b|\bstale\b|\bold(?:-|\s+)format\b|\bolder (?:head|commit)\b|\boutdated\b|\blegacy\b|\b(?:cannot|could not|can't|does not|doesn't) (?:be )?(?:parse|read)|\bunparse|\bunrecogni[sz]/i.test(s);
+  return verdict || /\bno (?:[\w.-]+ ){0,2}review (?:at|for|on) |\breview\b[^.]*\bnot (?:at |for )?the head\b/i.test(s);
 };
 export const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 // The workflow runs on a commit, in the shape evaluateGate reads. Throws when gh cannot list them.
@@ -745,8 +752,14 @@ if (isMain) {
       const stateChecks = loadStateChecks(E);
       const runOf = (f) => checks.filter((x) => x.name === f.name && (!f.runId || x.runId === f.runId));
       const jobOf = (f) => runOf(f).map((x) => x.jobId).filter(Boolean).pop() ?? null;
-      const state = stateFailing(gate.failing, stateChecks).map((f) => ({ ...f, jobId: jobOf(f), startedAt: runOf(f).map((x) => x.startedAt).filter(Boolean).pop() ?? null,
-        why: failureMessage(repo, jobOf(f))?.slice(0, 300) ?? null }));
+      const whys = new Map();
+      const whyOf = (f) => {
+        const job = jobOf(f);
+        if (!whys.has(job)) whys.set(job, failureMessage(repo, job)?.slice(0, 300) ?? null);
+        return whys.get(job);
+      };
+      const state = stateFailing(gate.failing, stateChecks, whyOf).map((f) => ({ ...f, jobId: jobOf(f), startedAt: runOf(f).map((x) => x.startedAt).filter(Boolean).pop() ?? null,
+        why: whyOf(f) }));
       const toRerun = gate.failing.filter((f) => !state.some((s) => s.name === f.name));
       // A run holding a red state check as well as one red check to rerun: `--failed` would rerun the state
       // check too, so that check's job is rerun alone. With more than one (a job rerun puts the run in
