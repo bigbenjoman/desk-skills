@@ -84,7 +84,7 @@ starts again at one.
 before you stop on a round-3 P0 or P1 or any park, with what is fixed so far), mark each fixed finding
 `"fixed": true` in the round's results and print what
 `node <desk-review>/bin/verdict.mjs --findings <results> --reviewer self` prints, verbatim, in your
-reply (desk-review, *The round's findings line*).
+reply (desk-review Phase 6, *The round's findings line*).
 
 **Declining a confirmed finding is a deferral, and a deferral does not read as clean.** It keeps the
 verdict off §4 Clean review verdict (`desk-env get clean-verdict`), and where a required check reads the verdict, the gate blocks

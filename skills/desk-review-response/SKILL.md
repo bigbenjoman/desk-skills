@@ -86,7 +86,7 @@ the user, and the loop continues around them. Moving equivalent sites onto a hel
 creates or fixes is not growth. Migrate them all, or list each one under *Not migrated* in the PR
 body. Growth means new behaviour, not new call sites.
 
-Each round ends with its findings line, as desk-review's *The round's findings line* says, with
+Each round ends with its findings line, as desk-review's Phase 6 file (*The round's findings line*) says, with
 `--reviewer pr`: printed verbatim in your reply once that round's fixes are committed.
 
 Not ceremony: a review fix can carry a top-severity bug the original review never reached — a server-side gate

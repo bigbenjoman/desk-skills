@@ -106,7 +106,7 @@ three at Phase 3.
 | 3 | Find | `references/phase-3-find.md`, with `references/phase-5-requirements.md` and `references/phase-4-refute.md` |
 | 4 | Refute | `references/phase-4-refute.md` |
 | 5 | Requirements | `references/phase-5-requirements.md` (dispatched at Phase 3) |
-| 6 | Report | `references/phase-6-report.md` |
+| 6 | Report | `references/phase-6-report.md`; also each round's end, for its findings line |
 | 7 | Post | `references/phase-7-post.md`, after *The verdict* below |
 
 **A phase file you cannot read stops the review.** If the file for the phase you are starting is
@@ -285,25 +285,6 @@ With these markers §4 Clean review verdict for this skill is
 `p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0`.
 `deferred` earns its place: prose that opens "no findings" and defers one further down reads as clean
 to a human skimming and to any regex over the summary.
-
-### The round's findings line
-
-**When a round ends, print its findings line.** A round ends once its fixes are committed, or at once
-with none to make. A round that stops instead (a park, or a round-3 P0 or P1 left for the person or a
-fix try) prints its line before it stops, with what it has fixed so far. Mark each finding you fixed
-`"fixed": true` in that round's results file, then:
-
-```bash
-node ~/.agents/skills/desk-review/bin/verdict.mjs --findings <results> --reviewer <self|pr>
-```
-
-`self` for desk-ticket's Stage 4b, `pr` for a review of an open PR (desk-review-response's fix loop
-included). It prints one `AUTOPILOT_FINDINGS: {…}` line: the round, the reviewer, the head, the
-counts the verdict attests, how many were fixed, whether it was a targeted round carried past a base
-move, and who refuted. Copy it into your reply verbatim, at the start of a line and never in a code
-fence: an autopilot pass harvests it into the ticket's findings file, and records a round whose
-verdict it saw with no line as missing. Never write the line by hand. A verdict the pass carries to a
-rebased head without a round is recorded by the pass itself, `carried` true.
 
 ## Guardrails
 
