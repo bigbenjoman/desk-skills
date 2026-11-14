@@ -1981,7 +1981,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
 
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
-t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
+t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 11);
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);
