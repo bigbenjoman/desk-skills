@@ -63,8 +63,11 @@ import { appendFileSync, readFileSync } from 'node:fs';
 const e = process.env;
 appendFileSync('$T/intake.log', JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2), dir: e.DESK_REPO_DIR ?? null, state: e.DESK_AUTOPILOT_STATE ?? null, queue: e.DESK_QUEUE ?? null, write: e.AUTOPILOT_WRITE_QUEUE ?? null }) + '\n');
 const key = process.argv[3];
-if (readFileSync('$T/intake.mode', 'utf8').trim() === 'ok') {
+const mode = readFileSync('$T/intake.mode', 'utf8').trim();
+if (mode === 'ok') {
   console.log(JSON.stringify({ ran: true, lines: [\`admitted \${key} by plan-batch into batch the standing batch (lane A, size S)\`], admitted: [key], refused: [] }));
+} else if (mode === 'already') {
+  console.log(JSON.stringify({ ran: true, lines: [\`\${key} is already in batch web-1 (triaged)\`], admitted: [], refused: [] }));
 } else {
   console.log(JSON.stringify({ ran: true, lines: [\`not admitted \${key}: the queue is locked\`], admitted: [], refused: [key] }));
   process.exitCode = 11;
@@ -110,6 +113,23 @@ rec SV-3995 '' '[{"key": "SV-3994", "category": "done"}]'
 seed SV-3994 SV-3995
 check "AC3: a blocker in the other repo already Done holds nothing" '[ "$(qg SV-3995 .state)" = triaged ] && [ "$(qg SV-3995 .held_outside)" = null ]'
 rec SV-3995 '' '[{"key": "SV-3994", "category": "new"}]'
+
+# ---- AC2: already in one of the other repo's batches, it is where it belongs ----------------------------
+echo already > "$T/intake.mode"
+seed SV-3994 SV-3995
+check "AC2: a child the other repo already holds is said to be there, with no question" \
+  '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qF "  SV-3994 → acme/studia-web: SV-3994 is already in batch web-1 (triaged)" && ! printf "%s\n" "$out" | grep -q "NOT ADMITTED"'
+
+# ---- AC1/AC3: an epic's child already in this queue (epic-plan.mjs startEpic) is taken out at seeding ----
+echo ok > "$T/intake.mode"
+rm -f "$DESK_QUEUE" "$T/intake.log"; node "$B/queue.mjs" init "t$RANDOM" >/dev/null
+node "$B/queue.mjs" add SV-3994 Task A >/dev/null; node "$B/queue.mjs" park SV-3994 "held behind epic SV-3983" >/dev/null
+node "$B/queue.mjs" add SV-3995 Task A >/dev/null; node "$B/queue.mjs" park SV-3995 "held behind epic SV-3983" >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" SV-3994 SV-3995 2>&1); rc=$?
+check "AC1: a pre-admitted child of another repo is dropped from this queue and handed over" \
+  '[ $rc -eq 0 ] && [ "$(qg SV-3994 "")" = null ] && printf "%s\n" "$out" | grep -qF "taken out of this queue, since each runs in another repo: SV-3994" && [ "$(ilog .args[1])" = SV-3994 ]'
+check "AC3: its dependant here is held outside the batch on it" \
+  '[ "$(qg SV-3995 .held_outside)" = SV-3994 ] && [ "$(qg SV-3995 .state)" = parked ]'
 
 # ---- AC4: a Repository no configured repo has is asked about ----------------------------------------
 rec SV-3996 studia-mobile '[]'

@@ -423,6 +423,9 @@ function handOver(r) {
   try { out = JSON.parse(String(x.stdout ?? '').trim().split('\n').pop()); } catch { /* no report: the exit and stderr say why */ }
   const mine = (out?.lines ?? []).filter((l) => l.includes(r.ticket));
   if (x.status === 0 && out?.admitted?.includes(r.ticket)) return { ok: true, line: mine.find((l) => /^admitted /.test(l)) ?? `admitted ${r.ticket}` };
+  // Already in one of that repo's batches (its own intake, or a person, admitted it there first).
+  const there = mine.find((l) => l.startsWith(`${r.ticket} is already in batch `));
+  if (x.status === 0 && there) return { ok: true, line: there };
   const why = out?.error ?? mine.at(-1) ?? (x.error?.message || String(x.stderr ?? '').trim().split('\n').pop() || `intake.mjs exited ${x.status}`);
   return { ok: false, why, cmd };
 }
@@ -598,9 +601,17 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
   const spineIds = feature?.on ? feature.criteria.map((c) => c.id).filter((id) => feature.plan.owners?.[id] || !feature.plan.untestable?.[id]) : null;
   execFileSync('node', [QUEUE, 'set-batch', `feature=${feature?.on === true}`, `spine=${feature?.on ? feature.spine : 'null'}`,
     `spine_ids=${spineIds ? JSON.stringify(spineIds) : 'null'}`, `owners=${feature?.on ? JSON.stringify(feature.plan.owners ?? {}) : 'null'}`], { stdio: 'ignore' });
+  // An epic's children are in this queue before its plan is seeded (epic-plan.mjs startEpic): one that
+  // runs in another repo is taken out, or its dependants here would wait on it as an in-batch blocker.
+  let queued = {};
+  try { queued = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets ?? {}; } catch { /* no queue to take it out of */ }
+  const takenOut = [];
   for (const r of order) {
     const t = r.ticket;
-    if (elsewhere(r)) continue;
+    if (elsewhere(r)) {
+      if (queued[t]) { execFileSync('node', [QUEUE, 'drop', t], { stdio: 'ignore' }); takenOut.push(t); }
+      continue;
+    }
     execFileSync('node', [QUEUE, 'add', t, r.type ?? 'Bug', r.lane], { stdio: 'ignore' });
     const runnable = admitted.includes(r) && !held(t) && !designParked(r);
     const sets = [
@@ -629,6 +640,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     appendDecisions(taken.map(({ ticket, decision }) => decisionEntry({ decision, ticket, run: 'plan-batch', repo, source: 'triage' })), STATE);
   }
   say('\nqueue seeded.');
+  if (takenOut.length) say(`taken out of this queue, since each runs in another repo: ${takenOut.join(', ')}`);
   if (handed.length) say(`\nELSEWHERE — ${handed.length} ticket(s) admitted into the repo their Jira Repository names, not this queue:`);
   for (const r of handed) {
     const h = handOver(r);
