@@ -13,8 +13,8 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo } from './desk-env.mjs';
+import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, labelPark, stepLabel, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
+import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo, personStepLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { placement } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
@@ -66,9 +66,14 @@ const ours = records.filter((r) => !r.assignee || isOwner(r.assignee));
 // or a canvas not on the base, parks. A ticket sized L or XL parks too: it is to be split, not run
 // whole. Those parks always win over a dependency hold, so a release can never send one to a
 // headless worker.
-const laneOk = (r) => ['A', 'B', 'D', 'E'].includes(r.lane) && !needsPersonLane(r);
+// A ticket labelled as the person's own step (config §4 Person-step labels) parks on that whatever its
+// lane or size: no worker takes it, and a ticket it blocks merges after it instead of waiting on it.
+const STEP_LABELS = personStepLabels();
+const stepParked = (r) => labelPark(r, STEP_LABELS) !== null;
+const stepped = ours.filter(stepParked);
+const laneOk = (r) => !stepParked(r) && ['A', 'B', 'D', 'E'].includes(r.lane) && !needsPersonLane(r);
 const sizeParked = (r) => laneOk(r) && ['L', 'XL'].includes(String(r.size ?? '').toUpperCase());
-const parked = ours.filter(needsPersonLane);
+const parked = ours.filter((r) => !stepParked(r) && needsPersonLane(r));
 // A C or D whose challenge could not read the code is shown as unchecked and asked about.
 const unchecked = parked.filter(laneUnchecked);
 const failedReads = (r) => (r.lane_challenge?.failed_reads ?? []).join('; ') || 'none listed';
@@ -149,6 +154,7 @@ let otherLinks = 0;
 // held_outside key against the ticket's own links, and would read an inherited one as unlinked and
 // release it while it is still open.
 const outsideHolds = {};  // ticket -> blockers in no batch it is held behind
+const mergeAfter = {};    // ticket -> the person's steps it merges after (merge_after), built meanwhile
 const taken = [];         // {ticket, decision}: calls plan-batch takes on triage's judgement
 const judgement = permission('autopilot-judgement') === 'yes';
 const blockerNeed = (r, k) => {
@@ -173,7 +179,10 @@ for (const r of admitted) {
       seen.add(k);
       const br = byKey[k];
       if (br && admittedKeys.has(k)) holdBehind(t, k, 'Jira link');
-      else if (br) {
+      else if (b.category !== 'done' && (br ? stepParked(br) : stepLabel(b.labels, STEP_LABELS))) {
+        (mergeAfter[t] ??= []).push(k);
+        note(t, `built now, merged only once ${k} (your step) is Done`);
+      } else if (br) {
         const why = !ours.includes(br) ? `assigned to ${br.assignee}` : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
         ask(t, `${t} is blocked by ${k}, which this batch will not build (${why}): finish ${k} first, or confirm ${t} can start without it`);
       } else if (b.category === 'done') note(t, `blocker ${k} is done`);
@@ -400,7 +409,8 @@ if (notOurs.length) {
   for (const r of notOurs) say(`  ${r.ticket}: assigned to ${r.assignee}`);
 }
 
-const ticketVerdict = (r) => (laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
+const ticketVerdict = (r) => (stepParked(r) ? `PARK (${labelPark(r, STEP_LABELS)})`
+  : laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
   : needsPersonLane(r) ? `PARK (lane ${r.lane} — ${r.lane === 'D' ? `${designGap(r)}, so ` : ''}run manually)`
   : sizeParked(r) ? `PARK (size ${String(r.size).toUpperCase()} — split it before batching)`
   : designParked(r) ? `PARK (${designPark(r)})`
@@ -455,6 +465,10 @@ if (linted.length) {
 if (sized.length) {
   say(`\n${'='.repeat(60)}\nPARKED ON SIZE (${sized.length}) — L and XL are split before they are batched:`);
   for (const r of sized) say(`  ${r.ticket}: size ${String(r.size).toUpperCase()}`);
+}
+if (stepped.length) {
+  say(`\n${'='.repeat(60)}\nYOUR STEPS (${stepped.length}) — labelled as your own step (config §4 Person-step labels), so no worker spawns on them:`);
+  for (const r of stepped) say(`  ${r.ticket}: labelled ${stepLabel(r.labels, STEP_LABELS)}`);
 }
 if (undesigned.length) {
   say(`\n${'='.repeat(60)}\nPARKED ON DESIGN (${undesigned.length}) — snapshot each artifact before any worker starts:`);
@@ -554,10 +568,11 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `open_questions=${laneOk(r) ? qsOf(r).length : (r.unknowns ?? []).length}`,
       `held_by=${held(t) ? holdsOf(t).join('|') : 'null'}`,
       `held_outside=${outsideHolds[t]?.length ? outsideHolds[t].join('|') : 'null'}`,
+      `merge_after=${mergeAfter[t]?.length ? mergeAfter[t].join('|') : 'null'}`,
       `location=${placed[t].where === 'cloud' ? 'cloud' : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
-    const park = lanePark(r)
+    const park = labelPark(r, STEP_LABELS) ?? lanePark(r)
       ?? (sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
       : designParked(r) ? designPark(r)
       : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — ${cycleFix(onCycle.get(t))}`
@@ -587,7 +602,7 @@ const needsPerson = [
   ...parked.filter((r) => r.lane_challenge?.verdict !== 'CONFIRM').map((r) => (laneUnchecked(r)
     ? { ticket: r.ticket, why: 'challenge_inconclusive', detail: `lane ${r.lane} is unchecked, reads failed: ${failedReads(r)}` }
     : { ticket: r.ticket, why: 'challenge_not_run', detail: `lane ${r.lane} is unreviewed: ${r.lane_challenge?.reason ?? 'no challenge recorded'}` })),
-  ...[...parked, ...sized, ...undesigned, ...cycled].map((r) => ({ ticket: r.ticket, why: 'parked', detail: ticketVerdict(r) })),
+  ...[...stepped, ...parked, ...sized, ...undesigned, ...cycled].map((r) => ({ ticket: r.ticket, why: 'parked', detail: ticketVerdict(r) })),
   ...(feature?.on && !feature.filed ? [{ ticket: batchEpic, why: 'feature_plan',
     detail: feature.plan ? 'approve the drafted spine and owner table, then file the spine under the epic and plan it with the rest' : `draft the spine and the owner table into ${featurePath}, then re-run plan-batch` }] : []),
 ];

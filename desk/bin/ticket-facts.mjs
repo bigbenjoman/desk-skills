@@ -13,9 +13,10 @@
 // stderr with exit 1; pass.mjs runs this for every unfinished ticket whose record has no `epic` key.
 //
 // Adds, for a tracker key:
-//   blockers     [{key, category, summary, type}] — "is blocked by" (Blocks) links, with the blocker's
-//                status category, summary and issue type, less any to its own epic (its parent epic
-//                or the batch's), which can never be Done before it
+//   blockers     [{key, category, summary, type, labels?}] — "is blocked by" (Blocks) links, with the
+//                blocker's status category, summary and issue type, and an open one's labels where §4
+//                Person-step labels names any, less any to its own epic (its parent epic or the
+//                batch's), which can never be Done before it
 //   own_epic_blockers  [key] — those links to its own epic, ignored; absent when there are none
 //   other_links  how many links of another type (not Blocks, not Relates) were ignored
 //   size         XS|S|M|L|XL from the field named "Size", else a first description line "Size: M", else null
@@ -32,7 +33,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { ghRepo, queueFile, stateDir, ticketKind } from './desk-env.mjs';
+import { ghRepo, queueFile, stateDir, ticketKind, personStepLabels } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 import { baseRef, designFact } from './desk-design.mjs';
 import { SIZES, epicFact, blockersFact, splitOwnEpic, queueEpic } from './desk-q-eta.mjs';
@@ -41,8 +42,16 @@ const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').po
 const jira = (args) => JSON.parse(execFileSync('desk-jira', [...args, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }));
 
 // `blockers` from the issue, less a link to the ticket's own epic, which is kept as own_epic_blockers.
+// Where §4 Person-step labels names any, each open blocker is read for its labels too (a link carries
+// none), so personStep can tell a blocker labelled as the person's step; one that cannot be read gets
+// no labels and holds as an ordinary blocker.
 function setBlockers(rec, issue) {
   const { blockers, own } = splitOwnEpic(blockersFact(issue), epicFact(issue, null)?.key, queueEpic(queueFile()));
+  if (personStepLabels().length) {
+    for (const b of blockers.filter((x) => x.category !== 'done')) {
+      try { const l = jira(['get', b.key]).fields?.labels; if (Array.isArray(l)) b.labels = l.map(String); } catch { /* read as unlabelled */ }
+    }
+  }
   rec.blockers = blockers;
   if (own.length) rec.own_epic_blockers = own;
   else delete rec.own_epic_blockers;

@@ -88,6 +88,12 @@ cat > "$T/fixture.json" <<'EOF'
     "KAN-53": {"description": "Size: M\nThe rest of the body."},
     "KAN-56": {"parent": {"key": "KAN-10", "fields": {"summary": "Epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}}}},
     "KAN-57": {"parent": {"key": "KAN-14", "fields": {"summary": "container", "issuetype": {"name": "Story", "hierarchyLevel": 0}}}},
+    "KAN-58": {"issuelinks": [
+                 {"id": "25", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                  "inwardIssue": {"key": "KAN-59", "fields": {"summary": "Rebuild the images on production", "issuetype": {"name": "Story"}, "status": {"name": "To Do", "statusCategory": {"key": "new"}}}}},
+                 {"id": "26", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                  "inwardIssue": {"key": "KAN-51", "fields": {"summary": "Apply the migration", "issuetype": {"name": "Task"}, "status": {"name": "Done", "statusCategory": {"key": "done"}}}}}]},
+    "KAN-59": {"labels": ["ben-step", "operator-task"]},
     "KAN-1100": {"summary": "epic with a definition of done", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
                  "description": "h2. Outcome\nA feature.\n\nh2. Definition of done\n# DoD1: Given a, then b.\n# DoD2: Given c, then d.\n# DoD1: named twice\n\nh2. Acceptance criteria\n# AC1: not read while a DoD exists"},
     "KAN-1110": {"summary": "epic with acceptance criteria only", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
@@ -325,6 +331,18 @@ check "facts: a parent epic is recorded with its key, summary and this repo's ch
 rec KAN-57 '{"ticket":"KAN-57","lane":"A","branch":"b"}'
 node "$B/ticket-facts.mjs" KAN-57 >/dev/null 2>&1
 check "facts: a parent that is not an epic records none" '[ "$(jq -c .epic "$T/state/triage/KAN-57.json")" = null ]'
+# DS-568 AC2: a link carries no labels, so each open blocker is read for them where §4 Person-step
+# labels names any; a Done one is not read.
+printf '| Person-step labels | `ben-step` |\n' >> "$CD/config.md"
+rec KAN-58 '{"ticket":"KAN-58","lane":"A","branch":"b"}'
+node "$B/ticket-facts.mjs" KAN-58 >/dev/null 2>&1
+check "DS-568 AC2: facts record an open blocker's labels, read from the blocker itself, and not a Done one's" \
+  '[ "$(jq -c "[.blockers[] | [.key, .labels]]" "$T/state/triage/KAN-58.json")" = "[[\"KAN-59\",[\"ben-step\",\"operator-task\"]],[\"KAN-51\",null]]" ]'
+node "$B/ticket-facts.mjs" --blockers KAN-58 >/dev/null 2>&1
+check "DS-568 AC2: a blockers refresh reads them again" '[ "$(jq -c ".blockers[0].labels" "$T/state/triage/KAN-58.json")" = "[\"ben-step\",\"operator-task\"]" ]'
+mkcfg "http://127.0.0.1:$PORT" yes
+node "$B/ticket-facts.mjs" KAN-58 >/dev/null 2>&1
+check "DS-568 AC3: with no Person-step labels row, no blocker is read for labels" '[ "$(jq -c "[.blockers[] | has(\"labels\")]" "$T/state/triage/KAN-58.json")" = "[false,false]" ]'
 rec KAN-404 '{"ticket":"KAN-404","lane":"A","branch":"b"}'
 out=$(node "$B/ticket-facts.mjs" KAN-404 2>&1); rc=$?
 check "facts: a failed read is recorded, not empty blockers" '[ "$(jq -r ".facts_error|type" "$T/state/triage/KAN-404.json")" = string ] && [ "$(jq -r ".blockers|type" "$T/state/triage/KAN-404.json")" = null ]'
@@ -419,6 +437,29 @@ node "$B/queue.mjs" init t2 >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-202 KAN-201 P1-5 2>&1); rc=$?
 check "regression: no links -> all triaged, argument order kept, no deps" \
   '[ $rc -eq 0 ] && [ "$(jq -r ".tickets|keys_unsorted|join(\" \")" "$DESK_QUEUE")" = "KAN-202 KAN-201 P1-5" ] && [ "$(jq -r "[.tickets[].state]|unique|join(\",\")" "$DESK_QUEUE")" = triaged ] && ! printf "%s" "$out" | grep -q -- "--deps"'
+
+# DS-568: a ticket labelled as the person's step (§4 Person-step labels) parks on it whatever its lane,
+# and a ticket it blocks, in the batch or out of it, is built now and merged after it.
+rm -f "$T/state/triage/"*.json "$T/state/expansion.json"
+printf '| Person-step labels | `ben-step` `operator-task` |\n' >> "$CD/config.md"
+r KAN-451 C '[]' '"labels":["Ben-Step"]'
+r KAN-452 A "[$(nb KAN-451)]"
+r KAN-453 A '[{"key":"KAN-990","category":"new","labels":["operator-task"]}]'
+r KAN-454 A '[]' '"labels":["frontend"]'
+node "$B/queue.mjs" init s568 >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-451 KAN-452 KAN-453 KAN-454 2>&1); rc=$?
+check "DS-568 AC1: plan-batch parks a ticket labelled as the person's step, whatever its lane, and lists it for the person" \
+  '[ $rc -eq 11 ] && [ "$(qg KAN-451 .state)" = parked ] && [[ "$(qg KAN-451 .park.question)" == "the person'\''s step: labelled Ben-Step"* ]] && printf "%s" "$out" | grep -q "^YOUR STEPS (1)" && printf "%s" "$out" | grep -q "^KAN-451  lane C .*PARK (the person"'
+check "DS-568 AC2: plan-batch builds a ticket blocked by it now, merging it after, with no question" \
+  '[ "$(qg KAN-452 .state)" = triaged ] && [ "$(qg KAN-452 .held_by)" = null ] && [ "$(qg KAN-452 .merge_after)" = KAN-451 ] && [ "$(qg KAN-452 .open_questions)" = 0 ]'
+check "DS-568 AC2: a blocker in no batch carrying the label is a person'\''s step too" \
+  '[ "$(qg KAN-453 .state)" = triaged ] && [ "$(qg KAN-453 .merge_after)" = KAN-990 ] && [ "$(qg KAN-453 .open_questions)" = 0 ]'
+check "DS-568 AC3: a ticket with another label is planned as before" '[ "$(qg KAN-454 .state)" = triaged ] && [ "$(qg KAN-454 .merge_after)" = null ]'
+mkcfg "http://127.0.0.1:$PORT" yes
+node "$B/queue.mjs" init s568b >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-451 KAN-452 2>&1); rc=$?
+check "DS-568 AC3: with no Person-step labels row, the labelled ticket is parked by its lane and its successor asked about, as before" \
+  '[[ "$(qg KAN-451 .park.question)" == "lane C"* ]] && [ "$(qg KAN-452 .merge_after)" = null ] && [ "$(qg KAN-452 .open_questions)" = 1 ]'
 
 # An INCONCLUSIVE lane challenge (its code reads failed) shows the lane as unchecked and asks the user.
 rm -f "$T/state/triage/"*.json "$T/state/expansion.json"

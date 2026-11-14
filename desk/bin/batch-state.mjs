@@ -375,12 +375,31 @@ export function lanePark(r) {
     : `lane ${r.lane} — ${why.slice(0, 160)}`;
 }
 
+// The first of `labels` that §4 Person-step labels names (`stepLabels`, lowercased), or null.
+export function stepLabel(labels, stepLabels = []) {
+  const want = new Set((stepLabels ?? []).map((s) => String(s).trim().toLowerCase()).filter(Boolean));
+  return want.size ? (Array.isArray(labels) ? labels : []).find((l) => want.has(String(l).trim().toLowerCase())) ?? null : null;
+}
+
+// The park for a ticket labelled as the person's own step (its triage record's `labels`), or null. It is
+// admitted parked on it, beside lanePark and designPark, so no worker spawns and Needs you lists it; a
+// ticket it blocks merges after it (merge_after) rather than waiting to build.
+export const PERSON_STEP_PREFIX = "the person's step: ";
+export function labelPark(r, stepLabels = []) {
+  const l = stepLabel(r?.labels, stepLabels);
+  return l ? `${PERSON_STEP_PREFIX}labelled ${l} (config §4 Person-step labels), so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
+}
+export const personStepPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(PERSON_STEP_PREFIX);
+
 // Whether blocker `b` (a triage record's `blockers` entry) is a step only the person takes, such as a
 // migration applied or a sign-off: a Task whose summary says apply, confirm or sign off, or one whose
 // summary names a step the blocked ticket's triage record `rec` lists in ben_steps. Open and in no
 // batch, it holds the blocked ticket's merge, not its build (merge_after).
+// A blocker carrying one of §4 Person-step labels (`stepLabels`, desk-env.mjs personStepLabels; its
+// labels are read by ticket-facts.mjs) is one whatever its summary says.
 const STEP_WORDS = /\b(appl(?:y|ies|ied)|confirm(?:s|ed)?|sign(?:s|ed)?[- ]?off)\b/i;
-export function personStep(b, rec = null) {
+export function personStep(b, rec = null, stepLabels = []) {
+  if (stepLabel(b?.labels, stepLabels)) return true;
   const summary = String(b?.summary ?? '').trim().toLowerCase();
   if (!summary) return false;
   const named = (Array.isArray(rec?.ben_steps) ? rec.ben_steps : [])
