@@ -85,6 +85,7 @@ import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } fro
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
 import { followOnPending } from './harvest.mjs';
+import { saveAnswer } from './briefing.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -961,15 +962,17 @@ function queueCmd(r, args) {
 }
 
 // A ticket a pass moved on since it was listed: an answer or resume with text is kept in its briefing
-// for its next worker, leaving its queue state as it is, while it can still spawn one (not merged, and
-// not done without a PR). Anything else records nothing.
+// for its next worker, while it can still spawn one (not merged, and not done without a PR). Anything
+// else records nothing. Only the briefing is written, never through answer.mjs: its mailbox would
+// answer a running worker's next park before it is asked, and its queue writes would take back a
+// grant the requeue was made for.
 function movedOn(r, ticket, verb, text, now) {
   const t = r.q?.tickets?.[ticket];
   const spent = !t || !!t.merged_at || prStatusOf(t)?.state === 'MERGED' || (t.state === 'done' && t.result?.pr == null);
   if (spent || !['answer', 'resume'].includes(verb) || !text.trim()) return { ok: false, line: `${r.name} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
-  const a = answer({ slug: r.slug, ticket, text, list: digestList(r), now: new Date(now) });
-  return a.ok ? { ok: true, line: `${r.name} ${ticket}: no longer waiting on you; your answer is saved in its briefing for its next worker.` }
-    : { ok: false, line: `${r.name} ${ticket}: no longer waiting on you, and your answer was not saved: ${a.why}` };
+  try { saveAnswer(r.stateDir, ticket, text.trim(), new Date(now).toISOString()); }
+  catch (e) { return { ok: false, line: `${r.name} ${ticket}: no longer waiting on you, and your answer was not saved: ${one(e.message)}` }; }
+  return { ok: true, line: `${r.name} ${ticket}: no longer waiting on you; your answer is saved in its briefing for its next worker.` };
 }
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
