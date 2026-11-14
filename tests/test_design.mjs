@@ -127,7 +127,7 @@ t('DS-382 AC4 matchStories: title and name pick the story', `${matched[1].story.
 t('DS-382 AC4 matchStories: the title\'s last segment and the name', matched[2].story?.id, 'press-kit-hero--wide');
 t('DS-382 AC5 matchStories: a board no story matches', `${matched[3].story} ${matched[3].by}`, 'null null');
 t('v3 save: README lists every board', read(join(rv3, DIR, 'PM-2/README.md')).includes('| Landscape | 390px | project/Landscape.dc.html |'), true);
-// DS-658 AC3: nothing loads from another host, so the boards render offline.
+// Nothing loads from another host, so the boards render offline.
 t('DS-658 AC3 save: README says a canvas loading nothing remote renders offline', read(join(rv3, DIR, 'PM-2/README.md')).includes('Open any board\'s HTML from `project/`: it renders offline with the files saved beside it.'), true);
 t('v3 save: source.json records the saved paths', JSON.stringify(sv3.files), JSON.stringify(cv3.files));
 t('v3 save: the saved folder reads back with nothing missing', collect(join(rv3, DIR, 'PM-2')).missing.length, 0);
@@ -160,7 +160,7 @@ t('save: an unreferenced file is not copied', existsSync(join(r1, DIR, 'DS-50/pr
 t('save: source.json records the files', json(join(r1, DIR, 'DS-50/source.json')).files.length, 6);
 t('save: README written', read(join(r1, DIR, 'DS-50/README.md')).includes('| DS-51 |'), true);
 
-// DS-658: the README names the boards' folder, and what they load from the network.
+// The README names the boards' folder, and what they load from the network.
 const r658 = repo('r658');
 const s658 = snapshot(join(T, 's658'));
 put(join(s658, 'project/support.js'), [
