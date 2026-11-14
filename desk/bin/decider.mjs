@@ -32,6 +32,8 @@ import { recommendedAnswer } from './recoveries.mjs';
 export const DECIDER_TIMEOUT_MS = 15 * 60 * 1000;
 export const DECIDER_EFFORT = 'low';
 export const RESULT_MARK = 'DECIDER_RESULT:';
+// How every decider prompt starts, which is how cache-report.mjs tells its transcripts apart.
+export const DECIDER_OPENING = 'You are the autopilot decider for ';
 
 const h = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 12);
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
@@ -277,7 +279,7 @@ export function deciderPrompt({ slug, report, items, rules, bin, state = null, w
     '  A park with no option marked recommended, one in an ask category, one a session has claimed, one naming a config §3 row that is not `yes`, one asking what its last requeue\'s park asked, or one either command refuses: hand it on',
   ] : [];
   return [
-    `You are the autopilot decider for ${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
+    `${DECIDER_OPENING}${slug}. A pass has just exited needing the person, and nobody is reading: settle what the recovery rules below let the orchestrator do without asking, and hand everything else to the check-in digest. You cannot ask anything.`,
     '',
     'What you may do, and nothing else:',
     `- requeue a ticket whose worker parked asking for more agent work, on lane A, B, D or E:\`node ${join(bin, 'queue.mjs')} requeue <TICKET>\``,
@@ -325,7 +327,8 @@ export function startDecider({ state, slug, bin, report, items, rules, webRead =
   const fd = openSync(out, 'w');
   const child = spawn(claude, ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
     '--permission-mode', 'dontAsk', '--settings', settings, '--add-dir', state, '--effort', DECIDER_EFFORT], {
-    cwd, env, detached: true, stdio: ['ignore', fd, fd],
+    // One short session: the 5-minute prompt cache costs less to write than the 1-hour one.
+    cwd, env: { ...env, FORCE_PROMPT_CACHING_5M: '1' }, detached: true, stdio: ['ignore', fd, fd],
   });
   closeSync(fd);
   child.on('error', () => {});

@@ -510,5 +510,19 @@ check "DS-597 AC3: the decider may Read, Grep and Glob the state folder and noth
 check "DS-597 AC4: the read line names Read, Grep and Glob on the state folder and says each command runs alone" \
   'grep -qF "files in the batch state directory ($T/q597) with the Read, Grep and Glob tools only. Run each allowed command on its own: no \`cd\`, pipe or \`;\`, which are refused" <<< "$out"'
 
+# DS-649 AC2: the decider's session asks for the 5-minute prompt cache, and the caller's env is left as it was.
+printf '#!/bin/sh\nprintf "%%s" "${FORCE_PROMPT_CACHING_5M-unset}" > "%s/cache.seen"\n' "$T" > "$T/fakes/cache-claude"
+chmod +x "$T/fakes/cache-claude"
+out=$(cd "$T/repo" && node --input-type=module -e "
+import { existsSync, readFileSync } from 'node:fs';
+const { startDecider } = await import('$B/decider.mjs');
+const env = { PATH: process.env.PATH, HOME: process.env.HOME };
+const before = JSON.stringify(env);
+const rec = startDecider({ state: '$T/state', slug: 'acme__widgets', bin: '$B', report: '', items: [], rules: '', cwd: process.cwd(), env, claude: '$T/fakes/cache-claude' });
+for (let i = 0; rec && !existsSync('$T/cache.seen') && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
+console.log(readFileSync('$T/cache.seen', 'utf8'), JSON.stringify(env) === before);
+" 2>&1)
+check "DS-649 AC2: the decider runs with FORCE_PROMPT_CACHING_5M=1, the caller's env unchanged" '[ "$out" = "1 true" ]'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

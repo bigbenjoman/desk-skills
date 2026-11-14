@@ -267,6 +267,8 @@ case "$CALL_LOGIN" in
   default) unset CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
   *) export CLAUDE_CONFIG_DIR="$CALL_LOGIN"; unset ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
 esac
+# Both passes end within minutes, so they write the 5-minute prompt cache, cheaper than the 1-hour one.
+export FORCE_PROMPT_CACHING_5M=1
 
 cd "$MAIN"
 # An earlier triage's record would read as this pass's, and hide a pass that wrote nothing.
