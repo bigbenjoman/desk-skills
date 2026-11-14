@@ -54,6 +54,7 @@ if [ "$1" = auth ]; then printf '{"loggedIn":true,"email":"%s@example.com"}\n' "
 n=$(ls "$STUB_LOG".* 2>/dev/null | wc -l | tr -d ' ')
 printf '%s\0' "$@" > "$STUB_LOG.$n"
 [ -z "${STUB_LOGINS:-}" ] || printf '%s\n' "${CLAUDE_CONFIG_DIR-unset}" >> "$STUB_LOGINS"
+[ -z "${STUB_CACHE:-}" ] || printf '%s\n' "${FORCE_PROMPT_CACHING_5M-unset}" >> "$STUB_CACHE"
 # Call STUB_LIMIT is refused at the weekly limit (its reset left out with STUB_NO_RESET); call STUB_NOREC
 # writes nothing and talks, as any other failure would.
 if [ "${STUB_LIMIT:-}" = "$n" ]; then
@@ -425,6 +426,13 @@ bench "$A_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/login
 out=$(STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-468 AC8: with no subscriptions file, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
 rm -f "$T/queue.json" "$T/logins" "$T/subs.md"; rm -rf "$T/home/.claude-logins"
+
+# DS-649 AC1: both passes ask for the 5-minute prompt cache.
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/cache"
+out=$(FORCE_PROMPT_CACHING_5M= STUB_CACHE="$T/cache" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-649 AC1: the first pass and the challenge each run with FORCE_PROMPT_CACHING_5M=1" \
+  '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/cache")" = "1 1 " ]'
+rm -f "$T/cache"
 
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'
