@@ -231,7 +231,8 @@ t('--reason with no text is refused', setErr(['test-lock-slots=3', '--reason'], 
 t('a refused size stores nothing', readFileSync(ov, 'utf8') === ovBefore, true);
 t('clearing a size that is no override is refused', setErr(['test-cap='], ov), 'exit 1: nothing written: `test-cap` holds no override to clear');
 t('machine set test-lock-slots=3 is written', setErr(['test-lock-slots=3', '--reason', 'measured: 3 suites fit'], ov), 'exit 0');
-t('the override reads back', `${env(['machine', 'get', 'test-lock-slots'], absent, ov)} | ${env(['machine', 'why', 'test-lock-slots'], absent, ov)}`, '3 | override: measured: 3 suites fit');
+t('machine set reads the override back from the file', env(['machine', 'set', 'test-lock-slots=3', '--reason', 'measured: 3 suites fit'], absent, ov).split('\n').pop(), '  test-lock-slots: 3 (override: measured: 3 suites fit)');
+t('the override reads back',`${env(['machine', 'get', 'test-lock-slots'], absent, ov)} | ${env(['machine', 'why', 'test-lock-slots'], absent, ov)}`, '3 | override: measured: 3 suites fit');
 t('with no reason, the override says it was set by hand', `${setErr(['test-cap=6'], ov)} ${env(['machine', 'why', 'test-cap'], absent, ov)}`, 'exit 0 override: set by hand with desk-env machine set');
 const ovProfile = parseProfile(readFileSync(ov, 'utf8'));
 t('the bench rows beside the override are kept', `${ovProfile.sizing['bench-cap-points']?.value} ${Object.keys(ovProfile.sizing).filter((k) => k === 'test-lock-slots').length}`, '10 1');

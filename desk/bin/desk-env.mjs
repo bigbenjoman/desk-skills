@@ -2314,6 +2314,9 @@ if (isMain) {
           // still offers the whole proposal.
           const text = existsSync(path) ? readFileSync(path, 'utf8') : M.BENCH_ONLY_PROFILE;
           console.log(writeWithBackup(path, M.setSizingRows(text, rows)));
+          // Read back from the written file, so what prints is what the readers will get.
+          const stored = M.readProfile(path)?.sizing ?? {};
+          for (const r of rows) console.log(stored[r.key] ? `  ${r.key}: ${stored[r.key].value} (${stored[r.key].why})` : `  ${r.key}: removed`);
           break;
         }
         const hw = M.gather();
