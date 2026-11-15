@@ -2035,16 +2035,60 @@ const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${
 // workers and ready tickets, a zero grey. A repo whose row cannot be read shows a grey dash.
 const R_REPO = 16, R_RUNS = 28, R_SET = 13, R_WORKERS = 9, R_READY = 8;
 const repoUseHead = () => bold(`  ${pad('REPO', R_REPO)}${pad('RUNS ON', R_RUNS)}${pad('SET', R_SET)}${rpad('WORKERS', R_WORKERS)}${rpad('READY', R_READY)}`);
-function repoUseRow(x) {
+function repoUseRow(x, open = false) {
   const s = x.sub;
   const on = s ? (s.login ? loginLabel(s.login) : s.email) : null;
-  const runs = on ? [[cut(on, R_RUNS - 3), null], [' ▾', GREY]] : [['—', GREY]];
+  const runs = on ? [[cut(on, R_RUNS - 3), null], open ? [' ▴', HUE.blue] : [' ▾', GREY]] : [['—', GREY]];
   const set = !s ? ['—', GREY] : s.source === 'default' ? ['○ default', GREY] : ['● pinned', HUE.blue];
   const n = (v) => [String(v), v ? null : GREY];
   const segs = [['  ', null], ...fitCell([[cut(x.name, R_REPO - 1), null]], R_REPO), ...fitCell(runs, R_RUNS), ...fitCell([set], R_SET),
     ...fitCell([n(x.workers)], R_WORKERS, true), ...fitCell([n(x.ready)], R_READY, true)];
   return { id: `repo ${x.slug}`, segs: segs.filter(([t]) => t), line: segText(segs), repo: x };
 }
+
+// A repo's subscription dropdown: Default (following `def`, the default's email), then each Claude
+// subscription desk knows the email of, with its plan and both windows. ✓ marks the repo's choice now
+// (`mark`, -1 with none), and `at` the option ↑↓ is on, null until moved, ↑↓ moving from the ✓ one.
+//   -> { slug, name, sub, def, options, mark, at, now }
+function repoDropdown(x, claude, at, now) {
+  const def = claude.find((c) => c.use?.isDefault);
+  const defEmail = def ? loginLabel(def.login) : null;
+  const pinned = x.sub?.source === 'default' ? null : x.sub?.email?.toLowerCase() ?? null;
+  const options = [{ value: 'default', label: 'Default', current: x.sub?.source === 'default', def: defEmail },
+    ...claude.filter((c) => accountOf(c.login).email).map((c) => {
+      const email = accountOf(c.login).email;
+      return { value: email, label: email, current: email.toLowerCase() === pinned, plan: c.plan, reading: c.reading };
+    })];
+  const mark = options.findIndex((o) => o.current);
+  return { slug: x.slug, name: x.name, sub: x.sub, def: defEmail, options, mark, at: at == null ? null : Math.max(0, Math.min(options.length - 1, at)), now };
+}
+// The dropdown's lines, boxed in blue under the RUNS ON column, and the line of keys under the box.
+const DROP_IN = 2 + R_REPO, DROP_W = 58;
+function dropdownRows(d) {
+  const lead = [' '.repeat(DROP_IN), null];
+  const edge = (l, r) => ({ segs: [lead, [`${l}${'─'.repeat(DROP_W)}${r}`, HUE.blue]], line: `${lead[0]}${l}${'─'.repeat(DROP_W)}${r}` });
+  const pct = (o, k) => {
+    const r = o.reading;
+    return r?.at == null || r.none?.includes(k) ? '—' : `${windowUse(r[k] ?? { utilization: 0, resetsAt: 0 }, d.now).pct}%`;
+  };
+  const option = (o, i) => {
+    const on = i === d.at;
+    const k = (base) => (!on ? base : base === BOLD ? OPT_BOLD : base === GREY ? OPT_GREY : OPT_ON);
+    const name = [[cut(o.label, 23), k(on ? BOLD : null)], ...(o.current ? [[' ✓', GOOD]] : [])];
+    const rest = o.value === 'default' ? fitCell([[o.def ? `→ ${o.def}` : '', k(GREY)]], 28)
+      : [...fitCell([[o.plan ?? '—', k(o.plan ? null : GREY)]], 9),
+        ...fitCell([['5h ', k(GREY)], [pct(o, 'five_hour'), k(null)], [' · 7d ', k(GREY)], [pct(o, 'seven_day'), k(null)]], 19)];
+    const inner = [[' ', k(null)], ...fitCell([[on ? '›' : String(i + 1), k(on ? BOLD : GREY)]], 2), ...fitCell(name, 26), ...rest, [' ', k(null)]]
+      .map(([s, c]) => [s, c ?? (on ? OPT_ON : null)]);
+    const segs = [lead, ['│', HUE.blue], ...inner, ['│', HUE.blue]];
+    return { segs: segs.filter(([s]) => s), line: segText(segs), opt: i };
+  };
+  const n = d.options.length;
+  const keys = [lead, [' ✓', GOOD], [' now · ', GREY], [n > 1 ? `1-${n}` : '1', BOLD], [' or ', GREY], ['↑↓ enter', BOLD], [' choose · ', GREY], ['esc', BOLD], [' close', GREY]];
+  return [edge('┌', '┐'), ...d.options.map(option), edge('└', '┘'), { segs: keys, line: segText(keys) }];
+}
+// The grey line under the repo table, saying how to change a repo's subscription.
+const repoHint = () => segLine([['  Select a repo and press ', GREY], ['enter', BOLD], [', or click its subscription, to change which one it runs on.', GREY]]);
 
 // The line under the tabs: a login that is signed out, which desk can't use; else with one login per
 // tool, that every worker runs on it; else the Claude default, which every repo not pinned runs on.
@@ -2093,7 +2137,7 @@ function addPanel(a, t, w) {
 // per login; then with one login per tool an offer to add one, a note per signed-out login and for logins
 // with no reading, and when they were read. While a login is being added (`adding`), its row waits,
 // unused, and the foot says how to sign it in. `following` names the repos on the Claude default.
-function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null } = {}) {
+function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null, drop = null } = {}) {
   const u = usageTable(repos, now, checked);
   const t = { claude: u.claude.filter((x) => !isAdding(adding, x)), codex: u.codex.filter((x) => !isAdding(adding, x)) };
   const solid = solidBars(width);
@@ -2103,8 +2147,12 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     return list.length || waiting.length ? [tableHead(name), ...list.map((x) => loginRow(x, now, solid)), ...waiting] : [];
   };
   const claudeRows = table('SUBSCRIPTION', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
-  // The repos sit under the subscriptions they run on, so ↓ from the last subscription selects the first repo.
-  const repoRows = u.repos.length ? [repoUseHead(), ...u.repos.map(repoUseRow)] : [];
+  // The repos sit under the subscriptions they run on, so ↓ from the last subscription selects the first
+  // repo. A repo whose dropdown is open has it under its row, in place of the hint under the table.
+  const x = !adding && drop ? u.repos.find((r) => r.slug === drop.slug) : null;
+  const d = x ? repoDropdown(x, t.claude, drop.at, now) : null;
+  const repoRows = u.repos.length
+    ? [repoUseHead(), ...u.repos.flatMap((r) => (r === x ? [repoUseRow(r, true), ...dropdownRows(d)] : [repoUseRow(r)])), ...(d || adding ? [] : [repoHint()])] : [];
   const rows = [claudeRows, repoRows, codexRows].filter((b) => b.length).flatMap((b, i) => [...(i ? [{ line: '' }] : []), ...b]);
   const following = u.following;
   if (adding) return { head: [usageHeadline(t), ''], rows, foot: ['', ...addPanel(adding, t, w)], following };
@@ -2127,7 +2175,7 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   const read = all.map((x) => x.reading?.at).filter((a) => a != null);
   const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.` : '  No login has a reading yet.');
   const blocks = [key, notes.length ? noteLines(notes, 14, w) : [], [readLine]].filter((b) => b.length);
-  return { head: [usageHeadline(t), ''], rows, foot: blocks.flatMap((b) => ['', ...b]), following };
+  return { head: [usageHeadline(t), ''], rows, foot: blocks.flatMap((b) => ['', ...b]), following, drop: d };
 }
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
@@ -3180,11 +3228,13 @@ function systemCopier(text, out = null) {
   throw new Error(`no clipboard command (${tries.map(([b]) => b).join(', ')}) worked`);
 }
 
-// `desk-env logins <args>` in the background, so a check that calls each login's CLI, or a rule change
-// that checks first, never holds the screen. done({ code, out, err }).
+// `desk-env logins <args>` (or `subscription <args>`) in the background, so a check that calls each
+// login's CLI, or a rule change that checks first, never holds the screen. done({ code, out, err }).
 const DESK_ENV_MJS = join(dirname(fileURLToPath(import.meta.url)), 'desk-env.mjs');
-function deskEnvLogins(args, done) {
-  const p = spawn(process.execPath, [DESK_ENV_MJS, 'logins', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+const deskEnvLogins = (args, done) => deskEnvRun(['logins', ...args], done);
+const deskEnvSubscription = (args, done) => deskEnvRun(['subscription', ...args], done);
+function deskEnvRun(args, done) {
+  const p = spawn(process.execPath, [DESK_ENV_MJS, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '', err = '';
   p.stdout.on('data', (d) => { out += d; });
   p.stderr.on('data', (d) => { err += d; });
@@ -3204,9 +3254,11 @@ const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t
 // The selected row's background: on a dark theme 256-colour 236, a tint dark enough that grey 247 and
 // every state colour keep 4.5:1 on it; on a light theme 254, on which grey 240 keeps it.
 const SELECT_BG = LIGHT ? '48;5;254' : '48;5;236';
+// The chosen option in a dropdown, on the selection's tint: plain, bold and grey.
+const OPT_ON = SELECT_BG, OPT_BOLD = `1;${SELECT_BG}`, OPT_GREY = `${GREY};${SELECT_BG}`;
 // What undoes each code that sets more than a colour; a colour alone is undone by 39, and a dimmed
 // colour by 22;39.
-const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [YOU_BOLD]: '22;39', [BAND]: '22;27;39' };
+const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [YOU_BOLD]: '22;39', [BAND]: '22;27;39', [OPT_ON]: '49', [OPT_BOLD]: '22;49', [OPT_GREY]: '39;49' };
 // Under NO_COLOR, grey is drawn faint, bold magenta bold and the band reversed.
 const NO_COLOR_AS = { [GREY]: FAINT, [YOU_BOLD]: BOLD, [BAND]: REVERSE };
 
@@ -3249,7 +3301,7 @@ function step(rows, i, d) {
 // two, "move" (select, open, view, back, scroll) then "act" (the rest), each breaking between keys
 // rather than losing the last ones.
 const KEY = /^(←→ or 1–6|\+ −|\S+) (.+)$/;
-const MOVES_ON = new RegExp(`^(select|open(?! the bill|${Object.values(SUPPLIER_BILL).map((t) => ` ${t}`).join('|')})|view|back|scroll)\\b`);
+const MOVES_ON = new RegExp(`^(select|choose|open(?! the bill|${Object.values(SUPPLIER_BILL).map((t) => ` ${t}`).join('|')})|view|back|scroll)\\b`);
 function keyLines(s, w) {
   const items = s.split(' · ').map((k) => { const m = KEY.exec(k); return m ? [m[1], m[2]] : [k, '']; });
   const text = (list) => list.map(([k, d]) => (d ? `${k} ${d}` : k)).join(' · ');
@@ -3290,7 +3342,7 @@ export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
   probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
-  addCheckMs = ADD_CHECK_MS,
+  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription,
 } = {}) {
   let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
@@ -3311,6 +3363,8 @@ export function interactive({
   // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` ({ tool, login, label })
   // until the check finds it signed in or esc stops it, the check rerun by `addTimer`.
   let typed = null, adding = null, addTimer = null;
+  // A repo's subscription dropdown, open: { slug, at }, `at` the option ↑↓ is on (null: the ✓ one).
+  let drop = null;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -3360,9 +3414,11 @@ export function interactive({
     keepTab();
     if (tab === 'usage' && hasTabs()) {
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
-      const s = usageParts(repos, { now, width: w, checked, adding });
+      const s = usageParts(repos, { now, width: w, checked, adding, drop });
       if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc cancel adding · : command · q quit` };
+      if (s.drop) return { badge: '', ...s, keys: `↑↓ choose · ${VIEW_KEYS} · ${s.drop.options.length > 1 ? `1-${s.drop.options.length}` : '1'} pick · enter save · esc close · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
+      if (x?.repo) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · enter change subscription · a add${undo ? ' · u undo' : ''} · ${cmdKeys}` };
       const copy = x?.check?.state === 'signed out' ? ' · y copy the sign-in command' : '';
       return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? 'd make default · ' : ''}a add${s.rows.length ? ` · x remove${copy}` : ''}${undo ? ' · u undo' : ''} · ${cmdKeys}` };
     }
@@ -3502,7 +3558,7 @@ export function interactive({
     stack.push({ view, sel, selId, tab });
     view = p.place; if (p.tab) tab = p.tab;
     keepTab();
-    sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
+    sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; unfold = new Set(); drop = null;
   }
   // The selection comes back only to the view it was made on: another view's rows are other rows.
   // Up from a repo's Costs, home's Costs select that repo's row.
@@ -3511,7 +3567,7 @@ export function interactive({
     const name = bySupplier() ? costName() : null;
     if (p) { view = p.view; keepTab(); if (p.tab === tab) ({ sel, selId } = p); else { sel = 0; selId = null; } }
     if (name && view.kind === 'overview' && tab === 'costs') { sel = 0; selId = `cost ${name}`; }
-    scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
+    scroll = null; msg = ''; zoom = 'auto'; unfold = new Set(); drop = null;
   }
   // A place reached directly (the command line, :, the breadcrumb) gets the places above it to Esc to.
   function goPlace(v) {
@@ -3524,7 +3580,7 @@ export function interactive({
     if (['epic', 'ticket', 'log'].includes(kind)) up({ kind: 'repo', slug });
     if (epic && kind !== 'epic') up({ kind: 'epic', slug, epic });
     if (kind === 'log') up({ kind: 'ticket', slug, key, ...(epic ? { epic } : {}) });
-    view = p.place; sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; unfold = new Set();
+    view = p.place; sel = 0; selId = null; scroll = null; msg = ''; zoom = 'auto'; unfold = new Set(); drop = null;
     keepTab();
   }
   // A view this place lacks leaves the view as it is and says why. A supplier's screen is Costs: another
@@ -3532,7 +3588,7 @@ export function interactive({
   function setTab(id) {
     if (!tabOk(id)) { msg = ['cost', 'supplier'].includes(view.kind) ? onlyCosts(view.name) : id === 'costs' ? NO_COSTS_HERE : id === 'usage' ? NO_USAGE_HERE : NO_EPICS_HERE; return; }
     if (view.kind === 'supplier') { if (id !== 'costs') { back(); setTab(id); } return; }
-    tab = id; sel = 0; selId = null; scroll = null; msg = ''; undo = null;
+    tab = id; sel = 0; selId = null; scroll = null; msg = ''; undo = null; drop = null;
   }
 
   // ---- Usage's keys ----
@@ -3619,15 +3675,51 @@ export function interactive({
   // A login made the default, given a rule or removed, then the footer says what changed (`said`,
   // `\n` between its lines) and u puts back `then`: { args, said }, the desk-env logins command that
   // undoes it and what the footer says once it has.
-  function saveLogin(args, said, then) {
+  // `run` is the desk-env command it goes through, logins unless named; an undo names its own.
+  function saveLogin(args, said, then, run = loginsWith) {
     saving = true;
     msg = 'Saving…';
-    loginsWith(args, (r) => {
+    run(args, (r) => {
       saving = false;
       if (r.code === 0) { undo = then; msg = said; }
-      else msg = `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^logins: /, '') ?? `desk-env exited ${r.code}`}`;
+      else msg = `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^(logins|desk-env subscription set): /, '') ?? `desk-env exited ${r.code}`}`;
       if (!done) draw();
     });
+  }
+  // enter on a repo row, or a click on its RUNS ON cell: its subscription dropdown opens under it.
+  function openDrop(x) {
+    if (saving) { msg = 'Still saving the last change.'; return; }
+    drop = { slug: x.repo.slug, at: null };
+    msg = '';
+  }
+  // An option picked from the open dropdown (`d`, the screen's): the repo's Subscription row written,
+  // u putting back what it was. The option already ✓ closes the dropdown and writes nothing.
+  function pickOption(d, i) {
+    const o = d.options[i];
+    if (!o) return;
+    drop = null;
+    msg = '';
+    if (o.current) return;
+    const was = d.sub?.source === 'default' || !d.sub?.email ? 'default' : d.sub.email;
+    const said = o.value === 'default'
+      ? `✓ ${d.name} follows the default${d.def ? `, ${d.def}` : ''}. u undoes.\n  Saved to its config as | Subscription | default |.`
+      : `✓ ${d.name} is pinned to ${o.value}. Its next worker starts there. u undoes.\n  Saved to its config as | Subscription | ${o.value} |. Pick Default to unpin.`;
+    const back = { args: ['set', d.slug, was], run: subscriptionWith,
+      said: was === 'default' ? `${d.name} follows the default again.` : `${d.name} is pinned to ${was} again.` };
+    saveLogin(['set', d.slug, o.value], said, back, subscriptionWith);
+  }
+  // The keys while a dropdown is open: 1-N pick, ↑↓ move, enter saves, esc closes, q quits, and a change
+  // of view closes it. -> true when the key was the dropdown's.
+  function dropKey(str, key) {
+    const d = screen?.drop;
+    if (!d) { drop = null; return false; }
+    if (/^[1-9]$/.test(str ?? '')) { if (Number(str) <= d.options.length) pickOption(d, Number(str) - 1); return true; }
+    if (key.name === 'up' || key.name === 'down') { drop = { ...drop, at: Math.max(0, Math.min(d.options.length - 1, (d.at ?? d.mark) + (key.name === 'up' ? -1 : 1))) }; return true; }
+    // enter before any move keeps the ✓ choice, as picking it does.
+    if (key.name === 'return' || key.name === 'enter') { if (d.at == null) drop = null; else pickOption(d, d.at); return true; }
+    if (key.name === 'escape') { drop = null; return true; }
+    if (['left', 'right', 'tab'].includes(key.name) || str === 'q') { drop = null; return false; }
+    return true;
   }
   // d: the selected login becomes its tool's default at once, the old default unused. The repos that
   // follow the default move with it from their next worker; the old default's running workers finish there.
@@ -3656,7 +3748,7 @@ export function interactive({
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (k === 'u') {
       if (!undo) { msg = 'Nothing to undo.'; return; }
-      return saveLogin(undo.args, undo.said, null);
+      return saveLogin(undo.args, undo.said, null, undo.run);
     }
     if (k === 'y' && adding) {
       const { shell } = signInParts(adding.login);
@@ -3695,10 +3787,15 @@ export function interactive({
       setTab(p.id);
     } else {
       const i = line - layout.pinned + layout.top - layout.first;
-      if (line < layout.pinned || line >= layout.pinned + layout.room || i < 0 || i >= layout.rows || !pickable(screen.rows[i])) return;
+      if (line < layout.pinned || line >= layout.pinned + layout.room || i < 0 || i >= layout.rows) return;
+      // With a dropdown open, a click on an option picks it and one anywhere else closes it.
+      if (drop && screen.drop && screen.rows[i]?.opt != null) { pickOption(screen.drop, screen.rows[i].opt); return draw(); }
+      if (drop) drop = null;
+      if (!pickable(screen.rows[i])) return draw();
       sel = i; selId = screen.rows[i]?.id ?? null;
       const o = screen.rows[i]?.open;
       if (o) go(o);
+      else if (usageTab() && screen.rows[i].repo && !adding && col >= DROP_IN && col < DROP_IN + R_RUNS) openDrop(screen.rows[i]);
     }
     draw();
   }
@@ -3784,6 +3881,7 @@ export function interactive({
       else return;
       return draw();
     }
+    if (drop && usageTab() && dropKey(str, key)) return draw();
     // On a repo's Queue the selected ticket moves within its own batch; on a ticket's screen, that
     // ticket. On a Timeline or By day nothing moves: the order is set on the Queue, and the dates follow.
     const queueView = (view.kind === 'repo' && tab === 'queue') || view.kind === 'ticket';
@@ -3821,6 +3919,7 @@ export function interactive({
       return (view.kind === 'ticket' || usageTab()) && selId !== was ? draw() : frame();
     } else if (usageTab() && ['d', 'x', 'u', 'y'].includes(str)) usageKey(str, rows[sel]);
     else if (usageTab() && str === 'a') addKey(rows[sel]);
+    else if (usageTab() && (key.name === 'return' || key.name === 'enter') && rows[sel]?.repo && !adding) openDrop(rows[sel]);
     else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
     else if (key.name === 'escape' && adding && usageTab()) stopWaiting();
     else if (key.name === 'escape') back();

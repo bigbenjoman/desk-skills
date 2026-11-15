@@ -4,7 +4,7 @@
 // a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT, DESK_LOCK_DIR and DESK_USAGE_DIR, with fake claude and
 // codex binaries the account check calls. The default, undo and remove keys run desk-env's logins
 // commands. Drawn at 104 columns under NO_COLOR. One check or more per acceptance criterion of DS-472,
-// DS-623 and DS-624.
+// DS-623 and DS-624, and for DS-625's drawn states.
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -212,6 +212,50 @@ f = S.frame();
 t('DS-624 AC4 ↓ on the last subscription row selects the first repo row', f[f.indexOf(REPO_HEAD) + 1].startsWith('› '), true);
 await S.press('\x1b[A');
 t('DS-624 AC5 ↑ on the first repo row selects the last subscription row', rowOf(S.frame(), 'spare@example.test').startsWith('› '), true);
+
+// ---- DS-625 AC13, AC15, AC1, AC2, AC3: a repo row's keys, the hint under the table, and its dropdown
+const HINT = '  Select a repo and press enter, or click its subscription, to change which one it runs on.';
+const CODEX_HEAD = '  CODEX                    PLAN     USE           5H                   7D                       WORKERS';
+f = S.frame();
+t('DS-625 AC15 a grey line under the repo table says how to change a repo\'s subscription', f[f.indexOf(CODEX_HEAD) - 2], HINT);
+await S.pick('pr-ninja');
+t('DS-625 AC13 a repo row selected with nothing to undo: the keys offer enter, a, : and q', S.frame().at(-1),
+  '↑↓ select · ←→ or 1–6 view · enter change subscription · a add · : command · q quit');
+await S.press('\r');
+f = S.frame();
+// The dropdown as the canvas lays it out: 18 columns in, a 60-wide box, then number 2, name 26 and 28 more.
+const IN = ' '.repeat(18);
+const edge = (l, r) => `${IN}${l}${'─'.repeat(58)}${r}`;
+const opt = (n, name, rest) => `${IN}│ ${cellPad(n, 2)}${cellPad(name, 26)}${cellPad(rest, 28)} │`;
+const sub = (plan, h5, d7) => `${cellPad(plan, 9)}5h ${h5} · 7d ${d7}`;
+const ri = f.indexOf(rowOf(f, 'pr-ninja'));
+t('DS-625 AC1 enter opens the dropdown under the row, its arrow ▴', f.slice(ri, ri + 8).join('\n'), [
+  repoLine(1, 'pr-ninja', 'me@example.test ▴', '○ default', '2', '8'),
+  edge('┌', '┐'),
+  opt('1', 'Default ✓', '→ me@example.test'),
+  opt('2', 'me@example.test', sub('Ultra', '31%', '61%')),
+  opt('3', 'work@example.test', sub('Max 5x', '58%', '72%')),
+  opt('4', 'spare@example.test', sub('Pro', '0%', '18%')),
+  edge('└', '┘'),
+  `${IN} ✓ now · 1-4 or ↑↓ enter choose · esc close`].join('\n'));
+t('DS-625 AC2 the keys while it is open', f.at(-1), '↑↓ choose · ←→ or 1–6 view · 1-4 pick · enter save · esc close · q quit');
+t('DS-625 AC15 the hint gives way to the open dropdown', f.includes(HINT), false);
+// A lone esc reaches the keys once readline's escape timeout has passed.
+await S.press('\x1b');
+await sleep(700);
+t('DS-625 esc closes the dropdown', S.frame().includes(edge('┌', '┐')), false);
+await S.pick('voicepa');
+await S.press('\r');
+f = S.frame();
+t('DS-625 AC3 a pinned repo\'s dropdown: ✓ on its subscription, not on Default', `${f.includes(opt('1', 'Default', '→ me@example.test'))} | ${f.includes(opt('3', 'work@example.test ✓', sub('Max 5x', '58%', '72%')))}`, 'true | true');
+S.done();
+// AC2 where the keys go on two lines, the act line reads as the canvas has it.
+S = await usage(undefined, 60);
+await S.pick('pr-ninja');
+await S.press('\r');
+f = S.frame();
+t('DS-625 AC2 the act line, where the keys wrap', f.at(-1), 'act   1-4 pick · enter save · esc close · q quit');
+t('DS-625 AC2 and the move line above it', f.at(-2), 'move  ↑↓ choose · ←→ or 1–6 view');
 S.done();
 // AC3: with work the default, every repo on the default runs on work.
 deskEnv('default', 'claude', 'work');
