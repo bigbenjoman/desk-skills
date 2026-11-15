@@ -39,6 +39,16 @@ const REWRITTEN = [
   ['DS-405', "Merging with `--squash` because it's the usual", 1],
   ['DS-460', 'see "Editing the body later" in §4). Keep', 1], // names opening.md, the file holding it
   ['DS-611', 'committed here. Say so, push as before, and offer', 1], // the items run under their locks instead
+  // a saved-canvas PR stitches each board's captures into one image per theme
+  ['DS-676', 'so it uploads with the rest', 1],
+  ['DS-676', '`built-<board>-<width>.png`, captured as below', 1],
+  ['DS-676', '`PASS` with what was compared', 1],
+  ['DS-676', 'One collapsed table per board the ticket uses', 1],
+  ['DS-676', 'canvas vs build at 6 widths', 1],
+  ['DS-676', '_drag canvas-order-summary-', 2],
+  ['DS-676', '| Width | Canvas | Built | Result |', 1],
+  ['DS-676', 'Leave a blank line after `<summary>` and before', 1],
+  ['DS-676', 'the exception: every breakpoint, collapsed', 1],
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 23, minRows: 35, rewritten: REWRITTEN });
 
