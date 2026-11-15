@@ -257,6 +257,25 @@ t('DS-389 a §3b row is added by its name, before the row below it', `${a.code} 
   `0 ${a.file.split('\n').findIndex((l) => l.startsWith('| Check-in times')) - 1} ${a.file.split('\n').findIndex((l) => l.startsWith('| Check-in times'))}`);
 t('DS-389 and drift no longer names it', drift(a.file).out, 'no drift');
 
+// DS-568 AC4: a config with no §4 Person-step labels row is named MISSING against the real template, so
+// /desk-setup asks for it (its step 1 says to, writing none when given none), and none reads as no labels.
+{
+  const realEnv = (c) => driftEnv({ DESK_CONFIG: c, DESK_CONFIG_TEMPLATE: join(ROOT, 'desk-config.md') });
+  const c = join(T, 'steps.md');
+  writeFileSync(c, `${P4}| Labels | \`any\` |\n`);
+  let out = '';
+  try { out = execFileSync('node', [BIN, 'drift'], { encoding: 'utf8', env: realEnv(c), stdio: 'pipe' }); } catch (e) { out = String(e.stdout); }
+  t('DS-568 AC4 a config with no Person-step labels row has it named MISSING', out.includes('MISSING  §4 "Person-step labels"'), true);
+  const setup = readFileSync(join(ROOT, 'skills/desk-setup/references/step-1-detect.md'), 'utf8');
+  t('DS-568 AC4 /desk-setup asks for the row, writing none when given none', /\*\*Person-step labels\.\*\* Ask [^]*?with none named, or with Tracker `none`, write `none`/.test(setup), true);
+  const w = execFileSync('node', [BIN, 'add-row', '4', 'Person-step labels', 'none'], { encoding: 'utf8', env: realEnv(c), stdio: 'pipe' });
+  t('DS-568 AC4 an answer of none is written as the row', `${w.startsWith('ADDED §4')} ${readFileSync(c, 'utf8').includes('| Person-step labels | `none` |')}`, 'true true');
+  const read = execFileSync('node', ['--input-type=module', '-e', `import { personStepLabels } from ${JSON.stringify(BIN)}; console.log(JSON.stringify(personStepLabels()));`], { encoding: 'utf8', env: realEnv(c) }).trim();
+  t('DS-568 AC3 a row of none names no labels', read, '[]');
+  writeFileSync(c, `${P4}| Labels | \`any\` |\n| Person-step labels | \`ben-step\` \`Operator-Task\` |\n`);
+  t('DS-568 AC1 each label is read, lowercased', execFileSync('node', ['--input-type=module', '-e', `import { personStepLabels } from ${JSON.stringify(BIN)}; console.log(JSON.stringify(personStepLabels()));`], { encoding: 'utf8', env: realEnv(c) }).trim(), '["ben-step","operator-task"]');
+}
+
 // The shipped template compared with itself: every row it declares is found, the ledger is not a row.
 const self = execFileSync('node', [BIN, 'drift'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG_TEMPLATE: join(ROOT, 'desk-config.md'), DESK_CONFIG: join(ROOT, 'desk-config.md') }) }).trim();
 t('the template has no drift against itself', self, 'no drift');

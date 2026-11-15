@@ -86,6 +86,11 @@ the ticket is built and reviewed as any other, and the merge driver holds its PR
 step Done, when the pass lifts it and the PRs merge in the batch's own order. Needs you lists the
 step once, as `step:<KEY>`, naming every PR and ticket waiting on it.
 
+**A ticket carrying one of config §4 Person-step labels is the person's step itself.** It is admitted
+parked on it (`the person's step: labelled …`) whatever its lane, so no worker spawns, and requeue
+refuses it. A blocker carrying one, in the batch or out of it, is a person's step as above: the
+ticket it blocks merges after it.
+
 **The person's instruction on an open PR holds its merge too.** From needs-you `resume` until the pass
 closes that fix, the merge driver leaves the PR alone, red or green, and a worker that parks or fails
 on it keeps it held. One that ends with no marker is parked, not done, so it keeps it held too.

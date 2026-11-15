@@ -317,6 +317,20 @@ t('DS-523 AC3 a ticket left after the last promotion: the batch is archived', a.
 t('DS-523 AC3 the ticket is in the standing batch', JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-11']?.state, 'triaged');
 t('DS-523 AC3 and not in the archived queue', JSON.parse(readFileSync(doneQ('X-9'), 'utf8')).tickets['X-11'], undefined);
 t('DS-523 AC3 the archive line names it', (a.log ?? []).join(' ').includes('moved X-11 to the standing batch'), true);
+// DS-568: moved into a batch where its open blocker is parked as the person's step, a ticket merges after
+// that step rather than losing the hold: nothing builds the step, so it is no build hold either.
+const withStep = JSON.parse(readFileSync(standingQ, 'utf8'));
+withStep.tickets['S-20'] = { key: 'S-20', state: 'parked', park: { question: "the person's step: labelled ben-step (config §4 Person-step labels), so no worker can do it" } };
+writeFileSync(standingQ, JSON.stringify(withStep));
+writeQ('X-30', { epic: 'X-30', base: 'feat/x-30', promotion: lastRecorded, tickets: {
+  'X-31': { key: 'X-31', state: 'done', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z' },
+  'X-32': { key: 'X-32', state: 'triaged' },
+} });
+mkdirSync(join(namedS('X-30'), 'triage'), { recursive: true });
+writeFileSync(join(namedS('X-30'), 'triage', 'X-32.json'), JSON.stringify({ ticket: 'X-32', type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: 'fix/X-32', files_in_scope: ['f/X-32'], unknowns: [], blockers: [{ key: 'S-20', category: 'new' }] }));
+a = res(archive('X-30', { 9: 'MERGED', 10: 'MERGED' }));
+const moved32 = JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-32'];
+t('DS-568 a ticket moved to a batch where its blocker is the person\'s step merges after it, held by nothing', `${a.archived} ${moved32?.state} ${moved32?.held_by} ${moved32?.merge_after}`, 'true triaged null S-20');
 // With no record, a merged slice and a ticket still to come is not the last: nothing moves.
 writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': { key: 'X-13', state: 'queued' } } });
 mkdirSync(namedS('X-12'), { recursive: true });
@@ -414,6 +428,7 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const standingS = join(HOME, '.desk-autopilot', SLUG);
   writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 'standing-3', supervised: true, tickets: {
     'S-1': { key: 'S-1', state: 'running' }, 'S-2': { key: 'S-2', state: 'parked', park: { question: 'which copy?' } },
+    ...Object.fromEntries(['S-3', 'S-4'].map((k) => [k, { key: k, state: 'parked', park: { question: "the person's step: labelled ben-step (config §4 Person-step labels), so no worker can do it" } }])),
   } }));
   const held = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')}`, since: MERGED_AT } });
   writeQ('Y-1', { base: 'feat/y-1', supervised: true, tickets: {
@@ -430,12 +445,16 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     'T-8': { key: 'T-8', ...held('M-1|B-1') },
     'T-9': { key: 'T-9', ...held('B-2') },
     'T-10': { key: 'T-10', state: 'triaged', held_by: null, park: null, held_outside: 'OUT-1' },
+    'T-11': { key: 'T-11', ...held('S-3') },
+    'T-12': { key: 'T-12', ...held('S-4') },
+    'T-13': { key: 'T-13', ...held('S-4') },
   } });
   const yState = (...p) => join(namedS('Y-1'), ...p);
   mkdirSync(yState('triage'), { recursive: true });
   const onB1 = [{ key: 'B-1', category: 'indeterminate' }];
-  const recs = { 'T-1': { blockers: onB1 }, 'T-4': { blockers: onB1, size: 'XL' }, 'T-8': { blockers: onB1 }, 'T-9': { blockers: [{ key: 'B-2', category: 'done' }] } };
-  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6', 'T-7', 'T-8', 'T-9', 'T-10']) {
+  const recs = { 'T-1': { blockers: onB1 }, 'T-4': { blockers: onB1, size: 'XL' }, 'T-8': { blockers: onB1 }, 'T-9': { blockers: [{ key: 'B-2', category: 'done' }] },
+    'T-12': { blockers: [{ key: 'S-4', category: 'done' }] }, 'T-13': { blockers: [{ key: 'S-4', category: 'indeterminate' }] } };
+  for (const k of ['T-1', 'T-2', 'T-3', 'T-4', 'T-5', 'T-6', 'T-7', 'T-8', 'T-9', 'T-10', 'T-11', 'T-12', 'T-13']) {
     writeFileSync(yState('triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Bug', lane: 'A', lane_reason: 'r', summary: 's', branch: `fix/${k}`, files_in_scope: [`f/${k}`], unknowns: [], blockers: [], ...recs[k] }));
   }
   const answer = (text) => `\n## Answer from the user (2026-11-14T10:00:00Z)\n\n${text}\n`;
@@ -502,6 +521,13 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   r = moveTo('T-10');
   const t10 = sq()['T-10'] ?? {};
   t('DS-665 a ticket the person released arrives unheld, its old outside hold not reinstated', `${r.code} ${t10.state} ${t10.held_by} ${'held_outside' in t10}`, '0 triaged null false');
+  // DS-568: a hold on a person's step in the destination. As an open Jira blocker it merges after the
+  // step. As no blocker it stays a hold: a pass lifts a merge_after step the blockers do not list. As a
+  // Done blocker it holds nothing.
+  const step = (k) => { const r2 = moveTo(k); const s = sq()[k] ?? {}; return `${r2.code} ${s.state} ${s.held_by} ${s.merge_after}`; };
+  t('DS-568 a hold on a person\'s step there that is an open blocker merges after it', step('T-13'), '0 triaged null S-4');
+  t('DS-568 a hold on a person\'s step there that is no blocker stays a hold', step('T-11'), '0 parked S-3 undefined');
+  t('DS-568 a hold on a person\'s step there that is a Done blocker holds nothing', step('T-12'), '0 triaged null undefined');
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.
