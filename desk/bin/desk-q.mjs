@@ -1796,7 +1796,7 @@ export function usageOf(repos, now, shown = repos) {
 // Each tool's default, once a subscriptions file exists; null with none, or one that cannot be read,
 // and the usage line is then the one it always was. Work runs on the Claude default unless its repo is
 // pinned, and every codex call on the Codex default (codex-login.mjs), so neither is chosen by room.
-//   -> { claude: side, codex: side | null } | null, the Codex side only while the file lists a Codex login
+//   -> { claude: side | null, codex: side | null } | null, the Codex side only while the file lists a Codex login
 // A side is { login, name, reading }. Claude's adds `n`, its subscriptions here; `pinned`, how many
 // configured repos run elsewhere; `bySlug`, each configured repo's repoSubscription; `follows(slug)`,
 // whether a repo runs on the default; and `limit`, the default's limit while it holds (limitOf).
@@ -1813,6 +1813,7 @@ export function loginsNow(repos, now) {
 }
 function claudeSide(repos, now, subs) {
   const login = defaultOf(migrateLogins(subs.logins), 'claude');
+  if (!login) return null;
   const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), login, now });
   const bench = liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now)[loginKey(login)];
   let rows = [];

@@ -2,7 +2,7 @@
 // desk-q against a subscriptions file, each Claude login's .claude.json and probe log, each Codex login's
 // session logs, each repo's Subscription row and queue, on a fixed clock, under a throwaway HOME,
 // DESK_HOME, DESK_CONFIG_ROOT, DESK_LOCK_DIR and DESK_USAGE_DIR. Each line is checked in plain output,
-// and drawn at 104 columns under NO_COLOR. One check or more per acceptance criterion of DS-628.
+// and drawn at 120 columns under NO_COLOR. One check or more per acceptance criterion of DS-628.
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -93,12 +93,12 @@ const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const home = (opts = {}) => Q.overview(Q.loadRepos(FIXED), { now: FIXED, avail: 30, all: true, ...opts }).split('\n');
 const lines = () => home().filter((l) => /^(Claude|Codex) /.test(l));
 const head = (opts) => home(opts).find((l) => /^ {2}REPO /.test(l));
-// Home drawn at 104 columns under NO_COLOR: the lines from the Claude line to the keys.
+// Home drawn at 120 columns under NO_COLOR: the lines from the Claude line to the keys.
 async function drawn() {
   process.env.NO_COLOR = '1';
   const input = new PassThrough();
   Object.assign(input, { isTTY: true, setRawMode() {} });
-  const output = { buf: '', columns: 104, rows: 40, write(s) { this.buf += s; }, on() {}, removeListener() {} };
+  const output = { buf: '', columns: 120, rows: 40, write(s) { this.buf += s; }, on() {}, removeListener() {} };
   const ui = Q.interactive({ input, output, start: { kind: 'overview', all: false }, exit() {}, refreshMs: 600000, clock: () => FIXED, probeMs: 600000, probeWith: async () => ({ ran: true }) });
   await sleep(20);
   ui.finish(0);
@@ -117,7 +117,7 @@ subscriptions(CLAUDE);
 repos('ben@voicepa.ai', 'ben@studia.io');
 const AC1 = `Claude  ben.lavender@me.com  ${BARS}  │ default · 2 repos pinned`;
 t('AC1 the Claude line names the default, its bars, then │ default · 2 repos pinned', lines().join('\n'), AC1);
-t('AC1 drawn at 104 columns under NO_COLOR, uncut', (await drawn())[0], AC1);
+t('AC1 drawn at 120 columns under NO_COLOR, uncut', (await drawn())[0], AC1);
 const segs1 = Q.usageLines(Q.usageOf(Q.loadRepos(FIXED), FIXED), { now: FIXED, solid: true })[0].segs;
 t('AC1 the label and the default segment are grey, the name in the text colour',
   JSON.stringify([segs1[0], segs1[1], segs1.at(-1)]), JSON.stringify([['Claude  ', '38;5;247'], ['ben.lavender@me.com  ', null], ['  │ default · 2 repos pinned', '38;5;247']]));
@@ -141,7 +141,7 @@ t('AC9 with none pinned', quiet(home()), true);
 subscriptions([...CLAUDE, ...CODEX]);
 const AC5 = `Codex   ${'codex-2'.padEnd('ben.lavender@me.com'.length)}  5h ██········ 16% 16:40 · 7d ███······· 27% Mon 09:00  │ default`;
 t('AC5 the Codex line names codex-2 with its bars, and no count of other logins', lines()[1], AC5);
-t('AC5 drawn at 104 columns, under the Claude line', (await drawn()).slice(0, 2).join('\n'), `${AC3}\n${AC5}`);
+t('AC5 drawn at 120 columns, under the Claude line', (await drawn()).slice(0, 2).join('\n'), `${AC3}\n${AC5}`);
 codexReading(join(H, '.codex'), [100, at(24, 16, 40)], [27, at(26, 9, 0)]);
 t('AC5 the Codex default at its limit is still the one named', lines()[1].startsWith('Codex   codex-2 '), true);
 t('AC9 with the Codex default at its limit', quiet(home()), true);
@@ -158,9 +158,12 @@ t('AC6 RUNS ON lines up under its head', h6.find((l) => l.startsWith('  solo '))
 // ---- AC7: too narrow for every column: DONE and MERGING go before RUNS ON
 const widths = Array.from({ length: 140 }, (_, i) => 200 - i);
 const heads = widths.map((width) => head({ width }));
+// DONE the column, not ALL DONE BY.
+const done = (h) => /(?<!ALL )DONE/.test(h);
 t('AC7 at every width RUNS ON goes only once DONE and MERGING have gone',
-  heads.every((h) => h.includes('RUNS ON') || (!h.includes('DONE') && !h.includes('MERGING'))), true);
-t('AC7 some width keeps RUNS ON with DONE and MERGING dropped', heads.some((h) => h.includes('RUNS ON') && !h.includes('DONE') && !h.includes('MERGING')), true);
+  heads.every((h) => h.includes('RUNS ON') || (!done(h) && !h.includes('MERGING'))), true);
+t('AC7 some width keeps RUNS ON with DONE and MERGING dropped', heads.some((h) => h.includes('RUNS ON') && !done(h) && !h.includes('MERGING')), true);
+t('AC7 and some wider one keeps all three', heads.some((h) => h.includes('RUNS ON') && done(h) && h.includes('MERGING')), true);
 t('AC7 and the narrowest drop RUNS ON too', heads.at(-1).includes('RUNS ON'), false);
 
 // ---- AC8: the default at its 5-hour limit until 14:05
@@ -181,7 +184,7 @@ rmSync(SPARE, { recursive: true, force: true });
 repos();
 t('AC10 the bottom line is the Claude usage line, and there is no Codex line', lines().join('\n'), 'Claude usage  5h ███······· 31% 14:05 · 7d ██████···· 61% Tue 06:00');
 t('AC10 the table has no RUNS ON', head().includes('RUNS ON'), false);
-t('AC10 drawn at 104 columns too', (await drawn())[0], 'Claude usage  5h ███······· 31% 14:05 · 7d ██████···· 61% Tue 06:00');
+t('AC10 drawn at 120 columns too', (await drawn())[0], 'Claude usage  5h ███······· 31% 14:05 · 7d ██████···· 61% Tue 06:00');
 
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all desk-q login line checks passed');
