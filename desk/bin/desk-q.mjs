@@ -49,7 +49,7 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir } from './claude-logins.mjs';
+import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, workLoginDirs } from './claude-logins.mjs';
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
@@ -696,21 +696,25 @@ const otherLogins = (own) => {
     return probeLogins().filter((l) => l.dir !== own?.dir && (l.configDir || l.source === 'file' || folders));
   } catch { return []; }
 };
+// Whether the scheduled probe covers a login: the default and each a repo is pinned to (workLoginDirs).
+// Every login, when the repos' rows cannot be read, so a bad config leaves no reading to go stale.
+const probedBy = () => { try { const dirs = workLoginDirs(); return (l) => dirs.has(l.dir); } catch { return () => true; } };
 // The login the usage line shows: the default, named by null, whichever login this desk-q started on
 // while there are others. With none, its own: one login under CLAUDE_CONFIG_DIR still shows its probe's
 // reading, and so does the one login a subscriptions file leaves in use.
 const lineLogin = () => { const own = ownLogin(); return own?.configDir && otherLogins(own).length ? null : own; };
 // The probes an open desk-q makes now. With one login, its probe while no worker anywhere keeps the
-// reading fresh. With more, each login in rotation or on standby, desk-q's own among them, while no
-// worker runs on it, judged on that login's own probe reading. desk-q's own login is never probed when
-// its rule is one desk may not start work on (off); with no rule, as one login no file names, it is.
+// reading fresh. With more, the default and each login a repo is pinned to, desk-q's own among them,
+// while no worker runs on it, judged on that login's own probe reading. A subscription no repo runs on
+// is never probed, desk-q's own included; with no rule, as one login no file names, desk-q's own is.
 //   -> [{ login }]
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
-  const ownProbed = own?.rule == null || inUse(own);
-  if (!own || !others.length) return ownProbed && probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
-  return [...(ownProbed ? [own] : []), ...others].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
+  const probed = probedBy();
+  const probeOwn = !own || own.rule == null || (inUse(own) && probed(own));
+  if (!own || !others.length) return probeOwn && probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
+  return [...(probeOwn ? [own] : []), ...others.filter(probed)].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
 }
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
@@ -2078,8 +2082,12 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
       ...(p.then ? [[', then ', null], [p.then, HUE.cyan]] : [])] };
   });
-  if (t.claude.some((x) => inUse(x.login) && !unusable(x) && x.reading?.at == null)) {
-    notes.push({ tag: 'no reading', sgr: GREY, text: [['Logins with no reading yet are read in the next 5 minutes. A login with no reading still takes workers, after the logins whose room is known.', null]] });
+  const unread = t.claude.filter((x) => inUse(x.login) && !unusable(x) && x.reading?.at == null);
+  if (unread.length) {
+    const probed = probedBy();
+    const when = unread.some((x) => probed(x.login)) ? 'Logins with no reading yet are read in the next 5 minutes. ' : '';
+    const unpinned = unread.some((x) => !probed(x.login)) ? 'A login no repo is pinned to is read only once one is, or a worker runs on it. ' : '';
+    notes.push({ tag: 'no reading', sgr: GREY, text: [[`${when}${unpinned}A login with no reading still takes workers, after the logins whose room is known.`, null]] });
   }
   const ats = (rule) => all.filter((x) => !rule || x.login.rule === rule).map((x) => x.reading?.at).filter((a) => a != null);
   const read = ats();

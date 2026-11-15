@@ -5,9 +5,10 @@
 // Each check, and when it is required:
 //   gh       `gh auth status`                     always
 //   jira     `desk-jira whoami`                   where §4 Tracker is jira
-//   claude   `claude auth status`                 always; and in the folder of each other Claude login the
-//                                                 subscriptions file puts in rotation or on standby,
-//                                                 told with its sign-in command but never holding a spawn.
+//   claude   `claude auth status`                 always; and in the folder of the Claude default and of
+//                                                 the login this repo's Subscription row pins, where the
+//                                                 subscriptions file lists it in its own folder, told
+//                                                 with its sign-in command but never holding a spawn.
 //                                                 A listed login whose folder does not exist is a row
 //                                                 with nothing behind it, not a sign-out: named in the
 //                                                 health line's notes and pushed once per machine
@@ -43,8 +44,8 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { loginState } from './find-playwright.mjs';
 import { parseDfAvailableGB } from './machine.mjs';
-import { isDir, loginEnv, readSubscriptions, signInCommand } from './logins.mjs';
-import { inUse, loginKey } from './claude-logins.mjs';
+import { isDir, loginEnv, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
+import { inUse, loginKey, workLoginDirs } from './claude-logins.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
@@ -262,13 +263,14 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const wanted = CHECKS.map((c) => c.id).filter((id) => !skip[id]);
   const prev = readRecord(state);
   const age = prev ? now - Date.parse(prev.at) : Infinity;
-  // Each other Claude login the file puts in rotation or on standby, checked as the default is, in its
-  // own folder (logins.mjs). One whose folder does not exist is not checked: it is a row to remove or
-  // sign in, told apart from the sign-outs. A folder the file does not list counts only once signed
-  // in, so it is not told as signed out.
+  // The Claude default and the login this repo is pinned to, where the file lists it in its own folder
+  // (logins.mjs), checked as the default is: a subscription no work here runs on is not checked. A
+  // listed row whose folder does not exist is a row to remove or sign in, told apart from the
+  // sign-outs. A folder the file does not list counts only once signed in, so it is not told as signed out.
   const listed = (() => { try { return readSubscriptions(E.subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.configDir && inUse(l)); } catch { return []; } })();
   const missing = listed.filter((l) => !isDir(l.dir));
-  const others = listed.filter((l) => isDir(l.dir));
+  const pinned = (() => { try { return workLoginDirs((subs) => [E.thisRepoSubscription({ repoSubscription }, subs, env)]); } catch { return new Set(); } })();
+  const others = listed.filter((l) => isDir(l.dir) && pinned.has(l.dir));
   const reusedLogins = others.every((l) => prev?.logins?.[loginKey(l)]?.ok);
   const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins;
   let results;
