@@ -68,19 +68,19 @@ CYCLE='v.waiting.filter((l) => / wait on each other/.test(l))'
 fresh ac1; held B A 12; pr 12 BLOCKED
 out=$(verdict)
 check "DS-615 AC1 one waiting line names A, B and PR 12 as waiting on each other" \
-  "has '$CYCLE.length === 1 && /^A: CYCLE — A and B wait on each other: A is parked until PR #12 \\(B\\) merges, and B is held behind A\\. /.test($CYCLE[0])'"
-check "DS-615 AC1 a mergeable PR is not called conflicting" "has '!/conflicts/.test($CYCLE[0])'"
+  "has '$CYCLE.length === 1 && /^A: CYCLE — A and B wait on each other: A is parked until PR #12 \\(B\\) merges, and B is held behind A\\. /.test(${CYCLE}[0])'"
+check "DS-615 AC1 a mergeable PR is not called conflicting" "has '!/conflicts/.test(${CYCLE}[0])'"
 
 # AC2: the cycle runs through C: B is held behind C, and C behind A.
 fresh ac2; held C A; held B C 12; pr 12 BLOCKED
 out=$(verdict)
 check "DS-615 AC2 the line names all three tickets in the cycle" \
-  "has '$CYCLE.length === 1 && /A, B and C wait on each other: A is parked until PR #12 \\(B\\) merges, and B is held behind C and C is held behind A/.test($CYCLE[0])'"
+  "has '$CYCLE.length === 1 && /A, B and C wait on each other: A is parked until PR #12 \\(B\\) merges, and B is held behind C and C is held behind A/.test(${CYCLE}[0])'"
 
 # AC3: the cycle in AC1, with PR 12 conflicting with main.
 fresh ac3; held B A 12; pr 12 DIRTY
 out=$(verdict)
-check "DS-615 AC3 the cycle line says PR 12 conflicts with the base" "has '$CYCLE.length === 1 && /\\. PR #12 conflicts with main\\. /.test($CYCLE[0])'"
+check "DS-615 AC3 the cycle line says PR 12 conflicts with the base" "has '$CYCLE.length === 1 && /\\. PR #12 conflicts with main\\. /.test(${CYCLE}[0])'"
 check "DS-615 AC3 the park item carries no second note" "has '!v.parked.find((p) => p.key === \"A\")?.note'"
 
 # AC4: no cycle (PR 12 is nobody's in the batch), PR 12 conflicting with main.
