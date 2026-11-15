@@ -244,9 +244,12 @@ const loginDirOf = (t) => (t.login ? t.login.config_dir : workerLoginDir(STATE, 
 // its session lives in that login's folder. With no subscriptions file and the repo following the
 // default, a worker inherits the pass's login and nothing is checked.
 const SUBS = readSubscriptions(E.subscriptionsPath());
-const SUB_ENV = process.env.DESK_SUBSCRIPTION?.trim();
-const REPO_SUB = repoSubscription(SUBS, SUB_ENV ? { value: SUB_ENV, source: 'DESK_SUBSCRIPTION' } : { value: E.configValue('subscription'), source: 'row' });
+const REPO_SUB = E.thisRepoSubscription({ repoSubscription }, SUBS);
 const INHERITS = !SUBS.exists && REPO_SUB.source === 'default';
+// Only a limit on the repo's own login holds the batch. One on another login, where a worker started
+// before the subscription changed, holds that worker alone.
+const REPO_LOGIN = INHERITS ? OWN_LOGIN : REPO_SUB.login;
+const onRepoLogin = (login) => !!REPO_LOGIN && !!login && login.dir === REPO_LOGIN.dir;
 const PROBES = new Map();
 // At most one probe a login a pass, made only when something on that login is held on the limit.
 const probeOnce = (login = OWN_LOGIN) => {
@@ -1055,6 +1058,8 @@ if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
 // hold whose limit has lifted holds nothing, and spawns and resumes go ahead as normal. Nothing moves
 // to another subscription: a worker waits for its own login's limit, and the batch for the repo's.
 let USAGE_HOLD = null;
+// Set when a limit met this pass holds the rest of it: a refused preflight, or a base worker paused.
+let usageStop = false;
 {
   const tickets = queue().tickets;
   for (const h of usageHolds.splice(0)) {
@@ -1074,8 +1079,9 @@ let USAGE_HOLD = null;
   const stored = queue().usage_hold;
   const pre = stored?.preflight ? { key: stored.preflight, limit: { type: stored.type ?? 'unknown', resetsAt: stored.resets_at ?? null },
     login: stored.login_dir === undefined ? OWN_LOGIN : loginOf(stored.login_dir) } : null;
-  const holding = [...(pre ? [pre] : []), ...usageHolds].find((h) => !lifted(h.limit, h.login));
-  if (holding) USAGE_HOLD = { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: pre && !lifted(pre.limit, pre.login) ? pre.key : null, login: pre?.login };
+  const holding = [...(pre ? [pre] : []), ...usageHolds].find((h) => onRepoLogin(h.login) && !lifted(h.limit, h.login));
+  if (holding) USAGE_HOLD = { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: holding === pre ? pre.key : null, login: holding.login };
+  else if (pre && !onRepoLogin(pre.login)) report.advanced.push(`${limitName(pre.limit.type)} on login ${pre.login.name} no longer holds the batch, as this repo's subscription is another: spawns go ahead`);
   else if (pre) report.advanced.push(`${limitName(pre.limit.type)} lifted (${liftedHow(pre.limit)}): spawns and resumes go ahead`);
 }
 
@@ -1960,7 +1966,17 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       // Until then it waits on its own login, whose folder holds its transcript.
       if (up && !resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume_limits: usage.limits.length } };
       else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
-      else if (paused || awaitsLift) report.paused.push(`${BASE_FIX_KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
+      else if (paused || awaitsLift) {
+        report.paused.push(`${BASE_FIX_KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
+        // On the repo's login its limit holds the batch, as a paused ticket's worker does.
+        if (onRepoLogin(from) && !lifted(atLimit, from)) {
+          if (!USAGE_HOLD) {
+            USAGE_HOLD = { type: atLimit.type, resetsAt: atLimit.resetsAt, preflight: null, login: from };
+            report.stalled.push(`${BASE_FIX_KEY}: ${usageHeldText(USAGE_HOLD)}`);
+          }
+          usageStop = true;
+        }
+      }
       else if (idle >= QUIET_PASSES) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
     }
   }
@@ -2288,8 +2304,7 @@ function repoLogin() {
   if (INHERITS) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
   const login = REPO_SUB.login;
   if (!login) {
-    const from = SUB_ENV ? 'DESK_SUBSCRIPTION' : `config §3b "${E.CONFIG_ROWS.subscription.row}"`;
-    noLogin(`${from} names ${REPO_SUB.email}, which is not one of this computer's subscriptions, so nothing new starts for this repo; it never falls back to another. Sign that account in and add it in desk-q view 6 (Usage), or change ${SUB_ENV ? 'DESK_SUBSCRIPTION' : 'the row'}`);
+    noLogin(`${REPO_SUB.from} names ${REPO_SUB.email}, which is not one of this computer's subscriptions, so nothing new starts for this repo; it never falls back to another. Sign that account in and add it in desk-q view 6 (Usage), or change ${REPO_SUB.fix}`);
     return null;
   }
   REPO_CHECK ??= checkLogin(login);
@@ -2329,11 +2344,15 @@ function preflight(key, wt, workerEnv) {
   // A call refused at the usage limit (spawn-worker.sh says so): nothing about the worker failed.
   return { failure, cost, limit: !!failure && /^\[preflight\] usage-limit/m.test(pre) };
 }
-// A preflight the usage limit refused holds the batch: the ticket keeps its place and state, and
-// nothing else spawns or preflights this pass. The probe names the limit where it can.
-let usageStop = false;
+// A preflight the usage limit refused on the repo's login holds the batch: the ticket keeps its place
+// and state, and nothing else spawns or preflights this pass. The probe names the limit where it can.
+// A resume refused on another login, the one its session started on, waits for that login alone.
 function preflightHitLimit(t, cost, login) {
   logPreflight(t.key, cost);
+  if (!onRepoLogin(login)) {
+    report.paused.push(`${t.key}: its preflight was refused at the usage limit on its own login ${login.name}, so it waits for that login; this repo's subscription is another, and the batch goes on`);
+    return;
+  }
   const l = probeOnce(login).limit ?? { type: 'unknown', resetsAt: null };
   USAGE_HOLD ??= { type: l.type, resetsAt: l.resetsAt, preflight: t.key };
   USAGE_HOLD.preflight ??= t.key;
@@ -2717,7 +2736,7 @@ let readRepoFailures = null;
 // health.mjs markFailed's line, stall and push once a worktree setup in this pass has not reached the local database.
 let dbDown = null;
 for (const t of spawnable) {
-  // usageStop: the base fix's preflight above was refused at the usage limit.
+  // usageStop: the base fix's preflight above was refused at the usage limit, or its worker is paused at it.
   if (baseHold || usageStop || !(attempts < ticketSlots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;

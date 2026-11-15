@@ -89,7 +89,7 @@ const state = join(H, '.desk-autopilot', slug);
 const config = join(process.env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md');
 mkdirSync(dirname(config), { recursive: true });
 // `sub` is the repo's §3b Subscription row, left out when null.
-const writeConfig = (sub) => writeFileSync(config, [
+const writeConfig = (sub, to = config) => writeFileSync(to, [
   '## 0. Repo', '| Field | Value |', '|---|---|', '| GitHub repo | `acme/widgets` |', '| Default branch | `main` |', '',
   '## 2. Paths', '| Field | Value |', '|---|---|', `| Primary repo root | \`${join(W, 'repo')}\` |`, `| Worktrees directory | \`${join(W, 'wt')}\` |`, '',
   '## 3. Permissions', '| Key | Capability | Recommended | Your setting |', '|---|---|---|---|', '| `autopilot-workers` | Run workers | `yes` | `yes` |', '',
@@ -244,11 +244,25 @@ writeFileSync(join(state, 'logs', 'K-2.log'), rejected(Math.round(Date.now() / 1
 pass(env);
 t('AC9 after the reset it resumes its own session on b', calls('K-2').at(-1), `K-2|sess-2|${dirOf('b')}|resume`);
 
+// A limit on a login that is no longer the repo's (the default moved from b to c) holds only the work
+// on it: a worker paused there waits, a resume refused there waits, and new work starts on c.
+env = world([['b', 'unused', 10, 10], ['c', 'default', 90, 90]], { 'K-2': PAUSED, 'Y-1': NEW('Y-1') });
+writeFileSync(join(state, 'logs', 'K-2.log'), rejected(RESET));
+atLimit(dirOf('b'));
+out = pass(env);
+t('a worker paused on a login no longer the repo\'s waits there', `${row('K-2').state} ${on('K-2')} ${calls('K-2').length}`, 'running b 0');
+t('and new work still starts on the repo\'s subscription', `${row('Y-1').state} ${on('Y-1')} ${batchOf().usage_hold ?? null}`, 'running c null');
+env = world([['b', 'unused', 10, 10], ['c', 'default', 90, 90]], { ...RESUMING('pending'), 'Y-1': NEW('Y-1') });
+atLimit(dirOf('b'));
+out = pass(env);
+t('a resume refused on its own login waits for it, and the batch goes on', `${row('K-1').state} ${row('K-1').resume} ${row('Y-1').state} ${on('Y-1')} ${batchOf().usage_hold ?? null}`, 'triaged pending running c null');
+t('and the report says it waits for that login', out.includes('K-1: its preflight was refused at the usage limit on its own login b, so it waits for that login'), true);
+
 // AC11: the row names an email no login here is signed in to.
 env = world(THREE, fresh, { sub: 'nobody@example.com' });
 out = pass(env);
 t('AC11 nothing starts', `${row('Y-1').state} ${calls('Y-1').length}`, 'triaged 0');
-t('AC11 the stall names the row and the email', out.includes('config §3b "Subscription" names nobody@example.com, which is not one of this computer\'s subscriptions'), true);
+t('AC11 the stall names the row and the email', out.includes('this repo\'s config §3b "Subscription" row names nobody@example.com, which is not one of this computer\'s subscriptions'), true);
 out = pass({ ...world(THREE, fresh), DESK_SUBSCRIPTION: 'nobody@example.com' });
 t('AC11 from DESK_SUBSCRIPTION, the stall names that', out.includes('DESK_SUBSCRIPTION names nobody@example.com'), true);
 
@@ -259,11 +273,22 @@ out = pass(env);
 t('AC12 nothing starts, on b or on c', `${row('Y-1').state} ${calls('Y-1').length}`, 'triaged 0');
 t('AC12 the stall gives b\'s sign-in command', out.includes('is signed out, so nothing new starts for this repo') && out.includes('CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login'), true);
 
-// AC13: the default at its limit; this repo pinned to b, which has room.
-env = world([['default', 'default', 10, 10], ['b', 'unused', 90, 90]], fresh, { sub: 'b@example.com' });
+// AC13: repo A follows the default, which is at its limit, and holds; repo B, pinned to b with room,
+// has its own config, queue and state, and starts on b while A's hold stands.
+env = world([['default', 'default', 10, 10], ['b', 'unused', 90, 90]], fresh);
 atLimit(DEF);
 pass(env);
-t('AC13 a repo pinned to a subscription with room starts on it', `${row('Y-1').state} ${on('Y-1')} ${batchOf().usage_hold ?? null}`, 'running b null');
+t('AC13 repo A, on the default at its limit, holds', `${row('Y-1').state} ${batchOf().usage_hold?.preflight}`, 'triaged Y-1');
+const otherState = join(H, '.desk-autopilot', 'acme__other');
+const otherQueue = join(process.env.DESK_HOME, 'repos', 'acme__other', 'queue.json');
+const otherConfig = join(process.env.DESK_CONFIG_ROOT, 'repos', 'acme__other', 'config.md');
+for (const d of [join(otherState, 'logs'), join(otherState, 'workers'), dirname(otherQueue), dirname(otherConfig)]) mkdirSync(d, { recursive: true });
+writeConfig('b@example.com', otherConfig);
+writeFileSync(otherQueue, JSON.stringify({ version: 1, batch: 'acme__other', tickets: { 'Z-1': NEW('Z-1') } }));
+pass({ ...env, DESK_CONFIG: otherConfig, DESK_QUEUE: otherQueue, DESK_AUTOPILOT_STATE: otherState, AUTOPILOT_PORT_FLOOR: String(floor += 100) });
+const other = JSON.parse(readFileSync(otherQueue, 'utf8'));
+t('AC13 repo B, pinned to b with room, starts on it', `${other.tickets['Z-1'].state} ${other.tickets['Z-1'].login?.name} ${loginArg(calls('Z-1').at(-1))} ${other.usage_hold ?? null}`, `running b ${dirOf('b')} null`);
+t('AC13 and repo A still holds', `${row('Y-1').state} ${batchOf().usage_hold?.preflight}`, 'triaged Y-1');
 
 // AC14: one login and no subscriptions file: as before.
 env = world(null, fresh);

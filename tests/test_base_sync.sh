@@ -396,6 +396,14 @@ for kind in conflict review; do
   : > "$LIM"; limit_event "$(( $(date +%s) - 60 ))"; age_log; pass
   check "DS-620 $kind: one login: once the limit lifts it resumes its own session" 'grep -q "^base-feat-x .* login=unset .*RESUME session=sid-old" "$T/spawns"'
 done
+# DS-620: outside feature mode too, a base worker paused at the repo's login's limit holds every spawn,
+# with no ticket preflighted, and the hold is recorded with its reset; on another login it holds nothing.
+logins default; stopped m7 conflict "$LD"; node "$B/queue.mjs" set-batch feature=false >/dev/null; rm -f "$C/state/feature.json"; pass
+check "DS-620 a base worker paused on the repo's login holds the batch, with the hold recorded" \
+  '[ "$(grep -c "^T-1 " "$T/spawns")" = 0 ] && [ "$(jq -r ".tickets[\"T-1\"].state" "$DESK_QUEUE")" = triaged ] && [ "$(jq -r .usage_hold.preflight "$DESK_QUEUE")" = null ] && [ "$(jq -r .usage_hold.resets_at "$DESK_QUEUE")" != null ]'
+logins default b; stopped m8 conflict; node "$B/queue.mjs" set-batch feature=false >/dev/null; rm -f "$C/state/feature.json"; pass
+check "DS-620 a base worker paused on a login that is not the repo's holds nothing else" \
+  '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && [ "$(jq -r .usage_hold "$DESK_QUEUE")" = null ] && [[ "$out" == *"base-feat-x on the 5-hour usage limit until "* ]]'
 unset DESK_SUBSCRIPTIONS; rm -f "$LIM"; probe_off
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; else echo "\$1 \$2 \${AUTOPILOT_BRANCH:-} \${AUTOPILOT_TASK:-}\${AUTOPILOT_RESUME:+RESUME session=\$3 \$AUTOPILOT_RESUME}" >> "$T/spawns"; echo "[spawn] ticket=\$1"; fi
