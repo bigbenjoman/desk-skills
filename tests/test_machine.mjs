@@ -243,13 +243,19 @@ t('a re-write keeps each override', `${reWritten.sizing['test-lock-slots'].value
 const dropped = parseProfile(renderProfile(small, rewrittenSizing(ovProfile, propose(small), ['test-cap']), '2026-11-15'));
 t('a re-write drops only the override named', `${dropped.sizing['test-cap'].value} ${isOverride(dropped.sizing['test-cap'])} ${dropped.sizing['test-lock-slots'].value}`, '16 false 3');
 t('clearing an override puts the proposal for the recorded hardware back', `${setErr(['test-cap='], ov)} ${env(['machine', 'get', 'test-cap'], absent, ov)} ${env(['machine', 'why', 'test-cap'], absent, ov)}`, 'exit 0 16 the 16 performance cores');
+// detect and write size from this computer, so the override is one more slot than it proposes: an
+// override equal to the proposal would read as no change whether or not it is kept.
+const hostSlots = Number(env(['machine', 'propose'], absent, ov).match(/^test-lock-slots\s+(\d+)/m)?.[1]);
+t('this computer proposes a slot count', Number.isInteger(hostSlots), true);
+const pinned = String(hostSlots + 1);
+t('an override this computer does not propose is written', setErr([`test-lock-slots=${pinned}`, '--reason', 'measured'], ov), 'exit 0');
 const detected = env(['machine', 'detect'], absent, ov);
-t('detect lists the override as one', detected.includes('overrides kept') && detected.includes('  test-lock-slots: 3 (the rules propose'), true);
-t('detect does not list the override as a change', /^ {2}test-lock-slots: 3 ->/m.test(detected), false);
+t('detect lists the override as one', detected.includes('overrides kept') && detected.includes(`  test-lock-slots: ${pinned} (the rules propose ${hostSlots})`), true);
+t('detect does not list the override as a change', /^ {2}test-lock-slots: \d+ ->/m.test(detected), false);
 t('write refuses to drop what is no override', env(['machine', 'write', '--drop-override', 'bench-cap-points'], absent, ov), 'exit 1');
 const wrote = env(['machine', 'write'], absent, ov);
-t('write names the override it kept', wrote.includes('kept override test-lock-slots: 3'), true);
-t('write keeps the override', `${env(['machine', 'get', 'test-lock-slots'], absent, ov)} ${env(['machine', 'why', 'test-lock-slots'], absent, ov)}`, '3 override: measured: 3 suites fit');
+t('write names the override it kept', wrote.includes(`kept override test-lock-slots: ${pinned}`), true);
+t('write keeps the override', `${env(['machine', 'get', 'test-lock-slots'], absent, ov)} ${env(['machine', 'why', 'test-lock-slots'], absent, ov)}`, `${pinned} override: measured`);
 const dropWrote = env(['machine', 'write', '--drop-override', 'test-lock-slots'], absent, ov);
 t('write --drop-override drops it', `${dropWrote.includes('dropped override test-lock-slots')} ${isOverride(parseProfile(readFileSync(ov, 'utf8')).sizing['test-lock-slots'])}`, 'true false');
 const fromSet = join(T, 'override-only.md');
