@@ -466,7 +466,7 @@ L = await usage();
 f = L.frame();
 t('DS-626 AC8 two at their limits: the headline is the default\'s', f[3], 'me@example.test, the default, is at its 5-hour limit until 14:05. Its workers start again then.');
 t('DS-626 AC8 a ■ note each, the default\'s first, then the one line', f.slice(f.findIndex((l) => l.startsWith('■ ')), f.indexOf(WAIT_LAST) + 1).join('\n'), [
-  '■ pr-ninja, forewatt, solo and api wait for me@example.test: 12 tickets ready, starting at 14:05.',
+  '■ pr-ninja, forewatt, solo, api and web wait for me@example.test: 12 tickets ready, starting at 14:05.',
   '■ desk-skills waits for work@example.test: 1 ticket ready, starting at 15:40.', WAIT_LAST].join('\n'));
 L.done();
 // AC7: no subscription at its limit.
