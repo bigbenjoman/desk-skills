@@ -17,6 +17,8 @@ export const VERSION = 1;
 export const KINDS = Object.freeze(['assign', 'transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete', 'audit', 'audit_deferred', 'needs_you']);
 // Kinds that act on every lever in the repo, or on the machine, so they name no lever.
 const NO_LEVER = Object.freeze(['freeze', 'thaw', 'row_change']);
+// Kinds that act on the machine rather than one repo: their `repo` is `*` in whichever log holds them.
+const MACHINE_WIDE = Object.freeze(['freeze', 'thaw']);
 // A transition by hand is Ben's own call, with no evaluation or evidence file behind it.
 const BY_HAND = 'ben';
 
@@ -53,13 +55,14 @@ function check(event) {
 
 const LOCK_WAIT_MS = 10_000;
 
-// Checks the event and appends it as one line, with `v`, `id`, `repo` and (unless given) `at` filled
-// in. Throws LeverLogError, writing nothing, on an event that fails the check.
+// Checks the event and appends it as one line, with `v`, `id`, `repo` (`*` for a machine-wide kind)
+// and (unless given) `at` filled in. Throws LeverLogError, writing nothing, on an event that fails the
+// check.
 export function append(slug, event) {
   const file = logFile(slug);
   check(event);
   const { v, id, repo, at, ...rest } = event;
-  const line = { v: VERSION, id: randomUUID(), at: at ?? new Date().toISOString(), repo: slug, ...rest };
+  const line = { v: VERSION, id: randomUUID(), at: at ?? new Date().toISOString(), repo: MACHINE_WIDE.includes(event.kind) ? '*' : slug, ...rest };
   mkdirSync(dirname(file), { recursive: true });
   const lock = `${file}.lock`;
   withDirLock(lock, () => appendFileSync(file, `${JSON.stringify(line)}\n`), {
