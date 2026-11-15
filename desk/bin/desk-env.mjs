@@ -82,12 +82,16 @@
 //                                             value; prints ADDED, and a §3 row's perm read back
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
-//   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
-//   node desk-env.mjs machine set <key>=<value>...
+//   node desk-env.mjs machine write [--drop-override <key>]...
+//                                             write ~/.config/desk/machine.md (only after the user confirms),
+//                                             keeping each override unless dropped, and naming the ones kept
+//   node desk-env.mjs machine set <key>=<value>... [--reason "<text>"]
 //                                             set the bench's bench-cap-points, bench-reserve-percent and
 //                                             bench-run-limit-<provider> in the profile (only after the
-//                                             user answers); a bad value exits 1
-//                                             naming it, and nothing is written
+//                                             user answers), or a proposed size as an override (its Why
+//                                             "override: <reason>"); <size>= clears an override back to
+//                                             the proposal. A bad value exits 1 naming it, and nothing
+//                                             is written
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
 //   node desk-env.mjs costs detect            print the GitHub repos, Vercel teams and projects and AWS
 //                                             profiles this computer can see
@@ -2275,14 +2279,34 @@ if (isMain) {
         }
         const profile = machineProfile();
         if (sub === 'set') {
-          // Every pair is checked before anything is written, so one bad value stores nothing.
+          // Every pair is checked before anything is written, so one bad value stores nothing. A
+          // proposed size is stored as an override; `<size>=` clears one back to the proposal.
           const rows = [];
-          for (const pair of rest) {
+          const ri = rest.indexOf('--reason');
+          const reason = ri >= 0 ? rest[ri + 1] : '';
+          if (ri >= 0 && !String(reason ?? '').trim()) { console.error('nothing written: --reason needs the reason as its next argument'); process.exit(1); }
+          const pairs = ri >= 0 ? rest.filter((_, j) => j !== ri && j !== ri + 1) : rest;
+          for (const pair of pairs) {
             const i = pair.indexOf('=');
             const k = (i > 0 ? pair.slice(0, i) : pair).trim().toLowerCase();
             const v = i > 0 ? pair.slice(i + 1).trim() : '';
+            if (i > 0 && M.isSizingKey(k)) {
+              if (v === '') {
+                if (!M.isOverride(profile?.sizing?.[k])) { console.error(`nothing written: \`${k}\` holds no override to clear`); process.exit(1); }
+                // Back to what the rules propose for the hardware the profile records; with none
+                // recorded there is no proposal, so the row goes.
+                const recorded = M.sizesProposed(profile) ? Object.fromEntries(Object.entries(profile.hardware).map(([hk, h]) => [hk, h.value])) : null;
+                const back = recorded ? M.propose(recorded).find((s) => s.key === k) : null;
+                rows.push(back ?? { key: k, value: null });
+                continue;
+              }
+              const bad = M.sizingSettingError(k, v);
+              if (bad) { console.error(`nothing written: ${bad}`); process.exit(1); }
+              rows.push({ key: k, value: v, why: M.overrideWhy(reason) });
+              continue;
+            }
             const bad = i > 0 ? M.benchSettingError(k, v) : `"${pair}" is not <key>=<value>`;
-            if (bad) { console.error(`nothing written: ${bad}`); process.exit(1); }
+            if (bad) { console.error(`nothing written: ${bad}${i > 0 && !M.benchWhy(k) ? `, or a size: ${M.SIZING_KEYS.join(', ')}` : ''}`); process.exit(1); }
             rows.push({ key: k, value: v, why: M.benchWhy(k) });
           }
           if (!rows.length) { console.error('usage: desk-env.mjs machine set <key>=<value>...'); process.exit(2); }
@@ -2300,6 +2324,9 @@ if (isMain) {
           if (!M.sizesProposed(profile)) { console.log(`\nno sizes proposed in ${path} yet: desk-env machine propose shows the sizes it would write`); break; }
           const hwc = M.hardwareChanges(profile, hw);
           const szc = M.sizingChanges(profile, proposal);
+          const ovr = M.sizingOverrides(profile, proposal);
+          if (ovr.length) console.log('\noverrides kept (a re-write keeps them; desk-env machine write --drop-override <key> drops one):');
+          for (const o of ovr) console.log(`  ${o.key}: ${o.value} (the rules propose ${o.proposed}) ${o.why}`);
           if (!hwc.length && !szc.length) { console.log(`\nunchanged since ${path}`); break; }
           if (hwc.length) console.log(`\nhardware changed since ${path}:`);
           for (const c of hwc) console.log(`  ${c.key}: ${c.was} -> ${c.now}`);
@@ -2311,13 +2338,26 @@ if (isMain) {
         if (sub === 'propose') {
           for (const s of proposal) {
             const was = profile?.sizing[s.key]?.value;
-            console.log(`${s.key.padEnd(27)} ${s.value.padEnd(8)} ${s.why}${was != null && was !== s.value ? `  (profile: ${was})` : ''}`);
+            const ovr = M.isOverride(profile?.sizing[s.key]) ? ', an override that write keeps' : '';
+            console.log(`${s.key.padEnd(27)} ${s.value.padEnd(8)} ${s.why}${was != null && (was !== s.value || ovr) ? `  (profile: ${was}${ovr})` : ''}`);
           }
           break;
         }
-        // write: overwrites; /desk-setup runs it only after the user confirms the proposal. Rows the
-        // proposal does not make (the bench settings) are kept.
-        console.log(writeWithBackup(path, M.renderProfile(hw, M.rewrittenSizing(profile, proposal), new Date().toISOString().slice(0, 10))));
+        // write: overwrites; /desk-setup runs it only after the user confirms the proposal. Overrides
+        // and the rows the proposal does not make (the bench settings) are kept; --drop-override <key>
+        // replaces one override with the proposal.
+        const drop = [];
+        for (let j = 0; j < rest.length; j++) {
+          if (rest[j] !== '--drop-override') { console.error(`usage: desk-env.mjs machine write [--drop-override <key>]...: "${rest[j]}" is not one`); process.exit(2); }
+          const k = String(rest[++j] ?? '').trim().toLowerCase();
+          if (!M.isOverride(profile?.sizing?.[k]) || !M.isSizingKey(k)) { console.error(`nothing written: \`${k}\` is not an override in ${path}`); process.exit(1); }
+          drop.push(k);
+        }
+        console.log(writeWithBackup(path, M.renderProfile(hw, M.rewrittenSizing(profile, proposal, drop), new Date().toISOString().slice(0, 10))));
+        for (const k of drop) console.log(`dropped override ${k}: now ${proposal.find((s) => s.key === k).value}, as proposed`);
+        for (const o of M.sizingOverrides(profile, proposal).filter((x) => !drop.includes(x.key))) {
+          console.log(`kept override ${o.key}: ${o.value} (the rules propose ${o.proposed}); desk-env machine write --drop-override ${o.key} drops it`);
+        }
         break;
       }
       case 'costs': {
