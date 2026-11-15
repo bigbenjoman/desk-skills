@@ -49,6 +49,11 @@ appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
 if (existsSync('$T/upload-left')) { process.stdout.write(readFileSync('$T/upload-left', 'utf8')); process.exit(4); }
 // \$T/upload-busy-<pr>, when it exists, is the shared profile in use: the uploader's exit 2.
 if (existsSync('$T/upload-busy-' + process.argv[2])) { console.error('[upload] the shared profile is in use — refusing:'); process.exit(2); }
+// \$T/upload-throttle-<pr>, when it exists, is GitHub's rate limit: its contents are the retry_after, then exit 7.
+if (existsSync('$T/upload-throttle-' + process.argv[2])) { console.error('[upload] throttled: an earlier stall has not passed, so nothing is uploaded before ' + readFileSync('$T/upload-throttle-' + process.argv[2], 'utf8').trim()); process.exit(7); }
+// \$T/upload-fillcrash-<pr>, when it exists, fills the first cell of the fake gh's PR body, then crashes.
+const frc = '$T/fr/' + process.argv[2] + '.json';
+if (existsSync('$T/upload-fillcrash-' + process.argv[2])) { const j = JSON.parse(readFileSync(frc, 'utf8')); j.body = j.body.replace(/_drag (\S+?)\.png_/, '<img alt="\$1" src="https://github.com/user-attachments/assets/1">'); writeFileSync(frc, JSON.stringify(j)); console.error('Error: page closed'); process.exit(1); }
 // \$T/upload-crash, when it exists, is an uncaught exception: a stack, then node's version banner last.
 if (existsSync('$T/upload-crash')) { console.error('file:///up.mjs:9\nError: profile locked\n    at main (file:///up.mjs:9:9)\n\nNode.js v22.23.1'); process.exit(1); }
 // \$T/upload-fills, when it exists, swaps the cells of the fake gh's PR \$T/fr/<pr>.json as the real one does.
@@ -2211,6 +2216,30 @@ check "DS-429 AC3 a spent upload is not tried again" '! grep -q "^772 " "$T/uplo
 check "DS-429 a round that names its screenshots is uploaded though earlier tries were spent" \
   'grep -qx "774 $T/state-s/images/P-4/" "$T/uploads" && [ "$(field P-4 upload_crash)" = null ] && grep -q "^pr ready 774" "$T/gh-calls"'
 rm -f "$T/upload-fills" "$T/upload-busy-775"
+
+# ---- DS-674: a crash that filled cells spends no try, and a throttled stop spends none and waits for
+# its retry_after. UC-1: one filled crash already recorded, three cells left, and each retry fills one
+# then crashes. UC-2: one try spent, and its retry is throttled.
+q add UC-1; q set UC-1 state=done lane=A branch=fix/UC-1 result.pr=791 'upload_crash={"pr":791,"dir":"'"$T/state-s/images/UC-1/"'","tries":1,"log":"x","filled":1}'
+frx 791 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 791 '_drag uc-1a.png_ _drag uc-1b.png_ _drag uc-1c.png_'; mkdir -p "$T/state-s/images/UC-1"; : > "$T/state-s/images/UC-1/uc-1a.png"
+q add UC-2; q set UC-2 state=done lane=A branch=fix/UC-2 result.pr=792 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x"}'
+frx 792 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 792 '_drag uc-2.png_'; mkdir -p "$T/state-s/images/UC-2"; : > "$T/state-s/images/UC-2/uc-2.png"
+: > "$T/upload-fillcrash-791"; echo 2099-01-01T00:00:00.000Z > "$T/upload-throttle-792"
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-674 AC1 a crash that filled a cell spends no try, and its cells wait rather than go to the person" \
+  'grep -qx "791 $T/state-s/images/UC-1/" "$T/uploads" && [ "$(field UC-1 upload_crash.tries)" = 1 ] && [ "$(field UC-1 upload_crash.filled)" = 1 ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -qF "UC-1: image upload to PR #791 crashed after filling 1 cell(s), so it spends no try (1 of 2 spent), and the next pass tries it again"'
+check "DS-674 AC3 a throttled upload spends no try and its cells wait for the back-off" \
+  'grep -qx "792 $T/state-s/images/UC-2/" "$T/uploads" && [ "$(field UC-2 upload_crash.tries)" = 1 ] && [ "$(field UC-2 upload_crash.throttled)" = "\"2099-01-01T00:00:00.000Z\"" ] && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -qF "UC-2 images → #792 wait: GitHub'"'"'s rate limit throttled the upload, so it is tried again after 2099-01-01T00:00:00.000Z without counting a try"'
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-674 AC1 after a second crash that filled a cell, the next pass tries the upload again" \
+  'grep -qx "791 $T/state-s/images/UC-1/" "$T/uploads" && [ "$(field UC-1 upload_crash.tries)" = 1 ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-1: DRAFT"'
+check "DS-674 AC3 a throttled upload is not tried again before its retry_after" \
+  '! grep -q "^792 " "$T/uploads" && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-2: DRAFT"'
+rm -f "$T/upload-fillcrash-791" "$T/upload-throttle-792"; : > "$T/upload-fills"
+q set UC-2 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x","throttled":"2020-01-01T00:00:00.000Z"}'
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-fills"
+check "DS-674 AC3 once its retry_after has passed, the throttled upload is tried again" \
+  'grep -qx "792 $T/state-s/images/UC-2/" "$T/uploads" && [ "$(field UC-2 upload_crash)" = null ] && [ "$(field UC-2 images_uploaded)" = true ]'
 
 # ---- KAN-629: screenshots saved in the ticket's briefed directory by a worker that never printed
 # AUTOPILOT_IMAGES are uploaded from that directory, not left to the person as files desk holds.

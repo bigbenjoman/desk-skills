@@ -541,19 +541,29 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
 // Puts a ticket's screenshots in PR #prNo's body, once a pass. Only `0 placeholder(s) left` counts as
 // uploaded. An upload with no result line crashed: its whole output is kept, and it is tried again by
 // a later pass (the "crashed uploads" step) until UPLOAD_TRIES is spent, when the undraft step names it.
+// A crash spends a try only when the body has as many `_drag <file>_` cells after it as before it:
+// one that filled cells made progress, so it is tried again however often it has crashed.
 // A round whose log names its screenshots is always uploaded: the cap holds back only the retries.
-// The shared profile in use (the uploader's exit 2) is a wait, so it spends no try.
+// The shared profile in use (the uploader's exit 2) and GitHub's rate limit (its exit 7) are waits,
+// so they spend no try; a throttled one is not tried again before the retry_after it printed.
 const uploadedThisPass = new Set();
+// PR #prNo's body, or null where it could not be read.
+function prBody(prNo) {
+  const view = shOut('gh', ['pr', 'view', String(prNo), '--repo', GH_REPO, '--json', 'body']);
+  try { return view.ok ? String(JSON.parse(view.out).body ?? '') : null; } catch { return null; }
+}
 // How many of `shots` (file names) PR #prNo's body still has a `_drag <file>_` cell for: 0 with none,
 // null where the body could not be read.
 function cellsFor(prNo, shots) {
-  const view = shOut('gh', ['pr', 'view', String(prNo), '--repo', GH_REPO, '--json', 'body']);
-  try { return view.ok ? dragFiles(String(JSON.parse(view.out).body ?? '')).filter((f) => shots.includes(f)).length : null; } catch { return null; }
+  const body = prBody(prNo);
+  return body == null ? null : dragFiles(body).filter((f) => shots.includes(f)).length;
 }
+const cellsIn = (prNo) => { const body = prBody(prNo); return body == null ? null : dragCells(body); };
 function uploadShots(t, prNo, imgDir) {
   const was = crashOf(t, prNo);
   if (uploadedThisPass.has(t.key)) return;
   uploadedThisPass.add(t.key);
+  const before = cellsIn(prNo);
   const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(prNo), imgDir]);
   const up = run.out;
   const doneLine = /done: (\d+) image\(s\) in the body, (\d+) placeholder\(s\) left/.exec(up);
@@ -580,12 +590,20 @@ function uploadShots(t, prNo, imgDir) {
     save();
     q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries: was?.tries ?? 0, log: saved, busy: true })}`);
     report.advanced.push(`${t.key} images → #${prNo} wait: the shared browser profile is in use, so the next pass tries again without counting a try`);
+  } else if (run.code === 7) {
+    save();
+    const until = /nothing is uploaded before (\S+)/.exec(up)?.[1] ?? null;
+    q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries: was?.tries ?? 0, log: saved, throttled: until ?? true })}`);
+    report.advanced.push(`${t.key} images → #${prNo} wait: GitHub's rate limit throttled the upload, so it is tried again ${until ? `after ${until}` : 'by the next pass'} without counting a try`);
   } else {
     save();
-    const tries = (was?.tries ?? 0) + 1;
-    q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries, log: saved })}`);
+    const after = cellsIn(prNo);
+    const filled = before != null && after != null && after < before ? before - after : 0;
+    const tries = (was?.tries ?? 0) + (filled ? 0 : 1);
+    q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries, log: saved, ...(filled ? { filled } : {}) })}`);
     const next = tries < UPLOAD_TRIES ? 'the next pass tries it again' : 'its cells go to the undraft step, which puts them to the person';
-    report.failed.push(`${t.key}: image upload to PR #${prNo} crashed (try ${tries} of ${UPLOAD_TRIES}), and ${next}; its whole output is saved in ${saved}`);
+    const spent = filled ? `after filling ${filled} cell(s), so it spends no try (${tries} of ${UPLOAD_TRIES} spent)` : `(try ${tries} of ${UPLOAD_TRIES})`;
+    report.failed.push(`${t.key}: image upload to PR #${prNo} crashed ${spent}, and ${next}; its whole output is saved in ${saved}`);
   }
 }
 
@@ -1039,7 +1057,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
   for (const t of Object.values(queue().tickets)) {
     const c = t.upload_crash;
-    if (!c || t.state === 'running' || uploadedThisPass.has(t.key) || (!c.busy && c.tries >= UPLOAD_TRIES)) continue;
+    if (!c || t.state === 'running' || uploadedThisPass.has(t.key) || (!c.busy && !c.throttled && c.tries >= UPLOAD_TRIES)) continue;
+    if (Date.parse(c.throttled) > Date.now()) continue;
     const cur = t.result?.pr ?? t.draft_pr;
     if (cur != null && Number(cur) !== Number(c.pr)) { q('set', t.key, 'upload_crash=null'); continue; }
     // A body with no cell left was filled after all (the crash came after the uploader's edit, or the
