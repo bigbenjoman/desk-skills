@@ -215,7 +215,7 @@ t('the sign-in starts no second write during that save', writes.length, 1);
 t('and its one row keeps waiting', f.filter((l) => l.includes('waiting for you to sign in: steps below')).length, 1);
 await release();
 await sleep(150);
-t('once saved, the next check puts it on standby', writes.map((w) => w.args.join(' ')).at(-1), 'set claude login-3 standby');
+t('once saved, the next check puts it on standby', writes.map((w) => w.args.join(' ')).at(-1), 'set claude login-3 unused');
 V.done();
 
 // ---- AC2 with no subscriptions file: the signed-in login is written down on standby

@@ -1792,9 +1792,9 @@ export function usageOf(repos, now, shown = repos) {
 }
 
 // The logins new work starts on, once a subscriptions file exists; null with none, or one that cannot
-// be read, and the usage line is then the one it always was. Claude's is the login a pass would start
-// a worker on (pass.mjs pickLogin): of the logins in rotation or on standby that no batch here has
-// benched, the one login-choice ranks first. Sign-in is not checked, which takes a call per login on
+// be read, and the usage line is then the one it always was. Claude's is the login a pass's own calls
+// would start on (call-login.mjs claudeChoice): of the usable logins that no batch here has benched,
+// the one login-choice ranks first. Sign-in is not checked, which takes a call per login on
 // every redraw. Codex's, only while the file lists a Codex login, is the one a codex call starts on
 // (codex-login.mjs).
 //   -> { claude: side | null, codex: side | null } | null
@@ -3579,7 +3579,7 @@ export function interactive({
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
       const said = `${c.email ?? a.label ?? 'The new account'} is added, unused. Press d on it to make it the default.`;
       if (c.rule === 'standby') msg = said;
-      else saveLogin(['set', a.tool, a.login.name, 'standby'], said, null);
+      else saveLogin(['set', a.tool, a.login.name, 'unused'], said, null);
     }
   }
   // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
@@ -3647,7 +3647,7 @@ export function interactive({
     if (x.use?.isDefault) { msg = `${label} is the default. Make another subscription the default with d first.`; return; }
     const on = x.use?.pinned ?? [];
     if (on.length) { msg = `${label} runs ${andList(on)}. Move ${andList(on)} to another subscription first.`; return; }
-    const back = l.rule ? { args: ['set', l.tool, l.name, l.rule], said: `${label} is back, ${l.rule === 'off' ? 'off' : 'unused'}.` } : null;
+    const back = l.rule ? { args: ['set', l.tool, l.name, l.rule === 'off' ? 'off' : 'unused'], said: `${label} is back, ${l.rule === 'off' ? 'off' : 'unused'}.` } : null;
     saveLogin(['remove', l.tool, l.name], `${label} is removed from the rules for this computer. Its folder and sign-in are left as they are.${back ? ' u undoes.' : ''}`, back);
   }
   function usageKey(k, x) {
