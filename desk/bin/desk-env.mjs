@@ -324,6 +324,7 @@ export const CONFIG_ROWS = Object.freeze({
   'work-id-patterns': { section: '4', row: 'Other work id patterns' },
   'merge-holds': { section: '4', row: 'Merge holds' },
   'incidental-paths': { section: '4', row: 'Incidental paths' },
+  'append-only-paths': { section: '4', row: 'Append-only paths' },
   'merge-method': { section: '4', row: 'Merge method' },
   'local-review': { section: '4', row: 'Local review command' },
   'clean-verdict': { section: '4', row: 'Clean review verdict' },

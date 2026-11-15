@@ -549,6 +549,49 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   t('DS-687 a merge_after on a ticket there that triage found not needed goes', step('T-16'), '0 triaged null undefined');
 }
 
+// DS-689: a file §4 Append-only paths covers is no collision, at admit or in plan-batch; any other
+// shared file still is, and a row of none, no row, or a row that is not a list of globs collides as today.
+{
+  const AO = join(T, 'append-only');
+  mkdirSync(join(AO, 'triage'), { recursive: true });
+  const aoCfg = (row) => {
+    const f = join(AO, `config-${Math.random().toString(36).slice(2)}.md`);
+    writeFileSync(f, `${readFileSync(base.DESK_CONFIG, 'utf8')}\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n${row == null ? '' : `| Append-only paths | ${row} |\n`}`);
+    return f;
+  };
+  const aoRec = (k, files) => writeFileSync(join(AO, 'triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', size: 'S', branch: `feat/${k}`, files_in_scope: files, unknowns: [], blockers: [] }));
+  aoRec('AO-1', ['messages/en.json', 'src/one.ts']);
+  aoRec('AO-2', ['messages/en.json', 'src/two.ts']);
+  aoRec('AO-3', ['messages/en.json', 'src/app.ts']);
+  aoRec('AO-4', ['messages/en.json', 'src/app.ts']);
+  // Admit `first` then `second` into a fresh queue under `row` -> each one's collides_with, and the output.
+  const admitBoth = (row, first, second) => {
+    const env = { DESK_CONFIG: aoCfg(row), DESK_QUEUE: join(AO, `queue-${first}-${Math.random().toString(36).slice(2)}.json`), DESK_AUTOPILOT_STATE: AO };
+    writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'ao', tickets: {} }));
+    const a = cli('queue.mjs', ['admit', first], env);
+    const b = cli('queue.mjs', ['admit', second], env);
+    const tk = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets;
+    return { got: `${a.code} ${b.code} ${tk[first]?.state} ${tk[first]?.collides_with} ${tk[second]?.collides_with}`, out: `${a.out}${b.out}` };
+  };
+  const glob = '`messages/*.json`';
+  t('DS-689 AC1 two tickets sharing only an append-only file are no collision at admit', admitBoth(glob, 'AO-1', 'AO-2').got, '0 0 triaged null null');
+  t('DS-689 AC3 a shared file the row does not cover still collides', admitBoth(glob, 'AO-3', 'AO-4').got, '0 0 triaged AO-4 AO-3');
+  t('DS-689 AC4 with the row none they collide as today', admitBoth('`none`', 'AO-1', 'AO-2').got, '0 0 triaged AO-2 AO-1');
+  t('DS-689 AC4 with no row they collide as today', admitBoth(null, 'AO-1', 'AO-2').got, '0 0 triaged AO-2 AO-1');
+  t('DS-689 AC6 a row that is not a list of path globs collides as none', admitBoth('messages and the locales', 'AO-1', 'AO-2').got, '0 0 triaged AO-2 AO-1');
+  t('DS-689 AC6 an absolute path or a .. is not a path glob', admitBoth('`/messages/*.json` `../messages/*.json`', 'AO-1', 'AO-2').got, '0 0 triaged AO-2 AO-1');
+  const planned = (row, keys) => {
+    const x = cli('plan-batch.mjs', ['--json', ...keys], { DESK_CONFIG: aoCfg(row), DESK_QUEUE: join(AO, 'plan-queue.json'), DESK_AUTOPILOT_STATE: AO });
+    try { return String(JSON.parse(x.out).message); } catch { return x.out; }
+  };
+  const p = planned(glob, ['AO-1', 'AO-2']);
+  t('DS-689 AC2 plan-batch lists no collision between two tickets sharing only an append-only file', `${p.includes('QUESTIONS')} ${p.includes('COLLISIONS')}`, 'true false');
+  t('DS-689 AC3 plan-batch still lists a collision on a file the row does not cover', planned(glob, ['AO-3', 'AO-4']).includes('AO-3 ~ AO-4: src/app.ts'), true);
+  t('DS-689 AC4 plan-batch with the row none lists the collision as today', planned('`none`', ['AO-1', 'AO-2']).includes('AO-1 ~ AO-2: messages/en.json'), true);
+  const bad = planned('messages and the locales', ['AO-1', 'AO-2']);
+  t('DS-689 AC6 plan-batch reads a malformed row as none and names it', `${bad.includes('AO-1 ~ AO-2: messages/en.json')} ${bad.includes('collisions: config §4 "Append-only paths" is not a list of path globs (messages and the locales) — read as none')}`, 'true true');
+}
+
 // The standing batch is never archived, even with a promotion that would archive a named one.
 writeFileSync(standingQ, JSON.stringify({ version: 1, batch: 's1', promotion: { pr: 9 }, tickets: {} }));
 t('the standing batch is never archived', res(run(`console.log(JSON.stringify(A.archiveCheck(B.listBatches()[0], { state: () => 'MERGED', mergedAt: () => '${MERGED_AT}' })))`)).archived === false && existsSync(standingQ), true);

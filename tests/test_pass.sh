@@ -3693,4 +3693,16 @@ check "DS-557 a links-made park reads direction as desk-jira link does: duplicat
 check "DS-557 a later round's follow-ons keep the link step an earlier round left" \
   '[ "$(field L-9 follow_on)" = "[{\"step\":\"Issue link not made: earlier\",\"row\":\"jira-edit\"},{\"step\":\"post the note\",\"row\":\"jira-comment\"}]" ]'
 
+# DS-689 AC6: a §4 Append-only paths row that is not a list of path globs is named in the pass report;
+# a row of globs is not.
+export DESK_QUEUE="$T/queue-ao.json" DESK_AUTOPILOT_STATE="$T/state-ao"; mkdir -p "$T/state-ao/logs"
+q init ao
+{ cat "$T/config.md"; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Append-only paths | messages and the locales |\n'; } > "$T/config-ao-bad.md"
+{ cat "$T/config.md"; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Append-only paths | `messages/*.json` |\n'; } > "$T/config-ao.md"
+out=$(DESK_CONFIG="$T/config-ao-bad.md" node "$B/pass.mjs" 2>&1)
+check "DS-689 AC6 a malformed Append-only paths row is named in the pass report, read as none" \
+  'echo "$out" | grep -qF "collisions: config §4 \"Append-only paths\" is not a list of path globs (messages and the locales) — read as none"'
+out=$(DESK_CONFIG="$T/config-ao.md" node "$B/pass.mjs" 2>&1)
+check "DS-689 AC6 a row of globs is not named" '! echo "$out" | grep -qF "Append-only paths"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
