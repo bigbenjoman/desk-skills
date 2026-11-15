@@ -400,6 +400,8 @@ if (mode === 'triage') {
     // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
     // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
     ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
+    // Whether its AUTOPILOT_PARK_CLEARS_WHEN line reads as a form a pass checks: reads and writes nothing.
+    ...BIN_FORMS.flatMap((b) => [`Bash(${b}/clears-when.mjs --check:*)`, `Bash(node ${b}/clears-when.mjs --check:*)`]),
     // `render` and `compare` open Chromium on the saved boards (and a built Storybook), so only
     // under the browser lock.
     ...BIN_FORMS.flatMap((b) => BIN_FORMS.flatMap((d) => [' render', ' compare'].map((s) => `Bash(${b}/with-lock.sh browser node ${d}/desk-design.mjs${s}:*)`))),

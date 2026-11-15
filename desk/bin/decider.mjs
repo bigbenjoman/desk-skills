@@ -11,6 +11,8 @@
 //     with no answer since (queue.mjs requeue keeps that park as `prev_park`), and a park on a step only a
 //     person or another account takes (batch-state.mjs personOnlyStep), with no answer since it parked;
 //   - a park with a recorded clears-when waits on it, neither handed on nor given to a session;
+//   - a park whose clears-when no form read goes to a session to restate as a form, or as none; once a
+//     session has seen it, or none will, the supervisor records it none (restateKeys);
 //   - the rest go to the session, unless already handed and not answered since (an answer through
 //     answer.mjs, which the ticket's briefing records), and an answered one goes with its answers;
 //   - what the session does not report settled is handed on with its reason, unless the usage limit
@@ -21,7 +23,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
-import { CLEARS_WHEN_FORMS, describeCond, personClears } from './clears-when.mjs';
+import { CLEARS_WHEN_FORMS, describeCond, personClears, recorded, restating } from './clears-when.mjs';
 import { needsSession, planPark, leftPark, personOnlyStep, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
@@ -83,6 +85,7 @@ export function deciderItems(v, q = {}, state = null) {
       round: (prev?.round ?? 0) + 1, prev, repeat: !!prev && samePark(prev.question, p.question, p.key),
       takenOnce: !!tickets[p.key]?.auto_answered && samePark(tickets[p.key].auto_answered.question, p.question, p.key),
       ...(tickets[p.key]?.park?.session_step ? { step: tickets[p.key].park.session_step } : {}),
+      ...(restating(tickets[p.key]?.park?.clears_when) ? { restate: String(tickets[p.key].park.clears_when.text ?? '') } : {}),
     };
   });
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
@@ -108,7 +111,8 @@ export function openQuestionsOf(state, key, t = {}) {
 // cleared asked, with no answer since that one, is handed on: another worker would park the same way.
 // So is a park on a step only a person or another account takes, with no answer since it parked.
 // With no `state` to read answers from, none is counted. A park with a recorded clears-when waits on
-// it: each pass checks it and settles the park, so it needs neither a session nor the person.
+// it: each pass checks it and settles the park, so it needs neither a session nor the person. One whose
+// clears-when no form read goes to the session to restate, unless the rules above hand it on first.
 export function presort(items, state = null) {
   const hand = [];
   const ask = [];
@@ -125,6 +129,8 @@ export function presort(items, state = null) {
       hand.push({ item, why: `the person approved a step no worker can run (${short(String(item.step.step))}): it goes to an interactive desk-ticket session` });
     } else if (item.kind === 'parked' && needsSession({ lane: item.lane, park: { question: item.text } })) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
+    } else if (item.kind === 'parked' && item.restate != null) {
+      ask.push(item);
     } else if (item.kind === 'parked' && item.clears && personClears(JSON.parse(item.clears))) {
       hand.push({ item, why: 'waits on issue links only the person makes: a pass records it done again once each is on Jira' });
     } else if (item.kind === 'parked' && item.clears) {
@@ -144,10 +150,16 @@ export function presort(items, state = null) {
   return { hand, ask, waits };
 }
 
-// A recorded clears-when as one comparable string, or null for none.
+// A recorded clears-when as one comparable string, or null for none or one still to be restated.
 function condKey(c) {
-  return c?.kind && c.kind !== 'none' ? JSON.stringify(c) : null;
+  return recorded(c) ? JSON.stringify(c) : null;
 }
+
+// The tickets of `items` parked on an unreadable clears-when, and with a queue `q` only those whose park
+// still is. Once a session has seen them, or none will, the supervisor records each as none, so the park
+// is the person's.
+export const restateKeys = (items, q = null) => [...new Set(items.filter((i) => i.restate != null).map((i) => i.ticket))]
+  .filter((k) => !q || restating(q.tickets?.[k]?.park?.clears_when));
 
 // ---- the handed register -----------------------------------------------------------------------
 export const handedPath = (state) => join(state, 'handed.json');
@@ -251,7 +263,12 @@ export function deciderPrompt({ slug, report, items, rules, bin, state = null, w
   const answerLines = (i) => (i.answers ?? []).map((a) => `  - answered ${a.at}: ${a.text.replace(/\n/g, '\n    ')}`);
   const prevLines = (i) => (i.prev?.question ? [`  - park ${i.round}; the last requeue cleared park ${i.round - 1}: ${i.prev.question.replace(/\n/g, ' ')}`] : []);
   const questionLines = (i) => (i.questions ?? []).map((x) => `  - open question: ${x}`);
-  const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...questionLines(i), ...prevLines(i), ...answerLines(i)]).join('\n');
+  const restateLines = (i) => (i.restate != null ? [`  - clears-when to restate: ${i.restate.replace(/\n/g, ' ')}`] : []);
+  const list = items.flatMap((i) => [`- id \`${i.id}\` · ${i.ticket} · ${i.kind}${i.lane ? ` · lane ${i.lane}` : ''}: ${i.text}`, ...restateLines(i), ...questionLines(i), ...prevLines(i), ...answerLines(i)]).join('\n');
+  // Only when an item's clears-when did not read, so a prompt without any reads as it always has.
+  const onRestate = items.some((i) => i.restate != null) ? [
+    `- an item with a "clears-when to restate" under it was parked with a condition no form reads, often a command or a sentence. Restate it once: where it names one fact a script can read, record that fact as one of the forms above (a \`gh pr view <n> … MERGED\` is \`pr <n> merged\`), keeping its meaning and adding nothing; where it names nothing a script can read (a person's answer, a comment, a sign-off), record \`none\` with \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> none\`. Then deal with the item as the rest of these rules say: one now waiting on a recorded form is settled, and one recorded \`none\` goes to the person unless another rule settles it`,
+  ] : [];
   // Only when an item has a previous park, so a prompt without any reads as it always has.
   const onRepeats = items.some((i) => i.prev?.question) ? [
     '- an item whose last requeue cleared a park asking the same thing in other words, with no answer under it, would only park again: hand it on, naming both parks in its `why`, rather than requeue it',
@@ -287,6 +304,7 @@ export function deciderPrompt({ slug, report, items, rules, bin, state = null, w
     `- read: \`node ${join(bin, 'queue.mjs')} render\`, \`desk-jira get <KEY>\`, \`gh pr view <n> --json state,isDraft,headRefOid\`, and files in the batch state directory${state ? ` (${state})` : ''} with the Read, Grep and Glob tools only. Run each allowed command on its own: no \`cd\`, pipe or \`;\`, which are refused`,
     `- never requeue a lane C ticket or a park that starts \`lane C\` or \`lane D\` (parked at triage on its lane), never requeue or record a clears-when for a park that starts \`${LEFT_PREFIX}\` (left in a finished feature batch), never answer a ${takes ? 'product, design or copy question other than by taking its recommended option as below' : 'product, design or copy question'}, and never act on anything that needs a config §3 row that is not \`yes\`: hand those on`,
     `- for a parked ticket you hand on that waits on something a script can read, record it so a later pass settles it with no session: \`node ${join(bin, 'queue.mjs')} clears-when <TICKET> "<${CLEARS_WHEN_FORMS}>"\``,
+    ...onRestate,
     ...onAnswers,
     ...onTake,
     ...onWeb,
