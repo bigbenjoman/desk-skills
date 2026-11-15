@@ -3238,7 +3238,7 @@ git -C "$T/wt/W-7" push -q origin fix/W-7 2>/dev/null
 node "$B/pass.mjs" >/dev/null 2>&1
 check "DS-497 and drops it once they are pushed" '[ "$(field W-7 park.unpushed)" = null ] && [ "$(field W-7 state)" = "\"parked\"" ]'
 
-# DS-606: commits up to the head the ticket's own last worker left are pushed by the fix try's pass,
+# Commits up to the head the ticket's own last worker left are pushed by the fix try's pass,
 # not held. W-9's worker parks with a commit it did not push, and the pass records that head.
 wb_clone(){ git clone -q "$T/wb-origin.git" "$T/wt/$1" 2>/dev/null; git -C "$T/wt/$1" checkout -q -b "fix/$1"
   echo a > "$T/wt/$1/a.txt"; git -C "$T/wt/$1" add a.txt; git -C "$T/wt/$1" commit -q -m a; git -C "$T/wt/$1" push -q origin "fix/$1" 2>/dev/null; }
