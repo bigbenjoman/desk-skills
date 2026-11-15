@@ -55,7 +55,7 @@ import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
 import { claudeAccount, claudeJsonPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins, nextLoginFolder, readSubscriptions,
   repoSubscription, signInParts } from './logins.mjs';
-import { limitName } from './usage-limit.mjs';
+import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
@@ -1996,8 +1996,6 @@ function limitOf(x, now) {
   const k = full.reduce((a, b) => (r[b].resetsAt > r[a].resetsAt ? b : a));
   return { type: k, at: r[k].resetsAt };
 }
-const LIMIT_WORDS = { five_hour: '5-hour limit', seven_day: 'weekly limit' };
-const limitWords = (type) => LIMIT_WORDS[type] ?? 'limit';
 
 // Each subscription at its limit that repos run on, earliest reset first (the default first on a tie):
 //   -> [{ x, limit, repos }], `repos` the repo-table rows whose subscription is that login, the most
@@ -2137,7 +2135,7 @@ function usageHeadline(t, now) {
   const def = t.claude.find((x) => x.use?.isDefault);
   const l = def?.limit;
   if (l) {
-    return segLine([[loginLabel(def.login), BOLD], [`, the default, is at its ${limitWords(l.type)}`, GREY],
+    return segLine([[loginLabel(def.login), BOLD], [`, the default, is at its ${limitWord(l.type) ? `${limitWord(l.type)} ` : ''}limit`, GREY],
       ...(l.at != null ? [[' until ', GREY], [resetText(l.at * 1000, now), null], ['. Its workers start again then.', GREY]] : [['. Its workers start again once it lifts.', GREY]])]);
   }
   const out = [...t.claude, ...t.codex].find((x) => x.check?.state === 'signed out');

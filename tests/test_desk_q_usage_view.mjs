@@ -391,7 +391,7 @@ B.done();
 repo();
 claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
 
-// ---- DS-626 AC1-AC8: at a subscription's limit, which repos wait, how many tickets are ready and when they start
+// ---- At a subscription's limit, which repos wait, how many tickets are ready and when they start
 // A login's probe log holding the rejection a real worker recorded at its limit (usage-limit-five-hour.json),
 // its limit `type` and both windows as given.
 const LIMIT_EVENT = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'usage-limit-five-hour.json'), 'utf8');
