@@ -159,7 +159,7 @@ for its own unpushed commits.
 A resume always runs on the login the worker started on (the row's `login`), whatever that login's
 rule is now, because its session lives in that login's folder. If that login has been signed out the
 ticket parks naming the login and its sign-in command, and no session starts. A new session,
-handoffs and requeues included, starts on the login with the most room.
+handoffs and requeues included, starts on the repo's subscription.
 
 **A worker on the person's instruction is never recorded done on an open PR alone.** Ended with no
 marker, or killed past the limit, it parks with the fix left open, so the merge driver keeps holding

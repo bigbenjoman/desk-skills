@@ -1,5 +1,5 @@
 // suite: the repo's subscription (a new session starts on it; a resume stays on its own login; a limit holds)
-// login-choice.mjs with a fixed clock, then the real pass.mjs against a fake claude whose sign-in answers
+// The real pass.mjs against a fake claude whose sign-in answers
 // per config folder, a stub spawn-worker.sh that records the login each call was given, and each login's
 // reading in its own probe log. A throwaway HOME: nothing reads this computer's logins.
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -19,33 +19,6 @@ for (const k of ['CLAUDE_CONFIG_DIR', 'DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_S
 Object.assign(process.env, { HOME: H, DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'), DESK_LOCK_DIR: join(T, 'locks'),
   DESK_SUBSCRIPTIONS: join(T, 'subscriptions.md'), DESK_USAGE_DIR: join(T, 'usage') });
 mkdirSync(process.env.DESK_LOCK_DIR);
-const { chooseLogin, loginRoom } = await import(join(BIN, 'login-choice.mjs'));
-
-// ---- the choice the decider still makes (login-choice.mjs) ---------------------------------------
-const NOW = 1_800_000_000_000;
-const win = (pct) => ({ utilization: pct / 100, resetsAt: NOW / 1000 + 3600 });
-const reading = (five, week) => ({ five_hour: five == null ? null : win(five), seven_day: week == null ? null : win(week), at: NOW, none: [] });
-const NONE = { five_hour: null, seven_day: null, at: null, none: [] };
-const c = (name, rule, r = NONE, running = 0) => ({ login: { name, rule }, reading: r, running });
-const pick = (...cs) => chooseLogin(cs, NOW)?.name ?? null;
-
-t('room is the smaller of the two windows', loginRoom(reading(30, 60), NOW).room, 40);
-t('a window past its reset leaves all its room', loginRoom({ ...reading(100, 20), five_hour: { utilization: 1, resetsAt: NOW / 1000 - 1 } }, NOW).room, 80);
-t('a subscription with no 5-hour window is judged on its weekly', loginRoom({ ...reading(null, 20), none: ['five_hour'] }, NOW).room, 80);
-t('no reading is no known room', loginRoom(NONE, NOW).room, null);
-t('the higher room wins', pick(c('a', 'in rotation', reading(10, 70)), c('b', 'in rotation', reading(60, 40))), 'b');
-t('the lower weekly use breaks a tie on room', pick(c('b', 'in rotation', reading(30, 50)), c('a', 'in rotation', reading(50, 40))), 'a');
-t('then the fewest workers running there', pick(c('a', 'in rotation', reading(50, 40), 2), c('b', 'in rotation', reading(50, 40), 1)), 'b');
-t('and with nothing else between them, the listing order', pick(c('a', 'in rotation'), c('b', 'in rotation')), 'a');
-t('known room comes before unknown', pick(c('a', 'in rotation'), c('b', 'in rotation', reading(90, 90))), 'b');
-t('a login with no reading comes before one at 100%', pick(c('a', 'in rotation', reading(100, 10)), c('b', 'in rotation')), 'b');
-t('every login in rotation at 100%: standby', pick(c('a', 'in rotation', reading(100, 10)), c('b', 'in rotation', reading(5, 100)), c('s', 'standby', reading(10, 10))), 's');
-t('a standby login with no reading can take it too', pick(c('a', 'in rotation', reading(100, 10)), c('s', 'standby')), 's');
-t('standby waits while a login in rotation has any room', pick(c('a', 'in rotation', reading(99, 10)), c('s', 'standby', reading(0, 0))), 'a');
-t('standby waits while a login in rotation has no reading yet', pick(c('a', 'in rotation', reading(100, 10)), c('b', 'in rotation'), c('s', 'standby', reading(0, 0))), 'b');
-t('with only standby logins usable, one takes it', pick(c('s', 'standby', reading(10, 10))), 's');
-t('every login out: one in rotation, so the preflight meets the limit', pick(c('s', 'standby', reading(100, 10)), c('a', 'in rotation', reading(100, 10))), 'a');
-t('no login usable: none', pick(), null);
 
 // ---- the real pass -------------------------------------------------------------------------------
 const W = join(T, 'w');

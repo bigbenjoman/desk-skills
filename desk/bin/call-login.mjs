@@ -13,12 +13,9 @@ import { fileURLToPath } from 'node:url';
 import { queueFile, subscriptionsPath, thisRepoSubscription } from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 import { listBatches } from './batches.mjs';
-import { loginOf, loginKey } from './claude-logins.mjs';
+import { loginOf } from './claude-logins.mjs';
 import { loginEnv, readSubscriptions, repoSubscription } from './logins.mjs';
-import { chooseLogin } from './login-choice.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
-import { newestReading, WEEK_MS } from './usage-pace.mjs';
-import { loginProbeLog, usageDir } from './usage-probe.mjs';
 
 // Whether a limit lifting at `resetsAt` (epoch seconds, or null) replaces the bench `was` on a login:
 // the limit that lifts last stands, one with no reset time outlasting any with one. liveBenches keeps it.
@@ -35,18 +32,6 @@ export function liveBenches(maps, now) {
     }
   }
   return out;
-}
-
-// desk-q Home's most-room login among `logins`: of those `benched` does not hold, the one login-choice
-// ranks first on its week-long probe reading, with `running(login)` workers on it. `dirs` are the state folders whose worker logs count too.
-//   -> { login, out: [{ login, at }] }: `login` null when every one is benched; `out` each benched login
-//      with when it lifts (`at`, epoch seconds, or null)
-export function claudeChoice(logins, { benched, running, now = Date.now(), dirs } = {}) {
-  const out = logins.filter((l) => benched[loginKey(l)]).map((l) => ({ login: l, at: benched[loginKey(l)].resets_at ?? null }));
-  const open = logins.filter((l) => !benched[loginKey(l)]);
-  const login = chooseLogin(open.map((l) => ({ login: l, running: running(l),
-    reading: newestReading({ ...(dirs ? { dirs } : {}), files: [loginProbeLog(usageDir(), l)], login: l, now, recent: WEEK_MS }) })), now);
-  return { login, out };
 }
 
 // The usage limit holding this repo's work on `login`, the repo's subscription, from its batches and the
