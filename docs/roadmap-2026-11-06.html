@@ -78,20 +78,20 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <div class="wrap">
 
 <header style="display:flex;flex-direction:column;gap:12px">
-  <div class="eyebrow">desk-skills · as of Mon 9 Nov 2026, 12:05</div>
+  <div class="eyebrow">desk-skills · as of Sun 15 Nov 2026 · re-sequenced from 9 Nov</div>
   <h1>Desk roadmap</h1>
-  <p class="lede">The goal from the 6 Nov throughput review: more tickets on the subscriptions you already pay for, at the same review quality and with less of your time. Your priorities, in order: <b>subscription rotation</b>, because batches kept stopping when one login ran out; <b>fewer tokens per ticket</b>; and <b>more autonomy</b>, meaning fewer stops that need you. Sentry intake waits. <b>Changed on 9 Nov:</b> instead of spending more on ChatGPT, desk evaluates other models one at a time on the test bench, starting with Kimi K3.1 Pro, and keeps whichever gives the most accepted tickets per pound. Codex stays as a reviewer only.</p>
+  <p class="lede">The goal from the 6 Nov throughput review: more tickets on the subscriptions you already pay for, at the same review quality and with less of your time. <b>Quota headroom is the binding constraint:</b> at 88% used against a 73% pace, parallelism buys latency, not throughput. Your priorities, in order: <b>subscriptions per repo</b> (<span class="k">DS-616</span>, which replaced rotation), promoted to <span class="k">main</span>; <b>automated lever trials</b> (<span class="k">DS-631</span>), which replace switching levers on by hand; <b>machine throughput</b>, starting with the test lock; and <b>more autonomy</b>, meaning fewer stops that need you. Sentry intake waits. <b>Changed on 15 Nov:</b> the rotation priority is gone, because <span class="k">DS-616</span> superseded it, and the test-lock track runs ahead of lever measurement, because lock waits confound the numbers every trial is judged on. <b>Changed on 9 Nov:</b> instead of spending more on ChatGPT, desk evaluates other models one at a time on the test bench, starting with Kimi K3.1 Pro, and keeps whichever gives the most accepted tickets per pound. Codex stays as a reviewer only.</p>
   <div class="legend">
-    <span class="chip c-done">Done</span><span class="chip c-filed">In Jira or in a batch</span><span class="chip c-none">Not drafted</span><span class="chip c-wait">Waiting on a gate</span><span class="chip c-you">Needs you</span>
+    <span class="chip c-done">Done</span><span class="chip c-filed">In Jira or in a batch</span><span class="chip c-draft">Draft, not in Jira</span><span class="chip c-none">Not drafted</span><span class="chip c-wait">Waiting on a gate</span><span class="chip c-you">Needs you</span>
   </div>
 </header>
 
 <section aria-labelledby="where">
   <h2 id="where">Where we are</h2>
   <div class="now">
-    <div><span>Top priority</span><b>Rotation is live on main</b><span>Epic PR #519 merged at 06:42 today, and this Mac has installed it. You added <span class="k">login-2</span> as standby at 07:26. No worker has run on it yet, so rotation hasn't been seen working on two real logins.</span></div>
-    <div><span>Fewer tokens</span><b>Phase 0 built, not measured</b><span>Every <span class="k">DS-443</span> child has merged. <span class="k">preflight</span> is the only lever on, and the others stay off until it has been measured against the baseline.</span></div>
-    <div><span>Shipped since Sun 09:12</span><b>21 PRs merged</b><span>18 to <span class="k">main</span>, including rotation's epic PR, and 3 bench tickets to its feature branch before that. Both queues are empty: the standing batch has 123 done, and rotation's batch has been archived.</span></div>
+    <div><span>Top priority</span><b>Subscriptions per repo: built, not on main</b><span><span class="k">DS-616</span> replaced rotation (<span class="k">DS-461</span> is Done). Its children are built on <span class="k">feat/DS-616-subscription-default-no-switching</span>. <span class="k">DS-626</span> is in progress and <span class="k">DS-628</span> is to do. Nothing on that branch is live yet.</span></div>
+    <div><span>Lever trials</span><b>DS-631 automated trials, on a branch</b><span>DS-631 replaced the manual one-at-a-time trial, which never ran. Its built children are on <span class="k">feat/DS-631-...</span>, not <span class="k">main</span>, and <span class="k">DS-639</span> is in progress. <span class="k">preflight</span> is still the only lever on.</span></div>
+    <div><span>Binding constraint</span><b>Quota: 88% used against a 73% pace</b><span>Usage, not dollars, is the currency. More workers shorten the wait but don't add tickets per week. The test-lock fixes (<span class="k">DS-660</span>, then <span class="k">DS-662</span>) cost no quota and come first.</span></div>
     <div><span>Waiting on you</span><b>3 items</b><span>Starting the Kimi evaluation needs a subscription and your OK on its terms. Listed at the bottom.</span></div>
   </div>
 </section>
@@ -99,9 +99,10 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <section aria-labelledby="priorities">
   <h2 id="priorities">Your priorities</h2>
   <ol class="next">
-    <li><div><b>Subscription rotation (<span class="k">DS-461</span>, P1).</b> Built and on <span class="k">main</span>: 13 rotation tickets, then <span class="k">DS-521</span>, <span class="k">DS-522</span> and <span class="k">DS-524</span> today. What's left is seeing it work: a batch that hits <span class="k">default</span>'s limit should carry on on <span class="k">login-2</span>. The other Mac still needs <span class="k">/desk-update</span>.</div></li>
-    <li><div><b>Fewer tokens per ticket (Phase 0, <span class="k">DS-443</span>).</b> All children have merged, including <span class="k">DS-446</span> (#496), <span class="k">DS-488</span> (#520) and <span class="k">DS-513</span> (#513). The next step is measuring the preflight lever.</div></li>
-    <li><div><b>More autonomy: fewer stops that need you.</b> <span class="k">DS-241</span> is down to 1 open ticket, <span class="k">DS-431</span>, which waits on your live check. <span class="k">DS-429</span>, <span class="k">DS-441</span>, <span class="k">DS-493</span>, <span class="k">DS-509</span>, <span class="k">DS-514</span>, <span class="k">DS-517</span> and <span class="k">DS-518</span> have merged.</div></li>
+    <li><div><b>Subscriptions per repo (<span class="k">DS-616</span>): promote it to <span class="k">main</span>.</b> desk runs each repo on one chosen subscription and never switches on its own; a repo at its limit waits for the reset. This replaced rotation (<span class="k">DS-461</span>, Done). The next step is finishing <span class="k">DS-626</span> (in progress) and promoting the branch, with <span class="k">DS-628</span> to follow. <span class="k">DS-528</span>'s pinning children (<span class="k">DS-529</span> to <span class="k">DS-531</span>) are Done and <span class="k">DS-616</span> keeps them.</div></li>
+    <li><div><b>Automated lever trials (<span class="k">DS-631</span>), in place of "fewer tokens" by hand.</b> desk trials, adopts and reverts each lever per repo itself, so you never switch one by hand. First, promote its built work to <span class="k">main</span> by finishing <span class="k">DS-639</span>. Then the trial engine: <span class="k">DS-641</span> assign, <span class="k">DS-645</span> blind audit, <span class="k">DS-642</span> evaluate, <span class="k">DS-643</span> hard trip and <span class="k">DS-646</span> quality-risk exposure. <span class="k">DS-443</span> stays as the outcome umbrella and closes when <span class="k">DS-642</span> adopts its first lever.</div></li>
+    <li><div><b>Machine throughput: the test lock (<span class="k">DS-660</span>, <span class="k">DS-662</span>, <span class="k">DS-664</span>).</b> A running track, sequenced ahead of lever measurement: lock waits confound tokens per ticket and fix tries per ticket, the metrics every trial is judged on. <span class="k">DS-660</span> sizes the lock from memory as well as cores, then <span class="k">DS-662</span> stops the pass starting workers that can only queue on it. Both are small and cost no quota. <span class="k">DS-664</span> (collisions across batches in one repo) is a correctness bug and stays narrow.</div></li>
+    <li><div><b>More autonomy: fewer stops that need you.</b> <span class="k">DS-241</span> has 18 open children in the 15 Nov Jira read, most of them filed from batch runs since 9 Nov. <span class="k">DS-431</span> still waits on your live check.</div></li>
     <li><div><b>Not now: Sentry intake (<span class="k">DS-206</span>).</b> P3 in Jira, at the bottom of the backlog.</div></li>
   </ol>
 </section>
@@ -112,9 +113,9 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
   <div class="track">
 
     <div class="phase here">
-      <div class="phead"><h3>Phase 0 · Low-risk changes, each measured</h3><span class="when">now</span><span class="chip c-filed">Built, to measure · DS-443</span></div>
+      <div class="phead"><h3>Phase 0 · Low-risk changes, each measured</h3><span class="when">now</span><span class="chip c-filed">Built · trials by DS-631</span></div>
       <div class="card">
-        <p>Epic <span class="k">DS-443</span>, "For Ben, a ticket costs fewer tokens and fewer interruptions, without losing review quality". Every change ships switched off, controlled by one config row, and you turn them on one at a time against the baseline. Only <span class="k">preflight</span> is on so far.</p>
+        <p>Epic <span class="k">DS-443</span>, "For Ben, a ticket costs fewer tokens and fewer interruptions, without losing review quality". Every change ships switched off, controlled by one config row. Turning them on one at a time by hand never ran, and <span class="k">DS-631</span> replaces it: desk assigns trial arms, evaluates them and adopts or reverts each lever per repo itself. Only <span class="k">preflight</span> is on so far, switched on by hand before DS-631.</p>
         <ul>
           <li><span class="k">DS-444</span> Baseline report and the levers row <span class="chip c-done">merged, #448</span></li>
           <li><span class="k">DS-450</span> Effort set per session <span class="chip c-done">merged, #457</span> · <span class="k">DS-452</span> Auto-memory off for workers, with a 6 KB digest <span class="chip c-done">merged, #451</span></li>
@@ -125,12 +126,20 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
           <li><span class="k">DS-446</span> → <span class="k">DS-488</span> Failure class on every park, then one rerun for a runner or resource red <span class="chip c-done">merged, #496 and #520</span></li>
           <li><span class="k">DS-513</span> A requirement gap only you can settle stops spending review fix tries <span class="chip c-done">merged, #513</span></li>
         </ul>
-        <p class="gate"><b>Gate:</b> one batch about the size of last week's, compared on tokens per ticket and fix tries per ticket. Preflight is the first lever being measured. The queue is empty, so this batch has to be admitted first.</p>
+        <h3>DS-631 automated lever trials</h3>
+        <ul>
+          <li>Built on the <span class="k">DS-631</span> feature branch, not yet on <span class="k">main</span>: outcome rows (<span class="k">DS-632</span>), park classes (<span class="k">DS-633</span>), lever-code fingerprints (<span class="k">DS-637</span>), the lever registry and log, and the levers view (<span class="k">DS-652</span>) <span class="chip c-filed">on branch</span></li>
+          <li><span class="k">DS-639</span> The pass reads each lever from the ticket's pin <span class="chip c-filed">in progress · promotes the branch</span></li>
+          <li><span class="k">DS-641</span> assign → <span class="k">DS-645</span> blind audit → <span class="k">DS-642</span> evaluate → <span class="k">DS-643</span> hard trip → <span class="k">DS-646</span> quality-risk exposure <span class="chip c-none">to do</span></li>
+          <li><b>Quality-risk levers:</b> the review-reuse, effort and codex trials can lower review quality, so <span class="k">DS-646</span> caps them at one quality-risk lever per ticket and at most 30% exposure, and they need <span class="k">DS-645</span>'s blind audit before any of them runs.</li>
+          <li><b>No hand flips.</b> Turning a lever on by hand pollutes the randomised arms <span class="k">DS-641</span> assigns. Every lever goes on through a trial.</li>
+        </ul>
+        <p class="gate"><b>Gate:</b> <span class="k">DS-642</span> adopts or reverts each lever from pooled evidence on tokens per ticket and fix tries per ticket, with DS-692's rework share as a guardrail. <span class="k">DS-443</span> closes when the first lever is adopted. The test-lock track (<span class="k">DS-660</span>, <span class="k">DS-662</span>) goes first, so lock waits don't skew the evidence.</p>
       </div>
     </div>
 
     <div class="phase">
-      <div class="phead"><h3>Phase 1 · Reshape review and the PR stage</h3><span class="when">weeks 2–3</span><span class="chip c-wait">Waits on Phase 0's numbers</span></div>
+      <div class="phead"><h3>Phase 1 · Reshape review and the PR stage</h3><span class="when">weeks 2–3</span><span class="chip c-wait">Waits on Phase 0's trials and DS-535</span></div>
       <div class="card">
         <ul>
           <li>A script runs the self-review seats (4b) in a small fresh context. The model fixes only confirmed findings: one full review, then one confirm round.</li>
@@ -138,7 +147,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
           <li>Small review nits move into lint and pre-push hooks.</li>
           <li>An "Interfaces and verification" block goes into the ticket template and desk-jira's lint.</li>
         </ul>
-        <p class="gate"><b>Gate:</b> the hidden-spec review eval from the test bench. Findings acted on per PR must not fall. <b>Not drafted on purpose</b> until Phase 0 is measured.</p>
+        <p class="gate"><b>Gate:</b> the hidden-spec review eval from the test bench. Findings acted on per PR must not fall. It stays the bench, and <span class="k">DS-535</span> (the Opus baseline, in progress) is still the blocker. <b>Not drafted on purpose</b> until Phase 0's trials have results.</p>
       </div>
     </div>
 
@@ -167,7 +176,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
     <div class="phase">
       <div class="phead"><h3>Phase 3 · Decide the subscriptions</h3><span class="when">at renewal</span><span class="chip c-wait">Waits on Phase 2's numbers</span></div>
       <div class="card">
-        <p>Buy capacity where accepted tickets per pound, at equal quality, are highest. Claude Ultra (£180) stays the main builder, and ChatGPT stays on its current plan for review. No upgrade to Pro 200. A candidate that passes gets a worker in rotation, restricted to the lanes and sizes it cleared. Move it to a longer billing period, or a larger plan, only if its 5-hour cap is what's slowing the batch.</p>
+        <p>Buy capacity where accepted tickets per pound, at equal quality, are highest. Claude Ultra (£180) stays the main builder, and ChatGPT stays on its current plan for review. No upgrade to Pro 200. A candidate that passes gets its own subscription, which runs only the repos it is pinned to (<span class="k">DS-616</span>), restricted to the lanes and sizes it cleared. Move it to a longer billing period, or a larger plan, only if its 5-hour cap is what's slowing the batch.</p>
         <p class="gate">Prices here come from each provider's page where it publishes one (Google, OpenCode, Kimi). Z.ai's price is only from third parties. Check every price at checkout.</p>
       </div>
     </div>
@@ -250,21 +259,31 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
   <div class="grid2">
 
     <div class="card">
-      <div class="phead"><h3>Subscription rotation</h3><span class="chip c-done">Top priority · P1 · on main</span></div>
-      <p>Workers spread across your Claude logins, and later your Codex logins. A login at its limit is benched until it resets, and the batch holds only when every login is out.</p>
+      <div class="phead"><h3>Subscriptions per repo</h3><span class="chip c-filed">Top priority · DS-616 · on a branch</span></div>
+      <p>Each computer has one default subscription per tool, and each repo runs on one chosen subscription. desk never moves work to another subscription on its own: a repo at its limit waits until its reset. This replaced rotation, whose rules and records <span class="k">DS-630</span> deletes.</p>
       <ul>
-        <li><span class="chip c-done">on main, #519</span> <span class="k">DS-462</span> to <span class="k">DS-474</span>, all 13, plus the 9 bench tickets that were on the feature branch. It merged at 06:42 after a clean round 5 review.</li>
-        <li><span class="chip c-done">follow-ups merged today</span> <span class="k">DS-524</span> (#528) names the new account in the add-a-login panel. <span class="k">DS-521</span> (#530) lets a base worker that hits one login's limit carry on on another. <span class="k">DS-522</span> (#531) means a sole Codex login set to <span class="k">off</span> runs no codex.</li>
-        <li><span class="chip c-wait">not yet seen working</span> This Mac has <span class="k">default</span> in rotation and <span class="k">login-2</span> on standby, so <span class="k">login-2</span> runs only when <span class="k">default</span> is at its limit. All 5 tickets today ran on <span class="k">default</span>.</li>
-        <li><span class="chip c-you">other Mac</span> Run <span class="k">/desk-update</span> there and add its logins in desk-q (press 6).</li>
-        <li>Design: the <a href="https://claude.ai/artifact/G72NSJFg5MqFPiuVoehtkv">Usage view canvas</a>, saved at <span class="k">docs/design/DS-461/</span>.</li>
+        <li><span class="chip c-filed">built, not on main</span> <span class="k">DS-617</span> to <span class="k">DS-625</span>, <span class="k">DS-627</span>, <span class="k">DS-629</span> and <span class="k">DS-630</span> are Done on <span class="k">feat/DS-616-subscription-default-no-switching</span>.</li>
+        <li><span class="chip c-filed">in progress</span> <span class="k">DS-626</span>: at a subscription's limit, desk-q's Usage view says which repos wait, how many tickets are ready and when they start. Finishing it promotes the branch.</li>
+        <li><span class="chip c-none">to do</span> <span class="k">DS-628</span>: desk-q Home names the default and how many repos are pinned.</li>
+        <li><span class="chip c-done">superseded</span> <span class="k">DS-461</span> (rotation) is Done. <span class="k">DS-528</span>'s title still says "rotates"; its pinning children are Done and kept, so it closes.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="phead"><h3>Machine throughput: the test lock</h3><span class="chip c-filed">Priority 3 · running track</span></div>
+      <p>Lock waits confound tokens per ticket and fix tries per ticket, the metrics every lever trial is judged on, so this track runs ahead of lever measurement. Both fixes cost no quota.</p>
+      <ul>
+        <li><span class="chip c-none">to do · first</span> <span class="k">DS-660</span>: the machine profile sizes the test lock from memory as well as performance cores, so an 18-core, 64 GB Mac mini gets 3 slots, not 2, and a hand-set value isn't undone as drift.</li>
+        <li><span class="chip c-none">to do · then</span> <span class="k">DS-662</span>: the pass stops starting workers that can only queue on the lock, so 16 runs no longer wait on one slot while the machine sits idle.</li>
+        <li><span class="chip c-none">to do</span> <span class="k">DS-664</span>: file collisions are checked across batches in one repo, not only inside one. A correctness bug; keep it narrow.</li>
       </ul>
     </div>
 
     <div class="card">
       <div class="phead"><h3>Test bench: the evaluation harness</h3><span class="chip c-filed">Built, never run · DS-475</span></div>
-      <p>All 12 tickets are on <span class="k">main</span>: frozen past tasks with hidden tests, blind scoring, a report and a weekly-allowance guard. It has never been run, though. No task set is built, so there's no Opus baseline to compare a candidate with.</p>
+      <p>All 12 tickets are on <span class="k">main</span>: frozen past tasks with hidden tests, blind scoring, a report and a weekly-allowance guard. It has never been run, though. No task set is built, so there's no Opus baseline to compare a candidate with. It is the explicit gate for stage packs (DS-693), model tiering and Phase 2 (Kimi).</p>
       <ul>
+        <li><span class="chip c-filed">in progress</span> <span class="k">DS-535</span> freezes the task set and runs the Opus arm. Its fix merged (#545), but no task set or baseline exists yet. It can run beside the lever trials within the bench cap (<span class="k">DS-477</span>'s reserve).</li>
         <li><span class="chip c-none">1 · build the set</span> Freeze about 24 merged <span class="k">desk-skills</span> PRs with <span class="k">bench-build.mjs</span>, and run the Opus arm as the baseline.</li>
         <li><span class="chip c-none">2 · endpoint arm</span> An arm that runs Claude Code against another provider's Anthropic-compatible endpoint, with the key kept in a chmod 600 file. It refuses to start if a run could bill your Claude login instead. This covers Kimi and Z.ai.</li>
         <li><span class="chip c-none">3 · allowance meters</span> The quota guard only reads Claude's and Codex's weekly windows. It needs readers for each provider's own windows (5-hour, weekly and monthly). Kimi and Z.ai only have undocumented usage endpoints, so the guard stops on any reading it can't trust.</li>
@@ -273,11 +292,21 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
       </ul>
     </div>
     <div class="card">
-      <div class="phead"><h3>Batch reliability</h3><span class="chip c-done">Today's bugs merged · DS-237</span></div>
-      <p>Rotation's archive showed up two bugs. Both are fixed.</p>
+      <div class="phead"><h3>Batch reliability</h3><span class="chip c-filed">1 open · DS-237</span></div>
+      <p>Rotation's archive showed up two bugs on 9 Nov. Both are fixed. One child is open, and <span class="k">DS-237</span> closes once it lands.</p>
       <ul>
         <li><span class="k">DS-523</span> (#529): a ticket admitted after a feature batch's promotion PR has merged now goes to the standing batch, and isn't archived along with the feature batch.</li>
         <li><span class="k">DS-525</span> (#532): a finished feature batch now stops its idle merge driver and archives. DS-461's batch had been held open since 07:15.</li>
+        <li><span class="chip c-none">to do</span> <span class="k">DS-655</span>: a worker still reviewing its draft PR no longer shows as "merging" in desk-q.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="phead"><h3>Levers page</h3><span class="chip c-filed">DS-653 in progress</span></div>
+      <p>One local page shows every lever's state, evidence, trends and data age, offline, built on <span class="k">DS-652</span>'s <span class="k">levers/view.json</span>.</p>
+      <ul>
+        <li><span class="chip c-filed">in progress · finish</span> <span class="k">DS-653</span>, the page. Its offline <span class="k">file://</span> criterion stays. It isn't widened mid-build; the rework share goes in DS-692 instead.</li>
+        <li><span class="chip c-wait">after DS-642</span> <span class="k">DS-654</span>, a Levers line on desk-q's home screen. It's visibility, not throughput, so it follows <span class="k">DS-642</span>.</li>
       </ul>
     </div>
 
@@ -295,29 +324,31 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 
 <section aria-labelledby="backlog">
   <h2 id="backlog">The backlog by epic</h2>
-  <p>The open DS epics in your order: rotation first, then fewer tokens and more autonomy, then the rest. Sentry intake (DS-206) is at the bottom. The status column shows each epic's Jira status and priority. Nothing is admitted at the moment.</p>
+  <p>The open DS epics in your order: subscriptions per repo first, then the lever trials, machine throughput and more autonomy, then the rest. Sentry intake (DS-206) is at the bottom. The status column shows each epic's Jira status.</p>
   <div class="tbl">
     <table>
       <thead><tr><th>Epic</th><th>Outcome</th><th>Status</th><th class="n">Open</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr class="grp"><th colspan="5">Top priority: rotation, fewer tokens and more autonomy</th></tr>
-        <tr><td class="k">DS-461</td><td>A batch keeps running on another Claude or Codex subscription when one reaches its limit</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">0</td><td>On main (#519) with DS-521, 522 and 524. Ready to close once it's been seen working on two logins</td></tr>
-        <tr><td class="k">DS-443</td><td>Phase 0: fewer tokens and fewer interruptions per ticket</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>All merged; preflight still to be measured</td></tr>
-        <tr><td class="k">DS-241</td><td>A ticket parks only for a step that needs you</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">1</td><td>DS-431 waits on your live check</td></tr>
-        <tr><td class="k">DS-475</td><td>A model, brief or review change is adopted only after it holds quality on frozen tasks</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>All 12 on main. Keep it open for the GLM‑5.3 arm</td></tr>
-        <tr><td class="k">DS-237</td><td>A batch finishes without false stops or flaky reds</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">0</td><td>DS-523 (#529) and DS-525 (#532) merged today. Ready to close</td></tr>
-        <tr><td class="k">DS-515</td><td>A repo's desk-q views show the work of every batch it has</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>DS-516 merged (#509). Ready to close</td></tr>
+        <tr class="grp"><th colspan="5">Top priority: subscriptions, lever trials, throughput and autonomy</th></tr>
+        <tr><td class="k">DS-616</td><td>desk runs each repo on one chosen subscription and never switches on its own</td><td><span class="chip c-filed">To do</span></td><td class="n">2</td><td>Built on its feature branch, not on main. DS-626 in progress, DS-628 to do. Replaces DS-461 (rotation, Done)</td></tr>
+        <tr><td class="k">DS-631</td><td>desk trials, adopts and reverts its own Phase 0 levers in every repo, so Ben never switches one by hand</td><td><span class="chip c-filed">To do</span></td><td class="n">9</td><td>Built work on its branch; DS-639 promotes it. Then DS-641, 645, 642, 643, 646. DS-653 in progress, DS-654 after DS-642</td></tr>
+        <tr><td class="k">DS-443</td><td>Phase 0: fewer tokens and fewer interruptions per ticket</td><td><span class="chip c-filed">To do</span></td><td class="n">0</td><td>All merged. The outcome umbrella: closes when DS-642 adopts its first lever</td></tr>
+        <tr><td class="k">—</td><td>Machine throughput: the test lock</td><td><span class="chip c-filed">3 tickets, no epic</span></td><td class="n">3</td><td>DS-660, then DS-662; DS-664 alongside. Runs ahead of lever measurement</td></tr>
+        <tr><td class="k">DS-690</td><td>Speed: a ticket's wall-clock time from admit to merge falls, with no extra tokens</td><td><span class="chip c-filed">To Do · filed 15 Nov</span></td><td class="n">—</td><td>Speed epic, filed 15 Nov: holds DS-695 (wake), DS-697, DS-698 and DS-700</td></tr>
+        <tr><td class="k">DS-241</td><td>A ticket parks only for a step that needs you</td><td><span class="chip c-filed">In progress</span></td><td class="n">18</td><td>DS-431 waits on your live check</td></tr>
+        <tr><td class="k">DS-475</td><td>A model, brief or review change is adopted only after it holds quality on frozen tasks</td><td><span class="chip c-filed">To do</span></td><td class="n">2</td><td>DS-535 (Opus baseline) in progress. The gate for Phase 1, Phase 2 and stage packs</td></tr>
+        <tr><td class="k">DS-237</td><td>A batch finishes without false stops or flaky reds</td><td><span class="chip c-filed">In progress</span></td><td class="n">1</td><td>DS-655. Close once it lands</td></tr>
         <tr class="grp"><th colspan="5">Next</th></tr>
-        <tr><td class="k">DS-228</td><td>Every desk SKILL.md is 20 KB or less</td><td><span class="chip c-filed">In progress · P1</span></td><td class="n">1</td><td>DS-442 (desk-ci split), not in a batch yet</td></tr>
-        <tr><td class="k">DS-260</td><td>CI runs on short-lived EC2 runners, GitHub-hosted as fallback</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">4</td><td>DS-259, 261, 262, 263</td></tr>
-        <tr><td class="k">DS-455</td><td>Prompt-audit drift fixes for desk skills and agents</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>DS-511 merged (#493). Ready to close</td></tr>
-        <tr><td class="k">DS-284</td><td>A README that explains desk, kept accurate by tests</td><td><span class="chip c-filed">To do · P3</span></td><td class="n">1</td><td>Waits until the backlog features ship</td></tr>
+        <tr><td class="k">DS-260</td><td>CI runs on short-lived EC2 runners, GitHub-hosted as fallback</td><td><span class="chip c-filed">To do</span></td><td class="n">4</td><td>DS-259, 261, 262, 263. After the test-lock track. Spends no Claude quota</td></tr>
+        <tr><td class="k">DS-228</td><td>Every desk SKILL.md is 20 KB or less</td><td><span class="chip c-filed">In progress</span></td><td class="n">1</td><td>DS-442 (desk-ci split), lowered: workers barely load desk-ci, so it closes an epic but isn't a lever. Whenever there's slack</td></tr>
+        <tr><td class="k">DS-284</td><td>A README that explains desk, kept accurate by tests</td><td><span class="chip c-filed">To do</span></td><td class="n">1</td><td>Waits until the backlog features ship</td></tr>
         <tr class="grp"><th colspan="5">Later: not a priority for now</th></tr>
-        <tr><td class="k">DS-206</td><td>Production events raise investigated tickets that jump the queue</td><td><span class="chip c-filed">To do · P3</span></td><td class="n">6</td><td>Sentry intake, DS-207 to DS-212</td></tr>
+        <tr><td class="k">DS-691</td><td>Desk app: a local window shows and clears everything desk-q and needs-you do, with every write through desk's own commands</td><td><span class="chip c-filed">To Do · filed 15 Nov</span></td><td class="n">—</td><td>Phases 0 to 2 cost no tokens; chat waits on quota. You chose a native Levers view in the app: it reads <span class="k">levers/view.json</span>, so it shows the same numbers as DS-653's page</td></tr>
+        <tr><td class="k">DS-206</td><td>Production events raise investigated tickets that jump the queue</td><td><span class="chip c-filed">To do</span></td><td class="n">6</td><td>Sentry intake, DS-207 to DS-212</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="foot">Open counts are each epic's children not in Done, read from Jira at 12:05. Outside these epics: DS-503 (To Do) has no epic, and DS-65, 66, 68 and 72 (To Do, P3) are still open under DS-236, which is Done. Batch states come from both queues at 12:05.</p>
+  <p class="foot">Open counts are each epic's children not in Done, read from a Jira export at 12:23 on 15 Nov. DS-461, DS-455 and DS-515 are Done and have left the table. To tidy: close DS-528 (its pinning children are Done and DS-616 keeps them), and close DS-65, 66, 68 and 72 as won't do: they are still open under DS-236, which is Done and labelled <span class="k">wont-do</span>, and DS-271 removed desk-runner. Close DS-237 once DS-655 lands. Queue and batch states were not re-read on 15 Nov.</p>
 </section>
 
 <section aria-labelledby="you">
@@ -334,16 +365,21 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <section aria-labelledby="next">
   <h2 id="next">Next, in order</h2>
   <ol class="next">
-    <li><div><b>Admit the next batch.</b> The queue is empty. DS-442 (P1) and DS-260's 4 children (P1) are next. A batch about the size of last week's also serves as Phase 0's preflight measurement, and as the first real run of rotation on two logins.</div></li>
-    <li><div><b>Phase 0 is measured:</b> preflight first, the other levers one at a time, and a measured batch decides Phase 1.</div></li>
-    <li><div><b>The harness gets built and run on Opus:</b> Claude files the four bench tickets under DS-475. Freezing the task set and running the Opus baseline don't depend on any new subscription.</div></li>
-    <li><div><b>Kimi, then the rest in order:</b> the Kimi arm runs once you've subscribed and the endpoint arm has merged. Then DeepSeek on OpenCode Go, Gemini on Google AI Pro, and GLM‑5.3 on Z.ai, each only if the one before leaves a reason to keep looking.</div></li>
-    <li><div><b>Claude tidies Jira:</b> closes DS-237, DS-455 and DS-515, closes DS-461 once rotation has been seen working, puts DS-503 under an epic, and moves DS-236's 4 open children to an open epic.</div></li>
-    <li><div><b>When VPL-793 merges,</b> you restore VoicePA's §4 Check builds.</div></li>
+    <li><div><b>Promote DS-616's and DS-631's built work to main</b> by finishing DS-626 and DS-639. Nothing on those branches is live yet, and both change what every later measurement reads. Claude closes DS-528, DS-65, DS-66, DS-68 and DS-72 alongside.</div></li>
+    <li><div><b>DS-660, then DS-662:</b> test-lock slots, then spawning against the lock queue. Small, no quota, and they remove the waiter storm.</div></li>
+    <li><div><b>DS-692, the rework-share metric:</b> the instrument for everything after it, computed in the levers view model and the report as a guardrail for DS-642. DS-697, the collision scope audit, is a query only and runs in parallel.</div></li>
+    <li><div><b>The DS-631 trial engine:</b> DS-641 assign, DS-645 blind audit, DS-642 evaluate, DS-643 hard trip and DS-646 quality-risk exposure. Levers go on through trials, never by hand. DS-653 finishes meanwhile; DS-654 follows DS-642.</div></li>
+    <li><div><b>DS-535, the Opus bench baseline,</b> alongside steps 2 to 4 within the bench cap. It unblocks Phase 1, Phase 2 (Kimi, then the other candidates in order, once you've subscribed) and DS-693.</div></li>
+    <li><div><b>DS-695, the worker-exit wake.</b> No quota, fine any time after step 1, but it touches <span class="k">supervisor.mjs</span>, which DS-654 also edits.</div></li>
+    <li><div><b>DS-705, <span class="k">desk-wait</span>,</b> only if polling turns are still material after step 2, judged by step 3's measure.</div></li>
+    <li><div><b>DS-693, the stage-pack spike,</b> after step 5. DS-442 whenever there is slack.</div></li>
+    <li><div><b>DS-260, CI on AWS.</b></div></li>
+    <li><div><b>The desktop app (DS-691):</b> its groundwork after the open desk-q tickets land, then the read-only window and the act phase. Chat only once quota pace sits below the window.</div></li>
+    <li><div><b>The remaining speed and small tickets</b> (DS-698, DS-699, DS-700, DS-694 and DS-696), as slots free. <b>When VPL-793 merges,</b> you restore VoicePA's §4 Check builds.</div></li>
   </ol>
 </section>
 
-<p class="foot">Sources: live Jira, queue, supervisor-log and GitHub reads at 12:00–12:05 on 9 Nov; <span class="k">~/.config/desk/subscriptions.md</span>; and your ChatGPT conversation of 7–8 Nov on subscription coding plans. Its claims were checked on 9 Nov against provider docs, Artificial Analysis and BenchLM. Its benchmark figures match Artificial Analysis. Kimi's '2 or 4 concurrent tasks' is a figure for its web agent, not for CLI sessions. This page is a snapshot; Jira is the record.</p>
+<p class="foot">Re-sequenced on 15 Nov from the backlog cross-reference in <span class="k">.handoffs/2026-11-15-portia-orca/</span> and a Jira export read at 12:23 that day. Its drafts were filed the same day as DS-690 to DS-708. Sources for the rest: live Jira, queue, supervisor-log and GitHub reads at 12:00–12:05 on 9 Nov; <span class="k">~/.config/desk/subscriptions.md</span>; and your ChatGPT conversation of 7–8 Nov on subscription coding plans. Its claims were checked on 9 Nov against provider docs, Artificial Analysis and BenchLM. Its benchmark figures match Artificial Analysis. Kimi's '2 or 4 concurrent tasks' is a figure for its web agent, not for CLI sessions. This page is a snapshot; Jira is the record.</p>
 </div>
 
 </html>
