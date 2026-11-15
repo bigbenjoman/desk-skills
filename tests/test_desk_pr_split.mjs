@@ -47,6 +47,18 @@ const REWRITTEN = [
   ['DS-672', 'On 3 or 4 fix the body by hand', 1],
   ['DS-672', '| 0 | every placeholder replaced |', 1],
   ['DS-672', '| Re-running the upload after exit 3 or 4 | The assets exist', 1],
+  // a saved-canvas PR stitches each board's captures into one image per theme
+  ['DS-676', 'so it uploads with the rest', 1],
+  ['DS-676', '`built-<board>-<width>.png`, captured as below', 1],
+  ['DS-676', '`PASS` with what was compared', 1],
+  ['DS-676', 'One collapsed table per board the ticket uses', 1],
+  ['DS-676', 'canvas vs build at 6 widths', 1],
+  ['DS-676', '_drag canvas-order-summary-', 2],
+  // header and separator rows are never counted items, so these two only exempt the rows
+  ['DS-676', '| Width | Canvas | Built | Result |', 0],
+  ['DS-676', '| --- | --- | --- | --- |', 0],
+  ['DS-676', 'Leave a blank line after `<summary>` and before', 1],
+  ['DS-676', 'the exception: every breakpoint, collapsed', 1],
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 23, minRows: 35, rewritten: REWRITTEN });
 

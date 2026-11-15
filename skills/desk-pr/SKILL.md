@@ -205,7 +205,7 @@ about immediately, not at the bottom of a finished PR description.
 | Uploading when §3 says `ask`, because it was fine last time | `ask` means every run. Standing permission is a §3 `yes`, never an inference |
 | Filling cells by hand after exit 4 or 7 | Run the script again (after a 7, not before the time it printed): `<dir>.tags.json` keeps every link, so nothing is uploaded twice |
 | Running the upload while another browser holds the profile | One `SingletonLock`. Never kill the holder; ask the user to free it |
-| A 12-row before/after table | Two or three widths that carry the change; the rest as numbers in Testing. A ticket with a saved canvas is the exception: every breakpoint, collapsed |
+| A 12-row before/after table | Two or three widths that carry the change; the rest as numbers in Testing. A ticket with a saved canvas is the exception: every breakpoint, in one stitched image per board and theme |
 | Screenshots with a consent banner over the content | Seed its cookie before the first `goto` |
 | A before/after table on a change that renders identically | Omit the section and say why in one line |
 | Opening a non-draft PR | Draft first (unless §5 PR lifecycle says otherwise); images and self-review land before it goes ready |

@@ -61,6 +61,9 @@ function board(dir, { screen = 'order-summary', noise = false, missing = [] } = 
 const pc = (n) => JSON.stringify(parseCapture(n));
 t('name: canvas, a dashed screen, width, theme', pc('canvas-order-summary-390-dark.png'), '{"role":"canvas","screen":"order-summary","width":390,"theme":"dark"}');
 t('name: no theme is light', pc('before-order-summary-768.png'), '{"role":"before","screen":"order-summary","width":768,"theme":"light"}');
+t('name: a theme before the width, as compare names a "<board> dark" board', pc('built-order-summary-dark-390.png'), '{"role":"after","screen":"order-summary","width":390,"theme":"dark"}');
+t('name: and its light twin, the same board', pc('canvas-order-summary-light-390.png'), '{"role":"canvas","screen":"order-summary","width":390,"theme":"light"}');
+t('name: a theme word inside a screen name stays in it', parseCapture('canvas-dark-mode-toggle-390.png').screen, 'dark-mode-toggle');
 t('name: built reads as after', parseCapture('built-hero-1440.png').role, 'after');
 t('name: a screen ending in a number keeps it', parseCapture('canvas-step-2-390.png').screen, 'step-2');
 t('name: desk-pr\'s before-<width>.png is the page', pc('after-375.png'), '{"role":"after","screen":"page","width":375,"theme":"light"}');
