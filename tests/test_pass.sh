@@ -2221,7 +2221,7 @@ rm -f "$T/upload-fills" "$T/upload-busy-775"
 # its retry_after. UC-1: one filled crash already recorded, three cells left, and each retry fills one
 # then crashes. UC-2: one try spent, and its retry is throttled.
 q add UC-1; q set UC-1 state=done lane=A branch=fix/UC-1 result.pr=791 'upload_crash={"pr":791,"dir":"'"$T/state-s/images/UC-1/"'","tries":1,"log":"x","filled":1}'
-frx 791 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 791 '_drag uc-1a.png_ _drag uc-1b.png_ _drag uc-1c.png_'; mkdir -p "$T/state-s/images/UC-1"; : > "$T/state-s/images/UC-1/uc-1a.png"
+frx 791 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 791 '_drag uc-1a.png_ _drag uc-1b.png_ _drag uc-1c.png_'; mkdir -p "$T/state-s/images/UC-1"; for f in a b c; do : > "$T/state-s/images/UC-1/uc-1$f.png"; done
 q add UC-2; q set UC-2 state=done lane=A branch=fix/UC-2 result.pr=792 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x"}'
 frx 792 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 792 '_drag uc-2.png_'; mkdir -p "$T/state-s/images/UC-2"; : > "$T/state-s/images/UC-2/uc-2.png"
 : > "$T/upload-fillcrash-791"; echo 2099-01-01T00:00:00.000Z > "$T/upload-throttle-792"
