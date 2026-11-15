@@ -80,8 +80,8 @@ one `lint:` line saying the link is ignored, and `desk-jira lint` flags it. Noth
 removing the link is the person's.
 
 **A blocker in no batch that is a step only the person takes holds the merge, not the build.** A
-Task whose summary says apply, confirm or sign off, or a blocker whose summary names one of the
-ticket's triage `ben_steps`, is recorded on the ticket at admission as `merge_after`, not as a hold:
+Task whose summary says apply, confirm or sign off, or a blocker one of the ticket's triage
+`ben_steps` names by key or quotes its whole summary, is recorded on the ticket at admission as `merge_after`, not as a hold:
 the ticket is built and reviewed as any other, and the merge driver holds its PR until Jira has the
 step Done, when the pass lifts it and the PRs merge in the batch's own order. Needs you lists the
 step once, as `step:<KEY>`, naming every PR and ticket waiting on it.
@@ -90,6 +90,12 @@ step once, as `step:<KEY>`, naming every PR and ticket waiting on it.
 parked on it (`the person's step: labelled …`) whatever its lane, so no worker spawns, and requeue
 refuses it. A blocker carrying one, in the batch or out of it, is a person's step as above: the
 ticket it blocks merges after it.
+
+**A step whose output the build reads holds the build.** A ticket carrying one of config §4
+Person-input labels (a fixture, a recorded response, a key to make) is parked as the person's step
+just the same, but a ticket it blocks is held behind it, as `held_outside` when it is in no batch,
+until it is Done. A blocker labelled both Person-step and Person-input is an input. Intake and
+plan-batch read a blocker the same way (`batch-state.mjs` `personStep`).
 
 **The person's instruction on an open PR holds its merge too.** From needs-you `resume` until the pass
 closes that fix, the merge driver leaves the PR alone, red or green, and a worker that parks or fails

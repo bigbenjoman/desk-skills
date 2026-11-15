@@ -377,36 +377,43 @@ export function lanePark(r) {
     : `lane ${r.lane} — ${why.slice(0, 160)}`;
 }
 
-// The first of `labels` that §4 Person-step labels names (`stepLabels`, lowercased), or null.
+// The first of `labels` that a labels row names (`stepLabels`, lowercased), or null.
 export function stepLabel(labels, stepLabels = []) {
   const want = new Set((stepLabels ?? []).map((s) => String(s).trim().toLowerCase()).filter(Boolean));
   return want.size ? (Array.isArray(labels) ? labels : []).find((l) => want.has(String(l).trim().toLowerCase())) ?? null : null;
 }
 
-// The park for a ticket labelled as the person's own step (its triage record's `labels`), or null. It is
-// admitted parked on it, beside lanePark and designPark, so no worker spawns and Needs you lists it; a
-// ticket it blocks merges after it (merge_after) rather than waiting to build.
+// The park for a ticket labelled as the person's own step, by §4 Person-step labels (`stepLabels`) or
+// Person-input labels (`inputLabels`) on its triage record's `labels`, or null. It is admitted parked on
+// it, beside lanePark and designPark, so no worker spawns and Needs you lists it.
 const PERSON_STEP_PREFIX ="the person's step: ";
-export function labelPark(r, stepLabels = []) {
-  const l = stepLabel(r?.labels, stepLabels);
-  return l ? `${PERSON_STEP_PREFIX}labelled ${l} (config §4 Person-step labels), so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
+export function labelPark(r, stepLabels = [], inputLabels = []) {
+  const input = stepLabel(r?.labels, inputLabels);
+  const l = input ?? stepLabel(r?.labels, stepLabels);
+  return l ? `${PERSON_STEP_PREFIX}labelled ${l} (config §4 ${input ? 'Person-input' : 'Person-step'} labels), so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
 }
 export const personStepPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(PERSON_STEP_PREFIX);
 
-// Whether blocker `b` (a triage record's `blockers` entry) is a step only the person takes, such as a
-// migration applied or a sign-off: a Task whose summary says apply, confirm or sign off, or one whose
-// summary names a step the blocked ticket's triage record `rec` lists in ben_steps. Open and in no
-// batch, it holds the blocked ticket's merge, not its build (merge_after).
-// A blocker carrying one of §4 Person-step labels (`stepLabels`, desk-env.mjs personStepLabels; its
-// labels are read by ticket-facts.mjs) is one whatever its summary says.
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const squash = (s) => String(s ?? '').trim().replace(/\s+/g, ' ');
+// Whether `text` holds `phrase` whole, not as part of a longer word or key.
+const holdsWhole = (text, phrase) => !!phrase && new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRe(phrase)}(?![\\p{L}\\p{N}_]|-\\p{N})`, 'iu').test(text);
+
+// How blocker `b` (a triage record's `blockers` entry) holds the ticket whose triage record is `rec`,
+// when it is a step only the person takes: 'build' when it carries one of §4 Person-input labels
+// (`inputLabels`), as its step produces something the build reads, which wins over everything below;
+// 'merge' when it carries one of §4 Person-step labels (`stepLabels`), when one of `rec`'s ben_steps
+// names its key or holds its whole summary, or when it is a Task whose summary says apply, confirm or
+// sign off; otherwise null, an ordinary blocker. Labels come from ticket-facts.mjs.
 const STEP_WORDS = /\b(appl(?:y|ies|ied)|confirm(?:s|ed)?|sign(?:s|ed)?[- ]?off)\b/i;
-export function personStep(b, rec = null, stepLabels = []) {
-  if (stepLabel(b?.labels, stepLabels)) return true;
-  const summary = String(b?.summary ?? '').trim().toLowerCase();
-  if (!summary) return false;
+export function personStep(b, rec = null, stepLabels = [], inputLabels = []) {
+  if (stepLabel(b?.labels, inputLabels)) return 'build';
+  if (stepLabel(b?.labels, stepLabels)) return 'merge';
+  const key = squash(b?.key);
+  const summary = squash(b?.summary);
   const named = (Array.isArray(rec?.ben_steps) ? rec.ben_steps : [])
-    .some((s) => [s?.step, s?.blocker].some((x) => String(x ?? '').trim() && summary.includes(String(x).trim().toLowerCase())));
-  return named || (/^task$/i.test(String(b?.type ?? '').trim()) && STEP_WORDS.test(summary));
+    .some((s) => [s?.step, s?.blocker].some((x) => holdsWhole(squash(x), key) || holdsWhole(squash(x), summary)));
+  return named || (/^task$/i.test(squash(b?.type)) && STEP_WORDS.test(summary)) ? 'merge' : null;
 }
 
 // Where a held ticket's hold leads: the parked or failed tickets it waits on, an empty list when every

@@ -315,6 +315,7 @@ export const CONFIG_ROWS = Object.freeze({
   'jira-cloudid': { section: '4', row: 'Jira cloudId' },
   labels: { section: '4', row: 'Labels' },
   'person-step-labels': { section: '4', row: 'Person-step labels' },
+  'person-input-labels': { section: '4', row: 'Person-input labels' },
   'required-checks': { section: '4', row: 'Required checks' },
   'work-id-patterns': { section: '4', row: 'Other work id patterns' },
   'merge-holds': { section: '4', row: 'Merge holds' },
@@ -647,12 +648,17 @@ export function configValues(id) {
   return configValuesIn(parseConfig(), id);
 }
 
-// §4 Person-step labels, lowercased: the labels marking a ticket as a step only the person takes. []
-// when the row is unset or `none`, and with no config (batch-state.mjs labelPark, personStep).
-export function personStepLabels() {
-  try { return [].concat(configValues('person-step-labels') ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
+// A labels row's items, lowercased: [] when the row is unset or `none`, and with no config.
+function labelsRow(id) {
+  try { return [].concat(configValues(id) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
   catch { return []; }
 }
+// §4 Person-step labels: the labels marking a ticket as a step only the person takes, which holds the
+// merge of a ticket it blocks (batch-state.mjs labelPark, personStep).
+export function personStepLabels() { return labelsRow('person-step-labels'); }
+// §4 Person-input labels: a step only the person takes that produces something the build reads (a
+// fixture, a recorded response, a key), which holds the build of a ticket it blocks.
+export function personInputLabels() { return labelsRow('person-input-labels'); }
 
 // §4 Required fields for an issue type, or for every type with none named: {need: [field id, in rule order],
 // malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}. No config reads as no rules. The

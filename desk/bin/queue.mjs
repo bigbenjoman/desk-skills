@@ -17,7 +17,7 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck } from './cl
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
@@ -422,7 +422,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
-  const stepPark = labelPark(r, personStepLabels());
+  const stepPark = labelPark(r, personStepLabels(), personInputLabels());
   const park = stepPark ?? lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
   // The collision check plan-batch makes, against every ticket still to finish: two tickets that

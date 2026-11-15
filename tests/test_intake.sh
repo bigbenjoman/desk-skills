@@ -220,13 +220,19 @@ rm -f "$T/prs.json"
 # A blocker in no batch that is the person's step holds the merge, not the build. OPS-1 is a Task that
 # says apply; OPS-2 is a Story naming the ticket's ben_steps; OUT-7 is an ordinary dev Task.
 rec P-1 A '"blockers":[{"key":"OPS-1","category":"new","type":"Task","summary":"Apply the billing migration to staging and production"}]'
-rec P-2 A '"blockers":[{"key":"OPS-2","category":"indeterminate","type":"Story","summary":"Run the cdk deploy for the queue stack"}],"ben_steps":[{"step":"cdk deploy","blocker":"deploy the queue stack, unblocking P-2"}]'
+rec P-2 A '"blockers":[{"key":"OPS-2","category":"indeterminate","type":"Story","summary":"Run the cdk deploy for the queue stack"}],"ben_steps":[{"step":"cdk deploy","blocker":"Run the cdk deploy for the queue stack, unblocking P-2"}]'
 rec P-3 A '"blockers":[{"key":"OUT-7","category":"new","type":"Task","summary":"Add the export endpoint"}]'
+# DS-682: P-4's ben_steps names its blocker's key; P-5's step is one word inside a code blocker's summary.
+rec P-4 A '"blockers":[{"key":"OPS-4","category":"new","type":"Story","summary":"Queue stack"}],"ben_steps":[{"step":"a cdk deploy","blocker":"OPS-4, unblocking P-4"}]'
+rec P-5 A '"blockers":[{"key":"OUT-8","category":"new","type":"Story","summary":"Deploy the search page"}],"ben_steps":[{"step":"deploy","blocker":"deploy"}]'
+search P-4 P-5; intake >/dev/null
 search P-1 P-2 P-3; out=$(intake)
 check "DS-407 AC1: a ticket blocked only by the person's step in no batch is admitted runnable, its merge held" '[ "$(qget tickets.P-1.state)" = triaged ] && [ "$(qget tickets.P-1.held_by)" = null ] && [ "$(qget tickets.P-1.held_outside)" = undefined ] && [ "$(qget tickets.P-1.merge_after)" = OPS-1 ]'
 check "DS-407 AC1: the report says it is built now and merged once the step is Done" 'grep -q "admitted P-1 by intake into batch b1 (lane A, size S), built now and merged only once OPS-1 (the person.s step) is Done" <<< "$out"'
 check "DS-407 AC1: a blocker naming one of the ticket'\''s ben_steps is a person'\''s step too" '[ "$(qget tickets.P-2.state)" = triaged ] && [ "$(qget tickets.P-2.merge_after)" = OPS-2 ]'
 check "DS-407 AC4: an ordinary dev ticket in no batch still holds the build, as DS-391 has it" '[ "$(qget tickets.P-3.state)" = parked ] && [ "$(qget tickets.P-3.held_outside)" = OUT-7 ] && [ "$(qget tickets.P-3.merge_after)" = undefined ]'
+check "DS-682 AC4: a blocker whose key the ticket'\''s ben_steps names is a merge-only gate" '[ "$(qget tickets.P-4.state)" = triaged ] && [ "$(qget tickets.P-4.merge_after)" = OPS-4 ]'
+check "DS-682 AC5: a step word inside a blocker'\''s summary no longer makes it a step: it is a full hold" '[ "$(qget tickets.P-5.state)" = parked ] && [ "$(qget tickets.P-5.held_outside)" = OUT-8 ] && [ "$(qget tickets.P-5.merge_after)" = undefined ]'
 
 # DS-568: a ticket carrying one of §4 Person-step labels is admitted parked as the person's step, so no
 # worker spawns, and a ticket it blocks, in the batch or out of it, is built now and merged after it.
@@ -261,6 +267,23 @@ rec S-5 A '"blockers":[{"key":"OPS-8","category":"new","type":"Story","summary":
 search S-4 S-5; out=$(intake)
 check "DS-568 AC3: with Person-step labels none, a labelled ticket and one it blocks are triaged as today" \
   '[ "$(qget tickets.S-4.state)" = triaged ] && [ "$(qget tickets.S-5.held_outside)" = OPS-8 ] && [ "$(qget tickets.S-5.merge_after)" = undefined ]'
+
+# DS-682: a blocker carrying one of §4 Person-input labels makes something the build reads, so it holds
+# the build; labelled both, the input wins; a ticket carrying one is parked as the person's step.
+config yes; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Person-step labels | `ben-step` |\n| Person-input labels | `ben-input` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+rec I-1 A '"blockers":[{"key":"OPS-11","category":"new","type":"Story","summary":"Walk through the checkout","labels":["ben-step"]}]'
+rec I-2 A '"blockers":[{"key":"OPS-12","category":"new","type":"Story","summary":"Record the gateway response","labels":["ben-input"]}]'
+rec I-3 A '"blockers":[{"key":"OPS-13","category":"new","type":"Task","summary":"Sign off the gateway key","labels":["ben-step","Ben-Input"]}]'
+rec I-4 A '"labels":["ben-input"],"unknowns":["which account?"]'
+rec I-5 A '"blockers":[{"key":"I-4","category":"new","type":"Story","summary":"Make the API key","labels":["ben-input"]}]'
+search I-4 I-5; intake >/dev/null
+search I-1 I-2 I-3; out=$(intake)
+check "DS-682 AC1: a blocker in no batch labelled as the person's step is a merge-only gate" '[ "$(qget tickets.I-1.state)" = triaged ] && [ "$(qget tickets.I-1.merge_after)" = OPS-11 ] && [ "$(qget tickets.I-1.held_outside)" = undefined ]'
+check "DS-682 AC2: a blocker in no batch labelled as an input holds the build" '[ "$(qget tickets.I-2.state)" = parked ] && [ "$(qget tickets.I-2.held_outside)" = OPS-12 ] && [ "$(qget tickets.I-2.merge_after)" = undefined ]'
+check "DS-682 AC3: labelled both, the input label wins and it holds the build" '[ "$(qget tickets.I-3.state)" = parked ] && [ "$(qget tickets.I-3.held_outside)" = OPS-13 ] && [ "$(qget tickets.I-3.merge_after)" = undefined ]'
+check "DS-682 AC9: a ticket carrying an input label is parked as the person's step, whatever its questions" \
+  '[ "$(qget tickets.I-4.state)" = parked ] && [[ "$(qget tickets.I-4.park.question)" == "the person'\''s step: labelled ben-input (config §4 Person-input labels)"* ]] && [ "$(qget tickets.I-4.held_by)" = null ]'
+check "DS-682 AC2: an input step in the batch holds the build of a ticket it blocks" '[ "$(qget tickets.I-5.state)" = parked ] && [ "$(qget tickets.I-5.held_by)" = I-4 ] && [ "$(qget tickets.I-5.merge_after)" = undefined ]'
 config yes
 
 # ---- the triage cap, and a triage that fails ------------------------------------------------------
