@@ -1111,8 +1111,11 @@ export function uploadEstimate(source, { key = null, themeCount = 1 } = {}) {
   let files = screenNames(all);
   const t = key ? (source?.tickets ?? []).find((x) => x.key === key) : null;
   if (t?.boards?.length) {
-    const byName = new Map(all.map((b, i) => [b.name, files[i]]));
-    files = t.boards.map((n) => byName.get(n) ?? screenNames([{ name: n }])[0]);
+    // As compare keeps them: every board whose title the ticket names, so two boards sharing a title
+    // ("Checkout", captured as checkout and checkout-2) both count. A title no board has counts once.
+    const named = new Set(t.boards);
+    const missing = [...named].filter((n) => !all.some((b) => b.name === n));
+    files = [...files.filter((_, i) => named.has(all[i].name)), ...screenNames(missing.map((name) => ({ name })))];
   }
   const parsed = files.map((f) => parseCapture(`canvas-${f}-1.png`));
   const bases = new Set(parsed.map((p) => p.screen));

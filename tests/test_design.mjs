@@ -506,6 +506,8 @@ t('estimate: a board drawn as another\'s dark theme stitches into it', `${upload
 t('estimate: a drawn dark board is a second theme with §5 Themes unset', uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 0 }).uploads, 22);
 t('estimate: a ticket naming a board and its dark board counts one board', uploadEstimate({ ...drawnDark, tickets: [{ key: 'DS-92', boards: ['Board 1', 'Board 1 dark'] }] }, { key: 'DS-92', themeCount: 0 }).uploads, 2);
 t('estimate: two boards with one title stitch as two', uploadEstimate({ ...eleven, boards: [{ name: 'Checkout' }, { name: 'Checkout' }] }, { key: 'DS-90', themeCount: 0 }).uploads, 2);
+t('estimate: a ticket naming a title two boards share counts both', uploadEstimate({ ...eleven, boards: [{ name: 'Checkout' }, { name: 'Checkout' }, { name: 'Basket' }], tickets: [{ key: 'DS-93', boards: ['Checkout'] }] }, { key: 'DS-93', themeCount: 2 }).uploads, 4);
+t('estimate: a ticket naming a title no board has counts it once', uploadEstimate({ ...eleven, tickets: [{ key: 'DS-94', boards: ['Board 1', 'Gone'] }] }, { key: 'DS-94', themeCount: 0 }).uploads, 2);
 t('estimate: a dark board matches its board whatever the case', uploadEstimate({ ...eleven, boards: [{ name: 'Order summary' }, { name: 'Order Summary dark' }] }, { key: 'DS-90', themeCount: 0 }).uploads, 2);
 t('estimate: a deck has no boards to stitch', estimateLines(uploadEstimate({ url: URL1, tickets: [], boards: [] }))[0], 'uploads: none: this canvas has no boards to stitch (a deck or a single page)');
 const th = (row) => {
