@@ -90,8 +90,9 @@ too large: capture it smaller (the viewport rather than the full page, or a lowe
 and stitch again, so the body names one image per board and theme. Only a board still split after
 that names each part its `wrote:` lines print, and its summary says why. Exit 2 is a usage error, no captures, or two captures for one cell; 5 is
 a single capture over the limit on its own (`over:`), which GitHub refuses: capture it smaller
-rather than ship it; 6 is desk's Playwright missing. The upload reads only the top level of
-`<dir>`, so the raw captures stay in `captures/` and only the stitched images reach the PR. **Open
+rather than ship it; 6 is desk's Playwright missing. The upload takes only the files the
+body's `_drag <file>_` cells name, so the raw captures stay in `captures/` and only the stitched
+images reach the PR. **Open
 each stitched image at full size before the body names it**: the 390 row included, every label
 readable.
 
@@ -216,20 +217,24 @@ never covers speaking as the user.
 node ~/.claude/desk/bin/upload-images.mjs <pr-number> <§2 Handoff directory>/<TICKET>/
 ```
 
-It uploads every png/jpg in the directory and swaps the `_drag <file>_` cells.
+It uploads only the files the body's `_drag <file>_` cells name, found in the directory or a folder
+under it, 15 to a batch, and fills each batch's cells with `![alt](url)` as it lands. Every link goes
+in `<directory>.tags.json` with its image's sha256, so a rerun uploads only what is left, and an image
+already uploaded is never uploaded again.
 
 | Exit | Meaning |
 |---|---|
-| 0 | every placeholder replaced |
-| 1 | bad arguments, missing dir or no images, or an unexpected crash |
+| 0 | every placeholder replaced, or the body had none left, so nothing was uploaded |
+| 1 | bad arguments, missing dir or no images, an unreadable tags file, or an unexpected crash |
 | 2 | shared browser profile in use; retry later |
-| 3 | uploaded, but no `_drag <file>_` placeholder matched (tags printed) |
-| 4 | uploaded, but placeholders still left |
+| 4 | uploaded, but placeholders still left (a file no folder holds is named) |
 | 5 | not permitted (§3 `pr-images` not `yes`) |
 | 6 | setup: Playwright not installed, or no saved GitHub login or it has expired (it names `github-signin.mjs`) |
+| 7 | throttled: a batch stalled, which is GitHub's rate limit, so it stopped without retrying; it refuses to run again before the time it prints (15 minutes, doubling with each stall in a row) |
 
-On 3 or 4 fix the body by hand from the printed tags — **do not re-upload**, the assets already
-exist. One session at a time: a single profile, one `SingletonLock`.
+On 4 or 7 just run it again later: what was uploaded is in the tags file and its cells are filled.
+Never retry a 7 sooner than the time it printed: retrying into the rate limit risks GitHub blocking
+the account. One session at a time: a single profile, one `SingletonLock`.
 
 **Without the script, or when it fails in a way you have to debug**, read
 `references/image-upload.md` — the manual steps and every GitHub quirk that has cost a failed run.
