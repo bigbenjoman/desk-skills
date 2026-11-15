@@ -10,6 +10,9 @@
 // else runs only with DESK_UPLOAD_APPROVED=1, which the caller sets after asking the user for
 // THIS upload. The browser acts as the user on a real site.
 //
+// Each file uploaded, and the one a stall stops on, is a line in the machine's upload log
+// (upload-log.mjs, <DESK_HOME>/upload-log.jsonl).
+//
 // Everything below is load-bearing and each cost a failed run once:
 //   - GitHub inserts an <img ...> tag into the textarea's VALUE, not a DOM node, and not
 //     markdown. Waiting for an <img> element times out while the upload succeeded.
@@ -36,6 +39,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { runUpload, shotIndex, UploadStop } from './upload-batches.mjs';
+import { logUpload, uploadLogFile } from './upload-log.mjs';
 import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, psRows } from './desk-env.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
@@ -124,12 +128,19 @@ async function openPage() {
   };
 }
 
+// Every file uploaded, and the one a stall or upload error stopped on, goes in the machine's
+// upload log; a log that cannot be written never stops an upload.
+const record = (file, result) => {
+  try { logUpload({ repo: REPO, pr, file, result }); } catch (e) { console.error(`[upload] the upload log was not written: ${e.message}`); return; }
+  if (result === 'throttled') console.error(`[upload] stalled on ${file}, logged as throttled in ${uploadLogFile()}`);
+};
+
 const readBody = () => execFileSync('gh', ['pr', 'view', pr, '--repo', REPO, '--json', 'body', '-q', '.body'], { encoding: 'utf8' });
 const writeBody = (body) => execFileSync('gh', ['pr', 'edit', pr, '--repo', REPO, '--body-file', '-'], { input: body });
 let result;
 try {
   result = await runUpload({
-    dir, readBody, writeBody, openPage,
+    dir, readBody, writeBody, openPage, record,
     log: (l) => console.log(`[upload] #${pr} ${l}`),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
   });

@@ -148,7 +148,9 @@ export const throttleMs = (stalls) => Math.min(THROTTLE_MS * 2 ** Math.max(0, st
 
 // The whole run. readBody() and writeBody(text) are the PR body's; openPage() opens the comment box
 // (only once there is something to upload). -> { code, lines }, the exit code and what to say.
-export async function runUpload({ dir, readBody, writeBody, openPage, log = () => {}, now = Date.now, sleep, stallMs, pollMs }) {
+// record(file, result) is told each image uploaded ('uploaded', by the first cell naming it) and the
+// one a stall or upload error stopped on ('throttled'): upload-images.mjs writes them to the upload log.
+export async function runUpload({ dir, readBody, writeBody, openPage, record = () => {}, log = () => {}, now = Date.now, sleep, stallMs, pollMs }) {
   const start = readBody();
   const cells = dragFiles(start);
   if (!cells.length) return { code: 0, lines: [doneLine(start)] };   // nothing left to fill: pass.mjs reads the done line
@@ -178,11 +180,19 @@ export async function runUpload({ dir, readBody, writeBody, openPage, log = () =
   if (batches.length) {
     const page = await openPage();
     for (const [i, batch] of batches.entries()) {
-      const { got, stalled } = await uploadBatch(page, batch, { stallMs, pollMs, now, sleep });
+      let got;
+      let stalled;
+      try {
+        ({ got, stalled } = await uploadBatch(page, batch, { stallMs, pollMs, now, sleep }));
+      } catch (e) {
+        record(batch[0].names[0], 'throttled');
+        throw e;
+      }
       const at = new Date(now()).toISOString();
       const fills = {};
       for (const u of batch) {
         if (!got[u.sha256]) continue;
+        record(u.names[0], 'uploaded');
         tags.shas[u.sha256] = got[u.sha256];
         for (const n of u.names) { tags.files[n] = { sha256: u.sha256, url: got[u.sha256], at }; fills[n] = got[u.sha256]; }
       }
@@ -196,6 +206,7 @@ export async function runUpload({ dir, readBody, writeBody, openPage, log = () =
       log(`batch ${i + 1}/${batches.length}: ${Object.keys(got).length} of ${batch.length} uploaded (${sent}/${total})`);
       if (stalled) {
         const waiting = batch.filter((u) => !got[u.sha256]).map((u) => u.names[0]);
+        record(waiting[0], 'throttled');
         return { code: EXIT_THROTTLED, lines: [
           `throttled: batch ${i + 1} filled no image for ${Math.round((stallMs ?? STALL_MS) / 1000)}s (still waiting on ${waiting.join(', ')}), which is GitHub's rate limit, so it stopped without retrying`,
           `${sent} image(s) uploaded this run are in ${path} and their cells are filled; nothing is uploaded before ${tags.throttle.retry_after}`,
