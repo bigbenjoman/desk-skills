@@ -81,7 +81,7 @@ storybook-cmd`) is set, build it, then shoot each board beside its story, both u
 ```bash
 ~/.claude/desk/bin/with-lock.sh browser --cwd <DIR> -- <CMD>      # §4 Storybook, exactly as written
 ~/.claude/desk/bin/with-lock.sh browser node ~/.claude/desk/bin/desk-design.mjs compare <saved folder> \
-  --storybook <DIR>/storybook-static --out <screenshot directory> [--boards '<board>,<board>']
+  --storybook <DIR>/storybook-static --out <screenshot directory>/captures [--boards '<board>,<board>']
 ```
 
 `--storybook` is the folder the build wrote (`storybook-static` beside its package unless the command
