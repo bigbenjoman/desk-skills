@@ -60,8 +60,13 @@ size:
 - **Before cell**, where the page existed before the ticket: `before-<board>-<width>.png` in the
   same `captures/`, the page on `<default>` at that width. It is the stitched image's Before column,
   so no separate before/after table goes alongside.
-- **Theme**: where the canvas draws a board in light and dark, every capture of it ends `-light` or
-  `-dark` (`canvas-<board>-<width>-dark.png`). A name with neither is light.
+- **Theme**: desk-design has no themes, so a canvas draws a board's dark theme as a board of its
+  own, named after the light one with `dark` last ("Order summary dark"). Its captures then read
+  `canvas-order-summary-dark-390.png` and `built-order-summary-dark-390.png`, as `desk-design
+  compare` names them, and the stitch reads that `-dark` as the theme of `order-summary`; a capture
+  script may instead end the name with it (`canvas-order-summary-390-dark.png`). A board whose name
+  does not end `light` or `dark` is light, so a dark board named any other way stitches as a board
+  of its own and gets its own section.
 - **Result**: `PASS`, `FAIL` with expected against actual (the board's value, never the code's), or
   `UNVERIFIABLE` with why, in a few words; what a `PASS` compared is said once, in the line above
   the board's table. A comparison that did not run is `UNVERIFIABLE`,
@@ -80,8 +85,10 @@ hundreds):
 Each `<board>-<theme>.png` has one row per width, with the canvas, before and after captures side
 by side and the width and theme written on it; a capture that is missing reads "no capture". An
 image that would reach 10 MB is split by width into `<board>-<theme>-<first width>-<last width>.png`
-(one width still over it, into `<board>-<theme>-<width>-<role>.png`): every `wrote:` line it prints
-is a file the body names. Exit 2 is a usage error, no captures, or two captures for one cell; 5 is
+(one width still over it, into `<board>-<theme>-<width>-<role>.png`). A split is a board captured
+too large: capture it smaller (the viewport rather than the full page, or a lower device scale)
+and stitch again, so the body names one image per board and theme. Only a board still split after
+that names each part its `wrote:` lines print, and its summary says why. Exit 2 is a usage error, no captures, or two captures for one cell; 5 is
 a single capture over the limit on its own (`over:`), which GitHub refuses: capture it smaller
 rather than ship it; 6 is desk's Playwright missing. The upload reads only the top level of
 `<dir>`, so the raw captures stay in `captures/` and only the stitched images reach the PR. **Open
@@ -113,13 +120,14 @@ PASS compares copy, colours and padding with the board.
 
 Leave a blank line after `<summary>`, between the images, and before `</details>`, or GitHub runs
 the images together and renders the table as text. A board drawn in one theme has one image and
-a single `Result` column. Testing carries the counts per board. A UI PR with no saved canvas keeps
-the short form.
+a single `Result` column. Consecutive widths with the same results share one row
+(`| 768–1440 | PASS | PASS |`). Testing carries the totals across the boards, not each board's
+counts again. A UI PR with no saved canvas keeps the short form.
 
 **Keep the description under 10,000 characters.** Each uploaded image swaps its `_drag` cell for an
 `<img>` tag of about 150 characters, so 22 images add about 3,300. After the upload, read it with
-`gh pr view <n> --json body --jq '.body | length'`; over the budget, shorten the `FAIL` notes and
-the summaries, never a board's section.
+`gh pr view <n> --json body --jq '.body | length'`; over the budget, shorten the `FAIL` notes, the
+summaries and the Accepted differences, never a board's images or a row's result.
 
 Below the tables, an **Accepted differences** list names every difference you shipped on purpose:
 each `FAIL` left in, and anything the build does differently from a board, with the board, the

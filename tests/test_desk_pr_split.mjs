@@ -46,7 +46,9 @@ const REWRITTEN = [
   ['DS-676', 'One collapsed table per board the ticket uses', 1],
   ['DS-676', 'canvas vs build at 6 widths', 1],
   ['DS-676', '_drag canvas-order-summary-', 2],
-  ['DS-676', '| Width | Canvas | Built | Result |', 1],
+  // header and separator rows are never counted items, so these two only exempt the rows
+  ['DS-676', '| Width | Canvas | Built | Result |', 0],
+  ['DS-676', '| --- | --- | --- | --- |', 0],
   ['DS-676', 'Leave a blank line after `<summary>` and before', 1],
   ['DS-676', 'the exception: every breakpoint, collapsed', 1],
 ];
