@@ -81,7 +81,8 @@ function releaseLock(dir) {
 }
 process.on('exit', () => { for (const d of held) releaseLock(d); });
 
-// fn(queue) changes the queue under its file lock, and the queue is saved after; returns fn's result.
+// fn(queue) changes the queue under its file lock, and the queue is saved after if it changed (so a
+// pass with nothing to upload writes nothing); returns fn's result.
 export function withQueue(file, fn, { waitMs = 10_000 } = {}) {
   const dir = `${file}.lock`;
   const until = Date.now() + waitMs;
@@ -92,8 +93,9 @@ export function withQueue(file, fn, { waitMs = 10_000 } = {}) {
   }
   try {
     const q = readUploadQueue(file);
+    const was = JSON.stringify(q);
     const out = fn(q);
-    writeUploadQueue(file, q);
+    if (JSON.stringify(q) !== was) writeUploadQueue(file, q);
     return out;
   } finally { releaseLock(dir); }
 }
