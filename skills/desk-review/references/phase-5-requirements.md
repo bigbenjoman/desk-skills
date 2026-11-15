@@ -91,8 +91,9 @@ Post a `person` gap as one list item holding the literal tag `PERSON'S CALL`, it
 under it, on every round it stays open, ending with the seat's pick whenever it has one:
 `- PERSON'S CALL · AC2: "<criterion>" — <what is open, and how the person can settle it>. Recommended: <option>`.
 The autopilot pass reads the tag (`desk/bin/fix-tries.mjs` `reviewFix`): a tagged gap earns no fix try,
-and it still counts in `gaps`. Under §3 `autopilot-judgement` `yes`, tagged gaps that all end
-`Recommended: <option>`, none reading as an ask category, go to one fix try that carries out each
+and it still counts in `gaps`. Under §3 `autopilot-judgement` `yes`, tagged gaps that are all the
+review leaves open and all end `Recommended: <option>`, none reading as an ask category, go to one fix
+try that carries out each
 recommendation, so name the pick last, after `Recommended:`, and nothing after it.
 
 `code_claim` answers one question: *would this still read as a defect with the ticket deleted?* A

@@ -313,7 +313,11 @@ t('DS-585 AC1 the task says to carry out the recommendation, recording the call 
 const recTwo = gapFix(personBody(2, REC_GAP, REC_GAP2), 2);
 t('DS-585 AC1 two recommended gaps go in the one try, a bold label read', JSON.stringify(recTwo?.fix.taken?.map((x) => x.answer)), JSON.stringify([REC, 'the batch name']));
 t('DS-585 AC1 a ready PR\'s review reaches the try before the person\'s-gaps call', `${reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, REC_GAP) }, { judgement: 'yes' })?.call}`, 'requeue');
-t('DS-585 AC1 a recommended gap beside a code gap is taken in the same try', `${JSON.stringify(gapFix(personBody(2, REC_GAP, CODE_GAP), 2)?.fix.gaps)} ${gapFix(personBody(2, REC_GAP, CODE_GAP), 2)?.fix.taken?.length}`, `${JSON.stringify([CODE_GAP.slice(2)])} 1`);
+const recBeside = gapFix(personBody(2, REC_GAP, CODE_GAP), 2);
+t('DS-585 AC1 only a review that leaves nothing else open: beside a code gap the recommended gap stays the person\'s', `${JSON.stringify(recBeside?.fix.gaps)} ${recBeside?.fix.taken} ${JSON.stringify(recBeside?.fix.person_gaps)}`, `${JSON.stringify([CODE_GAP.slice(2)])} undefined ${JSON.stringify([REC_GAP.slice(2)])}`);
+const recBesideP1 = gapFix(`${p1Body}\n\n### Requirement gaps\n${REC_GAP}`, 1, [], { p0: '0', p1: '1' });
+t('DS-585 AC1 nor beside a P1', `${recBesideP1?.fix.taken} ${recBesideP1?.fix.person_gaps?.length}`, 'undefined 1');
+t('DS-585 AC1 nor beside a deferred P2', gapFix(personBody(1, REC_GAP), 1, [], { p2: '1', deferred: '1' }), null);
 const noRec = personBody(2, REC_GAP, PERSON_GAP);
 t('DS-585 AC2 one gap with no recommendation: no try', gapFix(noRec, 2), null);
 t('DS-585 AC2 and the ready PR goes to the person with every gap named', JSON.stringify(gapsCall(noRec, { gaps: '2' })?.why), JSON.stringify(`review gaps only you can settle: ${REC_GAP.slice(2)}; ${PERSON_GAP.slice(2)}`));
@@ -332,8 +336,11 @@ t('DS-585 AC5 a try already sent at this head sends no second one: stuck, naming
 t('DS-585 AC5 and the stuck reason gives the person\'s gap up to needs-you', JSON.stringify(personGapsIn(sameHead?.why)), JSON.stringify([REC_GAP.slice(2)]));
 const newHead = gapFix(personBody(1, REC_GAP), 1, [{ ...recOnly.fix, head: 'b'.repeat(40) }]);
 t('DS-585 AC5 at a new head the gap survived its try and goes to the person', newHead?.why, `review not clean after 1 fix try (1 review): 1 gap — still open after the fix try that quoted it: ${REC_GAP.slice(2)}`);
+t('DS-585 AC5 and its reason gives that gap up to needs-you, so a ready PR offers the answer', JSON.stringify(personGapsIn(newHead?.why)), JSON.stringify([REC_GAP.slice(2)]));
 t('DS-585 recommendedOf reads the last Recommended: and drops a trailing full stop', `${recommendedOf(`${REC_GAP}.`)}|${recommendedOf(PERSON_GAP)}`, `${REC}|null`);
+t('DS-585 recommendedOf keeps the option as written, dropping only emphasis around it', JSON.stringify(['Recommended: rename it to batch_name', 'Recommended: **keep `__init__`**.', '**Recommended:** _the batch name_'].map(recommendedOf)), JSON.stringify(['rename it to batch_name', 'keep `__init__`', 'the batch name']));
 t('DS-585 askCategoryIn finds each category and none in a plain engineering call', JSON.stringify(['costs £5 a month', 'GDPR', 'the prod database', 'the SMS text', 'the catalog entry', 'split it to DS-12'].map(askCategoryIn)), JSON.stringify(['money', 'legal', 'production', 'customer-copy', 'user-fact', null]));
+t('DS-585 askCategoryIn covers every example in ask-or-take.md\'s table', JSON.stringify(['approve the spend', 'a paid plan', 'anything billed', 'the Stripe webhook', 'the cookie policy copy', 'privacy', 'compliance', 'a production database', 'a secret', 'the signing key', 'a live account', 'an SMS', 'a paid placement', 'copy billed by length', 'product data', 'a design URL', 'an asset', 'the brand name', 'who owns what'].map((x) => Boolean(askCategoryIn(x)))), JSON.stringify(Array(19).fill(true)));
 const readyCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: true, answer: 'accept it' }) });
 t('DS-513 the person\'s call on a ready PR keeps it out of draft', `${fixBrief(readyCall).includes('open and out of draft')} ${/leave the PR out of draft/.test(fixTask(readyCall))}`, 'true true');
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));

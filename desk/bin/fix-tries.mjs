@@ -456,23 +456,28 @@ export function reviewGaps(body) {
 }
 // The tag a review puts on a gap only the person can settle (desk-review phase-5-requirements.md).
 const personsCall = (gap) => /PERSON['’]S CALL/.test(gap);
-// The option a tagged gap ends with (`Recommended: <option>`), or null where it names none.
+// The option a tagged gap ends with (`Recommended: <option>`), or null where it names none. Only the
+// bold around the label and the emphasis around the whole option go: the option is kept as written.
 export function recommendedOf(gap) {
-  const s = String(gap ?? '').replace(/[*_`]/g, '');
-  const i = s.search(/\bRecommended:(?![\s\S]*\bRecommended:)/i);
-  const option = i < 0 ? '' : s.slice(i).replace(/^Recommended:\s*/i, '').replace(/\s*\.?\s*$/, '');
+  const s = String(gap ?? '');
+  const at = [...s.matchAll(/\bRecommended:/gi)].at(-1);
+  const option = !at ? '' : s.slice(at.index + at[0].length).replace(/^(\*\*|__)/, '').trim()
+    .replace(/\s*\.$/, '').replace(/^(\*\*|__|[*_`])(.+)\1$/, '$2').trim();
   return option && !/^(none|no recommendation|n\/a)\b/i.test(option) ? option : null;
 }
 // The tagged gaps a try may settle on their recommendations, as { gap, answer }: only under §3
-// autopilot-judgement yes, and only when every one names a recommendation and none reads as an ask
-// category (decisions.mjs askCategoryIn); otherwise [] and all of them stay the person's.
-function takenGaps(person, judgement) {
-  if (judgement !== 'yes' || !person.length) return [];
+// autopilot-judgement yes, only when they are all the review leaves open (`alone`), and only when every
+// one names a recommendation and none reads as an ask category (decisions.mjs askCategoryIn);
+// otherwise [] and all of them stay the person's.
+function takenGaps(person, judgement, alone) {
+  if (judgement !== 'yes' || !alone || !person.length) return [];
   const taken = person.map((gap) => ({ gap, answer: recommendedOf(gap) }));
   return taken.every((x) => x.answer && !askCategoryIn(x.gap)) ? taken : [];
 }
 
 const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
+// What a review stuck reason puts before the findings and gaps that outlasted the try that quoted them.
+const SURVIVED = 'still open after the fix try that quoted it: ';
 
 // A draft PR whose posted review at its head is not clean goes back to a fix worker when the review
 // found a P0 or a P1: one try per head, FIX_TRIES_MAX review fix tries per PR, and none once the PR
@@ -483,8 +488,9 @@ const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 // config §3 autopilot-judgement is yes (opts.judgement), so do its requirement gaps: closing one is a
 // call the worker may make and record, or park when it needs a product or another person's ruling.
 // A gap the review tags as the person's call earns no try: alone it is the person's at once (null), and
-// beside anything a try can fix it is left out of the try and named in its brief. Unless every tagged
-// gap names a recommendation outside the ask categories (takenGaps): then the try carries each one out
+// beside anything a try can fix it is left out of the try and named in its brief. Unless the tagged gaps
+// are all that is open and each names a recommendation outside the ask categories (takenGaps): then the
+// try carries each one out
 // (`taken`), logged as a decision, and one that survives it goes to the person as any gap does. The
 // verdict's count less the gaps left tagged is what code can close, so an untagged paragraph in the
 // section adds no try.
@@ -504,7 +510,8 @@ export function reviewFix(t, review, opts = {}) {
   const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
   const allGaps = gapsOpen ? reviewGaps(review.body) : [];
   const tagged = allGaps.filter(personsCall);
-  const taken = takenGaps(tagged, opts.judgement);
+  // As personGapsCall reads a review with nothing open but the person's gaps.
+  const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length);
   const personGaps = taken.length ? [] : tagged;
   const codeGaps = Math.max(0, gapsOpen - personGaps.length);
   const what = [counts, codeGaps ? gapCount(codeGaps) : ''].filter(Boolean).join(', ');
@@ -530,7 +537,7 @@ export function reviewFix(t, review, opts = {}) {
   const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
   const survived = survivors(done, findings, [...gaps, ...taken.map((x) => x.gap)]);
-  if (survived.length) return { call: 'stuck', why: `${after} — still open after the fix try that quoted it: ${[...survived, ...personGaps].join('; ')}` };
+  if (survived.length) return { call: 'stuck', why: `${after} — ${SURVIVED}${[...survived, ...personGaps].join('; ')}` };
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
   return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}), ...(taken.length ? { taken } : {}), ...(personGaps.length ? { person_gaps: personGaps } : {}) } };
 }
@@ -546,7 +553,8 @@ export function personGapsIn(why) {
   const s = String(why ?? '');
   if (s.startsWith(PERSON_GAPS)) return [s.slice(PERSON_GAPS.length)];
   const i = /^review not clean\b/.test(s) ? s.indexOf(' — ') : -1;
-  return i < 0 ? [] : s.slice(i + 3).split(/; (?=P[0-2]: |PERSON['’]S CALL)/).filter((x) => /^PERSON['’]S CALL/.test(x));
+  const rest = s.slice(i + 3);
+  return i < 0 ? [] : (rest.startsWith(SURVIVED) ? rest.slice(SURVIVED.length) : rest).split(/; (?=P[0-2]: |PERSON['’]S CALL)/).filter((x) => /^PERSON['’]S CALL/.test(x));
 }
 export function personGapsCall(review, opts = {}) {
   const v = review.verdict, open = Number(v?.gaps) || 0;
@@ -1067,7 +1075,7 @@ export function fixTask(t, review = null) {
     : gaps ? 'do what the call says about each gap, and nothing else'
     : instruction ? 'do what the instruction says, and nothing else'
       : f.kind === 'review' ? (f.gaps?.length || f.taken?.length
-        ? `${f.findings?.length ? `fix each ${findingKinds(f.findings)} finding it quotes and ` : ''}${[f.gaps?.length ? 'close each requirement gap it quotes by the call it needs' : '', f.taken?.length ? 'carry out the recommendation it quotes for each gap marked the person\'s call' : ''].filter(Boolean).join(' and ')}, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
+        ? `${f.findings?.length ? `fix each ${findingKinds(f.findings)} finding it quotes and ` : ''}${f.gaps?.length ? 'close each requirement gap it quotes by the call it needs' : 'carry out the recommendation it quotes for each gap marked the person\'s call'}, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
         : `fix each ${findingKinds(f.findings)} finding it quotes${f.findings?.some((x) => x.sev === 'P2') ? ', or carry one in your review of the new head where fixing it would mean another round' : ''}, and nothing else`)
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
