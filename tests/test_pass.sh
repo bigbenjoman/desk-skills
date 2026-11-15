@@ -3238,6 +3238,47 @@ git -C "$T/wt/W-7" push -q origin fix/W-7 2>/dev/null
 node "$B/pass.mjs" >/dev/null 2>&1
 check "DS-497 and drops it once they are pushed" '[ "$(field W-7 park.unpushed)" = null ] && [ "$(field W-7 state)" = "\"parked\"" ]'
 
+# DS-606: commits up to the head the ticket's own last worker left are pushed by the fix try's pass,
+# not held. W-9's worker parks with a commit it did not push, and the pass records that head.
+wb_clone(){ git clone -q "$T/wb-origin.git" "$T/wt/$1" 2>/dev/null; git -C "$T/wt/$1" checkout -q -b "fix/$1"
+  echo a > "$T/wt/$1/a.txt"; git -C "$T/wt/$1" add a.txt; git -C "$T/wt/$1" commit -q -m a; git -C "$T/wt/$1" push -q origin "fix/$1" 2>/dev/null; }
+wb_fix(){ q set "$1" state=triaged park=null lane=A "branch=fix/$1" 'fix={"try":1,"of":2,"pr":6'"${1#W-}"',"kind":"review","what":"a P1 review finding"}'; }
+wb_clone W-9; git -C "$T/wt/W-9" commit -q --allow-empty -m "merge of main, not pushed"; W9_HEAD=$(git -C "$T/wt/W-9" rev-parse HEAD)
+q add W-9; q set W-9 state=running lane=A branch=fix/W-9 "worktree=$T/wt/W-9" session_id=sess-w9 port=47762 stage=7/9
+{ say "AUTOPILOT_STAGE: 7/9 pr" "AUTOPILOT_PARK: which colour should the widget be?"; result_event; } > "$T/state-wb/logs/W-9.log"
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-606 a pass that finds a worker exited records the head its worktree was left at" \
+  '[ "$(field W-9 state)" = "\"parked\"" ] && [ "$(field W-9 worker_head.sha)" = "\"$W9_HEAD\"" ]'
+# W-11 is ahead with a head no worker of its own left; W-12's push is refused by origin; W-13 has an
+# uncommitted change on its last worker's head. W-10's origin ref is stale, its head already pushed.
+for k in 11 12 13; do wb_clone "W-$k"; q add "W-$k"; done
+q set W-11 "worker_head={\"sha\":\"$(git -C "$T/wt/W-11" rev-parse HEAD)\"}"; git -C "$T/wt/W-11" commit -q --allow-empty -m "by hand"
+git -C "$T/wt/W-12" commit -q --allow-empty -m "worker's"; q set W-12 "worker_head={\"sha\":\"$(git -C "$T/wt/W-12" rev-parse HEAD)\"}"
+q set W-13 "worker_head={\"sha\":\"$(git -C "$T/wt/W-13" rev-parse HEAD)\"}"; echo b >> "$T/wt/W-13/a.txt"
+wb_clone W-10; git -C "$T/wt/W-10" commit -q --allow-empty -m b; git -C "$T/wt/W-10" push -q origin fix/W-10 2>/dev/null
+git -C "$T/wt/W-10" update-ref refs/remotes/origin/fix/W-10 HEAD~1; q add W-10
+for k in 11 12 13 9; do wb_fix "W-$k"; done
+printf '#!/bin/sh\nwhile read o n r; do [ "$r" = refs/heads/fix/W-12 ] && { echo "W-12 is protected" >&2; exit 1; }; done; exit 0\n' > "$T/wb-origin.git/hooks/pre-receive"
+chmod +x "$T/wb-origin.git/hooks/pre-receive"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-606 with config §3 git-push not yes, its last worker's commits are held, naming the row" \
+  '[ "$(field W-9 state)" = "\"triaged\"" ] && ! grep -q "^W-9 " "$T/wb-spawns" && echo "$out" | grep -qF "W-9: WORKTREE IN USE — its branch fix/W-9 is 1 commit(s) ahead of origin/fix/W-9, not pushed: they are its last worker'"'"'s, but config §3 git-push is"'
+node -e 'const f = process.argv[1], fs = require("fs"); fs.writeFileSync(process.argv[2], fs.readFileSync(f, "utf8").replace(/^(\| `autopilot-workers` .*\n)/m, "$1| `git-push` | Push | `yes` | `yes` |\n"))' "$T/config.md" "$T/config-gp.md"
+out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
+check "DS-606 AC1 a fix try ahead of origin at its last worker's head is pushed, and its worker spawns" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-9)" = "$W9_HEAD" ] && grep -q "^W-9 " "$T/wb-spawns" && [ "$(field W-9 state)" = "\"running\"" ] && [ "$(field W-9 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-9: WORKTREE IN USE"'
+check "DS-606 AC3 a fix try ahead with a head no worker of its own left is held, as before" \
+  '[ "$(field W-11 state)" = "\"triaged\"" ] && ! grep -q "^W-11 " "$T/wb-spawns" && echo "$out" | grep -qF "W-11: WORKTREE IN USE — its branch fix/W-11 is 1 commit(s) ahead of origin/fix/W-11, not pushed, so no worker was spawned. The next pass looks again"'
+check "DS-606 AC4 a refused push of its last worker's head holds it, quoting the push's error" \
+  '[ "$(field W-12 state)" = "\"triaged\"" ] && ! grep -q "^W-12 " "$T/wb-spawns" && field W-12 worktree_busy.why | grep -qF "its branch fix/W-12 is 1 commit(s) ahead of origin/fix/W-12, not pushed: they are its last worker'"'"'s, and the pass'"'"'s git push origin fix/W-12 was refused (" && field W-12 worktree_busy.why | grep -qF "W-12 is protected"'
+check "DS-606 AC5 uncommitted changes on its last worker's head still hold it" \
+  '[ "$(field W-13 state)" = "\"triaged\"" ] && ! grep -q "^W-13 " "$T/wb-spawns" && echo "$out" | grep -qF "W-13: WORKTREE IN USE — its worktree $T/wt/W-13 has uncommitted changes (a.txt)"'
+q set W-9 state=done; wb_fix W-10
+out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
+check "DS-606 AC2 a stale origin ref is fetched first, so a head already on origin is not held" \
+  'grep -q "^W-10 " "$T/wb-spawns" && [ "$(field W-10 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-10: WORKTREE IN USE"'
+for k in 10 11 12 13; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/hooks/pre-receive"
+
 # ---- DS-397: routine recoveries the pass settles by script, with no decider and no person -----------
 # D-1's branch adds nothing to main, where merged PR #88 names it. P-2 parked on a refused push with its
 # PR body in its log. R-1 parked on a scope call it recommends an option for; R-2's recommendation is a
