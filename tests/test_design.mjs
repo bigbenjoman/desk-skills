@@ -9,7 +9,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
@@ -483,6 +483,48 @@ const bp = (row) => {
 t('breakpoints: unset is the default', bp(''), '390 768 1024 1280 1440');
 t('breakpoints: the row, ascending', bp('`1280` `390` `768`'), '390 768 1280');
 t('breakpoints: none is no breakpoints', bp('`none`'), '');
+
+// ---- estimate: the uploads a saved canvas's PR needs, and the time at the pace ----
+const boardsN = (n) => Array.from({ length: n }, (_, i) => ({ name: `Board ${i + 1}`, width: 1280 }));
+const eleven = { url: URL1, version: '7', tickets: [{ key: 'DS-90', boards: [] }, { key: 'DS-91', boards: ['Board 1', 'Board 2'] }], boards: boardsN(11) };
+const e11 = uploadEstimate(eleven, { key: 'DS-90', themeCount: 2 });
+t('AC1 estimate: 11 boards × 2 themes is 22 uploads', `${e11.boards} ${e11.themes} ${e11.uploads}`, '11 2 22');
+t('AC1 estimate: the time is the slower of 6 a minute and 300 an hour', Math.round(e11.minutes * 10) / 10, 4.4);
+t('AC1 estimate: the line states count and time', estimateLines(e11, { key: 'DS-90' }).join(' | '), 'uploads: 22 (11 boards × 2 themes), about 5 minutes at 6 a minute and 300 an hour');
+t('estimate: a ticket naming boards counts only those', uploadEstimate(eleven, { key: 'DS-91', themeCount: 2 }).uploads, 4);
+t('estimate: no themes counts one', uploadEstimate(eleven, { key: 'DS-90', themeCount: 0 }).uploads, 11);
+const e99 = uploadEstimate(eleven, { key: 'DS-99', themeCount: 2 });
+t('estimate: a ticket source.json does not list yet counts every board', `${e99.uploads} ${e99.unlisted}`, '22 true');
+t('estimate: an unlisted ticket gets a note line', estimateLines(e99, { key: 'DS-99' })[1], 'note: DS-99 is not among the tickets source.json lists yet, so every board is counted');
+t('estimate: a listed ticket gets no note line', estimateLines(e11, { key: 'DS-90' }).length, 1);
+const big = uploadEstimate({ ...eleven, boards: boardsN(151) }, { key: 'DS-90', themeCount: 2 });
+t('AC2 estimate: 302 uploads is over an hour', `${big.over} ${Math.round(big.minutes)}`, 'true 60');
+t('AC2 estimate: the flag suggests splitting by board', estimateLines(big, { key: 'DS-90' })[1], 'flag: over an hour to upload: split DS-90 by board, at most 150 boards per ticket');
+t('estimate: exactly 300 uploads is not over an hour', uploadEstimate({ ...eleven, boards: boardsN(150) }, { key: 'DS-90', themeCount: 2 }).over, false);
+const drawnDark = { ...eleven, boards: [...boardsN(11), ...boardsN(11).map((b) => ({ ...b, name: `${b.name} dark` }))] };
+t('estimate: a board drawn as another\'s dark theme stitches into it', `${uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 2 }).boards} ${uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 2 }).uploads}`, '11 22');
+t('estimate: a drawn dark board is a second theme with §5 Themes unset', uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 0 }).uploads, 22);
+t('estimate: a ticket naming a board and its dark board counts one board', uploadEstimate({ ...drawnDark, tickets: [{ key: 'DS-92', boards: ['Board 1', 'Board 1 dark'] }] }, { key: 'DS-92', themeCount: 0 }).uploads, 2);
+t('estimate: two boards with one title stitch as two', uploadEstimate({ ...eleven, boards: [{ name: 'Checkout' }, { name: 'Checkout' }] }, { key: 'DS-90', themeCount: 0 }).uploads, 2);
+t('estimate: a ticket naming a title two boards share counts both', uploadEstimate({ ...eleven, boards: [{ name: 'Checkout' }, { name: 'Checkout' }, { name: 'Basket' }], tickets: [{ key: 'DS-93', boards: ['Checkout'] }] }, { key: 'DS-93', themeCount: 2 }).uploads, 4);
+t('estimate: a ticket naming a title no board has counts it once', uploadEstimate({ ...eleven, tickets: [{ key: 'DS-94', boards: ['Board 1', 'Gone'] }] }, { key: 'DS-94', themeCount: 0 }).uploads, 2);
+t('estimate: a dark board matches its board whatever the case', uploadEstimate({ ...eleven, boards: [{ name: 'Order summary' }, { name: 'Order Summary dark' }] }, { key: 'DS-90', themeCount: 0 }).uploads, 2);
+t('estimate: a deck has no boards to stitch', estimateLines(uploadEstimate({ url: URL1, tickets: [], boards: [] }))[0], 'uploads: none: this canvas has no boards to stitch (a deck or a single page)');
+const th = (row) => {
+  const f = join(T, `th-${row.length}.md`);
+  put(f, `## 5. Conventions\n| Field | Value |\n|---|---|\n${row ? `| Themes | ${row} |\n` : ''}`);
+  const r = spawnSync('node', ['--input-type=module', '-e', `import { themes } from ${JSON.stringify(BIN)}; console.log(themes().length)`], { env: { ...process.env, DESK_CONFIG: f }, encoding: 'utf8' });
+  return (r.stdout || r.stderr).trim();
+};
+t('themes: unset is one look', th(''), '0');
+t('themes: the TODO template is one look', th('`TODO`'), '0');
+t('themes: the row', th('`light` `dark`'), '2');
+t('themes: none is one look', th('`none`'), '0');
+const est = join(T, 'est'); put(join(est, 'source.json'), JSON.stringify(eleven));
+const thCfg = join(T, 'th-cli.md'); put(thCfg, '## 5. Conventions\n| Field | Value |\n|---|---|\n| Themes | `light` `dark` |\n');
+const estCli = spawnSync('node', [BIN, 'estimate', est, '--key', 'DS-90'], { env: { ...process.env, DESK_CONFIG: thCfg }, encoding: 'utf8' });
+t('AC1 cli estimate: reads config §5 Themes', `${estCli.status} ${estCli.stdout.trim()}`, '0 uploads: 22 (11 boards × 2 themes), about 5 minutes at 6 a minute and 300 an hour');
+t('cli estimate: no saved canvas exits 2', spawnSync('node', [BIN, 'estimate', join(T, 'nowhere')], { env: { ...process.env, DESK_CONFIG: thCfg }, encoding: 'utf8' }).status, 2);
 
 // A re-save at a new version removes the old version's screens.
 const r7 = repo('r7');

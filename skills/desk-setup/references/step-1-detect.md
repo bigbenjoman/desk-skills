@@ -458,6 +458,10 @@ How to turn what you find into rows:
   Tailwind `screens` or `--breakpoint-*`, a width that recurs in `@media` queries), deduplicated and
   ascending, one span each. Name the `file:line` each width not in the default came from. `none` for
   a repo with no UI.
+- **Themes.** Propose each theme the design scan found the UI switching between (a `dark:` variant
+  in use, a `prefers-color-scheme` query, a `data-theme` or `.dark` class the code toggles), one
+  span each, e.g. `light` `dark`, and name the `file:line` it came from. `none` for a repo with one
+  look or no UI.
 - **Design system.** Propose each file the design scan found that defines tokens (a `tokens.css`,
   theme files, the Tailwind config, a CSS file with an `@theme` block, a `DESIGN.md`), one span each,
   repo-relative. `none` for a repo with no UI. **A repo with UI but nothing to put in this row
