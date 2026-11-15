@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { leverRow, parseLevers } from '../desk/bin/desk-env.mjs';
 
@@ -142,6 +142,17 @@ run([]);
 t('AC11 the same names in another order or case are no change', log('acme__widgets').filter((e) => e.kind === 'row_change').length, 2);
 run([], { DESK_LEVERS: 'memory' });
 t('AC11 a pinned worker does not read the row, so logs nothing', log('acme__widgets').filter((e) => e.kind === 'row_change').length, 2);
+setRow('`memory`');
+run(['memory'], { DESK_AUTOPILOT_WORKER: '1' });
+t('AC11 an unpinned worker reads the row but logs nothing', log('acme__widgets').filter((e) => e.kind === 'row_change').length, 2);
+// Readers of one edit at once record it once: the log is read and written under its lock.
+const runAsync = () => new Promise((res) => {
+  const c = spawn('node', [join(BIN, 'desk-env.mjs'), 'levers'], { cwd: join(T, 'repo'), env: env(), stdio: 'ignore' });
+  c.on('close', res);
+});
+await Promise.all(Array.from({ length: 6 }, runAsync));
+t('AC11 six reads of one edit at once log one row_change', log('acme__widgets').filter((e) => e.kind === 'row_change').map((e) => e.after).slice(2), ['memory']);
+setRow('`Preflight, auto`');
 
 // ---- AC5, AC9: freeze -----------------------------------------------------------------------------------
 const before = { w: log('acme__widgets').length, g: log('acme__gadgets').length };

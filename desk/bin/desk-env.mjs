@@ -1822,17 +1822,22 @@ function logEveryRepo(append, event, repos = configuredRepos()) {
 }
 
 // Appends a row_change event to this repo's lever log when its levers row reads differently from the
-// last row the log recorded, or the log has recorded none. A log it cannot write is said, not fatal.
+// last row the log recorded, or the log has recorded none. The log is read and written under its lock,
+// so callers reading one edit at once record it once. A worker records nothing: the row is the user's,
+// and a worker's `desk-env` is read-only. A log it cannot write is said, not fatal.
 function logRowChange(row, LL) {
+  if (process.env.DESK_AUTOPILOT_WORKER === '1') return;
   const p = configPathOrNull();
   if (!p || !existsSync(p)) return;
   const key = (r) => leverWords([r ?? 'none']).sort().join(' ');
   try {
     const slug = repoSlug();
-    const last = LL.read(slug, { kinds: ['row_change'] }).events.at(-1);
-    if (last && key(last.after) === key(row)) return;
-    const after = row ?? 'none';
-    LL.append(slug, { kind: 'row_change', actor: 'ben', reason_code: 'row_change', reason: `config §3b "${CONFIG_ROWS.levers.row}" now reads \`${after}\``, before: last?.after ?? null, after });
+    LL.appendWith(slug, () => {
+      const last = LL.read(slug, { kinds: ['row_change'] }).events.at(-1);
+      if (last && key(last.after) === key(row)) return null;
+      const after = row ?? 'none';
+      return { kind: 'row_change', actor: 'ben', reason_code: 'row_change', reason: `config §3b "${CONFIG_ROWS.levers.row}" now reads \`${after}\``, before: last?.after ?? null, after };
+    });
   } catch (e) {
     console.error(`desk-env levers: could not record the row change in the lever log: ${e.message}`);
   }
