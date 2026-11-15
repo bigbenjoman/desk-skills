@@ -282,6 +282,9 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const needs = (why, ...segs) => ({ k: 'needs', why, segs }), merging = (...segs) => ({ k: 'merging', segs });
   if (ps.state === 'CLOSED' && owesReopen(t)) return merging(['closed to start its CI', WARN], [' · the next pass reopens it', null]);
   if (ps.state === 'CLOSED') return needs({ code: 'closed' }, ['closed unmerged: requeue or drop it', null]);
+  // Held at this head by the repo's failing reviewer check (pass.mjs gate_hold): needs-you lists that
+  // check once, naming every PR it holds, so the PR itself is not a second item.
+  if (gateHeldAt(t)) return merging(['red only on its review gate', WARN], [' · held by the reviewer check, one item for the repo', null]);
   // What no fix try can move: a check only a person clears, or one still red after both tries.
   const stuck = stuckOf(t, ctx);
   if (stuck) return needs({ code: 'stuck', stuck }, [stuck.why, null]);
@@ -459,14 +462,16 @@ const owesReopen = (t) => t?.reopening != null && String(t.reopening) === String
 // How long an open PR's head and check results have gone unchanged, as the last pass read it
 // (pr_status changed_at), once that is STALL_MS or more; else null. desk-q flags a Merging row that
 // is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after), or
-// on a fix ticket for its evidence workflow, is held, not stalled.
+// on a fix ticket for its evidence workflow, or on the repo's reviewer check, is held, not stalled.
 export const STALL_MS = 2 * 60 * 60 * 1000;
 export const STALL_FOR = span(STALL_MS);
 const stalledFor = (t, now) => {
   const ps = prStatusOf(t), at = Date.parse(ps?.changed_at ?? '');
-  if (t.undraft?.call === 'evidence-fix') return null;
+  if (t.undraft?.call === 'evidence-fix' || gateHeldAt(t)) return null;
   return ps?.state === 'OPEN' && !keysOf(t.merge_after).length && Number.isFinite(at) && now - at >= STALL_MS ? now - at : null;
 };
+// A PR the pass holds for the repo's failing reviewer check (gate_hold), at the head it read.
+export const gateHeldAt = (t) => !!t?.gate_hold && prStatusOf(t)?.state === 'OPEN' && (t.gate_hold.head ?? null) === (prStatusOf(t)?.head ?? null);
 // A done ticket whose PR the last pass read as open or closed unmerged. One merged, with no PR, or not
 // read yet is done, as unmergedBlockers takes it.
 const prRow = (t) => !t?.merged_at && ['OPEN', 'CLOSED'].includes(prStatusOf(t)?.state);

@@ -50,9 +50,15 @@ export function postCall({ pr, repo, bodyFile }, account, own, env = process.env
   let dir = false;
   try { dir = statSync(account.dir).isDirectory(); } catch { /* missing */ }
   if (!dir) return { refused: `§4 Review account names ${account.dir} as ${account.login}'s gh config directory, and it does not exist: sign the account in with GH_CONFIG_DIR=${account.dir} gh auth login` };
-  // A token in the environment outranks GH_CONFIG_DIR, and would post as whoever owns it.
+  return { args, env: accountEnv(account, env), as: account.login };
+}
+
+// The environment gh runs in as the §4 Review account: its config directory, and no token, since a
+// token in the environment outranks GH_CONFIG_DIR and would act as whoever owns it. health.mjs reads
+// the posting login through it too.
+export function accountEnv(account, env = process.env) {
   const { GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN, ...rest } = env;
-  return { args, env: { ...rest, GH_CONFIG_DIR: account.dir }, as: account.login };
+  return { ...rest, GH_CONFIG_DIR: account.dir };
 }
 
 const isMain = (() => {
