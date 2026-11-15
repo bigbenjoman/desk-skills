@@ -545,8 +545,9 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
 // A crash spends a try only when the body has as many `_drag <file>_` cells after it as before it:
 // one that filled cells made progress, so it is tried again however often it has crashed.
 // A round whose log names its screenshots is always uploaded: the cap holds back only the retries.
-// The shared profile in use (the uploader's exit 2) is a wait, so it spends no try; GitHub's rate
-// limit (its exit 7) is the upload queue's back-off, which keeps the job queued and records no result.
+// The shared profile in use (the uploader's exit 2) and GitHub's rate limit (its exit 7) are waits,
+// so they spend no try; a throttled one is not tried again before the upload queue's back-off ends,
+// which holds every repo's uploads till then.
 // Every upload goes through the machine's one upload queue (upload-queue.mjs): uploadShots adds the
 // ticket's job and pumps the queue, which may run other repos' jobs first and leave this one for a
 // later pass, and recordUpload takes each result the queue holds for this batch.
@@ -578,7 +579,7 @@ function pumpUploads() {
       continue;
     }
     uploadedThisPass.add(r.key);
-    recordUpload(t, String(r.pr), r.dir, { ok: r.code === 0, code: r.code, out: r.out ?? '' }, r.cells_before ?? null);
+    recordUpload(t, String(r.pr), r.dir, { ok: r.code === 0, code: r.code, out: r.out ?? '', until: r.until ?? null }, r.cells_before ?? null);
   }
 }
 // PR #prNo's body, null where it could not be read, and `why`, the read's last line of output.
@@ -645,7 +646,7 @@ function recordUpload(t, prNo, imgDir, run, before) {
     report.advanced.push(`${t.key} images → #${prNo} wait: the shared browser profile is in use, so the next pass tries again without counting a try`);
   } else if (run.code === 7) {
     save();
-    const until = /nothing is uploaded before (\S+)/.exec(up)?.[1] ?? null;
+    const until = run.until ?? /nothing is uploaded before (\S+)/.exec(up)?.[1] ?? null;
     q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries: was?.tries ?? 0, log: saved, throttled: until ?? true })}`);
     report.advanced.push(`${t.key} images → #${prNo} wait: GitHub's rate limit throttled the upload, so it is tried again ${until ? `after ${until}` : 'by the next pass'} without counting a try`);
   } else {

@@ -5,14 +5,15 @@
 // jobs one after the other, from whichever repo was served longest ago, each capped (--max) at what
 // UPLOAD_PACE leaves of this minute's and this hour's uploads in the machine's upload log. A job whose
 // upload stalls (the uploader's exit 7) sets one back-off that stops every repo's uploads until it
-// ends. A job left part done by the cap (exit 8) keeps its place; any other end is a result, which
-// the pass of the queue that added it takes and records on its ticket. A job belongs to its ticket's
+// ends, and its result carries the back-off's end (`until`), so its pass retries it no sooner. A job
+// left part done by the cap (exit 8) keeps its place; any other end is a result, which the pass of
+// the queue that added it takes and records on its ticket. A job belongs to its ticket's
 // round (`round`, the ticket's upload_round when it was added): a spawn of the ticket's next round
 // waits while an upload of it is running (inFlight), then drops it (dropJob), and the pass records only
 // results of the ticket's current round.
 //
 //   { jobs:    [{ queue, repo, root, key, round, pr, dir, approved, at }]   queue: that batch's queue.json
-//     results: [{ ...job, code, out, done_at }]
+//     results: [{ ...job, code, out, until?, done_at }]   until: on a stall, when its back-off ends
 //     served:  { [repo]: <when its last job started> }
 //     backoff: { at, stalls, until, repo, pr } | null
 //     running: { id, pr, pid, at } | null }   the job an upload is running now (inFlight)
@@ -125,12 +126,13 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       ran.push({ job, code: r.code });
       const end = now();
       stop = withQueue(file, (w) => {
-        if (r.code === EXIT_THROTTLED) { w.backoff = backoffAfter(w.backoff, r.out, end, job); return backoffWhy(w.backoff); }
+        if (r.code === EXIT_THROTTLED) w.backoff = backoffAfter(w.backoff, r.out, end, job);
         if ([0, 4, EXIT_PACED].includes(r.code)) w.backoff = null;
         if (r.code === EXIT_PACED) return null;
         const i = w.jobs.findIndex((j) => jobId(j) === jobId(job) && String(j.pr) === String(job.pr) && j.dir === job.dir);
         if (i >= 0) w.jobs.splice(i, 1);
-        w.results.push({ ...job, code: r.code, out: r.out, done_at: iso(end) });
+        w.results.push({ ...job, code: r.code, out: r.out, ...(r.code === EXIT_THROTTLED ? { until: w.backoff.until } : {}), done_at: iso(end) });
+        if (r.code === EXIT_THROTTLED) return backoffWhy(w.backoff);
         return r.code === EXIT_BUSY ? 'the shared browser profile is in use' : null;
       });
       if (stop) break;

@@ -2248,14 +2248,17 @@ check "DS-674 AC1 a crash that filled a cell spends no try, and its cells wait r
   'grep -qx "791 $T/state-s/images/UC-1/" "$T/uploads" && [ "$(field UC-1 upload_crash.tries)" = 1 ] && [ "$(field UC-1 upload_crash.filled)" = 1 ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -qF "UC-1: image upload to PR #791 crashed after filling 1 cell(s), so it spends no try (1 of 2 spent), and the next pass tries it again"'
 check "DS-674 AC3 a throttled upload spends no try and its cells wait for the back-off" \
   'grep -qx "792 $T/state-s/images/UC-2/" "$T/uploads" && [ "$(field UC-2 upload_crash.tries)" = 1 ] && [ "$(field UC-2 upload_crash.throttled)" = "\"2099-01-01T00:00:00.000Z\"" ] && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -qF "UC-2 images → #792 wait: GitHub'"'"'s rate limit throttled the upload, so it is tried again after 2099-01-01T00:00:00.000Z without counting a try"'
+# UC-2's throttle set the machine's upload back-off (DS-673), so inside it no upload is tried, UC-1's included.
 : > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-674 AC3 a throttled upload is not tried again before its retry_after, nor is any other inside the back-off" \
+  '! grep -q "^792 " "$T/uploads" && ! grep -q "^791 " "$T/uploads" && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-[12]: DRAFT"'
+# The back-off ends: the queue's and UC-2's retry_after both lie in the past.
+rm -f "$T/upload-throttle-792"; : > "$T/upload-fills"
+node -e 'const f = process.argv[1]; const q = JSON.parse(require("fs").readFileSync(f, "utf8")); q.backoff.until = "2020-01-01T00:00:00.000Z"; require("fs").writeFileSync(f, JSON.stringify(q))' "$T/desk/upload-queue.json"
+q set UC-2 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x","throttled":"2020-01-01T00:00:00.000Z"}'
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-fills" "$T/upload-fillcrash-791"
 check "DS-674 AC1 after a second crash that filled a cell, the next pass tries the upload again" \
   'grep -qx "791 $T/state-s/images/UC-1/" "$T/uploads" && [ "$(field UC-1 upload_crash.tries)" = 1 ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-1: DRAFT"'
-check "DS-674 AC3 a throttled upload is not tried again before its retry_after" \
-  '! grep -q "^792 " "$T/uploads" && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-2: DRAFT"'
-rm -f "$T/upload-fillcrash-791" "$T/upload-throttle-792"; : > "$T/upload-fills"
-q set UC-2 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x","throttled":"2020-01-01T00:00:00.000Z"}'
-: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-fills"
 check "DS-674 AC3 once its retry_after has passed, the throttled upload is tried again" \
   'grep -qx "792 $T/state-s/images/UC-2/" "$T/uploads" && [ "$(field UC-2 upload_crash)" = null ] && [ "$(field UC-2 images_uploaded)" = true ]'
 

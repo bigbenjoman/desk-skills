@@ -102,7 +102,8 @@ function machine({ step = 5000 } = {}) {
   t('AC4 a stall stops the pass there: no other repo is tried', m.calls.map((c) => c.key), ['a-1']);
   t('AC4 the back-off is the machine\'s, recorded in the queue', readUploadQueue(m.file).backoff.stalls, 1);
   t('AC4 the pass says why it stopped', r.stop.startsWith('an upload for acme/a #1 stalled at'), true);
-  t('AC4 the stalled job keeps its place, with no result', `${isQueued(readUploadQueue(m.file), '/q/acme/a.json', 'a-1')} ${readUploadQueue(m.file).results.length}`, 'true 0');
+  const stalled = readUploadQueue(m.file).results.map((x) => `${x.key} ${x.code} ${x.until}`);
+  t('AC4 the stalled job leaves the queue as its pass\'s result, naming when the back-off ends', `${isQueued(readUploadQueue(m.file), '/q/acme/a.json', 'a-1')} ${stalled}`, `false a-1 ${EXIT_THROTTLED} ${named}`);
   delete m.code['a-1'];
   m.clock = START + 10 * 60_000;
   const inside = m.pump();
