@@ -547,18 +547,19 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
 // The shared profile in use (the uploader's exit 2) and GitHub's rate limit (its exit 7) are waits,
 // so they spend no try; a throttled one is not tried again before the retry_after it printed.
 const uploadedThisPass = new Set();
-// PR #prNo's body, or null where it could not be read.
+// PR #prNo's body, null where it could not be read, and `why`, the read's last line of output.
 function prBody(prNo) {
   const view = shOut('gh', ['pr', 'view', String(prNo), '--repo', GH_REPO, '--json', 'body']);
-  try { return view.ok ? String(JSON.parse(view.out).body ?? '') : null; } catch { return null; }
+  const why = view.out.split('\n').pop();
+  try { return { body: view.ok ? String(JSON.parse(view.out).body ?? '') : null, why }; } catch { return { body: null, why }; }
 }
 // How many of `shots` (file names) PR #prNo's body still has a `_drag <file>_` cell for: 0 with none,
 // null where the body could not be read.
 function cellsFor(prNo, shots) {
-  const body = prBody(prNo);
+  const { body } = prBody(prNo);
   return body == null ? null : dragFiles(body).filter((f) => shots.includes(f)).length;
 }
-const cellsIn = (prNo) => { const body = prBody(prNo); return body == null ? null : dragCells(body); };
+const cellsIn = (prNo) => { const { body } = prBody(prNo); return body == null ? null : dragCells(body); };
 function uploadShots(t, prNo, imgDir) {
   const was = crashOf(t, prNo);
   if (uploadedThisPass.has(t.key)) return;
@@ -1063,10 +1064,8 @@ if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
     if (cur != null && Number(cur) !== Number(c.pr)) { q('set', t.key, 'upload_crash=null'); continue; }
     // A body with no cell left was filled after all (the crash came after the uploader's edit, or the
     // evidence workflow filled it): uploading again would duplicate its assets and read as incomplete.
-    const view = shOut('gh', ['pr', 'view', String(c.pr), '--repo', GH_REPO, '--json', 'body']);
-    let body = null;
-    try { if (view.ok) body = String(JSON.parse(view.out).body ?? ''); } catch { /* unread */ }
-    if (body == null) { report.failed.push(`${t.key}: the crashed upload to PR #${c.pr} waits for the next pass, since its body could not be read (${view.out.split('\n').pop()})`); continue; }
+    const { body, why } = prBody(c.pr);
+    if (body == null) { report.failed.push(`${t.key}: the crashed upload to PR #${c.pr} waits for the next pass, since its body could not be read (${why})`); continue; }
     if (!dragCells(body)) {
       q('set', t.key, 'upload_crash=null', 'images_uploaded=true');
       report.advanced.push(`${t.key} #${c.pr} has no screenshot cell left, so its crashed upload is not tried again`);
