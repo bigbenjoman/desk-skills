@@ -4627,7 +4627,12 @@ if (!DRY) {
   const qg = queue();
   try { groups = groupsNow({ slug: E.repoSlug(), stateDir: STATE, queuePath: QUEUE_FILE, q: qg }); }
   catch (e) { out.push(`groups: not recorded this pass (${describeCrash(e).split('\n')[0]})`); }
-  for (const [key, g] of Object.entries(groups)) if (qg.tickets[key]?.group?.g !== g) q('set', key, `group=${JSON.stringify({ g, at: PASS_AT })}`);
+  // `from` and `from_at` are the group it left and when it entered that one: desk-q times a PR's
+  // Merging age from leaving Running when its head was pushed while it was there, under review.
+  for (const [key, g] of Object.entries(groups)) {
+    const was = qg.tickets[key]?.group;
+    if (was?.g !== g) q('set', key, `group=${JSON.stringify({ g, at: PASS_AT, from: was?.g ?? null, from_at: was?.at ?? null })}`);
+  }
 }
 
 // ---- verdict -------------------------------------------------------------
