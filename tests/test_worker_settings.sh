@@ -68,6 +68,7 @@ check "desk-env logins remove denied"                     'jq -e ".permissions.d
 check "desk-design save, status and check allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
 check "desk-design render allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs render:*)" && ! allows "Bash(node $B/desk-design.mjs render:*)"'
 check "DS-382 desk-design compare allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs compare:*)" && ! allows "Bash(node $B/desk-design.mjs compare:*)"'
+check "DS-676 stitch-boards allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/stitch-boards.mjs:*)" && ! allows "Bash(node $B/stitch-boards.mjs:*)"'
 check "DS-339 AC1 the worker's resume file in the state dir is writable" 'allows "Edit(/$T/state/resume/fix-thing.json)" && ! allows "Edit(/$T/state/resume/**)"'
 check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
 
@@ -328,6 +329,7 @@ for v in ask no; do
   check "AC2 dependency-install $v: bare install still allowed" 'ok "pnpm install"'
   check "AC4 screenshots $v: capture refused, named"       'no "$L browser node $W/node_modules/playwright/cli.js screenshot" "$L browser node ./shot.mjs" "$L browser ./node_modules/.bin/storybook build" "$L browser uv run python ./shot.py" && denied_line worker-screenshots $v'
   check "AC4 screenshots $v: desk-design render still allowed" 'ok "$L browser node $B/desk-design.mjs render docs/design/x"'
+  check "DS-676 screenshots $v: stitch-boards still allowed" 'ok "$L browser node $B/stitch-boards.mjs /x/captures --out /x"'
   check "AC5 local-services $v: compose up refused, named" 'no "$UP typesense" "docker compose up -d typesense" && denied_line worker-local-services $v'
 done
 PMROW='`npm`' INSTROW='`npm install` `web: npm install`' settings '`bash tests/run.sh`'
