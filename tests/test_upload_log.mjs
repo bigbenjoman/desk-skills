@@ -87,8 +87,9 @@ t('AC1: each line has the time it finished', readUploadLog(machineLog).every((e)
 r = upload('after-mobile.png');
 t('AC2: a stall stops the upload as throttled', `${r.status}`, '7');
 t('AC2: the stall says where it was logged', r.stderr.includes(`stalled on after-mobile.png, logged as throttled in ${machineLog}`), true);
-t('AC2: the stalled file is logged throttled, counting the three uploads before it', readUploadLog(machineLog).slice(2).map(shape),
-  ['acme/widgets #7 after-desktop.png uploaded', 'acme/widgets #7 after-mobile.png throttled minute=3 hour=3']);
+// The fake clock fills after-desktop 200s into the run and stalls 201s later, so only the hour counts it.
+t('AC2: the stalled file is logged throttled, counting the uploads by when each finished', readUploadLog(machineLog).slice(2).map(shape),
+  ['acme/widgets #7 after-desktop.png uploaded', 'acme/widgets #7 after-mobile.png throttled minute=0 hour=3']);
 t('AC2: a stalled run leaves the stalled file\'s cell for the next run', readFileSync(body, 'utf8').includes('_drag after-mobile.png_'), true);
 
 rmSync(T, { recursive: true, force: true });

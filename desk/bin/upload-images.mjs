@@ -130,8 +130,8 @@ async function openPage() {
 
 // Every file uploaded, and the one a stall or upload error stopped on, goes in the machine's
 // upload log; a log that cannot be written never stops an upload.
-const record = (file, result) => {
-  try { logUpload({ repo: REPO, pr, file, result }); } catch (e) { console.error(`[upload] the upload log was not written: ${e.message}`); return; }
+const record = (file, result, at) => {
+  try { logUpload({ repo: REPO, pr, file, result, at }); } catch (e) { console.error(`[upload] the upload log was not written: ${e.message}`); return; }
   if (result === 'throttled') console.error(`[upload] stalled on ${file}, logged as throttled in ${uploadLogFile()}`);
 };
 

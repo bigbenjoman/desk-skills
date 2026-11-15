@@ -185,6 +185,22 @@ const uploaded = (page) => page.batches.flat().map((p) => basename(p));
   t('AC6 the third round gets A\'s first link', rounds[2].body.includes(`![home](${urlA})`), true);
 }
 
+// ---- record: what upload-images.mjs writes to the upload log -----------------------------------
+{
+  const seen = [];
+  const record = (file, result, at) => seen.push({ file, result, at: at.getTime() });
+  const go = (dir, pr, page) => runUpload({ dir, readBody: () => pr.body, writeBody: (b) => { pr.body = b; }, openPage: page.open, record, now, sleep, pollMs: 1000, stallMs: 180000 });
+  const start = clock.t;
+  await go(folder(['a.png', 'b.png']), { body: body(['a.png', 'b.png']) }, fakePage({ stallAt: 1, partial: 1 }));
+  t('record: the upload then the stalled file', seen.map((s) => `${s.file} ${s.result}`).join(', '), 'a.png uploaded, b.png throttled');
+  t('record: an upload is timed when its link appeared, not at the stall', seen[0].at - start, 1000);
+  t('record: the stall is timed when it was seen', seen[1].at - seen[0].at >= 180000, true);
+  seen.length = 0;
+  let threw = '';
+  try { await go(folder(['c.png', 'd.png']), { body: body(['c.png', 'd.png']) }, fakePage({ crashAt: 1 })); } catch (e) { threw = e.message; }
+  t('record: an upload error is logged throttled on the first file it was waiting on, and still thrown', `${threw}: ${seen.map((s) => `${s.file} ${s.result}`).join(', ')}`, 'killed: c.png throttled');
+}
+
 // ---- the pieces --------------------------------------------------------------------------------
 {
   const pr = { body: 'intro\n![a](https://github.com/user-attachments/assets/abc)\n', edits: 0 };
