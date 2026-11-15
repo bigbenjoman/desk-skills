@@ -267,7 +267,7 @@ check "DS-687 AC8: a blocker_needs of the three calls is kept" \
 sed -e 's/| Tracker | `none` |/| Tracker | `jira` |/' -e 's/| Ticket key pattern | `none` |/| Ticket key pattern | `FIX-[0-9]+` |/' "$T/config.md" > "$T/config-jira.md"
 mkdir -p "$T/jirastub"
 link(){ printf '{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"%s","fields":{"summary":"s","issuetype":{"name":"Story"},"status":{"statusCategory":{"key":"%s"}}}}}' "$1" "$2"; }
-printf '{"key":"FIX-1","fields":{"summary":"Fix it","labels":[],"issuelinks":[%s,%s,%s]}}\n' "$(link X-1 new)" "$(link X-2 indeterminate)" "$(link X-3 done)" > "$T/fix-1.json"
+printf '{"key":"FIX-1","fields":{"summary":"Fix it","labels":[],"issuelinks":[%s,%s,%s]}}\n' "$(link X-1 new)" "$(link X-2 indeterminate)" "$(link X-3 'done')" > "$T/fix-1.json"
 cat > "$T/jirastub/desk-jira" <<EOF
 #!/bin/sh
 case "\$1" in
