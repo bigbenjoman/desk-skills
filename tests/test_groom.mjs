@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck,
-  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed, orderOf } from '../skills/desk-groom/bin/groom-scan.mjs'
+  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed, orderOf, groom, stepWords, holdLine } from '../skills/desk-groom/bin/groom-scan.mjs'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
@@ -227,6 +227,38 @@ t('order: wording before the key outranks a verb after it', ['Ship after DS-279 
   ['blocked-by', 'blocked-by', 'blocked-by'])
 t('order: every mention of the key is read', orderOf('See DS-279 for context. Ship after DS-279 merges.', 'DS-279'), 'blocked-by')
 t('order: mentions that disagree order nothing', orderOf('Lands before DS-279. Then after DS-279 merges, retry.', 'DS-279'), null)
+
+// A step only the person takes, blocking open work: which label it carries, and what a link to it holds.
+const bare = { commitsNaming: () => [], commitsTouching: () => [], resolve: () => null, exists: () => false, has: () => false, lines: () => [], renamedTo: () => null }
+const task = (key, summary, extra = {}) => ticketOf({ key, fields: { summary, description: '', issuetype: { name: 'Task' }, ...extra } })
+const steps = [
+  task('KAN-80', 'build: the checkout reads the webhook', { issuelinks: ['KAN-81', 'KAN-82', 'KAN-83', 'KAN-84', 'KAN-85'].map((k) => blocks(k)) }),
+  task('KAN-86', 'build: the refund page', { issuelinks: [blocks('KAN-81')] }),
+  task('KAN-81', 'Ben: approval of the refund copy'),
+  task('KAN-82', 'Ben: record a real Stripe webhook fixture'),
+  task('KAN-83', 'Ben: create the Stripe API key'),
+  task('KAN-84', 'Ben: walkthrough of the checkout', { labels: ['ben-step'] }),
+  task('KAN-85', 'checkout: render the receipt'),
+  task('KAN-87', 'Ben: go-live sign-off for checkout'),
+  task('KAN-88', 'build: the receipt email', { description: 'Ship it after KAN-87 is done.\nThis needs the fixture from KAN-82.\nIt needs the key KAN-89 makes.\nOnce KAN-84 is done, it can merge.' }),
+  task('KAN-89', 'Ben: create the signing key', { labels: ['ben-input'] }),
+]
+const labelled = groom({ tickets: steps, repo: bare, stepLabels: ['Ben-Step'], inputLabels: ['ben-input'] })
+const label = (k) => labelled.filter((f) => f.check === 'label' && f.ticket === k)
+t('label: one question per unlabelled step, naming every ticket it blocks', [label('KAN-81').length, label('KAN-81')[0]?.blocked, label('KAN-81')[0]?.kind], [1, ['KAN-80', 'KAN-86'], 'question'])
+t('label: an approval step recommends the Person-step label', label('KAN-81')[0]?.recommend, 'KAN-81 gates only the merge of KAN-80, KAN-86: desk-jira labels KAN-81 add ben-step')
+t('label: a fixture step recommends the Person-input label', label('KAN-82')[0]?.recommend, 'KAN-82 makes something the build of KAN-80 reads: desk-jira labels KAN-82 add ben-input')
+t('label: a key step recommends the Person-input label', /add ben-input$/.test(label('KAN-83')[0]?.recommend ?? ''), true)
+t('label: both labels and neither are the options', label('KAN-81')[0]?.options?.length, 3)
+t('label: a step already labelled, or an ordinary blocker, asks nothing', [label('KAN-84').length, label('KAN-85').length], [0, 0])
+t('label: no finding where the rows are none', groom({ tickets: steps, repo: bare }).filter((f) => f.check === 'label').length, 0)
+t('step words: an input wins over a merge gate', [stepWords('approve the recorded payment response'), stepWords('open the account'), stepWords('render it')].map((w) => w.kind), ['input', 'merge', null])
+const linkHold = (k) => labelled.find((f) => f.check === 'link' && f.ticket === 'KAN-88' && f.other === k)?.evidence?.[1] ?? null
+t('link: a step with neither label holds the build, as an ordinary blocker', linkHold('KAN-82'), "KAN-82 reads as the person's step but carries no label that says so: the link holds KAN-88's build until KAN-82 is Done, as an ordinary blocker (see KAN-82's label finding)")
+t('link: a Person-input step holds the build', linkHold('KAN-89'), "KAN-89 is the person's step, labelled as an input: the link holds KAN-88's build until KAN-89 is Done")
+t('link: a Person-step step holds only the merge', linkHold('KAN-84'), "KAN-84 is the person's step: the link holds only KAN-88's merge, so KAN-88 is built and reviewed meanwhile")
+t('link: a Task that says sign off holds only the merge, labelled or not', linkHold('KAN-87'), "KAN-87 is the person's step: the link holds only KAN-88's merge, so KAN-88 is built and reviewed meanwhile")
+t('link: an ordinary blocker adds no hold line', holdLine(steps.find((x) => x.key === 'KAN-85'), 'KAN-88'), null)
 
 // AC4
 const moved = of('stale', 'KAN-40')[0] ?? {}

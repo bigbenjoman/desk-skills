@@ -26,7 +26,8 @@ another repo's config.
 What it answers here: §0 for the GitHub repo and default branch, §2 for the primary repo root, §3 for
 which writes a proposal would need (`jira-edit`, `jira-close`, `jira-transition`), §3b for the
 fan-out, and §4 for the Jira project, Done and In-progress states, Priority, Priorities only you set,
-Size field, Other fields and Ticket key pattern.
+Size field, Other fields, Ticket key pattern, and Person-step labels and Person-input labels (the scan
+reads these two itself, through `desk-env`).
 
 ## Overview
 
@@ -47,7 +48,8 @@ only reports.
 **A fix or a question, never both.** A finding with one correct fix is proposed, never asked. A
 finding with no single correct fix (two tickets that could each own the scope, a DoD item either of
 two children could take, a loose ticket two epics fit equally, which of a ticket's many blockers it
-truly needs, which link in a Blocks loop to cut) is a judgement call: it is asked, with
+truly needs, which link in a Blocks loop to cut, whether the person's step holds a build or only a
+merge) is a judgement call: it is asked, with
 the options and a recommendation, and nothing is proposed for it. A loose ticket is always asked,
 even with one clear home: the user decides where a ticket lives.
 
@@ -81,7 +83,8 @@ it once more with `--json`, redirected to `<scratchpad>/groom-scan.json`, for st
 |---|---|---|
 | `landed` | commits on main that name the ticket's key; commits under another key that touch a file the ticket cites and share its title's words; a name the ticket says it adds that main already has | §4 Done state, **only after step 3** |
 | `duplicate` | two open tickets whose titles share most of their words | a `duplicates` link from the newer to the older, and the newer closed, **only after step 3** |
-| `link` | a ticket that names another open ticket in prose with no link, in wording that orders them, read only in the clause holding the key (`blocked-by` for after, needs, builds on, once… before the key; `blocks` for before, feeds… before it, or the key reading or needing this one's work; a bare mention, or wording in another sentence, proposes nothing); a command, flag or field one ticket adds and another uses; two tickets that both change the same function | `desk-jira link`, with both lines as evidence |
+| `link` | a ticket that names another open ticket in prose with no link, in wording that orders them, read only in the clause holding the key (`blocked-by` for after, needs, builds on, once… before the key; `blocks` for before, feeds… before it, or the key reading or needing this one's work; a bare mention, or wording in another sentence, proposes nothing); a command, flag or field one ticket adds and another uses; two tickets that both change the same function | `desk-jira link`, with both lines as evidence. Where the blocker in a prose link is a step only the person takes, a third line says what the link will hold as intake reads it: the blocked ticket's build (a Person-input label, or no label at all, an ordinary blocker) or only its merge (a Person-step label, or a Task whose title says apply, confirm or sign off) |
+| `label` | an open Task blocking open work that reads as a step only the person takes (its title names a fixture, a recorded response or a key; an approval, walkthrough, go-live or account; or says apply, confirm or sign off) and carries neither a §4 Person-step label nor a Person-input label. Only where both rows are set | a question, one per step, naming every ticket it blocks: the Person-input label (it holds their build) recommended when the title names an input, else the Person-step label (it holds only their merge), or neither when it is not the person's step |
 | `stale` | each `path:line` citation: a file that is gone or moved, a line past the end, a name beside the citation that is no longer at that line; and each premise with no citation, a line outside the criteria, outcome, verification, design and out-of-scope sections that names a function, `--flag` or repo file main does not have and no open ticket adds | the edit (`from -> to`) where the name is a whole word on exactly one line of the file; otherwise, for a file that moved and for every premise, a verifier settles it (step 3) |
 | `field` | a blank §4 Priority or §4 Other fields value | the priority from the ticket's epic, else the one most of its open siblings hold; any other field is judged (a size from desk-jira's scale) |
 | `title` | a title with no area prefix, or a different one, where most of its epic's other children share one | the title with that prefix, in place of any other |
@@ -184,7 +187,7 @@ own decision.
 Every `question` finding and every judgement call from step 3 is a question block, never a proposal:
 
 ```
-QUESTION — <loose | blocker | coverage | duplicate>
+QUESTION — <loose | blocker | label | coverage | duplicate>
 target : <KEY>
 evidence:
   <each evidence line>
