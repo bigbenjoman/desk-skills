@@ -37,19 +37,23 @@ t('no log yet reads as none', readUploadLog(join(T, 'nowhere.jsonl')).length, 0)
 
 // ---- upload-images: a fake Playwright, a stub gh, the log under DESK_HOME ---------------------
 mkdirSync(join(T, 'images')); mkdirSync(join(T, 'fakes')); mkdirSync(join(T, 'home'));
-for (const f of ['after-desktop.png', 'after-mobile.png']) writeFileSync(join(T, 'images', f), '');
+for (const f of ['after-desktop.png', 'after-mobile.png']) writeFileSync(join(T, 'images', f), f);
 writeFileSync(join(T, 'profile.github-session.json'),
   '{"user":"me","cookies":[{"name":"user_session","value":"v","domain":"github.com","path":"/"}],"origins":[]}\n');
-// GitHub writes an <img> tag into the textarea's value for each file; FAKE_STALL names one it never finishes.
+// GitHub writes an <img> tag into the textarea's value for each file; FAKE_STALL names one it never
+// finishes, and while it waits each read of the box moves the clock on past the stall limit.
 writeFileSync(join(T, 'pw.mjs'), `
+const realNow = Date.now; let skew = 0; Date.now = () => realNow() + skew;
 let value = '';
 const loc = { first: () => loc, waitFor: async () => {}, scrollIntoViewIfNeeded: async () => {}, click: async () => {},
-  setInputFiles: async () => {}, inputValue: async () => value, fill: async (v) => { value = v; } };
-const page = { goto: async () => {}, evaluate: async () => 'me', locator: () => loc,
-  waitForFunction: async (_fn, { base, f }) => {
-    if (f === process.env.FAKE_STALL) { const e = new Error('page.waitForFunction: Timeout 180000ms exceeded.'); e.name = 'TimeoutError'; throw e; }
-    value += '<img alt="' + base + '" src="https://github.com/user-attachments/assets/' + base + '">';
-  } };
+  setInputFiles: async (paths) => {
+    for (const p of paths) {
+      const f = p.split('/').pop(); const base = f.replace(/\\.[^.]+$/, '');
+      if (f !== process.env.FAKE_STALL) value += '<img alt="' + base + '" src="https://github.com/user-attachments/assets/' + base + '">';
+    }
+  },
+  inputValue: async () => { if (process.env.FAKE_STALL) skew += 200000; return value; }, fill: async (v) => { value = v; } };
+const page = { goto: async () => {}, evaluate: async () => 'me', locator: () => loc };
 const ctx = { addCookies: async () => {}, pages: () => [page], newPage: async () => page, cookies: async () => [], close: async () => {} };
 export const chromium = { launchPersistentContext: async () => ctx };
 `);
@@ -62,6 +66,7 @@ else process.stdout.write(fs.readFileSync(${JSON.stringify(body)}, 'utf8'));
 chmodSync(join(T, 'fakes', 'gh'), 0o755);
 const deskHome = join(T, 'desk');
 const upload = (stall = '') => {
+  rmSync(join(T, 'images.tags.json'), { force: true });   // each run uploads afresh, not from the last run's links
   writeFileSync(body, '| _drag after-desktop.png_ | _drag after-mobile.png_ |\n');
   const env = { ...process.env, HOME: join(T, 'home'), PATH: `${join(T, 'fakes')}:${process.env.PATH}`, DESK_HOME: deskHome,
     DESK_UPLOAD_APPROVED: '1', DESK_BROWSER_PROFILE: join(T, 'profile'), DESK_PLAYWRIGHT: join(T, 'pw.mjs'),
@@ -80,11 +85,12 @@ t('AC1: each file uploaded is a line in <DESK_HOME>/upload-log.jsonl', readUploa
 t('AC1: each line has the time it finished', readUploadLog(machineLog).every((e) => Math.abs(Date.now() - Date.parse(e.at)) < 60_000), true);
 
 r = upload('after-mobile.png');
-t('AC2: a stall still fails the upload', r.status !== 0 && /Timeout 180000ms exceeded/.test(r.stderr), true);
+t('AC2: a stall stops the upload as throttled', `${r.status}`, '7');
 t('AC2: the stall says where it was logged', r.stderr.includes(`stalled on after-mobile.png, logged as throttled in ${machineLog}`), true);
-t('AC2: the stalled file is logged throttled, counting the three uploads before it', readUploadLog(machineLog).slice(2).map(shape),
-  ['acme/widgets #7 after-desktop.png uploaded', 'acme/widgets #7 after-mobile.png throttled minute=3 hour=3']);
-t('AC2: a stalled run leaves the PR body alone', readFileSync(body, 'utf8').includes('_drag after-mobile.png_'), true);
+// The fake clock fills after-desktop 200s into the run and stalls 201s later, so only the hour counts it.
+t('AC2: the stalled file is logged throttled, counting the uploads by when each finished', readUploadLog(machineLog).slice(2).map(shape),
+  ['acme/widgets #7 after-desktop.png uploaded', 'acme/widgets #7 after-mobile.png throttled minute=0 hour=3']);
+t('AC2: a stalled run leaves the stalled file\'s cell for the next run', readFileSync(body, 'utf8').includes('_drag after-mobile.png_'), true);
 
 rmSync(T, { recursive: true, force: true });
 console.log(`${fails ? 'FAIL ' : ''}${fails} failed`);

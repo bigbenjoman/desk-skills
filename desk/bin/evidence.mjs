@@ -41,8 +41,19 @@ export function parseEvidenceRow(items) {
 // A cell is never inside a code span or a fenced block: a body that writes `_drag <file>_` there is
 // describing the cell, not leaving one (DS-381). A span stays on its line and closes only on a run of
 // its own length; a backtick run with no partner is left as text, so it cannot hide the cells below it.
-const outsideCode = (body) => String(body ?? '').replace(/^[ \t]*(```|~~~)[^]*?^[ \t]*\1[^\n]*$/gm, '').replace(/(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g, '');
+const FENCED = /^[ \t]*(```|~~~)[^]*?^[ \t]*\1[^\n]*$/gm;
+const SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+const outsideCode = (body) => String(body ?? '').replace(FENCED, '').replace(SPAN, '');
 export const dragCells = (body) => (outsideCode(body).match(/_drag \S+_/g) ?? []).length;
+// The body with each cell whose file `fills` ({ [file]: text }) has a value replaced by that text, and
+// every other cell, and anything in code, left as it is.
+export function swapCells(body, fills) {
+  const kept = [];
+  const hide = (m) => { kept.push(m); return `\u0000${kept.length - 1}\u0000`; };
+  const swapped = String(body ?? '').replace(FENCED, hide).replace(SPAN, hide)
+    .replace(/_drag (\S+)_/g, (cell, f) => (Object.hasOwn(fills, f) ? fills[f] : cell));
+  return swapped.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)]);
+}
 export const hasEvidenceBlock = (body) => /^\s*```evidence\b/m.test(String(body ?? ''));
 // The files a body's `_drag <file>_` cells name, once each, in the order they first appear.
 export const dragFiles = (body) => [...new Set([...outsideCode(body).matchAll(/_drag (\S+)_/g)].map((m) => m[1]))];
