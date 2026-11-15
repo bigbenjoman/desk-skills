@@ -1903,7 +1903,8 @@ if (isMain) {
       case 'levers': {
         // `levers freeze [reason]` and `levers thaw [reason]` set and clear the machine-wide freeze;
         // `levers <name>` prints on or off; bare, what is on, where each lever's state comes from, the
-        // freeze, and every name desk does not know. Exit 1 on an invalid row.
+        // freeze, and every name desk does not know. An invalid row is said either way, and exits 1
+        // only bare, so a script asking about one lever still reads `off`.
         // lever-log.mjs imports this module, so it is loaded without `await`: awaiting it here would
         // leave each module waiting for the other to finish, and node would exit with nothing written.
         const leverLog = (fn) => import('./lever-log.mjs').then(fn, (e) => { console.error(`desk-env levers: the lever log: ${e.message}`); process.exitCode = 1; });
@@ -1917,7 +1918,10 @@ if (isMain) {
         const l = levers();
         const known = `known: ${LEVERS.join(', ')}`;
         const row = `config §3b "${CONFIG_ROWS.levers.row}"`;
-        if (s.invalid) { console.error(`desk-env: ${row} is invalid: ${s.invalid}`); process.exitCode = 1; }
+        if (s.invalid) {
+          console.error(`desk-env: ${row} is invalid: ${s.invalid}`);
+          if (!args[0]) process.exitCode = 1;
+        }
         if (args[0]) {
           console.log(leverOn(args[0], l) ? 'on' : 'off');
           if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);

@@ -111,6 +111,8 @@ t('AC7 exits non-zero', r.status !== 0, true);
 t('AC7 names the row as invalid', /Phase 0 levers" is invalid/.test(r.stderr), true);
 t('AC7 every lever is off', [...new Set([state(r, 'preflight'), ...others(r, 'preflight')])], ['off']);
 t('AC7 a ticket admitted then is pinned with an empty set', admit(), []);
+r = run(['codex']);
+t('AC7 asking for one lever reads off, says the row is invalid, and exits 0', [r.stdout.trim(), /is invalid/.test(r.stderr), r.status], ['off', true, 0]);
 
 // ---- AC8: an unknown lever ----------------------------------------------------------------------------
 setRow('`preflight turbo`');
