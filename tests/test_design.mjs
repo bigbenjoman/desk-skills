@@ -501,6 +501,10 @@ const big = uploadEstimate({ ...eleven, boards: boardsN(151) }, { key: 'DS-90', 
 t('AC2 estimate: 302 uploads is over an hour', `${big.over} ${Math.round(big.minutes)}`, 'true 60');
 t('AC2 estimate: the flag suggests splitting by board', estimateLines(big, { key: 'DS-90' })[1], 'flag: over an hour to upload: split DS-90 by board, at most 150 boards per ticket');
 t('estimate: exactly 300 uploads is not over an hour', uploadEstimate({ ...eleven, boards: boardsN(150) }, { key: 'DS-90', themeCount: 2 }).over, false);
+const drawnDark = { ...eleven, boards: [...boardsN(11), ...boardsN(11).map((b) => ({ ...b, name: `${b.name} dark` }))] };
+t('estimate: a board drawn as another\'s dark theme stitches into it', `${uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 2 }).boards} ${uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 2 }).uploads}`, '11 22');
+t('estimate: a drawn dark board is a second theme with §5 Themes unset', uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 0 }).uploads, 22);
+t('estimate: a ticket naming a board and its dark board counts one board', uploadEstimate({ ...drawnDark, tickets: [{ key: 'DS-92', boards: ['Board 1', 'Board 1 dark'] }] }, { key: 'DS-92', themeCount: 0 }).uploads, 2);
 t('estimate: a deck has no boards to stitch', estimateLines(uploadEstimate({ url: URL1, tickets: [], boards: [] }))[0], 'uploads: none: this canvas has no boards to stitch (a deck or a single page)');
 const th = (row) => {
   const f = join(T, `th-${row.length}.md`);

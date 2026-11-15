@@ -77,7 +77,9 @@ node ~/.claude/desk/bin/desk-design.mjs estimate <saved folder> --key <TICKET>
 
 It prints `uploads: <n> (<boards> × <themes>), about <time> at 6 a minute and 300 an hour`. That is
 one stitched image per board the ticket names, for each theme in §5 Themes (`desk-env list themes`;
-one when the row is unset or `none`). A `note:` line means `source.json` does not list the ticket
+one when the row is unset or `none`). A board drawn as another's dark theme ("Order summary dark")
+stitches into that board's dark image, so it counts as that board, and its theme as one of the
+themes. A `note:` line means `source.json` does not list the ticket
 yet (a canvas saved for another ticket), so every board is counted: say so beside the count. Put
 the `uploads:` line, and any `flag:` line, in the ticket's Design section beside the `design:` line,
 via `desk-jira edit` under §3 `jira-edit`, and give the user the same lines in the update for the

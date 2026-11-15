@@ -1102,14 +1102,19 @@ export function themes() {
 // One stitched image per board and theme: the uploads a ticket's PR needs and the minutes they take
 // at UPLOAD_PACE (whichever of the minute and hour caps is slower). With `key`, the boards are that
 // ticket's (every board when it names none, or when source.json does not list it yet: `unlisted`).
+// A board drawn as another's dark or light theme ("Order summary dark") stitches into that board's
+// image for the theme (stitch-boards.mjs), so it counts once, and its theme counts toward the themes.
+const THEMED = /[\s_-]+(light|dark)$/i;
 export function uploadEstimate(source, { key = null, themeCount = 1 } = {}) {
   let boards = (source?.boards ?? []).map((b) => b.name);
   const t = key ? (source?.tickets ?? []).find((x) => x.key === key) : null;
   if (t?.boards?.length) boards = t.boards;
-  const themesN = Math.max(1, themeCount);
-  const uploads = boards.length * themesN;
+  const bases = new Set(boards.map((n) => String(n).replace(THEMED, '')));
+  const drawn = new Set(boards.map((n) => (THEMED.exec(String(n))?.[1] ?? 'light').toLowerCase()));
+  const themesN = Math.max(1, themeCount, drawn.size);
+  const uploads = bases.size * themesN;
   const minutes = Math.max(uploads / UPLOAD_PACE.perMinute, (uploads / UPLOAD_PACE.perHour) * 60);
-  return { boards: boards.length, themes: themesN, uploads, minutes, over: minutes > 60, boardsPerHour: Math.floor(UPLOAD_PACE.perHour / themesN), unlisted: !!key && !t };
+  return { boards: bases.size, themes: themesN, uploads, minutes, over: minutes > 60, boardsPerHour: Math.floor(UPLOAD_PACE.perHour / themesN), unlisted: !!key && !t };
 }
 
 const duration = (m) => {
