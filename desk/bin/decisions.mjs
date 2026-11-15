@@ -24,6 +24,19 @@ export const ASK_CATEGORIES = ['money', 'legal', 'production', 'customer-copy', 
 // Everything else is taken on the recommendation and logged, under one of these.
 export const TAKE_CATEGORIES = ['product', 'design', 'wording', 'review', 'engineering', 'scope', 'tracker'];
 
+// Words that put free text (a review gap, its recommendation) in an ask category. Matched broadly on
+// purpose: a false match costs the person a question, a missed one takes a call that was theirs. Each
+// covers its row of ask-or-take.md's table. gate.mjs builds its person's-step test on these too.
+export const ASK_TERMS = [
+  ['money', /\b(money|costs?|costing|pric(e[sd]?|ing)|spend\w*|budget\w*|bill(s|ed|ing)?|paid|payment\w*|invoic\w*|charges?|subscriptions?|refund\w*|stripe)\b|[$£€]\s?\d/i],
+  ['legal', /\b(legal|laws?|lawyers?|complian\w*|regulat\w*|polic(y|ies)|privacy|gdpr|terms of (service|use)|licen[cs]\w*|contract(s|ual)?)\b/i],
+  ['production', /\b(production|prod|live (account|database|data|site|system)s?|credential\w*|secrets?|(api|signing|encryption|ssh|private|access|secret|licen[cs]e)[- ]?keys?|password\w*|tokens?)\b/i],
+  ['customer-copy', /\b(customer[- ](copy|facing)|sms|marketing (copy|text)|paid placement|billed by length)\b/i],
+  ['user-fact', /\b(catalog(ue)?|product data|only (the person|the user|you|they) (holds?|knows?|can say)|fact only|design url|assets?|(brand|product|display|company|business|trading) names?|who owns)\b/i],
+];
+// The first ask category the text names, or null.
+export const askCategoryIn = (text) => ASK_TERMS.find(([, re]) => re.test(String(text ?? '')))?.[0] ?? null;
+
 // Who logs through the CLI: an interactive session, or the supervisor's decider taking a call a
 // worker parked on (decider.mjs, which may run only `log --source decider`).
 export const CLI_SOURCES = ['session', 'decider'];

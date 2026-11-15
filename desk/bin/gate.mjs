@@ -77,6 +77,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
+import { ASK_TERMS } from './decisions.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 // How long a check may stay queued or running before it is taken as stuck: GitHub Actions' default
@@ -367,24 +368,24 @@ export function parseHolds(items) {
   });
 }
 
-// A hold's step is a person's when its reason names one of the ask classes (money, legal, production
-// or shared environments and their data, credentials, customer copy and its wording, a fact only the
-// person holds or confirms), an approval, sign-off or someone's review, a deploy or publish, or a change
-// to what checks a merge (`changes …`, as desk-setup words those holds). `person only` (or any
-// `person`) in the reason forces it, and so does a reason desk wrote itself (NO_REASON, UNREAD_FILES).
+// A hold's step is a person's when its reason names one of the ask categories (decisions.mjs
+// ASK_TERMS: money, legal, production data and credentials, customer copy, a fact only the person
+// holds), a shared environment or its data, copy and its wording, a confirmation, an approval, sign-off
+// or someone's review, a deploy or publish, or a change to what checks a merge (`changes …`, as
+// desk-setup words those holds). `person only` (or any `person`) in the reason forces it, and so does a
+// reason desk wrote itself (NO_REASON, UNREAD_FILES).
 // Anything else is a check an agent can run, which a routine (`; desk runs: <command>`) clears.
 const PERSON_STEP = new RegExp([
   String.raw`\bpersons?\b`, String.raw`\bpeople\b`, String.raw`\bhuman\b`, String.raw`\bmanual(ly)?\b`, String.raw`\bby hand\b`,
   String.raw`sign[- ]?off`, String.raw`\bsigns? off\b`, String.raw`approv`, String.raw`code[- ]?owner`,
   String.raw`\bconfirm`, String.raw`\bask(s|ed)?\b`, String.raw`\bcheck(s|ed)? with\b`, String.raw`\breview(ed)? by\b`, String.raw`\bdesign review\b`,
-  String.raw`\bcopy\b`, String.raw`\bwording\b`, String.raw`\bcontracts?\b`, String.raw`\bclients?\b`, String.raw`\bpartners?\b`, String.raw`\bbill(s|ed)?\b`,
-  String.raw`\blegal\b`, String.raw`complian`, String.raw`regulat`, String.raw`\bpolic(y|ies)\b`, String.raw`\bprivacy\b`, String.raw`\bgdpr\b`, String.raw`\blicen[cs]`,
-  String.raw`\bproduction\b`, String.raw`\bprod\b`, String.raw`\blive\b`, String.raw`\bstaging\b`, String.raw`\bcustomers?\b`,
+  String.raw`\bcopy\b`, String.raw`\bwording\b`, String.raw`\bclients?\b`, String.raw`\bpartners?\b`,
+  String.raw`\blive\b`, String.raw`\bstaging\b`, String.raw`\bcustomers?\b`,
   String.raw`\bdeploy`, String.raw`\brelease`, String.raw`\bpublish`, String.raw`\bpush(es|ed)?\b`,
   String.raw`migrat`, String.raw`\bdatabases?\b`, String.raw`\bschema\b`,
-  String.raw`credential`, String.raw`\bsecrets?\b`, String.raw`api[- ]?keys?\b`, String.raw`\btokens?\b`, String.raw`password`, String.raw`\biam\b`, String.raw`\boauth\b`, String.raw`\bregister`,
-  String.raw`\bmoney\b`, String.raw`billing`, String.raw`payment`, String.raw`\bpric(e|es|ing)\b`, String.raw`invoice`, String.raw`refund`, String.raw`\bcharges?\b`, String.raw`\bstripe\b`, String.raw`\bspend`, String.raw`\bbudget`, String.raw`\bcosts?\b`,
+  String.raw`\biam\b`, String.raw`\boauth\b`, String.raw`\bregister`,
   String.raw`^changes\b`,
+  ...ASK_TERMS.map(([, re]) => re.source),
 ].join('|'), 'i');
 export const holdNeedsPerson = (why) => {
   const s = String(why ?? '').trim();
