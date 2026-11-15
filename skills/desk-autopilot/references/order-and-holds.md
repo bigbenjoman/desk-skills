@@ -12,11 +12,14 @@ does not hold, that is in the core or in the file the core's reference table nam
 radius first, each with its kind and why. Two tickets that share files are chained, the larger blast
 radius first (two of a kind: the smaller first, then the order named), as holds in the queue and
 entries in the `--deps` it prints, which already carries the chain; tickets that share no files are
-never chained. A file §4 Append-only paths (`desk-env list append-only-paths`) covers is not counted
-as shared, by `plan-batch` or by `queue.mjs admit`, so tickets that each only add to it run side by
-side; a row that is not a list of path globs reads as `none`, and the pass report names it. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
+never chained. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
 disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
 contradiction is worth one line to the user, since the link may be stale.
+
+**A file tickets only add to is not shared.** A path §4 Append-only paths (`desk-env list
+append-only-paths`) covers is not counted, by `plan-batch` or by `queue.mjs admit`, so tickets that
+each only add strings to one locale file run side by side. A row that is not a list of path globs
+reads as `none`, and the pass report names it.
 
 **The user's named order is spawn priority, not a merge chain**: `plan-batch` seeds the queue
 blockers first and otherwise in the order named, and `pass.mjs` spawns in queue order, so pass the
