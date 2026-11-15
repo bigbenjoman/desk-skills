@@ -33,8 +33,9 @@
 //     only the person takes (batch-state.mjs personStep 'merge') holds its merge instead, not its build
 //     (--hold-merge: the merge driver holds its PR until pass.mjs reads the step Done), as does an open
 //     blocker in the batch parked as the person's step; one carrying a §4 Person-input label still
-//     holds its build. A ticket carrying a config §4 Person-step or Person-input label is admitted parked as the person's step (labelPark), with no holds; or, when it links a Claude Design canvas no
-//     worker can read, parked on that instead, so Needs you names the artifact to snapshot or share.
+//     holds its build. A ticket carrying a config §4 Person-step or Person-input label is admitted
+//     parked as the person's step (labelPark), with no holds; or, when it links a Claude Design canvas
+//     no worker can read, parked on that instead, so Needs you names the artifact to snapshot or share.
 // With no queue, or one whose tickets are all done with no PR open, a batch is started for it
 // (`standing-<time>`, handed to the supervisor at once). A batch not handed over, an empty one included
 // (a session between `queue.mjs init` and its plan), is a session's and gets nothing until it is
