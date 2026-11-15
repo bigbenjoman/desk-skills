@@ -617,6 +617,8 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
       ? `its files in scope are all in ${names.join(', ')}, and ${unknown.map(isWhat).join('; ')}`
       : `its files in scope are all in other repos, split across ${names.join(', ')}` };
   }
+  const calls = (Array.isArray(rec.decided) ? rec.decided : []).filter((d) => d?.category === 'scope' && typeof d.chose === 'string' && /\b(run|runs|running|batch)\b/i.test(d.chose));
+  if (!calls.length) return null;
   const self = currentRepo();
   let own = null;
   try { own = configValue('gh-repo'); } catch { /* no config here: the remote decides */ }
@@ -625,8 +627,7 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
   const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : [])];
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${esc(n)}(?![\\w-])`, 'i').test(text));
-  for (const d of Array.isArray(rec.decided) ? rec.decided : []) {
-    if (d?.category !== 'scope' || typeof d.chose !== 'string' || !/\b(run|runs|running|batch)\b/i.test(d.chose)) continue;
+  for (const d of calls) {
     const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(esc).join('|')})(?![\\w-])`, 'gi');
     if (selfNames.length && named(d.chose.replace(fromSelf, ''), selfNames)) continue;
     const hits = repos.filter((r) => r.slug !== self.slug && !selfNames.some((n) => n.toLowerCase() === r.ghRepo.toLowerCase()) && named(d.chose, namesOf(r.slug, r.ghRepo)));
