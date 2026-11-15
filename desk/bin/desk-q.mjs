@@ -35,7 +35,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions } from './desk-env.mjs';
 import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript } from './batch-state.mjs';
 import { describeCond } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
@@ -53,8 +53,8 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, wo
 import { claudeChoice, liveBenches } from './call-login.mjs';
 import { codexChoice } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { RULES as LOGIN_RULES, claudeAccount, claudeJsonPath, defaultLogin, demotedBy, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, nextLoginFolder, readSubscriptions,
-  signInParts } from './logins.mjs';
+import { claudeAccount, claudeJsonPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins, nextLoginFolder, readSubscriptions,
+  repoSubscription, signInParts } from './logins.mjs';
 import { limitName } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1921,9 +1921,8 @@ function allOutNote(s, now) {
 // the account check's (`desk-env logins check`), which the screen runs in the background: `checked` maps
 // `<tool> <folder>` to each login it lists, and a found folder it leaves out is signed out. Until a check
 // has run, every login reads as signed in.
-const U_NAME = 25, U_PLAN = 9, U_RULE = 14, U_5H = 21, U_7D = 25, U_WORKERS = 7;
-const RULE_CELL = { 'in rotation': ['● in rotation', GOOD], standby: ['○ standby', HUE.blue], off: ['◌ off', GREY] };
-const LIMIT_WORDS = { five_hour: '5-hour', seven_day: 'weekly' };
+const U_NAME = 25, U_PLAN = 9, U_USE = 14, U_5H = 21, U_7D = 25, U_WORKERS = 7;
+const UNUSED_CELL = ['○ unused', GREY];
 // A Claude login's .claude.json, read again only when it changes: the default's ~/.claude.json is large.
 const accounts = new Map();
 function accountOf(l) {
@@ -1942,22 +1941,43 @@ function accountOf(l) {
 const loginLabel = (l) => (l.tool === 'codex' ? loginLabelOf(l) : accountOf(l).email) ?? l.name;
 const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
 
-// Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check }. `out` is
+// What each login is used for: each tool's default, as `logins list` shows it, and every configured
+// repo's subscription (desk-env repoSubscriptions), a repo whose row names an email being pinned to the
+// login signed in to it. -> { defaults: { claude, codex }: login, pinned: [{ slug, login }],
+// following: [slug] }, the repos following the Claude default; no pins when the rows cannot be read.
+function loginUses() {
+  const subs = readSubscriptions(subscriptionsPath());
+  const moved = migrateLogins(subs.logins);
+  let subsOf = [];
+  try { subsOf = repoSubscriptions({ repoSubscription }, subs); } catch { /* no repo rows: nothing pinned */ }
+  return { defaults: { claude: defaultOf(moved, 'claude'), codex: defaultOf(moved, 'codex') },
+    pinned: subsOf.filter((s) => s.source === 'row' && s.login), following: subsOf.filter((s) => s.source === 'default').map((s) => s.slug) };
+}
+// A configured repo's name as desk-q shows it: its queue's name, else its slug's repo part.
+const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? String(slug).replace(/^.*__/, '');
+
+// Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check, use }. `out` is
 // { at, type } while the login is at its limit (a batch here benched it, or its Codex reading is at
 // one); `workers` is null for Codex, whose calls desk does not count per login; `check` is the account
-// check's entry, null with none.
+// check's entry, null with none; `use` is { def, pinned: [repo name] }, `def` the tool's default login.
 function usageTable(repos, now, checked = null) {
   const benched = liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now);
   const dirs = stateDirs({ self: usageDir() });
   const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? (l.source === 'found' ? { state: 'signed out' } : null));
+  let uses = { defaults: {}, pinned: [], following: [] };
+  try { uses = loginUses(); } catch { /* an unreadable file: every login unused */ }
+  const useOf = (l) => ({ def: uses.defaults[l.tool] ?? null, isDefault: uses.defaults[l.tool]?.dir === l.dir,
+    pinned: l.tool === 'claude' ? uses.pinned.filter((s) => s.login.dir === l.dir).map((s) => repoName(repos, s.slug)) : [] });
   const claude = claudeLogins().map((l) => {
     const b = benched[loginKey(l)];
     return { tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: b ? { at: b.resets_at ?? null, type: b.type } : null,
-      workers: runningOn(repos, l), check: checkOf(l) };
+      workers: runningOn(repos, l), check: checkOf(l), use: useOf(l) };
   });
   const codex = codexChoice(codexLogins(), now).read.map((x) => ({ tool: 'codex', login: x.login, plan: x.reading.plan, reading: x.claude,
-    out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login) }));
-  return { claude, codex };
+    out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
+  // One login of a tool is its default, whatever the file says.
+  for (const list of [claude, codex]) if (list.length === 1) list[0].use = { ...list[0].use, def: list[0].login, isDefault: true };
+  return { claude, codex, following: uses.following.map((slug) => repoName(repos, slug)) };
 }
 
 // Coloured runs cut and padded to `w` columns, on the right when `right`.
@@ -1980,62 +2000,45 @@ function windowCell(x, k, now, solid) {
   if (r?.at == null) return [['no reading yet', GREY]];
   return barCell(r[k] ?? { utilization: 0, resetsAt: 0 }, now, solid, x.login.rule === 'off');
 }
-function ruleCell(x, n) {
-  if (x.out && inUse(x.login)) return ['■ at limit', FAIL];
-  if (n === 1 && inUse(x.login)) return ['● only login', GOOD];
-  return RULE_CELL[x.login.rule] ?? ['· no rule', GREY];
+// What a login is used for: the tool's default (at its limit too: the limit shows in its bars), else how
+// many repos are pinned to it, else unused.
+function useCell(x) {
+  if (x.use?.isDefault) return ['◉ default', GOOD];
+  const n = x.use?.pinned.length ?? 0;
+  return n ? [`● ${n} repo${n === 1 ? '' : 's'}`, HUE.blue] : UNUSED_CELL;
 }
 // A signed-out or refused login has one cell across both windows, saying desk won't use it.
 const unusable = (x) => (x.check?.state === 'signed out' ? '◆ signed out: desk won\'t use it'
   : x.check?.state === 'duplicate' ? `◆ the same account as ${x.check.duplicateOf}: desk won't use it` : null);
-function loginRow(x, n, now, solid) {
+function loginRow(x, now, solid) {
   const no = unusable(x);
   const windows = no ? fitCell([[no, YOU]], U_5H + U_7D)
     : [...fitCell(x.login.rule === 'off' ? [['not used', GREY]] : windowCell(x, 'five_hour', now, solid), U_5H), ...fitCell(windowCell(x, 'seven_day', now, solid), U_7D)];
   const workers = x.workers == null ? ['—', GREY] : [String(x.workers), x.workers ? null : GREY];
   const segs = [['  ', null], ...fitCell([[cut(loginLabel(x.login), U_NAME - 1), null]], U_NAME), ...fitCell([[x.plan ?? '—', no || !x.plan ? GREY : null]], U_PLAN),
-    ...fitCell([ruleCell(x, n)], U_RULE), ...windows, ...fitCell([workers], U_WORKERS, true)];
-  return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check };
+    ...fitCell([useCell(x)], U_USE), ...windows, ...fitCell([workers], U_WORKERS, true)];
+  return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check, use: x.use };
 }
-const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${pad('RULE', U_RULE)}${pad('5H', U_5H)}${pad('7D', U_7D)}${rpad('WORKERS', U_WORKERS)}`);
+const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${pad('USE', U_USE)}${pad('5H', U_5H)}${pad('7D', U_7D)}${rpad('WORKERS', U_WORKERS)}`);
 
-// The line under the tabs: the logins new work starts on and any at its limit until when, or with one
-// login per tool, that every worker runs on it.
-function usageHeadline(repos, now, t) {
-  const s = loginsNow(repos, now);
-  const oneEach = segLine([['Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.', GREY]]);
-  if (!s || (t.claude.length <= 1 && t.codex.length <= 1)) return oneEach;
-  const { claude: c, codex: x } = s;
-  const when = (o) => (o.at != null ? resetText(o.at * 1000, now) : null);
-  // Every login of a tool at its limit: the first back, and when.
-  const byReset = (a, b) => (a.at ?? Infinity) - (b.at ?? Infinity);
-  const allOut = (tool, side, held, unknown) => {
-    const first = [...side.out].sort(byReset)[0];
-    return [[`Every ${tool} login is at its limit, so ${held}. The first back is `, GREY], [loginLabel(first.login), null], [when(first) ? ` at ${when(first)}.` : unknown, GREY]];
-  };
-  if (c && !c.login) return segLine(allOut('Claude', c, 'no new Claude workers start', ', once a probe call on it succeeds.'));
-  if (x && !x.login && x.out.length) return segLine(allOut('Codex', x, 'no new Codex calls start', '.'));
-  // With a login out, the line names only its tool's: the one whose new work goes elsewhere.
-  const out = [...(c?.out ?? []), ...(x?.out ?? [])].sort(byReset);
-  const f = out[0];
-  const segs = [];
-  if (c?.login && (!f || f.login.tool === 'claude')) segs.push(['New Claude workers start on ', GREY], [loginLabel(c.login), BOLD]);
-  if (x?.login && (!f || f.login.tool === 'codex')) segs.push([segs.length ? ', Codex workers on ' : 'New Codex workers start on ', GREY], [loginLabel(x.login), BOLD]);
-  if (!segs.length) return oneEach;
-  if (!f) return segLine([...segs, [': the most room.', GREY]]);
-  const type = [...t.claude, ...t.codex].find((r) => r.login.dir === f.login.dir && r.login.tool === f.login.tool)?.out?.type;
-  return segLine([...segs, [': ', GREY], [loginLabel(f.login), null],
-    [` is at its ${LIMIT_WORDS[type] ? `${LIMIT_WORDS[type]} ` : ''}limit${when(f) ? ` until ${when(f)}` : ''}${out.length > 1 ? `, and ${out.length - 1} more` : ''}.`, GREY]]);
+// The line under the tabs: a login that is signed out, which desk can't use; else with one login per
+// tool, that every worker runs on it; else the Claude default, which every repo not pinned runs on.
+function usageHeadline(t) {
+  const out = [...t.claude, ...t.codex].find((x) => x.check?.state === 'signed out');
+  if (out) return segLine([[loginLabel(out.login), BOLD], [" isn't signed in yet, so desk can't use it.", GREY]]);
+  const def = t.claude.find((x) => x.use?.isDefault);
+  if (!def || (t.claude.length <= 1 && t.codex.length <= 1)) return segLine([['Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.', GREY]]);
+  return segLine([['Workers run on ', GREY], [loginLabel(def.login), BOLD], [", this computer's default, unless their repo is pinned.", GREY]]);
 }
 
-// A login being added: { tool, login, label }, its folder not signed in yet. It is one row on standby,
+// A login being added: { tool, login, label }, its folder not signed in yet. It is one row, unused and
 // waiting, until the account check finds its folder signed in.
 const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir;
 // What desk-q calls a login being added: a Codex one by the label typed for it, a Claude one as the new
 // account, never by its folder's name, which reads as an account in the column of emails.
 const addingName = (a) => a.label ?? 'the new account';
 function addingRow(a) {
-  const segs = [['  ', null], ...fitCell([[cut(a.label ?? 'new account', U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([RULE_CELL.standby], U_RULE),
+  const segs = [['  ', null], ...fitCell([[cut(a.label ?? 'new account', U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([UNUSED_CELL], U_USE),
     ...fitCell([['waiting for you to sign in: steps below', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
   return { id: 'adding', segs: segs.filter(([s]) => s), line: segText(segs) };
 }
@@ -2056,15 +2059,15 @@ function addPanel(a, t, w) {
     ...step('2', claude ? [['In that window, type ', null], [then, HUE.cyan], [' and sign in with an account not listed above.', null]]
       : [['Sign in with an account not listed above.', null]]),
     ...step('3', [[claude ? 'Come back here. Within a minute, "new account" changes to its email and plan.'
-      : `Come back here. Within a minute, ${a.label} shows as signed in.`, null], [' It waits on standby until you press ', null], ['space', BOLD], [' to start giving it workers.', null]]),
+      : `Come back here. Within a minute, ${a.label} shows as signed in.`, null], [' It starts unused: press ', null], ['d', BOLD], [' on it to make it the default.', null]]),
     ...(claude && t.codex.length ? ['', ...leadLines('  ', [['To add a Codex account, select the CODEX table and press ', GREY], ['a', BOLD], ['. It asks for a name first.', GREY]], w)] : []),
   ];
 }
 
-// -> { head, rows, foot }: the line under the tabs; each tool's table, a heading row and a row per login;
-// then the rules' key, or with one login per tool an offer to add one, a note per signed-out login and
-// for logins with no reading, and when they were read. While a login is being added (`adding`), its row
-// waits on standby and the foot says how to sign it in.
+// -> { head, rows, foot, following }: the line under the tabs; each tool's table, a heading row and a row
+// per login; then with one login per tool an offer to add one, a note per signed-out login and for logins
+// with no reading, and when they were read. While a login is being added (`adding`), its row waits,
+// unused, and the foot says how to sign it in. `following` names the repos on the Claude default.
 function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null } = {}) {
   const u = usageTable(repos, now, checked);
   const t = { claude: u.claude.filter((x) => !isAdding(adding, x)), codex: u.codex.filter((x) => !isAdding(adding, x)) };
@@ -2072,16 +2075,16 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   const w = width ?? 104;
   const table = (name, tool, list) => {
     const waiting = adding?.tool === tool ? [addingRow(adding)] : [];
-    return list.length || waiting.length ? [tableHead(name), ...list.map((x) => loginRow(x, list.length, now, solid)), ...waiting] : [];
+    return list.length || waiting.length ? [tableHead(name), ...list.map((x) => loginRow(x, now, solid)), ...waiting] : [];
   };
-  const claudeRows = table('CLAUDE', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
+  const claudeRows = table('SUBSCRIPTION', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
   const rows = [...claudeRows, ...(claudeRows.length && codexRows.length ? [{ line: '' }] : []), ...codexRows];
-  if (adding) return { head: [usageHeadline(repos, now, t), ''], rows, foot: ['', ...addPanel(adding, t, w)] };
+  const following = u.following;
+  if (adding) return { head: [usageHeadline(t), ''], rows, foot: ['', ...addPanel(adding, t, w)], following };
   const all = [...t.claude, ...t.codex];
-  const key = leadLines('  ', t.claude.length <= 1 && t.codex.length <= 1
-    ? [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]]
-    : [['● in rotation', GOOD], [' new workers start on the one with most room · ', GREY], ['○ standby', HUE.blue],
-      [' only when all in rotation are at their limit · ', GREY], ['◌ off', GREY], [' never used', GREY]], w);
+  const key = t.claude.length <= 1 && t.codex.length <= 1
+    ? leadLines('  ', [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]], w)
+    : [];
   const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => {
     const p = signInParts(x.login);
     return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
@@ -2094,12 +2097,10 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     const unpinned = unread.some((x) => !probed(x.login)) ? 'A login no repo is pinned to is read only once one is, or a worker runs on it. ' : '';
     notes.push({ tag: 'no reading', sgr: GREY, text: [[`${when}${unpinned}A login with no reading still takes workers, after the logins whose room is known.`, null]] });
   }
-  const ats = (rule) => all.filter((x) => !rule || x.login.rule === rule).map((x) => x.reading?.at).filter((a) => a != null);
-  const read = ats();
-  const rot = ats('in rotation'), standby = ats('standby');
-  const stale = rot.length && standby.length && Math.min(...standby) < Math.max(...rot) ? ` Standby logins were last read at ${resetText(Math.min(...standby), now)}.` : '';
-  const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.${stale}` : '  No login has a reading yet.');
-  return { head: [usageHeadline(repos, now, t), ''], rows, foot: ['', ...key, ...(notes.length ? ['', ...noteLines(notes, 14, w)] : []), '', readLine] };
+  const read = all.map((x) => x.reading?.at).filter((a) => a != null);
+  const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.` : '  No login has a reading yet.');
+  const blocks = [key, notes.length ? noteLines(notes, 14, w) : [], [readLine]].filter((b) => b.length);
+  return { head: [usageHeadline(t), ''], rows, foot: blocks.flatMap((b) => ['', ...b]), following };
 }
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
@@ -3169,9 +3170,6 @@ const CHECK_EVERY_MS = 60_000;
 const ADD_CHECK_MS = 10_000;
 // The longest label a Codex login can be given: the name column's width.
 const LABEL_MAX = U_NAME - 1;
-// What each rule means, as the footer says once one is saved.
-const RULE_SAVED = { 'in rotation': 'is in rotation: new workers start on it when it has the most room', standby: 'is on standby: desk uses it only when every login in rotation is at its limit',
-  off: "is off: desk won't start workers on it" };
 
 // Log text can carry a worker's own escape codes; only printable text reaches the screen.
 const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, '');
@@ -3338,8 +3336,8 @@ export function interactive({
       const s = usageParts(repos, { now, width: w, checked, adding });
       if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc cancel adding · : command · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
-      const copy = x?.check?.state === 'signed out' ? 'y copy the sign-in command · ' : '';
-      return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? `space change rule · x remove · ${copy}` : ''}a add a login · ${cmdKeys}` };
+      const copy = x?.check?.state === 'signed out' ? ' · y copy the sign-in command' : '';
+      return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? 'd make default · ' : ''}a add${s.rows.length ? ` · x remove${copy}` : ''}${undo ? ' · u undo' : ''} · ${cmdKeys}` };
     }
     // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
     // one repo's own, or none for a repo with no batch.
@@ -3433,7 +3431,9 @@ export function interactive({
     const body = ['', ...head, ...rows.map((x, i) => paint(x, w, i === sel && pickable(x))), ...screen.foot.flatMap(lay)];
     // A message can be longer than the line (a refused raise says what raising the cap takes). The
     // usage lines stay put above it and the keys, a blank line above them.
-    const status = [...(screen.usage ? ['', ...screen.usage.map(fit)] : []), ...[...wrap(msg, w), ...(typed != null ? [labelLine(typed)] : ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
+    // A message's lines are split at `\n`, each wrapped under its own indent.
+    const said = String(msg ?? '').split('\n').flatMap((p) => { const lead = /^ */.exec(p)[0]; return wrap(p, w - lead.length).map((l) => lead + l); });
+    const status = [...(screen.usage ? ['', ...screen.usage.map(fit)] : []), ...[...said, ...(typed != null ? [labelLine(typed)] : ask ? [askLine(ask.name)] : cmd != null ? [`:${cmd}`] : keyLines(screen.keys, w))].filter(Boolean).map(fit)];
     const room = Math.max(1, h - status.length - pinned.length);
     const first = 1 + head.length;
     let top = 0;
@@ -3552,7 +3552,7 @@ export function interactive({
       if (c.rule !== 'standby' && saving) return;
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      const said = `${c.email ?? a.label ?? 'The new account'} is added, on standby. Press space to start giving it workers.`;
+      const said = `${c.email ?? a.label ?? 'The new account'} is added, unused. Press d on it to make it the default.`;
       if (c.rule === 'standby') msg = said;
       else saveLogin(['set', a.tool, a.login.name, 'standby'], said, null);
     }
@@ -3589,27 +3589,47 @@ export function interactive({
     else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ' && typed.length < LABEL_MAX) typed += str;
     return frame();
   }
-  // A login's rule set, or the login removed, then the footer says what changed and u puts back `then`:
-  // the rules to set again, in order. `next` runs once this one is saved.
-  function saveLogin(args, said, then, next) {
+  // A login made the default, given a rule or removed, then the footer says what changed (`said`,
+  // `\n` between its lines) and u puts back `then`: { args, said }, the desk-env logins command that
+  // undoes it and what the footer says once it has.
+  function saveLogin(args, said, then) {
     saving = true;
     msg = 'Saving…';
     loginsWith(args, (r) => {
       saving = false;
-      if (r.code === 0 && next) return next();
-      if (r.code === 0) { undo = then; msg = `${said}${then ? ' · u undo' : ''}`; }
+      if (r.code === 0) { undo = then; msg = said; }
       else msg = `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^logins: /, '') ?? `desk-env exited ${r.code}`}`;
       if (!done) draw();
     });
   }
-  const savedText = (label, rule) => `${label} ${RULE_SAVED[rule]}. Saved for this computer.`;
+  // d: the selected login becomes its tool's default at once, the old default unused. The repos that
+  // follow the default move with it from their next worker; the old default's running workers finish there.
+  function makeDefault(x) {
+    const l = x.login, label = loginLabel(l), codex = l.tool === 'codex';
+    const was = x.use?.def;
+    if (x.use?.isDefault) { msg = `${label} is already the ${codex ? 'Codex ' : ''}default.`; return; }
+    if (unusable(x)) { msg = `${label} isn't signed in yet, so it can't be the default. Sign it in first.`; return; }
+    const follow = !codex && screen?.following?.length
+      ? ` ${andList(screen.following)} ${screen.following.length === 1 ? 'follows it from its' : 'follow it from their'} next worker.` : '';
+    const n = !codex && was ? runningOn(repos, was) : 0;
+    const finish = n ? `${n} running worker${n === 1 ? ' finishes' : 's finish'} on ${loginLabel(was)}. ` : '';
+    const said = `✓ ${label} is now the ${codex ? 'Codex ' : ''}default.${follow}\n  ${finish}u undoes.`;
+    saveLogin(['default', l.tool, l.name], said, was && { args: ['default', was.tool, was.name], said: `${loginLabel(was)} is the ${codex ? 'Codex ' : ''}default again.` });
+  }
+  // x: the login removed from this computer's subscriptions, unless it is the default or a repo runs on it.
+  function removeKey(x) {
+    const l = x.login, label = loginLabel(l);
+    if (x.use?.isDefault) { msg = `${label} is the default. Make another subscription the default with d first.`; return; }
+    const on = x.use?.pinned ?? [];
+    if (on.length) { msg = `${label} runs ${andList(on)}. Move ${andList(on)} to another subscription first.`; return; }
+    const back = l.rule ? { args: ['set', l.tool, l.name, l.rule], said: `${label} is back, ${l.rule === 'off' ? 'off' : 'unused'}.` } : null;
+    saveLogin(['remove', l.tool, l.name], `${label} is removed from the rules for this computer. Its folder and sign-in are left as they are.${back ? ' u undoes.' : ''}`, back);
+  }
   function usageKey(k, x) {
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (k === 'u') {
       if (!undo) { msg = 'Nothing to undo.'; return; }
-      const u = undo.at(-1), said = savedText(loginLabel(u.login), u.rule);
-      const step = ([s, ...more]) => saveLogin(['set', s.login.tool, s.login.name, s.rule], said, null, more.length ? () => step(more) : null);
-      return step(undo);
+      return saveLogin(undo.args, undo.said, null);
     }
     if (k === 'y' && adding) {
       const { shell } = signInParts(adding.login);
@@ -3626,16 +3646,8 @@ export function interactive({
       catch (e) { msg = `Could not copy the sign-in command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
       return;
     }
-    const was = l.rule ? [{ login: l, rule: l.rule }] : null;
-    if (k === ' ') {
-      const rule = LOGIN_RULES[(LOGIN_RULES.indexOf(l.rule) + 1) % LOGIN_RULES.length];
-      // A login set in rotation in a file saying default and unused takes over as the default, so u
-      // puts the old default back first: the new one can leave its default only once another holds it.
-      let down = [];
-      try { down = demotedBy(readSubscriptions(subscriptionsPath()).logins, { tool: l.tool, name: l.name, rule }); } catch { /* none */ }
-      return saveLogin(['set', l.tool, l.name, rule], savedText(label, rule), was && [...down.map((d) => ({ login: d, rule: 'in rotation' })), ...was]);
-    }
-    if (k === 'x') saveLogin(['remove', l.tool, l.name], `${label} is removed from the rules for this computer. Its folder and sign-in are left as they are.`, was);
+    if (k === 'd') makeDefault(x);
+    if (k === 'x') removeKey(x);
   }
 
   // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
@@ -3780,7 +3792,7 @@ export function interactive({
       // A ticket's keys name the PR of its selected blocker, and Usage's whether the selected login has a
       // sign-in command to copy, so a new selection there is a new screen.
       return (view.kind === 'ticket' || usageTab()) && selId !== was ? draw() : frame();
-    } else if (usageTab() && [' ', 'x', 'u', 'y'].includes(str)) usageKey(str, rows[sel]);
+    } else if (usageTab() && ['d', 'x', 'u', 'y'].includes(str)) usageKey(str, rows[sel]);
     else if (usageTab() && str === 'a') addKey(rows[sel]);
     else if (key.name === 'return' || key.name === 'enter') { const o = rows[sel]?.open; if (o) go(o); }
     else if (key.name === 'escape' && adding && usageTab()) stopWaiting();

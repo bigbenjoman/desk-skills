@@ -657,7 +657,7 @@ const shows = (s) => {
   return f.some((l) => /^ +# {2}TICKET/.test(l) || /^ {2}REPO {2,}LAST PASS/.test(l)) ? 'queue' : f.some((l) => l.startsWith('Scale: ')) ? 'timeline'
     : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : f.some((l) => /^ {2}(REPO {8})?EPIC +TITLE +CHILDREN +SHIPS$/.test(l) || l === 'No queued ticket here belongs to an epic.') ? 'epics'
       : f.some((l) => l.startsWith('No cost sources for ') || /^ {2}SUPPLIER +FOR +CHARGED$/.test(l)) ? 'costs'
-        : f.some((l) => /^ {2}CLAUDE +PLAN +RULE +5H +7D +WORKERS$/.test(l)) ? 'usage' : 'none';
+        : f.some((l) => /^ {2}SUBSCRIPTION +PLAN +USE +5H +7D +WORKERS$/.test(l)) ? 'usage' : 'none';
 };
 // Wide enough that every keys line is one line.
 const keysLine = (s) => s.frame().at(-1);
@@ -810,8 +810,8 @@ const want10 = {
   'repo timeline': { yes: ['←→ or 1–6 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
   'repo days': { yes: ['←→ or 1–6 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
   'repo epics': { yes: ['←→ or 1–6 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  'every usage': { yes: ['←→ or 1–6 view', '↑↓ select', 'space change rule', 'x remove'], no: ['esc back', 'enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
-  'repo usage': { yes: ['←→ or 1–6 view', 'space change rule', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'every usage': { yes: ['←→ or 1–6 view', '↑↓ select', 'd make default', 'x remove'], no: ['esc back', 'enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates', 'space change rule'] },
+  'repo usage': { yes: ['←→ or 1–6 view', 'd make default', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
   ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['←→ or 1–6 view', 'z scale', 'a all repos'] },
 };
 t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10).flatMap(([v, { yes, no }]) => [
