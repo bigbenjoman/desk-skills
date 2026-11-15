@@ -1944,14 +1944,16 @@ const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).
 // What each login is used for: each tool's default, as `logins list` shows it, and every configured
 // repo's subscription (desk-env repoSubscriptions), a repo whose row names an email being pinned to the
 // login signed in to it. -> { defaults: { claude, codex }: login, pinned: [{ slug, login }],
-// following: [slug] }, the repos following the Claude default; no pins when the rows cannot be read.
+// following: [slug], bySlug: Map(slug -> its repoSubscription) }, `following` the repos on the Claude
+// default; no pins and an empty `bySlug` when the rows cannot be read.
 function loginUses() {
   const subs = readSubscriptions(subscriptionsPath());
   const moved = migrateLogins(subs.logins);
   let subsOf = [];
   try { subsOf = repoSubscriptions({ repoSubscription }, subs); } catch { /* no repo rows: nothing pinned */ }
   return { defaults: { claude: defaultOf(moved, 'claude'), codex: defaultOf(moved, 'codex') },
-    pinned: subsOf.filter((s) => s.source === 'row' && s.login), following: subsOf.filter((s) => s.source === 'default').map((s) => s.slug) };
+    pinned: subsOf.filter((s) => s.source === 'row' && s.login), following: subsOf.filter((s) => s.source === 'default').map((s) => s.slug),
+    bySlug: new Map(subsOf.map((s) => [s.slug, s])) };
 }
 // A configured repo's name as desk-q shows it: its queue's name, else its slug's repo part.
 const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? String(slug).replace(/^.*__/, '');
@@ -1964,7 +1966,7 @@ function usageTable(repos, now, checked = null) {
   const benched = liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now);
   const dirs = stateDirs({ self: usageDir() });
   const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? (l.source === 'found' ? { state: 'signed out' } : null));
-  let uses = { defaults: {}, pinned: [], following: [] };
+  let uses = { defaults: {}, pinned: [], following: [], bySlug: new Map() };
   try { uses = loginUses(); } catch { /* an unreadable file: every login unused */ }
   const useOf = (l) => ({ def: uses.defaults[l.tool] ?? null, isDefault: uses.defaults[l.tool]?.dir === l.dir,
     pinned: l.tool === 'claude' ? uses.pinned.filter((s) => s.login.dir === l.dir).map((s) => repoName(repos, s.slug)) : [] });
@@ -1977,8 +1979,13 @@ function usageTable(repos, now, checked = null) {
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
   // One login of a tool is its default, whatever the file says.
   for (const list of [claude, codex]) if (list.length === 1) list[0].use = { ...list[0].use, def: list[0].login, isDefault: true };
-  return { claude, codex, following: uses.following.map((slug) => repoName(repos, slug)) };
+  return { claude, codex, following: uses.following.map((slug) => repoName(repos, slug)), repos: repoUses(repos, uses.bySlug) };
 }
+
+// Every repo desk knows here, once each, by name: { slug, name, sub, workers, ready }. `sub` is its
+// repoSubscription (null when its row cannot be read); workers and ready tickets add up its batches.
+const repoUses = (repos, bySlug) => byRepo(repos).map((r) => ({ slug: r.slug, name: r.repo, sub: bySlug.get(r.slug) ?? null,
+  workers: workersRunning(r), ready: count(r, 'ready') })).sort((a, b) => a.name.localeCompare(b.name));
 
 // Coloured runs cut and padded to `w` columns, on the right when `right`.
 function fitCell(segs, w, right = false) {
@@ -2020,6 +2027,22 @@ function loginRow(x, now, solid) {
   return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check, use: x.use };
 }
 const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${pad('USE', U_USE)}${pad('5H', U_5H)}${pad('7D', U_7D)}${rpad('WORKERS', U_WORKERS)}`);
+
+// The repo table under the subscriptions: each repo, the subscription it runs on, whether its row pins
+// it (an email that is no subscription here still pins it) or it follows the default, and its running
+// workers and ready tickets, a zero grey. A repo whose row cannot be read shows a grey dash.
+const R_REPO = 16, R_RUNS = 28, R_SET = 13, R_WORKERS = 9, R_READY = 8;
+const repoUseHead = () => bold(`  ${pad('REPO', R_REPO)}${pad('RUNS ON', R_RUNS)}${pad('SET', R_SET)}${rpad('WORKERS', R_WORKERS)}${rpad('READY', R_READY)}`);
+function repoUseRow(x) {
+  const s = x.sub;
+  const on = s ? (s.login ? loginLabel(s.login) : s.email) : null;
+  const runs = on ? [[cut(on, R_RUNS - 3), null], [' ▾', GREY]] : [['—', GREY]];
+  const set = !s ? ['—', GREY] : s.source === 'default' ? ['○ default', GREY] : ['● pinned', HUE.blue];
+  const n = (v) => [String(v), v ? null : GREY];
+  const segs = [['  ', null], ...fitCell([[cut(x.name, R_REPO - 1), null]], R_REPO), ...fitCell(runs, R_RUNS), ...fitCell([set], R_SET),
+    ...fitCell([n(x.workers)], R_WORKERS, true), ...fitCell([n(x.ready)], R_READY, true)];
+  return { id: `repo ${x.slug}`, segs: segs.filter(([t]) => t), line: segText(segs), repo: x };
+}
 
 // The line under the tabs: a login that is signed out, which desk can't use; else with one login per
 // tool, that every worker runs on it; else the Claude default, which every repo not pinned runs on.
@@ -2078,7 +2101,9 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     return list.length || waiting.length ? [tableHead(name), ...list.map((x) => loginRow(x, now, solid)), ...waiting] : [];
   };
   const claudeRows = table('SUBSCRIPTION', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
-  const rows = [...claudeRows, ...(claudeRows.length && codexRows.length ? [{ line: '' }] : []), ...codexRows];
+  // The repos sit under the subscriptions they run on, so ↓ from the last subscription selects the first repo.
+  const repoRows = u.repos.length ? [repoUseHead(), ...u.repos.map(repoUseRow)] : [];
+  const rows = [claudeRows, repoRows, codexRows].filter((b) => b.length).flatMap((b, i) => [...(i ? [{ line: '' }] : []), ...b]);
   const following = u.following;
   if (adding) return { head: [usageHeadline(t), ''], rows, foot: ['', ...addPanel(adding, t, w)], following };
   const all = [...t.claude, ...t.codex];

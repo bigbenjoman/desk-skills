@@ -3,8 +3,8 @@
 // login's session logs, each repo's Subscription row and a queue's benched logins, on a fixed clock, under
 // a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT, DESK_LOCK_DIR and DESK_USAGE_DIR, with fake claude and
 // codex binaries the account check calls. The default, undo and remove keys run desk-env's logins
-// commands. Drawn at 104 columns under NO_COLOR. One check or more per acceptance criterion of DS-472
-// and DS-623.
+// commands. Drawn at 104 columns under NO_COLOR. One check or more per acceptance criterion of DS-472,
+// DS-623 and DS-624.
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -111,8 +111,8 @@ function open(start = { kind: 'overview', all: false }, columns = 104) {
   const press = async (k) => { input.write(k); await sleep(20); };
   // Until `pred` holds of the frame, or 10 seconds.
   const until = async (pred) => { for (let i = 0; i < 500 && !pred(frame()); i++) await sleep(20); return frame(); };
-  // The selection moved down onto the row starting `name`.
-  const pick = async (name) => { for (let i = 0; i < 8 && !frame().find((l) => l.startsWith('›'))?.slice(2).startsWith(`${name} `); i++) await press(DOWN); };
+  // The selection moved down (or by `key`) onto the row starting `name`.
+  const pick = async (name, key = DOWN) => { for (let i = 0; i < 8 && !frame().find((l) => l.startsWith('›'))?.slice(2).startsWith(`${name} `); i++) await press(key); };
   return { ui, frame, press, until, pick, copied, done() { ui.finish(0); delete process.env.NO_COLOR; } };
 }
 // Usage open on its first frame after the account check.
@@ -176,6 +176,52 @@ f = S.frame();
 t('AC8 the act line, where the keys wrap', f.at(-1), 'act   d make default · a add · x remove · : command · q quit');
 t('AC8 and the move line above it', f.at(-2), 'move  ↑↓ select · ←→ or 1–6 view');
 S.done();
+
+// ---- DS-624 AC1-AC6: the repo table, on four more repos
+// A repo's queue with `running` workers and `ready` tickets ready to start.
+function batch(slug, running, ready) {
+  const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
+  mkdirSync(dirname(q), { recursive: true });
+  const tickets = {};
+  for (let i = 0; i < running; i++) tickets[`R-${i}`] = { key: `R-${i}`, state: 'running' };
+  for (let i = 0; i < ready; i++) tickets[`T-${i}`] = { key: `T-${i}`, state: 'triaged' };
+  writeFileSync(q, JSON.stringify({ version: 1, concurrency: 20, tickets }));
+}
+const FOUR = ['acme__voicepa', 'acme__pr-ninja', 'acme__idle', 'acme__elsewhere'];
+config('acme__voicepa', 'work@example.test');
+batch('acme__voicepa', 1, 2);
+config('acme__pr-ninja');
+batch('acme__pr-ninja', 2, 8);
+config('acme__idle');
+config('acme__elsewhere', 'stranger@example.test');
+// A repo row as the canvas lays it out: REPO 16, RUNS ON 28, SET 13, then WORKERS 9 and READY 8 on the right.
+const repoLine = (sel, name, runs, set, w, r) => `${sel ? '›' : ' '} ${cellPad(name, 16)}${cellPad(runs, 28)}${cellPad(set, 13)}${w.padStart(9)}${r.padStart(8)}`;
+S = await usage();
+f = S.frame();
+const REPO_HEAD = `  ${cellPad('REPO', 16)}${cellPad('RUNS ON', 28)}${cellPad('SET', 13)}${'WORKERS'.padStart(9)}${'READY'.padStart(8)}`;
+t('DS-624 AC1 a second table has the columns REPO, RUNS ON, SET, WORKERS and READY', f.includes(REPO_HEAD), true);
+t('DS-624 AC1 it comes after the subscription table', f.indexOf(REPO_HEAD) > f.findIndex((l) => l.slice(2).startsWith('spare@example.test ')), true);
+t('DS-624 AC1 a pinned repo reads its subscription ▾, ● pinned, 1 worker and 2 ready', rowOf(f, 'voicepa'), repoLine(0, 'voicepa', 'work@example.test ▾', '● pinned', '1', '2'));
+t('DS-624 AC1 a repo on the default reads the default ▾, ○ default, 2 workers and 8 ready', rowOf(f, 'pr-ninja'), repoLine(0, 'pr-ninja', 'me@example.test ▾', '○ default', '2', '8'));
+t('DS-624 AC2 a repo with no batch reads 0 workers and 0 ready', rowOf(f, 'idle'), repoLine(0, 'idle', 'me@example.test ▾', '○ default', '0', '0'));
+t('DS-624 AC6 a row naming an email that is no subscription here shows it, pinned', rowOf(f, 'elsewhere'), repoLine(0, 'elsewhere', 'stranger@example.test ▾', '● pinned', '0', '0'));
+// AC4, AC5: ↓ from the last subscription row selects the first repo row, and ↑ comes back.
+await S.pick('spare@example.test');
+await S.press(DOWN);
+f = S.frame();
+t('DS-624 AC4 ↓ on the last subscription row selects the first repo row', f[f.indexOf(REPO_HEAD) + 1].startsWith('› '), true);
+await S.press('\x1b[A');
+t('DS-624 AC5 ↑ on the first repo row selects the last subscription row', rowOf(S.frame(), 'spare@example.test').startsWith('› '), true);
+S.done();
+// AC3: with work the default, every repo on the default runs on work.
+deskEnv('default', 'claude', 'work');
+S = await usage();
+f = S.frame();
+t('DS-624 AC3 the default changed: each ○ default row runs on the new default', `${rowOf(f, 'pr-ninja')} | ${rowOf(f, 'idle')}`,
+  `${repoLine(0, 'pr-ninja', 'work@example.test ▾', '○ default', '2', '8')} | ${repoLine(0, 'idle', 'work@example.test ▾', '○ default', '0', '0')}`);
+S.done();
+subscriptions(ROWS);
+for (const slug of FOUR) { config(slug, false); rmSync(join(env.DESK_HOME, 'repos', slug), { recursive: true, force: true }); }
 
 // ---- AC2: two repos pinned to one subscription
 config('acme__site', 'work@example.test');
@@ -252,13 +298,13 @@ t('d on a signed-out login is refused, the file unchanged', `${ruleIn('claude', 
 await O.press('y');
 t('DS-472 AC11 y copies its sign-in command to the clipboard', O.copied.join('\n'), 'CLAUDE_CONFIG_DIR=~/.claude-logins/spare claude');
 t('DS-472 AC11 and the footer says so', footer(O.frame(), 'Copied'), 'Copied the sign-in command: CLAUDE_CONFIG_DIR=~/.claude-logins/spare claude. Run it in another terminal, then /login.');
-await O.press(DOWN);
+await O.pick('codexmain');
 await O.press('y');
 t('y on a signed-in login copies nothing and says why', `${O.copied.length} ${O.frame().some((l) => l.startsWith('codexmain is signed in, so there is no sign-in command to copy.'))}`, '1 true');
 rmSync(join(SPARE, '.signed-out'));
 
 // ---- DS-472 AC9, AC17: x removes an unused login, leaving its folder and sign-in
-await O.press('\x1b[A');
+await O.pick('spare@example.test', '\x1b[A');
 t('x acts on the selected login', O.frame().find((l) => l.startsWith('›'))?.slice(2, 20), 'spare@example.test');
 await O.press('x');
 f = await O.until(checked);
