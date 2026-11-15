@@ -34,6 +34,7 @@
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, PENDING_LIMIT_MS } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 import { stepFits } from './workflow-yaml.mjs';
+import { askCategoryIn } from './decisions.mjs';
 
 export const FIX_TRIES_MAX = 2;
 // merge-driver.sh's own cap and gap: reruns per check per head, and the seconds between them.
@@ -193,7 +194,7 @@ export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 const FIX_TRIES_TOTAL = FIX_TRIES_MAX + 1;
 export const REVIEW_TRIES_CEILING = 4;
 const isReviewTry = (x) => !x.extra && x.kind === 'review';
-const quoted = (x) => Boolean(x.findings?.length || x.gaps?.length);
+const quoted = (x) => Boolean(x.findings?.length || x.gaps?.length || x.taken?.length);
 const reviewTriesMade = (done) => (done ?? []).filter(isReviewTry).length;
 // The review fix tries left: below the ceiling, and, over the tries not known to have cleared what
 // they quoted, its own and no more than the overall cap leaves.
@@ -215,7 +216,7 @@ const plain = (text) => String(text).replace(/[`*]/g, '').replace(AT, '').replac
 function survivors(done, findings, gaps) {
   const before = (done ?? []).filter(isReviewTry);
   const atBefore = new Set((before.filter(quoted).at(-1)?.findings ?? []).map((f) => firstAt(f.text)).filter(Boolean));
-  const textBefore = new Set(before.flatMap((x) => [...(x.findings ?? []).map((f) => f.text), ...(x.gaps ?? [])].map(plain).filter(Boolean)));
+  const textBefore = new Set(before.flatMap((x) => [...(x.findings ?? []).map((f) => f.text), ...(x.gaps ?? []), ...(x.taken ?? []).map((g) => g.gap)].map(plain).filter(Boolean)));
   return [...findings.filter((f) => atBefore.has(firstAt(f.text)) || textBefore.has(plain(f.text))).map((f) => `${f.sev}: ${f.text}`),
     ...gaps.filter((g) => textBefore.has(plain(g)))];
 }
@@ -455,6 +456,21 @@ export function reviewGaps(body) {
 }
 // The tag a review puts on a gap only the person can settle (desk-review phase-5-requirements.md).
 const personsCall = (gap) => /PERSON['’]S CALL/.test(gap);
+// The option a tagged gap ends with (`Recommended: <option>`), or null where it names none.
+export function recommendedOf(gap) {
+  const s = String(gap ?? '').replace(/[*_`]/g, '');
+  const i = s.search(/\bRecommended:(?![\s\S]*\bRecommended:)/i);
+  const option = i < 0 ? '' : s.slice(i).replace(/^Recommended:\s*/i, '').replace(/\s*\.?\s*$/, '');
+  return option && !/^(none|no recommendation|n\/a)\b/i.test(option) ? option : null;
+}
+// The tagged gaps a try may settle on their recommendations, as { gap, answer }: only under §3
+// autopilot-judgement yes, and only when every one names a recommendation and none reads as an ask
+// category (decisions.mjs askCategoryIn); otherwise [] and all of them stay the person's.
+function takenGaps(person, judgement) {
+  if (judgement !== 'yes' || !person.length) return [];
+  const taken = person.map((gap) => ({ gap, answer: recommendedOf(gap) }));
+  return taken.every((x) => x.answer && !askCategoryIn(x.gap)) ? taken : [];
+}
 
 const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 
@@ -467,8 +483,11 @@ const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 // config §3 autopilot-judgement is yes (opts.judgement), so do its requirement gaps: closing one is a
 // call the worker may make and record, or park when it needs a product or another person's ruling.
 // A gap the review tags as the person's call earns no try: alone it is the person's at once (null), and
-// beside anything a try can fix it is left out of the try and named in its brief. The verdict's count
-// less those tagged is what code can close, so an untagged paragraph in the section adds no try.
+// beside anything a try can fix it is left out of the try and named in its brief. Unless every tagged
+// gap names a recommendation outside the ask categories (takenGaps): then the try carries each one out
+// (`taken`), logged as a decision, and one that survives it goes to the person as any gap does. The
+// verdict's count less the gaps left tagged is what code can close, so an untagged paragraph in the
+// section adds no try.
 // A P2 blocks a merge unless carried, so a review with nothing worse sends its P2s the same way, and the
 // fix's next round carries one where fixing it would mean another. One deferred on purpose is the
 // person's. So is a review that counts a finding but lists none with its file:line in its body or its
@@ -484,7 +503,9 @@ export function reviewFix(t, review, opts = {}) {
   const sevs = p2s ? ['P2'] : undefined;
   const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
   const allGaps = gapsOpen ? reviewGaps(review.body) : [];
-  const personGaps = allGaps.filter(personsCall);
+  const tagged = allGaps.filter(personsCall);
+  const taken = takenGaps(tagged, opts.judgement);
+  const personGaps = taken.length ? [] : tagged;
   const codeGaps = Math.max(0, gapsOpen - personGaps.length);
   const what = [counts, codeGaps ? gapCount(codeGaps) : ''].filter(Boolean).join(', ');
   if (!what || !review.head) return null;
@@ -507,16 +528,17 @@ export function reviewFix(t, review, opts = {}) {
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
   const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
-  if (counts ? !findings.length : !gaps.length) return null;
-  const survived = survivors(done, findings, gaps);
+  if (counts ? !findings.length : !gaps.length && !taken.length) return null;
+  const survived = survivors(done, findings, [...gaps, ...taken.map((x) => x.gap)]);
   if (survived.length) return { call: 'stuck', why: `${after} — still open after the fix try that quoted it: ${[...survived, ...personGaps].join('; ')}` };
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
-  return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}), ...(personGaps.length ? { person_gaps: personGaps } : {}) } };
+  return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}), ...(taken.length ? { taken } : {}), ...(personGaps.length ? { person_gaps: personGaps } : {}) } };
 }
 
 // A ready PR's review whose only open items are gaps it tags as the person's call, as the stuck call
 // that puts them to the person: a draft needs none, its undraft record says so (undraft.mjs). null for
-// any other review. Asked once reviewFix has returned null.
+// any other review. Asked once reviewFix has returned null, so never for gaps it sends to a try on
+// their recommendations.
 const PERSON_GAPS = 'review gaps only you can settle: ';
 // The tagged gaps a stuck reason names: all of a personGapsCall reason, or those a review stuck reason
 // (reviewFix) carries beside what outlasted its tries. [] for any other reason.
@@ -945,6 +967,14 @@ export function fixBrief(t, review = null) {
       for (const g of f.gaps) lines.push(`- Gap: ${g}`);
       lines.push('');
     }
+    if (f.taken?.length) {
+      lines.push('The review marks these requirement gaps as the person\'s call and recommends how to settle each. Config §3 autopilot-judgement is yes and none reads as an ask category, so the recommendation is the answer: carry out each one as written. ' +
+        'Log each as an AUTOPILOT_DECISION line (its options the recommendation and leaving the gap to the person, chose the recommendation), list it under Decisions taken in the PR body (desk-pr), and comment it on the ticket (worker contract Stage 8). ' +
+        'A recommendation that leaves the code as it is still needs a new head for the fresh review to read it: commit it on its own with git commit --allow-empty, the call and its reason as the message. ' +
+        'Where carrying one out would fall in an ask category after all, or leave an acceptance criterion unmet, it is not yours: park with that question (AUTOPILOT_PARK).', '');
+      for (const g of f.taken) lines.push(`- Gap: ${g.gap}`, `  Recommended, and your answer: ${g.answer}`);
+      lines.push('');
+    }
     if (f.person_gaps?.length) {
       lines.push('The review marks these requirement gaps as only the person\'s call, so they are not part of this try: change nothing for them and do not park on them. ' +
         'Your review of the new head lists each one again with its PERSON\'S CALL tag, and they go to the person with the result:', '');
@@ -968,7 +998,7 @@ export function fixBrief(t, review = null) {
     if (f.draft) lines.push('', 'Read each failing run\'s log with gh run view <run id> --log-failed (the id is the number in its URL).');
   }
   if (f.kind === 'review') {
-    lines.push('', `${f.person ? "desk's own fix tries were spent, and the person sent this one more." : `This is try ${f.try} of ${f.of}.`} A finding${f.gaps?.length ? ' or gap' : ''} quoted here that the review of your new head still lists goes to the person.`, '');
+    lines.push('', `${f.person ? "desk's own fix tries were spent, and the person sent this one more." : `This is try ${f.try} of ${f.of}.`} A finding${f.gaps?.length || f.taken?.length ? ' or gap' : ''} quoted here that the review of your new head still lists goes to the person.`, '');
     return lines.join('\n');
   }
   const left = f.kind === 'feedback' ? 'holding unresolved review feedback' : f.kind === 'conflict' && f.check ? 'failing the merged-tree check'
@@ -1036,8 +1066,8 @@ export function fixTask(t, review = null) {
     : f.kind === 'feedback' ? 'validate each review thread it quotes (desk-review-response), fix what is right, answer every thread with gh pr comment naming it, and park on one you cannot fix, naming it and what blocks it'
     : gaps ? 'do what the call says about each gap, and nothing else'
     : instruction ? 'do what the instruction says, and nothing else'
-      : f.kind === 'review' ? (f.gaps?.length
-        ? `${f.findings?.length ? `fix each ${findingKinds(f.findings)} finding it quotes and ` : ''}close each requirement gap it quotes by the call it needs, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
+      : f.kind === 'review' ? (f.gaps?.length || f.taken?.length
+        ? `${f.findings?.length ? `fix each ${findingKinds(f.findings)} finding it quotes and ` : ''}${[f.gaps?.length ? 'close each requirement gap it quotes by the call it needs' : '', f.taken?.length ? 'carry out the recommendation it quotes for each gap marked the person\'s call' : ''].filter(Boolean).join(' and ')}, recorded as the briefing says, or park on a gap that needs a product or another person's ruling, and nothing else`
         : `fix each ${findingKinds(f.findings)} finding it quotes${f.findings?.some((x) => x.sev === 'P2') ? ', or carry one in your review of the new head where fixing it would mean another round' : ''}, and nothing else`)
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
@@ -1054,5 +1084,5 @@ export function fixTask(t, review = null) {
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     task +
     `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after}. ` +
-    `Open no new PR, leave the PR ${inDraft ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>${said}.`;
+    `Open no new PR, leave the PR ${inDraft ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length || f.taken?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>${said}.`;
 }

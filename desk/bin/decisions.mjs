@@ -24,6 +24,18 @@ export const ASK_CATEGORIES = ['money', 'legal', 'production', 'customer-copy', 
 // Everything else is taken on the recommendation and logged, under one of these.
 export const TAKE_CATEGORIES = ['product', 'design', 'wording', 'review', 'engineering', 'scope', 'tracker'];
 
+// Words that put free text (a review gap, its recommendation) in an ask category. Matched broadly on
+// purpose: a false match costs the person a question, a missed one takes a call that was theirs.
+const ASK_TERMS = [
+  ['money', /\b(money|costs?|costing|price[sd]?|pricing|spend(s|ing)?|budget|bill(s|ed|ing)?|paid|payments?|invoices?|charges?|subscriptions?|refunds?)\b|[$£€]\s?\d/i],
+  ['legal', /\b(legal|law|laws|lawyer|compliance|compliant|regulat\w*|privacy|gdpr|terms of (service|use)|licen[cs]\w*|contract(s|ual)?)\b/i],
+  ['production', /\b(production|prod|live (account|database|data|site|system)|credentials?|secrets?|api[- ]keys?|passwords?|tokens?)\b/i],
+  ['customer-copy', /\b(customer[- ](copy|facing)|sms|marketing (copy|text)|paid placement|billed by length)\b/i],
+  ['user-fact', /\b(catalog(ue)?|product data|only (the person|the user|you|they) (holds?|knows?|can say)|fact only|design url|assets?|who owns)\b/i],
+];
+// The first ask category the text names, or null.
+export const askCategoryIn = (text) => ASK_TERMS.find(([, re]) => re.test(String(text ?? '')))?.[0] ?? null;
+
 // Who logs through the CLI: an interactive session, or the supervisor's decider taking a call a
 // worker parked on (decider.mjs, which may run only `log --source decider`).
 export const CLI_SOURCES = ['session', 'decider'];
