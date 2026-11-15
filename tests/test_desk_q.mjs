@@ -1612,13 +1612,19 @@ const p391 = lines(Q.ticketScreen(Q.loadRepos(FIXED).find((r) => r.name === 's39
 t('DS-391 AC1 a blocker the ticket is held behind outside the batch is listed once, outside, with its Jira status, and never as one to let start',
   `${['Blockers  3 · 1 in this batch, 2 open outside it', '  ◌ OUT-1     To Do', '  ◌ OUT-2     Done, not yet on main'].filter((s) => !p391.includes(s)).join(' | ')}|${p391.filter((l) => /^ {2}\S OUT-\d/.test(l)).length}|${p391.some((l) => l.includes('not in this queue'))}`, '|2|false');
 dated('s541', 5541, { hours: twelveHours, tickets: { 'DS-541': { ...heldBy('OUT-2'), held_outside: 'OUT-2', outside_blockers: [] },
-  'DS-542': { ...heldBy('OUT-1'), held_outside: 'OUT-1', outside_blockers: [{ key: 'OUT-1', category: 'new' }] } } });
+  'DS-542': { ...heldBy('OUT-1'), held_outside: 'OUT-1', outside_blockers: [{ key: 'OUT-1', category: 'new' }] },
+  'DS-543': heldBy('DS-542'), 'DS-544': { state: 'running', stage: '3/9' }, 'DS-545': heldBy('DS-544') } });
 writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__s541', 'triage', 'DS-541.json'), JSON.stringify({ ticket: 'DS-541', summary: 'held outside', size: 'M', blockers: [{ key: 'OUT-2', category: 'done' }] }));
 writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__s541', 'triage', 'DS-542.json'), JSON.stringify({ ticket: 'DS-542', summary: 'held outside', size: 'M', blockers: [{ key: 'OUT-1', category: 'new' }] }));
 const r541 = () => Q.loadRepos(FIXED).find((r) => r.name === 's541');
 t('DS-541 AC5 held behind a blocker outside the batch that is Done but not on the base: it says so, never "until it is Done"; an open one still waits until it is Done',
   [railText(Q.ticketScreen(r541(), 'DS-541', { now: FIXED, width: 120 })), railText(Q.ticketScreen(r541(), 'DS-542', { now: FIXED, width: 120 }))].join(' / '),
   'Moves without you: behind OUT-2, outside this batch: Done, waiting for its code to reach main. / Moves without you: behind OUT-1, outside this batch, until it is Done and on main.');
+const starts541 = (key) => (lines(Q.repoScreen(r541(), { now: FIXED })).find((x) => new RegExp(`^ +\\d+ {2}${key} `).test(x)) ?? '').slice(83, 96).trim();
+const T541 = Q.forecastOf(r541(), { now: FIXED }).T;
+t('DS-684 held behind a blocker in no batch, open or Done but not lifted, and anything held behind it: no start date, and STARTS never reads now; behind one in the batch: dated after it',
+  ['DS-542', 'DS-541', 'DS-543', 'DS-545'].map((k) => `${k} ${T541[k] ? T541[k].start >= T541['DS-544'].likely : null} ${starts541(k) === 'now'}`).join(' / '),
+  'DS-542 null false / DS-541 null false / DS-543 null false / DS-545 true false');
 const f168 = lastFrame(S168);
 t('DS-218 AC2 on screen: the count green, the one needing you magenta with the action bold, the outside ones grey',
   [f168.some((l) => l.includes('\x1b[38;5;108m  ✓ 3\x1b[39m')), f168.some((l) => l.includes('◆ DS-150    \x1b[22;39m#175: \x1b[1mdraft · undraft it once it is reviewed\x1b[22m')), f168.some((l) => l.startsWith(`${G}  ◌ OUT-1     To Do\x1b[39m`))].join(), 'true,true,true');
