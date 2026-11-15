@@ -572,9 +572,11 @@ function evidenceCall(pr, cfg) {
 // What a person does about cells nothing of desk's can fill. They are never asked to upload.
 const noCellsLeft = (n) => `edit the body of #${n} so no \`_drag <file>_\` cell is left`;
 
-// The uploads a PR's screenshots get that exit with no result line before they are the person's: the
-// pass's own and one retry. The ticket's upload_crash is { pr, dir, tries, log, busy }, log its whole
-// output, busy when the last try found the shared browser profile in use.
+// The uploads a PR's screenshots get that exit with no result line and fill no cell before they are
+// the person's: the pass's own and one retry. The ticket's upload_crash is { pr, dir, tries, log, busy,
+// throttled, filled }, log its whole output, busy when the last try found the shared browser profile in
+// use, throttled (its retry_after, or true) when GitHub's rate limit stopped it, and filled the cells a
+// crash filled, which spent no try.
 export const UPLOAD_TRIES = 2;
 export const UPLOAD_CRASHED = /, and desk's upload of them crashed on \d+ tr(?:y|ies); its output is saved in /;
 export const crashOf = (t, n) => (t.upload_crash && Number(t.upload_crash.pr) === Number(n) ? t.upload_crash : null);
@@ -600,8 +602,13 @@ export function cellCall(t, pr, cfg) {
   if (crash?.busy) {
     return { call: 'wait', why: `${left}: desk's upload of them found the shared browser profile in use, and the next pass tries it again`, crashed: crash };
   }
+  if (crash?.throttled) {
+    const after = typeof crash.throttled === 'string' ? ` after ${crash.throttled}` : '';
+    return { call: 'wait', why: `${left}: GitHub's rate limit throttled desk's upload of them, and a pass${after} tries it again`, crashed: crash };
+  }
   if (crash && crash.tries < UPLOAD_TRIES) {
-    return { call: 'wait', why: `${left}: desk's upload of them crashed (try ${crash.tries} of ${UPLOAD_TRIES}), and the next pass tries it again; its output is saved in ${crash.log}`, crashed: crash };
+    const how = crash.filled ? `crashed after filling ${crash.filled} cell(s), which spends no try (${crash.tries} of ${UPLOAD_TRIES} spent)` : `crashed (try ${crash.tries} of ${UPLOAD_TRIES})`;
+    return { call: 'wait', why: `${left}: desk's upload of them ${how}, and the next pass tries it again; its output is saved in ${crash.log}`, crashed: crash };
   }
   if (crash) {
     return { ...person(`${left}, and desk's upload of them crashed on ${crash.tries} ${crash.tries === 1 ? 'try' : 'tries'}; its output is saved in ${crash.log}`,
@@ -634,6 +641,7 @@ export function cellPlan(t, pr, cfg) {
   const wf = `\`${cfg.evidence?.workflow}\``;
   const spent = c.call === 'capture' && captureTry(t, { pr: pr.number, head: pr.head, files: c.files })?.call === 'stuck';
   const doing = (file) => {
+    if (c.crashed?.throttled && c.call === 'wait') return `GitHub's rate limit throttled desk's upload of it, and a pass${typeof c.crashed.throttled === 'string' ? ` after ${c.crashed.throttled}` : ''} tries it again`;
     if (c.crashed) return c.call === 'wait' ? `desk's upload of it ${c.crashed.busy ? 'found the shared browser profile in use' : 'crashed'}, and the next pass tries it again` : `desk's upload of it crashed on every try (its output is in ${c.crashed.log})`;
     if (c.call === 'evidence') return `${wf} takes it at the next pass`;
     if (c.call === 'wait') return `${wf} is taking it now`;
