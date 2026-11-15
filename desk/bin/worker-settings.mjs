@@ -405,6 +405,8 @@ if (mode === 'triage') {
     // `render` and `compare` open Chromium on the saved boards (and a built Storybook), so only
     // under the browser lock.
     ...BIN_FORMS.flatMap((b) => BIN_FORMS.flatMap((d) => [' render', ' compare'].map((s) => `Bash(${b}/with-lock.sh browser node ${d}/desk-design.mjs${s}:*)`))),
+    // stitch-boards shoots each board's captures as one image in Chromium: also under the lock.
+    ...BIN_FORMS.flatMap((b) => BIN_FORMS.map((d) => `Bash(${b}/with-lock.sh browser node ${d}/stitch-boards.mjs:*)`)),
     // A script run by the worktree's installed tsx (the contract's `node <wt>/node_modules/tsx/…`).
     // This runs code, like the test command does; `..` is denied so it cannot leave tsx's directory.
     ...withPrefix(`node ${WT}/node_modules/tsx/`).map((c) => `Bash(${c}*)`),
