@@ -125,4 +125,24 @@ rec SV-3992 '[{"key": "SV-3702", "category": "new"}]' '{"SV-3702": {"needs": "no
 plan SV-3992
 check "AC4: an entry with no boolean needs is not a judgement: asked as today" '[ $rc -eq 11 ] && [ "$(qg SV-3992 .open_questions)" = 1 ]'
 
+# ---- DS-687: the three calls, as intake acts on them (test_intake.sh's N-1..N-8), and a step disagreeing
+# with its call. OPS-1 and OPS-2 are Tasks saying apply: the person's steps, which hold the merge.
+rec SV-5001 '[{"key": "SV-5101", "category": "new"}]' '{"SV-5101": {"needs": "build", "why": "builds what it calls"}}'
+rec SV-5002 '[{"key": "SV-5102", "category": "new"}]' '{"SV-5102": {"needs": "merge", "why": "lands the flag it ships behind"}}'
+rec SV-5003 '[{"key": "SV-5103", "category": "new"}]' '{"SV-5103": {"needs": "none", "why": "touches none of its files"}}'
+rec SV-5004 '[{"key": "OPS-1", "category": "new", "type": "Task", "summary": "Apply the billing migration"}]' '{"OPS-1": {"needs": "build", "why": "the build reads the new table"}}'
+rec SV-5005 '[{"key": "OPS-2", "category": "new", "type": "Task", "summary": "Apply the billing migration"}]' '{"OPS-2": {"needs": "none", "why": "touches none of its files"}}'
+config yes
+plan SV-5001 SV-5002 SV-5003 SV-5004 SV-5005
+check "DS-687 AC2/AC5: a blocker called needed to build is a full hold, with no question" \
+  '[ $rc -eq 0 ] && [ "$(qg SV-5001 .state)" = parked ] && [ "$(qg SV-5001 .held_outside)" = SV-5101 ] && [ "$(qg SV-5001 .merge_after)" = null ]'
+check "DS-687 AC3/AC5: one called needed only to merge is built now, its merge held behind it" \
+  '[ "$(qg SV-5002 .state)" = triaged ] && [ "$(qg SV-5002 .held_outside)" = null ] && [ "$(qg SV-5002 .merge_after)" = SV-5102 ] && [ "$(qg SV-5002 .open_questions)" = 0 ] && printf "%s\n" "$out" | grep -qF "built now, merged only once SV-5102 is Done (triage: lands the flag it ships behind)"'
+check "DS-687 AC4/AC5: one called not needed holds nothing, and a start-without-it call is logged" \
+  '[ "$(qg SV-5003 .state)" = triaged ] && [ "$(qg SV-5003 .held_outside)" = null ] && [ "$(qg SV-5003 .merge_after)" = null ] && [ "$(decisions "[.[] | select(.ticket == \"SV-5003\") | .chose]")" = "[\"start without SV-5103\"]" ]'
+check "DS-687 AC6: a step that holds the merge, called needed to build, is a full hold" \
+  '[ "$(qg SV-5004 .state)" = parked ] && [ "$(qg SV-5004 .held_outside)" = OPS-1 ] && [ "$(qg SV-5004 .merge_after)" = null ]'
+check "DS-687 AC6: a step that holds the merge, called not needed, is still a merge-only gate" \
+  '[ "$(qg SV-5005 .state)" = triaged ] && [ "$(qg SV-5005 .merge_after)" = OPS-2 ] && [ "$(decisions "[.[] | select(.ticket == \"SV-5005\")] | length")" = 0 ]'
+
 echo "outside blockers: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

@@ -14,7 +14,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, labelPark, stepLabel, personStep, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
+import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, labelPark, stepLabel, blockerHold, startWithout, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo,
   repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
@@ -167,21 +167,17 @@ const holdBehind = (t, p, why) => {
 const ask = (t, q) => (added[t] ??= []).push(q);
 const note = (t, n) => (notes[t] ??= []).push(n);
 let otherLinks = 0;
-// An open blocker in no batch, as triage judged it in `blocker_needs`: one the ticket needs holds it
-// as intake does (held_outside, lifted by pass.mjs once the blocker is Done and on the base); one it
-// does not need starts without it, a call taken where §3 autopilot-judgement is yes. With no
-// judgement recorded, it is asked. So is a blocker inherited from a container story: the pass checks a
+// An open blocker in no batch, as triage called it in `blocker_needs` and as intake acts on it
+// (batch-state.mjs blockerHold): one the ticket needs to build holds it (held_outside, lifted by pass.mjs
+// once the blocker is Done and on the base); one it needs only to merge holds its merge (merge_after);
+// one it does not need starts without it, a call taken where §3 autopilot-judgement is yes. With no
+// call recorded, it is asked. So is a blocker inherited from a container story: the pass checks a
 // held_outside key against the ticket's own links, and would read an inherited one as unlinked and
 // release it while it is still open.
 const outsideHolds = {};  // ticket -> blockers in no batch it is held behind
 const mergeAfter = {};    // ticket -> the person's steps it merges after (merge_after), built meanwhile
 const taken = [];         // {ticket, decision}: calls plan-batch takes on triage's judgement
 const judgement = permission('autopilot-judgement') === 'yes';
-const blockerNeed = (r, k) => {
-  if (!r.blockers.some((b) => b?.key === k)) return null;
-  const n = r.blocker_needs?.[k];
-  return n && typeof n === 'object' && typeof n.needs === 'boolean' ? { needs: n.needs, why: String(n.why ?? '').trim() || 'no reason given' } : null;
-};
 
 for (const r of admitted) {
   const t = r.ticket;
@@ -208,29 +204,29 @@ for (const r of admitted) {
       } else if (
         // Only on the ticket's own link: the pass lifts merge_after once its own links no longer list the
         // step, so one inherited from a container would be lifted at once, and is asked below instead. A
-        // step whose Jira Repository this computer cannot place is asked about too. A step in no batch is
-        // judged as intake judges it (personStep).
-        b.category !== 'done' && r.blockers.some((x) => x?.key === k)
-        && (br ? !elsewhere(br) && stepParked(br) && !inputStep(br) : personStep(b, r, STEP_LABELS, INPUT_LABELS) === 'merge')) {
+        // step whose Jira Repository this computer cannot place is asked about too.
+        br && b.category !== 'done' && r.blockers.some((x) => x?.key === k) && !elsewhere(br) && stepParked(br) && !inputStep(br)) {
         (mergeAfter[t] ??= []).push(k);
         note(t, `built now, merged only once ${k} (your step) is Done`);
-      } else if (!br && b.category !== 'done' && r.blockers.some((x) => x?.key === k) && personStep(b, r, STEP_LABELS, INPUT_LABELS) === 'build') {
-        (outsideHolds[t] ??= []).push(k);
-        (holdWhy[t] ??= {})[k] = `${b.category === 'indeterminate' ? 'in progress' : 'not started'}, not in this batch; your input step: the build reads what it makes`;
       } else if (br) {
         const why = !ours.includes(br) ? `assigned to ${br.assignee}` : elsewhere(br) ? awayWhy(br) : inputStep(br) ? 'your input step: the build reads what it makes' : stepParked(br) ? 'your step' : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
         ask(t, `${t} is blocked by ${k}, which this batch will not build (${why}): finish ${k} first, or confirm ${t} can start without it`);
       } else if (b.category === 'done') note(t, `blocker ${k} is done`);
       else {
+        // In no batch, judged as intake judges it (blockerHold): the person's step and triage's call, the
+        // one that holds more winning. On its own link only, as above.
         const status = b.category === 'indeterminate' ? 'in progress' : 'not started';
-        const need = blockerNeed(r, k);
-        if (need?.needs) {
+        const hold = r.blockers.some((x) => x?.key === k) ? blockerHold(b, r, STEP_LABELS, INPUT_LABELS) : null;
+        const said = hold?.by === 'triage' ? `triage: ${hold.why}` : hold?.why;
+        if (hold?.needs === 'build') {
           (outsideHolds[t] ??= []).push(k);
-          (holdWhy[t] ??= {})[k] = `${status}, not in this batch; triage: ${need.why}`;
-        } else if (need && judgement) {
-          note(t, `starts without blocker ${k} (${status}, not in this batch): triage found it is not needed (${need.why})`);
-          taken.push({ ticket: t, decision: { question: `${t} is blocked by ${k} (${status}), which is not in this batch: start without it? Triage: ${need.why}`,
-            options: [`start without ${k}`, `wait for ${k}`], chose: `start without ${k}`, category: 'engineering' } });
+          (holdWhy[t] ??= {})[k] = `${status}, not in this batch; ${said}`;
+        } else if (hold?.needs === 'merge') {
+          (mergeAfter[t] ??= []).push(k);
+          note(t, hold.by === 'step' ? `built now, merged only once ${k} (your step) is Done` : `built now, merged only once ${k} is Done (${said})`);
+        } else if (hold && judgement) {
+          note(t, `starts without blocker ${k} (${status}, not in this batch): triage found it is not needed (${hold.why})`);
+          taken.push({ ticket: t, decision: startWithout(t, k, status, hold.why) });
         } else ask(t, `${t} is blocked by ${k} (${status}), which is not in this batch: add ${k} to the batch, or confirm ${t} can start without it`);
       }
     }

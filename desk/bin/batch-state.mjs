@@ -420,6 +420,37 @@ export function personStep(b, rec = null, stepLabels = [], inputLabels = []) {
   return named || (/^task$/i.test(squash(b?.type)) && STEP_WORDS.test(summary)) ? 'merge' : null;
 }
 
+// Triage's call on each open blocker (`blocker_needs`): the ticket needs it to build, needs it only to
+// merge, or does not need it.
+export const BLOCKER_CALLS = ['build', 'merge', 'none'];
+// Triage's call on blocker `key` in triage record `rec`: {needs, why}, or null when none is recorded. A
+// record written before the three calls holds a boolean: true is 'build', false is 'none'.
+export function blockerCall(rec, key) {
+  const n = rec?.blocker_needs?.[key];
+  if (!n || typeof n !== 'object') return null;
+  const needs = BLOCKER_CALLS.includes(n.needs) ? n.needs : n.needs === true ? 'build' : n.needs === false ? 'none' : null;
+  return needs ? { needs, why: String(n.why ?? '').trim() || 'no reason given' } : null;
+}
+// The open blockers in triage record `rec`'s `blockers` (ticket-facts.mjs) that `blocker_needs` gives no
+// call: triage.sh refuses a record with any.
+export const uncalledBlockers = (rec) => (Array.isArray(rec?.blockers) ? rec.blockers : [])
+  .filter((b) => b?.key && b.category !== 'done' && !blockerCall(rec, b.key)).map((b) => b.key);
+// How open blocker `b`, in no batch, holds the ticket whose triage record is `rec`: {needs, by, why}, or
+// null with neither a person's step (personStep) nor a triage call (blockerCall) to go on, which is
+// asked. Where the step and the call point different ways, the one that holds more wins: 'build' (a full
+// hold) over 'merge' (a merge-only gate) over 'none'. `by` is 'step' or 'triage', whichever decided it.
+export function blockerHold(b, rec, stepLabels = [], inputLabels = []) {
+  const step = personStep(b, rec, stepLabels, inputLabels);
+  const call = blockerCall(rec, b?.key);
+  if (call && BLOCKER_CALLS.indexOf(call.needs) < BLOCKER_CALLS.indexOf(step ?? 'none')) return { needs: call.needs, by: 'triage', why: call.why };
+  if (step) return { needs: step, by: 'step', why: step === 'build' ? 'your input step: the build reads what it makes' : 'your step' };
+  return call ? { needs: call.needs, by: 'triage', why: call.why } : null;
+}
+// The call taken where triage found ticket `t` does not need blocker `k` (`status` in Jira, in no batch),
+// logged as plan-batch and intake both log it.
+export const startWithout = (t, k, status, why) => ({ question: `${t} is blocked by ${k} (${status}), which is not in this batch: start without it? Triage: ${why}`,
+  options: [`start without ${k}`, `wait for ${k}`], chose: `start without ${k}`, category: 'engineering' });
+
 // Where a held ticket's hold leads: the parked or failed tickets it waits on, an empty list when every
 // predecessor is progressing (running, waiting to spawn, done with a PR that is open, itself held
 // and going somewhere, or a blocker in no batch it was admitted behind, held_outside) or merged (done
