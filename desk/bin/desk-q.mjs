@@ -1811,18 +1811,15 @@ export function loginsNow(repos, now) {
   lastLogins = { repos, now, v };
   return v;
 }
+// A row naming the default's own email runs on the default, so it is not pinned elsewhere.
 function claudeSide(repos, now, subs) {
-  const login = defaultOf(migrateLogins(subs.logins), 'claude');
+  const { defaults: { claude: login }, bySlug } = loginUses(subs);
   if (!login) return null;
   const reading = readUsage({ dirs: stateDirs({ self: usageDir() }), login, now });
-  const bench = liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now)[loginKey(login)];
-  let rows = [];
-  try { rows = repoSubscriptions({ repoSubscription }, subs); } catch { /* no repo rows: every repo on the default */ }
-  const bySlug = new Map(rows.map((s) => [s.slug, s]));
   const on = (s) => s.source === 'default' || s.login?.dir === login.dir;
-  return { login, name: loginLabel(login), reading, n: claudeLogins().length, pinned: rows.filter((s) => !on(s)).length, bySlug,
+  return { login, name: loginLabel(login), reading, n: claudeLogins().length, pinned: [...bySlug.values()].filter((s) => !on(s)).length, bySlug,
     follows: (slug) => !bySlug.has(slug) || on(bySlug.get(slug)),
-    limit: limitOf({ out: bench ? { at: bench.resets_at ?? null, type: bench.type } : null, reading }, now) };
+    limit: limitOf({ out: benchOut(benchedHere(repos, now), login), reading }, now) };
 }
 function codexSide(now, subs) {
   const login = defaultOf(migrateLogins(subs.logins), 'codex');
@@ -1923,6 +1920,8 @@ function accountOf(l) {
 // What the view calls a login: a Claude login's email where its folder records one, a Codex login's
 // label where it was given one, else its name.
 const loginLabel = (l) => (l.tool === 'codex' ? loginLabelOf(l) : accountOf(l).email) ?? l.name;
+// What a repo's subscription row is called: the login it names, else the email it names; null with no row.
+const subLabel = (s) => (s ? (s.login ? loginLabel(s.login) : s.email) : null);
 const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
 
 // What each login is used for: each tool's default, as `logins list` shows it, and every configured
@@ -1930,8 +1929,7 @@ const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).
 // login signed in to it. -> { defaults: { claude, codex }: login, pinned: [{ slug, login }],
 // following: [slug], bySlug: Map(slug -> its repoSubscription) }, `following` the repos on the Claude
 // default; no pins and an empty `bySlug` when the rows cannot be read.
-function loginUses() {
-  const subs = readSubscriptions(subscriptionsPath());
+function loginUses(subs = readSubscriptions(subscriptionsPath())) {
   const moved = migrateLogins(subs.logins);
   let subsOf = [];
   try { subsOf = repoSubscriptions({ repoSubscription }, subs); } catch { /* no repo rows: nothing pinned */ }
@@ -1939,6 +1937,10 @@ function loginUses() {
     pinned: subsOf.filter((s) => s.source === 'row' && s.login), following: subsOf.filter((s) => s.source === 'default').map((s) => s.slug),
     bySlug: new Map(subsOf.map((s) => [s.slug, s])) };
 }
+// Every login benched by a batch here whose limit has not lifted, and a login's bench as a limit `out`
+// ({ at, type }, `at` null with no reset time), null while it has none.
+const benchedHere = (repos, now) => liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now);
+const benchOut = (benched, l) => ((b) => (b ? { at: b.resets_at ?? null, type: b.type } : null))(benched[loginKey(l)]);
 // A configured repo's name as desk-q shows it: its queue's name, else its slug's repo part.
 const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? String(slug).replace(/^.*__/, '');
 
@@ -1947,18 +1949,15 @@ const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? St
 // one); `workers` is null for Codex, whose calls desk does not count per login; `check` is the account
 // check's entry, null with none; `use` is { def, pinned: [repo name] }, `def` the tool's default login.
 function usageTable(repos, now, checked = null) {
-  const benched = liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now);
+  const benched = benchedHere(repos, now);
   const dirs = stateDirs({ self: usageDir() });
   const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? (l.source === 'found' ? { state: 'signed out' } : null));
   let uses = { defaults: {}, pinned: [], following: [], bySlug: new Map() };
   try { uses = loginUses(); } catch { /* an unreadable file: every login unused */ }
   const useOf = (l) => ({ def: uses.defaults[l.tool] ?? null, isDefault: uses.defaults[l.tool]?.dir === l.dir,
     pinned: l.tool === 'claude' ? uses.pinned.filter((s) => s.login.dir === l.dir).map((s) => repoName(repos, s.slug)) : [] });
-  const claude = claudeLogins().map((l) => {
-    const b = benched[loginKey(l)];
-    return { tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: b ? { at: b.resets_at ?? null, type: b.type } : null,
-      workers: runningOn(repos, l), check: checkOf(l), use: useOf(l) };
-  });
+  const claude = claudeLogins().map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: benchOut(benched, l),
+    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l) }));
   const codex = codexLogins().map((l) => codexReading(l, now)).map((x) => ({ tool: 'codex', login: x.login, plan: x.reading.plan, reading: x.claude,
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
   // One login of a tool is its default, whatever the file says.
@@ -2056,7 +2055,7 @@ const R_REPO = 16, R_RUNS = 28, R_SET = 13, R_WORKERS = 9, R_READY = 8;
 const repoUseHead = () => bold(`  ${pad('REPO', R_REPO)}${pad('RUNS ON', R_RUNS)}${pad('SET', R_SET)}${rpad('WORKERS', R_WORKERS)}${rpad('READY', R_READY)}`);
 function repoUseRow(x, open = false, waits = false) {
   const s = x.sub;
-  const on = s ? (s.login ? loginLabel(s.login) : s.email) : null;
+  const on = subLabel(s);
   const runs = on ? [[cut(on, R_RUNS - 3), waits ? FAIL : null], open ? [' ▴', HUE.blue] : [' ▾', GREY]] : [['—', GREY]];
   const set = !s ? ['—', GREY] : s.source === 'default' ? ['○ default', GREY] : ['● pinned', HUE.blue];
   const n = (v) => [String(v), v ? null : GREY];
@@ -2310,10 +2309,7 @@ function overviewHead(repos, list, { now = Date.now(), solid = false, avail = av
 const R_RUNS_HOME = 9;
 function runsOnOf(claude) {
   if (!claude || claude.n <= 1) return null;
-  return (slug) => {
-    const s = claude.bySlug.get(slug);
-    return (s ? (s.login ? loginLabel(s.login) : s.email) : null) ?? '—';
-  };
+  return (slug) => subLabel(claude.bySlug.get(slug)) ?? '—';
 }
 
 // Home's table, widest first. With a `width` it sheds what it can until a row fits: the "ready with
