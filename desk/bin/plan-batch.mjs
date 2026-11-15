@@ -12,11 +12,11 @@
 // message (the plan), needs_person ({ticket, why, detail}; why is question, lint,
 // challenge_inconclusive, challenge_not_run, parked or feature_plan) and notify.
 import { readFileSync, existsSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, labelPark, stepLabel, personStep, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo,
-  repoPlacement, otherRepoEnv, PER_REPO_ENV, personStepLabels, personInputLabels } from './desk-env.mjs';
+  repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { placement } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
@@ -425,27 +425,8 @@ const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b =
 // desk-jira lint's blocking findings (ticket-facts.mjs): each is something a worker would park on.
 const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
 
-// Admits `r` into the repo its Jira Repository names, by intake.mjs admit run in that repo's checkout
-// with nothing of this repo's in its environment: {ok, line} or {ok: false, why, cmd}.
-function handOver(r) {
-  const p = elsewhere(r);
-  const intake = join(binDir(), 'intake.mjs');
-  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && node ${intake} admit ${r.ticket} --by plan-batch`;
-  if (!p.root || !existsSync(p.root)) return { ok: false, why: `${p.ghRepo}'s checkout (its config §2 Primary repo root) is ${p.root ? `not at ${p.root}` : 'unset'}`, cmd };
-  const env = otherRepoEnv();
-  for (const k of [...PER_REPO_ENV, 'DESK_AUTOPILOT_STATE', 'AUTOPILOT_WRITE_QUEUE']) delete env[k];
-  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root });
-  const x = spawnSync(process.execPath, [intake, 'admit', r.ticket, '--by', 'plan-batch', '--json'], { cwd: p.root, env, encoding: 'utf8', maxBuffer: 64 << 20 });
-  let out = null;
-  try { out = JSON.parse(String(x.stdout ?? '').trim().split('\n').pop()); } catch { /* no report: the exit and stderr say why */ }
-  const mine = (out?.lines ?? []).filter((l) => l.includes(r.ticket));
-  if (x.status === 0 && out?.admitted?.includes(r.ticket)) return { ok: true, line: mine.find((l) => /^admitted /.test(l)) ?? `admitted ${r.ticket}` };
-  // Already in one of that repo's batches (its own intake, or a person, admitted it there first).
-  const there = mine.find((l) => l.startsWith(`${r.ticket} is already in batch `));
-  if (x.status === 0 && there) return { ok: true, line: there };
-  const why = out?.error ?? mine.at(-1) ?? (x.error?.message || String(x.stderr ?? '').trim().split('\n').pop() || `intake.mjs exited ${x.status}`);
-  return { ok: false, why, cmd };
-}
+// Admits `r` into the repo its Jira Repository names (desk-env.mjs admitInRepo).
+const handOver = (r) => admitInRepo(elsewhere(r), r.ticket, { by: 'plan-batch' });
 
 // Config §3b "Worker location". At cloud, each admitted ticket that needs nothing on this computer
 // runs in a cloud session (cloud-worker.mjs placement), and the plan says where each runs, and why a
