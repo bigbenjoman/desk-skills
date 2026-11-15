@@ -891,15 +891,17 @@ function stampItem(r, x, item) {
 
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
 // `b`): the rows that need the person (`rows`), plus its person's-step items (stepItems), as
-// `shown`, less `putOff`, those put off with unchanged inputs.
+// `shown`, less `putOff`, those put off with unchanged inputs. A row held only by a person's step
+// is in `stepRows`, not `rows`: it needs the person, but is counted once, through its step item.
+// A reader that draws "not in rows" as put off counts `stepRows` as needing the person too.
 export function needsCount(r) {
   const registers = new Map();
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
-  const rows = [];
+  const rows = [], stepRows = [];
   let putOff = 0, steps = 0;
   for (const x of [...basePushRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
-    if (stepHeld(b, x)) continue;
+    if (stepHeld(b, x)) { stepRows.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
@@ -911,7 +913,7 @@ export function needsCount(r) {
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
   }
-  return { shown: rows.length + steps, putOff, rows };
+  return { shown: rows.length + steps, putOff, rows, stepRows };
 }
 
 // The batches `word` names, else every batch desk-q's home screen shows.

@@ -1633,6 +1633,11 @@ dated('s685', 5685, { hours: twelveHours, tickets: { 'DS-685': { ...heldBy('OPS-
   t('DS-685 AC5 held behind the person\'s step outside the batch: needs you, and the row names the step; behind a code ticket outside it: waiting',
     ['DS-685', 'DS-686'].map((k) => { const x = r685.rows.find((y) => y.t.key === k); return `${x?.k} ${Q.holdOf(r685.q, x?.t, r685.ctx).text}`; }).join(' / '),
     'needs waits to start on your step OPS-7: take it and move it to Done in Jira / waiting behind CODE-1, outside this batch, until it is Done and on main');
+  // Counted once, through its step item, but drawn under Needs you, never Put off.
+  const s685 = lines(Q.repoScreen(r685, { now: FIXED }));
+  const groupOf685 = (key) => { let g = null; for (const l of s685) { const h = l.match(/^ {2}(Needs you|Put off|Waiting|Ready|Running|Merging) · \d+$/); if (h) g = h[1]; else if (new RegExp(`^ +\\S+ {2}${key} `).test(l)) return g; } return null; };
+  t('DS-685 AC5 on the repo screen the ticket held on the person\'s step is under Needs you, not Put off',
+    `${groupOf685('DS-685')} ${s685.some((l) => /^ {2}Put off · /.test(l))}`, 'Needs you false');
 }
 const starts541 = (key) => (lines(Q.repoScreen(r541(), { now: FIXED })).find((x) => new RegExp(`^ +\\d+ {2}${key} `).test(x)) ?? '').slice(83, 96).trim();
 const T541 = Q.forecastOf(r541(), { now: FIXED }).T;

@@ -943,7 +943,7 @@ function epicWhy(r, F, e, checkin) {
   if (r.workers === 0) return 'No date: 0 workers';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
-  const needs = new Set(needsCount(r).rows);
+  const nc = needsCount(r), needs = new Set([...nc.rows, ...nc.stepRows]);
   const asks = undated.filter((x) => groupOf(x.k) === 'needs').length;
   const you = undated.filter((x) => needs.has(x)).length, off = asks - you;
   const why = [...(you ? [`${you} need${you === 1 ? 's' : ''} you`] : []), ...(off ? [`${off} put off`] : [])];
@@ -2726,8 +2726,9 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const list = epic ? rows0.filter((x) => F.of[x.t.key] === epic) : rows0;
   const summary = (x) => summaryOf({ r: of(x), x });
   const tt = titler(list.map(summary));
-  // needsCount's rows are those not put off: the rest of Needs you is Put off.
-  const asked = new Set(needsCount(r).rows);
+  // needsCount's rows (and stepRows, held by a person's step) are those not put off: the rest of
+  // Needs you is Put off.
+  const nc = needsCount(r), asked = new Set([...nc.rows, ...nc.stepRows]);
   const gk = (x) => (groupOf(x.k) === 'needs' && !asked.has(x) ? PUT_OFF : x.k);
   // A ticket with a PR open has started and has no ship date of its own. One in Merging or Needs you
   // says how long it has been there instead (ageOf), a Merging PR's amber or red by that age.
