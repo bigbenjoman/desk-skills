@@ -377,6 +377,15 @@ out = pass(env);
 t('a pass clears a bench left from before the upgrade', batchOf().benched ?? null, null);
 got = calling(env);
 t('and the decider starts again', got.decider === 'none', false);
+// DS-630 AC2: a ticket a pass from before left waiting to move off login b resumes its own session on b,
+// though the repo's subscription is c, and the field is gone; one that is not waiting just loses it.
+const WAITING = { ...RESUMING('x')['K-1'], resume: null, resume_why: null,
+  login_move: { from: 'b', from_dir: dirOf('b'), stage: '4/9', type: 'five_hour', resets_at: RESET, at: '2026-11-07T00:00:00.000Z' } };
+env = world(MOVED, { 'K-1': WAITING, 'D-1': { ...NEW('D-1'), state: 'done', login_move: { from: 'b', from_dir: dirOf('b') } } });
+out = pass(env);
+t('DS-630 AC2 the login_move is gone from the queue', `${row('K-1').login_move ?? null} ${row('D-1').login_move ?? null} ${row('D-1').state}`, 'null null done');
+t('DS-630 AC2 it resumes its own session on the login it started on', calls('K-1').at(-1), `K-1|sess-1|${dirOf('b')}|resume`);
+t('DS-630 AC2 the report says so', out.includes('K-1: no longer moved off login b: it resumes its own session there'), true);
 // AC8: one login only.
 env = world([['default', 'in rotation', 50, 50]], {});
 preset({ default: benchRow('default') });

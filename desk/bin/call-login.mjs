@@ -1,5 +1,5 @@
 // The Claude login a pass's own model call starts on: the decider, triage and its lane challenge, and
-// epic planning's headless calls. It is chosen as a new worker's is (pass.mjs pickLogin): among the
+// epic planning's headless calls. It is chosen among the
 // usable logins that are not benched, the one with the most room (login-choice.mjs). A login is benched
 // when any of this repo's batches benched it (the queue's `benched`) and its reset has not passed; a
 // bench with no reset time stands until a pass's probe clears it.
@@ -42,7 +42,7 @@ export function liveBenches(maps, now) {
   return out;
 }
 
-// The Claude login new work starts on among `logins`, as a new worker's is (pass.mjs pickLogin): of
+// The Claude login a pass's own call starts on among `logins`: of
 // those `benched` does not hold, the one login-choice ranks first on its week-long probe reading, with
 // `running(login)` workers on it. `dirs` are the state folders whose worker logs count too.
 //   -> { login, out: [{ login, at }] }: `login` null when every one is benched; `out` each benched login

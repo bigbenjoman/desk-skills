@@ -1060,6 +1060,15 @@ if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
 let USAGE_HOLD = null;
 // Set when a limit met this pass holds the rest of it: a refused preflight, or a base worker paused.
 let usageStop = false;
+// A ticket a pass from before this left waiting to move to another login (`login_move`) resumes its own
+// session on its own login instead, as one that exited at the limit does; the field goes from every ticket.
+for (const t of Object.values(queue().tickets)) {
+  if (t.login_move == null) continue;
+  const from = t.login_move.from ?? 'its own';
+  const waiting = t.state === 'triaged' && !!t.session_id;
+  q('set', t.key, 'login_move=null', ...(waiting ? ['resume=usage', `resume_why=was waiting to move off login ${from}, which desk no longer does`] : []));
+  if (waiting) report.advanced.push(`${t.key}: no longer moved off login ${from}: it resumes its own session there`);
+}
 {
   const tickets = queue().tickets;
   for (const h of usageHolds.splice(0)) {

@@ -285,7 +285,7 @@ t('desk-env logins remove refuses the default login', deskEnv('remove', 'claude'
 // The set u runs after x puts a removed login back in its own folder, though its name is not its folder's.
 subscriptions([['claude', 'spare', '~/.claude-logins/spare', 'default'], ['claude', 'office', '~/.claude-logins/work', 'unused'], ROWS[2]]);
 deskEnv('remove', 'claude', 'office');
-const back = deskEnv('set', 'claude', 'office', 'standby');
+const back = deskEnv('set', 'claude', 'office', 'unused');
 t('u after x on a login named apart from its folder puts back that folder', `${back.status} ${/^\| `claude` \| `office` \| `~\/.claude-logins\/work` \| `unused` \|$/m.test(subsText())} ${/^## Removed/m.test(subsText())}`, '0 true false');
 
 // ---- AC4: the default at its 5-hour limit still reads default, its 5H bar at 100% with the reset time

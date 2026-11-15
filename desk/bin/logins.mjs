@@ -307,15 +307,29 @@ export function checkLogins(subs, { tools = TOOLS, ...opts } = {}) {
 export const isUsable = (l) => l.state === 'signed in' && (l.rule === 'in rotation' || l.rule === 'standby');
 
 // ---- changing a rule -------------------------------------------------------------------------
-// The file's text with one login's rule changed. A login the file does not list is added: a tool's
+// What `desk-env logins set` takes, and the rule each is read as. The default is chosen by name with
+// `desk-env logins default`, never set as a rule, and the older rules are refused rather than mapped, so
+// a stale script fails loudly.
+export const SET_WORDS = Object.freeze({ unused: STORED_RULES.unused, off: 'off' });
+export const setWordError = (tool, v) => {
+  const how = `choose the default with desk-env logins default ${TOOLS.includes(tool) ? tool : '<claude|codex>'} <name>, and set any other login ${Object.keys(SET_WORDS).map((w) => `\`${w}\``).join(' or ')}`;
+  const s = ruleWords(v);
+  return s === 'default' || s === 'in rotation' || s === 'standby'
+    ? `logins: "${v}" is not a rule desk sets any more: ${how}` : `logins: "${v}" is not a rule: ${how}`;
+};
+// The file's text with one login set unused or off. A login the file does not list is added: a tool's
 // default (named `default`), a login the Removed table names, with its own folder, or a folder of that
 // name under the tool's logins folder. Turning off the last usable Claude login is refused; `check` is
 // called only then, -> checkLogins' result.
 //   -> { text, login }, or throws with the reason
-export function setRule(subs, { tool, name, rule: ruleText, check }) {
+export function setRule(subs, { tool, name, rule: word, check }) {
   if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
-  const rule = normRule(ruleText);
-  if (!rule) throw new Error(`logins: ${ruleError(ruleText)}`);
+  const rule = SET_WORDS[ruleWords(word)];
+  if (!rule) throw new Error(setWordError(tool, word));
+  return writeRule(subs, { tool, name, rule, check });
+}
+// setRule's write, given the rule a reader gets (in rotation for the tool's default, standby for unused).
+function writeRule(subs, { tool, name, rule, check }) {
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
   // Listed, then removed (its own folder), then a folder of that name, then the tool's own default.
   let target = subs.logins.find((l) => l.tool === tool && l.name === name);
@@ -368,14 +382,14 @@ export function setDefault(subs, { tool, who }) {
     const on = signedInTo(moved, key);
     if (on.length > 1) throw new Error(`logins: ${on.map((l) => l.name).join(' and ')} are all signed in to ${key}: name the login instead`);
     if (!on.length) throw new Error(`logins: no claude login is signed in to ${key}: the logins are ${moved.logins.filter((l) => l.tool === tool).map((l) => l.name).join(', ')}`);
-    // setRule finds a login by name, a listed or removed one before a folder, so a name another
+    // writeRule finds a login by name, a listed or removed one before a folder, so a name another
     // folder holds would make that folder the default.
     const clash = [...moved.logins, ...moved.removed].find((l) => l.tool === tool && l.name === on[0].name && l.dir !== on[0].dir);
     if (clash) throw new Error(`logins: ${key} is signed in at ${on[0].folder}, but the file's claude ${clash.name} is ${clash.folder}: give one of them another name in the subscriptions file first`);
     name = on[0].name;
   }
   const was = defaultOf(moved.logins, tool);
-  const r = setRule(moved, { tool, name, rule: 'in rotation', check: () => null });
+  const r = writeRule(moved, { tool, name, rule: 'in rotation', check: () => null });
   return { text: r.text, login: r.login, was: was && was.dir !== r.login.dir ? was : null };
 }
 
@@ -469,7 +483,7 @@ export function checkLines(r, path) {
     if (l.state === 'duplicate') notes.push(`${l.tool} ${l.name} refused: ${l.name} and ${l.duplicateOf} are signed in to the same account; desk uses ${l.duplicateOf}`);
   }
   const found = r.logins.filter((l) => l.source === 'found');
-  if (found.length && !r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}: no rule until one is set (desk-env logins set <tool> <name> <rule>)`);
+  if (found.length && !r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}: no rule until one is set (desk-env logins set <tool> <name> unused)`);
   if (found.length && r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}, not in the file: unused`);
   return [
     ...tableLines(r, path, head, body),
