@@ -316,8 +316,8 @@ export function readDraft(text) {
   return s ? { ...s, cost } : { why: 'the drafter gave no spine draft or owner table' };
 }
 
-// One headless session with no tools, answering `prompt`: the spawn result. It runs on a Claude login
-// that is not benched (call-login.mjs), or as the caller does when every one is.
+// One headless session with no tools, answering `prompt`: the spawn result. It runs on the repo's
+// subscription (call-login.mjs), at its limit too.
 const headlessArgs = (prompt) => ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
   '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)];
 export const headlessEnv = (env) => callLogin({ env }).env;

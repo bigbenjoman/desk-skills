@@ -221,10 +221,10 @@ re-running a ticket from scratch.
 - **A queue from before subscriptions is cleaned up on its first pass.** A record a pass from before
   left, of a login set aside at its limit or of a ticket waiting to move to another login, is
   cleared, and that ticket resumes its own session on its own login, as a paused worker does.
-- **The pass's own model calls choose their own login.** The decider, triage and its lane
-  challenge, and epic planning's headless calls each start on a usable login chosen by
-  `call-login.mjs`; with no login open to them, no decider starts and its items wait for the next
-  one, and triage and epic planning run on the caller's own login.
+- **The pass's own model calls run on the repo's subscription too.** The decider, triage and its
+  lane challenge, and epic planning's headless calls start on the subscription the repo's workers use
+  (`call-login.mjs`), never on another login with more room. At its limit no decider starts and its
+  items wait for the next one, while triage and epic planning still run on it.
 - **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
   batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
   once; exactly one row that is the same batch with tickets added or removed is the same session.

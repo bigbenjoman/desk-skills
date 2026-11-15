@@ -677,7 +677,7 @@ function restatedNone(items) {
 }
 
 // Restarts the RESTATE_MS clock on each item's park still waiting on a restate, for a tick that starts
-// no decider (the batch on a usage hold, every login benched): the hour is the decider's to use, so a
+// no decider (the batch on a usage hold, or the repo's subscription at its limit or signed in nowhere): the hour is the decider's to use, so a
 // line never lapses to none, and to the person, before one has seen it. Returns the report line.
 function restampRestate(items, now) {
   if (!restateKeys(items).length) return [];
@@ -756,9 +756,10 @@ function decide(state, s, v, q, now = new Date()) {
     handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
     return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`, ...restatedNone(fresh)];
   }
-  s.decider = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),
+  const started = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),
     webRead: E.permission('worker-web-read') === 'yes', judgement: E.permission('autopilot-judgement'), targets: runningBatches(HERE, { cwd: process.cwd() }), cwd: process.cwd(), now });
-  if (!s.decider) return [...lines, `decider: not started, every Claude login is benched; ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once one is back`, ...restampRestate(fresh, now)];
+  if (started.wait) return [...lines, `decider: not started, ${started.wait}; ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider`, ...restampRestate(fresh, now)];
+  s.decider = started;
   return [...lines, `decider: started (pid ${s.decider.pid})${s.decider.login ? ` on login ${s.decider.login}` : ''} for ${fresh.map((i) => i.ticket).join(', ')}; its output is ${s.decider.out}`];
 }
 
