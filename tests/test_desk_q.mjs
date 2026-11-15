@@ -2102,6 +2102,29 @@ const raw421 = async (key) => {
   return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
 };
 t('DS-421 AC4 2 hours stuck is amber and 10 days red, so the two never render alike', `${await raw421('R-4')} | ${await raw421('R-1')}`, '38;5;180:for 2h 5m | 38;5;210:for 10d');
+
+// ---- DS-655: a worker still reviewing its draft PR is running, whatever pr_status its last done stint
+// left, and its Merging clock starts once it finishes, not at a head it pushed while reviewing.
+const ds655 = {
+  // AC1: requeued after done, its worker reviewing the open draft.
+  'P-1': { ...prOn(951, okChecks(2), { isDraft: true }), state: 'running', stage: '7/9' },
+  // AC2: finished 3 minutes ago, its head pushed 25 minutes ago while it ran from 40 minutes ago.
+  'P-2': { ...prOn(952, okChecks(2), { head_at: ago194(25), changed_at: ago194(20) }), group: { g: 'merging', at: ago194(3), from: 'running', from_at: ago194(40) } },
+  // AC3: a done ticket requeued for a fix try on its open PR.
+  'P-3': { ...prOn(953, okChecks(2)), state: 'running', stage: '3/9', fix: { try: 1, of: 2, pr: 953, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
+  // A head pushed before it entered Running (a PR moved to a new slot) was not pushed under review.
+  'P-4': { ...prOn(954, okChecks(2), { head_at: ago194(10 * 24 * 60), changed_at: ago194(20) }), group: { g: 'merging', at: ago194(3), from: 'running', from_at: ago194(5) } },
+};
+put(I.T, I.env, 'ds655', { port: 5675, conc: '3 / 5', beat: 1, perms: grant, queue: { batch: 'ds655', concurrency: 3, supervised: true, tickets: ds655 } });
+const r655 = Q.loadRepos(NOW).find((r) => r.name === 'ds655');
+const q655 = lines(Q.repoScreen(r655, { now: NOW, width: 200 }));
+t('DS-655 AC1 a running worker with its draft PR open is in Running, once, not Merging',
+  `${/P-1 +● running/.test(fxRow(q655, 'P-1'))} ${q655.filter((l) => / P-1 /.test(l)).length} ${r655.prs.some((x) => x.t.key === 'P-1')}`, 'true 1 false');
+t('DS-655 AC2 once it finishes, its Merging age counts from entering Merging, not from the head pushed under review',
+  `${fxRow(q655, 'P-2').slice(83, 96).trim()} | ${fxRow(q655, 'P-4').slice(83, 96).trim()}`, 'for 3m | for 10d');
+t('DS-655 AC3 a fix try running on an open PR shows as it did: Running, a worker repairing it', /P-3 +● running +#953 · /.test(fxRow(q655, 'P-3')), true);
+t('DS-655 the pass stamps the same groups desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds655', stateDir: r655.stateDir, queuePath: r655.queuePath, q: r655.q, now: NOW })),
+  JSON.stringify({ 'P-1': 'running', 'P-2': 'merging', 'P-3': 'running', 'P-4': 'merging' }));
 t('DS-421 under 2 hours the age is uncoloured', await raw421('R-3'), '');
 
 // ---- DS-357: a repo with its standing batch and a batch in a slot named after a long branch is one

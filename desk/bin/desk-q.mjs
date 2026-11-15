@@ -2618,9 +2618,13 @@ function inGroup(x, now) {
   return ['merging', 'needs'].includes(g) && x.t.group?.g === g && Number.isFinite(at) ? Math.max(0, now - at) : null;
 }
 // The age STARTS shows: a Merging PR's from its head commit (pr_status head_at), which a driver restart
-// or a migration does not reset and a new head does; else how long the row has been in its group.
+// or a migration does not reset and a new head does; else how long the row has been in its group. A
+// head its worker pushed while the row was in Running (`group.from`, since `from_at`) was pushed under
+// review: the age counts from when it entered Merging instead.
 function ageOf(x, now) {
-  const at = groupOf(x.k) === 'merging' ? Date.parse(prStatusOf(x.t)?.head_at ?? '') : NaN;
+  const g = x.t.group, head = groupOf(x.k) === 'merging' ? Date.parse(prStatusOf(x.t)?.head_at ?? '') : NaN;
+  const reviewed = g?.g === 'merging' && g.from === 'running' && head >= Date.parse(g.from_at ?? '');
+  const at = reviewed ? Math.max(head, Date.parse(g.at ?? '') || head) : head;
   return Number.isFinite(at) ? Math.max(0, now - at) : inGroup(x, now);
 }
 // A Merging row's age is amber from STALL_MS and red from AGE_RED_MS, so ten days stuck never reads as two hours.

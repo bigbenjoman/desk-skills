@@ -26,11 +26,12 @@
 //
 // `scan` prints one block per finding (or a JSON array with --json). A finding is
 //   {check, ticket, other?, evidence: [line], propose: [desk-jira command], verify?: brief}
-// where `check` is landed, duplicate, link, stale, field, title or blocker per ticket, and coverage,
+// where `check` is landed, duplicate, link, stale, field, title, blocker or label per ticket, and coverage,
 // children, loose, priority or status per epic (groomEpics). A finding with `verify` is a candidate
 // only: a read-only verifier settles it before anything is proposed (SKILL.md). Every finding also
 // has `kind`: `fix` (one correct fix, proposed), `question` (no single correct fix: `question`,
-// `options` and `recommend`, and nothing proposed; a loose ticket, a blocker rescope) or `report`
+// `options` and `recommend`, and nothing proposed; a loose ticket, a blocker rescope, a person's step
+// with neither label) or `report`
 // (a gap to report, nothing to write).
 
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -54,7 +55,13 @@ const deskBin = [
 if (!deskBin) { console.error(`groom-scan: ${DESK_MODULES.join(' and ')} not found in desk/bin. Run install.sh from desk-skills.`); process.exit(2) }
 const { sections } = await import(pathToFileURL(join(deskBin, 'desk-design.mjs')).href)
 const { namedBatches } = await import(pathToFileURL(join(deskBin, 'batches.mjs')).href)
-const { BATCHES_DIR } = await import(pathToFileURL(join(deskBin, 'desk-env.mjs')).href)
+const deskEnv = await import(pathToFileURL(join(deskBin, 'desk-env.mjs')).href)
+const { BATCHES_DIR } = deskEnv
+// batch-state.mjs's `personStep`, how intake reads a blocker that is the person's step: 'build',
+// 'merge' or null. A desk/bin older than the Person-input labels row returns true for 'merge'. Its
+// `stepLabel` matches a labels row; the label finding, which uses it, needs that row, so is never older.
+const { personStep: intakeStep, stepLabel } = await import(pathToFileURL(join(deskBin, 'batch-state.mjs')).href)
+const holdOf = (b, stepLabels, inputLabels) => { const s = intakeStep(b, null, stepLabels, inputLabels); return s === true ? 'merge' : s || null }
 
 // ---- pure parts (exported for tests/test_groom.mjs) ------------------------------------------
 
@@ -86,6 +93,7 @@ export function ticketOf(issue, fieldIds = []) {
     status: f.status?.name ?? '',
     category: f.status?.statusCategory?.key ?? 'new',
     parent: f.parent?.key ?? null,
+    labels: Array.isArray(f.labels) ? f.labels : [],
     fields: Object.fromEntries(fieldIds.map((id) => [id, val(f[id])])),
     names: issue.names ?? {},
     links: (f.issuelinks ?? []).map((l) => {
@@ -223,12 +231,58 @@ export function blockerCycles(tickets) {
 // Over this many open blockers, a ticket waits on a set that keeps growing ("every feature").
 export const BLOCKER_FANIN = 10
 
+// A step only the person takes, read from its title: one that makes something the build reads (a
+// fixture, a recorded response, a key) is an input; a sign-off, walkthrough, go-live or account step
+// gates only the merge. An input word wins over a merge word, as a Person-input label wins.
+const INPUT_STEP = /\bfixtures?\b|\brecorded\s+(?:[\w-]+\s+){0,3}?(?:responses?|payloads?)\b|\b(?:api|secret|signing|access|licen[cs]e|ssh|deploy|private|encryption|webhook)[- ]keys?\b/i
+const MERGE_STEP = /\bapprov(?:e|es|ed|al|als)\b|\bsign(?:s|ed)?[- ]?offs?\b|\bwalk-?throughs?\b|\bgo(?:es)?[- ]live\b|\baccounts?\b/i
+export function stepWords(summary) {
+  const s = String(summary ?? ''), input = INPUT_STEP.exec(s), merge = MERGE_STEP.exec(s)
+  return input ? { kind: 'input', word: input[0] } : merge ? { kind: 'merge', word: merge[0] } : { kind: null, word: null }
+}
+
+// Whether a ticket reads as a step only the person takes, and which kind: a Task whose title names an
+// input or a merge gate, or says apply, confirm or sign off as intake reads it. In such a title a bare
+// key is an input too ("confirm the Stripe key"). {kind: 'input' | 'merge' | null, word}.
+export function stepOf(b) {
+  if (!b || isEpic(b) || !/^(?:sub-?)?task$/i.test(String(b.type ?? '').trim())) return { kind: null, word: null }
+  const w = stepWords(b.summary)
+  if (w.kind === 'input' || (!w.kind && !holdOf({ ...b, labels: [] }, [], []))) return w
+  const key = /\bkeys?\b/i.exec(String(b.summary ?? ''))
+  return key ? { kind: 'input', word: key[0] } : w.kind ? w : { kind: 'merge', word: null }
+}
+export const personStepOf = (b) => stepOf(b).kind
+
+const row = (xs) => (xs ?? []).map((x) => String(x).trim()).filter(Boolean)
+
+// What a Blocks link from `b` to `blocked` holds, as intake will read it, when `b` is the person's
+// step: its build, or only its merge. Null when `b` is an ordinary blocker. `asked`: the scan raises
+// a label finding for `b`.
+export function holdLine(b, blocked, stepLabels = [], inputLabels = [], asked = false) {
+  const hold = holdOf(b, stepLabels, inputLabels)
+  if (hold === 'build') return `${b.key} is the person's step, labelled as an input: the link holds ${blocked}'s build until ${b.key} is Done`
+  if (hold === 'merge') return `${b.key} is the person's step: the link holds only ${blocked}'s merge, so ${blocked} is built and reviewed meanwhile`
+  if (!personStepOf(b)) return null
+  return `${b.key} reads as the person's step but carries no label that says so: the link holds ${blocked}'s build until ${b.key} is Done, as an ordinary blocker${asked ? ` (see ${b.key}'s label finding)` : ''}`
+}
+
 // Every check over the open tickets. `siblings` maps a parent to [{key, summary}] (its children,
-// done ones included); `repo` answers from origin/<default> (repoAt below, or a test's own).
-export function groom({ tickets, siblings = {}, repo, fields = [], priority = null, done = 'Done' }) {
+// done ones included); `repo` answers from origin/<default> (repoAt below, or a test's own);
+// `stepLabels` and `inputLabels` are §4 Person-step labels and Person-input labels.
+export function groom({ tickets, siblings = {}, repo, fields = [], priority = null, done = 'Done', stepLabels = [], inputLabels = [] }) {
+  stepLabels = row(stepLabels); inputLabels = row(inputLabels)
   const out = []
   const work = tickets.filter((t) => !isEpic(t))
   const open = new Map(tickets.map((t) => [t.key, t]))
+  // Each open step only the person takes that carries neither label, mapped to the open work it blocks
+  // (the label finding below); only where both rows are set.
+  const unlabelled = new Map()
+  if (stepLabels.length && inputLabels.length) for (const t of work) for (const l of t.links) {
+    if (l.type !== 'Blocks' || !/blocked by/i.test(l.verb) || isDone(l.category)) continue
+    const b = open.get(l.key)
+    if (!b || stepLabel(b.labels, stepLabels) || stepLabel(b.labels, inputLabels) || !personStepOf(b)) continue
+    unlabelled.set(b.key, [...(unlabelled.get(b.key) ?? []), t.key])
+  }
   const names = new Map(work.map((t) => [t.key, namesOf(t)]))
   // Every name an open ticket says it adds: a premise naming one is pending work, not stale.
   const pending = new Set([...names.values()].flatMap((n) => [...n.adds.keys()].map((s) => premiseName(s)?.name ?? s)))
@@ -367,7 +421,9 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
         const where = `${s.name || 'description'}: ${l.text}`
         const verb = orderOf(l.text, k) ?? (HEAD_DEPENDS.test(s.name) ? 'blocked-by' : HEAD_FEEDS.test(s.name) ? 'blocks' : null)
         if (!verb) continue
-        add({ check: 'link', ticket: t.key, other: k, evidence: [`${t.key} names ${k} in ${quote(where)}`], propose: [`desk-jira link ${t.key} ${verb} ${k}`] })
+        const [b, blocked] = verb === 'blocked-by' ? [open.get(k), t.key] : [t, k]
+        const hold = holdLine(b, blocked, stepLabels, inputLabels, unlabelled.has(b.key))
+        add({ check: 'link', ticket: t.key, other: k, evidence: [`${t.key} names ${k} in ${quote(where)}`, ...(hold ? [hold] : [])], propose: [`desk-jira link ${t.key} ${verb} ${k}`] })
       }
     }
   }
@@ -390,6 +446,23 @@ export function groom({ tickets, siblings = {}, repo, fields = [], priority = nu
         evidence: [`both change \`${fn}\``, `${a.key}: ${quote(na.changes.get(fn))}`, `${b.key}: ${quote(nb.changes.get(fn))}`],
         propose: [`desk-jira link ${a.key} relates-to ${b.key}`] })
     }
+  }
+
+  // ---- a step only the person takes, blocking open work with neither label: whether it holds the
+  // build or only the merge is the person's to say, so it is asked, the label its title reads as
+  // recommended. One finding per step, naming every ticket it blocks.
+  for (const [k, blocked] of unlabelled) {
+    const b = open.get(k), w = stepOf(b), list = blocked.join(', ')
+    const build = `${k} makes something the build of ${list} reads: desk-jira labels ${k} add ${inputLabels[0]}`
+    const merge = `${k} gates only the merge of ${list}: desk-jira labels ${k} add ${stepLabels[0]}`
+    add({ check: 'label', kind: 'question', ticket: k, blocked,
+      evidence: [`${k} blocks ${list} and reads as a step only the person takes: "${quote(b.summary)}"`,
+        `it carries neither a Person-step label (${stepLabels.join(', ')}) nor a Person-input label (${inputLabels.join(', ')})`,
+        w.word ? `its title names ${w.kind === 'input' ? 'an input the build reads' : 'a step that gates only the merge'}: "${w.word}"`
+          : 'its title says apply, confirm or sign off, a step that gates only the merge'],
+      question: `Does ${k} hold the build of ${list}, or only the merge? It carries neither label.`,
+      options: [build, merge, `${k} is not a step only the person takes: leave it unlabelled`],
+      recommend: w.kind === 'input' ? build : merge, propose: [] })
   }
 
   // ---- duplicates: two open tickets with nearly the same title (AC2)
@@ -952,7 +1025,8 @@ function scan(o) {
     }
   }
   let findings = [
-    ...groom({ tickets, siblings, repo: repoAt(o.repo, o.default), fields: ids, priority, done }),
+    ...groom({ tickets, siblings, repo: repoAt(o.repo, o.default), fields: ids, priority, done,
+      stepLabels: deskEnv.personStepLabels?.() ?? [], inputLabels: deskEnv.personInputLabels?.() ?? [] }),
     ...groomEpics({ tickets, children, lookup, priority, size: o.size && o.size !== true && o.size !== 'none' ? o.size : null, done,
       inProgress: o['in-progress'] && o['in-progress'] !== true ? o['in-progress'] : 'In Progress' }),
   ].map((f) => ({ kind: 'fix', ...f }))
