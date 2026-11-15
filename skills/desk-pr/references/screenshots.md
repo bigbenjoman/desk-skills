@@ -90,8 +90,9 @@ too large: capture it smaller (the viewport rather than the full page, or a lowe
 and stitch again, so the body names one image per board and theme. Only a board still split after
 that names each part its `wrote:` lines print, and its summary says why. Exit 2 is a usage error, no captures, or two captures for one cell; 5 is
 a single capture over the limit on its own (`over:`), which GitHub refuses: capture it smaller
-rather than ship it; 6 is desk's Playwright missing. The upload reads only the top level of
-`<dir>`, so the raw captures stay in `captures/` and only the stitched images reach the PR. **Open
+rather than ship it; 6 is desk's Playwright missing. The upload takes only the files the
+body's `_drag <file>_` cells name, so the raw captures stay in `captures/` and only the stitched
+images reach the PR. **Open
 each stitched image at full size before the body names it**: the 390 row included, every label
 readable.
 
