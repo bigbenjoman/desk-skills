@@ -8,15 +8,17 @@
 // ends. A job left part done by the cap (exit 8) keeps its place; any other end is a result, which
 // the pass of the queue that added it takes and records on its ticket. A job belongs to its ticket's
 // round (`round`, the ticket's upload_round when it was added): a spawn of the ticket's next round
-// drops it (dropJob), and the pass records only results of the ticket's current round.
+// waits while an upload of it is running (inFlight), then drops it (dropJob), and the pass records only
+// results of the ticket's current round.
 //
 //   { jobs:    [{ queue, repo, root, key, round, pr, dir, approved, at }]   queue: that batch's queue.json
 //     results: [{ ...job, code, out, done_at }]
 //     served:  { [repo]: <when its last job started> }
-//     backoff: { at, stalls, until, repo, pr } | null }
+//     backoff: { at, stalls, until, repo, pr } | null
+//     running: { id, pr, pid, at } | null }   the job an upload is running now (inFlight)
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { lock, tryLock, unlock, writeJsonAtomic } from './dir-lock.mjs';
+import { alive, lock, tryLock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 import { deskHome } from './desk-env.mjs';
 import { UPLOAD_PACE } from './desk-design.mjs';
 import { readUploadLog, uploadsBefore } from './upload-log.mjs';
@@ -32,7 +34,7 @@ export function readUploadQueue(file = uploadQueueFile()) {
   try { q = JSON.parse(readFileSync(file, 'utf8')); } catch (e) {
     if (e.code !== 'ENOENT' && !(e instanceof SyntaxError)) throw e;
   }
-  return { jobs: Array.isArray(q?.jobs) ? q.jobs : [], results: Array.isArray(q?.results) ? q.results : [], served: q?.served ?? {}, backoff: q?.backoff ?? null };
+  return { jobs: Array.isArray(q?.jobs) ? q.jobs : [], results: Array.isArray(q?.results) ? q.results : [], served: q?.served ?? {}, backoff: q?.backoff ?? null, running: q?.running ?? null };
 }
 // fn(queue) changes the queue under its file lock, and the queue is saved after if it changed (so a
 // pass with nothing to upload writes nothing); returns fn's result.
@@ -58,6 +60,8 @@ export function enqueue(job, { file = uploadQueueFile(), now = Date.now } = {}) 
   });
 }
 export const isQueued = (q, queue, key) => q.jobs.some((j) => j.queue === queue && j.key === key);
+// The job of `queue`'s ticket `key` an upload is running now, or null; a pump that has exited is not running it.
+export const inFlight = (q, queue, key) => (q.running && q.running.id === jobId({ queue, key }) && alive(q.running.pid) ? q.running : null);
 // Drops the job `queue`'s ticket `key` added, as its next round starts: that round adds its own.
 export function dropJob(queue, key, { file = uploadQueueFile() } = {}) {
   return withQueue(file, (q) => {
@@ -115,8 +119,9 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       const p = pace(uploadLog(), new Date(t));
       if (p.allow <= 0) { stop = `the upload pace is spent: ${p.why}`; break; }
       tried.add(jobId(job));
-      withQueue(file, (w) => { w.served[job.repo] = iso(t); });
-      const r = run(job, p.allow);
+      withQueue(file, (w) => { w.served[job.repo] = iso(t); w.running = { id: jobId(job), pr: job.pr, pid: process.pid, at: iso(t) }; });
+      let r;
+      try { r = run(job, p.allow); } finally { withQueue(file, (w) => { w.running = null; }); }
       ran.push({ job, code: r.code });
       const end = now();
       stop = withQueue(file, (w) => {

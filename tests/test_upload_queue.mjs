@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter, dropJob } from '../desk/bin/upload-queue.mjs';
+import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter, dropJob, inFlight } from '../desk/bin/upload-queue.mjs';
 import { tryLock, unlock } from '../desk/bin/dir-lock.mjs';
 import { uploadsBefore } from '../desk/bin/upload-log.mjs';
 import { UPLOAD_PACE } from '../desk/bin/desk-design.mjs';
@@ -136,6 +136,12 @@ function machine({ step = 5000 } = {}) {
   t('uploadsBefore counts only what the log uploaded', uploadsBefore([{ at: new Date(START).toISOString(), result: 'throttled' }], new Date(START + 1)).uploads_last_minute, 0);
   m.add('acme/a', 'a-9', 1, { round: 'r1' });
   t('a ticket\'s next round drops the job its last round added, and only that one', `${dropJob('/q/acme/a.json', 'a-9', { file: m.file })} ${isQueued(readUploadQueue(m.file), '/q/acme/a.json', 'a-9')} ${isQueued(readUploadQueue(m.file), '/q/acme/b.json', 'b-1')}`, '1 false true');
+  let during = null;
+  m.add('acme/a', 'a-7', 1);
+  m.code['a-7'] = (job) => { during = inFlight(readUploadQueue(m.file), '/q/acme/a.json', 'a-7'); delete m.code['a-7']; return m.run(job, 1); };
+  m.clock += 120_000; m.pump();
+  t('while a job\'s upload runs, the queue names it running, and no longer once it ends', `${during?.pr} ${inFlight(readUploadQueue(m.file), '/q/acme/a.json', 'a-7')}`, '1 null');
+  t('a running job whose pump has exited is not running', inFlight({ running: { id: '/q/acme/a.json#a-7', pr: 1, pid: 999999999 } }, '/q/acme/a.json', 'a-7'), null);
   t('a job carries the round that added it to its result', (() => { m.add('acme/a', 'a-8', 1, { round: 'r2' }); m.clock += 120_000; m.pump(); return takeResults('/q/acme/a.json', { file: m.file }).find((x) => x.key === 'a-8')?.round; })(), 'r2');
 }
 

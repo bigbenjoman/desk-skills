@@ -2927,6 +2927,16 @@ for (const t of spawnable) {
     report.waiting.push(`${t.key}: WORKTREE IN USE — ${busy}, so no worker was spawned. The next pass looks again`);
     continue;
   }
+  // Its last round's upload running in the machine's upload queue (another repo's pass may be running
+  // it) edits the PR body the next round's worker edits too: that round waits until it ends.
+  if (!toResume(t) && !toHandoff(t) && t.location !== 'cloud') {
+    let up = null;
+    try { up = UQ.inFlight(UQ.readUploadQueue(), QUEUE_FILE, t.key); } catch { /* unread: the spawn drops its job */ }
+    if (up) {
+      report.waiting.push(`${t.key}: its last round's upload to PR #${up.pr} is running in the machine's upload queue, so its next round's worker waits for it to end. The next pass looks again`);
+      continue;
+    }
+  }
   if (t.location !== 'cloud') {
     readRepoFailures ??= refreshReadRepos();
     if (readRepoFailures.length) {
