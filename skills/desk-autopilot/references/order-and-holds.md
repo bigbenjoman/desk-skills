@@ -44,7 +44,9 @@ written before the calls reads a boolean `needs` as `build` (true) or `none` (fa
 also the person's step (a §4 Person-step or Person-input label) holds as whichever of the step and the
 call holds more: a full hold over a merge-only gate, a merge-only gate over none, in the batch or out
 of it, so a step in the batch that triage calls `build` holds the build, not only the merge. Standing intake and
-`/desk-admit` act on the same call the same way (`batch-state.mjs` `blockerHold`).
+`/desk-admit` act on the same call the same way (`batch-state.mjs` `blockerHold`). A ticket moved
+(`queue.mjs transfer`) into a batch holding that blocker keeps the merge-only gate while Jira reads the
+blocker Done, so the gate lifts only once the blocker's code is on the base.
 
 A ticket parked for its lane (C, D) or its size (L, XL) is **never held and never in `--deps`**:
 those parks win, so a release can never send one to a headless worker. `plan-batch` seeds the queue

@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -571,14 +571,15 @@ function transfer(q, key, to) {
   // unless it is parked there as the person's step (labelPark), which nothing builds: it merges after that.
   // A step parked on a Person-input label makes what its build reads, so it stays a hold, as does one
   // triage called needed to build (blockerHold), as intake and plan-batch hold it.
-  const builds = (k) => {
-    const b = (Array.isArray(r.blockers) ? r.blockers : []).find((x) => x?.key === k);
-    return !!b && blockerHold(b, r, personStepLabels(), personInputLabels())?.needs === 'build';
-  };
+  // A merge gate triage set on another ticket's code (triageGate) is lifted by that batch's pass only once
+  // Done and landed, so it stays a gate there too while it is not held behind: Done in Jira, not yet merged.
+  const own = (k) => (Array.isArray(r.blockers) ? r.blockers : []).find((x) => x?.key === k);
+  const builds = (k) => !!own(k) && blockerHold(own(k), r, personStepLabels(), personInputLabels())?.needs === 'build';
+  const gate = (k) => !!own(k) && triageGate(own(k), r, personStepLabels(), personInputLabels());
   const stepThere = (k) => personStepPark(tq.tickets[k]) && !personInputPark(tq.tickets[k]) && !builds(k);
   const there = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
   const holds = there.filter((k) => !stepThere(k));
-  const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p))), ...there.filter(stepThere)])];
+  const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p) || (gate(p) && !holds.includes(p)))), ...there.filter(stepThere)])];
   // Its holds go with it. One on a ticket in that batch is held behind there until it merges. A blocker
   // parked there as the person's step is a merge_after step already (above), or holds nothing once Done;
   // a hold on such a step that is no blocker stays a hold, since pass.mjs lifts an unlinked merge_after
