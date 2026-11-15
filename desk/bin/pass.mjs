@@ -38,7 +38,7 @@ import { claudeChoice, laterLift, nothingToChoose } from './call-login.mjs';
 import { firstSpawnFromLogs, epicUnread, splitOwnEpic, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded, restating, UNREADABLE } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded, restateLapsed, RESTATE_MS, UNREADABLE } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
@@ -497,18 +497,14 @@ function againstRegister(t, question, log, cond) {
 
 // What clears a worker's park, from the `AUTOPILOT_PARK_CLEARS_WHEN:` after its last park (clears-when.mjs).
 // None given is none: the park waits for a person. One that does not read is kept as unreadable, for
-// the decider to restate once (decider.mjs) before the person is asked. Only the supervisor starts a
-// decider, so in a pass a session runs it is none, as it would be once the decider had seen it.
+// the decider to restate once (decider.mjs; in a batch a session runs, that session) before the person
+// is asked. One no restate reaches in RESTATE_MS is recorded none (below).
 function clearsWhenOf(t, log) {
   const raw = afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN');
   const p = parseClearsWhen(raw, { here: GH_REPO });
   if (p.ok) return p.cond;
-  if (PASS_BY !== 'supervisor') {
-    report.clears.push(`${t.key}: unreadable clears-when (${p.why}), recorded as none: no decider runs in a session's pass`);
-    return { kind: 'none' };
-  }
-  report.clears.push(`${t.key}: unreadable clears-when (${p.why}), kept for the decider to restate`);
-  return { kind: UNREADABLE, text: String(raw).trim(), why: p.why };
+  report.clears.push(`${t.key}: unreadable clears-when (${p.why}), kept for the decider to restate: queue.mjs clears-when ${t.key} "<a form>", or none`);
+  return { kind: UNREADABLE, text: String(raw).trim(), why: p.why, at: PASS_AT };
 }
 
 // The call a worker's park recommends, from the `AUTOPILOT_PARK_RECOMMENDS:` after its last park
@@ -1393,12 +1389,12 @@ const clearable = (t) => {
 // "base contains <branch>" is checked after the base sync below, so the pass that syncs the base also
 // requeues what waited on it ("parks waiting on the base", after the base sync).
 const BASE_CONTAINS = 'base-contains';
-// A park still waiting on a restate from a supervised pass, in a pass a session runs: no decider will
-// see it here, so it is the person's (clearsWhenOf).
-if (!DRY && PASS_BY !== 'supervisor') {
-  for (const t of Object.values(queue().tickets).filter((x) => x.state === 'parked' && restating(x.park?.clears_when))) {
+// A park whose unreadable clears-when no restate reached in time (a decider that never came, or a
+// session that left it) is the person's: recorded none, so the digest and needs-you list it.
+if (!DRY) {
+  for (const t of Object.values(queue().tickets).filter((x) => x.state === 'parked' && restateLapsed(x.park?.clears_when, Date.parse(PASS_AT)))) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`);
-    report.clears.push(`${t.key}: unreadable clears-when "${t.park.clears_when.text}" recorded as none: no decider runs in a session's pass`);
+    report.clears.push(`${t.key}: unreadable clears-when "${t.park.clears_when.text}" not restated within ${RESTATE_MS / 60000} minutes: recorded as none, for the person`);
   }
 }
 for (const t of Object.values(queue().tickets)) if (clearable(t) && t.park.clears_when.kind !== BASE_CONTAINS) settleClear(t);

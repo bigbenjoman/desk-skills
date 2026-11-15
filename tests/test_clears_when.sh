@@ -299,8 +299,7 @@ check "DS-581 a file path is read under \$DESK_STATE or the worktree" '[ "$(cut 
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
 
-# The supervisor's pass: only the supervisor starts a decider, so only its pass keeps an unreadable line.
-out=$(node "$B/pass.mjs" --by supervisor 2>&1)
+out=$(node "$B/pass.mjs" 2>&1)
 check "DS-269 AC2 a worker's park records its condition" '[ "$(field C-1 state)" = "\"parked\"" ] && [ "$(field C-1 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":41}" ]'
 check "DS-563 AC3 an unreadable condition is kept for the decider to restate, and reported" \
   '[ "$(field C-2 park.clears_when.kind)" = "\"unreadable\"" ] && [ "$(field C-2 park.clears_when.text)" = "\"when it rains\"" ] && grep -q "C-2: unreadable clears-when (\"when it rains\" is not one of.*), kept for the decider to restate" <<< "$out"'
@@ -380,18 +379,18 @@ check "DS-581 AC7 with no studia-zendesk queue it does not hold, and the report 
 
 # ---- AC3: a lane A ticket waiting on something else is requeued ------------------------------------
 pr 41 MERGED false
-printf '{"headRefOid":"%s","statusCheckRollup":[{"name":"Flows image","status":"COMPLETED","conclusion":"SUCCESS"}]}\n' "$(printf d%.0s {1..40})" > "$T/gh/checks-874.json"
+# Its first run failed and a later one passed: only the latest run counts.
+fl='{"name":"Flows image","workflowName":"images","status":"COMPLETED","conclusion":"%s","startedAt":"%s","detailsUrl":"https://github.com/acme/widgets/actions/runs/%s/job/1"}'
+printf "{\"headRefOid\":\"%s\",\"statusCheckRollup\":[$fl,$fl]}\n" "$(printf d%.0s {1..40})" FAILURE 2026-11-01T10:00:00Z 1 SUCCESS 2026-11-01T11:00:00Z 2 > "$T/gh/checks-874.json"
 q add V-2 Story A; q park V-2 "set FOO"; q clears-when V-2 "variable FOO set"; touch "$T/gh/vars.fail"
 rm "$T/gh/refuse-feat_P-2" "$T/gh/refuse-feat_P-3"
-# A session's pass (the default): no decider runs, so prose is none, and so is a park a supervised pass
-# left waiting on its restate.
-q add C-9 Story A; q set C-9 state=running branch=feat/C-9 session_id=gone
-say "AUTOPILOT_PARK: waiting on the press kit" "AUTOPILOT_PARK_CLEARS_WHEN: once the press kit is signed off" > "$T/state/logs/C-9.log"
+# C-8 waited past the restate window with no restate (no decider came, or a session left it); C-2 has
+# just parked.
+q set C-8 'park.clears_when={"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-563 in a session's pass an unreadable line is recorded none, since no decider runs there" \
-  '[ "$(field C-9 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-9 state)" = "\"parked\"" ] && grep -q "C-9: unreadable clears-when (.*), recorded as none: no decider runs in a session.s pass" <<< "$out"'
-check "DS-563 and a park still waiting on its restate is recorded none, so the digest lists it" \
-  '[ "$(field C-8 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-8 state)" = "\"parked\"" ] && grep -q "C-8: unreadable clears-when \"KAN-1086.s fix PR is merged to main\" recorded as none: no decider runs in a session.s pass" <<< "$out"'
+check "DS-563 a park no restate reached within the window is recorded none, so the digest lists it" \
+  '[ "$(field C-8 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-8 state)" = "\"parked\"" ] && grep -q "C-8: unreadable clears-when \"KAN-1086s fix PR is merged to main\" not restated within 60 minutes: recorded as none, for the person" <<< "$out"'
+check "DS-563 one still inside the window keeps waiting on its restate" '[ "$(field C-2 park.clears_when.kind)" = "\"unreadable\"" ] && ! grep -q "C-2: unreadable" <<< "$out"'
 check "DS-496 AC2 the 5xx over: the next pass pushes and requeues" 'on_origin P-2 && [ "$(field P-2 state)" = "\"triaged\"" ]'
 check "DS-496 AC3 a refusal is not tried again" '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ]'
 check "DS-269 AC3 C-1's PR merged: requeued, with one line naming the condition" '[ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(grep -c "C-1: \"PR #41 merged\" holds: requeued" <<< "$out")" = 1 ]'

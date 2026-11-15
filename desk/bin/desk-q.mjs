@@ -137,7 +137,7 @@ const readPark = (t, ctx) => waitingOnRead(t) && ctx?.live === true;
 // not on the person. A live read is readPark's.
 const clearsPark = (t) => settlesByScript(t) && !waitingOnRead(t);
 const clearsText = (t) => (restating(t.park.clears_when)
-  ? `waiting on the decider to restate its clears-when "${t.park.clears_when.text}": it reaches you only if the decider records none`
+  ? `waiting on the decider to restate its clears-when "${t.park.clears_when.text}": it reaches you if the decider records none, or after an hour with no restate`
   : `waiting on ${describeCond(t.park.clears_when)}: a pass requeues it then`);
 const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.batch}` : 'the batch session'} to requeue it`;
 // A triaged ticket the last pass would not spawn because its worktree is in use (pass.mjs busyWorktree,

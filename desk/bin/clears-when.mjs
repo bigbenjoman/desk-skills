@@ -38,9 +38,9 @@
 // run-completed, push-ok (with lease: <sha> for a lease push), base-contains, pr-reviewed {pr, login},
 // file-exists {path, root: abs | worktree | state}, ticket-queued {ticket, repo}, checks-pass
 // {pr, checks}, commit-on {sha, branch} or none.
-// A worker's line that reads as none of them is stored by the supervisor's pass as unreadable {text,
-// why}: the decider restates it once (decider.mjs), and it waits for a person only once the decider has
-// seen it. A session's pass, where no decider runs, stores none.
+// A worker's line that reads as none of them is stored as unreadable {text, why, at}: the decider
+// restates it once (decider.mjs; in a batch a session runs, that session), and it waits for a person
+// only once the decider has seen it, or once RESTATE_MS has passed with no restate.
 // The pass records one more itself, live-read {reads, head}, for a park waiting on §4 Live reads it
 // runs (live-read.mjs), and settles it in its own section. And links-made {links, pr}, for a ticket that
 // ended on DONE parked on issue links the pass did not make (pass.mjs parkLinks): it holds once each
@@ -88,6 +88,10 @@ export const CLEARS_WHEN_FORM_LINES = [...FORM_LIST, 'none'];
 // asks the person until the decider has seen it.
 export const UNREADABLE = 'unreadable';
 export const restating = (c) => c?.kind === UNREADABLE;
+// How long a pass leaves one for a restate before recording it none, so it reaches the person: several
+// of the supervisor's deciders (decider.mjs DECIDER_TIMEOUT_MS), or of a session's passes.
+export const RESTATE_MS = 60 * 60 * 1000;
+export const restateLapsed = (c, now = Date.now()) => restating(c) && !(Date.parse(c.at ?? '') > now - RESTATE_MS);
 // Whether `c` is a condition a pass checks: neither none nor one still to be restated.
 export const recorded = (c) => !!c?.kind && c.kind !== 'none' && c.kind !== UNREADABLE;
 

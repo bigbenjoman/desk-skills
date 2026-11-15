@@ -355,8 +355,8 @@ export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.par
 // the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A
 // claimed park is its session's (pass.mjs clearable never settles one), so it is not one. Nor is it the
 // person's while its clears-when is unreadable: that waits on the decider to restate it, and becomes
-// none (theirs) only once the decider has seen it. The digest and needs-you leave it out, and desk-q
-// shows it as waiting.
+// none (theirs) once the decider has seen it, or a pass finds no restate came in time (clears-when.mjs
+// RESTATE_MS). The digest and needs-you leave it out, and desk-q shows it as waiting.
 export const settlesByScript = (t) => {
   const c = t?.park?.clears_when;
   return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);

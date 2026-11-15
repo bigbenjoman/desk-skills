@@ -63,7 +63,8 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   `node ~/.claude/desk/bin/clears-when.mjs --check "<condition>"` on its line before it ends**:
   it prints what the line reads as, or exits 1 listing the forms, so rewrite it in one of them. A line
   no form reads is kept for the decider to restate once, and goes to the person only if the decider
-  records `none`; in a batch a session runs, where no decider runs, it is `none` at once. Each pass checks it, and once it holds settles the park as
+  records `none` (in a batch a session runs, that session restates it); one no restate reaches
+  within an hour is recorded `none` by the next pass. Each pass checks it, and once it holds settles the park as
   `references/orchestrator-recovery.md` says, with no model: a lane C ticket, or a lane D parked at triage on its design, stays for a
   person, one whose own PR merged is recorded done, any other is requeued, its next worker told
   what cleared it (a run's conclusion included). Each outcome, a run still in progress, and any
