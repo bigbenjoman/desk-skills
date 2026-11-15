@@ -80,7 +80,7 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, blockerHold, EXIT } from './batch-state.mjs';
 import { reviewerRecord } from './health.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
@@ -600,12 +600,23 @@ const standingDir = (b) => (b.batch == null ? b.stateDir : resolve(b.stateDir, '
 const waitingOn = (slug, key) => listBatches(slug)
   .flatMap((b) => { try { return Object.values(readQueue(b.queue).tickets ?? {}); } catch { return []; /* no queue there */ } })
   .filter((t) => !t.merged_at && t.state !== 'failed' && keysOf(t.merge_after).includes(key)).map((t) => t.key).sort();
+const labelsIn = (slug, id) => {
+  try { return [].concat(repoConfigValues(slug, id) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); } catch { return []; }
+};
+// Whether ticket `t`'s merge_after key `k` is no step of the person's but a blocker triage called needed
+// only to merge (batch-state.mjs blockerHold): another ticket's code, which the pass lifts once it is Done,
+// with nothing for the person to do.
+const mergeGate = (b, t, k) => {
+  const rec = triageOf(b.stateDir, t.key);
+  const bl = (Array.isArray(rec?.blockers) ? rec.blockers : []).find((x) => x?.key === k);
+  return !!bl && blockerHold(bl, rec, labelsIn(b.slug, 'person-step-labels'), labelsIn(b.slug, 'person-input-labels'))?.by === 'triage';
+};
 function stepItems(batches) {
   const waits = new Map();
   for (const b of batches) {
     for (const t of Object.values(b.q?.tickets ?? {})) {
       if (t.merged_at || t.state === 'failed') continue;
-      for (const k of keysOf(t.merge_after)) waits.set(k, [...(waits.get(k) ?? []), { b, t }]);
+      for (const k of keysOf(t.merge_after).filter((x) => !mergeGate(b, t, x))) waits.set(k, [...(waits.get(k) ?? []), { b, t }]);
     }
   }
   const standing = batches.find((b) => b.batch == null);
