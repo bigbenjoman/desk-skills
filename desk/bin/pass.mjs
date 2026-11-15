@@ -3054,11 +3054,23 @@ for (const t of spawnable) {
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
   // worktree it could not finish, and a half-built one must not get a worker.
-  const setupRun = shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN });
+  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN });
+  const whyOf = (out) => out.split('\n').filter((l) => /FAIL|WARNING|failed|cannot lock ref/.test(l)).slice(-3).join(' ') || out.slice(-200);
+  const setUp = (r) => r.ok && [...r.out.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim() === wt && existsSync(wt);
+  let setupRun = runSetup();
+  // A remote-tracking ref that moved under setup's fetch is stale, not broken: re-fetch it and retry once.
+  const staleRef = !setUp(setupRun) && setupRun.out.match(/cannot lock ref '(refs\/remotes\/([^/']+)\/[^']+)'/);
+  let retried = '';
+  if (staleRef) {
+    const first = whyOf(setupRun.out);
+    const refetch = shOut('git', ['-C', MAIN, 'fetch', '--prune', staleRef[2]]);
+    setupRun = runSetup();
+    retried = `first try: ${first}; re-fetched ${staleRef[2]}${refetch.ok ? '' : ` (that fetch failed: ${lastLine(refetch.out)})`} and retried once: `;
+    if (setUp(setupRun)) report.recovered.push(`${t.key}: worktree setup could not lock the stale ref ${staleRef[1]}; re-fetched ${staleRef[2]} and the retry set it up`);
+  }
   const setup = setupRun.out;
-  const setupWt = [...setup.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim();
-  if (!setupRun.ok || setupWt !== wt || !existsSync(wt)) {
-    const why = setup.split('\n').filter((l) => /FAIL|WARNING|failed/.test(l)).slice(-3).join(' ') || setup.slice(-200);
+  if (!setUp(setupRun)) {
+    const why = `${retried}${whyOf(setup)}`;
     // The local database not answering is the machine's, not the ticket's: it stays queued, and the
     // database health check is marked failing so the hold starts now and lifts once it answers.
     const pgDown = setup.split('\n').find((l) => /FAIL: cannot reach Postgres in container/.test(l));
