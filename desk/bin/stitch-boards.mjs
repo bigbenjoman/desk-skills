@@ -4,9 +4,10 @@
 // canvas, before and after captures side by side and the width and theme written on it. The grid is
 // an HTML page shot with desk's own Playwright (find-playwright.mjs).
 //   node stitch-boards.mjs <captures dir> [--out <dir>] [--max-mb <n>]
-//       reads <role>-<screen>-<width>[-<theme>].png from <captures dir>: role canvas, before or after
-//       (built, as desk-design compare names it, is read as after), theme light or dark (none is
-//       light), screen optional (none is "page"). Writes <out>/<screen>-<theme>.png (default <out>:
+//       reads <role>-<screen>[-<theme>]-<width>[-<theme>].png from <captures dir>: role canvas,
+//       before or after (built, as desk-design compare names it, is read as after), theme light or
+//       dark (none is light; before the width is how compare names a board titled "<board> dark"),
+//       screen optional (none is "page"). Writes <out>/<screen>-<theme>.png (default <out>:
 //       <captures dir>/stitched). An image that would be --max-mb (default 10) or more is split by
 //       width into <screen>-<theme>-<first width>-<last width>.png, each under it, and a single
 //       width still over it into <screen>-<theme>-<width>-<role>.png, one per capture. A missing
@@ -20,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 export const ROLES = ['canvas', 'before', 'after'];
 const COLUMN = { canvas: 'Canvas', before: 'Before', after: 'After' };
 export const MAX_BYTES = 10 * 1000 * 1000;
-const CAPTURE = /^(canvas|before|after|built)-(?:(.+?)-)?(\d+)(?:-(light|dark))?\.png$/;
+const CAPTURE = /^(canvas|before|after|built)-(?:(.+?)-)?(?:(light|dark)-)?(\d+)(?:-(light|dark))?\.png$/;
 
 const fail = (message, code = 2) => { throw Object.assign(new Error(message), { code }); };
 
@@ -28,7 +29,7 @@ const fail = (message, code = 2) => { throw Object.assign(new Error(message), { 
 export function parseCapture(name) {
   const m = CAPTURE.exec(name);
   if (!m) return null;
-  return { role: m[1] === 'built' ? 'after' : m[1], screen: m[2] ?? 'page', width: Number(m[3]), theme: m[4] ?? 'light' };
+  return { role: m[1] === 'built' ? 'after' : m[1], screen: m[2] ?? 'page', width: Number(m[4]), theme: m[5] ?? m[3] ?? 'light' };
 }
 
 // A PNG's pixel size, read from its IHDR chunk.
@@ -218,7 +219,7 @@ if (isMain) {
       console.log(`${i.over ? 'over' : 'wrote'}: ${join(r.out, i.file)} (${i.screen}, ${i.theme}, ${i.widths.join(' ')}px${i.role ? ` ${i.role}` : ''}, ${size}${i.over ? ', over the limit with one capture: the capture itself is too large to upload' : ''})`);
       for (const m of i.missing) console.log(`  no capture: ${m}`);
     }
-    for (const s of r.skipped) console.log(`skipped: ${s} (not <role>-<screen>-<width>[-<theme>].png)`);
+    for (const s of r.skipped) console.log(`skipped: ${s} (not <role>-<screen>[-<theme>]-<width>[-<theme>].png)`);
     if (r.images.some((i) => i.over)) process.exit(5);
   } catch (e) {
     console.error(`stitch-boards: ${e.message}`);
