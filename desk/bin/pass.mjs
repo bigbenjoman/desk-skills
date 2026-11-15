@@ -2942,6 +2942,10 @@ function saveUsage() {
       ...(USAGE_HOLD.login && USAGE_HOLD.login.dir !== OWN_LOGIN.dir ? { login_dir: USAGE_HOLD.login.configDir } : {}) };
     q('set-batch', `usage_hold=${JSON.stringify(rec)}`);
   } else if (was) q('set-batch', 'usage_hold=null');
+  // The pass no longer benches a login: a limit holds the repo (usage_hold) instead. A `benched` left by
+  // a pass from before that is cleared, so a bench with no reset time cannot outlast the upgrade and keep
+  // the decider and triage off a login for good (call-login.mjs still reads it).
+  if (queue().benched != null) q('set-batch', 'benched=null');
 }
 saveUsage();
 const borrowLine = borrowedLine(ticketPlan, { share: concurrency, running: ticketWorkers, spawned: report.spawned.length });

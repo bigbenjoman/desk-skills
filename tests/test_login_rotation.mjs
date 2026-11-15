@@ -40,6 +40,11 @@ t('and with nothing else between them, the listing order', pick(c('a', 'in rotat
 t('known room comes before unknown', pick(c('a', 'in rotation'), c('b', 'in rotation', reading(90, 90))), 'b');
 t('a login with no reading comes before one at 100%', pick(c('a', 'in rotation', reading(100, 10)), c('b', 'in rotation')), 'b');
 t('every login in rotation at 100%: standby', pick(c('a', 'in rotation', reading(100, 10)), c('b', 'in rotation', reading(5, 100)), c('s', 'standby', reading(10, 10))), 's');
+t('a standby login with no reading can take it too', pick(c('a', 'in rotation', reading(100, 10)), c('s', 'standby')), 's');
+t('standby waits while a login in rotation has any room', pick(c('a', 'in rotation', reading(99, 10)), c('s', 'standby', reading(0, 0))), 'a');
+t('standby waits while a login in rotation has no reading yet', pick(c('a', 'in rotation', reading(100, 10)), c('b', 'in rotation'), c('s', 'standby', reading(0, 0))), 'b');
+t('with only standby logins usable, one takes it', pick(c('s', 'standby', reading(10, 10))), 's');
+t('every login out: one in rotation, so the preflight meets the limit', pick(c('s', 'standby', reading(100, 10)), c('a', 'in rotation', reading(100, 10))), 'a');
 t('no login usable: none', pick(), null);
 
 // ---- the real pass -------------------------------------------------------------------------------
@@ -366,6 +371,12 @@ got = calling(env);
 t('DS-468 AC5 every login benched: no decider starts', got.decider, 'none');
 t('DS-468 AC6 triage runs as the caller does', got.triage, 'all');
 t('DS-468 AC7 epic planning runs as the caller does', got.epic, 'unset');
+// The pass benches nothing now, so a bench a pass from before left (one with no reset time included)
+// is cleared by the next pass, and the decider starts again.
+out = pass(env);
+t('a pass clears a bench left from before the upgrade', batchOf().benched ?? null, null);
+got = calling(env);
+t('and the decider starts again', got.decider === 'none', false);
 // AC8: one login only.
 env = world([['default', 'in rotation', 50, 50]], {});
 preset({ default: benchRow('default') });
