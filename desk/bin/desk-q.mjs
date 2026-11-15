@@ -364,8 +364,13 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const advisory = checks.filter(checkFailed).length;
   const done = checks.filter((c) => c.status === 'completed').length;
   if (checks.length && done === checks.length) {
-    const all = advisory ? [`${checksFailed(advisory)}, advisory only`, WARN]
-      : [checks.length === 1 ? '1 check passed' : `all ${checks.length} checks passed`, GOOD];
+    // A skipped or neutral check did not pass, so the row counts each apart from the passes.
+    const passed = checks.filter((c) => c.conclusion === 'success').length;
+    const others = ['skipped', 'neutral'].map((k) => [checks.filter((c) => c.conclusion === k).length, k]).filter(([n]) => n).map(([n, k]) => `${n} ${k}`);
+    const lead = advisory ? `${checksFailed(advisory)}, advisory only`
+      : passed === checks.length ? (passed === 1 ? '1 check passed' : `all ${passed} checks passed`)
+        : `${passed} check${passed === 1 ? '' : 's'} passed`;
+    const all = [[lead, ...others].join(', '), advisory ? WARN : GOOD];
     return ctx.merges ? merging(all, [' · merges at the next pass', null]) : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
