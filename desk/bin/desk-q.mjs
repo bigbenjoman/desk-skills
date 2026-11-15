@@ -37,7 +37,7 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath } from './desk-env.mjs';
 import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript } from './batch-state.mjs';
-import { describeCond } from './clears-when.mjs';
+import { describeCond, restating } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
@@ -136,7 +136,9 @@ const readPark = (t, ctx) => waitingOnRead(t) && ctx?.live === true;
 // A park a pass settles once its clears-when holds (a PR merging, a ticket done): it waits on that,
 // not on the person. A live read is readPark's.
 const clearsPark = (t) => settlesByScript(t) && !waitingOnRead(t);
-const clearsText = (t) => `waiting on ${describeCond(t.park.clears_when)}: a pass requeues it then`;
+const clearsText = (t) => (restating(t.park.clears_when)
+  ? `waiting on the decider to restate its clears-when "${t.park.clears_when.text}": it reaches you only if the decider records none`
+  : `waiting on ${describeCond(t.park.clears_when)}: a pass requeues it then`);
 const answeredText = (q) => `answered: waiting for ${q?.batch ? `session ${q.batch}` : 'the batch session'} to requeue it`;
 // A triaged ticket the last pass would not spawn because its worktree is in use (pass.mjs busyWorktree,
 // recorded as `worktree_busy`): uncommitted changes, unpushed commits or another process working in it.

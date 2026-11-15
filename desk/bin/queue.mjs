@@ -13,7 +13,7 @@ import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPar
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
-import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, checkLine } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
@@ -41,6 +41,15 @@ function setBase(q, v) {
   catch (e) { throw new Error(`base: could not ask origin for ${v} (${e.message.split('\n')[0]})`); }
   if (!found) throw new Error(`base: ${v} does not exist on origin — push it first`);
   q.base = v;
+}
+
+// clears-when --check "<condition>": whether a pass reads it (clears-when.mjs checkLine, which a worker
+// runs as clears-when.mjs --check). Reads no queue. Exit 0 naming what it reads as, or 1 listing the forms.
+const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
+if (process.argv[2] === 'clears-when' && process.argv[3] === '--check') {
+  const r = checkLine(process.argv.slice(4).join(' '), { here: hereRepo() });
+  (r.ok ? console.log : console.error)(r.text);
+  process.exit(r.ok ? 0 : 1);
 }
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
@@ -840,11 +849,11 @@ switch (cmd) {
   // What clears a parked ticket's park (clears-when.mjs), so a pass can settle it without a model.
   case 'clears-when': {
     const [key, ...rest] = args;
-    if (!key || !rest.length) throw new Error(`usage: queue.mjs clears-when <TICKET> <${CLEARS_WHEN_FORMS}>`);
+    if (!key || !rest.length) throw new Error(`usage: queue.mjs clears-when <TICKET> <${CLEARS_WHEN_FORMS}>, or clears-when --check "<condition>"`);
     const t = ticket(q, key);
     if (t.state !== 'parked' || isHeld(t)) throw new Error(`${key} is not parked for its own reason (state ${t.state}), so it has no park to clear`);
     refuseLeft(t, key, 'given a condition to clear on');
-    const p = parseClearsWhen(rest.join(' '));
+    const p = parseClearsWhen(rest.join(' '), { here: hereRepo() });
     if (!p.ok) throw new Error(p.why);
     t.park.clears_when = p.cond;
     t.updated_at = new Date().toISOString();

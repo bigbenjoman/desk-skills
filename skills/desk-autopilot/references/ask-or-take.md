@@ -54,10 +54,16 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   `base contains main` once main is merged into it, `pr <n> reviewed by <login> at head` for a
   review by that account on the PR's current head, `file <path> exists` for an absolute path, one
   relative to the worktree or `$DESK_STATE/<path>`, `ticket <KEY> in <repo> batch` for the ticket
-  queued in a running batch of that repo on this computer, or `none`), or
+  queued in a running batch of that repo on this computer, `check "<name>" on pr <n> passes` for
+  that check green on the PR's head (several quoted names joined by `and`), `commit <sha> on
+  <branch>` for origin's branch holding it, or `none`), or
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
-  left out (or `none`) when only a person can settle it. Each pass checks it, and once it holds settles the park as
+  left out (or `none`) when only a person can settle it. **A worker runs
+  `node ~/.claude/desk/bin/clears-when.mjs --check "<condition>"` on its line before it ends**:
+  it prints what the line reads as, or exits 1 listing the forms, so rewrite it in one of them. A line
+  no form reads is kept for the decider to restate once, and goes to the person only if the decider
+  records `none`. Each pass checks it, and once it holds settles the park as
   `references/orchestrator-recovery.md` says, with no model: a lane C ticket, or a lane D parked at triage on its design, stays for a
   person, one whose own PR merged is recorded done, any other is requeued, its next worker told
   what cleared it (a run's conclusion included). Each outcome, a run still in progress, and any

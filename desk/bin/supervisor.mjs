@@ -78,7 +78,7 @@ import { readInstalled, oldCode, lockVersion, AGENTS, plistPath, restartDriver }
 import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
-import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches } from './decider.mjs';
+import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches, restateKeys } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_INTERVAL = 180;
@@ -658,6 +658,24 @@ function watchDriver(state, s, holder) {
 // s.decider is the running session's record ({id, pid, started, out, items}), or null.
 const recoveryRules = () => join(E.skillsDir(), 'desk-autopilot', 'references', 'orchestrator-recovery.md');
 
+// Records none as the clears-when of each item's park still waiting on a restate (decider restateKeys):
+// a session saw it and left it, or none will, so the park is the person's. Returns the report line.
+function restatedNone(items) {
+  if (!restateKeys(items).length) return [];
+  let q;
+  try { q = readQueue(E.queueFile()); } catch { return []; /* left for the next tick */ }
+  const done = [];
+  const failed = [];
+  for (const key of restateKeys(items, q)) {
+    const r = spawnSync(process.execPath, [join(HERE, 'queue.mjs'), 'clears-when', key, 'none'], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
+    (r.status === 0 ? done : failed).push(r.status === 0 ? key : `${key} (${`${r.stderr ?? ''}`.trim().split('\n').pop()})`);
+  }
+  return [
+    ...(done.length ? [`decider: unreadable clears-when recorded as none, for the person: ${done.join(', ')}`] : []),
+    ...(failed.length ? [`decider: an unreadable clears-when could not be recorded as none: ${failed.join(', ')}`] : []),
+  ];
+}
+
 // Stops a decider past its time and hands its items on; records an ended one's outcome. Returns the
 // lines for the batch report.
 function reapDecider(state, s, now = new Date()) {
@@ -680,7 +698,8 @@ function reapDecider(state, s, now = new Date()) {
   noteOutcome(state, o, now);
   s.decider = null;
   s.settled = o.settled.map((x) => x.item.id);
-  return [reportLine(rec, o)];
+  // A session the usage limit refused saw nothing: its items wait for the next one.
+  return [reportLine(rec, o), ...(o.kept ? [] : restatedNone(rec.items))];
 }
 
 // After a pass that needs the person: hands on what no session may settle, and starts a decider for
@@ -708,6 +727,10 @@ function decide(state, s, v, q, now = new Date()) {
   const added = handItems(state, [...hand, ...again.map((item) => ({ item, why: 'the decider settled it, but the next pass still lists it' }))], now);
   if (added.length) lines.push(`decider: handed to the digest without a session: ${added.map((x) => `${x.item.ticket} (${x.why})`).join(', ')}`);
   const fresh = freshItems(state, ask.filter((i) => !again.includes(i)));
+  // An unreadable clears-when no session will see now (handed on, or handed already and unanswered)
+  // is none from here.
+  const freshIds = new Set(fresh.map((i) => i.id));
+  lines.push(...restatedNone(items.filter((i) => !freshIds.has(i.id))));
   if (!fresh.length) return lines;
   if (s.decider) return [...lines, `decider: one is still running (pid ${s.decider.pid}, since ${s.decider.started}), so none starts for ${fresh.map((i) => i.ticket).join(', ')}`];
   // A session started at the limit fails at once; its items wait for the pass that finds it lifted.
@@ -716,7 +739,7 @@ function decide(state, s, v, q, now = new Date()) {
   const rules = recoveryRules();
   if (!existsSync(rules)) {
     handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
-    return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`];
+    return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`, ...restatedNone(fresh)];
   }
   s.decider = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),
     webRead: E.permission('worker-web-read') === 'yes', judgement: E.permission('autopilot-judgement'), targets: runningBatches(HERE, { cwd: process.cwd() }), cwd: process.cwd(), now });
