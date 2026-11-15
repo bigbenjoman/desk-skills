@@ -4,18 +4,28 @@
 // file:// fetches, and a small inline script ages the page at the moment it is opened.
 //
 //   import { renderPage, pageAge } from './levers-page.mjs'
-import { DECISION_RULE, GUARDRAILS, REGISTRY } from './lever-registry.mjs';
+import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY } from './lever-registry.mjs';
+
+// An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
+// minutes as "min", as the page's header does. Runs in the browser too, so it uses nothing from outside
+// its own body.
+export function ageWords(s, short) {
+  if (s == null) return 'never recorded';
+  const m = Math.round(s / 60);
+  if (m < 1) return 'under a minute ago';
+  if (m < 60) return short ? `${m} min ago` : `${m} minute${m === 1 ? '' : 's'} ago`;
+  const h = Math.round(s / 3600);
+  if (h < 48) return `${h} hour${h === 1 ? '' : 's'} ago`;
+  return `${Math.round(s / 86400)} days ago`;
+}
 
 // The page's age when opened: stale after an hour, out of date after 26. Runs in the browser too, so it
-// uses nothing from outside its own body.
+// uses nothing from outside its own body but ageWords, which the page script also carries.
 export function pageAge(generatedAt, now) {
   const at = Date.parse(generatedAt);
   if (Number.isNaN(at)) return { state: 'old', s: null, words: 'at an unknown time' };
   const s = Math.max(0, Math.round((now - at) / 1000));
-  const m = Math.round(s / 60);
-  const h = Math.round(s / 3600);
-  const words = m < 1 ? 'under a minute ago' : m < 60 ? `${m} min ago` : h < 48 ? `${h} hour${h === 1 ? '' : 's'} ago` : `${Math.round(s / 86400)} days ago`;
-  return { state: s > 26 * 3600 ? 'old' : s > 3600 ? 'stale' : 'fresh', s, words };
+  return { state: s > 26 * 3600 ? 'old' : s > 3600 ? 'stale' : 'fresh', s, words: ageWords(s, true) };
 }
 
 // The banner for an age, empty while the page is fresh. Runs in the browser too.
@@ -51,7 +61,6 @@ const WHAT = Object.freeze({
   codex: 'Has Codex review pull requests instead of Claude',
   effort: 'Uses less thinking on simple steps',
 });
-const KEPT = ['adopted', 'settled'];
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
@@ -126,8 +135,9 @@ function nice(lo, hi, minStep) {
 const decimals = (st) => (String(Number(st.toFixed(6))).split('.')[1] ?? '').length;
 
 // One panel of a chart into `o`: its gridlines, axis, ticks, the baseline in grey, the series in black
-// with a gap wherever a point is null, and a note over a gap before desk's first recorded day.
-function panel(o, { labels, vals, base, m, x0, x1, side, every, first }) {
+// with a gap wherever a point is null, and a note over the points that end before desk's first recorded
+// day (`ends` holds each point's last day). A gap after that day is a period with no tickets, so no note.
+function panel(o, { labels, vals, ends, base, m, x0, x1, side, every, first }) {
   const n = labels.length;
   const dx = (x1 - x0) / n;
   const xAt = (i) => x0 + dx * (i + 0.5);
@@ -156,9 +166,17 @@ function panel(o, { labels, vals, base, m, x0, x1, side, every, first }) {
     if (every === 1 || (n - 1 - i) % every === 0) o.labels.push({ x: xAt(i), y: y(v) - 6, tf: 'translate(-50%,-100%)', s: m.v(v), c: C.ink });
   });
   if (cur.length) o.segs.push(cur.join(' '));
-  const firstGot = vals.findIndex((v) => v != null);
-  if (first && firstGot > 1) o.labels.push({ x: (x0 + xAt(firstGot - 1)) / 2, y: (TOP + BOT) / 2, tf: 'translate(-50%,-50%)', s: `desk started recording on ${dayLabel(first)}`, c: C.grey, note: true });
+  const pre = first ? ends.filter((k) => k < first).length : 0;
+  if (pre) {
+    // A gap too narrow to centre the note in starts it at the gap's left edge instead.
+    const wide = pre * dx >= 160;
+    o.labels.push({ x: wide ? x0 + (pre * dx) / 2 : x0 + 4, y: (TOP + BOT) / 2, tf: wide ? 'translate(-50%,-50%)' : 'translate(0,-50%)', s: `desk started recording on ${dayLabel(first)}`, c: C.grey, note: true });
+  }
 }
+
+// The last day of a week starting on `k`, and of the month `m` (YYYY-MM), as day keys.
+const weekEnd = (k) => new Date(Date.parse(`${k}T00:00:00Z`) + 6 * 86_400_000).toISOString().slice(0, 10);
+const monthEnd = (m) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).toISOString().slice(0, 10);
 
 function chart(key, metric, view) {
   const m = METRICS[key];
@@ -166,10 +184,10 @@ function chart(key, metric, view) {
   const o = { grid: [], axes: [], ticks: [], labels: [], bases: [], bdots: [], segs: [], dots: [] };
   const first = metric.first_recorded;
   if (view === 'days') {
-    panel(o, { labels: metric.daily.map((p) => dayLabel(p.date)), vals: metric.daily.map((p) => scaled(m, p.value)), base, m, x0: W * 0.08, x1: W * 0.95, side: 'left', every: 5, first });
+    panel(o, { labels: metric.daily.map((p) => dayLabel(p.date)), vals: metric.daily.map((p) => scaled(m, p.value)), ends: metric.daily.map((p) => p.date), base, m, x0: W * 0.08, x1: W * 0.95, side: 'left', every: 5, first });
   } else {
-    panel(o, { labels: metric.weekly.map((p) => `WK ${isoWeek(p.week)}`), vals: metric.weekly.map((p) => scaled(m, p.value)), base, m, x0: W * 0.08, x1: W * 0.48, side: 'left', every: 1, first });
-    panel(o, { labels: metric.monthly.map((p) => MONTHS[Number(p.month.slice(5, 7)) - 1]), vals: metric.monthly.map((p) => scaled(m, p.value)), base, m, x0: W * 0.54, x1: W * 0.91, side: 'right', every: 2, first });
+    panel(o, { labels: metric.weekly.map((p) => `WK ${isoWeek(p.week)}`), vals: metric.weekly.map((p) => scaled(m, p.value)), ends: metric.weekly.map((p) => weekEnd(p.week)), base, m, x0: W * 0.08, x1: W * 0.48, side: 'left', every: 1, first });
+    panel(o, { labels: metric.monthly.map((p) => MONTHS[Number(p.month.slice(5, 7)) - 1]), vals: metric.monthly.map((p) => scaled(m, p.value)), ends: metric.monthly.map((p) => monthEnd(p.month)), base, m, x0: W * 0.54, x1: W * 0.91, side: 'right', every: 2, first });
   }
   const f1 = (v) => v.toFixed(1);
   const aria = `${m.title}: ${view === 'days' ? 'each of the last 30 days' : 'last 6 weeks on the left, last 12 months on the right'}. Black is now${base == null ? '' : `, grey is before levers at ${m.v(base)}`}.`;
@@ -311,6 +329,11 @@ function trends(v) {
   return `<section aria-labelledby="tr-h" class="stack12">${head}${notes(p)}${body}</section>`;
 }
 
+// When desk last kept `lever` in `repo`, from the change list; null when no change records it.
+const keptAt = (v, lever, repo) => ((v.panels.changes?.all ?? v.panels.changes?.events ?? [])
+  .filter((e) => e.kind === 'transition' && KEPT.includes(e.to) && e.lever === lever && e.repo === repo)
+  .map((e) => e.at).sort().pop() ?? null);
+
 // One row per lever: its overall status across repos, and the cell its result is read from.
 function leverRows(v) {
   const needs = leverItems(v);
@@ -330,7 +353,8 @@ function leverRows(v) {
     else if (status === 'error') { const e = l.cells.find((c) => c.error)?.error; next = `Couldn’t read ${basename(e?.file)}${e?.line ? ` line ${e.line}` : ''}.`; }
     else if (reg && !reg.trialled) next = 'Tested one at a time with blind reviews, once desk starts trialling it.';
     else next = anyAuto ? 'Testing starts with the next tickets desk admits.' : 'Testing starts when a repo is set to auto.';
-    return { lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, i, rank: order[status] };
+    const decided = status === 'kept' && main ? keptAt(v, l.lever, main.repo) : null;
+    return { lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, decided, i, rank: order[status] };
   }).sort((a, b) => a.rank - b.rank || a.i - b.i);
 }
 
@@ -354,13 +378,27 @@ function result(row) {
   if (e.verdict === 'better') { if (e.est != null && e.unit === 'ratio') text = `${Math.round(Math.abs(e.est) * 100)}% lower ${metric}`; ink = C.ink; }
   else if (e.verdict === 'worse') ink = C.amberInk;
   const range = e.lo90 != null && e.hi90 != null ? `90% range ${signed(e.lo90)} to ${signed(e.hi90)}` : 'No range recorded';
-  const lines = [`${range} · n ${e.n ?? 'not recorded'}`];
-  if (c.cost) lines.push(`Cost: ${c.cost.label}${c.cost.lo90 != null ? ` (${signed(c.cost.lo90)} to ${signed(c.cost.hi90)})` : ''}`);
-  return { text, ink, notes: lines, verdict: e.verdict };
+  const plain = plainWords(c);
+  return { text, ink, notes: [...(plain ? [plain] : []), `${range} · n ${e.n ?? 'not recorded'}`], verdict: e.verdict };
 }
 
-function progress(row) {
-  if (row.status === 'kept') return { pct: 100, text: 'Decided' };
+// The cost and guardrails of a cell in plain words, from the view's own labels and statuses:
+// "Cost not worse than off, saves $0.18–$1.75 a ticket, nothing worse". Empty while both are too early.
+function plainWords(c) {
+  const parts = [];
+  if (c.cost?.verdict) parts.push(`cost ${c.cost.label}`);
+  const s = c.cost?.saving_usd;
+  if (s && s.lo != null && s.hi != null) parts.push(`saves $${s.lo.toFixed(2)}–$${s.hi.toFixed(2)} a ticket`);
+  const gs = (c.guardrails ?? []).map((g) => g.status);
+  const watching = gs.filter((g) => g === 'watching').length;
+  if (gs.includes('breached')) parts.push('a guardrail breached');
+  else if (watching) parts.push(`${watching} guardrail${watching === 1 ? '' : 's'} being watched`);
+  else if (gs.length && gs.every((g) => g === 'ok')) parts.push('nothing worse');
+  return cap(parts.join(', '));
+}
+
+function progress(row, tz) {
+  if (row.status === 'kept') return { pct: 100, text: row.decided ? `Decided ${dayMonth(row.decided, tz)}` : 'Decided' };
   if (row.status === 'needs') return { pct: 0, text: 'Paused until you decide' };
   const s = row.main?.sample;
   if (!s) return { pct: 0, text: 'Not started' };
@@ -386,7 +424,7 @@ function leverTable(v, today) {
     head = '<tr><th class="th" style="width:26%">Lever</th><th class="th" style="width:15%">Status</th><th class="th" style="width:20%">Result so far</th><th class="th" style="width:17%">Progress to a decision</th><th class="th">By repo</th></tr>';
     body = rows.map((r) => {
       const res = result(r);
-      const pr = progress(r);
+      const pr = progress(r, v.tz);
       return `<tr data-lever="${esc(r.lever)}"${r.status === 'needs' ? ' style="background:#FFFBEB"' : ''}>${name(r, true)}<td class="td">${badge(r.status)}</td>`
         + `<td class="td num"><div class="stack3"><span class="b result" data-verdict="${esc(res.verdict ?? 'none')}" style="color:${res.ink}">${esc(res.text)}</span>${res.notes.map((n) => `<span class="muted tiny">${esc(n)}</span>`).join('')}</div></td>`
         + `<td class="td num"><div class="stack6"><div class="bar" role="img" aria-label="${esc(pr.text)}"><div style="width:${pr.pct}%"></div></div><span class="muted tiny">${esc(pr.text)}</span></div></td>`
@@ -570,6 +608,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 
 // The page script: ages the page when it is opened and every minute after, and switches the charts.
 const SCRIPT = `(function () {
+var ageWords = ${ageWords.toString()};
 var pageAge = ${pageAge.toString()};
 var bannerHtml = ${bannerHtml.toString()};
 var data = JSON.parse(document.getElementById('levers-view').textContent);

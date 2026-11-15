@@ -21,9 +21,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameS
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, reasonWording } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
-import { renderPage } from './levers-page.mjs';
+import { ageWords, renderPage } from './levers-page.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -35,7 +35,6 @@ const WEEK_DAYS = 7;
 const DAY_MS = 86_400_000;
 // Events the change list shows: every automatic or manual change, not the per-ticket assignments.
 const CHANGE_KINDS = Object.freeze(['transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete']);
-const KEPT = Object.freeze(['adopted', 'settled']);
 const TESTING = Object.freeze(['trial']);
 
 export const autopilotRoot = () => join(HOME, '.desk-autopilot');
@@ -92,15 +91,6 @@ export function guardrailStatus(g, n, minN) {
   return g.p_worse >= 0.5 ? 'watching' : 'ok';
 }
 
-export function ageWords(s) {
-  if (s == null) return 'never recorded';
-  const m = Math.round(s / 60);
-  if (m < 1) return 'under a minute ago';
-  if (m < 60) return `${m} minute${m === 1 ? '' : 's'} ago`;
-  const h = Math.round(s / HOUR_S);
-  if (h < 48) return `${h} hour${h === 1 ? '' : 's'} ago`;
-  return `${Math.round(s / 86_400)} days ago`;
-}
 const ageOf = (at, now) => (at == null ? null : Math.max(0, Math.round((now - Date.parse(at)) / 1000)));
 const age = (at, now, max) => { const s = ageOf(at, now); return { as_of: at, age_s: s, words: ageWords(s), stale: s == null || s > max }; };
 
@@ -262,7 +252,7 @@ function evalEvidence(e, layerMin) {
   };
 }
 
-const panel =(state, body = {}, errors = []) => ({ state: errors.length ? 'error' : state, ...(errors.length ? { errors } : {}), ...body });
+const panel = (state, body = {}, errors = []) => ({ state: errors.length ? 'error' : state, ...(errors.length ? { errors } : {}), ...body });
 const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Boolean);
 
 // The view model for the inputs under `root` and the configs under `configRoot`, as of `now`.

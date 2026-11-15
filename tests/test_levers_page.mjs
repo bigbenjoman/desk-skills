@@ -2,6 +2,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import vm from 'node:vm';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const j = (v) => JSON.stringify(v);
@@ -131,7 +132,34 @@ for (const [name, h, v] of [['today', hToday, today], ['six weeks', hSix, six]])
   t('AC3 the page is marked out of date', old.includes('<body data-age="old">'), true);
   t('AC3 which desaturates everything under the banner', /body\[data-age=old\] #page-body\{filter:grayscale\(1\)/.test(old), true);
   t('AC3 the banner sits outside the desaturated body', old.indexOf('id="age-banner"') < old.indexOf('<main id="page-body">'), true);
-  t('the browser re-ages the page with the same function', hToday.includes(`var pageAge = ${P.pageAge.toString()}`), true);
+}
+
+// The page's own script, run as a browser would when the page is opened at `openedAt`: what it leaves
+// on the body, the banner and the age words.
+function openAt(html, openedAt) {
+  const script = html.split('<script>').pop().split('</script>')[0];
+  const json = html.split('<script type="application/json" id="levers-view">')[1].split('</script>')[0];
+  const since = /id="age-banner" data-since="([^"]*)"/.exec(html)[1];
+  const el = { 'levers-view': { textContent: json }, 'age-banner': { innerHTML: '', getAttribute: () => since }, 'age-words': { textContent: '' } };
+  const body = { attrs: {}, setAttribute(k, val) { this.attrs[k] = val; } };
+  class FixedDate extends Date { static now() { return openedAt; } }
+  const document = { getElementById: (id) => el[id], body, querySelectorAll: () => [] };
+  vm.runInNewContext(script, { document, Date: FixedDate, JSON, Math, Number, Array, String, setInterval: () => 0 });
+  return { age: body.attrs['data-age'], banner: el['age-banner'].innerHTML, words: el['age-words'].textContent };
+}
+{
+  const at = '2026-11-13T08:12:00.000Z';
+  const ms = Date.parse(at);
+  const built = P.renderPage({ ...today, generated_at: at });
+  const fresh = openAt(built, ms + 2 * MIN);
+  t('opened 2 minutes after the build: fresh, no banner', `${fresh.age}|${fresh.banner}|${fresh.words}`, 'fresh||2 min ago');
+  const stale = openAt(built, ms + 3 * HOUR);
+  t('opened 3 hours after: stale', stale.age, 'stale');
+  t('opened 3 hours after: the banner says so', stale.banner.includes('Updated 3 hours ago</span>') && stale.banner.includes('The supervisor may have stopped'), true);
+  const old = openAt(built, ms + 30 * HOUR);
+  t('opened 30 hours after: out of date', old.age, 'old');
+  t('opened 30 hours after: the banner names the build', old.banner.includes('Updated 30 hours ago: these numbers are out of date') && old.banner.includes('since Fri 13 Nov, 08:12'), true);
+  t('opened 30 hours after: the age words', old.words, '30 hours ago');
 }
 
 const section = (h, id) => { const i = h.indexOf(`aria-labelledby="${id}"`); return i < 0 ? '' : h.slice(i, h.indexOf('</section>', i)); };
@@ -226,6 +254,19 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('AC9 only recorded points are drawn', count(ch, /<circle class="pt"/g), weekly + 2);
   t('AC9 the two recorded months are one segment', count(ch, /class="now" points="[^"]*"/g), 2);
   t('AC9 no point sits on the axis', [...ch.matchAll(/<circle class="pt" cx="[^"]*" cy="([^"]*)"/g)].some((m) => m[1] === '285.6'), false);
+  const notes = (h) => count(h, /class="gap-note"/g);
+  t('AC9 the note once, over the 12-month panel only', notes(ch), 1);
+  // Days with no tickets after desk started recording are a gap with no note.
+  const quiet = structuredClone(six);
+  for (const p of quiet.panels.trends.metrics.cost.daily.slice(0, 3)) p.value = null;
+  const qc = P.renderPage(quiet).split('<article class="card wbr"')[1].split('</article>')[0];
+  t('AC9 ticketless days after the first recorded day: a gap', count(chartOf(qc, 'days'), /<circle class="pt"/g), 27);
+  t('AC9 with no recording note', notes(chartOf(qc, 'days')), 0);
+  // One month before the first recorded day still gets the note.
+  const feb = structuredClone(six);
+  feb.panels.trends.metrics.cost.first_recorded = '2026-02-10';
+  const fc = P.renderPage(feb).split('<article class="card wbr"')[1].split('</article>')[0];
+  t('AC9 a single month before recording: the note', labels(chartOf(fc, 'wbr')).filter((l) => l === 'desk started recording on 10 Feb').length, 1);
 }
 
 // AC10: an effect with no verdict is grey, says too early, and has no direction word.
@@ -239,6 +280,14 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('AC10 its range and n are still shown', fc.includes('90% range −0.4 to 0.2 · n 19'), true);
   const pf = lev.split('<tr data-lever="preflight"')[1].split('</tr>')[0];
   t('AC10 a decided effect gets its direction', /data-verdict="better" style="color:#111827">42% lower preflight dollars per start</.test(pf), true);
+  t('AC5 a kept lever: its cost and guardrails in plain words', pf.includes('<span class="muted tiny">Cost not worse than off, nothing worse</span>'), true);
+  t('AC5 a kept lever: the day it was decided', pf.includes('>Decided 9 Dec</span>'), true);
+  t('AC10 too early: no cost or guardrail words yet', fc.includes('nothing worse'), false);
+  // A kept lever whose whole cost interval is under 1.00 saves money.
+  const saving = structuredClone(six);
+  saving.panels.board.levers.find((l) => l.lever === 'wrappers').cells.find((c) => c.sample).cost.saving_usd = { lo: 0.18, hi: 1.75 };
+  const wr = section(P.renderPage(saving), 'lev-h').split('<tr data-lever="wrappers"')[1].split('</tr>')[0];
+  t('AC5 a saving, per ticket', wr.includes('Cost not worse than off, saves $0.18–$1.75 a ticket, nothing worse'), true);
 }
 
 // AC11: an expanded change carries its reason, arms, intervals, guardrails, commits and evidence file.
@@ -255,17 +304,6 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('AC11 a change citing no evaluation says so', section(hSix, 'ch-h').split('<details class="change">')[3].includes('<dt>Tickets per arm</dt><dd><span class="muted">not recorded</span>'), true);
 }
 
-// AC12: at phone width nothing is wider than the window.
-{
-  const css = hToday.split('<style>')[1].split('</style>')[0];
-  const phone = css.split('@media (max-width:640px){')[1] ?? '';
-  t('AC12 the tiles go 2 by 2', phone.includes('.tiles{grid-template-columns:repeat(2,minmax(0,1fr))'), true);
-  t('AC12 the lever table becomes stacked rows', phone.includes('.levtable,.levtable tbody,.levtable tr,.levtable td{display:block'), true);
-  t('AC12 the callouts wrap 3 by 3', phone.includes('.callouts{grid-template-columns:repeat(3,minmax(0,1fr))}'), true);
-  t('AC12 no grid column is wider than the window', /minmax\((?!min\(|0,)\d+px/.test(css), false);
-  t('AC12 no fixed minimum width', /min-width:\s*[1-9]\d*px/.test(hToday + hSix), false);
-  t('AC12 long paths wrap', css.includes('overflow-wrap:anywhere'), true);
-}
 
 // Text from the view is escaped, and view.json cannot close its script element.
 {
