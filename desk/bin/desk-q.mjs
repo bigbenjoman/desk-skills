@@ -50,11 +50,11 @@ import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durat
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, workLoginDirs } from './claude-logins.mjs';
-import { liveBenches } from './call-login.mjs';
+import { holdOn } from './call-login.mjs';
 import { codexReading } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
 import { claudeAccount, claudeJsonPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins, nextLoginFolder, readSubscriptions,
-  repoSubscription, signInParts } from './logins.mjs';
+  repoSubscription, signInParts, toolDefault } from './logins.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -1819,10 +1819,10 @@ function claudeSide(repos, now, subs) {
   const on = (s) => s.source === 'default' || s.login?.dir === login.dir;
   return { login, name: loginLabel(login), reading, n: claudeLogins().length, pinned: [...bySlug.values()].filter((s) => !on(s)).length, bySlug,
     follows: (slug) => !bySlug.has(slug) || on(bySlug.get(slug)),
-    limit: limitOf({ out: benchOut(benchedHere(repos, now), login), reading }, now) };
+    limit: limitOf({ out: holdOut(repos, login, now), reading }, now) };
 }
 function codexSide(now, subs) {
-  const login = defaultOf(migrateLogins(subs.logins), 'codex');
+  const login = toolDefault(subs, 'codex');
   return { login, name: loginLabel(login), reading: codexReading(login, now).claude };
 }
 
@@ -1937,26 +1937,26 @@ function loginUses(subs = readSubscriptions(subscriptionsPath())) {
     pinned: subsOf.filter((s) => s.source === 'row' && s.login), following: subsOf.filter((s) => s.source === 'default').map((s) => s.slug),
     bySlug: new Map(subsOf.map((s) => [s.slug, s])) };
 }
-// Every login benched by a batch here whose limit has not lifted, and a login's bench as a limit `out`
-// ({ at, type }, `at` null with no reset time), null while it has none.
-const benchedHere = (repos, now) => liveBenches(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q?.benched)), now);
-const benchOut = (benched, l) => ((b) => (b ? { at: b.resets_at ?? null, type: b.type } : null))(benched[loginKey(l)]);
+// A batch here holding its work on login `l` at a usage limit (call-login.mjs holdOn, the hold the pass
+// and the decider wait on) as a limit `out`: { at, type }, `at` null with no reset time; null with none.
+// A hold naming no login is on the pass's own, which desk-q shares.
+const holdOut = (repos, l, now) => ((h) => (h ? { at: h.resets_at ?? null, type: h.type } : null))(
+  holdOn(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q)), l, loginOf(process.env.CLAUDE_CONFIG_DIR), now));
 // A configured repo's name as desk-q shows it: its queue's name, else its slug's repo part.
 const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? String(slug).replace(/^.*__/, '');
 
 // Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check, use }. `out` is
-// { at, type } while the login is at its limit (a batch here benched it, or its Codex reading is at
+// { at, type } while the login is at its limit (a batch here holds on it, or its Codex reading is at
 // one); `workers` is null for Codex, whose calls desk does not count per login; `check` is the account
 // check's entry, null with none; `use` is { def, pinned: [repo name] }, `def` the tool's default login.
 function usageTable(repos, now, checked = null) {
-  const benched = benchedHere(repos, now);
   const dirs = stateDirs({ self: usageDir() });
   const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? (l.source === 'found' ? { state: 'signed out' } : null));
   let uses = { defaults: {}, pinned: [], following: [], bySlug: new Map() };
   try { uses = loginUses(); } catch { /* an unreadable file: every login unused */ }
   const useOf = (l) => ({ def: uses.defaults[l.tool] ?? null, isDefault: uses.defaults[l.tool]?.dir === l.dir,
     pinned: l.tool === 'claude' ? uses.pinned.filter((s) => s.login.dir === l.dir).map((s) => repoName(repos, s.slug)) : [] });
-  const claude = claudeLogins().map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: benchOut(benched, l),
+  const claude = claudeLogins().map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: holdOut(repos, l, now),
     workers: runningOn(repos, l), check: checkOf(l), use: useOf(l) }));
   const codex = codexLogins().map((l) => codexReading(l, now)).map((x) => ({ tool: 'codex', login: x.login, plan: x.reading.plan, reading: x.claude,
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
@@ -1966,7 +1966,7 @@ function usageTable(repos, now, checked = null) {
   return { claude, codex, following: uses.following.map((slug) => repoName(repos, slug)), repos: repoUses(repos, uses.bySlug) };
 }
 
-// A Claude subscription's limit while it holds: a bench a batch left on it, else a window its newest
+// A Claude subscription's limit while it holds: a batch's usage hold on it, else a window its newest
 // reading has full before that window resets, the one lifting last where both are.
 //   -> { type, at } (`at` epoch seconds, or null with no reset time) | null
 function limitOf(x, now) {
@@ -2185,7 +2185,7 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   if (adding) return { head: [usageHeadline(t, now), ''], rows, foot: ['', ...addPanel(adding, t, w)], following };
   const all = [...t.claude, ...t.codex];
   const key = t.claude.length <= 1 && t.codex.length <= 1
-    ? leadLines('  ', [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]], w)
+    ? leadLines('  ', [['If you have another Claude or Codex subscription, add it to make it the default or pin repos to it. Nothing moves to another subscription on its own. Press ', null], ['a', BOLD], [' to add a login.', null]], w)
     : [];
   const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => {
     const p = signInParts(x.login);
@@ -2197,7 +2197,7 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     const probed = probedBy();
     const when = unread.some((x) => probed(x.login)) ? 'Logins with no reading yet are read in the next 5 minutes. ' : '';
     const unpinned = unread.some((x) => !probed(x.login)) ? 'A login no repo is pinned to is read only once one is, or a worker runs on it. ' : '';
-    notes.push({ tag: 'no reading', sgr: GREY, text: [[`${when}${unpinned}A login with no reading still takes workers, after the logins whose room is known.`, null]] });
+    notes.push({ tag: 'no reading', sgr: GREY, text: [[`${when}${unpinned}`.trim(), null]] });
   }
   const read = all.map((x) => x.reading?.at).filter((a) => a != null);
   const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.` : '  No login has a reading yet.');

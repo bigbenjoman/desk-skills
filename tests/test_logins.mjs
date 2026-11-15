@@ -251,6 +251,15 @@ t('migrate AC5 the Removed table unchanged', JSON.stringify(after.removed), JSON
 writeFileSync(SUBS, ROWS(['| `claude` | `login-2` | `~/.claude-logins/login-2` | `standby` |', '| `claude` | `login-3` | `~/.claude-logins/login-3` | `off` |']));
 await cli('list');
 t('migrate AC3 with none in rotation the first listed is the default', words('claude'), 'login-2:default,login-3:unused');
+writeFileSync(SUBS, ROWS(['| `claude` | `login-3` | `~/.claude-logins/login-3` | `off` |', '| `claude` | `login-2` | `~/.claude-logins/login-2` | `standby` |']));
+await cli('list');
+t('migrate a login set off is never made the default: the first not off is', words('claude'), 'login-3:unused,login-2:default');
+writeFileSync(SUBS, ROWS(['| `codex` | `codex-2` | `~/.codex-logins/codex-2` | `off` |', '| `codex` | `codex-3` | `~/.codex-logins/codex-3` | `off` |']));
+await cli('list');
+t('migrate Codex rows that are all off stay off', readSubscriptions(SUBS).logins.filter((l) => l.tool === 'codex').map((l) => `${l.name}:${l.rule}`).join(), 'codex-2:off,codex-3:off');
+refused = null;
+try { setRule(parseSubscriptions(ROWS(['| `claude` | `default` | `~/.claude` | `default` |', '| `claude` | `login-2` | `~/.claude-logins/login-2` | `unused` |'])), { tool: 'claude', name: 'login-2', rule: 'off', check: () => null, repos: () => ['acme__widgets'] }); } catch (e) { refused = e.message; }
+t('a login a repo\'s Subscription row runs on cannot be turned off', /acme__widgets runs on claude login-2, by its config's Subscription row/.test(refused ?? ''), true);
 const workerEnv = { ...env, DESK_AUTOPILOT_WORKER: '1' };
 let held;
 writeFileSync(SUBS, OLD);

@@ -224,7 +224,9 @@ re-running a ticket from scratch.
 - **The pass's own model calls run on the repo's subscription too.** The decider, triage and its
   lane challenge, and epic planning's headless calls start on the subscription the repo's workers use
   (`call-login.mjs`), never on another login with more room. At its limit no decider starts and its
-  items wait for the next one, while triage and epic planning still run on it.
+  items wait for the next one, while triage and epic planning still run on it. A subscription no
+  login here is signed in to runs none of them: triage fails naming it, and none falls back to
+  another login.
 - **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
   batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
   once; exactly one row that is the same batch with tickets added or removed is the same session.

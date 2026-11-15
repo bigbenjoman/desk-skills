@@ -84,7 +84,7 @@ await A.press('6');
 let f = await A.until((x) => has(x, 'Press a to add a login.'));
 const offerAt = f.findIndex((l) => l.startsWith('  If you have'));
 t('AC5 with one login of each, a line offers a to add a login', f.slice(offerAt, offerAt + 2).join(' ').replace(/\s+/g, ' ').trim(),
-  'If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press a to add a login.');
+  'If you have another Claude or Codex subscription, add it to make it the default or pin repos to it. Nothing moves to another subscription on its own. Press a to add a login.');
 t('AC5 and the keys offer a', f.at(-1).includes('a add ·'), true);
 
 // ---- AC1: a adds a row on standby, waiting, and shows the sign-in command with y to copy it

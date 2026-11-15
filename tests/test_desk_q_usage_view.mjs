@@ -1,6 +1,6 @@
 // suite: desk-q Usage view (view 6: every Claude and Codex login with its plan, use and both windows)
 // desk-q's view 6 against a subscriptions file, each Claude login's .claude.json and probe log, each Codex
-// login's session logs, each repo's Subscription row and a queue's benched logins, on a fixed clock, under
+// login's session logs, each repo's Subscription row and a queue's usage hold, on a fixed clock, under
 // a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT, DESK_LOCK_DIR and DESK_USAGE_DIR, with fake claude and
 // codex binaries the account check calls. The default, undo and remove keys run desk-env's logins
 // commands. Drawn at 104 columns under NO_COLOR. One check or more per acceptance criterion of DS-472,
@@ -56,14 +56,14 @@ function config(slug, sub = null) {
 }
 // The repo with a queue, solo: its Subscription row naming `sub` when given, and `running` workers on
 // the default (a worker with no login file runs on it).
-function repo(benched = {}, sub = null, running = 0) {
+function repo(hold = null, sub = null, running = 0) {
   const slug = 'acme__solo';
   config(slug, sub);
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(q), { recursive: true });
   const tickets = { 'S-1': { key: 'S-1', state: 'triaged' } };
   for (let i = 0; i < running; i++) tickets[`S-${i + 2}`] = { key: `S-${i + 2}`, state: 'running' };
-  writeFileSync(q, JSON.stringify({ version: 1, batch: 'solo', concurrency: 2, tickets, benched }));
+  writeFileSync(q, JSON.stringify({ version: 1, batch: 'solo', concurrency: 2, tickets, ...(hold ? { usage_hold: hold } : {}) }));
 }
 const subscriptions = (rows) => writeFileSync(env.DESK_SUBSCRIPTIONS,
   `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n${rows.map((r) => `| ${r.map((c) => `\`${c}\``).join(' | ')} |`).join('\n')}\n`);
@@ -140,7 +140,7 @@ const ruleIn = (tool, name) => (new RegExp(`^\\| \`${tool}\` \\| \`${name}\` \\|
 const deskEnv = (...args) => spawnSync(process.execPath, [join(BIN, 'desk-env.mjs'), 'logins', ...args], { encoding: 'utf8', env: process.env });
 
 // solo and api follow the default, web is pinned to work; two workers run on the default.
-repo({}, null, 2);
+repo(null, null, 2);
 config('acme__api');
 config('acme__web', 'work@example.test');
 subscriptions(ROWS);
@@ -382,7 +382,7 @@ t('u after x on a login named apart from its folder puts back that folder', `${b
 
 // ---- AC4: the default at its 5-hour limit still reads default, its 5H bar at 100% with the reset time
 subscriptions(ROWS);
-repo({ default: { login: 'personal', config_dir: null, type: 'five_hour', resets_at: at(24, 14, 5), since: FIXED - 20 * MIN, by: 'S-1' } });
+repo({ since: new Date(FIXED - 20 * MIN).toISOString(), type: 'five_hour', resets_at: at(24, 14, 5), preflight: 'S-1', paused: [], login_dir: null });
 claudeReading(null, [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
 const B = await usage();
 t('AC4 the default at its limit reads ◉ default, its 5H bar at 100% with the reset', rowOf(B.frame(), 'me@example.test'),
@@ -409,7 +409,7 @@ const WAIT_LAST = '  Repos pinned elsewhere keep running. Nothing moves to anoth
 const KEYS_SUB = '↑↓ select · ←→ or 1–6 view · d make default · a add · x remove · : command · q quit';
 const KEYS_REPO = '↑↓ select · ←→ or 1–6 view · enter change subscription · a add · : command · q quit';
 // pr-ninja (8 ready) and forewatt (3 ready) follow the default; solo, api and web are pinned to work.
-repo({}, 'work@example.test');
+repo(null, 'work@example.test');
 config('acme__api', 'work@example.test');
 config('acme__pr-ninja');
 batch('acme__pr-ninja', 0, 8);
@@ -489,7 +489,7 @@ W.done();
 
 // ---- DS-472 AC12: a login with no reading yet, one the repo is pinned to
 rmSync(join(env.DESK_USAGE_DIR, 'probe.work.log'));
-repo({}, 'work@example.test');
+repo(null, 'work@example.test');
 const N = await usage();
 f = N.frame();
 t('DS-472 AC12 a login with no reading yet says so in its 5H and 7D cells', rowOf(f, 'work@example.test'),

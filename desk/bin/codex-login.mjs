@@ -6,7 +6,7 @@
 // `dead` says why.
 import { subscriptionsPath } from './desk-env.mjs';
 import { codexLogins, readCodexUsage } from './codex-usage.mjs';
-import { checkLogin, defaultOf, loginEnv, readSubscriptions } from './logins.mjs';
+import { checkLogin, loginEnv, readSubscriptions, toolDefault } from './logins.mjs';
 
 // A Codex window in a Claude reading's shape.
 const asClaude =(w) => (w ? { utilization: w.used / 100, resetsAt: w.resetsAt } : null);
@@ -25,9 +25,9 @@ export function codexCallLogin({ env = process.env } = {}) {
   // With no subscriptions file desk has one login per tool, whatever folders exist (logins.mjs).
   const subs = readSubscriptions(subscriptionsPath());
   if (!subs.exists) return keep;
-  // The file's default, or in the older rules its first login in rotation. A file whose Codex rows
-  // are all off picks an off one, and no call runs until a person names a default.
-  const login = defaultOf(subs.logins, 'codex');
+  // The default `logins list` shows (logins.mjs toolDefault). A file whose Codex rows are all off
+  // picks an off one, and no call runs until a person names a default.
+  const login = toolDefault(subs, 'codex');
   if (login.rule === 'off') return { login: null, env, dead: `the Codex default, ${login.name}, is off (desk-env logins default codex <name>)` };
   // A default of ~/.codex with no other Codex folder found runs as a sole login always has, unchecked.
   if (!login.configDir && codexLogins().every((l) => l.dir === login.dir)) return keep;

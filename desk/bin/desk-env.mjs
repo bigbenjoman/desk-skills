@@ -2304,9 +2304,12 @@ if (isMain) {
           else for (const l of L.checkLines(r, path)) console.log(l);
           break;
         }
+        // The repos whose Subscription row runs on login `l`: it is neither removed nor turned off.
+        const repos = (l) => (l.tool === 'claude'
+          ? repoSubscriptions(L, subs).filter((s) => s.source === 'row' && s.login?.dir === l.dir).map((s) => s.slug) : []);
         if (sub === 'set' && rest.length >= 3) {
           const [tool, name, ...rule] = rest;
-          const r = L.setRule(subs, { tool, name, rule: rule.join(' '), check: () => L.checkLogins(subs) });
+          const r = L.setRule(subs, { tool, name, rule: rule.join(' '), check: () => L.checkLogins(subs), repos });
           console.log(writeWithBackup(path, r.text));
           console.log(`${tool} ${name}: ${r.login.rule === 'off' ? 'off' : 'unused'}`);
           break;
@@ -2320,8 +2323,6 @@ if (isMain) {
         }
         if (sub === 'remove' && rest.length === 2) {
           const [tool, name] = rest;
-          const repos = (l) => (l.tool === 'claude'
-            ? repoSubscriptions(L, subs).filter((s) => s.source === 'row' && s.login?.dir === l.dir).map((s) => s.slug) : []);
           const r = L.removeLogin(subs, { tool, name, check: () => L.checkLogins(subs), repos });
           console.log(writeWithBackup(path, r.text));
           console.log(`${tool} ${name}: removed; ${r.login.folder} and its sign-in are left as they are`);

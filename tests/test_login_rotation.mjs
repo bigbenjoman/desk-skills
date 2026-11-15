@@ -307,7 +307,8 @@ const calling = (env) => {
     const rec = startDecider({ state: ${JSON.stringify(state)}, slug: 'acme__widgets', bin: ${JSON.stringify(BIN)}, report: '', items: [], rules: '', cwd: process.cwd(), claude: ${JSON.stringify(DECIDER_CLAUDE)} });
     for (let i = 0; !rec.wait && !existsSync(${JSON.stringify(SEEN)}) && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
     const decider = rec.wait ? 'none' : readFileSync(${JSON.stringify(SEEN)}, 'utf8');
-    console.log(JSON.stringify({ decider, line: rec.login ?? null, wait: rec.wait ?? null, epic: headlessEnv(process.env).CLAUDE_CONFIG_DIR ?? 'unset' }));`;
+    const he = headlessEnv(process.env);
+    console.log(JSON.stringify({ decider, line: rec.login ?? null, wait: rec.wait ?? null, epic: he === null ? 'none' : he.CLAUDE_CONFIG_DIR ?? 'unset' }));`;
   const r = spawnSync('node', ['--input-type=module', '-e', js], { env, cwd: join(W, 'repo'), encoding: 'utf8' });
   const d = spawnSync('node', [join(BIN, 'call-login.mjs'), 'dir'], { env, cwd: join(W, 'repo'), encoding: 'utf8' });
   try { return { ...JSON.parse(r.stdout.trim().split('\n').pop()), triage: d.stdout.trim() }; } catch { return { error: `${r.stdout}${r.stderr}` }; }
@@ -362,10 +363,11 @@ t('DS-621 AC6 with DESK_SUBSCRIPTION=c, triage runs on c', got.triage, dirOf('c'
 env = world(ROOMY_DEFAULT, {}, { sub: 'c@example.com' });
 got = calling({ ...env, CLAUDE_CONFIG_DIR: dirOf('c') });
 t('DS-621 a caller already on the subscription keeps its environment', `${got.decider} ${got.triage} ${got.epic} ${got.line}`, `${dirOf('c')} keep ${dirOf('c')} null`);
-// A row naming an account no login here is signed in to: no decider, and the rest run as the caller does.
+// A row naming an account no login here is signed in to: no call runs, and none falls back to the caller's.
 env = world(ROOMY_DEFAULT, {}, { sub: 'nobody@example.com' });
 got = calling(env);
-t('DS-621 an unknown subscription: no decider, the rest as the caller', `${got.decider} ${got.triage} ${got.epic}`, 'none keep unset');
+t('DS-621 an unknown subscription: no decider, no triage, no epic planning', `${got.decider} ${got.triage} ${got.epic}`,
+  'none none: the repo\'s subscription, nobody@example.com, is not signed in to any login here none');
 t('DS-621 and the decider says why', got.wait, 'the repo\'s subscription, nobody@example.com, is not signed in to any login here');
 // DS-630 AC2: a ticket a pass from before left waiting to move off login b resumes its own session on b,
 // though the repo's subscription is c, and the field is gone; one that is not waiting just loses it.
