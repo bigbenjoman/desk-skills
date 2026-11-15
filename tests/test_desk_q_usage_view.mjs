@@ -238,7 +238,7 @@ t('DS-625 AC1 enter opens the dropdown under the row, its arrow ▴', f.slice(ri
   opt('4', 'spare@example.test', sub('Pro', '0%', '18%')),
   edge('└', '┘'),
   `${IN} ✓ now · 1-4 or ↑↓ enter choose · esc close`].join('\n'));
-t('DS-625 AC2 the keys while it is open', f.at(-1), '↑↓ choose · ←→ or 1–6 view · 1-4 pick · enter save · esc close · q quit');
+t('DS-625 AC2 the keys while it is open', f.at(-1), '↑↓ choose · ←→ view · 1-4 pick · enter save · esc close · q quit');
 t('DS-625 AC15 the hint gives way to the open dropdown', f.includes(HINT), false);
 // A lone esc reaches the keys once readline's escape timeout has passed.
 await S.press('\x1b');
@@ -255,7 +255,7 @@ await S.pick('pr-ninja');
 await S.press('\r');
 f = S.frame();
 t('DS-625 AC2 the act line, where the keys wrap', f.at(-1), 'act   1-4 pick · enter save · esc close · q quit');
-t('DS-625 AC2 and the move line above it', f.at(-2), 'move  ↑↓ choose · ←→ or 1–6 view');
+t('DS-625 AC2 and the move line above it', f.at(-2), 'move  ↑↓ choose · ←→ view');
 S.done();
 // AC3: with work the default, every repo on the default runs on work.
 deskEnv('default', 'claude', 'work');

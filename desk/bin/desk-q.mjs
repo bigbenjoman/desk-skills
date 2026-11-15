@@ -3417,7 +3417,8 @@ export function interactive({
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
       const s = usageParts(repos, { now, width: w, checked, adding, drop });
       if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc cancel adding · : command · q quit` };
-      if (s.drop) return { badge: '', ...s, keys: `↑↓ choose · ${VIEW_KEYS} · ${pickKeys(s.drop)} pick · enter save · esc close · q quit` };
+      // The digits pick while it is open, so only ←→ change view.
+      if (s.drop) return { badge: '', ...s, keys: `↑↓ choose · ←→ view · ${pickKeys(s.drop)} pick · enter save · esc close · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
       if (x?.repo) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · enter change subscription · a add${undo ? ' · u undo' : ''} · ${cmdKeys}` };
       const copy = x?.check?.state === 'signed out' ? ' · y copy the sign-in command' : '';
@@ -3702,10 +3703,13 @@ export function interactive({
     msg = '';
     if (o.current) return;
     const was = d.sub?.source === 'default' || !d.sub?.email ? 'default' : d.sub.email;
+    // A pin to an email no login here is signed in to can't be set again, so it can't be undone.
+    const lost = d.sub?.source === 'unknown email';
+    const undoes = lost ? `No undo: ${was} isn't signed in here.` : 'u undoes.';
     const said = o.value === 'default'
-      ? `✓ ${d.name} follows the default${d.def ? `, ${d.def}` : ''}. u undoes.\n  Saved to its config as | Subscription | default |.`
-      : `✓ ${d.name} is pinned to ${o.value}. Its next worker starts there. u undoes.\n  Saved to its config as | Subscription | ${o.value} |. Pick Default to unpin.`;
-    const back = { args: ['set', d.slug, was], run: subscriptionWith,
+      ? `✓ ${d.name} follows the default${d.def ? `, ${d.def}` : ''}. ${undoes}\n  Saved to its config as | Subscription | default |.`
+      : `✓ ${d.name} is pinned to ${o.value}. Its next worker starts there. ${undoes}\n  Saved to its config as | Subscription | ${o.value} |. Pick Default to unpin.`;
+    const back = lost ? null : { args: ['set', d.slug, was], run: subscriptionWith,
       said: was === 'default' ? `${d.name} follows the default again.` : `${d.name} is pinned to ${was} again.` };
     saveLogin(['set', d.slug, o.value], said, back, subscriptionWith);
   }
@@ -3790,7 +3794,7 @@ export function interactive({
       const i = line - layout.pinned + layout.top - layout.first;
       if (line < layout.pinned || line >= layout.pinned + layout.room || i < 0 || i >= layout.rows) return;
       // With a dropdown open, a click on an option picks it and one anywhere else closes it.
-      if (drop && screen.drop && screen.rows[i]?.opt != null) { pickOption(screen.drop, screen.rows[i].opt); return draw(); }
+      if (drop && screen.drop && screen.rows[i]?.opt != null && col >= DROP_IN && col < DROP_IN + DROP_W + 2) { pickOption(screen.drop, screen.rows[i].opt); return draw(); }
       if (drop) drop = null;
       if (!pickable(screen.rows[i])) return draw();
       sel = i; selId = screen.rows[i]?.id ?? null;

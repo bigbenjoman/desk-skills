@@ -49,13 +49,20 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const DOWN = '\x1b[B', ESC = '\x1b';
 const FIXED = new Date(2026, 9, 24, 9, 0).getTime();
+// desk-env's subscription command run for real, each call counted, so a check can say nothing was written.
+const { execFile } = await import('node:child_process');
+let writes = 0;
+const subscriptionWith = (args, done) => {
+  writes++;
+  execFile(process.execPath, [join(BIN, 'desk-env.mjs'), 'subscription', ...args], (e, out, err) => done({ code: e ? (e.code ?? 1) : 0, out, err }));
+};
 
 function open() {
   process.env.NO_COLOR = '1';
   const input = new PassThrough();
   Object.assign(input, { isTTY: true, setRawMode() {} });
   const output = { buf: '', columns: 104, rows: 60, write(s) { this.buf += s; }, on() {}, removeListener() {} };
-  const ui = Q.interactive({ input, output, start: { kind: 'overview', all: false }, exit() {}, refreshMs: 600000, clock: () => FIXED, probeMs: 600000, probeWith: async () => ({ ran: true }) });
+  const ui = Q.interactive({ input, output, start: { kind: 'overview', all: false }, exit() {}, refreshMs: 600000, clock: () => FIXED, probeMs: 600000, probeWith: async () => ({ ran: true }), subscriptionWith });
   const frame = () => output.buf.split('\x1b[H').at(-1).split('\r\n').map((l) => plain(l.replace(/\x1b\[J$/, '').replace(/\x1b\[K$/, '')));
   // Each key on its own read, as a terminal sends them; a lone esc once readline's escape timeout passes.
   const press = async (...ks) => { for (const k of ks) { input.write(k); await sleep(k === ESC ? 700 : 40); } };
@@ -118,20 +125,20 @@ t('AC9 its SET reads ○ default', setOf(f), '○ default');
 t('AC9 the message lines', message(f)?.join('\n'), '✓ forewatt follows the default, me@example.test. u undoes.\n  Saved to its config as | Subscription | default |.');
 
 // ---- AC7: esc closes, the config unchanged
-let before = configText();
+let before = configText(), wrote = writes;
 await S.press('\r');
 await S.press(ESC);
 f = S.frame();
 t('AC7 esc closes the dropdown', isOpen(f), false);
-t('AC7 and forewatt\'s config is unchanged', configText(), before);
+t('AC7 and forewatt\'s config is unchanged', `${configText() === before} | ${writes - wrote} writes`, 'true | 0 writes');
 
 // ---- AC11: picking the ✓ option closes it and writes nothing
 await S.press('\r', '1');
 await sleep(300);
 f = S.frame();
 t('AC11 1 on the ✓ Default closes the dropdown', isOpen(f), false);
-t('AC11 and forewatt\'s config is unchanged', configText(), before);
-t('AC11 with nothing saved', f.includes('Saving…'), false);
+t('AC11 and forewatt\'s config is unchanged, nothing written', `${configText() === before} | ${writes - wrote} writes`, 'true | 0 writes');
+t('AC11 with nothing saved', f.includes('Saving…') || saved(f), false);
 
 // ---- AC8: a click on forewatt's RUNS ON cell opens its dropdown
 const y = f.indexOf(rowOf(f, 'forewatt')) + 1;
@@ -149,6 +156,26 @@ chmodSync(dirname(CONFIG), 0o755);
 chmodSync(CONFIG, 0o644);
 t('AC12 the message begins Not saved: with the reason', /^Not saved: \S/.test(f.find((l) => l.startsWith('Not saved:')) ?? ''), true);
 t('AC12 forewatt\'s row is unchanged', `${subRow()} | ${setOf(f)}`, 'default | ○ default');
+
+// ---- a click beside the box, on an option's line, closes it and picks nothing
+await S.press('\r');
+f = S.frame();
+const line4 = f.findIndex((l) => /│ 4 +spare@example\.test/.test(l)) + 1;
+wrote = writes;
+await S.press(`\x1b[<0;1;${line4}M`);
+await sleep(300);
+t('a click left of the box closes the dropdown and writes nothing', `${isOpen(S.frame())} | ${writes - wrote} writes | ${subRow()}`, 'false | 0 writes | default');
+S.done();
+
+// ---- a pin to an email no login here has: the pick says there is no undo, and u has nothing to undo
+writeFileSync(CONFIG, `${readFileSync(CONFIG, 'utf8').replace(/^\| Subscription \|.*$/m, '| Subscription | x | `gone@example.test` |')}`);
+t('forewatt is pinned to an email with no login here', subRow(), 'gone@example.test');
+S = await usage();
+await S.press('\r', '1');
+f = await S.until(saved);
+t('picking Default from it says there is no undo', message(f)?.[0], '✓ forewatt follows the default, me@example.test. No undo: gone@example.test isn\'t signed in here.');
+await S.press('u');
+t('and u has nothing to undo', S.frame().includes('Nothing to undo.'), true);
 S.done();
 
 rmSync(T, { recursive: true, force: true });
