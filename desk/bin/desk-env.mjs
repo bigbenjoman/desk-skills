@@ -1769,11 +1769,13 @@ function setRowValue(config, section, row, value) {
 export function repoSubscriptions(L, subs, root = deskConfigRoot()) {
   return configuredRepos(root).map(({ slug }) => ({ slug, ...L.repoSubscription(subs, { value: repoConfigValue(slug, 'subscription', root), source: 'row' }) }));
 }
-// This repo's subscription: DESK_SUBSCRIPTION, one caller's override, else its own row.
-//   -> { email, login, source }
+// This repo's subscription: DESK_SUBSCRIPTION, one caller's override, else its own row. `from` names
+// where an email no login here is signed in to came from, and `fix` what to change.
+//   -> { email, login, source, from, fix }
 export function thisRepoSubscription(L, subs, env = process.env) {
-  const v = env.DESK_SUBSCRIPTION?.trim();
-  return v ? L.repoSubscription(subs, { value: v, source: 'DESK_SUBSCRIPTION' }) : L.repoSubscription(subs, { value: configValue('subscription'), source: 'row' });
+  const value = env.DESK_SUBSCRIPTION?.trim();
+  const r = L.repoSubscription(subs, value ? { value, source: 'DESK_SUBSCRIPTION' } : { value: configValue('subscription'), source: 'row' });
+  return { ...r, from: value ? 'DESK_SUBSCRIPTION' : `this repo's config §3b "${CONFIG_ROWS.subscription.row}" row`, fix: value ? 'DESK_SUBSCRIPTION' : 'the row' };
 }
 
 // Writes another repo's Subscription row: `default`, or an email one of this computer's Claude logins is
@@ -2346,11 +2348,9 @@ if (isMain) {
           break;
         }
         if (sub === undefined || (sub === '--json' && !rest.length)) {
-          const env = process.env.DESK_SUBSCRIPTION?.trim();
           const r = thisRepoSubscription(L, subs);
           if (!r.login) {
-            const from = env ? 'DESK_SUBSCRIPTION' : `this repo's config §3b "${CONFIG_ROWS.subscription.row}" row`;
-            throw new DeskConfigError(`desk-env subscription: ${from} names ${r.email}, which is not one of this computer's subscriptions, so this repo has none (it never falls back to the default): sign that account in and add it in desk-q view 6 (Usage), or change ${env ? 'DESK_SUBSCRIPTION' : 'the row'}`);
+            throw new DeskConfigError(`desk-env subscription: ${r.from} names ${r.email}, which is not one of this computer's subscriptions, so this repo has none (it never falls back to the default): sign that account in and add it in desk-q view 6 (Usage), or change ${r.fix}`);
           }
           const s = shown(r);
           if (json) console.log(JSON.stringify(s, null, 2));
