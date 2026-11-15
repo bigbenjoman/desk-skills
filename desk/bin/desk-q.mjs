@@ -2062,6 +2062,8 @@ function repoDropdown(x, claude, at, now) {
   const mark = options.findIndex((o) => o.current);
   return { slug: x.slug, name: x.name, sub: x.sub, def: defEmail, options, mark, at: at == null ? null : Math.max(0, Math.min(options.length - 1, at)), now };
 }
+// The digits that pick a dropdown's options: one key each, so 1 to 9 at most.
+const pickKeys = (d) => (d.options.length > 1 ? `1-${Math.min(9, d.options.length)}` : '1');
 // The dropdown's lines, boxed in blue under the RUNS ON column, and the line of keys under the box.
 const DROP_IN = 2 + R_REPO, DROP_W = 58;
 function dropdownRows(d) {
@@ -2074,7 +2076,7 @@ function dropdownRows(d) {
   const option = (o, i) => {
     const on = i === d.at;
     const k = (base) => (!on ? base : base === BOLD ? OPT_BOLD : base === GREY ? OPT_GREY : OPT_ON);
-    const name = [[cut(o.label, 23), k(on ? BOLD : null)], ...(o.current ? [[' ✓', GOOD]] : [])];
+    const name = [[cut(o.label, 23), k(on ? BOLD : null)], ...(o.current ? [[' ✓', on ? OPT_GOOD : GOOD]] : [])];
     const rest = o.value === 'default' ? fitCell([[o.def ? `→ ${o.def}` : '', k(GREY)]], 28)
       : [...fitCell([[o.plan ?? '—', k(o.plan ? null : GREY)]], 9),
         ...fitCell([['5h ', k(GREY)], [pct(o, 'five_hour'), k(null)], [' · 7d ', k(GREY)], [pct(o, 'seven_day'), k(null)]], 19)];
@@ -2083,8 +2085,7 @@ function dropdownRows(d) {
     const segs = [lead, ['│', HUE.blue], ...inner, ['│', HUE.blue]];
     return { segs: segs.filter(([s]) => s), line: segText(segs), opt: i };
   };
-  const n = d.options.length;
-  const keys = [lead, [' ✓', GOOD], [' now · ', GREY], [n > 1 ? `1-${n}` : '1', BOLD], [' or ', GREY], ['↑↓ enter', BOLD], [' choose · ', GREY], ['esc', BOLD], [' close', GREY]];
+  const keys = [lead, [' ✓', GOOD], [' now · ', GREY], [pickKeys(d), BOLD], [' or ', GREY], ['↑↓ enter', BOLD], [' choose · ', GREY], ['esc', BOLD], [' close', GREY]];
   return [edge('┌', '┐'), ...d.options.map(option), edge('└', '┘'), { segs: keys, line: segText(keys) }];
 }
 // The grey line under the repo table, saying how to change a repo's subscription.
@@ -3255,10 +3256,10 @@ const printable = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\t
 // every state colour keep 4.5:1 on it; on a light theme 254, on which grey 240 keeps it.
 const SELECT_BG = LIGHT ? '48;5;254' : '48;5;236';
 // The chosen option in a dropdown, on the selection's tint: plain, bold and grey.
-const OPT_ON = SELECT_BG, OPT_BOLD = `1;${SELECT_BG}`, OPT_GREY = `${GREY};${SELECT_BG}`;
+const OPT_ON = SELECT_BG, OPT_BOLD = `1;${SELECT_BG}`, OPT_GREY = `${GREY};${SELECT_BG}`, OPT_GOOD = `${GOOD};${SELECT_BG}`;
 // What undoes each code that sets more than a colour; a colour alone is undone by 39, and a dimmed
 // colour by 22;39.
-const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [YOU_BOLD]: '22;39', [BAND]: '22;27;39', [OPT_ON]: '49', [OPT_BOLD]: '22;49', [OPT_GREY]: '39;49' };
+const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [YOU_BOLD]: '22;39', [BAND]: '22;27;39', [OPT_ON]: '49', [OPT_BOLD]: '22;49', [OPT_GREY]: '39;49', [OPT_GOOD]: '39;49' };
 // Under NO_COLOR, grey is drawn faint, bold magenta bold and the band reversed.
 const NO_COLOR_AS = { [GREY]: FAINT, [YOU_BOLD]: BOLD, [BAND]: REVERSE };
 
@@ -3416,7 +3417,7 @@ export function interactive({
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
       const s = usageParts(repos, { now, width: w, checked, adding, drop });
       if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc cancel adding · : command · q quit` };
-      if (s.drop) return { badge: '', ...s, keys: `↑↓ choose · ${VIEW_KEYS} · ${s.drop.options.length > 1 ? `1-${s.drop.options.length}` : '1'} pick · enter save · esc close · q quit` };
+      if (s.drop) return { badge: '', ...s, keys: `↑↓ choose · ${VIEW_KEYS} · ${pickKeys(s.drop)} pick · enter save · esc close · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
       if (x?.repo) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · enter change subscription · a add${undo ? ' · u undo' : ''} · ${cmdKeys}` };
       const copy = x?.check?.state === 'signed out' ? ' · y copy the sign-in command' : '';
