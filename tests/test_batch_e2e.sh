@@ -831,13 +831,14 @@ echo MERGED > "$T/pr/202"; echo 2999-01-01T00:00:00Z > "$T/pr/202.merged_at"
 pass
 check "AC6: a promotion PR merged after every child opens no further one" '[ "$(grep -c "^pr create" "$T/gh.log")" = 3 ] && [ "$(bfield promotion.merged.2.pr)" = 202 ]'
 
-# ---- a login in rotation with more room: the real spawn-worker.sh puts the preflight and worker on it --
+# ---- the repo's subscription is not ~/.claude: the real spawn-worker.sh puts the preflight and worker on it --
+# b is the default, so the repo following the default runs there, though ~/.claude has more room.
 export DESK_QUEUE="$T/queue-l.json" DESK_AUTOPILOT_STATE="$T/state-l" DESK_SUBSCRIPTIONS="$T/subscriptions.md" DESK_USAGE_DIR="$T/usage"
 LOGIN_B="$T/home/.claude-logins/b"
 mkdir -p "$T/state-l/triage" "$T/usage" "$LOGIN_B"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `in rotation` |\n' > "$DESK_SUBSCRIPTIONS"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `unused` |\n| `claude` | `b` | `~/.claude-logins/b` | `default` |\n' > "$DESK_SUBSCRIPTIONS"
 reading(){ node -e 'const r = Math.floor(Date.now() / 1000) + 3600; const u = Number(process.argv[1]); console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: u, resetsAt: r }, seven_day: { utilization: u, resetsAt: r } } } }))' "$1"; }
-reading 0.9 > "$T/usage/probe.log"; reading 0.1 > "$T/usage/probe.b.log"
+reading 0.1 > "$T/usage/probe.log"; reading 0.9 > "$T/usage/probe.b.log"
 printf '{"ticket": "T-91", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-91", "files_in_scope": ["src/l.txt"], "unknowns": []}\n' > "$T/state-l/triage/T-91.json"
 printf 'WAIT\nAUTOPILOT_DONE: pr=191 jira=none\n' > "$T/scripts/T-91.1"
 q init logins; q admit T-91
@@ -845,7 +846,7 @@ q init logins; q admit T-91
 MEM="$T/home/.claude/projects/$(printf '%s' "$T/repo" | tr -c 'A-Za-z0-9' '-')/memory"
 mkdir -p "$MEM"; echo '- [A hazard](hazard.md) — the one to remember' > "$MEM/MEMORY.md"
 pass
-check "DS-465 AC2 the real preflight and the worker both run in the chosen login's folder" '[ "$(cat "$T/logins.log")" = "$(printf "preflight %s\nworker %s" "$LOGIN_B" "$LOGIN_B")" ]'
+check "DS-620 AC1 AC3 the real preflight and the worker both run on the repo's subscription, not the roomier login" '[ "$(cat "$T/logins.log")" = "$(printf "preflight %s\nworker %s" "$LOGIN_B" "$LOGIN_B")" ]'
 check "DS-465 AC1 the row and the worker's login file name it" '[ "$(field T-91 login.name)" = "\"b\"" ] && grep -q "\"login\":\"b\"" "$T/state-l/workers/T-91.login.json"'
 check "DS-465 a worker on another login gets the memory index in its brief, its auto-memory being that login's" 'run_has "$T/runs/T-91.1" prompt "the one to remember"'
 finish T-91

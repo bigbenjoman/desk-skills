@@ -252,11 +252,13 @@ ben_steps is [] when the ticket needs no step only the user can take.
 blocker_needs is {} when the ticket has no open blocker.
 PROMPT_END
 
-# Both passes run on a Claude login that is not benched (call-login.mjs), as a new worker would. With one
-# login, or every login benched, they run on this shell's own, as they always have.
+# Both passes run on the repo's subscription (call-login.mjs), as a new worker would, at its limit too.
+# With one login and no subscriptions file they run on this shell's own, as they always have. A
+# subscription no login here is signed in to runs neither: triage never falls back to another login.
 CALL_LOGIN="$(node "$DESK_BIN/call-login.mjs" dir 2>/dev/null)" || CALL_LOGIN=keep
 case "$CALL_LOGIN" in
-  keep|all|'') ;;
+  keep|'') ;;
+  none:*) echo "FAIL: $TICKET not triaged: ${CALL_LOGIN#none: }, and triage never runs on another login" >&2; exit 1 ;;
   default) unset CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
   *) export CLAUDE_CONFIG_DIR="$CALL_LOGIN"; unset ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
 esac
