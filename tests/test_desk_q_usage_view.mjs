@@ -99,25 +99,27 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const DOWN = '\x1b[B';
 
-// desk-q open at `columns` (104) under NO_COLOR, its account check and keys running desk-env for real.
-function open(start = { kind: 'overview', all: false }, columns = 104) {
-  process.env.NO_COLOR = '1';
+// desk-q open at `columns` (104) under NO_COLOR (in colour with `color`), its account check and keys
+// running desk-env for real. `raw` is the frame with its colours.
+function open(start = { kind: 'overview', all: false }, columns = 104, color = false) {
+  if (color) delete process.env.NO_COLOR; else process.env.NO_COLOR = '1';
   const input = new PassThrough();
   Object.assign(input, { isTTY: true, setRawMode() {} });
   const output = { buf: '', columns, rows: 60, write(s) { this.buf += s; }, on() {}, removeListener() {} };
   const copied = [];
   const ui = Q.interactive({ input, output, start, exit() {}, refreshMs: 600000, clock: () => FIXED, probeMs: 600000, probeWith: async () => ({ ran: true }), copier: (s) => copied.push(s) });
-  const frame = () => output.buf.split('\x1b[H').at(-1).split('\r\n').map((l) => plain(l.replace(/\x1b\[J$/, '').replace(/\x1b\[K$/, '')));
+  const raw = () => output.buf.split('\x1b[H').at(-1).split('\r\n');
+  const frame = () => raw().map((l) => plain(l.replace(/\x1b\[J$/, '').replace(/\x1b\[K$/, '')));
   const press = async (k) => { input.write(k); await sleep(20); };
   // Until `pred` holds of the frame, or 10 seconds.
   const until = async (pred) => { for (let i = 0; i < 500 && !pred(frame()); i++) await sleep(20); return frame(); };
   // The selection moved down (or by `key`) onto the row starting `name`.
   const pick = async (name, key = DOWN) => { for (let i = 0; i < 8 && !frame().find((l) => l.startsWith('›'))?.slice(2).startsWith(`${name} `); i++) await press(key); };
-  return { ui, frame, press, until, pick, copied, done() { ui.finish(0); delete process.env.NO_COLOR; } };
+  return { ui, frame, raw, press, until, pick, copied, done() { ui.finish(0); delete process.env.NO_COLOR; } };
 }
 // Usage open on its first frame after the account check.
-async function usage(start, columns) {
-  const u = open(start, columns);
+async function usage(start, columns, color) {
+  const u = open(start, columns, color);
   await sleep(20);
   await u.press('6');
   await u.until((x) => x.some((l) => l.startsWith('  Read at') || l.startsWith('  No login')));
@@ -388,6 +390,95 @@ t('AC4 the default at its limit reads ◉ default, its 5H bar at 100% with the r
 B.done();
 repo();
 claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
+
+// ---- DS-626 AC1-AC8: at a subscription's limit, which repos wait, how many tickets are ready and when they start
+// A login's probe log holding the rejection a real worker recorded at its limit (usage-limit-five-hour.json),
+// its limit `type` and both windows as given.
+const LIMIT_EVENT = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'usage-limit-five-hour.json'), 'utf8');
+function limitReading(key, type, five, seven) {
+  const ev = JSON.parse(LIMIT_EVENT);
+  const info = ev.rate_limit_info;
+  info.rateLimitType = type;
+  info.resetsAt = (type === 'five_hour' ? five : seven)[1];
+  info.unifiedWindows = { five_hour: { utilization: five[0], resetsAt: five[1] }, seven_day: { utilization: seven[0], resetsAt: seven[1] } };
+  const path = join(env.DESK_USAGE_DIR, key ? `probe.${key}.log` : 'probe.log');
+  writeFileSync(path, `${JSON.stringify(ev)}\n`);
+  utimesSync(path, (FIXED - MIN) / 1000, (FIXED - MIN) / 1000);
+}
+const WAIT_LAST = '  Repos pinned elsewhere keep running. Nothing moves to another subscription on its own.';
+const KEYS_SUB = '↑↓ select · ←→ or 1–6 view · d make default · a add · x remove · : command · q quit';
+const KEYS_REPO = '↑↓ select · ←→ or 1–6 view · enter change subscription · a add · : command · q quit';
+// pr-ninja (8 ready) and forewatt (3 ready) follow the default; solo, api and web are pinned to work.
+repo({}, 'work@example.test');
+config('acme__api', 'work@example.test');
+config('acme__pr-ninja');
+batch('acme__pr-ninja', 0, 8);
+config('acme__forewatt');
+batch('acme__forewatt', 0, 3);
+limitReading(null, 'five_hour', [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
+let L = await usage();
+f = L.frame();
+t('DS-626 AC1 the default at its 5-hour limit: the headline says so and when its workers start', f[3],
+  'me@example.test, the default, is at its 5-hour limit until 14:05. Its workers start again then.');
+const wait1 = f.findIndex((l) => l.startsWith('■ '));
+t('DS-626 AC3 a ■ note names the repos waiting for it, their ready tickets and when they start', f[wait1],
+  '■ pr-ninja and forewatt wait for me@example.test: 11 tickets ready, starting at 14:05.');
+t('DS-626 AC3 and the line under it says pinned repos keep running and nothing moves', f[wait1 + 1], WAIT_LAST);
+t('DS-626 the notes sit under the repo table, a blank line between, in place of the hint',
+  `${f[wait1 - 1] === ''} ${f[wait1 - 2] === rowOf(f, 'web')} ${f.includes(HINT)}`, 'true true false');
+t('DS-626 AC6 a subscription row selected: the act line is the one with no limit', f.at(-1), KEYS_SUB);
+await L.pick('pr-ninja');
+t('DS-626 AC6 a repo row selected: the act line is the one with no limit', L.frame().at(-1), KEYS_REPO);
+L.done();
+// AC4 in colour: the waiting repos' RUNS ON in red, and no other repo's.
+const RED = '\x1b[38;5;210m';
+L = await usage(undefined, 104, true);
+const runsRed = (name) => { const l = L.raw().find((x) => plain(x).slice(2).startsWith(`${name} `)) ?? ''; return l.includes(`${RED}me@example.test`) || l.includes(`${RED}work@example.test`); };
+t('DS-626 AC4 pr-ninja\'s and forewatt\'s RUNS ON are red, and solo\'s, api\'s and web\'s are not',
+  ['pr-ninja', 'forewatt', 'solo', 'api', 'web'].map(runsRed).join(' '), 'true true false false false');
+t('DS-626 AC4 the ■ is red', L.raw().some((x) => x.includes(`${RED}■`)), true);
+L.done();
+// AC2: at its weekly limit.
+limitReading(null, 'seven_day', [0.4, at(24, 14, 5)], [1, at(27, 6, 0)]);
+L = await usage();
+f = L.frame();
+t('DS-626 AC2 the default at its weekly limit: the headline says so', f[3],
+  'me@example.test, the default, is at its weekly limit until Tue 06:00. Its workers start again then.');
+t('DS-626 AC2 and the ■ note starts them then', f.find((l) => l.startsWith('■ ')), '■ pr-ninja and forewatt wait for me@example.test: 11 tickets ready, starting at Tue 06:00.');
+L.done();
+// AC5: desk-skills (1 ready) pinned to work, at its 5-hour limit, while the default has room.
+claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
+limitReading('work', 'five_hour', [1, at(24, 15, 40)], [0.72, at(26, 9, 0)]);
+repo();
+config('acme__api');
+config('acme__web');
+config('acme__desk-skills', 'work@example.test');
+batch('acme__desk-skills', 0, 1);
+L = await usage();
+f = L.frame();
+t('DS-626 AC5 a pinned subscription at its limit: the headline is the usual one', f[3], "Workers run on me@example.test, this computer's default, unless their repo is pinned.");
+t('DS-626 AC5 its ■ note names the one repo and its one ticket', f.filter((l) => l.startsWith('■ ')).join('\n'), '■ desk-skills waits for work@example.test: 1 ticket ready, starting at 15:40.');
+t('DS-626 AC5 and the line under it', f[f.findIndex((l) => l.startsWith('■ ')) + 1], WAIT_LAST);
+L.done();
+// AC8: the default and work both at their 5-hour limits.
+limitReading(null, 'five_hour', [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
+L = await usage();
+f = L.frame();
+t('DS-626 AC8 two at their limits: the headline is the default\'s', f[3], 'me@example.test, the default, is at its 5-hour limit until 14:05. Its workers start again then.');
+t('DS-626 AC8 a ■ note each, the default\'s first, then the one line', f.slice(f.findIndex((l) => l.startsWith('■ ')), f.indexOf(WAIT_LAST) + 1).join('\n'), [
+  '■ pr-ninja, forewatt, solo and api wait for me@example.test: 12 tickets ready, starting at 14:05.',
+  '■ desk-skills waits for work@example.test: 1 ticket ready, starting at 15:40.', WAIT_LAST].join('\n'));
+L.done();
+// AC7: no subscription at its limit.
+claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
+claudeReading('work', [0.58, at(24, 13, 20)], [0.72, at(26, 9, 0)]);
+L = await usage();
+f = L.frame();
+t('DS-626 AC7 no subscription at its limit: no ■ note and no "Nothing moves" line', `${f.some((l) => l.startsWith('■'))} ${f.some((l) => l.includes('Nothing moves to another subscription on its own.'))}`, 'false false');
+t('DS-626 AC7 and the hint is back under the repo table', f.includes(HINT), true);
+L.done();
+for (const slug of ['acme__pr-ninja', 'acme__forewatt', 'acme__desk-skills']) { config(slug, false); rmSync(join(env.DESK_HOME, 'repos', slug), { recursive: true, force: true }); }
+config('acme__web', 'work@example.test');
 
 // ---- DS-472 AC5: a Codex plan with no 5-hour window
 codexReading(join(H, '.codex'), null, [27, at(26, 9, 0)], 'prolite');

@@ -1981,7 +1981,45 @@ function usageTable(repos, now, checked = null) {
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
   // One login of a tool is its default, whatever the file says.
   for (const list of [claude, codex]) if (list.length === 1) list[0].use = { ...list[0].use, def: list[0].login, isDefault: true };
+  for (const x of claude) x.limit = limitOf(x, now);
   return { claude, codex, following: uses.following.map((slug) => repoName(repos, slug)), repos: repoUses(repos, uses.bySlug) };
+}
+
+// A Claude subscription's limit while it holds: a bench a batch left on it, else a window its newest
+// reading has full before that window resets, the one lifting last where both are.
+//   -> { type, at } (`at` epoch seconds, or null with no reset time) | null
+function limitOf(x, now) {
+  if (x.out) return x.out;
+  const r = x.reading;
+  const full = ['five_hour', 'seven_day'].filter((k) => r?.[k]?.utilization >= 1 && r[k].resetsAt * 1000 > now);
+  if (!full.length) return null;
+  const k = full.reduce((a, b) => (r[b].resetsAt > r[a].resetsAt ? b : a));
+  return { type: k, at: r[k].resetsAt };
+}
+const LIMIT_WORDS = { five_hour: '5-hour limit', seven_day: 'weekly limit' };
+const limitWords = (type) => LIMIT_WORDS[type] ?? 'limit';
+
+// Each subscription at its limit that repos run on, earliest reset first (the default first on a tie):
+//   -> [{ x, limit, repos }], `repos` the repo-table rows whose subscription is that login, the most
+//   tickets ready first.
+function waitingFor(t, repos) {
+  const on = (x) => repos.filter((r) => r.sub?.login?.dir === x.login.dir).sort((a, b) => b.ready - a.ready || a.name.localeCompare(b.name));
+  return t.claude.filter((x) => x.limit).map((x) => ({ x, limit: x.limit, repos: on(x) }))
+    .filter((w) => w.repos.length)
+    .sort((a, b) => (a.limit.at ?? Infinity) - (b.limit.at ?? Infinity) || (b.x.use?.isDefault ? 1 : 0) - (a.x.use?.isDefault ? 1 : 0));
+}
+// The notes under the repo table while repos wait for a subscription at its limit: a red ■ line for each
+// subscription, naming its repos, their ready tickets and when they start, then that nothing switches.
+function waitingLines(waiting, now, w) {
+  if (!waiting.length) return [];
+  const note = ({ x, limit, repos }) => {
+    const ready = repos.reduce((a, r) => a + r.ready, 0);
+    const names = repos.flatMap((r, i) => [...(i ? [[i === repos.length - 1 ? ' and ' : ', ', GREY]] : []), [r.name, BOLD]]);
+    const segs = [...names, [` wait${repos.length === 1 ? 's' : ''} for ${loginLabel(x.login)}: `, GREY], [`${ready} ticket${ready === 1 ? '' : 's'} ready`, BOLD],
+      [limit.at != null ? `, starting at ${resetText(limit.at * 1000, now)}.` : ', starting once its limit lifts.', GREY]];
+    return wrapSegs(segs, Math.max(20, w - 2)).map((l, i) => segLine([i ? ['  ', null] : ['■ ', FAIL], ...l]));
+  };
+  return [...waiting.flatMap(note), ...leadLines('  ', [['Repos pinned elsewhere keep running. Nothing moves to another subscription on its own.', GREY]], w)];
 }
 
 // Every repo desk knows here, once each, by name: { slug, name, sub, workers, ready }. `sub` is its
@@ -2032,13 +2070,14 @@ const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${
 
 // The repo table under the subscriptions: each repo, the subscription it runs on, whether its row pins
 // it (an email that is no subscription here still pins it) or it follows the default, and its running
-// workers and ready tickets, a zero grey. A repo whose row cannot be read shows a grey dash.
+// workers and ready tickets, a zero grey. A repo whose row cannot be read shows a grey dash. A repo
+// waiting for its subscription's limit to lift (`waits`) has that subscription in red.
 const R_REPO = 16, R_RUNS = 28, R_SET = 13, R_WORKERS = 9, R_READY = 8;
 const repoUseHead = () => bold(`  ${pad('REPO', R_REPO)}${pad('RUNS ON', R_RUNS)}${pad('SET', R_SET)}${rpad('WORKERS', R_WORKERS)}${rpad('READY', R_READY)}`);
-function repoUseRow(x, open = false) {
+function repoUseRow(x, open = false, waits = false) {
   const s = x.sub;
   const on = s ? (s.login ? loginLabel(s.login) : s.email) : null;
-  const runs = on ? [[cut(on, R_RUNS - 3), null], open ? [' ▴', HUE.blue] : [' ▾', GREY]] : [['—', GREY]];
+  const runs = on ? [[cut(on, R_RUNS - 3), waits ? FAIL : null], open ? [' ▴', HUE.blue] : [' ▾', GREY]] : [['—', GREY]];
   const set = !s ? ['—', GREY] : s.source === 'default' ? ['○ default', GREY] : ['● pinned', HUE.blue];
   const n = (v) => [String(v), v ? null : GREY];
   const segs = [['  ', null], ...fitCell([[cut(x.name, R_REPO - 1), null]], R_REPO), ...fitCell(runs, R_RUNS), ...fitCell([set], R_SET),
@@ -2091,12 +2130,18 @@ function dropdownRows(d) {
 // The grey line under the repo table, saying how to change a repo's subscription.
 const repoHint = () => segLine([['  Select a repo and press ', GREY], ['enter', BOLD], [', or click its subscription, to change which one it runs on.', GREY]]);
 
-// The line under the tabs: a login that is signed out, which desk can't use; else with one login per
-// tool, that every worker runs on it; else the Claude default, which every repo not pinned runs on.
-function usageHeadline(t) {
+// The line under the tabs: the Claude default at its limit, and when its workers start again; else a
+// login that is signed out, which desk can't use; else with one login per tool, that every worker runs
+// on it; else the Claude default, which every repo not pinned runs on.
+function usageHeadline(t, now) {
+  const def = t.claude.find((x) => x.use?.isDefault);
+  const l = def?.limit;
+  if (l) {
+    return segLine([[loginLabel(def.login), BOLD], [`, the default, is at its ${limitWords(l.type)}`, GREY],
+      ...(l.at != null ? [[' until ', GREY], [resetText(l.at * 1000, now), null], ['. Its workers start again then.', GREY]] : [['. Its workers start again once it lifts.', GREY]])]);
+  }
   const out = [...t.claude, ...t.codex].find((x) => x.check?.state === 'signed out');
   if (out) return segLine([[loginLabel(out.login), BOLD], [" isn't signed in yet, so desk can't use it.", GREY]]);
-  const def = t.claude.find((x) => x.use?.isDefault);
   if (!def || (t.claude.length <= 1 && t.codex.length <= 1)) return segLine([['Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.', GREY]]);
   return segLine([['Workers run on ', GREY], [loginLabel(def.login), BOLD], [", this computer's default, unless their repo is pinned.", GREY]]);
 }
@@ -2150,13 +2195,18 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   const claudeRows = table('SUBSCRIPTION', 'claude', t.claude), codexRows = table('CODEX', 'codex', t.codex);
   // The repos sit under the subscriptions they run on, so ↓ from the last subscription selects the first
   // repo. A repo whose dropdown is open has it under its row, in place of the hint under the table.
+  // While repos wait for a subscription at its limit, the notes saying so take the hint's place.
   const x = !adding && drop ? u.repos.find((r) => r.slug === drop.slug) : null;
   const d = x ? repoDropdown(x, t.claude, drop.at, now) : null;
+  const waiting = adding ? [] : waitingFor(t, u.repos);
+  const waits = new Set(waiting.flatMap((wt) => wt.repos));
+  const row = (r) => repoUseRow(r, r === x, waits.has(r));
+  const under = waiting.length ? [{ line: '' }, ...waitingLines(waiting, now, w)] : d || adding ? [] : [repoHint()];
   const repoRows = u.repos.length
-    ? [repoUseHead(), ...u.repos.flatMap((r) => (r === x ? [repoUseRow(r, true), ...dropdownRows(d)] : [repoUseRow(r)])), ...(d || adding ? [] : [repoHint()])] : [];
+    ? [repoUseHead(), ...u.repos.flatMap((r) => (r === x ? [row(r), ...dropdownRows(d)] : [row(r)])), ...under] : [];
   const rows = [claudeRows, repoRows, codexRows].filter((b) => b.length).flatMap((b, i) => [...(i ? [{ line: '' }] : []), ...b]);
   const following = u.following;
-  if (adding) return { head: [usageHeadline(t), ''], rows, foot: ['', ...addPanel(adding, t, w)], following };
+  if (adding) return { head: [usageHeadline(t, now), ''], rows, foot: ['', ...addPanel(adding, t, w)], following };
   const all = [...t.claude, ...t.codex];
   const key = t.claude.length <= 1 && t.codex.length <= 1
     ? leadLines('  ', [['If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press ', null], ['a', BOLD], [' to add a login.', null]], w)
@@ -2176,7 +2226,7 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   const read = all.map((x) => x.reading?.at).filter((a) => a != null);
   const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.` : '  No login has a reading yet.');
   const blocks = [key, notes.length ? noteLines(notes, 14, w) : [], [readLine]].filter((b) => b.length);
-  return { head: [usageHeadline(t), ''], rows, foot: blocks.flatMap((b) => ['', ...b]), following, drop: d };
+  return { head: [usageHeadline(t, now), ''], rows, foot: blocks.flatMap((b) => ['', ...b]), following, drop: d };
 }
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
