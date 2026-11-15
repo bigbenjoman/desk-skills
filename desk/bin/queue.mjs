@@ -13,7 +13,7 @@ import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPar
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
-import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, checkLine } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
@@ -43,14 +43,10 @@ function setBase(q, v) {
   q.base = v;
 }
 
-// clears-when --check "<condition>": whether a pass reads it (clears-when.mjs checkLine, which a worker
+// clears-when --check "<condition>": whether a pass reads it (clears-when.mjs runCheck, which a worker
 // runs as clears-when.mjs --check). Reads no queue. Exit 0 naming what it reads as, or 1 listing the forms.
+if (process.argv[2] === 'clears-when' && process.argv[3] === '--check') await runCheck(process.argv.slice(4));
 const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
-if (process.argv[2] === 'clears-when' && process.argv[3] === '--check') {
-  const r = checkLine(process.argv.slice(4).join(' '), { here: hereRepo() });
-  (r.ok ? console.log : console.error)(r.text);
-  process.exit(r.ok ? 0 : 1);
-}
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.

@@ -26,7 +26,7 @@
 //                          the ticket is in the queue of a batch of that repo on this computer (its
 //                          name or owner/name), other than this one, whose orchestrator has a live beat
 //   check "<name>" on pr <n> passes
-//                          every run of that check on the PR's head commit succeeded; several names,
+//                          the latest run of that check on the PR's head commit succeeded; several names,
 //                          each quoted, joined by commas or "and" (`checks "a" and "b" on pr 9 pass`)
 //   commit <sha> on <branch>
 //                          origin's <branch> holds that commit ("is an ancestor of origin/<branch>" too)
@@ -38,8 +38,9 @@
 // run-completed, push-ok (with lease: <sha> for a lease push), base-contains, pr-reviewed {pr, login},
 // file-exists {path, root: abs | worktree | state}, ticket-queued {ticket, repo}, checks-pass
 // {pr, checks}, commit-on {sha, branch} or none.
-// A worker's line that reads as none of them is stored as unreadable {text, why}: the decider restates
-// it once (decider.mjs), and it waits for a person only once the decider has seen it.
+// A worker's line that reads as none of them is stored by the supervisor's pass as unreadable {text,
+// why}: the decider restates it once (decider.mjs), and it waits for a person only once the decider has
+// seen it. A session's pass, where no decider runs, stores none.
 // The pass records one more itself, live-read {reads, head}, for a park waiting on §4 Live reads it
 // runs (live-read.mjs), and settles it in its own section. And links-made {links, pr}, for a ticket that
 // ended on DONE parked on issue links the pass did not make (pass.mjs parkLinks): it holds once each
@@ -70,7 +71,8 @@ const FORMS = [
   [/^commit\s+([0-9a-f]{7,40})\s+(?:is\s+)?(?:on|in|an\s+ancestor\s+of|reachable\s+from)\s+(?:origin\/)?([\w.-]+(?:\/[\w.-]+)*)$/i,
     (m) => ({ kind: 'commit-on', sha: m[1].toLowerCase(), branch: m[2] })],
   [/^gh\s+pr\s+view\s+#?(\d+)((?:\s+\S+)*?)\s+(?:reports|returns|prints|shows|says|is|==?)\s+["'`]?merged["'`]?\.?$/i, (m, here) => {
-    const repo = /(?:^|\s)(?:--repo|-R)[=\s]+["']?([\w.-]+\/[\w.-]+)/.exec(m[2])?.[1];
+    // gh takes [HOST/]OWNER/REPO: the repo is the last two parts.
+    const repo = /(?:^|\s)(?:--repo|-R)[=\s]+["']?(?:[\w.-]+\/)?([\w.-]+\/[\w.-]+)(?=["']?(?:\s|$))/.exec(m[2])?.[1];
     return { kind: 'pr-merged', pr: Number(m[1]), ...(repo && repo.toLowerCase() !== String(here ?? '').toLowerCase() ? { repo } : {}) };
   }],
   [/^none$/i, () => ({ kind: 'none' })],
@@ -146,12 +148,12 @@ const sameRepo = (slug, repo) => {
   const at = s.indexOf('__');
   return s === r || (!String(repo).includes('/') && at > 0 && s.slice(at + 2) === r);
 };
-// A status check on a PR's head, as gh's statusCheckRollup gives it: a check run by its name (or its
-// workflow's "<workflow> / <name>"), or a commit status by its context, case aside.
-const sameCheck = (r, name) => [r?.name, r?.context, r?.workflowName && r?.name ? `${r.workflowName} / ${r.name}` : null]
+// A check on a PR's head, as gate.mjs normaliseRollup gives it: by its name, or its workflow's
+// "<workflow> / <name>", case aside.
+const sameCheck = (r, name) => [r?.name, r?.workflow && r?.name ? `${r.workflow} / ${r.name}` : null]
   .some((n) => n != null && String(n).toLowerCase() === String(name).toLowerCase());
-// SUCCESS for a passed one; otherwise its conclusion, or how far it has got.
-const checkState = (r) => String((r?.context != null ? r.state : r?.status === 'COMPLETED' ? r.conclusion : r?.status) || 'unknown').toUpperCase();
+// success for a passed one; otherwise its conclusion, or how far it has got.
+const checkState = (r) => String((r?.status === 'completed' ? r.conclusion : r?.status) || 'unknown').toLowerCase();
 const queueLabel = (o) => `${o.slug}${o.batch ? ` batch ${o.batch}` : ''}`;
 
 // Whether `ticket` is in a running batch of `repo`. queues: otherQueues() less this batch's own;
@@ -205,7 +207,8 @@ export function describeCond(c) {
 //   reviews(n) → {headRefOid, reviews: [{author: {login}, commit: {oid}}]}
 //   file(c) → bool, the file condPath names is there
 //   queued(ticket, repo) → {holds, note?}, queuedIn over this computer's other queues
-//   checks(n) → {headRefOid, statusCheckRollup: [{name, status, conclusion} | {context, state}]}
+//   checks(n) → {headRefOid, checks: [{name, workflow, status, conclusion}]}, the latest run of each
+//              check on the head (gate.mjs latestPerCheck over normaliseRollup)
 //   commitOn(sha, branch) → {holds, note?}, having fetched origin's branch
 export function checkCond(c, read) {
   try {
@@ -237,10 +240,10 @@ export function checkCond(c, read) {
         if (!p?.headRefOid) throw new Error(`gh pr view ${c.pr}: no head commit`);
         const head = p.headRefOid.slice(0, 9);
         const behind = (c.checks ?? []).flatMap((name) => {
-          const runs = (p.statusCheckRollup ?? []).filter((r) => sameCheck(r, name));
+          const runs = (p.checks ?? []).filter((r) => sameCheck(r, name));
           if (!runs.length) return [`"${name}" has not run`];
-          const bad = runs.find((r) => checkState(r) !== 'SUCCESS');
-          return bad ? [`"${name}" is ${checkState(bad).toLowerCase()}`] : [];
+          const bad = runs.find((r) => checkState(r) !== 'success');
+          return bad ? [`"${name}" is ${checkState(bad)}`] : [];
         });
         return behind.length ? { holds: false, note: `${behind.join(', ')} at ${head}` } : { holds: true, note: `at ${head}` };
       }
@@ -256,12 +259,18 @@ const isMain = (() => {
   catch { return false; }
 })();
 
+// The --check command, for this file and queue.mjs clears-when --check: checkLine on `args` against
+// this repo, printed, exiting 0 or 1.
+export async function runCheck(args) {
+  let here = null;
+  try { here = (await import('./desk-env.mjs')).ghRepo(); } catch { /* outside a desk repo: no repo is this one */ }
+  const r = checkLine(args.join(' '), { here });
+  (r.ok ? console.log : console.error)(r.text);
+  process.exit(r.ok ? 0 : 1);
+}
+
 // A worker's check: its settings allow this, and never queue.mjs.
 if (isMain) {
   if (process.argv[2] !== '--check') { console.error('usage: clears-when.mjs --check "<condition>"'); process.exit(2); }
-  let here = null;
-  try { here = (await import('./desk-env.mjs')).ghRepo(); } catch { /* outside a desk repo: no repo is this one */ }
-  const r = checkLine(process.argv.slice(3).join(' '), { here });
-  (r.ok ? console.log : console.error)(r.text);
-  process.exit(r.ok ? 0 : 1);
+  await runCheck(process.argv.slice(3));
 }

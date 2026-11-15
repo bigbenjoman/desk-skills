@@ -179,8 +179,11 @@ out=$(node "$B/clears-when.mjs" --check 'check "Flows image" on pr 874 passes' 2
 check "DS-563 AC4 clears-when.mjs --check reads the check form" '[ $rc -eq 0 ] && [ "$out" = "reads as: \"Flows image\" passing on PR #874'"'"'s head" ]'
 r=$(node --input-type=module -e "
 import { parseClearsWhen, checkCond } from '$B/clears-when.mjs';
+import { normaliseRollup, latestPerCheck } from '$B/gate.mjs';
 const p = (s, here) => JSON.stringify(parseClearsWhen(s, { here }).cond ?? null);
-const roll = (rows) => ({ checks: () => ({ headRefOid: 'abcdef1234567', statusCheckRollup: rows }) });
+// As pass.mjs reads them: the latest run of each check on the head.
+const roll = (rows) => ({ checks: () => ({ headRefOid: 'abcdef1234567', checks: latestPerCheck(normaliseRollup(rows)) }) });
+const run = (id, at, conclusion) => ({ name: 'Flows image', workflowName: 'images', status: 'COMPLETED', conclusion, startedAt: at, detailsUrl: 'https://github.com/o/r/actions/runs/' + id + '/job/1' });
 const ok = { __typename: 'CheckRun', name: 'Flows image', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'images' };
 const c = { kind: 'checks-pass', pr: 874, checks: ['Flows image', 'Grader image'] };
 console.log([
@@ -195,6 +198,9 @@ console.log([
   JSON.stringify(checkCond({ ...c, checks: ['images / Flows image', 'ci/legacy'] }, roll([ok, { __typename: 'StatusContext', context: 'ci/legacy', state: 'FAILURE' }]))),
   JSON.stringify(checkCond(c, { checks: () => { throw new Error('gh pr view 874: HTTP 502'); } })),
   JSON.stringify(checkCond({ kind: 'pr-merged', pr: 991, repo: 'o/r' }, { pr: (n, repo) => ({ state: repo === 'o/r' ? 'MERGED' : 'OPEN' }) })),
+  JSON.stringify(checkCond({ ...c, checks: ['Flows image'] }, roll([run(1, '2026-11-01T10:00:00Z', 'FAILURE'), run(2, '2026-11-01T11:00:00Z', 'SUCCESS')]))),
+  JSON.stringify(checkCond({ ...c, checks: ['Flows image'] }, roll([run(2, '2026-11-01T11:00:00Z', 'SUCCESS'), run(3, '2026-11-01T12:00:00Z', 'FAILURE')]))),
+  p('gh pr view 991 --repo github.com/o/r --json state reports MERGED'), p('gh pr view 991 -R github.com/O/R reports MERGED', 'o/r'),
 ].join('|'));
 ")
 check "DS-563 AC1 a gh pr view command reporting MERGED reads as that PR merged, in the repo it names" \
@@ -213,6 +219,10 @@ check "DS-563 a check named as workflow / job matches, and a failed commit statu
   '[ "$(cut -d"|" -f15 <<< "$r")" = "{\"holds\":false,\"note\":\"\\\"ci/legacy\\\" is failure at abcdef123\"}" ]'
 check "DS-563 a failed checks read is an error, not holding" '[ "$(cut -d"|" -f16 <<< "$r")" = "{\"error\":\"gh pr view 874: HTTP 502\"}" ]'
 check "DS-563 another repo's PR is read in that repo" '[ "$(cut -d"|" -f17 <<< "$r")" = "{\"holds\":true}" ]'
+check "DS-563 AC2 only a check's latest run counts: a failure a later run passed holds, a pass a later run failed does not" \
+  '[ "$(cut -d"|" -f18,19 <<< "$r")" = "{\"holds\":true,\"note\":\"at abcdef123\"}|{\"holds\":false,\"note\":\"\\\"Flows image\\\" is failure at abcdef123\"}" ]'
+check "DS-563 AC1 a --repo with its host is the last two parts, and this repo's stores none" \
+  '[ "$(cut -d"|" -f20,21 <<< "$r")" = "{\"kind\":\"pr-merged\",\"pr\":991,\"repo\":\"o/r\"}|{\"kind\":\"pr-merged\",\"pr\":991}" ]'
 # DS-542 AC5: a park waiting on main being merged into the batch base.
 parked B-1 A "requeue me once main has been merged into the base"
 out=$(node "$B/queue.mjs" clears-when B-1 "base contains main" 2>&1); rc=$?
@@ -289,7 +299,8 @@ check "DS-581 a file path is read under \$DESK_STATE or the worktree" '[ "$(cut 
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
 
-out=$(node "$B/pass.mjs" 2>&1)
+# The supervisor's pass: only the supervisor starts a decider, so only its pass keeps an unreadable line.
+out=$(node "$B/pass.mjs" --by supervisor 2>&1)
 check "DS-269 AC2 a worker's park records its condition" '[ "$(field C-1 state)" = "\"parked\"" ] && [ "$(field C-1 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":41}" ]'
 check "DS-563 AC3 an unreadable condition is kept for the decider to restate, and reported" \
   '[ "$(field C-2 park.clears_when.kind)" = "\"unreadable\"" ] && [ "$(field C-2 park.clears_when.text)" = "\"when it rains\"" ] && grep -q "C-2: unreadable clears-when (\"when it rains\" is not one of.*), kept for the decider to restate" <<< "$out"'
@@ -372,7 +383,15 @@ pr 41 MERGED false
 printf '{"headRefOid":"%s","statusCheckRollup":[{"name":"Flows image","status":"COMPLETED","conclusion":"SUCCESS"}]}\n' "$(printf d%.0s {1..40})" > "$T/gh/checks-874.json"
 q add V-2 Story A; q park V-2 "set FOO"; q clears-when V-2 "variable FOO set"; touch "$T/gh/vars.fail"
 rm "$T/gh/refuse-feat_P-2" "$T/gh/refuse-feat_P-3"
+# A session's pass (the default): no decider runs, so prose is none, and so is a park a supervised pass
+# left waiting on its restate.
+q add C-9 Story A; q set C-9 state=running branch=feat/C-9 session_id=gone
+say "AUTOPILOT_PARK: waiting on the press kit" "AUTOPILOT_PARK_CLEARS_WHEN: once the press kit is signed off" > "$T/state/logs/C-9.log"
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-563 in a session's pass an unreadable line is recorded none, since no decider runs there" \
+  '[ "$(field C-9 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-9 state)" = "\"parked\"" ] && grep -q "C-9: unreadable clears-when (.*), recorded as none: no decider runs in a session.s pass" <<< "$out"'
+check "DS-563 and a park still waiting on its restate is recorded none, so the digest lists it" \
+  '[ "$(field C-8 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-8 state)" = "\"parked\"" ] && grep -q "C-8: unreadable clears-when \"KAN-1086.s fix PR is merged to main\" recorded as none: no decider runs in a session.s pass" <<< "$out"'
 check "DS-496 AC2 the 5xx over: the next pass pushes and requeues" 'on_origin P-2 && [ "$(field P-2 state)" = "\"triaged\"" ]'
 check "DS-496 AC3 a refusal is not tried again" '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ]'
 check "DS-269 AC3 C-1's PR merged: requeued, with one line naming the condition" '[ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(grep -c "C-1: \"PR #41 merged\" holds: requeued" <<< "$out")" = 1 ]'
