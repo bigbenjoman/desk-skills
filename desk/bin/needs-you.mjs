@@ -596,8 +596,9 @@ const standingOf = (repos, r) => repos.find((x) => x.slug === r.slug && x.batch 
 // batch's state folder, so desk-q's count over any of the repo's batches and this list read one register.
 const STEP = 'step:';
 const standingDir = (b) => (b.batch == null ? b.stateDir : resolve(b.stateDir, '..', '..'));
-// The steps in no batch of `q` that hold held ticket `t`'s build, by `stepOf` (personStepOf).
-const startSteps = (q, t, stepOf) => (isHeld(t) ? keysOf(t.held_outside).filter((k) => !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
+// The steps in no batch of `q` that hold held ticket `t`'s build, by `stepOf` (personStepOf). Only
+// those still in its held_by: a person's release leaves held_outside behind (queue.mjs).
+const startSteps = (q, t, stepOf) => (isHeld(t) ? keysOf(t.held_outside).filter((k) => keysOf(t.held_by).includes(k) && !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
 // A needs row whose hold needs nothing but such a step: the step's item lists it, so it is not one of its own.
 const stepHeld = (b, x) => isHeld(x.t) && !heldAsks(x.t) && holdOf(b.q, x.t, b.ctx).step != null;
 // Every ticket in any of the repo's batches waiting on the step, read from the queues on disk, so a

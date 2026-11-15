@@ -202,7 +202,9 @@ function holdContext(r) {
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
 // when nothing moves until they act, which `text` names; `act` is the command to run, where one is.
-// Behind several blockers, the first that needs the user speaks for the ticket.
+// Behind several blockers, the first that needs the user speaks for the ticket, and one that is their
+// own step (`step`) only when no other needs them: needs-you lists the step apart, so it must not hide
+// another ask.
 export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   const day = dateHeld(t);
   if (day?.bad) return { k: 'needs', text: `held: ${badLabelText(day.label)}`, act: releaseCmd(t.key) };
@@ -217,7 +219,7 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   seen.add(t.key);
   const each = open.map((b) => blockerHold(q, t.key, b, ctx, seen));
   seen.delete(t.key);
-  return each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
+  return each.find((e) => e.k === 'needs' && !e.step) ?? each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
 }
 
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.

@@ -1749,6 +1749,17 @@ t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alon
   t('DS-685 AC2 it names one ticket waiting to start and the other waiting to merge', nu[0]?.need,
     'OPS-7 ("Record the webhook payload") is a step only you can take, and one ticket waits to start on it: H-1, and one waits to merge on it: PR #91 (H-2). Do it and move OPS-7 to Done in Jira; the next pass that reads it lifts the hold, and H-1 can start, and you merge them on GitHub');
   t('DS-685 AC2 its put-off inputs name both tickets waiting on it', nu[0]?.waiting.join(), 'H-1,H-2');
+  // Held behind the step and behind a blocker that needs its own action, the ticket keeps its own item
+  // for that blocker; released from the step by hand (held_outside left behind) and held again, the
+  // step no longer holds it.
+  put('mu685', { port: 5687, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: {
+    'B-9': { state: 'done', lane: 'A', result: {} },
+    'H-4': { ...held('OPS-7'), held_by: 'OPS-7|B-9' },
+    'H-5': { ...held('OPS-7'), held_by: 'B-9', park: { question: 'held by orchestrator: blocked by B-9' } } },
+    triage: { 'H-4': { blockers: [input] }, 'H-5': { blockers: [input] } } });
+  const mu = N.collect({ word: 'mu685' }).items;
+  t('DS-685 a step never hides another blocker that needs you: the ticket keeps its own item for it', mu.some((i) => i.t.key === 'H-4' && /B-9 finished with no PR: let it start/.test(i.need)), true);
+  t('DS-685 the step item names only the ticket its held_by still holds behind it', mu.find((i) => i.kind === 'step')?.waiting.join(), 'H-4');
 }
 
 // The pass undrafted a PR on the desk-review a worker posted, so nothing is left for the person.
