@@ -304,8 +304,20 @@ if [ ! -f "$OUT" ]; then
   echo "FAIL: $TICKET produced no triage record at $OUT (an empty run can also be the account session limit)" >&2
   exit 1
 fi
-node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps"); const n=d.blocker_needs; if(n!==undefined&&!(n&&typeof n==="object"&&!Array.isArray(n)&&Object.values(n).every((x)=>x&&typeof x==="object"&&["build","merge","none"].includes(x.needs)))) throw new Error("bad blocker_needs");' "$OUT" \
+node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps");' "$OUT" \
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
+# Each call in blocker_needs is one of batch-state.mjs's BLOCKER_CALLS. Its readers still take a record
+# written before the three calls, with a boolean, but a fresh one must give a call.
+node --input-type=module - "$OUT" "$DESK_BIN" <<'CALLS_END' \
+  || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, bin] = process.argv.slice(2);
+const { BLOCKER_CALLS } = await import(pathToFileURL(join(bin, 'batch-state.mjs')).href);
+const n = JSON.parse(readFileSync(out, 'utf8')).blocker_needs;
+if (n !== undefined && !(n && typeof n === 'object' && !Array.isArray(n) && Object.values(n).every((x) => x && typeof x === 'object' && BLOCKER_CALLS.includes(x.needs)))) throw new Error('bad blocker_needs');
+CALLS_END
 # Only the questions the user must answer stay in `unknowns`, as strings every reader of the record
 # takes them as; each call taken on its recommendation goes to `decided`, logged when the ticket is
 # admitted. `verify_only` holds only with criteria named in `already_met`.

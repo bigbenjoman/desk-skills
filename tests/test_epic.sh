@@ -468,9 +468,12 @@ check "DS-568 AC3: a ticket with another label is planned as before" '[ "$(qg KA
 r KAN-455 A '[]' '"labels":["operator-task"]'
 r KAN-456 A "[$(nb KAN-455)]"
 r KAN-457 A '[]'
+r KAN-458 A "[$(nb KAN-455)]" '"blocker_needs":{"KAN-455":{"needs":"build","why":"the build reads its images"}}'
 printf '{"parent":"KAN-100","containers":{"KAN-460":{"subtasks":["KAN-457"],"blocked_by":[{"key":"KAN-455","category":"new"}]}}}' > "$T/state/expansion.json"
 node "$B/queue.mjs" init s568c >/dev/null; node "$B/queue.mjs" set-batch epic=KAN-100 >/dev/null
-out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-455 KAN-456 KAN-457 2>&1); rc=$?
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-455 KAN-456 KAN-457 KAN-458 2>&1); rc=$?
+check "DS-687 AC6: a step in the batch that triage calls needed to build is not merged after, and is asked about" \
+  '[ "$(qg KAN-458 .merge_after)" = null ] && printf "%s" "$out" | grep -q "\[KAN-458\] KAN-458 is blocked by KAN-455, which this batch will not build (your step, which triage found it needs to build: the build reads its images)"'
 check "DS-568 AC1: a lane A ticket labelled as the person's step parks on the label, and the one it blocks merges after it" \
   '[[ "$(qg KAN-455 .park.question)" == "the person'\''s step: labelled operator-task"* ]] && [ "$(qg KAN-456 .held_by)" = null ] && [ "$(qg KAN-456 .merge_after)" = KAN-455 ]'
 check "DS-568 AC2: a step inherited from a container story is asked about, never a merge hold the pass would lift" \

@@ -264,7 +264,7 @@ config yes
 rec N-6 A "$(needs OUT-26 '"none"' 'touches none of its files')"
 search N-6; out=$(intake)
 check "DS-687 AC4/AC5: without autopilot-judgement yes, a blocker called not needed is asked, as plan-batch asks it" \
-  '[ "$(qget tickets.N-6)" = undefined ] && [[ "$(handed N-6)" == "handed: N-6 is blocked by OUT-26 (not started), which is not in this batch: add OUT-26 to the batch, or confirm it can start without it (triage: touches none of its files)" ]]'
+  '[ "$(qget tickets.N-6)" = undefined ] && [[ "$(handed N-6)" == "handed: N-6 is blocked by OUT-26 (not started), which is not in this batch: add OUT-26 to the batch, or run /desk-admit N-6 again once OUT-26 is Done: triage found it is not needed (touches none of its files), but intake starts a ticket without its blocker only where §3 autopilot-judgement is yes" ]]'
 # AC6: a person's step and triage's call pointing different ways hold as the one that holds more. OPS-21
 # is a Task saying apply (a step: merge) that triage calls build; OPS-22 the same, called none.
 rec N-7 A '"blockers":[{"key":"OPS-21","category":"new","type":"Task","summary":"Apply the billing migration"}],"blocker_needs":{"OPS-21":{"needs":"build","why":"the build reads the new table"}}'
@@ -298,6 +298,10 @@ rec S-7 A '"blockers":[{"key":"S-1","category":"done","type":"Story","summary":"
 search S-7; out=$(intake)
 check "DS-568 AC2: once the step is Done, though still in the batch, a ticket it blocks is held by nothing" \
   '[ "$(qget tickets.S-7.state)" = triaged ] && [ "$(qget tickets.S-7.held_by)" = null ] && [ "$(qget tickets.S-7.merge_after)" = undefined ]'
+rec S-8 A '"blockers":[{"key":"S-1","category":"new","type":"Story","summary":"Rebuild the images"}],"blocker_needs":{"S-1":{"needs":"build","why":"the build reads the images"}}'
+search S-8; out=$(intake)
+check "DS-687 AC6: a step in the batch that triage calls needed to build holds the build, not only the merge" \
+  '[ "$(qget tickets.S-8.state)" = parked ] && [ "$(qget tickets.S-8.held_by)" = S-1 ] && [ "$(qget tickets.S-8.merge_after)" = undefined ]'
 rec S-6 C '"labels":["ben-step"],"unknowns":["which region?"]'
 search S-6; out=$(intake)
 check "DS-568 AC1: whatever its lane or open questions, it is admitted parked as the person'\''s step, not handed on" \

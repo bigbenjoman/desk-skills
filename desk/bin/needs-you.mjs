@@ -76,11 +76,11 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
+import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, blockerHold, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, triageGate, EXIT } from './batch-state.mjs';
 import { reviewerRecord } from './health.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
@@ -600,16 +600,13 @@ const standingDir = (b) => (b.batch == null ? b.stateDir : resolve(b.stateDir, '
 const waitingOn = (slug, key) => listBatches(slug)
   .flatMap((b) => { try { return Object.values(readQueue(b.queue).tickets ?? {}); } catch { return []; /* no queue there */ } })
   .filter((t) => !t.merged_at && t.state !== 'failed' && keysOf(t.merge_after).includes(key)).map((t) => t.key).sort();
-const labelsIn = (slug, id) => {
-  try { return [].concat(repoConfigValues(slug, id) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); } catch { return []; }
-};
 // Whether ticket `t`'s merge_after key `k` is no step of the person's but a blocker triage called needed
-// only to merge (batch-state.mjs blockerHold): another ticket's code, which the pass lifts once it is Done,
-// with nothing for the person to do.
+// only to merge (batch-state.mjs triageGate): another ticket's code, which the pass lifts once it is Done
+// and landed, with nothing for the person to do.
 const mergeGate = (b, t, k) => {
   const rec = triageOf(b.stateDir, t.key);
   const bl = (Array.isArray(rec?.blockers) ? rec.blockers : []).find((x) => x?.key === k);
-  return !!bl && blockerHold(bl, rec, labelsIn(b.slug, 'person-step-labels'), labelsIn(b.slug, 'person-input-labels'))?.by === 'triage';
+  return triageGate(bl, rec, personStepLabels(b.slug), personInputLabels(b.slug));
 };
 function stepItems(batches) {
   const waits = new Map();

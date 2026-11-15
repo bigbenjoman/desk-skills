@@ -719,17 +719,18 @@ export function configValues(id) {
   return configValuesIn(parseConfig(), id);
 }
 
-// A labels row's items, lowercased: [] when the row is unset or `none`, and with no config.
-function labelsRow(id) {
-  try { return [].concat(configValues(id) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
+// A labels row's items, lowercased: [] when the row is unset or `none`, and with no config. With `slug`,
+// that repo's config's row instead of this one's.
+function labelsRow(id, slug = null) {
+  try { return [].concat((slug == null ? configValues(id) : repoConfigValues(slug, id)) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
   catch { return []; }
 }
 // §4 Person-step labels: the labels marking a ticket as a step only the person takes, which holds the
-// merge of a ticket it blocks (batch-state.mjs labelPark, personStep).
-export function personStepLabels() { return labelsRow('person-step-labels'); }
+// merge of a ticket it blocks (batch-state.mjs labelPark, personStep). With `slug`, that repo's.
+export function personStepLabels(slug = null) { return labelsRow('person-step-labels', slug); }
 // §4 Person-input labels: a step only the person takes that produces something the build reads (a
-// fixture, a recorded response, a key), which holds the build of a ticket it blocks.
-export function personInputLabels() { return labelsRow('person-input-labels'); }
+// fixture, a recorded response, a key), which holds the build of a ticket it blocks. With `slug`, that repo's.
+export function personInputLabels(slug = null) { return labelsRow('person-input-labels', slug); }
 
 // §4 Required fields for an issue type, or for every type with none named: {need: [field id, in rule order],
 // malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}. No config reads as no rules. The

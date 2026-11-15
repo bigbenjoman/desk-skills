@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -3245,14 +3245,25 @@ const epicMerged = (qO, key) => {
 // A ticket admitted with blockers in no batch that are the person's steps (merge_after) is built as any
 // other, and the merge driver holds its PR. Each step is lifted once its triage record's `blockers`
 // read it Done (a step has no code to land), or no longer list it; lifting the last lets the driver
-// merge it, in the order the batch's own holds give.
+// merge it, in the order the batch's own holds give. A blocker in no batch that triage called needed only
+// to merge (triageGate) is another ticket's code, so it is lifted as an outside hold is: once Done and on
+// this batch's base, or Done alone where its Jira Repository is another configured repo.
 {
   const qM = queue();
+  const stepLabels = E.personStepLabels();
+  const inputLabels = E.personInputLabels();
+  const landed = new Map();
+  const landedHere = (p) => {
+    if (!landed.has(p)) { const a = E.repoPlacement(triageRec(p)?.repository); landed.set(p, (!!a && !a.unknown) || landedOn(p, DEFAULT_BRANCH) === true); }
+    return landed.get(p);
+  };
   for (const t of Object.values(qM.tickets).filter(waitsOnStep)) {
     const steps = keysOf(t.merge_after);
-    const blockers = triageRec(t.key)?.blockers;
+    const rec = triageRec(t.key);
+    const blockers = rec?.blockers;
     if (!Array.isArray(blockers)) continue;
-    const doneNow = steps.filter((p) => blockers.some((b) => b?.key === p && b.category === 'done'));
+    const doneNow = steps.filter((p) => blockers.some((b) => b?.key === p && b.category === 'done'
+      && (qM.tickets[p] || !triageGate(b, rec, stepLabels, inputLabels) || landedHere(p))));
     const unlinked = steps.filter((p) => !blockers.some((b) => b?.key === p));
     const left = steps.filter((p) => !doneNow.includes(p) && !unlinked.includes(p));
     if (left.length === steps.length) continue;

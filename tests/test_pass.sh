@@ -1405,6 +1405,18 @@ check "DS-407 a step that joined the batch still holds the merge while it is ope
 ops1 'done'; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-407 a step that joined the batch is lifted once Jira has it Done" '[ "$(field J-8 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-8: OPS-1 Done; free to merge"'
 q drop OPS-1; q drop J-8
+# A blocker triage called needed only to merge is another ticket's code, not a step: Done in Jira lifts
+# its merge gate only once its PR is on the base, as an outside hold is lifted.
+x7gate(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"X-7","fields":{"summary":"Ship the flag","issuetype":{"name":"Story"},"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-12.json"
+  printf '[{"number":70,"state":"%s","title":"fix(x): X-7 a thing","headRefName":"fix/X-7-thing","baseRefName":"main","mergeCommit":null}]\n' "$2" > "$T/prs-x7.json"
+  q set J-12 outside_blockers_read=null; }
+q add J-12; q set J-12 state=done result.pr=612 merge_after=X-7
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"new","type":"Story","summary":"Ship the flag"}],"blocker_needs":{"X-7":{"needs":"merge","why":"lands the flag it ships behind"}}}' > "$T/state-j/triage/J-12.json"
+x7gate 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-687 a triage merge gate Done in Jira whose PR has not merged to the base still holds the merge" '[ "$(field J-12 merge_after)" = "\"X-7\"" ] && ! echo "$out" | grep -q "merge hold: J-12"'
+x7gate 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-687 once it is Done and its PR merged to the base, the pass lifts the gate" '[ "$(field J-12 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 Done; free to merge"'
+q drop J-12
 # AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
 out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'

@@ -196,6 +196,10 @@ for (const r of admitted) {
       const br = byKey[k];
       // Held on its own link only: the pass reads a held_outside key against the ticket's own links.
       const direct = handedOff(k) ? r.blockers.find((x) => x?.key === k) : null;
+      // A step in the batch that triage called needed to build holds the build as an input step does.
+      const own = r.blockers.find((x) => x?.key === k);
+      const call = own ? blockerHold(own, r, STEP_LABELS, INPUT_LABELS) : null;
+      const buildCall = call?.by === 'triage' && call.needs === 'build';
       if (br && admittedKeys.has(k)) holdBehind(t, k, 'Jira link');
       else if (direct?.category === 'done') note(t, `blocker ${k} is done (${awayWhy(br)})`);
       else if (direct) {
@@ -205,11 +209,11 @@ for (const r of admitted) {
         // Only on the ticket's own link: the pass lifts merge_after once its own links no longer list the
         // step, so one inherited from a container would be lifted at once, and is asked below instead. A
         // step whose Jira Repository this computer cannot place is asked about too.
-        br && b.category !== 'done' && r.blockers.some((x) => x?.key === k) && !elsewhere(br) && stepParked(br) && !inputStep(br)) {
+        br && b.category !== 'done' && r.blockers.some((x) => x?.key === k) && !elsewhere(br) && stepParked(br) && !inputStep(br) && !buildCall) {
         (mergeAfter[t] ??= []).push(k);
         note(t, `built now, merged only once ${k} (your step) is Done`);
       } else if (br) {
-        const why = !ours.includes(br) ? `assigned to ${br.assignee}` : elsewhere(br) ? awayWhy(br) : inputStep(br) ? 'your input step: the build reads what it makes' : stepParked(br) ? 'your step' : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
+        const why = !ours.includes(br) ? `assigned to ${br.assignee}` : elsewhere(br) ? awayWhy(br) : inputStep(br) ? 'your input step: the build reads what it makes' : stepParked(br) && buildCall ? `your step, which triage found it needs to build: ${call.why}` : stepParked(br) ? 'your step' : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
         ask(t, `${t} is blocked by ${k}, which this batch will not build (${why}): finish ${k} first, or confirm ${t} can start without it`);
       } else if (b.category === 'done') note(t, `blocker ${k} is done`);
       else {

@@ -71,7 +71,7 @@ import { machineCap } from './borrow.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
-import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, personStep, labelPark, personStepPark, blockerHold, startWithout } from './batch-state.mjs';
+import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
@@ -160,8 +160,8 @@ export function landedOn(key, base) {
 // each is both; `failed`, open ones that failed in the batch, which nothing releases; `merge`, open
 // ones in no batch whose step only the person takes holds the merge (personStep 'merge'), or open ones in
 // the batch parked as the person's step (personStepPark), which hold its merge, not its build, until
-// each is Done; an open step carrying a §4 Person-input label (personStep 'build') holds its build, as
-// `held` in the batch and `outside` out of it. A ticket that is itself the person's step (labelPark) is
+// each is Done; an open step carrying a §4 Person-input label (personStep 'build'), or one triage called
+// needed to build (blockerHold 'build'), holds its build, as `held` in the batch and `outside` out of it. A ticket that is itself the person's step (labelPark) is
 // held by nothing: no worker builds it.
 // An open blocker in no batch is held as plan-batch holds it (blockerHold): the person's step and
 // triage's call in blocker_needs, the one that holds more winning. One triage calls needed only to merge
@@ -178,7 +178,8 @@ function holdsFor(rec, tickets, base) {
   for (const b of Array.isArray(rec.blockers) ? rec.blockers : []) {
     const t = tickets[b.key];
     // A step has no code to land, so once Done it holds nothing, though it is still in the batch.
-    if (t && personStepPark(t)) { if (b.category !== 'done') out[personStep(b, rec, stepLabels, inputLabels) === 'build' ? 'held' : 'merge'].push(b.key); }
+    // Triage calling it needed to build holds the build too, as for one in no batch (blockerHold).
+    if (t && personStepPark(t)) { if (b.category !== 'done') out[blockerHold(b, rec, stepLabels, inputLabels)?.needs === 'build' ? 'held' : 'merge'].push(b.key); }
     else if (t) {
       if (b.category !== 'done') out[t.state === 'failed' ? 'failed' : 'held'].push(b.key);
       else if (t.state !== 'failed' && !t.merged_at && !(t.state === 'done' && t.result?.pr == null)) out.held.push(b.key);
@@ -189,7 +190,7 @@ function holdsFor(rec, tickets, base) {
       if (!hold || hold.needs === 'build') out.outside.push(b.key);
       else if (hold.needs === 'merge') { out.merge.push(b.key); if (hold.by === 'triage') out.gates.push(b.key); }
       else if (judgement) out.free.push({ key: b.key, status, why: hold.why });
-      else out.ask.push(`${rec.ticket ?? 'it'} is blocked by ${b.key} (${status}), which is not in this batch: add ${b.key} to the batch, or confirm it can start without it (triage: ${hold.why})`);
+      else out.ask.push(`${rec.ticket ?? 'it'} is blocked by ${b.key} (${status}), which is not in this batch: add ${b.key} to the batch, or run /desk-admit ${rec.ticket ?? 'it'} again once ${b.key} is Done: triage found it is not needed (${hold.why}), but intake starts a ticket without its blocker only where §3 autopilot-judgement is yes`);
     }
   }
   return out;

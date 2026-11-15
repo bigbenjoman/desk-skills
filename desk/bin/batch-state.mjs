@@ -446,6 +446,12 @@ export function blockerHold(b, rec, stepLabels = [], inputLabels = []) {
   if (step) return { needs: step, by: 'step', why: step === 'build' ? 'your input step: the build reads what it makes' : 'your step' };
   return call ? { needs: call.needs, by: 'triage', why: call.why } : null;
 }
+// Whether blocker `b` holds rec's ticket's merge on triage's call alone (blockerHold 'merge' by
+// 'triage'): another ticket's code, no step of the person's, so it is lifted once Done and landed.
+export const triageGate = (b, rec, stepLabels = [], inputLabels = []) => {
+  const hold = b ? blockerHold(b, rec, stepLabels, inputLabels) : null;
+  return hold?.needs === 'merge' && hold.by === 'triage';
+};
 // The call taken where triage found ticket `t` does not need blocker `k` (`status` in Jira, in no batch),
 // logged as plan-batch and intake both log it.
 export const startWithout = (t, k, status, why) => ({ question: `${t} is blocked by ${k} (${status}), which is not in this batch: start without it? Triage: ${why}`,
