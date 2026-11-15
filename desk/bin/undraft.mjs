@@ -534,7 +534,7 @@ export function buildPark(question, readPr, cfg) {
 // ticket is recorded done on that PR; { call: 'ask', pr, head, question } where a row keeps desk from
 // it, the merge question for the person naming that row.
 export function mergePark(cond, readPr, cfg) {
-  if (cond?.kind !== 'pr-merged') return null;
+  if (cond?.kind !== 'pr-merged' || cond.repo) return null;
   const pr = readPr();
   if (pr?.state !== 'OPEN' || Number(pr.number) !== Number(cond.pr)) return null;
   const gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });

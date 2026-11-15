@@ -49,7 +49,8 @@ printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
 case "\$1 \$2" in
-  "pr view") if [ "\$7" = headRefOid,reviews ]; then [ -f "$T/gh/reviews-\$3.json" ] && { cat "$T/gh/reviews-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading reviews of PR \$3" >&2; exit 1; fi
+  "pr view") if [ "\$7" = headRefOid,statusCheckRollup ]; then [ -f "$T/gh/checks-\$3.json" ] && { cat "$T/gh/checks-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading checks of PR \$3" >&2; exit 1; fi
+    if [ "\$7" = headRefOid,reviews ]; then [ -f "$T/gh/reviews-\$3.json" ] && { cat "$T/gh/reviews-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading reviews of PR \$3" >&2; exit 1; fi
     [ -f "$T/gh/pr-\$3.json" ] && { cat "$T/gh/pr-\$3.json"; exit 0; }; echo "gh: HTTP 502 for PR \$3" >&2; exit 1 ;;
   "pr list") h=""; while [ \$# -gt 0 ]; do [ "\$1" = --head ] && h="\$2"; shift; done
     [ -n "\$h" ] || { echo "[]"; exit 0; }
@@ -90,6 +91,14 @@ say "AUTOPILOT_PARK: waiting on the weather" "AUTOPILOT_PARK_CLEARS_WHEN: when i
 q add C-3 Story A; q set C-3 state=running branch=feat/C-3 session_id=gone
 say "AUTOPILOT_PARK_CLEARS_WHEN: pr 3 merged" "AUTOPILOT_PARK: which copy?" > "$T/state/logs/C-3.log"
 pr 41 OPEN true
+# DS-563: KAN-976's command, a check on a PR's head, and prose no form reads.
+q add C-6 Story A; q set C-6 state=running branch=feat/C-6 session_id=gone
+say "AUTOPILOT_PARK: waiting on PR 991" "AUTOPILOT_PARK_CLEARS_WHEN: gh pr view 991 --repo acme/widgets --json state reports MERGED" > "$T/state/logs/C-6.log"
+q add C-7 Story A; q set C-7 state=running branch=feat/C-7 session_id=gone
+say "AUTOPILOT_PARK: waiting on the Flows image build" 'AUTOPILOT_PARK_CLEARS_WHEN: check "Flows image" on pr 874 passes' > "$T/state/logs/C-7.log"
+printf '{"headRefOid":"%s","statusCheckRollup":[{"name":"Flows image","status":"IN_PROGRESS","conclusion":""}]}\n' "$(printf d%.0s {1..40})" > "$T/gh/checks-874.json"
+q add C-8 Story A; q set C-8 state=running branch=feat/C-8 session_id=gone
+say "AUTOPILOT_PARK: waiting on KAN-1086" "AUTOPILOT_PARK_CLEARS_WHEN: KAN-1086's fix PR is merged to main" > "$T/state/logs/C-8.log"
 
 out=$(node "$B/queue.mjs" clears-when C-1 "pr 41 merged" 2>&1); rc=$?
 check "queue.mjs clears-when refuses a ticket that is not parked" '[ $rc -ne 0 ] && grep -q "is not parked" <<< "$out"'
@@ -157,7 +166,63 @@ say "AUTOPILOT_PARK: needs a force-push of feat/F-3. Approve?" "AUTOPILOT_PARK_I
 say "AUTOPILOT_PARK: should I merge rather than force-push?" > "$T/state/logs/F-4.log"
 say "AUTOPILOT_PARK: needs a force-push of feat/F-5, which my settings deny. Approve?" > "$T/state/logs/F-5.log"
 out=$(node "$B/queue.mjs" clears-when E-2 "when it rains" 2>&1); rc=$?
-check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, base contains <branch>, pr <n> reviewed by <login> at head, file <path> exists, ticket <KEY> in <repo> batch, or none" <<< "$out"'
+check "queue.mjs clears-when refuses a condition it cannot read, naming the forms" '[ $rc -ne 0 ] && grep -q "pr <n> merged, pr <n> ready, ticket <KEY> done, variable <NAME> set, run <id> completed, git push origin <branch> succeeds, base contains <branch>, pr <n> reviewed by <login> at head, file <path> exists, ticket <KEY> in <repo> batch, check \"<name>\" on pr <n> passes, commit <sha> on <branch>, gh pr view <n> \[--repo <owner/name>\] reports MERGED, or none" <<< "$out"'
+# DS-563 AC4: a worker checks its line before it ends, through queue.mjs or the clears-when.mjs its settings allow.
+out=$(node "$B/queue.mjs" clears-when --check "when the fix PR is merged to main" 2>&1); rc=$?
+check "DS-563 AC4 queue.mjs clears-when --check on an unreadable line exits non-zero and prints the forms, one a line" \
+  '[ $rc -ne 0 ] && grep -q "\"when the fix PR is merged to main\" is not a form a pass reads. The forms:" <<< "$out" && grep -qx "  pr <n> merged" <<< "$out" && grep -qx "  check \"<name>\" on pr <n> passes" <<< "$out" && grep -qx "  none" <<< "$out"'
+out=$(node "$B/clears-when.mjs" --check "when the fix PR is merged to main" 2>&1); rc=$?
+check "DS-563 AC4 and so does clears-when.mjs --check, which a worker may run" '[ $rc -eq 1 ] && grep -qx "  commit <sha> on <branch>" <<< "$out"'
+out=$(node "$B/queue.mjs" clears-when --check "gh pr view 991 --repo acme/widgets --json state reports MERGED" 2>&1); rc=$?
+check "DS-563 AC4 a line that reads exits 0, naming what it reads as" '[ $rc -eq 0 ] && [ "$out" = "reads as: PR #991 merged" ]'
+out=$(node "$B/clears-when.mjs" --check 'check "Flows image" on pr 874 passes' 2>&1); rc=$?
+check "DS-563 AC4 clears-when.mjs --check reads the check form" '[ $rc -eq 0 ] && [ "$out" = "reads as: \"Flows image\" passing on PR #874'"'"'s head" ]'
+r=$(node --input-type=module -e "
+import { parseClearsWhen, checkCond } from '$B/clears-when.mjs';
+import { normaliseRollup, latestPerCheck } from '$B/gate.mjs';
+const p = (s, here) => JSON.stringify(parseClearsWhen(s, { here }).cond ?? null);
+// As pass.mjs reads them: the latest run of each check on the head.
+const roll = (rows) => ({ checks: () => ({ headRefOid: 'abcdef1234567', checks: latestPerCheck(normaliseRollup(rows)) }) });
+const run = (id, at, conclusion) => ({ name: 'Flows image', workflowName: 'images', status: 'COMPLETED', conclusion, startedAt: at, detailsUrl: 'https://github.com/o/r/actions/runs/' + id + '/job/1' });
+const ok = { __typename: 'CheckRun', name: 'Flows image', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'images' };
+const c = { kind: 'checks-pass', pr: 874, checks: ['Flows image', 'Grader image'] };
+console.log([
+  p('gh pr view 991 --repo o/r --json state reports MERGED'), p('gh pr view 991 --repo o/r --json state reports MERGED', 'O/R'),
+  p('gh pr view 991 … reports MERGED'), p('gh pr view 991 --json state -q .state returns \"MERGED\"'),
+  p('check \"Flows image\" on pr 874 passes'), p('checks \"Flows image\" and \"Grader image\" on PR #909 pass at its head'),
+  p('commit 68d6155aa is an ancestor of origin/feat/bug-1253-press-kit-key-messages'), p('commit 68D6155AA on main'),
+  p('KAN-1086s fix PR is merged to main'), p('gh pr view 991 reports OPEN'), p('check Flows image on pr 874 passes'),
+  JSON.stringify(checkCond(c, roll([ok, { name: 'Grader image', status: 'COMPLETED', conclusion: 'SUCCESS' }]))),
+  JSON.stringify(checkCond(c, roll([ok, { name: 'Grader image', status: 'IN_PROGRESS', conclusion: '' }]))),
+  JSON.stringify(checkCond(c, roll([ok]))),
+  JSON.stringify(checkCond({ ...c, checks: ['images / Flows image', 'ci/legacy'] }, roll([ok, { __typename: 'StatusContext', context: 'ci/legacy', state: 'FAILURE' }]))),
+  JSON.stringify(checkCond(c, { checks: () => { throw new Error('gh pr view 874: HTTP 502'); } })),
+  JSON.stringify(checkCond({ kind: 'pr-merged', pr: 991, repo: 'o/r' }, { pr: (n, repo) => ({ state: repo === 'o/r' ? 'MERGED' : 'OPEN' }) })),
+  JSON.stringify(checkCond({ ...c, checks: ['Flows image'] }, roll([run(1, '2026-11-01T10:00:00Z', 'FAILURE'), run(2, '2026-11-01T11:00:00Z', 'SUCCESS')]))),
+  JSON.stringify(checkCond({ ...c, checks: ['Flows image'] }, roll([run(2, '2026-11-01T11:00:00Z', 'SUCCESS'), run(3, '2026-11-01T12:00:00Z', 'FAILURE')]))),
+  p('gh pr view 991 --repo github.com/o/r --json state reports MERGED'), p('gh pr view 991 -R github.com/O/R reports MERGED', 'o/r'),
+].join('|'));
+")
+check "DS-563 AC1 a gh pr view command reporting MERGED reads as that PR merged, in the repo it names" \
+  '[ "$(cut -d"|" -f1,2 <<< "$r")" = "{\"kind\":\"pr-merged\",\"pr\":991,\"repo\":\"o/r\"}|{\"kind\":\"pr-merged\",\"pr\":991}" ]'
+check "DS-563 AC1 with no --repo, or other flags, it is this repo's PR" \
+  '[ "$(cut -d"|" -f3,4 <<< "$r")" = "{\"kind\":\"pr-merged\",\"pr\":991}|{\"kind\":\"pr-merged\",\"pr\":991}" ]'
+check "DS-563 AC2 the check form reads one quoted name, or several joined by and" \
+  '[ "$(cut -d"|" -f5,6 <<< "$r")" = "{\"kind\":\"checks-pass\",\"pr\":874,\"checks\":[\"Flows image\"]}|{\"kind\":\"checks-pass\",\"pr\":909,\"checks\":[\"Flows image\",\"Grader image\"]}" ]'
+check "DS-563 a commit on a branch reads, origin/ dropped and the SHA lower-cased" \
+  '[ "$(cut -d"|" -f7,8 <<< "$r")" = "{\"kind\":\"commit-on\",\"sha\":\"68d6155aa\",\"branch\":\"feat/bug-1253-press-kit-key-messages\"}|{\"kind\":\"commit-on\",\"sha\":\"68d6155aa\",\"branch\":\"main\"}" ]'
+check "DS-563 prose, a state other than MERGED and an unquoted check name read as no form" '[ "$(cut -d"|" -f9,10,11 <<< "$r")" = "null|null|null" ]'
+check "DS-563 AC2 every named check green at the head holds" '[ "$(cut -d"|" -f12 <<< "$r")" = "{\"holds\":true,\"note\":\"at abcdef123\"}" ]'
+check "DS-563 AC2 one still running, or not run, does not, saying which" \
+  '[ "$(cut -d"|" -f13,14 <<< "$r")" = "{\"holds\":false,\"note\":\"\\\"Grader image\\\" is in_progress at abcdef123\"}|{\"holds\":false,\"note\":\"\\\"Grader image\\\" has not run at abcdef123\"}" ]'
+check "DS-563 a check named as workflow / job matches, and a failed commit status does not hold" \
+  '[ "$(cut -d"|" -f15 <<< "$r")" = "{\"holds\":false,\"note\":\"\\\"ci/legacy\\\" is failure at abcdef123\"}" ]'
+check "DS-563 a failed checks read is an error, not holding" '[ "$(cut -d"|" -f16 <<< "$r")" = "{\"error\":\"gh pr view 874: HTTP 502\"}" ]'
+check "DS-563 another repo's PR is read in that repo" '[ "$(cut -d"|" -f17 <<< "$r")" = "{\"holds\":true}" ]'
+check "DS-563 AC2 only a check's latest run counts: a failure a later run passed holds, a pass a later run failed does not" \
+  '[ "$(cut -d"|" -f18,19 <<< "$r")" = "{\"holds\":true,\"note\":\"at abcdef123\"}|{\"holds\":false,\"note\":\"\\\"Flows image\\\" is failure at abcdef123\"}" ]'
+check "DS-563 AC1 a --repo with its host is the last two parts, and this repo's stores none" \
+  '[ "$(cut -d"|" -f20,21 <<< "$r")" = "{\"kind\":\"pr-merged\",\"pr\":991,\"repo\":\"o/r\"}|{\"kind\":\"pr-merged\",\"pr\":991}" ]'
 # DS-542 AC5: a park waiting on main being merged into the batch base.
 parked B-1 A "requeue me once main has been merged into the base"
 out=$(node "$B/queue.mjs" clears-when B-1 "base contains main" 2>&1); rc=$?
@@ -236,7 +301,18 @@ check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 p
 
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-269 AC2 a worker's park records its condition" '[ "$(field C-1 state)" = "\"parked\"" ] && [ "$(field C-1 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":41}" ]'
-check "DS-269 AC2 an unreadable condition is recorded as none and reported" '[ "$(field C-2 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "C-2: unreadable clears-when (\"when it rains\" is not one of" <<< "$out"'
+check "DS-563 AC3 an unreadable condition is kept for the decider to restate, and reported" \
+  '[ "$(field C-2 park.clears_when.kind)" = "\"unreadable\"" ] && [ "$(field C-2 park.clears_when.text)" = "\"when it rains\"" ] && grep -q "C-2: unreadable clears-when (\"when it rains\" is not one of.*), kept for the decider to restate" <<< "$out"'
+check "DS-563 AC1 KAN-976's gh pr view command is recorded as PR 991 merged" '[ "$(field C-6 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":991}" ]'
+check "DS-563 AC2 a check line is recorded as that check passing, and waits while it runs" \
+  '[ "$(field C-7 park.clears_when)" = "{\"kind\":\"checks-pass\",\"pr\":874,\"checks\":[\"Flows image\"]}" ] && [ "$(field C-7 state)" = "\"parked\"" ] && grep -q "C-7: waiting on ..Flows image. passing on PR #874.s head. (.Flows image. is in_progress at ddddddddd): left parked" <<< "$out"'
+check "DS-563 AC3 prose is kept for the decider, not checked and not none" '[ "$(field C-8 park.clears_when.kind)" = "\"unreadable\"" ] && [ "$(field C-8 state)" = "\"parked\"" ]'
+r=$(node --input-type=module -e "
+import { settlesByScript } from '$B/batch-state.mjs';
+const q = JSON.parse((await import('node:fs')).readFileSync('$DESK_QUEUE', 'utf8'));
+console.log([settlesByScript(q.tickets['C-8']), settlesByScript(q.tickets['E-2'])].join('|'));
+")
+check "DS-563 AC3 a park waiting on its restate is not yet the person's (digest and needs-you leave it out), and one recorded none is" '[ "$r" = "true|false" ]'
 check "DS-269 AC2 a condition printed before the last park is not that park's" '[ "$(field C-3 park.clears_when)" = "{\"kind\":\"none\"}" ]'
 check "DS-269 a condition that does not hold yet says nothing and leaves the park" '! grep -q "C-1: \"" <<< "$out" && ! grep -q "E-4: \"\|E-4: could not" <<< "$out" && [ "$(field E-4 state)" = "\"parked\"" ]'
 check "DS-269 AC4 a lane C park whose condition holds stays, and the report says so" '[ "$(field D-1 state)" = "\"parked\"" ] && grep -q "D-1: \"ABC-9 done\" holds, but it is lane C: left parked for a person" <<< "$out"'
@@ -303,12 +379,23 @@ check "DS-581 AC7 with no studia-zendesk queue it does not hold, and the report 
 
 # ---- AC3: a lane A ticket waiting on something else is requeued ------------------------------------
 pr 41 MERGED false
+# Its first run failed and a later one passed: only the latest run counts.
+fl='{"name":"Flows image","workflowName":"images","status":"COMPLETED","conclusion":"%s","startedAt":"%s","detailsUrl":"https://github.com/acme/widgets/actions/runs/%s/job/1"}'
+printf "{\"headRefOid\":\"%s\",\"statusCheckRollup\":[$fl,$fl]}\n" "$(printf d%.0s {1..40})" FAILURE 2026-11-01T10:00:00Z 1 SUCCESS 2026-11-01T11:00:00Z 2 > "$T/gh/checks-874.json"
 q add V-2 Story A; q park V-2 "set FOO"; q clears-when V-2 "variable FOO set"; touch "$T/gh/vars.fail"
 rm "$T/gh/refuse-feat_P-2" "$T/gh/refuse-feat_P-3"
+# C-8 waited past the restate window with no restate (no decider came, or a session left it); C-2 has
+# just parked.
+q set C-8 'park.clears_when={"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-563 a park no restate reached within the window is recorded none, so the digest lists it" \
+  '[ "$(field C-8 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-8 state)" = "\"parked\"" ] && grep -q "C-8: unreadable clears-when \"KAN-1086s fix PR is merged to main\" not restated within 60 minutes: recorded as none, for the person" <<< "$out"'
+check "DS-563 one still inside the window keeps waiting on its restate" '[ "$(field C-2 park.clears_when.kind)" = "\"unreadable\"" ] && ! grep -q "C-2: unreadable" <<< "$out"'
 check "DS-496 AC2 the 5xx over: the next pass pushes and requeues" 'on_origin P-2 && [ "$(field P-2 state)" = "\"triaged\"" ]'
 check "DS-496 AC3 a refusal is not tried again" '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ]'
 check "DS-269 AC3 C-1's PR merged: requeued, with one line naming the condition" '[ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(grep -c "C-1: \"PR #41 merged\" holds: requeued" <<< "$out")" = 1 ]'
+check "DS-563 AC2 the check green at the PR's head: the pass settles the park" \
+  '[ "$(field C-7 state)" = "\"triaged\"" ] && grep -q "C-7: ..Flows image. passing on PR #874.s head, at ddddddddd. holds: requeued" <<< "$out"'
 check "DS-269 AC6 a failed variable read leaves the park and is named" '[ "$(field V-2 state)" = "\"parked\"" ] && grep -q "V-2: could not check \"repo variable FOO set\" (gh variable list: gh: HTTP 401: Bad credentials): left parked" <<< "$out"'
 check "DS-269 AC4 still lane C: never requeued" '[ "$(field D-1 state)" = "\"parked\"" ]'
 pushpark P-7 A; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
@@ -318,6 +405,16 @@ check "DS-496 a push that reached nothing keeps the park and its condition" \
   '[ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\"" <<< "$out"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 and the next pass that reaches origin pushes it" 'on_origin P-7 && [ "$(field P-7 state)" = "\"triaged\"" ]'
+# While the batch is on a usage hold no decider starts, so a line past the window is not lapsed to none.
+q add C-9 Story A; q park C-9 "waiting on KAN-1087"
+q set C-9 'park.clears_when={"kind":"unreadable","text":"KAN-1087s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'
+q set-batch 'usage_hold={"since":"2026-01-01T00:00:00Z","type":"seven_day","paused":[]}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-563 AC3 on a usage hold, a line past the window keeps waiting for a decider" \
+  '[ "$(field C-9 park.clears_when.kind)" = "\"unreadable\"" ] && ! grep -q "C-9: unreadable" <<< "$out"'
+node -e 'const f = process.argv[1]; const fs = require("fs"); const q = JSON.parse(fs.readFileSync(f, "utf8")); delete q.usage_hold; fs.writeFileSync(f, JSON.stringify(q, null, 2))' "$DESK_QUEUE"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-563 AC3 once the hold lifts it lapses as before" '[ "$(field C-9 park.clears_when)" = "{\"kind\":\"none\"}" ]'
 
 # ---- the decider records a condition, and gets an answer to a park it was never handed --------------
 node "$B/answer.mjs" E-2 "go with the second option" >/dev/null 2>&1
@@ -334,5 +431,32 @@ console.log([allow.includes('Bash(node /b/queue.mjs clears-when:*)'), prompt.inc
 check "DS-269 AC2 the decider may record a condition, and its prompt says how" '[ "$(cut -d"|" -f1,2 <<< "$r")" = "true|true" ]'
 check "DS-269 AC5 an answer since a park never handed on goes to the decider with it" '[ "$(cut -d"|" -f3 <<< "$r")" = "go with the second option" ]'
 check "DS-269 AC5 an answer from before the park does not" '[ "$(cut -d"|" -f4 <<< "$r")" = true ]'
+
+# ---- DS-563 AC3: an unreadable clears-when goes to the decider to restate, and to the person only as none ----
+r=$(node --input-type=module -e "
+import { deciderItems, presort, deciderPrompt, outcome, restateKeys } from '$B/decider.mjs';
+const un = { kind: 'unreadable', text: 'KAN-1086s fix PR is merged to main', why: 'x' };
+const tickets = { 'U-1': { lane: 'A', state: 'parked', park: { question: 'waiting on KAN-1086', clears_when: un } },
+  'U-2': { lane: 'C', state: 'parked', park: { question: 'which layout?', clears_when: un } } };
+const items = deciderItems({ parked: [{ key: 'U-1', question: 'waiting on KAN-1086' }, { key: 'U-2', question: 'which layout?' }] }, { tickets });
+const s = presort(items);
+const prompt = deciderPrompt({ slug: 's', report: '', items: s.ask, rules: '', bin: '/b' });
+const plain = deciderPrompt({ slug: 's', report: '', items: [], rules: '', bin: '/b' });
+const rec = { items: s.ask };
+const restated = { tickets: { 'U-1': { ...tickets['U-1'], park: { ...tickets['U-1'].park, clears_when: { kind: 'pr-merged', pr: 5 } } } } };
+const none = { tickets: { 'U-1': { ...tickets['U-1'], park: { ...tickets['U-1'].park, clears_when: { kind: 'none' } } } } };
+console.log([
+  items[0].restate, items[0].clears, s.ask.map((i) => i.ticket).join(','), s.hand.map((h) => h.item.ticket).join(','), s.waits.length,
+  prompt.includes('  - clears-when to restate: KAN-1086s fix PR is merged to main'), prompt.includes('/b/queue.mjs clears-when <TICKET> none'), plain.includes('to restate'),
+  outcome(rec, { settled: {}, handed: {} }, restated).settled[0]?.did, outcome(rec, { settled: {}, handed: { [s.ask[0].id]: 'only a person' } }, none).handed[0]?.why,
+  restateKeys(items).join(','), restateKeys(items, { tickets: { ...tickets, 'U-2': none.tickets['U-1'] } }).join(','),
+].join('|'));
+")
+check "DS-563 AC3 the decider's item carries the line to restate, and no recorded condition" '[ "$(cut -d"|" -f1,2 <<< "$r")" = "KAN-1086s fix PR is merged to main|" ]'
+check "DS-563 AC3 it goes to the decider session, not the digest or the waits; a lane C one is still handed on" '[ "$(cut -d"|" -f3,4,5 <<< "$r")" = "U-1|U-2|0" ]'
+check "DS-563 AC3 the prompt asks it restated as a form, or recorded none; a prompt without one is unchanged" '[ "$(cut -d"|" -f6,7,8 <<< "$r")" = "true|true|false" ]'
+check "DS-563 AC3 restated as a form: settled, waiting on it" '[ "$(cut -d"|" -f9 <<< "$r")" = "recorded clears-when \"PR #5 merged\", which a later pass checks" ]'
+check "DS-563 AC3 recorded none: handed to the person" '[ "$(cut -d"|" -f10 <<< "$r")" = "only a person" ]'
+check "DS-563 AC3 restateKeys names the tickets whose line is still to restate, against the queue as it stands" '[ "$(cut -d"|" -f11,12 <<< "$r")" = "U-1,U-2|U-1" ]'
 
 echo "clears-when: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
