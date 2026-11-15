@@ -316,12 +316,20 @@ export function readDraft(text) {
   return s ? { ...s, cost } : { why: 'the drafter gave no spine draft or owner table' };
 }
 
-// One headless session with no tools, answering `prompt`: the spawn result. It runs on a Claude login
-// that is not benched (call-login.mjs), or as the caller does when every one is.
+// One headless session with no tools, answering `prompt`: the spawn result. It runs on the repo's
+// subscription (call-login.mjs), at its limit too. A subscription no login here is signed in to runs
+// none: `refused` is the failed result the caller reports, and nothing falls back to the caller's login.
 const headlessArgs = (prompt) => ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
   '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)];
-export const headlessEnv = (env) => callLogin({ env }).env;
-const headless = (claude, prompt, env) => run(claude, headlessArgs(prompt), headlessEnv(env), { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+const headlessCall = (env) => {
+  const c = callLogin({ env });
+  return c.refuse ? { env: null, refused: { status: 1, stdout: '', stderr: `not run: ${c.refuse}` } } : { env: c.env, refused: null };
+};
+export const headlessEnv = (env) => headlessCall(env).env;
+const headless = (claude, prompt, env) => {
+  const c = headlessCall(env);
+  return c.refused ?? run(claude, headlessArgs(prompt), c.env, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+};
 
 // One headless session drafts the plan: {plan} or {why}.
 async function draft({ epic, state, children, env, claude }) {
@@ -329,7 +337,8 @@ async function draft({ epic, state, children, env, claude }) {
   const expansion = readJson(join(state, 'expansion.json'), {});
   const prompt = draftPrompt({ epic, epicText: epicText.status === 0 ? epicText.stdout : '', criteria: expansion.criteria, children, fields: fieldsSection(DRAFT_FIELDS, env) });
   writeFileSync(join(state, 'plan-draft.prompt.md'), prompt);
-  const r = await runLater(claude, headlessArgs(prompt), headlessEnv(env), { timeout: DRAFT_TIMEOUT_MS });
+  const c = headlessCall(env);
+  const r = c.refused ?? await runLater(claude, headlessArgs(prompt), c.env, { timeout: DRAFT_TIMEOUT_MS });
   if (r.error || r.status !== 0) return { why: `the plan drafter failed (${lastLine(r)})` };
   const p = readDraft(r.stdout);
   return p.why ? p : { plan: { epic, spine: null, draft: p.draft, owners: p.owners, contributors: p.contributors, untestable: p.untestable }, cost: p.cost };

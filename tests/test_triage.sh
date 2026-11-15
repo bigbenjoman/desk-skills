@@ -407,24 +407,23 @@ check "DS-394 AC5: a call the person overrode binds as overridden, and the overr
   '[ $rc -eq 0 ] && P0 | grep -qxF -- "- which retry backoff?: took \"fixed\", overriding \"exponential\" (ben) (engineering)" && ! P0 | grep -qF "took \"exponential\""'
 rm -rf "$T/state/briefings" "$T/state/decisions.jsonl"
 
-# DS-468: both passes run on a login that is not benched; with every login benched, or one login, as the
-# shell does. Login a is the default (~/.claude), benched in the queue; b has room.
+# DS-621: both passes run on the repo's subscription, at its limit too; with no subscriptions file, as the
+# shell does. Login a is the default (~/.claude); b, signed in to b@example.com, has room.
 mkdir -p "$T/home/.claude" "$T/home/.claude-logins/b"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `in rotation` |\n' > "$T/subs.md"
-bench(){ printf '{"version":1,"tickets":{},"benched":{%s}}\n' "$1" > "$T/queue.json"; }
-A_BENCH='"default":{"login":"a","config_dir":null,"type":"five_hour","resets_at":null}'
-B_BENCH="\"b\":{\"login\":\"b\",\"config_dir\":\"$T/home/.claude-logins/b\",\"type\":\"five_hour\",\"resets_at\":null}"
+printf '{"oauthAccount":{"emailAddress":"b@example.com"}}\n' > "$T/home/.claude-logins/b/.claude.json"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$T/subs.md"
+hold(){ printf '{"version":1,"tickets":{},"usage_hold":{"type":"five_hour","resets_at":null,"preflight":"X-1","paused":[]}}\n' > "$T/queue.json"; }
 logins(){ tr '\n' ' ' < "$T/logins" | sed 's/ $//'; }
-bench "$A_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
-out=$(DESK_SUBSCRIPTIONS="$T/subs.md" STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC2 AC3: with login a benched, triage and its challenge both run on login b" \
+hold; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+out=$(DESK_SUBSCRIPTIONS="$T/subs.md" DESK_SUBSCRIPTION=b@example.com STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-621 AC1 AC6: with the repo's subscription b, triage and its challenge both run on login b" \
   '[ $rc -eq 0 ] && [ "$(logins)" = "$T/home/.claude-logins/b $T/home/.claude-logins/b" ]'
-bench "$A_BENCH,$B_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+hold; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
 out=$(DESK_SUBSCRIPTIONS="$T/subs.md" STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC6 AC7: with every login benched, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
-bench "$A_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+check "DS-621 AC5: following the default a at its limit, both run on a, the shell's own, not on b" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins" "$T/queue.json"
 out=$(STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC8: with no subscriptions file, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
+check "DS-621 AC7: with no subscriptions file, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
 rm -f "$T/queue.json" "$T/logins" "$T/subs.md"; rm -rf "$T/home/.claude-logins"
 
 # DS-649 AC1: both passes ask for the 5-minute prompt cache.

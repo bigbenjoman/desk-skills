@@ -39,6 +39,14 @@ const REWRITTEN = [
   ['DS-405', "Merging with `--squash` because it's the usual", 1],
   ['DS-460', 'see "Editing the body later" in §4). Keep', 1], // names opening.md, the file holding it
   ['DS-611', 'committed here. Say so, push as before, and offer', 1], // the items run under their locks instead
+  // the uploader takes only the cells' files, in batches, keeps a tags file and stops on a stall
+  ['DS-672', 'It uploads every png/jpg in the directory', 1],
+  ['DS-672', 'bad arguments, missing dir or no images, or an unexpected crash', 1],
+  ['DS-672', 'uploaded, but no `_drag <file>_` placeholder matched', 1],
+  ['DS-672', 'uploaded, but placeholders still left', 1],
+  ['DS-672', 'On 3 or 4 fix the body by hand', 1],
+  ['DS-672', '| 0 | every placeholder replaced |', 1],
+  ['DS-672', '| Re-running the upload after exit 3 or 4 | The assets exist', 1],
   // a saved-canvas PR stitches each board's captures into one image per theme
   ['DS-676', 'so it uploads with the rest', 1],
   ['DS-676', '`built-<board>-<width>.png`, captured as below', 1],

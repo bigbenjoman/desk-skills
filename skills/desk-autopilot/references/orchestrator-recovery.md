@@ -159,7 +159,7 @@ for its own unpushed commits.
 A resume always runs on the login the worker started on (the row's `login`), whatever that login's
 rule is now, because its session lives in that login's folder. If that login has been signed out the
 ticket parks naming the login and its sign-in command, and no session starts. A new session,
-handoffs and requeues included, starts on the login with the most room.
+handoffs and requeues included, starts on the repo's subscription.
 
 **A worker on the person's instruction is never recorded done on an open PR alone.** Ended with no
 marker, or killed past the limit, it parks with the fix left open, so the merge driver keeps holding
@@ -208,22 +208,25 @@ re-running a ticket from scratch.
   `[preflight] usage-limit` when its call gets HTTP 429. The pass leaves that ticket as it was, spawns
   and preflights nothing more that pass, and records the hold on the queue (`usage_hold`), which
   desk-q shows as one note and desk-needs-you as one item. Retrying by hand only burns calls.
-- **With more than one login, a limit benches its own login, not the batch.** A worker or preflight
-  at a limit on one login benches that login (the queue's `benched`, one record per login) until its
-  reset passes or a probe call on it succeeds; one with no reset time waits for the probe. New work
-  starts on the other logins, on standby only once every login in rotation is benched. A worker
-  whose session ended at a login's limit moves to another login that can take new work (the queue's
-  `login_move`), as a fresh session: its transcript stays under its own login. It starts at the stage
-  it reached, from Stage 3 on, when its worktree holds its resume file, and otherwise at Stage 0,
-  its briefing saying why; a fix try starts its task again. Either way the briefing names the uncommitted changes the worktree kept,
-  and the move spends no resume try. With no other login open it stays paused and resumes its own
-  session once its login is back, as with one login. The batch holds as above only once every login
-  is benched, and its hold names each login's reset, earliest first.
-- **The pass's own model calls skip a benched login too.** The decider, triage and its lane
-  challenge, and epic planning's headless calls each start on a usable login no batch of the repo has
-  benched, chosen as a new worker's is (`call-login.mjs`). With every login benched, no decider
-  starts and its items wait for the next one; triage and epic planning run on the caller's own login,
-  as they do with one login.
+- **A limit holds the repo's own work until its subscription's reset, and nothing moves.** Each repo
+  runs on one subscription (`desk-env subscription`: `DESK_SUBSCRIPTION`, else config §3b
+  Subscription, else this computer's default), and every new session starts there. When that
+  subscription is at its limit, the repo's spawns and preflights wait for its reset (or a probe call
+  that succeeds), and a paused worker resumes its own session on the login it started on: no work is
+  carried to another subscription, however much room another has. Repos and batches on other
+  subscriptions carry on as normal, and a worker that started on another login before the repo's
+  subscription changed waits only for that login's own limit, without holding the batch. To move a
+  repo's new work elsewhere, the person changes its subscription or the default (`desk-env
+  subscription set`, desk-q view 6's `d`), and the next worker starts there.
+- **A queue from before subscriptions is cleaned up on its first pass.** A record a pass from before
+  left, of a login set aside at its limit or of a ticket waiting to move to another login, is
+  cleared, and that ticket resumes its own session on its own login, as a paused worker does.
+- **The pass's own model calls run on the repo's subscription too.** The decider, triage and its
+  lane challenge, and epic planning's headless calls start on the subscription the repo's workers use
+  (`call-login.mjs`), never on another login with more room. At its limit no decider starts and its
+  items wait for the next one, while triage and epic planning still run on it. A subscription no
+  login here is signed in to runs none of them: triage fails naming it, and none falls back to
+  another login.
 - **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
   batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
   once; exactly one row that is the same batch with tickets added or removed is the same session.

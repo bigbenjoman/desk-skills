@@ -24,7 +24,8 @@ PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
-# config <codex-review> <pr-images>; $DBROW, when set, is §4 Local database, with a per-ticket database made in it
+# config <codex-review> <pr-images>; $DBROW, when set, is §4 Local database, with a per-ticket database made in it;
+# $SUBROW, when set, is §3b Subscription
 config(){
   local perm="" rows=""
   if [ -n "${DBROW:-}" ]; then
@@ -60,6 +61,7 @@ $perm
 | Field | Recommended | Your setting |
 |---|---|---|
 | Free disk floor (GB) | \`20\` | \`20\` |
+${SUBROW:+| Subscription | \`default\` | \`$SUBROW\` |}
 
 ## 4. Tracker
 | Field | Value |
@@ -288,22 +290,30 @@ q set-batch supervised=false
 mode gh ok; rm -f "$T/state/health.json"
 mkdir -p "$HOME/.claude-logins/b"; : > "$HOME/.claude-logins/b/signed-out"
 export DESK_SUBSCRIPTIONS="$T/subscriptions.md"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `standby` |\n' > "$DESK_SUBSCRIPTIONS"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$DESK_SUBSCRIPTIONS"
+printf '{"oauthAccount":{"emailAddress":"b@example.com"}}\n' > "$HOME/.claude-logins/b/.claude.json"
+# ---- DS-629 AC3: an unused subscription signed out is not checked, and not named
+before=$(calls claude)
+pj
+check "DS-629 AC3 an unused login signed out is not checked" '[ "$(calls claude)" = $((before + 1)) ]'
+check "DS-629 AC3 nor named under STALLED, nor pushed"       '! grep -q "Claude login b" <<< "$out" && [ -z "$(pushes)" ] && grep -q "health: all checks pass" <<< "$out"'
+# ---- DS-629 AC4: this repo pinned to login b
+SUBROW=b@example.com config yes yes; rm -f "$T/state/health.json"
 before=$(calls claude)
 pj
 check "DS-463 AC7 login b is checked in its own folder"     '[ "$(calls claude)" = $((before + 2)) ]'
 check "DS-463 AC7 the default login's result is unchanged"  'grep -q "health: all checks pass" <<< "$out"'
-check "DS-463 AC7 login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
+check "DS-463 AC7 DS-629 AC4 the pinned login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
 check "DS-463 AC7 and pushed under its own key"             '[[ "$(pushes)" =~ health:.+:claude:b ]]'
 rm -f "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
 pj
 check "DS-463 AC7 signed back in, nothing is said of it"    '! grep -q "Claude login b" <<< "$out" && [ -z "$(pushes)" ]'
 
 # ---- DS-602: a listed login whose folder does not exist ----------------------------------------
-# Login c is on standby at a folder never made. Another slot is the same health checks run with its
+# Login c is unused, at a folder never made. Another slot is the same health checks run with its
 # own state folder, on the same machine.
 slot(){ json=$(DESK_AUTOPILOT_STATE="$T/state2" node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs"); out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json"); }
-printf '| `claude` | `c` | `~/.claude-logins/c` | `standby` |\n' >> "$DESK_SUBSCRIPTIONS"
+printf '| `claude` | `c` | `~/.claude-logins/c` | `unused` |\n' >> "$DESK_SUBSCRIPTIONS"
 note_c="claude login c listed at ~/.claude-logins/c, which does not exist: remove its row (desk-env logins remove claude c) or sign it in (CLAUDE_CONFIG_DIR=~/.claude-logins/c claude, then /login)"
 rm -f "$T/state/health.json"
 before=$(calls claude)
@@ -333,6 +343,13 @@ slot
 check "DS-602 a slot whose owner's state folder is gone takes the push over" '[ "$(pushes)" = "health:claude-missing:c" ]'
 pj
 check "DS-602 and the slot it took it from no longer lists it"     '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out"'
+
+# ---- DS-616: the subscriptions file in its default/unused vocabulary ---------------------------
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$DESK_SUBSCRIPTIONS"
+: > "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
+pj
+check "a file saying default and unused: the pinned login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
+rm -f "$HOME/.claude-logins/b/signed-out" "$T/state/health.json"
 unset DESK_SUBSCRIPTIONS
 
 # ---- DS-589: the local Postgres container ------------------------------------------------------

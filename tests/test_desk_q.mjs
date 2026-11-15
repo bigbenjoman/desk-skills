@@ -657,7 +657,7 @@ const shows = (s) => {
   return f.some((l) => /^ +# {2}TICKET/.test(l) || /^ {2}REPO {2,}LAST PASS/.test(l)) ? 'queue' : f.some((l) => l.startsWith('Scale: ')) ? 'timeline'
     : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : f.some((l) => /^ {2}(REPO {8})?EPIC +TITLE +CHILDREN +SHIPS$/.test(l) || l === 'No queued ticket here belongs to an epic.') ? 'epics'
       : f.some((l) => l.startsWith('No cost sources for ') || /^ {2}SUPPLIER +FOR +CHARGED$/.test(l)) ? 'costs'
-        : f.some((l) => /^ {2}CLAUDE +PLAN +RULE +5H +7D +WORKERS$/.test(l)) ? 'usage' : 'none';
+        : f.some((l) => /^ {2}SUBSCRIPTION +PLAN +USE +5H +7D +WORKERS$/.test(l)) ? 'usage' : 'none';
 };
 // Wide enough that every keys line is one line.
 const keysLine = (s) => s.frame().at(-1);
@@ -810,8 +810,8 @@ const want10 = {
   'repo timeline': { yes: ['←→ or 1–6 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
   'repo days': { yes: ['←→ or 1–6 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
   'repo epics': { yes: ['←→ or 1–6 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  'every usage': { yes: ['←→ or 1–6 view', '↑↓ select', 'space change rule', 'x remove'], no: ['esc back', 'enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
-  'repo usage': { yes: ['←→ or 1–6 view', 'space change rule', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'every usage': { yes: ['←→ or 1–6 view', '↑↓ select', 'd make default', 'x remove'], no: ['esc back', 'enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates', 'space change rule'] },
+  'repo usage': { yes: ['←→ or 1–6 view', 'd make default', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
   ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['←→ or 1–6 view', 'z scale', 'a all repos'] },
 };
 t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10).flatMap(([v, { yes, no }]) => [
@@ -1612,13 +1612,19 @@ const p391 = lines(Q.ticketScreen(Q.loadRepos(FIXED).find((r) => r.name === 's39
 t('DS-391 AC1 a blocker the ticket is held behind outside the batch is listed once, outside, with its Jira status, and never as one to let start',
   `${['Blockers  3 · 1 in this batch, 2 open outside it', '  ◌ OUT-1     To Do', '  ◌ OUT-2     Done, not yet on main'].filter((s) => !p391.includes(s)).join(' | ')}|${p391.filter((l) => /^ {2}\S OUT-\d/.test(l)).length}|${p391.some((l) => l.includes('not in this queue'))}`, '|2|false');
 dated('s541', 5541, { hours: twelveHours, tickets: { 'DS-541': { ...heldBy('OUT-2'), held_outside: 'OUT-2', outside_blockers: [] },
-  'DS-542': { ...heldBy('OUT-1'), held_outside: 'OUT-1', outside_blockers: [{ key: 'OUT-1', category: 'new' }] } } });
+  'DS-542': { ...heldBy('OUT-1'), held_outside: 'OUT-1', outside_blockers: [{ key: 'OUT-1', category: 'new' }] },
+  'DS-543': heldBy('DS-542'), 'DS-544': { state: 'running', stage: '3/9' }, 'DS-545': heldBy('DS-544') } });
 writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__s541', 'triage', 'DS-541.json'), JSON.stringify({ ticket: 'DS-541', summary: 'held outside', size: 'M', blockers: [{ key: 'OUT-2', category: 'done' }] }));
 writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__s541', 'triage', 'DS-542.json'), JSON.stringify({ ticket: 'DS-542', summary: 'held outside', size: 'M', blockers: [{ key: 'OUT-1', category: 'new' }] }));
 const r541 = () => Q.loadRepos(FIXED).find((r) => r.name === 's541');
 t('DS-541 AC5 held behind a blocker outside the batch that is Done but not on the base: it says so, never "until it is Done"; an open one still waits until it is Done',
   [railText(Q.ticketScreen(r541(), 'DS-541', { now: FIXED, width: 120 })), railText(Q.ticketScreen(r541(), 'DS-542', { now: FIXED, width: 120 }))].join(' / '),
   'Moves without you: behind OUT-2, outside this batch: Done, waiting for its code to reach main. / Moves without you: behind OUT-1, outside this batch, until it is Done and on main.');
+const starts541 = (key) => (lines(Q.repoScreen(r541(), { now: FIXED })).find((x) => new RegExp(`^ +\\d+ {2}${key} `).test(x)) ?? '').slice(83, 96).trim();
+const T541 = Q.forecastOf(r541(), { now: FIXED }).T;
+t('DS-684 held behind a blocker in no batch, open or Done but not lifted, and anything held behind it: no start date, and STARTS never reads now; behind one in the batch: dated after it',
+  ['DS-542', 'DS-541', 'DS-543', 'DS-545'].map((k) => `${k} ${T541[k] ? T541[k].start >= T541['DS-544'].likely : null} ${starts541(k) === 'now'}`).join(' / '),
+  'DS-542 null false / DS-541 null false / DS-543 null false / DS-545 true false');
 const f168 = lastFrame(S168);
 t('DS-218 AC2 on screen: the count green, the one needing you magenta with the action bold, the outside ones grey',
   [f168.some((l) => l.includes('\x1b[38;5;108m  ✓ 3\x1b[39m')), f168.some((l) => l.includes('◆ DS-150    \x1b[22;39m#175: \x1b[1mdraft · undraft it once it is reviewed\x1b[22m')), f168.some((l) => l.startsWith(`${G}  ◌ OUT-1     To Do\x1b[39m`))].join(), 'true,true,true');
@@ -1927,6 +1933,16 @@ t('DS-279 a required check that never reported or ended neutral needs you, namin
 t('DS-279 and its row names the check and what to do',
   ['R-1', 'R-2'].map((k) => Q.needText({ q: reqQ, ctx: advCtx([], ['e2e']), live: true }, { t: reqQ.tickets[k], k: 'needs', pr: true })).join(' | '),
   '#811 · required check "e2e" has not reported · fix the check or §4 Required checks | #812 · required check "e2e" is neutral · fix the check or §4 Required checks');
+// A skipped check did not pass: the row counts it apart from the passes and from an advisory failure.
+const skip = (name) => ({ ...okCheck(name), conclusion: 'skipped' });
+const skipQ = { tickets: {
+  'S-1': { key: 'S-1', ...prOn(820, [...okChecks(3), skip('docs'), skip('e2e')]) },
+  'S-2': { key: 'S-2', ...prOn(821, okChecks(3)) },
+  'S-3': { key: 'S-3', ...prOn(822, [okCheck('build'), { ...red, name: 'lint' }, skip('docs')]) },
+} };
+t('desk-q a PR with skipped checks counts the passed and skipped apart; all passed reads as before; an advisory failure and a skip are each named once',
+  ['S-1', 'S-2', 'S-3'].map((k) => Q.needText({ q: skipQ, ctx: advCtx(['lint']), live: true }, { t: skipQ.tickets[k], k: 'merging', pr: true })).join(' | '),
+  '#820 · 3 checks passed, 2 skipped · merges at the next pass | #821 · all 3 checks passed · merges at the next pass | #822 · 1 check failed, advisory only, 1 skipped · merges at the next pass');
 // DS-410: the pass records on pr_status the required checks no workflow runs on the PR's base, so a
 // ready PR's row names the trigger, as the undraft path does for a draft.
 const never410 = { e2e: 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/e2e.yml runs on pull requests into main)' };

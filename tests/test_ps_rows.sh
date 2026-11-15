@@ -49,6 +49,9 @@ check "AC3: processList holds the suite with its parent" '[ "$out" = 1 ]'
 printf 'export const chromium = { launchPersistentContext: async () => { console.log("LAUNCHED"); process.exit(0); } };\n' > "$T/x/pw.mjs"
 printf '{"user":"me","cookies":[{"name":"user_session","value":"v","domain":"github.com","path":"/"}],"origins":[]}\n' > "$T/profile.github-session.json"
 : > "$T/images/after-desktop.png"
+# The PR body the uploader reads before it opens the browser: one cell naming that file.
+printf '#!/bin/sh\necho "| _drag after-desktop.png_ |"\n' > "$T/fakes/gh"
+chmod +x "$T/fakes/gh"
 upload(){ (cd "$T" && DESK_UPLOAD_APPROVED=1 DESK_BROWSER_PROFILE="$T/profile" DESK_PLAYWRIGHT="$T/x/pw.mjs" node "$B/upload-images.mjs" 7 "$T/images" 2>&1); }
 out=$(upload); rc=$?
 check "AC3: upload-images reads the whole list and goes on to the browser" '[ $rc -eq 0 ] && grep -q "^LAUNCHED$" <<< "$out"'
