@@ -1101,19 +1101,15 @@ export function themes() {
 
 // One stitched image per board and theme: the uploads a ticket's PR needs and the minutes they take
 // at UPLOAD_PACE (whichever of the minute and hour caps is slower). With `key`, the boards are that
-// ticket's (every board when it names none); a key the canvas does not list is refused.
-export function uploadEstimate(source, { key = null, themeCount = 1, pace = UPLOAD_PACE } = {}) {
-  const all = source?.boards ?? [];
-  let boards = all.map((b) => b.name);
-  if (key) {
-    const t = (source?.tickets ?? []).find((x) => x.key === key);
-    if (!t) fail(`${key} is not among the tickets this canvas is saved for (${(source?.tickets ?? []).map((x) => x.key).join(', ') || 'none'})`);
-    if (t.boards?.length) boards = t.boards;
-  }
+// ticket's (every board when it names none, or when source.json does not list it yet: `unlisted`).
+export function uploadEstimate(source, { key = null, themeCount = 1 } = {}) {
+  let boards = (source?.boards ?? []).map((b) => b.name);
+  const t = key ? (source?.tickets ?? []).find((x) => x.key === key) : null;
+  if (t?.boards?.length) boards = t.boards;
   const themesN = Math.max(1, themeCount);
   const uploads = boards.length * themesN;
-  const minutes = Math.max(uploads / pace.perMinute, (uploads / pace.perHour) * 60);
-  return { boards: boards.length, themes: themesN, uploads, minutes, over: minutes > 60, boardsPerHour: Math.floor(pace.perHour / themesN) };
+  const minutes = Math.max(uploads / UPLOAD_PACE.perMinute, (uploads / UPLOAD_PACE.perHour) * 60);
+  return { boards: boards.length, themes: themesN, uploads, minutes, over: minutes > 60, boardsPerHour: Math.floor(UPLOAD_PACE.perHour / themesN), unlisted: !!key && !t };
 }
 
 const duration = (m) => {
@@ -1124,9 +1120,10 @@ const duration = (m) => {
 };
 
 // The groom's lines for one estimate: the count and time, then a flag when it is over an hour.
-export function estimateLines(e, { key = null, pace = UPLOAD_PACE } = {}) {
+export function estimateLines(e, { key = null } = {}) {
   if (!e.boards) return ['uploads: none: this canvas has no boards to stitch (a deck or a single page)'];
-  const out = [`uploads: ${e.uploads} (${e.boards} board${e.boards === 1 ? '' : 's'} × ${e.themes} theme${e.themes === 1 ? '' : 's'}), about ${duration(e.minutes)} at ${pace.perMinute} a minute and ${pace.perHour} an hour`];
+  const out = [`uploads: ${e.uploads} (${e.boards} board${e.boards === 1 ? '' : 's'} × ${e.themes} theme${e.themes === 1 ? '' : 's'}), about ${duration(e.minutes)} at ${UPLOAD_PACE.perMinute} a minute and ${UPLOAD_PACE.perHour} an hour`];
+  if (e.unlisted) out.push(`note: ${key} is not among the tickets source.json lists yet, so every board is counted`);
   if (e.over) out.push(`flag: over an hour to upload: split ${key ?? 'the ticket'} by board, at most ${e.boardsPerHour} board${e.boardsPerHour === 1 ? '' : 's'} per ticket`);
   return out;
 }

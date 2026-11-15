@@ -493,7 +493,10 @@ t('AC1 estimate: the time is the slower of 6 a minute and 300 an hour', Math.rou
 t('AC1 estimate: the line states count and time', estimateLines(e11, { key: 'DS-90' }).join(' | '), 'uploads: 22 (11 boards × 2 themes), about 5 minutes at 6 a minute and 300 an hour');
 t('estimate: a ticket naming boards counts only those', uploadEstimate(eleven, { key: 'DS-91', themeCount: 2 }).uploads, 4);
 t('estimate: no themes counts one', uploadEstimate(eleven, { key: 'DS-90', themeCount: 0 }).uploads, 11);
-t('estimate: a key the canvas is not saved for is refused', throws(() => uploadEstimate(eleven, { key: 'DS-99' })).split(':')[0], '2');
+const e99 = uploadEstimate(eleven, { key: 'DS-99', themeCount: 2 });
+t('estimate: a ticket source.json does not list yet counts every board', `${e99.uploads} ${e99.unlisted}`, '22 true');
+t('estimate: an unlisted ticket gets a note line', estimateLines(e99, { key: 'DS-99' })[1], 'note: DS-99 is not among the tickets source.json lists yet, so every board is counted');
+t('estimate: a listed ticket gets no note line', estimateLines(e11, { key: 'DS-90' }).length, 1);
 const big = uploadEstimate({ ...eleven, boards: boardsN(151) }, { key: 'DS-90', themeCount: 2 });
 t('AC2 estimate: 302 uploads is over an hour', `${big.over} ${Math.round(big.minutes)}`, 'true 60');
 t('AC2 estimate: the flag suggests splitting by board', estimateLines(big, { key: 'DS-90' })[1], 'flag: over an hour to upload: split DS-90 by board, at most 150 boards per ticket');

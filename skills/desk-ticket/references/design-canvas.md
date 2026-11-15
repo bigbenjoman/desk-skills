@@ -77,11 +77,14 @@ node ~/.claude/desk/bin/desk-design.mjs estimate <saved folder> --key <TICKET>
 
 It prints `uploads: <n> (<boards> × <themes>), about <time> at 6 a minute and 300 an hour`. That is
 one stitched image per board the ticket names, for each theme in §5 Themes (`desk-env list themes`;
-one when the row is unset or `none`). Put that line in the ticket's Design section beside the
-`design:` line, via `desk-jira edit` under §3 `jira-edit`, and give it in the Stage 0 report. A
-`flag:` line means the uploads take over an hour. Say so in the report and suggest splitting the
-ticket by board, with at most the number of boards per ticket that the line names. Never split the
-ticket yourself: that is the user's call.
+one when the row is unset or `none`). A `note:` line means `source.json` does not list the ticket
+yet (a canvas saved for another ticket), so every board is counted: say so beside the count. Put
+the `uploads:` line, and any `flag:` line, in the ticket's Design section beside the `design:` line,
+via `desk-jira edit` under §3 `jira-edit`, and give the user the same lines in the update for the
+stage you ran it at (Stage 0's triage for a copy already saved, Stage 1's for one saved there). A `flag:` line
+means the uploads take over an hour: say so and suggest splitting the ticket by board, with at most
+the number of boards per ticket that the line names. Never split the ticket yourself: that is the
+user's call.
 
 An artifact the user does not own reads as a summary, not the files: ask for access or an export
 rather than saving that. **When a copy is already saved** (`check` prints `ok`, or an `advisory`
