@@ -1344,6 +1344,12 @@ check "DS-598 AC5: while the blocker is in progress the ticket stays held, and n
 x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-598 AC5: once the blocker is Done and on the base, the pass releases it and it can start" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
+# A person's step in no batch has no PR: the first pass that reads it Done in Jira releases the ticket held behind it.
+q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once X-7 is Done in Jira"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"done","labels":["ben-input"]}]}' > "$T/state-j/triage/J-7.json"
+printf '[]\n' > "$T/prs-x7.json"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-685 AC4: a person's step in no batch read Done releases the ticket waiting to start on it" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
 # A blocker whose Jira Repository is another configured repo lands there, never on this base: the first
 # pass that reads it Done in Jira releases the ticket, with no PR of its on main here.
 mkdir -p "$HOME/.config/desk/repos/acme__web"; git init -q -b main "$T/web"; git -C "$T/web" commit -q --allow-empty -m init
