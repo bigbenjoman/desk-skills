@@ -469,7 +469,7 @@ function holdPath(q, from, to, seen = new Set()) {
 // Each parked ticket waiting on "pr <n> merged" (this repo's PR) for its own reason, a hold being no
 // such reason: the PR, the queue ticket whose PR it is (`owner`, another ticket, or null), and `path`
 // when that owner is held behind the park, directly or through other holds: [owner, …, park]. Such a
-// pair waits on each other and neither moves (DS-615). `parked` says which parks to read.
+// pair waits on each other and neither moves. `parked` says which parks to read.
 export function prParkWaits(q, parked = () => true) {
   const out = [];
   for (const a of Object.values(q.tickets ?? {})) {

@@ -54,7 +54,7 @@ import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './revie
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
-import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
+import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
@@ -4456,7 +4456,6 @@ for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${pr
 // may still be the person's to settle.
 const parkNotes = new Map();
 {
-  const and = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
   const states = new Map();
   const conflictOf = (n) => {
     if (!states.has(n)) states.set(n, readPrStatus(n));
@@ -4468,7 +4467,7 @@ const parkNotes = new Map();
     if (!w.path) { if (conflict) parkNotes.set(w.park, conflict); continue; }
     const [owner, ...rest] = w.path;
     const holds = w.path.slice(0, -1).map((k, i) => `${k} is held behind ${rest[i]}`);
-    report.waiting.push(`${w.park}: CYCLE — ${and([w.park, ...w.path.slice(0, -1)])} wait on each other: ${w.park} is parked until PR #${w.pr} (${owner}) merges, and ${and(holds)}` +
+    report.waiting.push(`${w.park}: CYCLE — ${andList([w.park, ...w.path.slice(0, -1)])} wait on each other: ${w.park} is parked until PR #${w.pr} (${owner}) merges, and ${andList(holds)}` +
       `${conflict ? `. ${conflict}` : ''}. Neither moves until you answer ${w.park}'s park or release ${owner} (${E.releaseCommand(owner)})`);
   }
 }
