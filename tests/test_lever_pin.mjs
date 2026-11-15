@@ -123,7 +123,7 @@ r = node([join(BIN, 'queue.mjs'), 'add', 'P-3', 'Story', 'A']);
 t('AC1 a ticket plan-batch adds is pinned too', queue().tickets['P-3']?.levers?.set, ['preflight']);
 
 // ---- AC4: desk-env levers prints the pin ----------------------------------------------------------
-const deskEnv = (args, extra) => node([join(BIN, 'desk-env.mjs'), 'levers', ...args], { DESK_CONFIG: BOTH, ...extra }).stdout.trim();
+const deskEnv = (args, extra) => node([join(BIN, 'desk-env.mjs'), 'levers', ...args], { DESK_CONFIG: BOTH, ...extra }).stdout.trim().split('\n')[0];
 t('AC4 with no pin it prints the row', deskEnv([]), 'on: preflight memory');
 t('AC4 a pinned worker prints its pin, not the row', deskEnv([], { DESK_LEVERS: 'preflight' }), 'on: preflight');
 t('AC4 and a lever the row has but the pin does not is off', deskEnv(['memory'], { DESK_LEVERS: 'preflight' }), 'off');

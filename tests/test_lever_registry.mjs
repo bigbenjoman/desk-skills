@@ -29,7 +29,7 @@ t('AC2 the message names each refused lever', /"turbo"/.test(row.message) && /"w
 t('AC2 the message does not name a declared lever as refused', /"preflight"/.test(row.message), false);
 t('AC2 nothing refused, no message', trialable(['wrappers', 'effort']).message, null);
 t('AC2 a lever removed from the registry is refused', trialable(['codex'], loadRegistry(dropCodex, LEVERS.filter((n) => n !== 'codex'))).refused.join(' '), 'codex');
-const raw = trialable(['Preflight, turbo', 'MEMORY', 'none']);
+const raw = trialable(['Preflight, turbo', 'MEMORY']);
 t('AC2 the row is read as desk-env reads it: case and comma-separated items', `${raw.ok.join(' ')} | ${raw.refused.join(' ')}`, 'preflight memory | turbo');
 t('AC2 and agrees with desk-env on which are on', raw.ok.join(' '), parseLevers(['Preflight, turbo', 'MEMORY']).on.join(' '));
 

@@ -22,6 +22,12 @@
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
+//   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
+//                                             auto or off), the freeze, unknown names; exit 1 on an invalid
+//                                             row; with <lever>, on or off. A row unlike the last one the
+//                                             repo's lever log recorded is logged as a row_change
+//   node desk-env.mjs levers freeze|thaw [reason]  set or clear the machine-wide freeze
+//                                             (~/.desk-autopilot/levers.freeze), logged in every repo's log
 //   node desk-env.mjs lines <file> <A>[,<B>]  with the wrappers lever on, print what `sed -n A,Bp <file>`
 //                                             prints, refusing a file a worker may not read; exit 3 lever off
 //   node desk-env.mjs list <config id>        print every item of a list row, one per line, exit 3 if unset
@@ -889,23 +895,64 @@ export function parseWorkerLocation(raw) {
 }
 export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: 'local' }));
 
-// Config §3b "Phase 0 levers": the Phase 0 changes switched on, one name per backtick span (a span may
-// hold several, split on commas and spaces). No row, an unset row or `none` is every lever off, and so
-// is no config at all: off is the side that changes nothing. A name desk does not know is kept in
-// `unknown`, for the caller to name, and is never on.
-//   -> { on: [lever], unknown: [name] }
+// Config §3b "Phase 0 levers": names, one per backtick span (a span may hold several, split on commas
+// and spaces). Each lever named is pinned on for every ticket, outside any trial; `auto` beside them
+// hands every lever not named to desk's trials; `none` alone is every lever off and no trials. No row,
+// an unset row and no config at all read as `none`: off is the side that changes nothing. `none` beside
+// any other name is invalid, and reads as `none`. A name desk does not know is kept in `unknown`, for
+// the caller to name, and is never on.
+//   leverRow -> { on: [lever], unknown: [name], auto, invalid: message | null }
+//   parseLevers -> { on, unknown }
 export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers']);
-export function parseLevers(items) {
-  const names = [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter((x) => x && !isNone(x)))];
-  return { on: names.filter((n) => LEVERS.includes(n)), unknown: names.filter((n) => !LEVERS.includes(n)) };
+export const LEVERS_AUTO = 'auto';
+const leverWords = (items) => [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter(Boolean))];
+export function leverRow(items) {
+  const words = leverWords(items);
+  const names = words.filter((x) => !isNone(x) && x !== LEVERS_AUTO);
+  const unknown = names.filter((n) => !LEVERS.includes(n));
+  if (words.some((x) => isNone(x)) && words.length > 1) {
+    return { on: [], unknown, auto: false, invalid: `\`none\` cannot sit beside another name ("${(items ?? []).join(' ')}"); every lever is read as off` };
+  }
+  return { on: names.filter((n) => LEVERS.includes(n)), unknown, auto: words.includes(LEVERS_AUTO), invalid: null };
 }
+export function parseLevers(items) {
+  const { on, unknown } = leverRow(items);
+  return { on, unknown };
+}
+// The row's items, or null with no row or no config.
+const leverItems = () => {
+  try { return configValues('levers'); } catch (e) { if (e instanceof NoRepoConfigError) return null; throw e; }
+};
 // A worker reads its ticket's pin (lever-pin.mjs), which spawn-worker.sh exports as DESK_LEVERS
 // (`none` for an empty set), not the row; with DESK_LEVERS unset the row stands.
 export function levers(env = process.env) {
-  if (env.DESK_LEVERS != null) return parseLevers([env.DESK_LEVERS]);
-  try { return parseLevers(configValues('levers')); } catch (e) { if (e instanceof NoRepoConfigError) return parseLevers(null); throw e; }
+  return parseLevers(env.DESK_LEVERS != null ? [env.DESK_LEVERS] : leverItems());
 }
 export const leverOn = (name, l = levers()) => l.on.includes(name);
+
+// Where each lever's state comes from: `pinned` (named in the row, or in this ticket's pin), `auto`
+// (the row reads `auto` and does not name it) or `off`. `from` is `pin` inside a pinned worker, else
+// `row`; `row` is the row as written, null when unset.
+//   -> { from, row, states: { <lever>: 'pinned' | 'auto' | 'off' }, unknown, invalid }
+export function leverStates(env = process.env) {
+  const pin = env.DESK_LEVERS != null;
+  const items = pin ? [env.DESK_LEVERS] : leverItems();
+  const r = leverRow(items);
+  const auto = !pin && r.auto;
+  const states = Object.fromEntries(LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : auto ? 'auto' : 'off']));
+  return { from: pin ? 'pin' : 'row', row: items?.length ? items.join(' ') : null, states, unknown: r.unknown, invalid: r.invalid };
+}
+
+// The machine-wide freeze: while ~/.desk-autopilot/levers.freeze exists, every trial in every repo is
+// stopped. `leversFrozen` is { at, reason } from the file, or null with no file; a file it cannot parse
+// is still a freeze, dated by its mtime.
+export const freezeFile = () => join(HOME, '.desk-autopilot', 'levers.freeze');
+export function leversFrozen(file = freezeFile()) {
+  let body;
+  try { body = readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  try { const j = JSON.parse(body); if (j && typeof j === 'object' && j.at) return { at: j.at, reason: j.reason ?? null }; } catch { /* dated below */ }
+  return { at: statSync(file).mtime.toISOString(), reason: null };
+}
 
 // Config §3b "Worker effort": `<start>=<effort>` pairs, read only with the effort lever on. A start is
 // the stage a session starts at, `task` (a fix or review try) or `resume`. A value or start desk does
@@ -1738,12 +1785,63 @@ const PATHS = {
 };
 const IDENTITY = { DESK_GITHUB_HANDLE: githubHandle, DESK_JIRA_NAME: jiraName };
 const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
-// The subcommands that write the machine profile, the cost sources or the login rules: the user's to
+// The subcommands that write the machine profile, the cost sources, the login rules or the lever
+// freeze: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
 // command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
-export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins remove'];
+export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins remove', 'levers freeze', 'levers thaw'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+
+// `desk-env levers freeze|thaw`: sets or clears the freeze file and says so. Returns the lever log
+// event every repo's log gets, or null when the freeze was already that way and nothing changed.
+function setFreeze(action, reason, file = freezeFile(), now = new Date()) {
+  const was = leversFrozen(file);
+  if (action === 'freeze') {
+    if (was) { console.log(`levers: already frozen since ${was.at}; nothing changed`); return null; }
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ at: now.toISOString(), reason: reason || null })}\n`);
+    console.log(`levers: frozen: every trial in every repo is stopped until desk-env levers thaw (${file})`);
+  } else {
+    if (!was) { console.log('levers: not frozen; nothing changed'); return null; }
+    unlinkSync(file);
+    console.log('levers: thawed: trials resume');
+  }
+  return { kind: action, actor: 'ben', reason_code: action, reason: reason || `${action === 'freeze' ? 'frozen' : 'thawed'} by hand with desk-env levers ${action}`, at: now.toISOString() };
+}
+
+// Appends `event` to the lever log of every repo with a desk config; returns 1 when any could not be
+// written, naming each.
+function logEveryRepo(append, event, repos = configuredRepos()) {
+  let failed = 0;
+  for (const { slug } of repos) {
+    try { append(slug, event); } catch (e) { failed++; console.error(`desk-env levers: ${slug}'s lever log: ${e.message}`); }
+  }
+  console.log(`levers: ${event.kind} logged in ${repos.length - failed} of ${repos.length} repo lever logs`);
+  return failed ? 1 : 0;
+}
+
+// Appends a row_change event to this repo's lever log when its levers row reads differently from the
+// last row the log recorded, or the log has recorded none. The log is read and written under its lock,
+// so callers reading one edit at once record it once. A worker records nothing: the row is the user's,
+// and a worker's `desk-env` is read-only. A log it cannot write is said, not fatal.
+function logRowChange(row, LL) {
+  if (process.env.DESK_AUTOPILOT_WORKER === '1') return;
+  const p = configPathOrNull();
+  if (!p || !existsSync(p)) return;
+  const key = (r) => leverWords([r ?? 'none']).sort().join(' ');
+  try {
+    const slug = repoSlug();
+    LL.appendWith(slug, () => {
+      const last = LL.read(slug, { kinds: ['row_change'] }).events.at(-1);
+      if (last && key(last.after) === key(row)) return null;
+      const after = row ?? 'none';
+      return { kind: 'row_change', actor: 'ben', reason_code: 'row_change', reason: `config §3b "${CONFIG_ROWS.levers.row}" now reads \`${after}\``, before: last?.after ?? null, after };
+    });
+  } catch (e) {
+    console.error(`desk-env levers: could not record the row change in the lever log: ${e.message}`);
+  }
+}
 
 // ---- CLI -----------------------------------------------------------------------------------
 const isMain = (() => {
@@ -1808,16 +1906,38 @@ if (isMain) {
         break;
       }
       case 'levers': {
-        // `levers <name>` prints on or off; bare, every lever on and every name desk does not know.
+        // `levers freeze [reason]` and `levers thaw [reason]` set and clear the machine-wide freeze;
+        // `levers <name>` prints on or off; bare, what is on, where each lever's state comes from, the
+        // freeze, and every name desk does not know. An invalid row is said either way, and exits 1
+        // only bare, so a script asking about one lever still reads `off`.
+        // lever-log.mjs imports this module, so it is loaded without `await`: awaiting it here would
+        // leave each module waiting for the other to finish, and node would exit with nothing written.
+        const leverLog = (fn) => import('./lever-log.mjs').then(fn, (e) => { console.error(`desk-env levers: the lever log: ${e.message}`); process.exitCode = 1; });
+        if (args[0] === 'freeze' || args[0] === 'thaw') {
+          const event = setFreeze(args[0], args.slice(1).join(' ').trim());
+          if (event) leverLog((LL) => { process.exitCode = logEveryRepo(LL.append, event); });
+          break;
+        }
+        const s = leverStates();
+        if (s.from === 'row') leverLog((LL) => logRowChange(s.row, LL));
         const l = levers();
         const known = `known: ${LEVERS.join(', ')}`;
+        const row = `config §3b "${CONFIG_ROWS.levers.row}"`;
+        if (s.invalid) {
+          console.error(`desk-env: ${row} is invalid: ${s.invalid}`);
+          if (!args[0]) process.exitCode = 1;
+        }
         if (args[0]) {
           console.log(leverOn(args[0], l) ? 'on' : 'off');
           if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
           break;
         }
         console.log(`on: ${l.on.join(' ') || 'none'}`);
-        if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (config §3b "${CONFIG_ROWS.levers.row}" names levers desk does not know; each is read as off; ${known})`);
+        console.log(`from: ${s.from === 'pin' ? 'this ticket\'s pin (DESK_LEVERS)' : `${row}, \`${s.row ?? 'none'}\``}`);
+        for (const n of LEVERS) console.log(`${n}: ${s.states[n]}`);
+        const f = leversFrozen();
+        if (f) console.log(`frozen: every trial in every repo is stopped, since ${f.at}${f.reason ? ` (${f.reason})` : ''}; desk-env levers thaw ends it`);
+        if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (${row} names levers desk does not know; each is read as off; ${known})`);
         break;
       }
       case 'lines': {

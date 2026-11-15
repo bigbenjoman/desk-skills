@@ -5,6 +5,7 @@
 //
 //   import { append, read } from './lever-log.mjs'
 //   append(slug, { lever, kind, actor, reason_code, reason, ... })  -> the event as written
+//   appendWith(slug, () => event | null)                            -> the event as written, or null
 //   read(slug, { kinds, since })                                    -> { events, bad: [{ line, error }] }
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -17,6 +18,8 @@ export const VERSION = 1;
 export const KINDS = Object.freeze(['assign', 'transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete', 'audit', 'audit_deferred', 'needs_you']);
 // Kinds that act on every lever in the repo, or on the machine, so they name no lever.
 const NO_LEVER = Object.freeze(['freeze', 'thaw', 'row_change']);
+// Kinds that act on the machine rather than one repo: their `repo` is `*` in whichever log holds them.
+const MACHINE_WIDE = Object.freeze(['freeze', 'thaw']);
 // A transition by hand is Ben's own call, with no evaluation or evidence file behind it.
 const BY_HAND = 'ben';
 
@@ -53,21 +56,34 @@ function check(event) {
 
 const LOCK_WAIT_MS = 10_000;
 
-// Checks the event and appends it as one line, with `v`, `id`, `repo` and (unless given) `at` filled
-// in. Throws LeverLogError, writing nothing, on an event that fails the check.
+// Checks the event and appends it as one line, with `v`, `id`, `repo` (`*` for a machine-wide kind)
+// and (unless given) `at` filled in. Throws LeverLogError, writing nothing, on an event that fails the
+// check.
 export function append(slug, event) {
-  const file = logFile(slug);
   check(event);
-  const { v, id, repo, at, ...rest } = event;
-  const line = { v: VERSION, id: randomUUID(), at: at ?? new Date().toISOString(), repo: slug, ...rest };
+  return appendWith(slug, () => event);
+}
+
+// As append, but `build()` runs under the log's lock and returns the event, or null to write nothing
+// (append then returns null). A caller that decides from what the log already holds reads it there,
+// so two callers deciding at once cannot both append.
+export function appendWith(slug, build) {
+  const file = logFile(slug);
   mkdirSync(dirname(file), { recursive: true });
   const lock = `${file}.lock`;
-  withDirLock(lock, () => appendFileSync(file, `${JSON.stringify(line)}\n`), {
+  return withDirLock(lock, () => {
+    const event = build();
+    if (event == null) return null;
+    check(event);
+    const { v, id, repo, at, ...rest } = event;
+    const line = { v: VERSION, id: randomUUID(), at: at ?? new Date().toISOString(), repo: MACHINE_WIDE.includes(event.kind) ? '*' : slug, ...rest };
+    appendFileSync(file, `${JSON.stringify(line)}\n`);
+    return line;
+  }, {
     waitMs: LOCK_WAIT_MS,
     pollMs: 20,
     timeoutError: (pid) => new LeverLogError(`lever-log: ${lock} is held by pid ${pid ?? '?'} past the ${LOCK_WAIT_MS / 1000}s wait: nothing was written`),
   });
-  return line;
 }
 
 // The log's events, oldest first, narrowed to `kinds` and to those at or after `since` when given. A
