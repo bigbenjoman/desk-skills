@@ -175,10 +175,9 @@ already uploaded is never uploaded again.
 
 | Exit | Meaning |
 |---|---|
-| 0 | every placeholder replaced |
+| 0 | every placeholder replaced, or the body had none left, so nothing was uploaded |
 | 1 | bad arguments, missing dir or no images, an unreadable tags file, or an unexpected crash |
 | 2 | shared browser profile in use; retry later |
-| 3 | no `_drag <file>_` placeholder in the body, so nothing uploaded |
 | 4 | uploaded, but placeholders still left (a file no folder holds is named) |
 | 5 | not permitted (§3 `pr-images` not `yes`) |
 | 6 | setup: Playwright not installed, or no saved GitHub login or it has expired (it names `github-signin.mjs`) |

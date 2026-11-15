@@ -203,7 +203,7 @@ about immediately, not at the bottom of a finished PR description.
 | `gh pr edit --body-file` from your local draft | It wipes what CI and bots added. Fetch the live body and change only what sits between desk's markers |
 | Placeholder rows left in the merged body | Script: check its exit code. By hand: say "delete these rows" |
 | Uploading when §3 says `ask`, because it was fine last time | `ask` means every run. Standing permission is a §3 `yes`, never an inference |
-| Re-running the upload after exit 3 or 4 | The assets exist; fix the body from the printed tags |
+| Re-running the upload after exit 4 by hand | The assets exist; fix the body from the printed tags |
 | Running the upload while another browser holds the profile | One `SingletonLock`. Never kill the holder; ask the user to free it |
 | A 12-row before/after table | Two or three widths that carry the change; the rest as numbers in Testing. A ticket with a saved canvas is the exception: every breakpoint, collapsed |
 | Screenshots with a consent banner over the content | Seed its cookie before the first `goto` |

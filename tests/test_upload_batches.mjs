@@ -47,8 +47,8 @@ function fakePage({ delay = 1, stallAt = 0, partial = 0, crashAt = 0 } = {}) {
 const clock = { t: Date.parse('2026-11-15T10:00:00Z') };
 const now = () => clock.t;
 const sleep = async (ms) => { clock.t += ms; };
-function run(dir, pr, page, extra = {}) {
-  return runUpload({ dir, readBody: () => pr.body, writeBody: (b) => { pr.body = b; pr.edits += 1; }, openPage: page.open, now, sleep, pollMs: 1000, stallMs: 180000, ...extra });
+function run(dir, pr, page) {
+  return runUpload({ dir, readBody: () => pr.body, writeBody: (b) => { pr.body = b; pr.edits += 1; }, openPage: page.open, now, sleep, pollMs: 1000, stallMs: 180000 });
 }
 const uploaded = (page) => page.batches.flat().map((p) => basename(p));
 
@@ -168,12 +168,30 @@ const uploaded = (page) => page.batches.flat().map((p) => basename(p));
   await run(dir, pr2, page2);
   t('AC6 two files of one image upload once and both cells fill', page2.batches.flat().length === 1 && dragFiles(pr2.body).length === 0, true);
 }
+{
+  // One file name whose pixels go A, then B, then back to A: A's link is kept and A is not sent again.
+  const dir = folder(['home.png'], { 'home.png': 'pixels A' });
+  const shot = join(dir, 'home.png');
+  const urlA = url(shot);
+  const rounds = [];
+  for (const pixels of ['pixels A', 'pixels B', 'pixels A']) {
+    writeFileSync(shot, pixels);
+    const pr = { body: body(['home.png']), edits: 0 };
+    const page = fakePage();
+    await run(dir, pr, page);
+    rounds.push({ sent: page.batches.flat().length, body: pr.body });
+  }
+  t('AC6 a file changed A, B, A uploads A once', rounds.map((r) => r.sent).join(','), '1,1,0');
+  t('AC6 the third round gets A\'s first link', rounds[2].body.includes(`![home](${urlA})`), true);
+}
 
 // ---- the pieces --------------------------------------------------------------------------------
 {
-  const pr = { body: 'intro\n', edits: 0 };
-  const r = await run(folder(['a.png']), pr, fakePage());
-  t('a body with no cells uploads nothing and exits 3', r.code, 3);
+  const pr = { body: 'intro\n![a](https://github.com/user-attachments/assets/abc)\n', edits: 0 };
+  const noCells = fakePage();
+  const r = await run(folder(['a.png']), pr, noCells);
+  t('a body with no cells left uploads nothing and exits 0', r.code === 0 && noCells.opened === 0, true);
+  t('a body with no cells left prints the done line pass.mjs reads', r.lines[0], 'done: 1 image(s) in the body, 0 placeholder(s) left');
   const swapped = swapCells('| _drag a.png_ | `_drag a.png_` |\n```\n_drag a.png_\n```\n| _drag b.png_ |', { 'a.png': '![a](u)' });
   t('swapCells fills only the cells outside code', swapped, '| ![a](u) | `_drag a.png_` |\n```\n_drag a.png_\n```\n| _drag b.png_ |');
   const b = batchesOf([{ path: '/x/a.png' }, { path: '/y/a.png' }, { path: '/x/b.png' }], 15);

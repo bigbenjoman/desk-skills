@@ -45,6 +45,8 @@ const REWRITTEN = [
   ['DS-672', 'uploaded, but no `_drag <file>_` placeholder matched', 1],
   ['DS-672', 'uploaded, but placeholders still left', 1],
   ['DS-672', 'On 3 or 4 fix the body by hand', 1],
+  ['DS-672', '| 0 | every placeholder replaced |', 1],
+  ['DS-672', '| Re-running the upload after exit 3 or 4 | The assets exist', 1],
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 23, minRows: 35, rewritten: REWRITTEN });
 

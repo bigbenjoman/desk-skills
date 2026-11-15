@@ -23,7 +23,7 @@
 // upload-batches.mjs's.
 //
 // Exit codes (pass.mjs and desk-pr read these):
-//   0 uploaded, every placeholder replaced      3 no `_drag <file>_` placeholder in the body, so nothing uploaded
+//   0 every placeholder replaced, or none left   3 not used (it was: uploaded, but no placeholder matched)
 //   1 bad arguments, no such dir, no images     4 uploaded, but placeholder(s) are still left in the body (a
 //                                                 file no cell's name finds is named)
 //   2 the shared profile is in use (retry)      5 not permitted: config §3 pr-images is not yes and no DESK_UPLOAD_APPROVED
