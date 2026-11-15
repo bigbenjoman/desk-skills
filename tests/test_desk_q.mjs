@@ -1933,6 +1933,16 @@ t('DS-279 a required check that never reported or ended neutral needs you, namin
 t('DS-279 and its row names the check and what to do',
   ['R-1', 'R-2'].map((k) => Q.needText({ q: reqQ, ctx: advCtx([], ['e2e']), live: true }, { t: reqQ.tickets[k], k: 'needs', pr: true })).join(' | '),
   '#811 · required check "e2e" has not reported · fix the check or §4 Required checks | #812 · required check "e2e" is neutral · fix the check or §4 Required checks');
+// A skipped check did not pass: the row counts it apart from the passes and from an advisory failure.
+const skip = (name) => ({ ...okCheck(name), conclusion: 'skipped' });
+const skipQ = { tickets: {
+  'S-1': { key: 'S-1', ...prOn(820, [...okChecks(3), skip('docs'), skip('e2e')]) },
+  'S-2': { key: 'S-2', ...prOn(821, okChecks(3)) },
+  'S-3': { key: 'S-3', ...prOn(822, [okCheck('build'), { ...red, name: 'lint' }, skip('docs')]) },
+} };
+t('desk-q a PR with skipped checks counts the passed and skipped apart; all passed reads as before; an advisory failure and a skip are each named once',
+  ['S-1', 'S-2', 'S-3'].map((k) => Q.needText({ q: skipQ, ctx: advCtx(['lint']), live: true }, { t: skipQ.tickets[k], k: 'merging', pr: true })).join(' | '),
+  '#820 · 3 checks passed, 2 skipped · merges at the next pass | #821 · all 3 checks passed · merges at the next pass | #822 · 1 check failed, advisory only, 1 skipped · merges at the next pass');
 // DS-410: the pass records on pr_status the required checks no workflow runs on the PR's base, so a
 // ready PR's row names the trigger, as the undraft path does for a draft.
 const never410 = { e2e: 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/e2e.yml runs on pull requests into main)' };
