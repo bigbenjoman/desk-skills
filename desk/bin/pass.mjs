@@ -2793,6 +2793,31 @@ function recordWorkerHead(t) {
   if (head.ok && /^[0-9a-f]{40}$/.test(head.out) && head.out !== t.worker_head?.sha) q('set', t.key, `worker_head=${JSON.stringify({ sha: head.out, at: PASS_AT })}`);
 }
 
+// A spawn from Stage 0, with no worker's session, fix try or PR in this repo behind it.
+const startsFresh = (t) => !toResume(t) && !toHandoff(t) && !t.login_move && !(t.fix && !t.fix.finished) && t.result?.pr == null && t.draft_pr == null;
+// A ticket whose triage record puts its code in another configured repo (desk-env.mjs triagePlacement)
+// is admitted there by intake.mjs admit and leaves this queue. One naming a repo with no config here,
+// or whose admit there fails, parks with what settles it, and so does one that tickets here are held
+// behind, which a drop would leave waiting on a merge that never lands here (as queue.mjs transfer
+// refuses). No worker is spawned either way.
+function handAway(t, p) {
+  const park = (line) => {
+    if (!DRY) q('park', t.key, line);
+    report.parked.push(`${t.key}: ${line}`);
+  };
+  if (p.unknown) return park(`${p.why}, so no worker was spawned: which repo does it run in? Admit it in that repo's checkout with intake.mjs admit ${t.key}, then queue.mjs drop ${t.key} here`);
+  const behind = Object.values(queue().tickets).filter((o) => o.key !== t.key && keysOf(o.held_by).includes(t.key)).map((o) => o.key);
+  if (behind.length) return park(`${p.why}, so no worker was spawned, but ${behind.join(', ')} ${behind.length === 1 ? 'is' : 'are'} held behind it here: release or drop ${behind.length === 1 ? 'it' : 'them'}, then admit ${t.key} in ${p.ghRepo}'s checkout with intake.mjs admit ${t.key} and queue.mjs drop ${t.key} here`);
+  if (DRY) {
+    report.waiting.push(`${t.key}: ${p.why}: would be admitted into ${p.ghRepo} and taken out of this queue (dry run)`);
+    return;
+  }
+  const h = E.admitInRepo(p, t.key, { by: 'pass' });
+  if (!h.ok) return park(`${p.why}, so no worker was spawned, but admitting it into ${p.ghRepo} failed (${h.why}). Admit it there: ${h.cmd}, then queue.mjs drop ${t.key}`);
+  if (q('drop', t.key)) report.done.push(`${t.key}: ${p.why}, so it was admitted into ${p.ghRepo} (${h.line}) and taken out of this queue, no worker spawned`);
+  else report.failed.push(`${t.key}: admitted into ${p.ghRepo} (${h.line}), but not taken out of this queue: queue.mjs drop ${t.key}`);
+}
+
 // A worktree held is kept on the ticket (`worktree_busy`), so desk-q and desk-needs-you show it as
 // needing the person (desk-q worktreeBusy) and not as ready; it is dropped once a pass finds it clean.
 const busyNow = new Set();
@@ -2813,6 +2838,12 @@ for (const t of spawnable) {
     const before = report.failed.length;
     if (!DRY) q(...shippedSet(t, how, shipped.pr ?? null, shipped.mergedAt ?? null));
     if (report.failed.length === before) report.done.push(`${t.key}: ${how}, outside its worker: recorded done, no worker spawned`);
+    continue;
+  }
+  // Its code wholly in another repo by its triage record: handed over without taking a slot.
+  const away = startsFresh(t) ? E.triagePlacement(triageRec(t.key)) : null;
+  if (away) {
+    handAway(t, away);
     continue;
   }
   // Held without taking a slot: another ticket may spawn in its place.

@@ -590,6 +590,76 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
   return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null };
 }
 
+// Where a triage record puts a ticket's code when that is wholly another repo, or null to build it
+// here: repoPlacement's answer for that repo, with `why`. Every files_in_scope entry prefixed
+// `<repo>: ` with the same name that is not this repo's sends it there, and so does a scope call
+// whose choice says to run it in exactly one other configured repo and names this one only as where
+// it is taken from. Entries in this repo and another build here. Prefixes naming no configured repo
+// give {unknown: true, names, why}.
+export function triagePlacement(rec, root = deskConfigRoot()) {
+  if (!rec || typeof rec !== 'object') return null;
+  // Each entry's repo: null for this one (no prefix, this repo's name, or a prefix that is a path's,
+  // with a slash or a file extension, and no configured repo's).
+  const repoOf = (f) => {
+    const name = String(f).match(/^\s*([A-Za-z0-9][\w.-]*(?:\/[\w.-]+)?):\s+\S/)?.[1];
+    const p = name ? repoPlacement(name, root) : null;
+    return p && !(p.unknown && /\/|\.\w{1,5}$/.test(name)) ? { name, p } : null;
+  };
+  const files = (Array.isArray(rec.files_in_scope) ? rec.files_in_scope : []).map(String).filter((f) => f.trim());
+  const away = files.map(repoOf).filter(Boolean);
+  if (away.length && away.length < files.length) return null;
+  if (away.length) {
+    const names = [...new Set(away.map((a) => a.name))];
+    const unknown = [...new Map(away.filter((a) => a.p.unknown).map((a) => [a.name, a.p.slugs])).entries()];
+    const slugs = new Set(away.filter((a) => !a.p.unknown).map((a) => a.p.slug));
+    if (!unknown.length && slugs.size === 1) return { ...away[0].p, why: `its files in scope are all in ${away[0].p.ghRepo}` };
+    const isWhat = ([n, s]) => `${n} is ${s.length ? `the name of ${s.length} repos configured on this computer (${s.join(', ')})` : 'no repo configured on this computer'}`;
+    return { unknown: true, names, why: unknown.length
+      ? `its files in scope are all in ${names.join(', ')}, and ${unknown.map(isWhat).join('; ')}`
+      : `its files in scope are all in other repos, split across ${names.join(', ')}` };
+  }
+  const calls = (Array.isArray(rec.decided) ? rec.decided : []).filter((d) => d?.category === 'scope' && typeof d.chose === 'string' && /\b(run|runs|running|batch)\b/i.test(d.chose));
+  if (!calls.length) return null;
+  const self = currentRepo();
+  let own = null;
+  try { own = configValue('gh-repo'); } catch { /* no config here: the remote decides */ }
+  const repos = configuredRepos(root);
+  const namesOf = (slug, gh) => [slug?.split('__').slice(1).join('__'), gh, String(gh ?? '').split('/').pop()].filter(Boolean);
+  const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : [])];
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${esc(n)}(?![\\w-])`, 'i').test(text));
+  for (const d of calls) {
+    const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(esc).join('|')})(?![\\w-])`, 'gi');
+    if (selfNames.length && named(d.chose.replace(fromSelf, ''), selfNames)) continue;
+    const hits = repos.filter((r) => r.slug !== self.slug && !selfNames.some((n) => n.toLowerCase() === r.ghRepo.toLowerCase()) && named(d.chose, namesOf(r.slug, r.ghRepo)));
+    if (hits.length !== 1) continue;
+    const p = repoPlacement(hits[0].ghRepo, root);
+    if (p && !p.unknown) return { ...p, why: `triage decided to run it in ${p.ghRepo} ("${d.chose.trim()}")` };
+  }
+  return null;
+}
+
+// Admits `key` into the other configured repo `p` (repoPlacement's answer) by intake.mjs admit, run in
+// that repo's checkout with nothing of this repo's in its environment: {ok, line} or {ok: false, why, cmd}.
+export function admitInRepo(p, key, { by }) {
+  const intake = join(binDir(), 'intake.mjs');
+  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && node ${intake} admit ${key} --by ${by}`;
+  if (!p.root || !existsSync(p.root)) return { ok: false, why: `${p.ghRepo}'s checkout (its config §2 Primary repo root) is ${p.root ? `not at ${p.root}` : 'unset'}`, cmd };
+  const env = otherRepoEnv();
+  for (const k of [...PER_REPO_ENV, 'DESK_AUTOPILOT_STATE', 'AUTOPILOT_WRITE_QUEUE']) delete env[k];
+  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root });
+  const x = spawnSync(process.execPath, [intake, 'admit', key, '--by', by, '--json'], { cwd: p.root, env, encoding: 'utf8', maxBuffer: 64 << 20 });
+  let out = null;
+  try { out = JSON.parse(String(x.stdout ?? '').trim().split('\n').pop()); } catch { /* no report: the exit and stderr say why */ }
+  const mine = (out?.lines ?? []).filter((l) => l.includes(key));
+  if (x.status === 0 && out?.admitted?.includes(key)) return { ok: true, line: mine.find((l) => /^admitted /.test(l)) ?? `admitted ${key}` };
+  // Already in one of that repo's batches (its own intake, or a person, admitted it there first).
+  const there = mine.find((l) => l.startsWith(`${key} is already in batch `));
+  if (x.status === 0 && there) return { ok: true, line: there };
+  const why = out?.error ?? mine.at(-1) ?? (x.error?.message || String(x.stderr ?? '').trim().split('\n').pop() || `intake.mjs exited ${x.status}`);
+  return { ok: false, why, cmd };
+}
+
 // The per-computer files' write: the previous copy kept beside it as <path>.bak.
 function writeWithBackup(path, text) {
   mkdirSync(dirname(path), { recursive: true });
