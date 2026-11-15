@@ -314,10 +314,12 @@ out = pass(env);
 t('AC14 one login at its limit: the batch holds on the preflight', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at, calls('Y-2').length]), JSON.stringify(['Y-1', RESET, 0]));
 
 // ---- the pass's own model calls: the decider, triage and epic planning ----------------------------
-// Each runs on a login that is not benched, chosen as a worker's is; with every login benched the
-// decider starts nothing and the others run as the caller does; with one login, nothing changes.
-const preset = (benched) => writeFileSync(QF, JSON.stringify({ ...batchOf(), benched }));
+// Each runs on the repo's subscription, never on a login with more room; at its limit the decider waits
+// and the others still run on it; with one login and no subscriptions file, nothing changes.
+const preset = (fields) => writeFileSync(QF, JSON.stringify({ ...batchOf(), ...fields }));
 const benchRow = (name, at = RESET) => ({ login: name, config_dir: name === 'default' ? null : dirOf(name), type: 'five_hour', resets_at: at, since: '2026-11-07T00:00:00.000Z', by: 'X-1' });
+// As a pass not itself on login `name` records it (pass.mjs saveUsage).
+const holdRow = (at = RESET, name = 'b') => ({ since: '2026-11-07T00:00:00.000Z', type: 'five_hour', resets_at: at, preflight: 'Y-1', paused: [], login_dir: dirOf(name) });
 const SEEN = join(T, 'decider-login');
 const DECIDER_CLAUDE = join(W, 'stub', 'decider-claude');
 writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}"\n`, { mode: 0o755 });
@@ -330,53 +332,68 @@ const calling = (env) => {
     const { startDecider } = await import(${JSON.stringify(join(BIN, 'decider.mjs'))});
     const { headlessEnv } = await import(${JSON.stringify(join(BIN, 'epic-plan.mjs'))});
     const rec = startDecider({ state: ${JSON.stringify(state)}, slug: 'acme__widgets', bin: ${JSON.stringify(BIN)}, report: '', items: [], rules: '', cwd: process.cwd(), claude: ${JSON.stringify(DECIDER_CLAUDE)} });
-    for (let i = 0; rec && !existsSync(${JSON.stringify(SEEN)}) && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
-    const decider = rec ? readFileSync(${JSON.stringify(SEEN)}, 'utf8') : 'none';
-    console.log(JSON.stringify({ decider, line: rec?.login ?? null, epic: headlessEnv(process.env).CLAUDE_CONFIG_DIR ?? 'unset' }));`;
+    for (let i = 0; !rec.wait && !existsSync(${JSON.stringify(SEEN)}) && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
+    const decider = rec.wait ? 'none' : readFileSync(${JSON.stringify(SEEN)}, 'utf8');
+    console.log(JSON.stringify({ decider, line: rec.login ?? null, wait: rec.wait ?? null, epic: headlessEnv(process.env).CLAUDE_CONFIG_DIR ?? 'unset' }));`;
   const r = spawnSync('node', ['--input-type=module', '-e', js], { env, cwd: join(W, 'repo'), encoding: 'utf8' });
   const d = spawnSync('node', [join(BIN, 'call-login.mjs'), 'dir'], { env, cwd: join(W, 'repo'), encoding: 'utf8' });
   try { return { ...JSON.parse(r.stdout.trim().split('\n').pop()), triage: d.stdout.trim() }; } catch { return { error: `${r.stdout}${r.stderr}` }; }
 };
 
-// AC1 to AC4: login A (the default) benched, B with room.
-env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], {});
-preset({ default: benchRow('default') });
+// AC1 to AC3: the repo's row names c; b, the default, has more room.
+const ROOMY_DEFAULT = [['b', 'default', 10, 10], ['c', 'unused', 90, 90]];
+env = world(ROOMY_DEFAULT, {}, { sub: 'c@example.com' });
 let got = calling(env);
-t('DS-468 AC1 the decider runs on login b', got.decider, dirOf('b'));
-t('DS-468 AC1 its record names the login', got.line, 'b');
-t('DS-468 AC2 AC3 triage and its challenge are pointed at login b', got.triage, dirOf('b'));
-t('DS-468 AC4 epic planning\'s headless call runs on login b', got.epic, dirOf('b'));
-// A bench in another of the repo's batches counts too: a login at its limit is at it everywhere.
-env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], {});
+t('DS-621 AC1 triage and its lane challenge run on the repo\'s subscription c', got.triage, dirOf('c'));
+t('DS-621 AC2 the decider runs on c', got.decider, dirOf('c'));
+t('DS-621 AC2 its record names the login', got.line, 'c');
+t('DS-621 AC3 epic planning\'s headless call runs on c', got.epic, dirOf('c'));
+// AC4, AC5: the repo follows the default b, which is at its limit (the pass's usage_hold); c has room.
+const ROOMY_OTHER = [['b', 'default', 100, 100], ['c', 'unused', 10, 10]];
+env = world(ROOMY_OTHER, {});
+preset({ usage_hold: holdRow() });
+got = calling(env);
+t('DS-621 AC4 no decider starts', got.decider, 'none');
+t('DS-621 AC4 and it says why', got.wait, `the repo's subscription, b, is held on the 5-hour usage limit until ${resetText(RESET)}`);
+t('DS-621 AC5 triage runs on the default, not on c', got.triage, dirOf('b'));
+t('DS-621 AC5 and so does epic planning', got.epic, dirOf('b'));
+// A hold in another of the repo's batches holds the decider too: the subscription is at its limit everywhere.
+env = world(ROOMY_OTHER, {});
 const OTHER = join(dirname(QF), 'batches', 'EPIC-1', 'queue.json');
 mkdirSync(dirname(OTHER), { recursive: true });
-writeFileSync(OTHER, JSON.stringify({ version: 1, batch: 'EPIC-1', tickets: {}, benched: { default: benchRow('default') } }));
+writeFileSync(OTHER, JSON.stringify({ version: 1, batch: 'EPIC-1', tickets: {}, usage_hold: holdRow() }));
 got = calling({ ...env, DESK_REPO_OVERRIDE: 'acme/widgets' });
-t('DS-468 a bench in another batch steers the calls too', `${got.decider} ${got.triage}`, `${dirOf('b')} ${dirOf('b')}`);
+t('DS-621 a hold in another batch of the repo holds the decider too', `${got.decider} ${got.triage}`, `none ${dirOf('b')}`);
 rmSync(dirname(OTHER), { recursive: true, force: true });
-// B benched and A, the caller's own, with room: the calls run as they always have.
-env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60]], {});
-preset({ b: benchRow('b') });
+// A hold whose reset has passed holds nothing.
+env = world(ROOMY_OTHER, {});
+preset({ usage_hold: holdRow(Math.round(Date.now() / 1000) - 60) });
+t('DS-621 a hold past its reset holds nothing', calling(env).decider, dirOf('b'));
+// A hold on another login, left from before the repo's row changed, holds nothing, even with no reset time.
+env = world(ROOMY_OTHER, {});
+preset({ usage_hold: holdRow(null, 'c') });
 got = calling(env);
-t('DS-468 with the caller\'s own login open, nothing is changed', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
-// A bench whose reset has passed benches nothing: the login with the most room is chosen again.
-env = world([['default', 'in rotation', 90, 90], ['b', 'in rotation', 10, 10]], {});
-preset({ b: benchRow('b', Math.round(Date.now() / 1000) - 60) });
+t('DS-621 a hold left on another subscription holds nothing', `${got.decider} ${got.wait}`, `${dirOf('b')} null`);
+// A bench a pass from before left steers nothing: the calls stay on the repo's subscription.
+env = world(ROOMY_DEFAULT, {});
+preset({ benched: { b: benchRow('b', null) } });
 got = calling(env);
-t('DS-468 a bench past its reset is not a bench', got.decider, dirOf('b'));
-// AC5 to AC7: every login in rotation and on standby benched.
-env = world([['default', 'in rotation', 10, 10], ['b', 'in rotation', 60, 60], ['s', 'standby', 0, 0]], {});
-preset({ default: benchRow('default'), b: benchRow('b'), s: benchRow('s', null) });
-got = calling(env);
-t('DS-468 AC5 every login benched: no decider starts', got.decider, 'none');
-t('DS-468 AC6 triage runs as the caller does', got.triage, 'all');
-t('DS-468 AC7 epic planning runs as the caller does', got.epic, 'unset');
-// The pass benches nothing now, so a bench a pass from before left (one with no reset time included)
-// is cleared by the next pass, and the decider starts again.
+t('DS-621 a bench left from before moves no call off the subscription', `${got.decider} ${got.triage} ${got.epic}`, `${dirOf('b')} ${dirOf('b')} ${dirOf('b')}`);
 out = pass(env);
 t('a pass clears a bench left from before the upgrade', batchOf().benched ?? null, null);
+// AC6: DESK_SUBSCRIPTION wins over the row.
+env = world(ROOMY_DEFAULT, {});
+got = calling({ ...env, DESK_SUBSCRIPTION: 'c@example.com' });
+t('DS-621 AC6 with DESK_SUBSCRIPTION=c, triage runs on c', got.triage, dirOf('c'));
+// The caller already on the subscription: its environment is kept.
+env = world(ROOMY_DEFAULT, {}, { sub: 'c@example.com' });
+got = calling({ ...env, CLAUDE_CONFIG_DIR: dirOf('c') });
+t('DS-621 a caller already on the subscription keeps its environment', `${got.decider} ${got.triage} ${got.epic} ${got.line}`, `${dirOf('c')} keep ${dirOf('c')} null`);
+// A row naming an account no login here is signed in to: no decider, and the rest run as the caller does.
+env = world(ROOMY_DEFAULT, {}, { sub: 'nobody@example.com' });
 got = calling(env);
-t('and the decider starts again', got.decider === 'none', false);
+t('DS-621 an unknown subscription: no decider, the rest as the caller', `${got.decider} ${got.triage} ${got.epic}`, 'none keep unset');
+t('DS-621 and the decider says why', got.wait, 'the repo\'s subscription, nobody@example.com, is not signed in to any login here');
 // DS-630 AC2: a ticket a pass from before left waiting to move off login b resumes its own session on b,
 // though the repo's subscription is c, and the field is gone; one that is not waiting just loses it.
 const WAITING = { ...RESUMING('x')['K-1'], resume: null, resume_why: null,
@@ -386,14 +403,18 @@ out = pass(env);
 t('DS-630 AC2 the login_move is gone from the queue', `${row('K-1').login_move ?? null} ${row('D-1').login_move ?? null} ${row('D-1').state}`, 'null null done');
 t('DS-630 AC2 it resumes its own session on the login it started on', calls('K-1').at(-1), `K-1|sess-1|${dirOf('b')}|resume`);
 t('DS-630 AC2 the report says so', out.includes('K-1: no longer moved off login b: it resumes its own session there'), true);
-// AC8: one login only.
-env = world([['default', 'in rotation', 50, 50]], {});
-preset({ default: benchRow('default') });
-got = calling(env);
-t('DS-468 AC8 one login: every call runs as today', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
+// AC7 to AC9: one login and no subscriptions file, from a caller on ~/.claude and on a folder of its own.
 env = world(null, {});
 got = calling(env);
-t('DS-468 AC8 no subscriptions file: every call runs as today', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
+t('DS-621 AC7 triage runs on the caller\'s own login', got.triage, 'keep');
+t('DS-621 AC8 the decider runs on the caller\'s own login', `${got.decider} ${got.line}`, 'unset null');
+t('DS-621 AC9 epic planning runs on the caller\'s own login', got.epic, 'unset');
+mkdirSync(join(T, 'own'), { recursive: true });
+got = calling({ ...env, CLAUDE_CONFIG_DIR: join(T, 'own') });
+t('DS-621 AC7 to AC9 a caller under its own config folder stays on it', `${got.decider} ${got.triage} ${got.epic}`, `${join(T, 'own')} keep ${join(T, 'own')}`);
+env = world([['default', 'default', 50, 50]], {});
+got = calling(env);
+t('DS-621 one login in a subscriptions file: every call runs as today', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
