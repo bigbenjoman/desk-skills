@@ -156,6 +156,11 @@ it lists a P0, a P1, a P2 or, under §3 `autopilot-judgement`, a gap (`reviewFix
 is left, and a later round may carry one), and otherwise to the person. A gap the review tags `PERSON'S
 CALL` earns no fix try and goes to the person, after any try the rest of the review earns: on a draft
 or a ready PR, the needs-you item offers `answer`, and a worker on the PR carries out their call.
+Under §3 `autopilot-judgement` `yes`, tagged gaps that are all the review leaves open and each end
+`Recommended: <option>`, none of them reading as an ask category (`decisions.mjs` `ASK_TERMS`), go to
+a review fix try instead: its worker carries out each recommendation
+and logs it as a decision. One gap with no recommendation, or in an ask category, sends them all to the
+person, and so does a recommended gap still open after its try.
 
 With the `review-reuse` lever on (config §3b Phase 0 levers), the carry rests on what the review read
 instead: after a rebase or any merge of the base, a verdict holds at the new head only while the PR's
