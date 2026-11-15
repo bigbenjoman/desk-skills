@@ -30,11 +30,12 @@
 //   - otherwise admitted (queue.mjs admit --by intake), held in the same write behind every open
 //     blocker in the batch, and every blocker in no batch until it is Done and its code is on the
 //     batch's base (--hold-outside, lifted by pass.mjs). An open blocker in no batch that is a step
-//     only the person takes (batch-state.mjs personStep) holds its merge instead, not its build
+//     only the person takes (batch-state.mjs personStep 'merge') holds its merge instead, not its build
 //     (--hold-merge: the merge driver holds its PR until pass.mjs reads the step Done), as does an open
-//     blocker in the batch parked as the person's step. A ticket carrying a config §4 Person-step label
-//     is admitted parked as the person's step (labelPark), with no holds; or, when it links a Claude Design canvas no
-//     worker can read, parked on that instead, so Needs you names the artifact to snapshot or share.
+//     blocker in the batch parked as the person's step; one carrying a §4 Person-input label still
+//     holds its build. A ticket carrying a config §4 Person-step or Person-input label is admitted
+//     parked as the person's step (labelPark), with no holds; or, when it links a Claude Design canvas
+//     no worker can read, parked on that instead, so Needs you names the artifact to snapshot or share.
 // With no queue, or one whose tickets are all done with no PR open, a batch is started for it
 // (`standing-<time>`, handed to the supervisor at once). A batch not handed over, an empty one included
 // (a session between `queue.mjs init` and its plan), is a session's and gets nothing until it is
@@ -116,7 +117,7 @@ const lintBlocking = (r) => {
 // lane, lint or questions, since no worker takes it.
 export function intakeReasons(r) {
   const out = [];
-  if (labelPark(r, E.personStepLabels())) return out;
+  if (labelPark(r, E.personStepLabels(), E.personInputLabels())) return out;
   if (needsPersonLane(r)) out.push(`lane ${r.lane}: ${r.lane === 'D' ? `${designGap(r)}; ` : ''}${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`);
   if (r.lint_error) out.push(`lint did not run (${r.lint_error})`);
   for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}`);
@@ -153,21 +154,25 @@ export function landedOn(key, base) {
 // the batch not merged there, open in Jira or Done with a PR still to merge, released as they merge;
 // `outside`, those in no batch, open or Done with their code not yet on `base`, lifted by the pass once
 // each is both; `failed`, open ones that failed in the batch, which nothing releases; `merge`, open
-// ones in no batch that are a step only the person takes (personStep), or open ones in the batch parked
-// as the person's step (personStepPark), which hold its merge, not its build, until each is Done. A
-// ticket that is itself the person's step (labelPark) is held by nothing: no worker builds it.
+// ones in no batch whose step only the person takes holds the merge (personStep 'merge'), or open ones in
+// the batch parked as the person's step (personStepPark), which hold its merge, not its build, until
+// each is Done; an open step carrying a §4 Person-input label (personStep 'build') holds its build, as
+// `held` in the batch and `outside` out of it. A ticket that is itself the person's step (labelPark) is
+// held by nothing: no worker builds it.
 function holdsFor(rec, tickets, base) {
   const out = { held: [], outside: [], failed: [], merge: [] };
   const stepLabels = E.personStepLabels();
-  if (labelPark(rec, stepLabels)) return out;
+  const inputLabels = E.personInputLabels();
+  if (labelPark(rec, stepLabels, inputLabels)) return out;
   for (const b of Array.isArray(rec.blockers) ? rec.blockers : []) {
     const t = tickets[b.key];
+    const step = b.category !== 'done' ? personStep(b, rec, stepLabels, inputLabels) : null;
     // A step has no code to land, so once Done it holds nothing, though it is still in the batch.
-    if (t && personStepPark(t)) { if (b.category !== 'done') out.merge.push(b.key); }
+    if (t && personStepPark(t)) { if (b.category !== 'done') out[step === 'build' ? 'held' : 'merge'].push(b.key); }
     else if (t) {
       if (b.category !== 'done') out[t.state === 'failed' ? 'failed' : 'held'].push(b.key);
       else if (t.state !== 'failed' && !t.merged_at && !(t.state === 'done' && t.result?.pr == null)) out.held.push(b.key);
-    } else if (b.category !== 'done' && personStep(b, rec, stepLabels)) out.merge.push(b.key);
+    } else if (step === 'merge') out.merge.push(b.key);
     else if (b.category !== 'done' || landedOn(b.key, base) !== true) out.outside.push(b.key);
   }
   return out;
@@ -593,7 +598,7 @@ async function intake({ state, query, reg, now }) {
     }
     if (r.started) { started = r.started; lines.push(`intake: started standing batch ${started}, handed to the supervisor`); }
     if (r.admitFailed) { lines.push(`intake: ${key} not admitted: ${r.admitFailed}; the next intake tries again`); continue; }
-    const parkedOn = labelPark(rec, E.personStepLabels()) ?? designPark(rec);
+    const parkedOn = labelPark(rec, E.personStepLabels(), E.personInputLabels()) ?? designPark(rec);
     const parked = parkedOn ? `, parked: ${parkedOn}` : '';
     const took = logTaken(key, rec, state);
     reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}${parked}` };
@@ -748,7 +753,7 @@ async function byHand(keys, { state, by, front, now, onLine }) {
     }
     // A design no worker can read is snapshotted by the person's session before the admit, never after.
     // The person's own step (labelPark) is admitted parked on that instead: no worker reads its design.
-    const unread = needsPersonLane(t.rec) || labelPark(t.rec, E.personStepLabels()) ? [] : unreadCanvases(t.rec);
+    const unread = needsPersonLane(t.rec) || labelPark(t.rec, E.personStepLabels(), E.personInputLabels()) ? [] : unreadCanvases(t.rec);
     if (unread.length) return refuse(key, `design not snapshotted: ${unread.join(', ')}: snapshot it into ${join(state, 'designs', key)}/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared with this subscription, then run /desk-admit ${key} again`);
     recs[key] = t.rec;
     seen[key] = t.rec;
