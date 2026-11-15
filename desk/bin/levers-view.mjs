@@ -328,8 +328,10 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
       lever, layer: reg.layer,
       cells: repos.map((r) => {
         const col = repoView.find((c) => c.slug === r.slug);
-        if (r.evals.error || r.configRead.error) return { repo: r.name, state: 'error', error: r.evals.error ?? r.configRead.error };
+        if (r.evals.error) return { repo: r.name, state: 'error', error: r.evals.error };
         const e = latest.get(`${r.slug}|${lever}`);
+        // Only a lever with no evaluation reads its state from the levers row.
+        if (!e && r.configRead.error) return { repo: r.name, state: 'error', error: r.configRead.error };
         if (!e) {
           if (r.enrol.pinned.includes(lever)) return { repo: r.name, state: 'pinned', note: 'pinned by hand: before/after only, not a trial', stale: col.column === 'stale' };
           return { repo: r.name, state: r.enrol.auto ? 'off' : 'not_enrolled', stale: col.column === 'stale' };

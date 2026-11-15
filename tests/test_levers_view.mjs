@@ -297,6 +297,11 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('config error: naming the config and its row', `${col.errors[0].file}:${col.errors[0].line}`, `${join(m.configRoot, 'repos', 'acme__ai-agents', 'config.md')}:12`);
   t('config error: not listed as waiting to enrol', v.panels.waiting.items.some((i) => i.repo === 'ai-agents'), false);
   t('config error: the other columns build', v.repos.find((r) => r.name === 'desk-skills').column, 'ok');
+  const g = [{ name: 'fix_tries_ratio', scope: 'repo', est: 1.9, lo90: 1.3, hi90: 2.6, margin: 1.25, p_worse: 0.95 }];
+  const badDs = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`none` `auto`' } : r));
+  const ev = view(machine({ repos: badDs, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers', { guardrails: g })]) } }));
+  t('config error: an evaluated lever keeps its guardrails', j(ev.panels.guardrails.rows.map((r) => `${r.lever} ${r.status}`)), '["wrappers breached"]');
+  t('config error: a lever with no evaluation is error', cell(ev, 'memory').state, 'error');
 }
 
 // The per accepted ticket trends read merged tickets only; the cost panel stays per admitted.
