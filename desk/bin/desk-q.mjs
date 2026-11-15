@@ -785,10 +785,11 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
   const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])),
     { jira: /^jira\b/i.test(String(repoConfigValue(r.slug, 'tracker') ?? '').trim()) });
-  // A ticket held behind a PR that needs the user waits on them, as one held outside the batch does,
-  // so it is not run forward; nor is anything held behind it.
+  // A ticket held behind a PR that needs the user waits on them, and one held behind a blocker in no
+  // batch waits until a pass lifts it, so neither is run forward; nor is anything held behind them.
   const behindYou = (t) => isHeld(t) && unmergedBlockers(r.q, t).some((b) => blockerHold(r.q, t.key, b, r.ctx, new Set([t.key])).you);
-  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && behindYou(t) ? 'stuck' : k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
+  const heldOutside = (t) => isHeld(t) && keysOf(t.held_outside).some((b) => !r.q.tickets?.[b]);
+  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && (heldOutside(t) || behindYou(t)) ? 'stuck' : k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
