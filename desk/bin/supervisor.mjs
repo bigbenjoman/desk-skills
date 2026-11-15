@@ -676,6 +676,21 @@ function restatedNone(items) {
   ];
 }
 
+// Restarts the RESTATE_MS clock on each item's park still waiting on a restate, for a tick that starts
+// no decider (the batch on a usage hold, every login benched): the hour is the decider's to use, so a
+// line never lapses to none, and to the person, before one has seen it. Returns the report line.
+function restampRestate(items, now) {
+  if (!restateKeys(items).length) return [];
+  let q;
+  try { q = readQueue(E.queueFile()); } catch { return []; /* left for the next tick */ }
+  const done = [];
+  for (const key of restateKeys(items, q)) {
+    const r = spawnSync(process.execPath, [join(HERE, 'queue.mjs'), 'set', key, `park.clears_when.at=${now.toISOString()}`], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
+    if (r.status === 0) done.push(key);
+  }
+  return done.length ? [`decider: the hour to restate an unreadable clears-when starts again once one runs: ${done.join(', ')}`] : [];
+}
+
 // Stops a decider past its time and hands its items on; records an ended one's outcome. Returns the
 // lines for the batch report.
 function reapDecider(state, s, now = new Date()) {
@@ -735,7 +750,7 @@ function decide(state, s, v, q, now = new Date()) {
   if (s.decider) return [...lines, `decider: one is still running (pid ${s.decider.pid}, since ${s.decider.started}), so none starts for ${fresh.map((i) => i.ticket).join(', ')}`];
   // A session started at the limit fails at once; its items wait for the pass that finds it lifted.
   const hold = q.usage_hold;
-  if (hold) return [...lines, `decider: not started, the batch is held on ${limitName(hold.type)}${hold.resets_at != null ? ` until ${resetText(hold.resets_at)}` : ''} (usage_hold); ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once it lifts`];
+  if (hold) return [...lines, `decider: not started, the batch is held on ${limitName(hold.type)}${hold.resets_at != null ? ` until ${resetText(hold.resets_at)}` : ''} (usage_hold); ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once it lifts`, ...restampRestate(fresh, now)];
   const rules = recoveryRules();
   if (!existsSync(rules)) {
     handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
@@ -743,7 +758,7 @@ function decide(state, s, v, q, now = new Date()) {
   }
   s.decider = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),
     webRead: E.permission('worker-web-read') === 'yes', judgement: E.permission('autopilot-judgement'), targets: runningBatches(HERE, { cwd: process.cwd() }), cwd: process.cwd(), now });
-  if (!s.decider) return [...lines, `decider: not started, every Claude login is benched; ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once one is back`];
+  if (!s.decider) return [...lines, `decider: not started, every Claude login is benched; ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once one is back`, ...restampRestate(fresh, now)];
   return [...lines, `decider: started (pid ${s.decider.pid})${s.decider.login ? ` on login ${s.decider.login}` : ''} for ${fresh.map((i) => i.ticket).join(', ')}; its output is ${s.decider.out}`];
 }
 

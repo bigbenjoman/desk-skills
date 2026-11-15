@@ -1390,8 +1390,10 @@ const clearable = (t) => {
 // requeues what waited on it ("parks waiting on the base", after the base sync).
 const BASE_CONTAINS = 'base-contains';
 // A park whose unreadable clears-when no restate reached in time (a decider that never came, or a
-// session that left it) is the person's: recorded none, so the digest and needs-you list it.
-if (!DRY) {
+// session that left it) is the person's: recorded none, so the digest and needs-you list it. Not while
+// the batch is on a usage hold: no decider starts then (supervisor.mjs decide), and the supervisor
+// restarts the hour for each one it could not hand a decider, so it lapses only once one could run.
+if (!DRY && !queue().usage_hold) {
   for (const t of Object.values(queue().tickets).filter((x) => x.state === 'parked' && restateLapsed(x.park?.clears_when, Date.parse(PASS_AT)))) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`);
     report.clears.push(`${t.key}: unreadable clears-when "${t.park.clears_when.text}" not restated within ${RESTATE_MS / 60000} minutes: recorded as none, for the person`);

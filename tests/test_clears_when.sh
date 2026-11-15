@@ -405,6 +405,16 @@ check "DS-496 a push that reached nothing keeps the park and its condition" \
   '[ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\"" <<< "$out"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 and the next pass that reaches origin pushes it" 'on_origin P-7 && [ "$(field P-7 state)" = "\"triaged\"" ]'
+# While the batch is on a usage hold no decider starts, so a line past the window is not lapsed to none.
+q add C-9 Story A; q park C-9 "waiting on KAN-1087"
+q set C-9 'park.clears_when={"kind":"unreadable","text":"KAN-1087s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'
+q set-batch 'usage_hold={"since":"2026-01-01T00:00:00Z","type":"seven_day","paused":[]}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-563 AC3 on a usage hold, a line past the window keeps waiting for a decider" \
+  '[ "$(field C-9 park.clears_when.kind)" = "\"unreadable\"" ] && ! grep -q "C-9: unreadable" <<< "$out"'
+node -e 'const f = process.argv[1]; const fs = require("fs"); const q = JSON.parse(fs.readFileSync(f, "utf8")); delete q.usage_hold; fs.writeFileSync(f, JSON.stringify(q, null, 2))' "$DESK_QUEUE"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-563 AC3 once the hold lifts it lapses as before" '[ "$(field C-9 park.clears_when)" = "{\"kind\":\"none\"}" ]'
 
 # ---- the decider records a condition, and gets an answer to a park it was never handed --------------
 node "$B/answer.mjs" E-2 "go with the second option" >/dev/null 2>&1

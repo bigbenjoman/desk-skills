@@ -544,6 +544,16 @@ unpark R2 "r2: waiting on KAN-1086"
 out=$(tick); settle; out=$(tick)
 check "DS-563 AC3: restated as a form, it waits on it: not handed to the person, never none" \
   '[ "$(cw R2)" = pr-merged ] && [ -z "$(handed)" ] && ! grep -q "recorded as none, for the person: R2" "$LOG"'
+# No decider starts on a usage hold, so the hour a pass waits for a restate starts again: it cannot
+# lapse to none before a decider has seen it.
+mark; rm -f "$T/state/handed.json"; n=$(calls)
+RQ='"R3":{"key":"R3","state":"parked","lane":"A","park":{"question":"r3: waiting on KAN-1086","since":"2026-11-01T09:00:00Z","clears_when":{"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}}}'
+printf '{"version":1,"batch":"b1","supervised":true,"approved":{},"usage_hold":{"since":"2026-10-29T17:30:00Z","type":"seven_day","resets_at":1793545200,"preflight":"Z","paused":[]},"tickets":{%s}}\n' "$RQ" > "$DESK_QUEUE"
+verdict "$(parked R3 "r3: waiting on KAN-1086")"
+out=$(tick)
+at=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets.R3.park.clears_when.at)' "$DESK_QUEUE")
+check "DS-563 AC3: on a usage hold no decider starts, and the restate's hour starts again" \
+  '[ "$(calls)" = "$n" ] && [ "$(cw R3)" = unreadable ] && [ "$at" != 2026-01-01T00:00:00Z ] && node -e "process.exit(Date.now() - Date.parse(process.argv[1]) < 600000 ? 0 : 1)" "$at" && grep -q "^decider: the hour to restate an unreadable clears-when starts again once one runs: R3$" "$LOG"'
 verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
 
 echo "$PASS checks passed, $FAIL failed"
