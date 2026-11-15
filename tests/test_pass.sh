@@ -110,6 +110,15 @@ check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'e
 check "DS-673 AC5 the pass uploads through the machine's upload queue, capped at the minute's pace" 'grep -qx "2 $T/state/images/T-1/ --max 6" "$T/upload-args"'
 check "DS-673 AC5 each upload done, the queue holds no job and no result" 'node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); process.exit(q.jobs.length + q.results.length)" "$T/desk/upload-queue.json"'
 
+# R-1 and R-2: finished tickets whose uploads ended in another repo's pump. R-1's was its last round's,
+# ending after its next round started; R-2's is its own round's.
+q add R-1; q set R-1 state=done branch=fix/R-1 upload_round=new result.pr=21
+q add R-2; q set R-2 state=done branch=fix/R-2 upload_round=same result.pr=22
+node -e 'const [f, queue] = process.argv.slice(1); const r = (key, round, pr) => ({ queue, repo: "acme/widgets", key, round, pr, dir: "/d/", code: 0, out: "[upload] done: 1 image(s) in the body, 0 placeholder(s) left", done_at: new Date().toISOString() }); require("fs").writeFileSync(f, JSON.stringify({ jobs: [], results: [r("R-1", "old", 21), r("R-2", "same", 22)], served: {}, backoff: null }))' "$T/desk/upload-queue.json" "$DESK_QUEUE"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-673 a result of a ticket's earlier round is not recorded on its next round" '[ "$(field R-1 images_uploaded)" = null ] && echo "$out" | grep -q "R-1: an upload to PR #21 from an earlier round"'
+check "DS-673 a result of the ticket's own round is recorded"                       '[ "$(field R-2 images_uploaded)" = true ]'
+
 # T-3: round one finished with PR 1 and uploaded; it is requeued for a deliberate re-run.
 q add T-3; q set T-3 state=triaged branch=fix/T-3 result.pr=1 result.summary=old images_uploaded=true images_reported=true draft_pr=1
 say "AUTOPILOT_IMAGES: $T/state/images/T-3/" "AUTOPILOT_DONE: pr=1 jira=none" > "$T/state/logs/T-3.log"

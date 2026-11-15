@@ -6,14 +6,17 @@
 // UPLOAD_PACE leaves of this minute's and this hour's uploads in the machine's upload log. A job whose
 // upload stalls (the uploader's exit 7) sets one back-off that stops every repo's uploads until it
 // ends. A job left part done by the cap (exit 8) keeps its place; any other end is a result, which
-// the pass of the queue that added it takes and records on its ticket.
+// the pass of the queue that added it takes and records on its ticket. A job belongs to its ticket's
+// round (`round`, the ticket's upload_round when it was added): a spawn of the ticket's next round
+// drops it (dropJob), and the pass records only results of the ticket's current round.
 //
-//   { jobs:    [{ queue, repo, root, key, pr, dir, approved, at }]   queue: that batch's queue.json
+//   { jobs:    [{ queue, repo, root, key, round, pr, dir, approved, at }]   queue: that batch's queue.json
 //     results: [{ ...job, code, out, done_at }]
 //     served:  { [repo]: <when its last job started> }
 //     backoff: { at, stalls, until, repo, pr } | null }
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { lock, tryLock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 import { deskHome } from './desk-env.mjs';
 import { UPLOAD_PACE } from './desk-design.mjs';
 import { readUploadLog, uploadsBefore } from './upload-log.mjs';
@@ -31,73 +34,18 @@ export function readUploadQueue(file = uploadQueueFile()) {
   }
   return { jobs: Array.isArray(q?.jobs) ? q.jobs : [], results: Array.isArray(q?.results) ? q.results : [], served: q?.served ?? {}, backoff: q?.backoff ?? null };
 }
-function writeUploadQueue(file, q) {
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp.${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(q, null, 2)}\n`);
-  renameSync(tmp, file);
-}
-
-// ---- locks: a directory holding its holder's pid, as queue.mjs's ---------------------------------
-const held = new Set();
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
-// A holder that has exited never lets go; one with no pid yet is between its mkdir and its write,
-// unless it has sat that way for a minute.
-function stale(dir) {
-  const pid = lockPid(dir);
-  try { return pid ? !alive(pid) : Date.now() - statSync(dir).mtimeMs > 60_000; } catch { return false; }
-}
-// Clearing takes its own lock and looks again under it, so two takers that saw one stale lock never
-// remove the fresh lock the faster of them has just taken.
-function clearStale(dir) {
-  const clearing = `${dir}.clearing`;
-  try { mkdirSync(clearing); } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    try { if (Date.now() - statSync(clearing).mtimeMs > 5_000) rmSync(clearing, { recursive: true, force: true }); } catch { /* gone */ }
-    return false;
-  }
-  try { if (stale(dir)) rmSync(dir, { recursive: true, force: true }); } finally { rmSync(clearing, { recursive: true, force: true }); }
-  return true;
-}
-// true once taken, else the holder's pid (null when it has written none yet).
-function takeLock(dir) {
-  mkdirSync(dirname(dir), { recursive: true });
-  for (let i = 0; i < 2; i++) {
-    try {
-      mkdirSync(dir);
-      writeFileSync(join(dir, 'pid'), `${process.pid}\n`);
-      held.add(dir);
-      return true;
-    } catch (e) { if (e.code !== 'EEXIST') throw e; }
-    if (!(stale(dir) && clearStale(dir))) break;
-  }
-  return lockPid(dir);
-}
-function releaseLock(dir) {
-  if (lockPid(dir) === process.pid) rmSync(dir, { recursive: true, force: true });
-  held.delete(dir);
-}
-process.on('exit', () => { for (const d of held) releaseLock(d); });
-
 // fn(queue) changes the queue under its file lock, and the queue is saved after if it changed (so a
 // pass with nothing to upload writes nothing); returns fn's result.
 export function withQueue(file, fn, { waitMs = 10_000 } = {}) {
   const dir = `${file}.lock`;
-  const until = Date.now() + waitMs;
-  let got;
-  while ((got = takeLock(dir)) !== true) {
-    if (Date.now() >= until) throw new Error(`the upload queue ${file} is locked by pid ${got ?? '?'} past the ${waitMs / 1000}s wait`);
-    sleep(50);
-  }
+  lock(dir, { waitMs, timeout: (pid) => new Error(`the upload queue ${file} is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) });
   try {
     const q = readUploadQueue(file);
     const was = JSON.stringify(q);
     const out = fn(q);
-    if (JSON.stringify(q) !== was) writeUploadQueue(file, q);
+    if (JSON.stringify(q) !== was) writeJsonAtomic(file, q);
     return out;
-  } finally { releaseLock(dir); }
+  } finally { unlock(dir); }
 }
 
 // Adds a ticket's upload, or moves its job to a new PR or directory; one job per ticket per queue.
@@ -110,6 +58,14 @@ export function enqueue(job, { file = uploadQueueFile(), now = Date.now } = {}) 
   });
 }
 export const isQueued = (q, queue, key) => q.jobs.some((j) => j.queue === queue && j.key === key);
+// Drops the job `queue`'s ticket `key` added, as its next round starts: that round adds its own.
+export function dropJob(queue, key, { file = uploadQueueFile() } = {}) {
+  return withQueue(file, (q) => {
+    const before = q.jobs.length;
+    q.jobs = q.jobs.filter((j) => !(j.queue === queue && j.key === key));
+    return before - q.jobs.length;
+  });
+}
 
 // How many images may go now: what UPLOAD_PACE leaves of the minute and the hour before `at`.
 export function pace(entries, at) {
@@ -145,7 +101,7 @@ export const backoffWhy = (b) => `an upload for ${b.repo} #${b.pr} stalled at ${
 // -> { ran: [{ job, code }], stop: why it stopped short, or null }.
 export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog = () => readUploadLog(), tried = new Set() }) {
   const runLock = `${file}.run`;
-  const holder = takeLock(runLock);
+  const holder = tryLock(runLock);
   if (holder !== true) return { ran: [], stop: `another pass is uploading from the machine's upload queue (pid ${holder ?? '?'})` };
   const ran = [];
   let stop = null;
@@ -174,7 +130,7 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       });
       if (stop) break;
     }
-  } finally { releaseLock(runLock); }
+  } finally { unlock(runLock); }
   return { ran, stop };
 }
 

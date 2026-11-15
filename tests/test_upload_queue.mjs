@@ -1,9 +1,10 @@
 // suite: upload queue (one machine-wide queue: order, the minute and hour pace, repo rotation, shared back-off)
 // upload-queue.mjs with a fake uploader and a fake clock: nothing here opens a browser or calls GitHub.
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter } from '../desk/bin/upload-queue.mjs';
+import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter, dropJob } from '../desk/bin/upload-queue.mjs';
+import { tryLock, unlock } from '../desk/bin/dir-lock.mjs';
 import { uploadsBefore } from '../desk/bin/upload-log.mjs';
 import { UPLOAD_PACE } from '../desk/bin/desk-design.mjs';
 import { EXIT_PACED, EXIT_THROTTLED, THROTTLE_MS } from '../desk/bin/upload-batches.mjs';
@@ -133,6 +134,21 @@ function machine({ step = 5000 } = {}) {
   const moved = readUploadQueue(m.file).jobs.find((j) => j.key === 'b-1');
   t('a ticket that moves to a new PR moves its job, taking a new place in line', `${moved.pr} ${moved.at !== at}`, '2 true');
   t('uploadsBefore counts only what the log uploaded', uploadsBefore([{ at: new Date(START).toISOString(), result: 'throttled' }], new Date(START + 1)).uploads_last_minute, 0);
+  m.add('acme/a', 'a-9', 1, { round: 'r1' });
+  t('a ticket\'s next round drops the job its last round added, and only that one', `${dropJob('/q/acme/a.json', 'a-9', { file: m.file })} ${isQueued(readUploadQueue(m.file), '/q/acme/a.json', 'a-9')} ${isQueued(readUploadQueue(m.file), '/q/acme/b.json', 'b-1')}`, '1 false true');
+  t('a job carries the round that added it to its result', (() => { m.add('acme/a', 'a-8', 1, { round: 'r2' }); m.clock += 120_000; m.pump(); return takeResults('/q/acme/a.json', { file: m.file }).find((x) => x.key === 'a-8')?.round; })(), 'r2');
+}
+
+// ---- the lock: a dead holder's lock is cleared, a live one's is not --------------------------------
+{
+  const dir = join(ROOT, 'held.lock');
+  mkdirSync(dir); writeFileSync(join(dir, 'pid'), '999999999\n');
+  t('a lock whose holder has exited is cleared and taken', tryLock(dir), true);
+  unlock(dir);
+  mkdirSync(dir); writeFileSync(join(dir, 'pid'), `${process.ppid}\n`);
+  t('a lock a live process holds is not taken, and names its holder', tryLock(dir), process.ppid);
+  unlock(dir);
+  t('and is never released by a process that does not hold it', existsSync(dir), true);
 }
 
 rmSync(ROOT, { recursive: true, force: true });

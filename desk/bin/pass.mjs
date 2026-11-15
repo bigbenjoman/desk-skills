@@ -571,6 +571,12 @@ function pumpUploads() {
   for (const r of results) {
     const t = queue().tickets[r.key];
     if (!t) continue;
+    // A result of an earlier round is not this round's: recorded, it would mark this round's
+    // screenshots uploaded before they are.
+    if ((r.round ?? null) !== (t.upload_round ?? null)) {
+      report.advanced.push(`${t.key}: an upload to PR #${r.pr} from an earlier round ended after its next round started, so it is not recorded`);
+      continue;
+    }
     uploadedThisPass.add(r.key);
     recordUpload(t, String(r.pr), r.dir, { ok: r.code === 0, code: r.code, out: r.out ?? '' }, r.cells_before ?? null);
   }
@@ -593,11 +599,12 @@ function uploadShots(t, prNo, imgDir) {
   uploadedThisPass.add(t.key);
   if (DRY) { report.advanced.push(`${t.key} images → #${prNo} (dry run): would join the machine's upload queue`); return; }
   try {
-    // The body's cells when the job first joined for this PR: a crash that leaves fewer filled some,
-    // so it spends no try (recordUpload), however many paced runs it took.
-    const queued = UQ.readUploadQueue().jobs.find((j) => j.queue === QUEUE_FILE && j.key === t.key && String(j.pr) === String(prNo));
+    // The body's cells when the job first joined for this round and PR: a crash that leaves fewer
+    // filled some, so it spends no try (recordUpload), however many paced runs it took.
+    const round = t.upload_round ?? null;
+    const queued = UQ.readUploadQueue().jobs.find((j) => j.queue === QUEUE_FILE && j.key === t.key && String(j.pr) === String(prNo) && (j.round ?? null) === round);
     const before = queued && 'cells_before' in queued ? queued.cells_before : cellsIn(prNo);
-    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before });
+    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before });
   } catch (e) {
     report.failed.push(`${t.key}: image upload to PR #${prNo} did not join the machine's upload queue: ${e.message}; a later pass tries again`);
     return;
@@ -3070,7 +3077,13 @@ for (const t of spawnable) {
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
-    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null');
+    'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null',
+    // The round the upload queue's jobs belong to: the last round's job is dropped, and a result of it
+    // that ends after this is not recorded (pumpUploads). A handoff's session is the same round.
+    `upload_round=${sid}`);
+  if (!DRY) {
+    try { UQ.dropJob(QUEUE_FILE, t.key); } catch (e) { report.failed.push(`${t.key}: its last round's upload was not dropped from the machine's upload queue: ${e.message}; its result is not recorded`); }
+  }
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
   const now = new Date().toISOString();
