@@ -74,13 +74,14 @@ export function samePark(a, b, ticket = '') {
 // whose label is no queue ticket (`BASE GATE`, `base sync`) is the batch's, with no ticket to answer.
 // A park carries its round (which park in a row this is, counted by queue.mjs requeue), the park the
 // last requeue cleared, whether this one asks the same thing, and the clears-when it had when listed.
-// A triaged ticket's line carries its open questions word for word (openQuestionsOf).
+// A triaged ticket's line carries its open questions word for word (openQuestionsOf). A park's `note`
+// (its PR conflicting with the base, say) goes in its text, never its id, so the item stays one item.
 export function deciderItems(v, q = {}, state = null) {
   const tickets = q.tickets ?? {};
   const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => {
     const prev = tickets[p.key]?.prev_park ?? null;
     return {
-      id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: String(p.question ?? ''), lane: tickets[p.key]?.lane ?? null,
+      id: `park-${h(`${p.key}\0${p.question ?? ''}`)}`, ticket: p.key, kind: 'parked', text: `${p.question ?? ''}${p.note ? ` (${p.note})` : ''}`, lane: tickets[p.key]?.lane ?? null,
       since: tickets[p.key]?.park?.since ?? null, clears: condKey(tickets[p.key]?.park?.clears_when),
       round: (prev?.round ?? 0) + 1, prev, repeat: !!prev && samePark(prev.question, p.question, p.key),
       takenOnce: !!tickets[p.key]?.auto_answered && samePark(tickets[p.key].auto_answered.question, p.question, p.key),
