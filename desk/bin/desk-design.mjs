@@ -56,6 +56,7 @@ import { basename, dirname, extname, isAbsolute, join, normalize, relative, reso
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
+import { parseCapture } from './stitch-boards.mjs';
 
 const safeId = (s) => E.SAFE_ID.test(String(s ?? '')) && !String(s).includes('..');
 const fail = (msg, code = 2) => { const e = new Error(msg); e.code = code; throw e; };
@@ -1102,15 +1103,20 @@ export function themes() {
 // One stitched image per board and theme: the uploads a ticket's PR needs and the minutes they take
 // at UPLOAD_PACE (whichever of the minute and hour caps is slower). With `key`, the boards are that
 // ticket's (every board when it names none, or when source.json does not list it yet: `unlisted`).
-// A board drawn as another's dark or light theme ("Order summary dark") stitches into that board's
-// image for the theme (stitch-boards.mjs), so it counts once, and its theme counts toward the themes.
-const THEMED = /[\s_-]+(light|dark)$/i;
+// Boards are counted as the stitch groups them: by the file name compare gives each (screenNames),
+// read with stitch-boards.mjs's parseCapture, so a board drawn as another's dark theme ("Order
+// summary dark") counts as that board, and its theme counts toward the themes.
 export function uploadEstimate(source, { key = null, themeCount = 1 } = {}) {
-  let boards = (source?.boards ?? []).map((b) => b.name);
+  const all = source?.boards ?? [];
+  let files = screenNames(all);
   const t = key ? (source?.tickets ?? []).find((x) => x.key === key) : null;
-  if (t?.boards?.length) boards = t.boards;
-  const bases = new Set(boards.map((n) => String(n).replace(THEMED, '')));
-  const drawn = new Set(boards.map((n) => (THEMED.exec(String(n))?.[1] ?? 'light').toLowerCase()));
+  if (t?.boards?.length) {
+    const byName = new Map(all.map((b, i) => [b.name, files[i]]));
+    files = t.boards.map((n) => byName.get(n) ?? screenNames([{ name: n }])[0]);
+  }
+  const parsed = files.map((f) => parseCapture(`canvas-${f}-1.png`));
+  const bases = new Set(parsed.map((p) => p.screen));
+  const drawn = new Set(parsed.map((p) => p.theme));
   const themesN = Math.max(1, themeCount, drawn.size);
   const uploads = bases.size * themesN;
   const minutes = Math.max(uploads / UPLOAD_PACE.perMinute, (uploads / UPLOAD_PACE.perHour) * 60);
