@@ -37,7 +37,7 @@ import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from '
 import { firstSpawnFromLogs, epicUnread, splitOwnEpic, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded, restateLapsed, RESTATE_MS, UNREADABLE } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
@@ -459,12 +459,15 @@ function againstRegister(t, question, log, cond) {
 }
 
 // What clears a worker's park, from the `AUTOPILOT_PARK_CLEARS_WHEN:` after its last park (clears-when.mjs).
-// None given, or one that does not read, is none: the park waits for a person.
+// None given is none: the park waits for a person. One that does not read is kept as unreadable, for
+// the decider to restate once (decider.mjs; in a batch a session runs, that session) before the person
+// is asked. One no restate reaches in RESTATE_MS is recorded none (below).
 function clearsWhenOf(t, log) {
   const raw = afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN');
-  const p = parseClearsWhen(raw);
-  if (!p.ok) report.clears.push(`${t.key}: unreadable clears-when (${p.why}), recorded as none`);
-  return p.ok ? p.cond : { kind: 'none' };
+  const p = parseClearsWhen(raw, { here: GH_REPO });
+  if (p.ok) return p.cond;
+  report.clears.push(`${t.key}: unreadable clears-when (${p.why}), kept for the decider to restate: queue.mjs clears-when ${t.key} "<a form>", or none`);
+  return { kind: UNREADABLE, text: String(raw).trim(), why: p.why, at: PASS_AT };
 }
 
 // The call a worker's park recommends, from the `AUTOPILOT_PARK_RECOMMENDS:` after its last park
@@ -679,7 +682,7 @@ const conflictHandle = E.verdictLogins();
 // its own open PR merging, and that PR is green with a clean review at its head. Null when it is not,
 // or unread. `grantedOnly` reads nothing from GitHub unless desk may undraft and merge it.
 function mergeParkOf(t, cond, { grantedOnly = false } = {}) {
-  if (!t.branch || isSpine(t) || needsSession(t) || cond?.kind !== 'pr-merged') return null;
+  if (!t.branch || isSpine(t) || needsSession(t) || cond?.kind !== 'pr-merged' || cond.repo) return null;
   const perm = E.permission('pr-ready');
   const ready = perm === 'ask' && queue().approved?.undraft === true ? 'yes' : perm;
   const merge = E.mergeGrant(queue());
@@ -849,7 +852,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
   // A park asking only who merges its green, clean PR (mergeParkOf): done where desk may merge it, else
   // the merge question naming the row that keeps desk from it.
   const merging = park && !built && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id))
-    ? mergeParkOf(t, parseClearsWhen(afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN')).cond) : null;
+    ? mergeParkOf(t, parseClearsWhen(afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN'), { here: GH_REPO }).cond) : null;
   const mergeOnly = merging?.call === 'done' ? merging : null;
   // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
   const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? (built ? String(built.pr) : null) ?? (mergeOnly ? String(mergeOnly.pr) : null) ?? t.result?.pr;
@@ -1199,7 +1202,22 @@ const readOrThrow = (what, cmd, args) => {
   return r.out;
 };
 const clearsRead = {
-  pr: (n) => cached(`pr:${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,isDraft']))),
+  pr: (n, repo = GH_REPO) => cached(`pr:${repo}#${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state,isDraft']))),
+  // The latest run of each check, as the gate reads them (gate.mjs latestPerCheck).
+  checks: (n) => cached(`checks:${n}`, () => {
+    const v = JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefOid,statusCheckRollup']));
+    return { headRefOid: v?.headRefOid, checks: latestPerCheck(normaliseRollup(v?.statusCheckRollup)) };
+  }),
+  // From origin as fetched now. A commit not here after the fetch is on no branch this clone has.
+  commitOn: (sha, branch) => {
+    cached(`fetch:${branch}`, () => readOrThrow(`git fetch ${branch}`, 'git', ['-C', MAIN, 'fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]));
+    const not = { holds: false, note: `${sha} is not on origin/${branch} yet` };
+    if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) return not;
+    const r = shOut('git', ['-C', MAIN, 'merge-base', '--is-ancestor', sha, `origin/${branch}`]);
+    if (r.ok) return { holds: true };
+    if (r.code === 1) return not;
+    throw new Error(`git merge-base ${sha} origin/${branch}: ${r.out.split('\n').pop()}`);
+  },
   ticket: (key) => cached(`ticket:${key}`, () => {
     const c = JSON.parse(readOrThrow(`desk-jira get ${key}`, 'desk-jira', ['get', key, '--json']))?.fields?.status?.statusCategory?.key;
     if (!c) throw new Error(`desk-jira get ${key}: no status category`);
@@ -1292,11 +1310,21 @@ function pushParked(t, c) {
 // A ticket left in a finished feature batch is the person's to move, whatever its earlier park waited on.
 const clearable = (t) => {
   const c = t.park?.clears_when;
-  return !(t.state !== 'parked' || isHeld(t) || spinePark(t) || leftPark(t) || t.park?.claim?.session || !c || c.kind === 'none' || c.kind === LIVE_READ);
+  return !(t.state !== 'parked' || isHeld(t) || spinePark(t) || leftPark(t) || t.park?.claim?.session || !recorded(c) || c.kind === LIVE_READ);
 };
 // "base contains <branch>" is checked after the base sync below, so the pass that syncs the base also
 // requeues what waited on it ("parks waiting on the base", after the base sync).
 const BASE_CONTAINS = 'base-contains';
+// A park whose unreadable clears-when no restate reached in time (a decider that never came, or a
+// session that left it) is the person's: recorded none, so the digest and needs-you list it. Not while
+// the batch is on a usage hold: no decider starts then (supervisor.mjs decide), and the supervisor
+// restarts the hour for each one it could not hand a decider, so it lapses only once one could run.
+if (!DRY && !queue().usage_hold) {
+  for (const t of Object.values(queue().tickets).filter((x) => x.state === 'parked' && restateLapsed(x.park?.clears_when, Date.parse(PASS_AT)))) {
+    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`);
+    report.clears.push(`${t.key}: unreadable clears-when "${t.park.clears_when.text}" not restated within ${RESTATE_MS / 60000} minutes: recorded as none, for the person`);
+  }
+}
 for (const t of Object.values(queue().tickets)) if (clearable(t) && t.park.clears_when.kind !== BASE_CONTAINS) settleClear(t);
 function settleClear(t) {
   const c = t.park.clears_when;
@@ -1490,7 +1518,7 @@ for (const t of DRY ? [] : Object.values(queue().tickets)) {
   if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t) || leftPark(t) || t.park?.claim?.session || needsSession(t) || putOff(t)) continue;
   if (t.branch && dropDuplicate(t)) continue;
   // Waiting on a recorded condition, or tried once already: the clears-when check or the person settles it.
-  if ((t.park?.clears_when?.kind && t.park.clears_when.kind !== 'none') || t.park?.recovery) continue;
+  if (recorded(t.park?.clears_when) || t.park?.recovery) continue;
   if (finishPush(t)) continue;
   takeRecommended(t);
 }

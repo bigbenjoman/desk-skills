@@ -74,6 +74,9 @@ case "\$mode" in
     node -e 'const [key, ids] = process.argv.slice(1); console.log(JSON.stringify({type:"result", total_cost_usd:0.1234, result:"Done.\nDECIDER_RESULT: "+JSON.stringify({settled: ids.split(/\s+/).filter(Boolean).map((id) => ({id, did:"requeued "+key+" for more agent work"})), handed:[]})}))' "\$key" "\$ids" ;;
   hand)
     node -e 'console.log(JSON.stringify({type:"result", total_cost_usd:0.05, result:"DECIDER_RESULT: "+JSON.stringify({settled:[], handed: process.argv[1].split(/\s+/).filter(Boolean).map((id) => ({id, why:"a product call"}))})}))' "\$ids" ;;
+  # restate <KEY>: record its clears-when as a form (the real queue.mjs), then hand every item on
+  restate) node "$B/queue.mjs" clears-when "\$key" "pr 5 merged" >> "$T/restate.out" 2>&1
+    node -e 'console.log(JSON.stringify({type:"result", total_cost_usd:0.05, result:"DECIDER_RESULT: "+JSON.stringify({settled:[], handed: process.argv[1].split(/\s+/).filter(Boolean).map((id) => ({id, why:"a product call"}))})}))' "\$ids" ;;
   limit) cat "$S/fixtures/decider-usage-limit.json" ;;
   *) echo '{"type":"result","total_cost_usd":0.01,"result":"I could not decide."}' ;;
 esac
@@ -523,6 +526,35 @@ for (let i = 0; rec && !existsSync('$T/cache.seen') && i < 100; i++) await new P
 console.log(readFileSync('$T/cache.seen', 'utf8'), JSON.stringify(env) === before);
 " 2>&1)
 check "DS-649 AC2: the decider runs with FORCE_PROMPT_CACHING_5M=1, the caller's env unchanged" '[ "$out" = "1 true" ]'
+
+# ---- DS-563 AC3: a clears-when no form read goes to the decider to restate, and to the person only as none ----
+ln -s "$B/queue.mjs" "$T/bin/queue.mjs"
+cw(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]?.park?.clears_when?.kind)' "$DESK_QUEUE" "$1"; }
+unpark(){ queue "{\"$1\":{\"key\":\"$1\",\"state\":\"parked\",\"lane\":\"A\",\"park\":{\"question\":\"$2\",\"since\":\"2026-11-01T09:00:00Z\",\"clears_when\":{\"kind\":\"unreadable\",\"text\":\"KAN-1086s fix PR is merged to main\",\"why\":\"x\"}}}}"; verdict "$(parked "$1" "$2")"; }
+mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
+unpark R "r: waiting on KAN-1086"
+out=$(tick); settle
+check "DS-563 AC3: a park whose clears-when no form read goes to a decider session, asked to restate it" \
+  '[ "$(calls)" = 1 ] && [ "$(cw R)" = unreadable ] && P=$(ls -t "$T"/claude.args.* | head -1) && grep -qx "  - clears-when to restate: KAN-1086s fix PR is merged to main" "$P"'
+out=$(tick)
+check "DS-563 AC3: the session handed it on without a form: recorded none, and handed to the person" \
+  '[ "$(cw R)" = none ] && grep -q "^decider: unreadable clears-when recorded as none, for the person: R$" "$LOG" && handed | grep -q "^R|" && [ "$(calls)" = 1 ]'
+mark; rm -f "$T/state/handed.json"; echo "restate R2" > "$T/claude.mode"
+unpark R2 "r2: waiting on KAN-1086"
+out=$(tick); settle; out=$(tick)
+check "DS-563 AC3: restated as a form, it waits on it: not handed to the person, never none" \
+  '[ "$(cw R2)" = pr-merged ] && [ -z "$(handed)" ] && ! grep -q "recorded as none, for the person: R2" "$LOG"'
+# No decider starts on a usage hold, so the hour a pass waits for a restate starts again: it cannot
+# lapse to none before a decider has seen it.
+mark; rm -f "$T/state/handed.json"; n=$(calls)
+RQ='"R3":{"key":"R3","state":"parked","lane":"A","park":{"question":"r3: waiting on KAN-1086","since":"2026-11-01T09:00:00Z","clears_when":{"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}}}'
+printf '{"version":1,"batch":"b1","supervised":true,"approved":{},"usage_hold":{"since":"2026-10-29T17:30:00Z","type":"seven_day","resets_at":1793545200,"preflight":"Z","paused":[]},"tickets":{%s}}\n' "$RQ" > "$DESK_QUEUE"
+verdict "$(parked R3 "r3: waiting on KAN-1086")"
+out=$(tick)
+at=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets.R3.park.clears_when.at)' "$DESK_QUEUE")
+check "DS-563 AC3: on a usage hold no decider starts, and the restate's hour starts again" \
+  '[ "$(calls)" = "$n" ] && [ "$(cw R3)" = unreadable ] && [ "$at" != 2026-01-01T00:00:00Z ] && node -e "process.exit(Date.now() - Date.parse(process.argv[1]) < 600000 ? 0 : 1)" "$at" && grep -q "^decider: the hour to restate an unreadable clears-when starts again once one runs: R3$" "$LOG"'
+verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
