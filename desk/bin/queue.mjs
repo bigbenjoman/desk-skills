@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -17,7 +17,7 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck } from './cl
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
@@ -422,7 +422,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
-  const stepPark = labelPark(r, personStepLabels());
+  const stepPark = labelPark(r, personStepLabels(), personInputLabels());
   const park = stepPark ?? lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
   // The collision check plan-batch makes, against every ticket still to finish: two tickets that
@@ -569,7 +569,8 @@ function transfer(q, key, to) {
   // Admitted in memory first, so a refusal from either step leaves the worktree and both queues as they were.
   // Its merge holds on the person's steps go with it; a blocker in that batch is held behind there instead,
   // unless it is parked there as the person's step (labelPark), which nothing builds: it merges after that.
-  const stepThere = (k) => personStepPark(tq.tickets[k]);
+  // A step parked on a Person-input label makes what its build reads, so it stays a hold.
+  const stepThere = (k) => personStepPark(tq.tickets[k]) && !personInputPark(tq.tickets[k]);
   const there = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
   const holds = there.filter((k) => !stepThere(k));
   const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p))), ...there.filter(stepThere)])];
@@ -769,7 +770,8 @@ switch (cmd) {
     for (const p of mergeAfter) {
       if (!SAFE_ID.test(p) || p === key || outside.includes(p) || holds.includes(p)) throw new Error(`admit --hold-merge: ${p} is not a step ${key} merges after`);
       // One in this batch is a step only once it is parked as the person's (labelPark): nothing builds it.
-      if (q.tickets[p] && !personStepPark(q.tickets[p])) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
+      // One parked on a Person-input label makes what the build reads: it holds the build instead.
+      if (q.tickets[p] && (!personStepPark(q.tickets[p]) || personInputPark(q.tickets[p]))) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
     }
     if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);
@@ -1031,8 +1033,17 @@ switch (cmd) {
     const running = t.state === 'running';
     const removed = running ? null : dropWorktree(key, t);
     delete q.tickets[key];
+    // The person's step never merges, so a hold behind it here would never release. Dropped, it is held
+    // outside instead, which pass.mjs lifts once Jira has it Done (a step has no code to land).
+    const outside = [];
+    if (personStepPark(t)) for (const o of Object.values(q.tickets)) {
+      if (!String(o.held_by ?? '').split('|').includes(key)) continue;
+      const was = String(o.held_outside ?? '').split('|').filter(Boolean);
+      if (!was.includes(key)) o.held_outside = [...was, key].join('|');
+      outside.push(o.key);
+    }
     save(q);
-    console.log(`dropped ${key} from the batch${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : running && t.worktree ? `; its worker was running, so its worktree ${t.worktree} was left` : ''}`);
+    console.log(`dropped ${key} from the batch${outside.length ? `; ${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} held behind it outside the batch until it is Done in Jira` : ''}${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : running && t.worktree ? `; its worker was running, so its worktree ${t.worktree} was left` : ''}`);
     break;
   }
 

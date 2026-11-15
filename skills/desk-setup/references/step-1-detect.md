@@ -203,6 +203,12 @@ How to turn what you find into rows:
   Person-step labels; with none named, or with Tracker `none`, write `none`. Say that autopilot admits a ticket
   carrying one parked as the user's step, so no worker spawns on it, and builds a ticket it blocks
   now, merging it only once the step is Done.
+- **Person-input labels.** Ask which labels the team puts on a ticket that is the user's own step
+  whose output a build reads (a fixture, a recorded response, a key), suggesting `ben-input`, and
+  record each as one span in §4 Person-input labels; with none named, or with Tracker `none`, write
+  `none`. Say that autopilot parks a ticket carrying one as the user's step, as a Person-step label
+  does, but holds the build of a ticket it blocks until the step is Done; a ticket labelled both is
+  an input.
 - **Evidence workflow.** Look in the workflows for one that takes a PR's screenshots and writes them
   into its body (a `workflow_dispatch` with a `pr` input that replaces `_drag <file>_` cells, e.g.
   `pr-evidence.yml`). Where there is one, propose it for §4 Evidence workflow as `` `<file>.yml` ``;

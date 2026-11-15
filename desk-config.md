@@ -339,6 +339,7 @@ such thing.
 | Priorities only you set | `TODO` (the top values of the §4 Priority field, one span each, e.g. `` `P0` `P1` ``; or `none`. A headless autopilot worker can never set them; an interactive session sets them only with `desk-jira … --approved "<your decision>"`, which is posted to the ticket) |
 | Labels | `TODO` (labels the skills may apply, or `any`) |
 | Person-step labels | `none` (labels that mark a ticket as a step only you take, one span each, e.g. `` `ben-step` `operator-task` ``; or `none`. Autopilot admits a ticket carrying one parked as your step, so no worker spawns on it, and a ticket it blocks is built now and merged only once it is Done) |
+| Person-input labels | `none` (labels that mark a ticket as a step only you take whose output the build reads (a fixture, a recorded response, a key), one span each, e.g. `` `ben-input` ``; or `none`. Autopilot admits a ticket carrying one parked as your step, as Person-step labels does, but a ticket it blocks waits to be built until it is Done. A ticket carrying both is an input) |
 | `desk-jira` set up? | `TODO` (`yes` / `no`; reads the email and token in this repo's credentials folder) |
 
 ### GitHub and CI
