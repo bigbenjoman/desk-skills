@@ -1703,6 +1703,14 @@ const kpDone = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'done'
 t('DS-407 done records nothing: the pass reads the step from Jira', `${kpDone.ok} ${/next pass that reads OPS-9 from Jira lifts the hold/.test(kpDone.line)}`, 'true true');
 const kpOff = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'not-now' });
 t('DS-407 not-now puts it off, in the list and in desk-q\'s count', `${kpOff.ok} ${kp().length} ${kpCount().shown} ${kpCount().putOff}`, 'true 0 0 1');
+// DS-687: a blocker triage called needed only to merge is another ticket's code, not the person's step, so
+// it is no item; a step triage also called merge still is one.
+const gate687 = (k, b, needs = 'merge') => ({ blockers: [b], blocker_needs: { [b.key]: { needs, why: 'lands the flag it ships behind' } } });
+put('kappa687', { port: 5687, beat: 1, supervised: true, tickets: { 'K-7': { ...waitsOn(77), merge_after: 'OUT-7' }, 'K-8': { ...waitsOn(78), merge_after: 'OPS-8' }, 'K-9': { ...waitsOn(79), merge_after: 'OPS-9' } },
+  triage: { 'K-7': gate687('K-7', { key: 'OUT-7', category: 'new', type: 'Story', summary: 'Add the export endpoint' }),
+    'K-8': gate687('K-8', { key: 'OPS-8', category: 'new', type: 'Task', summary: 'Apply the billing migration' }),
+    'K-9': gate687('K-9', { key: 'OPS-9', category: 'new', type: 'Task', summary: 'Apply the search migration' }, 'build') } });
+t('DS-687 a merge-only gate triage called is no step item; a step called merge or build still is', N.collect({ word: 'kappa687' }).items.filter((i) => i.kind === 'step').map((i) => i.t.key).sort().join(), 'step:OPS-8,step:OPS-9');
 // A step two of the repo's batches wait on is still one item, naming the PRs in both.
 const kfq = join(env.DESK_HOME, 'repos', 'acme__kappa407', 'batches', 'KF', 'queue.json');
 const kfs = join(env.HOME, '.desk-autopilot', 'acme__kappa407', 'batches', 'KF');
