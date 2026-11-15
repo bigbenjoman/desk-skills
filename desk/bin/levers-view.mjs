@@ -4,6 +4,7 @@
 // the honesty rules already applied, so no renderer words a result on its own.
 //
 //   node levers-view.mjs build      writes view.json and build.json, and prints where
+//   node levers-view.mjs render     writes the Levers page, index.html, from view.json beside it
 //
 // It only reads its sources: every configured repo's levers row (config §3b "Phase 0 levers"), and
 // under ~/.desk-autopilot/<slug>/ its levers.jsonl, lever-evals.jsonl, audit.jsonl, levers-evidence/
@@ -22,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, reasonWording } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
+import { renderPage } from './levers-page.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -247,7 +249,20 @@ function trend(metric, rows, base, today, first) {
 }
 
 // ---- the build ---------------------------------------------------------------------------------------------
-const panel = (state, body = {}, errors = []) => ({ state: errors.length ? 'error' : state, ...(errors.length ? { errors } : {}), ...body });
+// What one evaluation row showed, with the honesty rules applied: its arms, mechanism effect, cost and
+// each guardrail's status.
+function evalEvidence(e, layerMin) {
+  const minN = e.min_n ?? layerMin;
+  const n = smallerArm(e.n);
+  return {
+    eval_id: e.eval_id ?? null, at: e.at ?? null, state: e.state ?? null,
+    n: { on: e.n?.on ?? null, off: e.n?.off ?? null, smaller: n, min: minN },
+    effect: effectView(e.mechanism, n, minN), cost: costView(e.cost, n, minN, KEPT.includes(e.state)),
+    guardrails: (e.guardrails ?? []).map((g) => ({ ...g, status: guardrailStatus(g, n, minN) })),
+  };
+}
+
+const panel =(state, body = {}, errors = []) => ({ state: errors.length ? 'error' : state, ...(errors.length ? { errors } : {}), ...body });
 const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Boolean);
 
 // The view model for the inputs under `root` and the configs under `configRoot`, as of `now`.
@@ -339,15 +354,14 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         }
         const minN = e.min_n ?? min;
         const n = smallerArm(e.n);
-        const adopted = KEPT.includes(e.state);
-        const guardrails = (e.guardrails ?? []).map((g) => ({ ...g, status: guardrailStatus(g, n, minN) }));
+        const { effect, cost, guardrails } = evalEvidence(e, min);
         const chip = {};
         for (const g of guardrails) chip[g.status] = (chip[g.status] ?? 0) + 1;
         return {
           repo: r.name, state: e.state ?? null, as_of: e.at, stale: col.column === 'stale' || age(e.at, now, MAX_AGE_S.evals).stale,
           arm_share_7d: e.arm_share_7d ?? null,
           sample: { n, min: minN, max: e.max_n ?? DECISION_RULE.max_per_arm, on: e.n?.on ?? null, off: e.n?.off ?? null, pooled_on: e.n?.pooled_on ?? null, pooled_off: e.n?.pooled_off ?? null },
-          effect: effectView(e.mechanism, n, minN), cost: costView(e.cost, n, minN, adopted),
+          effect, cost,
           guardrails, guardrail_chip: chip, decision: e.decision ?? null, reason_code: e.reason_code ?? null, reason: reasonWording(e.reason_code), next: e.next ?? null,
         };
       }),
@@ -365,14 +379,20 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const guardrails = panel(!guardRows.length ? 'empty' : scanStale.length || evalAge.stale ? 'stale' : 'ok', { rows: guardRows, post_merge: scans.map((s) => ({ repo: s.repo, ...age(s.at, now, MAX_AGE_S.post_merge) })) },
     errs(repos.map((r) => r.evals), repos.map((r) => r.postMerge)));
 
-  // P6 this week's changes.
-  const changesAll = repos.flatMap((r) => r.log.rows.filter((e) => CHANGE_KINDS.includes(e.kind) && !Number.isNaN(Date.parse(e.at))).map((e) => ({
-    at: e.at, repo: e.repo === '*' ? '*' : r.name, lever: e.lever ?? null, kind: e.kind, from: e.from ?? null, to: e.to ?? null, actor: e.actor ?? null,
-    reason_code: e.reason_code ?? null, wording: reasonWording(e.reason_code), reason: e.reason ?? null, ticket: e.ticket ?? null,
-    eval_id: e.eval_id ?? null, evidence_file: e.evidence_file ?? null, decision_id: e.decision_id ?? null, desk_commit_range: e.desk_commit_range ?? null,
-  }))).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
+  // P6 the changes: this week's, and every one, each with the evaluation it cites.
+  const evalById = new Map();
+  for (const r of repos) for (const e of r.evals.rows) if (e.eval_id) evalById.set(`${r.slug}|${e.eval_id}`, e);
+  const changesAll = repos.flatMap((r) => r.log.rows.filter((e) => CHANGE_KINDS.includes(e.kind) && !Number.isNaN(Date.parse(e.at))).map((e) => {
+    const ev = e.eval_id ? evalById.get(`${r.slug}|${e.eval_id}`) : null;
+    return {
+      at: e.at, repo: e.repo === '*' ? '*' : r.name, lever: e.lever ?? null, kind: e.kind, from: e.from ?? null, to: e.to ?? null, actor: e.actor ?? null,
+      reason_code: e.reason_code ?? null, wording: reasonWording(e.reason_code), reason: e.reason ?? null, ticket: e.ticket ?? null,
+      eval_id: e.eval_id ?? null, evidence_file: e.evidence_file ?? null, decision_id: e.decision_id ?? null, desk_commit_range: e.desk_commit_range ?? null,
+      evidence: ev ? evalEvidence(ev, DECISION_RULE.min_per_arm[REGISTRY[ev.lever]?.layer] ?? null) : null,
+    };
+  })).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
   const week = changesAll.filter((e) => Date.parse(e.at) >= weekAgo);
-  const changes = panel(week.length ? 'ok' : 'empty', { events: week, last_change: changesAll[0] ?? null }, errs(repos.map((r) => r.log)));
+  const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll, last_change: changesAll[0] ?? null }, errs(repos.map((r) => r.log)));
 
   // P7 experiment overhead.
   const audits = repos.flatMap((r) => r.audit.rows.filter((a) => Date.parse(a.at) >= weekAgo).map((a) => ({ ...a, repo: r.name })));
@@ -477,13 +497,29 @@ export function build({ out = leversDir(), ...opts } = {}) {
   return { view, record, files };
 }
 
+// Renders the Levers page from the view.json in `dir` into index.html beside it. -> { file, view }
+export function render({ dir = leversDir() } = {}) {
+  const src = join(dir, 'view.json');
+  let view;
+  try { view = JSON.parse(readFileSync(src, 'utf8')); } catch (e) { throw new Error(e.code === 'ENOENT' ? `no view.json at ${src}: run \`levers-view.mjs build\` first` : `cannot read ${src}: ${e.message}`); }
+  const file = join(dir, 'index.html');
+  writeFileSync(`${file}.tmp`, renderPage(view));
+  renameSync(`${file}.tmp`, file);
+  return { file, view };
+}
+
 const isMain = () => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 };
 if (isMain()) {
   const [cmd] = process.argv.slice(2);
-  if (cmd !== 'build') { console.error('usage: levers-view.mjs build'); process.exit(2); }
+  if (cmd !== 'build' && cmd !== 'render') { console.error('usage: levers-view.mjs build|render'); process.exit(2); }
   try {
+    if (cmd === 'render') {
+      const { file } = render();
+      console.log(`levers-view: wrote ${file}`);
+      process.exit(0);
+    }
     const { files, record, view } = build();
     console.log(`levers-view: wrote ${files.view} and ${files.build} (line: ${view.line.state}${record.errors.length ? `; ${record.errors.length} input error(s), see build.json` : ''})`);
   } catch (e) {
