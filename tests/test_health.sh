@@ -73,12 +73,15 @@ EOF
 config yes yes
 
 for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
-# Setup answers per $T/mode.setup: ok, pgdown (Postgres not answering) or other (any other failure).
+# Setup answers per $T/mode.setup: ok, pgdown (Postgres not answering), other (any other failure), lock
+# (git cannot lock a moved remote-tracking ref, every time) or lockonce (that once per ticket, then ok).
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 echo "\$2" >> "$T/calls.setup"
 case "\$(cat "$T/mode.setup" 2>/dev/null || echo ok)" in
   pgdown) echo "FAIL: cannot reach Postgres in container acme-pg as postgres: psql in container acme-pg did not answer within 30s, after 4 tries over 120s (is it running?)" >&2; exit 1 ;;
   other) echo "FAIL: §4 Install failed twice" >&2; exit 1 ;;
+  lock) echo "error: cannot lock ref 'refs/remotes/origin/feat/moved': is at cdad369 but expected e7fc5c9" >&2; exit 1 ;;
+  lockonce) [ -f "$T/locked.\$2" ] || { : > "$T/locked.\$2"; echo "error: cannot lock ref 'refs/remotes/origin/feat/moved': is at cdad369 but expected e7fc5c9" >&2; exit 1; } ;;
 esac
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
@@ -409,8 +412,27 @@ pj
 check "DS-589 setup not reaching Postgres once: queued"             '[ "$(field H-11 state)" = triaged ]'
 pj
 check "DS-589 again while the database check answers: parks"        '[ "$(field H-11 state)" = parked ] && grep -q "H-11: worktree setup failed, not spawned — FAIL: cannot reach Postgres in container acme-pg.*the local database check passes" <<< "$out"'
-rm -f "$T/mode.setup"
 q set H-11 state=done
+
+# ---- DS-572: setup's fetch cannot lock a remote-tracking ref that moved under it -----------------
+git init -q --bare "$T/origin.git"; git -C "$T/repo" push -q "$T/origin.git" main:feat/moved
+git -C "$T/repo" remote add origin "$T/origin.git"
+q add H-12; q set H-12 state=triaged branch=fix/H-12
+echo lockonce > "$T/mode.setup"; : > "$T/calls.setup"
+pj
+check "DS-572 AC1 a stale ref lock: re-fetched, retried once, spawned" '[ "$(field H-12 state)" = running ] && [ "$(calls setup)" = 2 ] && git -C "$T/repo" rev-parse -q --verify refs/remotes/origin/feat/moved >/dev/null && grep -q "H-12: worktree setup could not lock the stale ref refs/remotes/origin/feat/moved; re-fetched origin and the retry set it up" <<< "$out"'
+q set H-12 state=done
+q add H-13; q set H-13 state=triaged branch=fix/H-13
+echo lock > "$T/mode.setup"; : > "$T/calls.setup"
+pj
+check "DS-572 AC2 the retry fails too: parks with both errors"        '[ "$(field H-13 state)" = parked ] && [ "$(calls setup)" = 2 ] && grep -q "H-13: worktree setup failed, not spawned — first try: error: cannot lock ref .*; re-fetched origin and retried once: error: cannot lock ref" <<< "$out"'
+q set H-13 state=done
+q add H-14; q set H-14 state=triaged branch=fix/H-14
+echo other > "$T/mode.setup"; : > "$T/calls.setup"
+pj
+check "DS-572 AC3 any other failure: one try, parks as today"          '[ "$(field H-14 state)" = parked ] && [ "$(calls setup)" = 1 ] && grep -q "H-14: worktree setup failed, not spawned — FAIL: §4 Install failed twice" <<< "$out" && ! grep -q "re-fetched" <<< "$out"'
+rm -f "$T/mode.setup"
+q set H-14 state=done
 
 # ---- DS-577: the reviewer check, against §4 Gate reviewers --------------------------------------
 # gh answers `api user` with the login in $T/ghuser, or signed out per $T/mode.ghuser, logging the gh
