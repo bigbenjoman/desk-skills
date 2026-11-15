@@ -85,12 +85,12 @@ let f = await A.until((x) => has(x, 'Press a to add a login.'));
 const offerAt = f.findIndex((l) => l.startsWith('  If you have'));
 t('AC5 with one login of each, a line offers a to add a login', f.slice(offerAt, offerAt + 2).join(' ').replace(/\s+/g, ' ').trim(),
   'If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press a to add a login.');
-t('AC5 and the keys offer a', f.at(-1).includes('a add a login'), true);
+t('AC5 and the keys offer a', f.at(-1).includes('a add ·'), true);
 
 // ---- AC1: a adds a row on standby, waiting, and shows the sign-in command with y to copy it
 await A.press('a');
 f = A.frame();
-t('AC1 a adds a row on standby waiting for its sign-in, selected', rowOf(f, 'new account'), row(1, 'new account', '—', '○ standby', 'waiting for you to sign in: steps below', null, '0'));
+t('AC1 a adds a row on standby waiting for its sign-in, selected', rowOf(f, 'new account'), row(1, 'new account', '—', '○ unused', 'waiting for you to sign in: steps below', null, '0'));
 t('AC1 the view says it is adding another Claude account', has(f, '  Add another Claude account'), true);
 t('AC1 and shows the sign-in command for a new folder under the logins folder', f.find((l) => l.trim().startsWith('CLAUDE_CONFIG_DIR='))?.trim(), 'CLAUDE_CONFIG_DIR=~/.claude-logins/login-2 claude');
 t('AC1 then what to type in it', has(f, '  2  In that window, type /login and sign in with an account not listed above.'), true);
@@ -103,11 +103,11 @@ t('AC1 and the footer says so', has(A.frame(), 'Copied. Paste it in a new termin
 // ---- AC2: the folder signs in partway through the wait: its row shows its email and plan, on standby
 mkdirSync(NEW, { recursive: true });
 await sleep(150);
-t('AC2 a folder made but not signed in yet still waits', rowOf(A.frame(), 'new account'), row(1, 'new account', '—', '○ standby', 'waiting for you to sign in: steps below', null, '0'));
+t('AC2 a folder made but not signed in yet still waits', rowOf(A.frame(), 'new account'), row(1, 'new account', '—', '○ unused', 'waiting for you to sign in: steps below', null, '0'));
 account(join(NEW, '.claude.json'), 'new@example.test', 'Pro');
 f = await A.until((x) => rowOf(x, 'new@example.test'));
-t('AC2 once signed in the row shows its email and plan, still on standby', rowOf(f, 'new@example.test'), row(1, 'new@example.test', 'Pro', '○ standby', 'no reading yet', 'no reading yet', '0'));
-t('AC2 and the footer says it is signed in', has(f, 'new@example.test is added, on standby. Press space to start giving it workers.'), true);
+t('AC2 once signed in the row shows its email and plan, still on standby', rowOf(f, 'new@example.test'), row(1, 'new@example.test', 'Pro', '○ unused', 'no reading yet', 'no reading yet', '0'));
+t('AC2 and the footer says it is signed in', has(f, 'new@example.test is added, unused. Press d on it to make it the default.'), true);
 t('AC2 the wait is over: the keys are the view\'s own again', f.at(-1).includes('esc cancel adding'), false);
 
 // ---- AC3: a folder signed in to an account already listed is refused, naming the login it duplicates
@@ -126,15 +126,15 @@ rmSync(DUP, { recursive: true, force: true });
 const E = open();
 await sleep(20);
 await E.press('6');
-await E.until((x) => has(x, 'a add a login'));
+await E.until((x) => has(x, 'a add ·'));
 await E.press('a');
-t('AC4 a third Claude login waits as the new account', rowOf(E.frame(), 'new account'), row(1, 'new account', '—', '○ standby', 'waiting for you to sign in: steps below', null, '0'));
+t('AC4 a third Claude login waits as the new account', rowOf(E.frame(), 'new account'), row(1, 'new account', '—', '○ unused', 'waiting for you to sign in: steps below', null, '0'));
 await E.press(ESC);
 f = await E.until((x) => !rowOf(x, 'new account'));
 t('AC4 esc removes the new row', rowOf(f, 'new account'), null);
 t('AC4 and says it stopped waiting', has(f, 'Cancelled: the new account is not added.'), true);
 t('AC4 the panel is gone', has(f, 'Add another Claude account'), false);
-t('AC4 esc while waiting stays on Usage', f.some((l) => l.startsWith('  CLAUDE') && l.includes('PLAN')), true);
+t('AC4 esc while waiting stays on Usage', f.some((l) => l.startsWith('  SUBSCRIPTION') && l.includes('PLAN')), true);
 
 // ---- AC6: a on the CODEX table asks for the label first
 f = E.frame();
@@ -150,22 +150,22 @@ await E.press(...'work codex');
 t('AC6 the label shows as it is typed', E.frame().at(-1).startsWith('Label for the new Codex login: work codex'), true);
 await E.press('\r');
 f = E.frame();
-t('AC6 then the row waits on standby under its label', rowOf(f, 'work codex'), row(1, 'work codex', '—', '○ standby', 'waiting for you to sign in: steps below', null, '—'));
+t('AC6 then the row waits on standby under its label', rowOf(f, 'work codex'), row(1, 'work codex', '—', '○ unused', 'waiting for you to sign in: steps below', null, '—'));
 t('AC6 with the Codex sign-in command for its folder', f.find((l) => l.trim().startsWith('CODEX_HOME='))?.trim(), 'CODEX_HOME=~/.codex-logins/login-2 codex login');
 t('AC6 the folder is made with its label in it', existsSync(join(CODEX_NEW, 'desk-label')) && readFileSync(join(CODEX_NEW, 'desk-label'), 'utf8'), 'work codex\n');
 
 // ---- AC7: the Codex folder signs in: its row shows its label, signed in, on standby
 writeFileSync(join(CODEX_NEW, 'auth.json'), '{}');
 f = await E.until((x) => has(x, 'work codex is signed in'));
-t('AC7 once signed in the row shows its label, still on standby', rowOf(f, 'work codex')?.slice(0, 50), row(1, 'work codex', '—', '○ standby', '', null, '').slice(0, 50));
-t('AC7 and the footer says it is signed in', has(f, 'work codex is added, on standby. Press space to start giving it workers.'), true);
+t('AC7 once signed in the row shows its label, still on standby', rowOf(f, 'work codex')?.slice(0, 50), row(1, 'work codex', '—', '○ unused', '', null, '').slice(0, 50));
+t('AC7 and the footer says it is signed in', has(f, 'work codex is added, unused. Press d on it to make it the default.'), true);
 E.done();
 
 // ---- esc on a Codex login takes away the folder desk made for it
 const C = open();
 await sleep(20);
 await C.press('6');
-await C.until((x) => has(x, 'a add a login'));
+await C.until((x) => has(x, 'a add ·'));
 for (let i = 0; i < 6 && !C.frame().find((l) => l.startsWith('›'))?.includes('codexmain'); i++) await C.press(DOWN);
 await C.press('a', ...'spare', '\r');
 const CODEX_3 = join(H, '.codex-logins', 'login-3');
@@ -184,12 +184,12 @@ const release = async () => { writes.at(-1).done({ code: 0, out: '', err: '' });
 const W = open(heldOpts);
 await sleep(20);
 await W.press('6');
-await W.until((x) => has(x, 'a add a login'));
+await W.until((x) => has(x, 'a add ·'));
 await W.press('a');
 mkdirSync(BEGUN, { recursive: true });
 writeFileSync(join(BEGUN, 'begun'), '');
-await W.press('\x1b[A', ' ');
-t('a rule change on another row is saving', writes.map((w) => w.args[0]).join(), 'set');
+await W.press('\x1b[A', 'x');
+t('a removal on another row is saving', writes.map((w) => w.args[0]).join(), 'remove');
 await W.press(ESC);
 f = await W.until((x) => has(x, 'Still saving the last change.'));
 t('esc during that save starts no second write', writes.length, 1);
@@ -205,9 +205,9 @@ writes.length = 0;
 const V = open(heldOpts);
 await sleep(20);
 await V.press('6');
-await V.until((x) => has(x, 'a add a login'));
-await V.press('a', '\x1b[A', ' ');
-t('a rule change is saving as the folder signs in', writes.length, 1);
+await V.until((x) => has(x, 'a add ·'));
+await V.press('a', '\x1b[A', 'x');
+t('a removal is saving as the folder signs in', writes.length, 1);
 checkOut = JSON.stringify({ logins: [{ tool: 'claude', configDir: BEGUN, state: 'signed in', rule: null, email: 'held@example.test' }] });
 await sleep(150);
 f = V.frame();
@@ -224,24 +224,23 @@ rmSync(join(H, '.claude-logins'), { recursive: true, force: true });
 const N = open();
 await sleep(20);
 await N.press('6');
-await N.until((x) => has(x, 'a add a login'));
+await N.until((x) => has(x, 'a add ·'));
 await N.press('a');
 account(join(NEW, '.claude.json'), 'other@example.test', 'Max 5x');
 f = await N.until((x) => has(x, 'other@example.test is signed in'));
 t('AC2 with no subscriptions file the new login is saved on standby', /^\| `claude` \| `login-2` \| `~\/.claude-logins\/login-2` \| `standby` \|$/m.test(subsText()), true);
-t('AC2 and its row shows it on standby', rowOf(f, 'other@example.test')?.slice(0, 50), row(1, 'other@example.test', 'Max 5x', '○ standby', '', null, '').slice(0, 50));
+t('AC2 and its row shows it on standby', rowOf(f, 'other@example.test')?.slice(0, 50), row(1, 'other@example.test', 'Max 5x', '○ unused', '', null, '').slice(0, 50));
 N.done();
 
-// ---- a file saying default and unused: view 6 shows them as in rotation and standby. The default is
-// the folder under the logins folder, and ~/.claude the unused one: read any other way, ~/.claude
-// would be in rotation and login-2 found on standby.
+// ---- a file saying default and unused: view 6 shows them so. The default is the folder under the
+// logins folder, and ~/.claude the unused one: read any other way, ~/.claude would be the default.
 subscriptions([['claude', 'personal', '~/.claude', 'unused'], ['claude', 'login-2', '~/.claude-logins/login-2', 'default'], ['codex', 'codexmain', '~/.codex', 'default']]);
 const D = open();
 await sleep(20);
 await D.press('6');
 f = await D.until((x) => rowOf(x, 'other@example.test') && rowOf(x, 'me@example.test'));
-t('a file saying default: its row reads in rotation', rowOf(f, 'other@example.test')?.includes('● in rotation'), true);
-t('a file saying unused: its row reads standby', rowOf(f, 'me@example.test')?.includes('○ standby'), true);
+t('a file saying default: its row reads ◉ default', rowOf(f, 'other@example.test')?.includes('◉ default'), true);
+t('a file saying unused: its row reads ○ unused', rowOf(f, 'me@example.test')?.includes('○ unused'), true);
 D.done();
 
 rmSync(T, { recursive: true, force: true });
