@@ -10,6 +10,9 @@
 // else runs only with DESK_UPLOAD_APPROVED=1, which the caller sets after asking the user for
 // THIS upload. The browser acts as the user on a real site.
 //
+// Each file uploaded, and the one a stall stops on, is a line in the machine's upload log
+// (upload-log.mjs, <DESK_HOME>/upload-log.jsonl).
+//
 // Everything below is load-bearing and each cost a failed run once:
 //   - GitHub inserts an <img ...> tag into the textarea's VALUE, not a DOM node, and not
 //     markdown. Waiting for an <img> element times out while the upload succeeded.
@@ -29,6 +32,7 @@
 import { readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dragCells } from './evidence.mjs';
+import { logUpload, uploadLogFile } from './upload-log.mjs';
 import { join } from 'node:path';
 import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, SCREENSHOT_FILE, psRows } from './desk-env.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
@@ -115,20 +119,34 @@ try {
 
   const input = page.locator('form:has(textarea#new_comment_field) input[type="file"]').first();
   await input.waitFor({ state: 'attached', timeout: 30000 });
-  await input.setInputFiles(files.map((f) => join(dir, f)));
 
-  for (const f of files) {
-    const base = f.replace(/\.[^.]+$/, '');
-    await page.waitForFunction(
-      ({ base: b, f: file }) => {
-        const t = document.querySelector('textarea#new_comment_field')?.value ?? '';
-        return new RegExp(`<img[^>]*alt="${b}"[^>]*src="https://github.com/user-attachments/assets/`).test(t)
-          && !t.includes(`Uploading ${file}`);
-      },
-      { base, f },
-      { timeout: 180000 },
-    );
-    console.log(`[upload]   ${f}`);
+  // Every file uploaded, and the one a stall or upload error stopped on, goes in the machine's
+  // upload log; a log that cannot be written never stops an upload.
+  const log = (file, result) => {
+    try { logUpload({ repo: REPO, pr, file, result }); } catch (e) { console.error(`[upload] the upload log was not written: ${e.message}`); }
+  };
+  let waiting = files[0];
+  try {
+    await input.setInputFiles(files.map((f) => join(dir, f)));
+    for (const f of files) {
+      waiting = f;
+      const base = f.replace(/\.[^.]+$/, '');
+      await page.waitForFunction(
+        ({ base: b, f: file }) => {
+          const t = document.querySelector('textarea#new_comment_field')?.value ?? '';
+          return new RegExp(`<img[^>]*alt="${b}"[^>]*src="https://github.com/user-attachments/assets/`).test(t)
+            && !t.includes(`Uploading ${file}`);
+        },
+        { base, f },
+        { timeout: 180000 },
+      );
+      log(f, 'uploaded');
+      console.log(`[upload]   ${f}`);
+    }
+  } catch (e) {
+    log(waiting, 'throttled');
+    console.error(`[upload] stalled on ${waiting}, logged as throttled in ${uploadLogFile()}`);
+    throw e;
   }
 
   const value = await ta.inputValue();
