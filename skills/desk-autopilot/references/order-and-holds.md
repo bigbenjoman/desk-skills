@@ -94,7 +94,9 @@ ticket it blocks merges after it.
 **A step whose output the build reads holds the build.** A ticket carrying one of config §4
 Person-input labels (a fixture, a recorded response, a key to make) is parked as the person's step
 just the same, but a ticket it blocks is held behind it, as `held_outside` when it is in no batch,
-until it is Done. A blocker labelled both Person-step and Person-input is an input. Intake and
+until it is Done. One in the batch holds it in `held_by`, never `merge_after`, a transfer included;
+dropping the step (`queue.mjs drop`, once it is Done) moves the hold to `held_outside`, which the pass
+lifts on Done. A blocker labelled both Person-step and Person-input is an input. Intake and
 plan-batch read a blocker the same way (`batch-state.mjs` `personStep`).
 
 **The person's instruction on an open PR holds its merge too.** From needs-you `resume` until the pass

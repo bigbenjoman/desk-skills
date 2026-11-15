@@ -482,7 +482,7 @@ out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-451 KAN-452 2>&1); rc
 check "DS-568 AC3: with no Person-step labels row, the labelled ticket is parked by its lane and its successor asked about, as before" \
   '[[ "$(qg KAN-451 .park.question)" == "lane C"* ]] && [ "$(qg KAN-452 .merge_after)" = null ] && [ "$(qg KAN-452 .open_questions)" = 1 ]'
 
-# DS-682 AC7: plan-batch reads a blocker in no batch as intake does (personStep): a Person-input label
+# plan-batch reads a blocker in no batch as intake does (personStep): a Person-input label
 # holds the build, and wins over a Person-step label; a ben_steps entry naming the blocker's key is a
 # merge gate; a step word inside a blocker's summary is not. A ticket carrying an input label parks.
 rm -f "$T/state/triage/"*.json

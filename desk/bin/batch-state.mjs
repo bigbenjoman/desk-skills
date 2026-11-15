@@ -387,12 +387,16 @@ export function stepLabel(labels, stepLabels = []) {
 // Person-input labels (`inputLabels`) on its triage record's `labels`, or null. It is admitted parked on
 // it, beside lanePark and designPark, so no worker spawns and Needs you lists it.
 const PERSON_STEP_PREFIX ="the person's step: ";
+const INPUT_ROW = '(config §4 Person-input labels)';
 export function labelPark(r, stepLabels = [], inputLabels = []) {
   const input = stepLabel(r?.labels, inputLabels);
   const l = input ?? stepLabel(r?.labels, stepLabels);
-  return l ? `${PERSON_STEP_PREFIX}labelled ${l} (config §4 ${input ? 'Person-input' : 'Person-step'} labels), so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
+  return l ? `${PERSON_STEP_PREFIX}labelled ${l} ${input ? INPUT_ROW : '(config §4 Person-step labels)'}, so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
 }
 export const personStepPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(PERSON_STEP_PREFIX);
+// A person's step parked on a Person-input label: what it makes, the build reads, so a ticket it blocks
+// is held behind it, never merged after it.
+export const personInputPark = (t) => personStepPark(t) && String(t.park.question).includes(INPUT_ROW);
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const squash = (s) => String(s ?? '').trim().replace(/\s+/g, ' ');
