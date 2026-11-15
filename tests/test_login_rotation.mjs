@@ -318,7 +318,8 @@ t('AC14 one login at its limit: the batch holds on the preflight', JSON.stringif
 // and the others still run on it; with one login and no subscriptions file, nothing changes.
 const preset = (fields) => writeFileSync(QF, JSON.stringify({ ...batchOf(), ...fields }));
 const benchRow = (name, at = RESET) => ({ login: name, config_dir: name === 'default' ? null : dirOf(name), type: 'five_hour', resets_at: at, since: '2026-11-07T00:00:00.000Z', by: 'X-1' });
-const holdRow = (at = RESET) => ({ since: '2026-11-07T00:00:00.000Z', type: 'five_hour', resets_at: at, preflight: 'Y-1', paused: [] });
+// As a pass not itself on login `name` records it (pass.mjs saveUsage).
+const holdRow = (at = RESET, name = 'b') => ({ since: '2026-11-07T00:00:00.000Z', type: 'five_hour', resets_at: at, preflight: 'Y-1', paused: [], login_dir: dirOf(name) });
 const SEEN = join(T, 'decider-login');
 const DECIDER_CLAUDE = join(W, 'stub', 'decider-claude');
 writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}"\n`, { mode: 0o755 });
@@ -368,6 +369,11 @@ rmSync(dirname(OTHER), { recursive: true, force: true });
 env = world(ROOMY_OTHER, {});
 preset({ usage_hold: holdRow(Math.round(Date.now() / 1000) - 60) });
 t('DS-621 a hold past its reset holds nothing', calling(env).decider, dirOf('b'));
+// A hold on another login, left from before the repo's row changed, holds nothing, even with no reset time.
+env = world(ROOMY_OTHER, {});
+preset({ usage_hold: holdRow(null, 'c') });
+got = calling(env);
+t('DS-621 a hold left on another subscription holds nothing', `${got.decider} ${got.wait}`, `${dirOf('b')} null`);
 // A bench a pass from before left steers nothing: the calls stay on the repo's subscription.
 env = world(ROOMY_DEFAULT, {});
 preset({ benched: { b: benchRow('b', null) } });

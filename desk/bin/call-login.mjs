@@ -49,18 +49,21 @@ export function claudeChoice(logins, { benched, running, now = Date.now(), dirs 
   return { login, out };
 }
 
-// The usage limit holding this repo's work, from its batches and the one the environment pins: the
-// first batch's usage_hold whose reset has not passed at `now`, or null. A pass records a hold only for
-// a limit on the repo's subscription, and keeps it until a probe finds the limit lifted. A queue that
+// The usage limit holding this repo's work on `login`, the repo's subscription, from its batches and the
+// one the environment pins: the first batch's usage_hold on that login whose reset has not passed at
+// `now`, or null. A pass records a hold only for a limit on the repo's subscription, its login in
+// `login_dir` (none: the pass's own, `own`), and keeps it until a probe finds the limit lifted. A hold
+// on another login, left from before the row changed, holds nothing, as pass.mjs reads it. A queue that
 // cannot be read holds nothing.
-function repoHold(now) {
+function repoHold(login, own, now) {
   const batches = [];
   try { batches.push({ queue: queueFile() }); } catch { /* no pinned batch */ }
   try { batches.push(...listBatches().filter((b) => !batches.some((p) => resolve(p.queue) === resolve(b.queue)))); } catch { /* outside a repo there are none */ }
   for (const b of batches) {
     let h;
     try { h = readQueue(b.queue).usage_hold; } catch { continue; }
-    if (h && (h.resets_at == null || now < h.resets_at * 1000)) return h;
+    if (!h || (h.login_dir === undefined ? own : loginOf(h.login_dir)).dir !== login.dir) continue;
+    if (h.resets_at == null || now < h.resets_at * 1000) return h;
   }
   return null;
 }
@@ -77,9 +80,10 @@ export function callLogin({ env = process.env, now = Date.now() } = {}) {
   const sub = subscriptionOf(subs, env);
   if (!subs.exists && sub.source === 'default') return { login: null, env, wait: null };
   if (!sub.login) return { login: null, env, wait: `the repo's subscription, ${sub.email}, is not signed in to any login here` };
-  const hold = repoHold(now);
+  const own = loginOf(env.CLAUDE_CONFIG_DIR);
+  const hold = repoHold(sub.login, own, now);
   const wait = hold ? `the repo's subscription, ${sub.login.name}, is held on ${limitName(hold.type)}${hold.resets_at != null ? ` until ${resetText(hold.resets_at)}` : ''}` : null;
-  if (sub.login.dir === loginOf(env.CLAUDE_CONFIG_DIR).dir) return { login: null, env, wait };
+  if (sub.login.dir === own.dir) return { login: null, env, wait };
   return { login: sub.login, env: loginEnv(sub.login, env), wait };
 }
 
