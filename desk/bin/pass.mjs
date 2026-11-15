@@ -2797,25 +2797,23 @@ function recordWorkerHead(t) {
 const startsFresh = (t) => !toResume(t) && !toHandoff(t) && !t.login_move && !(t.fix && !t.fix.finished) && t.result?.pr == null && t.draft_pr == null;
 // A ticket whose triage record puts its code in another configured repo (desk-env.mjs triagePlacement)
 // is admitted there by intake.mjs admit and leaves this queue. One naming a repo with no config here,
-// or whose admit there fails, parks with what settles it. No worker is spawned either way.
+// or whose admit there fails, parks with what settles it, and so does one that tickets here are held
+// behind, which a drop would leave waiting on a merge that never lands here (as queue.mjs transfer
+// refuses). No worker is spawned either way.
 function handAway(t, p) {
-  if (p.unknown) {
-    const line = `${p.why}, so no worker was spawned: which repo does it run in? Admit it in that repo's checkout with intake.mjs admit ${t.key}, then queue.mjs drop ${t.key} here`;
+  const park = (line) => {
     if (!DRY) q('park', t.key, line);
     report.parked.push(`${t.key}: ${line}`);
-    return;
-  }
+  };
+  if (p.unknown) return park(`${p.why}, so no worker was spawned: which repo does it run in? Admit it in that repo's checkout with intake.mjs admit ${t.key}, then queue.mjs drop ${t.key} here`);
+  const behind = Object.values(queue().tickets).filter((o) => o.key !== t.key && keysOf(o.held_by).includes(t.key)).map((o) => o.key);
+  if (behind.length) return park(`${p.why}, so no worker was spawned, but ${behind.join(', ')} ${behind.length === 1 ? 'is' : 'are'} held behind it here: release or drop ${behind.length === 1 ? 'it' : 'them'}, then admit ${t.key} in ${p.ghRepo}'s checkout with intake.mjs admit ${t.key} and queue.mjs drop ${t.key} here`);
   if (DRY) {
     report.waiting.push(`${t.key}: ${p.why}: would be admitted into ${p.ghRepo} and taken out of this queue (dry run)`);
     return;
   }
   const h = E.admitInRepo(p, t.key, { by: 'pass' });
-  if (!h.ok) {
-    const line = `${p.why}, so no worker was spawned, but admitting it into ${p.ghRepo} failed (${h.why}). Admit it there: ${h.cmd}, then queue.mjs drop ${t.key}`;
-    q('park', t.key, line);
-    report.parked.push(`${t.key}: ${line}`);
-    return;
-  }
+  if (!h.ok) return park(`${p.why}, so no worker was spawned, but admitting it into ${p.ghRepo} failed (${h.why}). Admit it there: ${h.cmd}, then queue.mjs drop ${t.key}`);
   if (q('drop', t.key)) report.done.push(`${t.key}: ${p.why}, so it was admitted into ${p.ghRepo} (${h.line}) and taken out of this queue, no worker spawned`);
   else report.failed.push(`${t.key}: admitted into ${p.ghRepo} (${h.line}), but not taken out of this queue: queue.mjs drop ${t.key}`);
 }

@@ -98,6 +98,8 @@ rec SV-3004 '["src/a.js: the handler", "src/b.js: its test"]'
 rec SV-3005 '["src/x.js"]' "$(scope 'Run it in this zendesk batch, not a studia-web one')"
 rec SV-3006 '["src/y.js"]' "$(scope 'Run it in a studia-web batch' engineering)"
 rec SV-3007 '["studia-web: apps/portal/d.ts"]'; q set SV-3007 draft_pr=12
+rec SV-3008 '["studia-web: apps/portal/e.ts"]'
+rec SV-3009 '["src/z.js"]'; q set SV-3009 state=parked held_by=SV-3008
 
 out=$(node "$B/pass.mjs" 2>&1)
 check "AC1: files all in another configured repo: no worker, admitted there, out of this queue" \
@@ -120,5 +122,7 @@ check "a path with a colon note is this repo's file, so it spawns" 'spawned SV-3
 check "a scope call that keeps it in this repo spawns" 'spawned SV-3005 && ! admitted SV-3005'
 check "a call outside the scope category spawns" 'spawned SV-3006 && ! admitted SV-3006'
 check "a ticket with a PR in this repo already stays here" 'spawned SV-3007 && ! admitted SV-3007'
+check "a ticket another is held behind here: no worker, nothing admitted, parked naming the one held" \
+  '! spawned SV-3008 && ! admitted SV-3008 && [ "$(qg SV-3008 .state)" = parked ] && qg SV-3008 .park.question | grep -qF "but SV-3009 is held behind it here: release or drop it, then admit SV-3008 in acme/studia-web"'
 
 echo "pass other repo: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
