@@ -2321,12 +2321,13 @@ if (isMain) {
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }
-          if (!M.sizesProposed(profile)) { console.log(`\nno sizes proposed in ${path} yet: desk-env machine propose shows the sizes it would write`); break; }
-          const hwc = M.hardwareChanges(profile, hw);
-          const szc = M.sizingChanges(profile, proposal);
+          // Listed before the no-sizes stop: `machine set` can start a profile holding only an override.
           const ovr = M.sizingOverrides(profile, proposal);
           if (ovr.length) console.log('\noverrides kept (a re-write keeps them; desk-env machine write --drop-override <key> drops one):');
           for (const o of ovr) console.log(`  ${o.key}: ${o.value} (the rules propose ${o.proposed}) ${o.why}`);
+          if (!M.sizesProposed(profile)) { console.log(`\nno sizes proposed in ${path} yet: desk-env machine propose shows the sizes it would write`); break; }
+          const hwc = M.hardwareChanges(profile, hw);
+          const szc = M.sizingChanges(profile, proposal);
           if (!hwc.length && !szc.length) { console.log(`\nunchanged since ${path}`); break; }
           if (hwc.length) console.log(`\nhardware changed since ${path}:`);
           for (const c of hwc) console.log(`  ${c.key}: ${c.was} -> ${c.now}`);

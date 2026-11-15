@@ -18,10 +18,18 @@ export const HARDWARE_KEYS = Object.freeze([
   'model', 'chip', 'cpu-cores', 'performance-cores', 'efficiency-cores', 'gpu-cores',
   'memory-gb', 'disk-free-gb', 'os', 'arch', 'battery', 'wsl',
 ]);
-export const SIZING_KEYS = Object.freeze([
-  'autopilot-concurrency',
-  'memory-ceiling-gb', 'test-cap', 'test-lock-slots', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
-]);
+// The sizes the proposal makes, in its order, each with the check a hand-set override must pass.
+const wholeAtLeast = (min) => (v) => /^\d+$/.test(v) && Number(v) >= min;
+const SIZING_RULES = Object.freeze({
+  'autopilot-concurrency': { ok: (v) => /^\d+ \/ \d+$/.test(v) && Number(v.split(' / ')[0]) >= 1 && Number(v.split(' / ')[0]) <= Number(v.split(' / ')[1]),
+    want: '"<default> / <cap>", whole numbers with the default from 1 to the cap' },
+  'memory-ceiling-gb': { ok: wholeAtLeast(1), want: 'a whole number of GB, 1 or more' },
+  'test-cap': { ok: wholeAtLeast(1), want: 'a whole number of test workers, 1 or more' },
+  'test-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
+  'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
+  'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
+});
+export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 
 // The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
 // user's answers and read by bench-quota.mjs.
@@ -63,16 +71,6 @@ export const RULES = Object.freeze({
 const OVERRIDE_WHY = /^override\b/i;
 export const isOverride = (row) => OVERRIDE_WHY.test(String(row?.why ?? '').trim());
 export const overrideWhy = (reason) => `override: ${String(reason ?? '').trim() || 'set by hand with desk-env machine set'}`;
-const wholeAtLeast = (min) => (v) => /^\d+$/.test(v) && Number(v) >= min;
-const SIZING_RULES = Object.freeze({
-  'autopilot-concurrency': { ok: (v) => /^\d+ \/ \d+$/.test(v) && Number(v.split(' / ')[0]) >= 1 && Number(v.split(' / ')[0]) <= Number(v.split(' / ')[1]),
-    want: '"<default> / <cap>", whole numbers with the default from 1 to the cap' },
-  'memory-ceiling-gb': { ok: wholeAtLeast(1), want: 'a whole number of GB, 1 or more' },
-  'test-cap': { ok: wholeAtLeast(1), want: 'a whole number of test workers, 1 or more' },
-  'test-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
-  'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
-  'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
-});
 export const isSizingKey = (key) => Object.hasOwn(SIZING_RULES, key);
 // Why a value cannot be stored as an override of a proposed size, or null when it can.
 export function sizingSettingError(key, raw) {

@@ -253,6 +253,8 @@ const dropWrote = env(['machine', 'write', '--drop-override', 'test-lock-slots']
 t('write --drop-override drops it', `${dropWrote.includes('dropped override test-lock-slots')} ${isOverride(parseProfile(readFileSync(ov, 'utf8')).sizing['test-lock-slots'])}`, 'true false');
 const fromSet = join(T, 'override-only.md');
 t('with no profile, a size override starts one', `${setErr(['test-lock-slots=2'], fromSet)} ${sizesProposed(parseProfile(readFileSync(fromSet, 'utf8')))}`, 'exit 0 false');
+const detectedOnly = env(['machine', 'detect'], absent, fromSet);
+t('detect lists an override in a profile with no sizes proposed yet', `${detectedOnly.includes('  test-lock-slots: 2 (the rules propose')} ${detectedOnly.includes('no sizes proposed')}`, 'true true');
 t('and clearing it there removes the row', `${setErr(['test-lock-slots='], fromSet)} ${env(['machine', 'get', 'test-lock-slots'], absent, fromSet)}`, 'exit 0 exit 3');
 
 t('with no profile, the bench keeps its defaults', quotaLine(missing), 'quota: cap 10 points of each weekly allowance, reserve 25% (the defaults: neither is set on this computer)');
