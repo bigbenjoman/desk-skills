@@ -395,6 +395,7 @@ export const CONFIG_ROWS = Object.freeze({
   'branch-names': { section: '5', row: 'Branch names' },
   'pr-title': { section: '5', row: 'PR title' },
   breakpoints: { section: '5', row: 'Breakpoints' },
+  themes: { section: '5', row: 'Themes' },
   'design-system': { section: '5', row: 'Design system' },
   'dev-port': { section: '3b', row: 'Preferred dev-server port' },
   concurrency: { section: '3b', row: 'Autopilot worker concurrency' },
