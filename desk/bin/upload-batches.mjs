@@ -24,6 +24,7 @@ export const POLL_MS = 1000;
 export const THROTTLE_MS = 15 * 60_000;
 export const THROTTLE_MAX_MS = 8 * 60 * 60_000;
 export const EXIT_THROTTLED = 7;
+export const EXIT_PACED = 8;
 
 // A stop with an exit code, for a step that cannot go on (the login gone, the profile in use).
 export class UploadStop extends Error {
@@ -151,7 +152,9 @@ export const throttleMs = (stalls) => Math.min(THROTTLE_MS * 2 ** Math.max(0, st
 // record(file, result, at) is told each image uploaded ('uploaded', by the first cell naming it, as its
 // link appears) and the one a stall or upload error stopped on ('throttled'), `at` a Date on now()'s
 // clock: upload-images.mjs writes them to the upload log.
-export async function runUpload({ dir, readBody, writeBody, openPage, record = () => {}, log = () => {}, now = Date.now, sleep, stallMs, pollMs }) {
+// With `max`, at most that many images are uploaded; any left over end the run with EXIT_PACED, their
+// cells left for the next run.
+export async function runUpload({ dir, readBody, writeBody, openPage, record = () => {}, log = () => {}, now = Date.now, sleep, stallMs, pollMs, max = null }) {
   const start = readBody();
   const cells = dragFiles(start);
   if (!cells.length) return { code: 0, lines: [doneLine(start)] };   // nothing left to fill: pass.mjs reads the done line
@@ -174,9 +177,11 @@ export async function runUpload({ dir, readBody, writeBody, openPage, record = (
     fill(plan.reuse);
   }
 
-  const batches = batchesOf(plan.uploads);
-  const total = plan.uploads.length;
-  log(`${total} image(s) to upload in ${batches.length} batch(es) of at most ${BATCH_SIZE}, from ${dir}`);
+  const uploads = max == null ? plan.uploads : plan.uploads.slice(0, max);
+  const held = plan.uploads.length - uploads.length;
+  const batches = batchesOf(uploads);
+  const total = uploads.length;
+  log(`${total} image(s) to upload in ${batches.length} batch(es) of at most ${BATCH_SIZE}, from ${dir}${held ? `; ${held} more wait, as this run may upload only ${max}` : ''}`);
   let sent = 0;
   if (batches.length) {
     const page = await openPage();
@@ -218,6 +223,12 @@ export async function runUpload({ dir, readBody, writeBody, openPage, record = (
     }
   }
 
+  if (held) {
+    return { code: EXIT_PACED, lines: [
+      `paced: ${sent} image(s) uploaded, the most this run may upload; ${held} more wait for the next run, and their cells are left`,
+      ...(plan.missing.length ? [missingLine(dir, plan.missing)] : []),
+    ] };
+  }
   const after = readBody();
   return { code: dragCells(after) ? 4 : 0, lines: [
     doneLine(after),

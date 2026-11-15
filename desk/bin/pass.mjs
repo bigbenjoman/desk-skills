@@ -29,6 +29,7 @@ import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './wor
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
+import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
 import { usageLimit, resetText, limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
@@ -544,9 +545,36 @@ function handedOff(t, said, { log, h, imgs, stopped }) {
 // A crash spends a try only when the body has as many `_drag <file>_` cells after it as before it:
 // one that filled cells made progress, so it is tried again however often it has crashed.
 // A round whose log names its screenshots is always uploaded: the cap holds back only the retries.
-// The shared profile in use (the uploader's exit 2) and GitHub's rate limit (its exit 7) are waits,
-// so they spend no try; a throttled one is not tried again before the retry_after it printed.
+// The shared profile in use (the uploader's exit 2) is a wait, so it spends no try; GitHub's rate
+// limit (its exit 7) is the upload queue's back-off, which keeps the job queued and records no result.
+// Every upload goes through the machine's one upload queue (upload-queue.mjs): uploadShots adds the
+// ticket's job and pumps the queue, which may run other repos' jobs first and leave this one for a
+// later pass, and recordUpload takes each result the queue holds for this batch.
 const uploadedThisPass = new Set();
+const pumpedThisPass = new Set();
+let uploadStop = null;
+function runUploadJob(job, max) {
+  const own = job.queue === QUEUE_FILE;
+  const env = { ...(own ? process.env : E.otherRepoEnv()) };
+  if (job.approved) env.DESK_UPLOAD_APPROVED = '1';
+  else delete env.DESK_UPLOAD_APPROVED;
+  const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(job.pr), job.dir, '--max', String(max)], { env, ...(own ? {} : { cwd: job.root }) });
+  return { code: run.ok ? 0 : run.code, out: run.out };
+}
+function pumpUploads() {
+  if (DRY) return;
+  try {
+    uploadStop = UQ.pump({ run: runUploadJob, tried: pumpedThisPass }).stop;
+  } catch (e) { report.failed.push(`the machine's upload queue did not run: ${e.message}; the next pass tries again`); }
+  let results = [];
+  try { results = UQ.takeResults(QUEUE_FILE); } catch (e) { report.failed.push(`the upload queue's results were not read: ${e.message}; the next pass reads them`); }
+  for (const r of results) {
+    const t = queue().tickets[r.key];
+    if (!t) continue;
+    uploadedThisPass.add(r.key);
+    recordUpload(t, String(r.pr), r.dir, { ok: r.code === 0, code: r.code, out: r.out ?? '' }, r.cells_before ?? null);
+  }
+}
 // PR #prNo's body, null where it could not be read, and `why`, the read's last line of output.
 function prBody(prNo) {
   const view = shOut('gh', ['pr', 'view', String(prNo), '--repo', GH_REPO, '--json', 'body']);
@@ -561,11 +589,28 @@ function cellsFor(prNo, shots) {
 }
 const cellsIn = (prNo) => { const { body } = prBody(prNo); return body == null ? null : dragCells(body); };
 function uploadShots(t, prNo, imgDir) {
-  const was = crashOf(t, prNo);
   if (uploadedThisPass.has(t.key)) return;
   uploadedThisPass.add(t.key);
-  const before = cellsIn(prNo);
-  const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(prNo), imgDir]);
+  if (DRY) { report.advanced.push(`${t.key} images → #${prNo} (dry run): would join the machine's upload queue`); return; }
+  try {
+    // The body's cells when the job first joined for this PR: a crash that leaves fewer filled some,
+    // so it spends no try (recordUpload), however many paced runs it took.
+    const queued = UQ.readUploadQueue().jobs.find((j) => j.queue === QUEUE_FILE && j.key === t.key && String(j.pr) === String(prNo));
+    const before = queued && 'cells_before' in queued ? queued.cells_before : cellsIn(prNo);
+    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before });
+  } catch (e) {
+    report.failed.push(`${t.key}: image upload to PR #${prNo} did not join the machine's upload queue: ${e.message}; a later pass tries again`);
+    return;
+  }
+  pumpUploads();
+  let waiting = false;
+  try { waiting = UQ.isQueued(UQ.readUploadQueue(), QUEUE_FILE, t.key); } catch { /* reported by the pump */ }
+  if (waiting) report.advanced.push(`${t.key} images → #${prNo} wait in the machine's upload queue: ${uploadStop ?? 'part are uploaded, at the most the pace allows, and a later pass uploads the rest'}`);
+}
+// What the uploader's run for t's PR #prNo ended with, recorded on t; `before` is the body's cells
+// when its job joined the queue (null where unread).
+function recordUpload(t, prNo, imgDir, run, before) {
+  const was = crashOf(t, prNo);
   const up = run.out;
   const doneLine = /done: (\d+) image\(s\) in the body, (\d+) placeholder\(s\) left/.exec(up);
   const tail = up.split('\n').slice(-2).join(' ');
@@ -1055,6 +1100,9 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 // An upload that crashed is tried again from the directory it was given, not from a round's log line:
 // a ticket requeued for a fix starts a round whose log names no screenshots. A running worker is left
 // to finish, since it may still edit the body, and a PR the ticket has moved off drops the record.
+// First the machine's upload queue is pumped every pass, whatever this repo's §3 pr-images says (each
+// job carries its own repo's grant), and the results it holds for this batch are recorded.
+pumpUploads();
 if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
   for (const t of Object.values(queue().tickets)) {
     const c = t.upload_crash;

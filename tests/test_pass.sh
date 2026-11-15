@@ -45,6 +45,7 @@ for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln 
 cat > "$T/desk/bin/upload-images.mjs" <<EOF
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
+appendFileSync('$T/upload-args', \`\${process.argv.slice(2).join(' ')}\\n\`);
 // \$T/upload-left, when it exists, is an upload that left cells: what upload-images says, and its exit 4.
 if (existsSync('$T/upload-left')) { process.stdout.write(readFileSync('$T/upload-left', 'utf8')); process.exit(4); }
 // \$T/upload-busy-<pr>, when it exists, is the shared profile in use: the uploader's exit 2.
@@ -106,6 +107,8 @@ check "the finished round records the log's PR"         '[ "$(field T-1 result.p
 check "DS-193 AC1 a missing image directory runs no upload and reports nothing" '! grep -q "^11 " "$T/uploads" && ! echo "$out" | grep -q "I-1: image" && [ "$(field I-1 images_uploaded)" = "\"none\"" ] && [ "$(field I-1 state)" = "\"done\"" ]'
 check "DS-193 AC2 a directory with no image runs no upload and reports nothing" '! grep -q "^12 " "$T/uploads" && ! echo "$out" | grep -q "I-2: image" && [ "$(field I-2 images_uploaded)" = "\"none\"" ] && [ "$(field I-2 state)" = "\"done\"" ]'
 check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'
+check "DS-673 AC5 the pass uploads through the machine's upload queue, capped at the minute's pace" 'grep -qx "2 $T/state/images/T-1/ --max 6" "$T/upload-args"'
+check "DS-673 AC5 each upload done, the queue holds no job and no result" 'node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); process.exit(q.jobs.length + q.results.length)" "$T/desk/upload-queue.json"'
 
 # T-3: round one finished with PR 1 and uploaded; it is requeued for a deliberate re-run.
 q add T-3; q set T-3 state=triaged branch=fix/T-3 result.pr=1 result.summary=old images_uploaded=true images_reported=true draft_pr=1
