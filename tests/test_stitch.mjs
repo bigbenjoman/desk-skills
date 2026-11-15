@@ -103,11 +103,17 @@ mkdirSync(join(T, 'empty'));
 const none = cli(join(T, 'empty'));
 t('cli: a folder with no captures exits 2, naming the pattern', `${none.status}:${none.stderr.includes('<canvas|before|after|built>-<screen>-<width>')}`, '2:true');
 t('cli: a bad --max-mb exits 2', cli(g1, '--max-mb', '0').status, 2);
+// As on CI's runner: no desk Playwright anywhere.
+const noPw = (...a) => spawnSync(process.execPath, [BIN, ...a], { encoding: 'utf8', env: { ...process.env, DESK_HOME: join(T, 'no-desk'), DESK_PLAYWRIGHT: '' } });
+t('cli: no captures exits 2 without Playwright too', noPw(join(T, 'empty')).status, 2);
+t('cli: captures and no Playwright exits 6', noPw(g1).status, 6);
 
 // ---- in a real browser ---------------------------------------------------------------------------
+// Skipped where desk's Playwright is not installed, CI's Linux runner included, until DS-681 installs
+// it there and makes this skip a failure in CI.
 const pw = findPlaywright();
 if (!pw.entry) {
-  console.log(`SKIP stitch in a browser: no desk Playwright (tried ${pw.tried.join(', ')})`);
+  console.log(`SKIP stitch in a browser: no desk Playwright (tried ${pw.tried.join(', ')}); CI runs these once DS-681 lands`);
 } else {
   const { chromium } = await importPlaywright(pw);
 
@@ -143,12 +149,23 @@ if (!pw.entry) {
   await stitch(big, { chromium, out: out2 });
   t('rerun: the parts give way to the whole image', readdirSync(out2).sort().join(' '), 'hero-dark.png hero-light.png');
 
-  // One width over the limit on its own is written and flagged; the command exits 5.
+  // AC2, one width over the limit on its own: one image per capture, its missing cell drawn with the first.
+  const wide = join(T, 'wide');
+  mkdirSync(wide);
+  for (const role of ['canvas', 'after']) writeFileSync(join(wide, `${role}-wide-1440.png`), png(1440, 900, COLOUR[role], true));
+  const wholeWide = (await stitch(wide, { chromium, out: join(T, 'wide-whole') })).images[0].bytes;
+  const r5 = await stitch(wide, { chromium, out: join(T, 'out5'), maxBytes: wholeWide });
+  t('AC2: one width over the limit is split by capture', r5.images.map((i) => i.file).join(' '), 'wide-light-1440-canvas.png wide-light-1440-after.png');
+  t('AC2: each capture\'s image under the limit', r5.images.every((i) => i.bytes < wholeWide && !i.over), true);
+  t('AC2: the split by capture is what is on disk', readdirSync(join(T, 'out5')).sort().join(' '), 'wide-light-1440-after.png wide-light-1440-canvas.png');
+  t('AC3: the missing before is drawn with the first capture', r5.images.map((i) => i.missing.join(',') || '-').join(' '), 'before at 1440px -');
+
+  // One capture over the limit on its own is written and flagged; the command exits 5.
   const one = join(T, 'one');
   mkdirSync(one);
   writeFileSync(join(one, 'canvas-wide-1440.png'), png(1440, 900, [10, 10, 10], true));
   const r3 = cli(one, '--out', join(T, 'out3'), '--max-mb', '0.001');
-  t('cli: one width over the limit exits 5, naming it', `${r3.status}:${/^over: .*wide-light\.png .*over the limit with one width/m.test(r3.stdout)}`, '5:true');
+  t('cli: one capture over the limit exits 5, naming it', `${r3.status}:${/^over: .*wide-light\.png .*over the limit with one capture/m.test(r3.stdout)}`, '5:true');
   const r4 = cli(g1, '--out', join(T, 'out4'));
   t('cli: writes and names each image, and the missing capture', `${r4.status}:${(r4.stdout.match(/^wrote: /gm) ?? []).length}:${r4.stdout.includes('  no capture: before at 768px')}:${r4.stdout.includes('skipped: hero-desktop.png')}`, '0:2:true:true');
 }

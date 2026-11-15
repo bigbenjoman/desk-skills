@@ -8,10 +8,11 @@
 //       (built, as desk-design compare names it, is read as after), theme light or dark (none is
 //       light), screen optional (none is "page"). Writes <out>/<screen>-<theme>.png (default <out>:
 //       <captures dir>/stitched). An image that would be --max-mb (default 10) or more is split by
-//       width into <screen>-<theme>-<first width>-<last width>.png, each under it. A missing capture
-//       reads "no capture". The same captures give byte-identical images.
+//       width into <screen>-<theme>-<first width>-<last width>.png, each under it, and a single
+//       width still over it into <screen>-<theme>-<width>-<role>.png, one per capture. A missing
+//       capture reads "no capture". The same captures give byte-identical images.
 //       Exit 2 on a usage error, no captures, or two after captures for one cell; 5 when a single
-//       width is over the limit on its own (written anyway, and named); 6 when Playwright is missing
+//       capture is over the limit on its own (written anyway, and named); 6 when Playwright is missing
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,7 +58,11 @@ export function collectCaptures(dir) {
   const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const out = [...groups.values()]
     .sort((a, b) => byName(a.screen, b.screen) || byName(a.theme, b.theme))
-    .map((g) => ({ ...g, rows: [...g.rows.values()].sort((a, b) => a.width - b.width) }));
+    .map((g) => ({
+      ...g,
+      rows: [...g.rows.values()].sort((a, b) => a.width - b.width)
+        .map((r) => ({ width: r.width, cells: Object.fromEntries(ROLES.filter((role) => r.cells[role]).map((role) => [role, r.cells[role]])) })),
+    }));
   return { groups: out, skipped };
 }
 
@@ -65,12 +70,13 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 
 // The page for one board and theme. `rows` carry each cell's {src, width, height}, or null for a
 // missing capture, which is drawn at the row's largest capture's size so the row keeps its shape.
-export function sheetHtml(screen, theme, rows) {
+// `roles` are the columns drawn: all three, or fewer for a width split by capture.
+export function sheetHtml(screen, theme, rows, roles = ROLES) {
   const body = rows.map((r) => {
-    const present = ROLES.map((role) => r.cells[role]).filter(Boolean);
+    const present = roles.map((role) => r.cells[role]).filter(Boolean);
     const w = Math.max(...present.map((c) => c.width), r.width);
     const h = Math.max(...present.map((c) => c.height), 240);
-    const cells = ROLES.map((role) => {
+    const cells = roles.map((role) => {
       const c = r.cells[role];
       const shown = c ? `<img src="${esc(c.src)}" width="${c.width}" height="${c.height}">`
         : `<div class="none" style="width:${w}px;height:${h}px">no capture</div>`;
@@ -96,18 +102,18 @@ ${body}
 const ORIGIN = 'http://stitch.invalid/';
 
 // One PNG of these rows, the page and its captures served from memory so nothing is fetched.
-async function shoot(browser, group, rows, files) {
+async function shoot(browser, group, rows, files, roles = ROLES) {
   const served = new Map();
   const shown = rows.map((r) => ({
     width: r.width,
-    cells: Object.fromEntries(ROLES.filter((role) => r.cells[role]).map((role) => {
+    cells: Object.fromEntries(roles.filter((role) => r.cells[role]).map((role) => {
       const f = files.get(r.cells[role]);
       const src = `${ORIGIN}i/${served.size}.png`;
       served.set(src, f.buf);
       return [role, { src, width: f.width, height: f.height }];
     })),
   }));
-  served.set(ORIGIN, Buffer.from(sheetHtml(group.screen, group.theme, shown)));
+  served.set(ORIGIN, Buffer.from(sheetHtml(group.screen, group.theme, shown, roles)));
   const context = await browser.newContext({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 });
   try {
     const page = await context.newPage();
@@ -124,12 +130,15 @@ async function shoot(browser, group, rows, files) {
   }
 }
 
+const noCaptures = (dir) => `no captures in ${dir}: want <canvas|before|after|built>-<screen>-<width>[-<light|dark>].png`;
+
 // Each board and theme as one image under maxBytes, else split in half by width until each part
-// is, so the same captures always split the same way. A single width over the limit is kept, with
-// `over` set.
+// is, so the same captures always split the same way. A single width still over the limit is split
+// into one image per capture, its "no capture" cells drawn with the first; a single capture over
+// the limit is kept, with `over` set.
 export async function stitch(dir, { chromium, out = join(dir, 'stitched'), maxBytes = MAX_BYTES }) {
   const { groups, skipped } = collectCaptures(dir);
-  if (!groups.length) fail(`no captures in ${dir}: want <canvas|before|after|built>-<screen>-<width>[-<light|dark>].png`);
+  if (!groups.length) fail(noCaptures(dir));
   const files = new Map();
   for (const g of groups) for (const r of g.rows) for (const name of Object.values(r.cells)) {
     const buf = readFileSync(join(dir, name));
@@ -141,17 +150,29 @@ export async function stitch(dir, { chromium, out = join(dir, 'stitched'), maxBy
     for (const g of groups) {
       const fit = async (rows) => {
         const png = await shoot(browser, g, rows, files);
-        if (png.length < maxBytes || rows.length === 1) return [{ rows, png, over: png.length >= maxBytes }];
-        const mid = Math.ceil(rows.length / 2);
-        return [...await fit(rows.slice(0, mid)), ...await fit(rows.slice(mid))];
+        if (png.length < maxBytes) return [{ rows, roles: ROLES, png, over: false }];
+        if (rows.length > 1) {
+          const mid = Math.ceil(rows.length / 2);
+          return [...await fit(rows.slice(0, mid)), ...await fit(rows.slice(mid))];
+        }
+        const present = ROLES.filter((role) => rows[0].cells[role]);
+        if (present.length < 2) return [{ rows, roles: ROLES, png, over: true }];
+        const parts = [];
+        for (const [n, role] of present.entries()) {
+          const roles = ROLES.filter((r) => r === role || (n === 0 && !rows[0].cells[r]));
+          const one = await shoot(browser, g, rows, files, roles);
+          parts.push({ rows, roles, role, png: one, over: one.length >= maxBytes });
+        }
+        return parts;
       };
       const parts = await fit(g.rows);
       for (const p of parts) {
         const ws = p.rows.map((r) => r.width);
         const span = parts.length === 1 ? '' : ws.length === 1 ? `-${ws[0]}` : `-${ws[0]}-${ws.at(-1)}`;
         images.push({
-          screen: g.screen, theme: g.theme, file: `${g.screen}-${g.theme}${span}.png`, widths: ws, png: p.png, bytes: p.png.length, over: p.over,
-          missing: p.rows.flatMap((r) => ROLES.filter((role) => !r.cells[role]).map((role) => `${role} at ${r.width}px`)),
+          screen: g.screen, theme: g.theme, file: `${g.screen}-${g.theme}${span}${p.role ? `-${p.role}` : ''}.png`,
+          widths: ws, ...(p.role ? { role: p.role } : {}), png: p.png, bytes: p.png.length, over: p.over,
+          missing: p.rows.flatMap((r) => p.roles.filter((role) => !r.cells[role]).map((role) => `${role} at ${r.width}px`)),
         });
       }
     }
@@ -162,7 +183,7 @@ export async function stitch(dir, { chromium, out = join(dir, 'stitched'), maxBy
   mkdirSync(out, { recursive: true });
   const mine = new Set(groups.map((g) => `${g.screen}-${g.theme}`));
   for (const name of readdirSync(out)) {
-    const m = /^(.+-(?:light|dark))(?:-\d+){0,2}\.png$/.exec(name);
+    const m = /^(.+-(?:light|dark))(?:-\d+){0,2}(?:-(?:canvas|before|after))?\.png$/.exec(name);
     if (m && mine.has(m[1])) rmSync(join(out, name));
   }
   for (const i of images) writeFileSync(join(out, i.file), i.png);
@@ -185,6 +206,7 @@ if (isMain) {
     if (!existsSync(target)) fail(`no such folder: ${target}`);
     const mb = opt(rest, '--max-mb');
     if (mb !== undefined && !(Number(mb) > 0)) fail(`--max-mb wants a positive number, not ${mb}`);
+    if (!collectCaptures(resolve(target)).groups.length) fail(noCaptures(resolve(target)));
     const { findPlaywright, importPlaywright } = await import('./find-playwright.mjs');
     const found = findPlaywright();
     if (!found.entry) fail(`playwright not found (tried: ${found.tried.join(', ')}): re-run desk-skills' ./install.sh, which installs desk's own`, 6);
@@ -193,7 +215,7 @@ if (isMain) {
     const r = await stitch(resolve(target), { chromium, ...(out ? { out: resolve(out) } : {}), ...(mb ? { maxBytes: Number(mb) * 1000 * 1000 } : {}) });
     for (const i of r.images) {
       const size = `${(i.bytes / 1e6).toFixed(1)} MB`;
-      console.log(`${i.over ? 'over' : 'wrote'}: ${join(r.out, i.file)} (${i.screen}, ${i.theme}, ${i.widths.join(' ')}px, ${size}${i.over ? `, over the limit with one width: upload it as separate captures` : ''})`);
+      console.log(`${i.over ? 'over' : 'wrote'}: ${join(r.out, i.file)} (${i.screen}, ${i.theme}, ${i.widths.join(' ')}px${i.role ? ` ${i.role}` : ''}, ${size}${i.over ? ', over the limit with one capture: the capture itself is too large to upload' : ''})`);
       for (const m of i.missing) console.log(`  no capture: ${m}`);
     }
     for (const s of r.skipped) console.log(`skipped: ${s} (not <role>-<screen>-<width>[-<theme>].png)`);
