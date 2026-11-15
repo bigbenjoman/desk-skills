@@ -1760,6 +1760,14 @@ t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alon
   const mu = N.collect({ word: 'mu685' }).items;
   t('DS-685 a step never hides another blocker that needs you: the ticket keeps its own item for it', mu.some((i) => i.t.key === 'H-4' && /B-9 finished with no PR: let it start/.test(i.need)), true);
   t('DS-685 the step item names only the ticket its held_by still holds behind it', mu.find((i) => i.kind === 'step')?.waiting.join(), 'H-4');
+  // The ticket the step holds is drawn with the step: under Needs you while the step needs the
+  // person, and under Put off once the step is put off with not-now.
+  put('xi685', { port: 5688, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-6': held('OPS-7') }, triage: { 'H-6': { blockers: [input] } } });
+  const xi = () => loadRepos().find((r) => r.name === 'xi685');
+  const xiGroup = () => { let g = null; for (const l of strip(repoScreen(xi())).split('\n')) { const h = l.match(/^ {2}(Needs you|Put off|Waiting|Ready|Running|Merging) · \d+$/); if (h) g = h[1]; else if (/^ +\S+ {2}H-6 /.test(l)) return g; } return null; };
+  t('DS-685 AC5 the held ticket is a step row, drawn under Needs you', `${N.needsCount(xi()).stepRows.map((x) => x.t.key).join()} ${xiGroup()}`, 'H-6 Needs you');
+  const xiOff = N.record({ word: 'xi685', ticket: 'step:OPS-7', action: 'not-now' });
+  t('DS-685 AC5 the step put off, the ticket it holds is drawn under Put off and counted nowhere', `${xiOff.ok} ${N.needsCount(xi()).stepRows.length} ${N.needsCount(xi()).shown} ${N.needsCount(xi()).putOff} ${xiGroup()}`, 'true 0 0 1 Put off');
 }
 
 // The pass undrafted a PR on the desk-review a worker posted, so nothing is left for the person.

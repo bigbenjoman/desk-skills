@@ -892,21 +892,24 @@ function stampItem(r, x, item) {
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
 // `b`): the rows that need the person (`rows`), plus its person's-step items (stepItems), as
 // `shown`, less `putOff`, those put off with unchanged inputs. A row held only by a person's step
-// is in `stepRows`, not `rows`: it needs the person, but is counted once, through its step item.
-// A reader that draws "not in rows" as put off counts `stepRows` as needing the person too.
+// is in `stepRows`, not `rows`, while a step holding it is not put off: it needs the person, but is
+// counted once, through its step item. A reader that draws "not in rows" as put off counts
+// `stepRows` as needing the person too, so a row whose every step is put off is drawn put off.
 export function needsCount(r) {
   const registers = new Map();
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
-  const rows = [], stepRows = [];
+  const rows = [], held = [];
   let putOff = 0, steps = 0;
   for (const x of [...basePushRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
-    if (stepHeld(b, x)) { stepRows.push(x); continue; }
+    if (stepHeld(b, x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
+  const live = new Set();
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else { steps++; live.add(s.item.step); }
   }
+  const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
   for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap(followItems)) {
     if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
   }
