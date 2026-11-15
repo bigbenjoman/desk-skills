@@ -451,6 +451,7 @@ House style for this repo. Setup proposes values from recent merged PRs and bran
 | Code comments | `TODO` (e.g. default none; at most one short line) |
 | User-facing copy you write | `TODO` (e.g. copy supplied by design or product ships verbatim) |
 | Breakpoints | `TODO` (viewport widths in px every design is shown and captured at, one span each, ascending: the default `390` `768` `1024` `1280` `1440` merged with the widths the repo's own code uses; or `none` for a repo with no UI) |
+| Themes | `TODO` (the themes every screen is captured in, one span each, e.g. `light` `dark`; or `none` for a repo with one look or no UI) |
 | Design system | `TODO` (the files that define the design system, one span each, repo-relative: token files, theme files, the Tailwind config, a `DESIGN.md`, e.g. `` `src/styles/tokens.css` `tailwind.config.ts` `DESIGN.md` ``; or `none`) |
 | Messages to colleagues | plain, direct, no filler: the fact, then the ask. Always a draft |
 | Decisions put to you | one `AskUserQuestion` carousel, recommended option first and labelled, trade-off on each option |

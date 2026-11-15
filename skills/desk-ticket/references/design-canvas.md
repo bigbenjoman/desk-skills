@@ -68,6 +68,21 @@ Commit the folder, screens included, on the ticket's branch. Then make the
 ticket's Design section carry both the artifact URL and the repo path (the `design:` line it prints),
 via `desk-jira edit` under §3 `jira-edit`.
 
+**The groom states the PR's upload count and time.** Once a canvas is saved, either here or already
+(`check` prints `ok`, or an `advisory` naming the path), estimate what the PR's images will cost:
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs estimate <saved folder> --key <TICKET>
+```
+
+It prints `uploads: <n> (<boards> × <themes>), about <time> at 6 a minute and 300 an hour`. That is
+one stitched image per board the ticket names, for each theme in §5 Themes (`desk-env list themes`;
+one when the row is unset or `none`). Put that line in the ticket's Design section beside the
+`design:` line, via `desk-jira edit` under §3 `jira-edit`, and give it in the Stage 0 report. A
+`flag:` line means the uploads take over an hour. Say so in the report and suggest splitting the
+ticket by board, with at most the number of boards per ticket that the line names. Never split the
+ticket yourself: that is the user's call.
+
 An artifact the user does not own reads as a summary, not the files: ask for access or an export
 rather than saving that. **When a copy is already saved** (`check` prints `ok`, or an `advisory`
 naming the path), still read the artifact's current version (`action:list scope:files`) and run
