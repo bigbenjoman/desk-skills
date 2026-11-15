@@ -13,6 +13,8 @@ import { join } from 'node:path';
 import { workerLocation, LEVERS, parseLevers, HOME, deskHome } from './desk-env.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
+// The evaluation states in which a lever has been kept.
+export const KEPT_STATES = Object.freeze(['adopted', 'settled']);
 
 // The epic's decision rule, shared by every lever: an adopt needs the mechanism metric better by at
 // least the lever's minimum with this probability, the cost ratio's upper bound below `cost_ratio_max`,
