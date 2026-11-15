@@ -324,7 +324,8 @@ export const setWordError = (tool, v) => {
 //   -> { text, login }, or throws with the reason
 export function setRule(subs, { tool, name, rule: word, check }) {
   if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
-  const rule = SET_WORDS[ruleWords(word)];
+  const w = ruleWords(word);
+  const rule = Object.hasOwn(SET_WORDS, w) ? SET_WORDS[w] : null;
   if (!rule) throw new Error(setWordError(tool, word));
   return writeRule(subs, { tool, name, rule, check });
 }

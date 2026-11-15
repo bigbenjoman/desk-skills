@@ -151,7 +151,12 @@ for (const [what, text] of [['an unreadable', ROWS(['| `claude` | `default` | `~
 }
 writeFileSync(SUBS, kept);
 c = await cli('set', 'codex', 'login-2', 'Unused');
-t('a rule in any case is read', readSubscriptions(SUBS).logins.find((l) => l.tool === 'codex' && l.name === 'login-2').rule, 'standby');
+t('a rule in any case is read', `${c.rc} ${readSubscriptions(SUBS).logins.find((l) => l.tool === 'codex' && l.name === 'login-2').rule} ${c.out.trim().split('\n').at(-1)}`, '0 standby codex login-2: unused');
+for (const word of ['constructor', 'toString', '__proto__']) {
+  const held = readFileSync(SUBS, 'utf8');
+  c = await cli('set', 'claude', 'login-3', word);
+  t(`set ${word} is refused as an unknown rule, the file unchanged`, `${c.rc} ${c.out.includes(`"${word}" is not a rule:`)} ${readFileSync(SUBS, 'utf8') === held}`, '1 true true');
+}
 c = await cli('set', 'claude', 'nobody', 'off');
 t('an unknown login is refused, naming the logins', /^logins: no claude login "nobody": the logins are default, login-2, login-3, login-4/.test(c.out), true);
 
