@@ -42,7 +42,7 @@ import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn } from './
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
 import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
@@ -1715,6 +1715,8 @@ if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`
 // Running workers carry on; the report names each failure and its fix, and the push names it once.
 const HEALTH = await health({ state: STATE });
 for (const s of HEALTH.stalls) personStall(s);
+// The reviewer check passing, or not required, lifts every PR hold it made (gate_hold, below).
+if (!HEALTH.reviewer && !DRY) for (const t of all.filter((x) => x.gate_hold)) { q('set', t.key, 'gate_hold=null'); t.gate_hold = null; }
 // Weekly usage pacing (usage-pace.mjs): new spawns hold while 7-day usage is ahead of an even pace by
 // more than §3b "Usage pacing headroom (points)". That drains as the week goes on; a row that does not
 // read holds every spawn until it is fixed, as a malformed budget does.
@@ -3603,6 +3605,26 @@ const baseMoves = (t, head) => {
 // §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
 // sends a review worker for one reading the verdict).
 const stateRow = parseStateChecks(E.configValues('state-checks'));
+// A failing reviewer check (health.mjs: the account desk posts verdicts from is not one §4 Gate
+// reviewers counts, or cannot be read) holds every PR red only on a §4 State check of kind verdict,
+// with nothing pending: a review or fix try there posts a verdict the gate does not count. The PR
+// records the hold as gate_hold, which needs-you lists once for the repo; build workers still start.
+function gatedByReviewer(s) {
+  if (!HEALTH.reviewer || s?.state !== 'OPEN') return false;
+  const gate = evaluateGate(s.checks ?? [], gateLists());
+  if (gate.state !== 'fail' || gate.pending.length) return false;
+  const verdict = new Set(stateFailing(gate.failing, stateRow.checks).filter((f) => f.kind === 'verdict').map((f) => f.name));
+  return verdict.size > 0 && gate.failing.every((f) => verdict.has(f.name));
+}
+function markGateHold(t, s, on) {
+  if (!on) { if (t.gate_hold && !DRY) { q('set', t.key, 'gate_hold=null'); t.gate_hold = null; } return; }
+  const h = HEALTH.reviewer;
+  if (!DRY && (t.gate_hold?.item !== h.key || t.gate_hold?.head !== s.head)) {
+    q('set', t.key, `gate_hold=${JSON.stringify({ item: h.key, head: s.head ?? null, why: h.why, at: t.gate_hold?.at ?? new Date().toISOString() })}`);
+  }
+  if (t.stuck && !DRY) q('set', t.key, 'stuck=null');
+  report.waiting.push(`${t.key}: GATE — PR #${s.pr} is red only on its review gate, held by ${h.key}: ${h.why}. No review or fix try goes to it until that check passes`);
+}
 // The rows the fix tries read: one that does not parse makes none this pass.
 const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <what fixes it>`'], ['§4 Pre-merge steps', preMergeRow, '`<check>: <what fixes it>`'], ['§4 State checks', stateRow, '`<check>` or `<check>: verdict|approval`']]
   .filter(([, r]) => r.errors.length).map(([row, r, want]) => `${row} does not parse: ${r.errors.join(', ')} (want ${want})`);
@@ -3742,8 +3764,12 @@ if (drafts.length) {
       if (r.error) out.push(`undraft: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     };
+    // Red only on a verdict state check while the reviewer check fails: no review or fix worker,
+    // findings fixes included, as out of draft.
+    const gated = !hold && ['review', 'checks', 'findings'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
+    markGateHold(t, s, gated);
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
-    const rf = hold ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
+    const rf = hold || gated ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(v.headRefOid), ...(FAILURE_CLASS ? { classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid) } } : {}) })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge, targeted: c.targeted })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch), baseAt: baseAtOf(v.headRefOid) })
@@ -3763,6 +3789,7 @@ if (drafts.length) {
         : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since`;
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) { applyFix(t, n, v.headRefOid, rf); if (rf.call === 'rerun' || rf.call === 'wait') rec = { ...rec, call: rf.call, why: rf.why, action: null }; }
+    else if (gated) { /* markGateHold reported it */ }
     else if (c.call === 'wait') out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
     else if (c.call === 'upload' && DRY) out.push(`undraft (dry run): would upload ${c.dir} to PR #${n} (${t.key}): ${c.why}`);
     else if (c.call === 'upload') {
@@ -4103,6 +4130,12 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   // head the merge driver held for failing §4 Merged-tree check merged into the base.
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
+  // Held by the reviewer check: no review, checks or feedback fix try, as on a draft. A fix's new head
+  // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
+  // only on the gate, so it still goes to its own fix below.
+  const gated = !dirty && !tree && gatedByReviewer(s);
+  markGateHold(t, s, gated);
+  if (gated) continue;
   if (dirty || tree) {
     const row = humanSeen(n) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
     const perm = E.permission(row);

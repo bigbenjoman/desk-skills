@@ -156,6 +156,13 @@ How to turn what you find into rows:
   exactly as GitHub shows it; desk-gate.yml's `desk-review verdict: verdict` and `protected-path
   approval: approval` are the default when the user writes nothing. Say that the merge driver never
   reruns one: a red verdict check goes to a review worker, a red approval check to the user.
+- **Gate reviewers.** Where a verdict check counts only some accounts' reviews, read the logins from
+  its workflow: an env list on the verdict job, such as `PULLBOT_REVIEWERS: "agent-pullbot"`, or a
+  list the job's script compares the reviewer's login with. Propose them for §4 Gate reviewers, one
+  span each (`` `agent-pullbot` ``); a gate that filters on `author_association`, or one with no login
+  list, is `any`. Say that each pass compares that list with the login desk posts verdicts from (§4
+  Review account, else the default `gh` login) and, on a mismatch, reports one item for the repo and
+  sends no review or fix try to a PR red only on that check until it is fixed.
 - **Checks workers can't fix.** Search the repo instructions and the workflows for checks that fail
   until a person does something outside the code: an image built by hand, a credential, a service
   only they can reach ("run `ensure-flows-image.sh` if the Flows check says the image is missing").
