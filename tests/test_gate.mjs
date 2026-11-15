@@ -299,6 +299,8 @@ const askClass = ['content/legal/**: legal copy sign-off', 'src/billing/**: touc
 t('DS-503 AC3 a hold in an ask class, or a sign-off, deploy or push, stays a person\'s', kinds(askClass), askClass.map(() => 'person').join());
 t('DS-503 AC3 `person only` in the reason forces a person\'s hold', kinds(['docs/**: read the docs preview; person only']), 'person');
 t('DS-503 AC3 so does a code-owner approval', holdNeedsPerson('CODEOWNERS path, needs your code-owner approval'), true);
+t('DS-585 the ask-category words a hold reason names are decisions.mjs ASK_TERMS, none lost from before', JSON.stringify(['the stripe webhook', 'billing', 'payments page', 'invoices', 'refunds', 'prices', 'spending cap', 'budgets', 'costs', 'contract', 'legal copy', 'compliance', 'regulator', 'cookie policy', 'privacy', 'GDPR', 'licensing', 'production', 'prod', 'credentials', 'secrets', 'api-key', 'tokens', 'passwords', 'a paid plan'].map(holdNeedsPerson)), JSON.stringify(Array(25).fill(true)));
+t('DS-585 and an agent check still is not a person\'s step', holdNeedsPerson('lint and unit tests must pass'), false);
 const factsAndCopy = ['launch/**: Ben confirms the launch date first', 'marketing/**: the client signs off the wording', 'sms/**: SMS template text, each message is billed',
   'content/**: design review by Sam before merging', 'partners/**: ask the partner for their logo'];
 t('DS-503 AC3 a fact only the person holds, or copy that costs, stays a person\'s', kinds(factsAndCopy), factsAndCopy.map(() => 'person').join());
