@@ -51,8 +51,9 @@ Playwright reads `PLAYWRIGHT_BROWSERS_PATH` once, on first import.
    `/upload/policies/assets` at all.
 4. **The file input is hidden.** `form:has(textarea#new_comment_field) input[type=file]`, waited with
    `{ state: 'attached' }` — the default `visible` times out with the element right there.
-   It is `multiple`; setting all files in one `setInputFiles` works **provided the wait in
-   step 5 is per file**. `input.files.length` reads 0 afterwards because GitHub consumes it.
+   It is `multiple`; setting up to 15 files in one `setInputFiles` works **provided the wait in
+   step 5 is per file**. Set only the files the cells name, 15 at a time, and record each batch's
+   links before the next. `input.files.length` reads 0 afterwards because GitHub consumes it.
 5. **Wait per file, on that file's own finished tag.** GitHub inserts an HTML `<img>` into the
    textarea's value, not `![alt](url)` markdown, and the **alt drops the extension**
    (`before-mobile.png` → `alt="before-mobile"`). It also inserts `Uploading <file>…` the instant a
@@ -94,4 +95,5 @@ Log requests to `/upload/` and dump the textarea value before suspecting permiss
 |---|---|
 | No POST to `/upload/policies/assets` | The form was never focused (step 3) |
 | 201 from the upload, wait still times out | The wait condition is wrong: markdown regex, or alt with the extension (step 5) |
+| A batch that worked earlier in the day fills nothing for minutes | GitHub's rate limit (about 80 uploads a minute, 500 an hour). Stop; never retry sooner than 15 minutes |
 | "We don't support that file type" / "Attaching documents requires write permission" in the DOM | Pre-rendered error templates, always present. Not a real failure |
