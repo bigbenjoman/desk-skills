@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, parseLevers, repoConfigValues } from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, reasonWording } from './lever-registry.mjs';
+import { parseBaseline } from './bench-report.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -41,6 +42,7 @@ export const leversDir = (root = autopilotRoot()) => join(root, 'levers');
 // ---- the honesty rules -----------------------------------------------------------------------------
 const round = (v, dp) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 10 ** dp) / 10 ** dp);
 const smallerArm = (n) => (n && Number.isFinite(n.on) && Number.isFinite(n.off) ? Math.min(n.on, n.off) : null);
+const tooEarly = (n, minN) => (n == null ? `too early: sample not recorded, needs ${minN}` : `too early: ${n} of ${minN}`);
 
 // A mechanism effect, lower being better: its interval and n always, a verdict only at the minimum
 // sample, and its point estimate only from POINT_MIN_N per arm.
@@ -52,7 +54,7 @@ export function effectView(m, n, minN) {
     metric: m.metric ?? null, unit: m.unit ?? null, scope: m.scope ?? null, n, min_n: minN,
     est: n != null && n >= POINT_MIN_N ? m.est ?? null : null, lo90: lo, hi90: hi, min_benefit: m.min_benefit ?? null,
   };
-  if (n == null || n < minN) return { ...out, verdict: null, label: `too early: ${n ?? 0} of ${minN}` };
+  if (n == null || n < minN) return { ...out, verdict: null, label: tooEarly(n, minN) };
   if (lo == null || hi == null) return { ...out, verdict: null, label: 'no interval recorded' };
   if (lo <= 0 && hi >= 0) return { ...out, verdict: 'no_clear_effect', label: 'no clear effect yet' };
   if (lo > 0) return { ...out, verdict: 'worse', label: "can't rule out worse" };
@@ -69,7 +71,7 @@ export function costView(c, n, minN, adopted = false) {
   const margin = c.margin ?? DECISION_RULE.cost_ratio_max;
   const out = { ratio: n != null && n >= POINT_MIN_N ? c.ratio ?? null : null, lo90: lo, hi90: hi, margin, scope: c.scope ?? null, n, min_n: minN,
     usd_per_admitted: c.usd_per_admitted ?? null, saving_usd: null };
-  if (n == null || n < minN) return { ...out, verdict: null, label: `too early: ${n ?? 0} of ${minN}` };
+  if (n == null || n < minN) return { ...out, verdict: null, label: tooEarly(n, minN) };
   if (lo == null || hi == null) return { ...out, verdict: null, label: 'no interval recorded' };
   const off = c.usd_per_admitted?.off;
   const saving = adopted && hi < 1 && Number.isFinite(off) ? { lo: round((1 - hi) * off, 2), hi: round((1 - lo) * off, 2) } : null;
@@ -125,12 +127,13 @@ export function readJsonl(file) {
 const stateDirs = (state) => [state, ...listDir(join(state, BATCHES_DIR)).filter((n) => !n.startsWith('.')).map((n) => join(state, BATCHES_DIR, n))];
 
 // The config line holding a repo's levers row, for the waiting-on-you item to point at.
-function rowLine(config) {
+function rowNumber(config) {
   try {
     const i = readFileSync(config, 'utf8').split('\n').findIndex((l) => /^\|\s*Phase 0 levers\s*\|/.test(l));
-    return i >= 0 ? `${config}:${i + 1}` : config;
-  } catch { return config; }
+    return i >= 0 ? i + 1 : null;
+  } catch { return null; }
 }
+const rowLine = (config) => { const n = rowNumber(config); return n ? `${config}:${n}` : config; };
 
 // How a repo's levers row reads: no row (not enrolled), `none` (off), `auto`, or levers pinned by hand.
 export function enrolment(items) {
@@ -141,27 +144,21 @@ export function enrolment(items) {
   return { row: auto ? 'auto' : pinned.length ? 'pinned' : 'none', auto, pinned };
 }
 
-// The Phase 0 baseline's `total` block: its per accepted ticket figures, its window and starts.
-export function parseBaseline(text) {
-  const lines = text.split('\n');
-  const head = /from (\S+) to (\S+?)\.? /.exec(lines[0] ?? '');
-  const i = lines.findIndex((l) => /^total\b/.test(l));
-  if (i < 0) return null;
-  const block = [];
-  for (const l of lines.slice(i + 1)) { if (!/^\s/.test(l)) break; block.push(l); }
-  const find = (re) => block.map((l) => re.exec(l)).find(Boolean);
-  const int = (s) => Number(String(s).replace(/,/g, ''));
-  const acc = find(/accepted \(PR merged\): (\d+)/);
-  const per = find(/^\s*per accepted ticket: ([\d,]+) input tokens · ([\d,]+) output tokens · \$([\d.]+) API-equivalent, over (\d+) of (\d+)/);
-  const fix = find(/fix tries per accepted ticket: ([\d.]+)/);
-  const den = find(/permission denials by command: (\d+) in all/);
-  const lev = find(/^\s*levers on: (.*)$/);
-  const starts = lev ? [...lev[1].matchAll(/\((\d+) start\(s\)\)/g)].reduce((n, m) => n + int(m[1]), 0) : null;
+// The Phase 0 baseline's per accepted ticket figures, its window and starts, from bench-report's
+// parser of that report. -> { base, error }: a file that cannot be read or is not that report is an
+// error naming it, never a missing baseline.
+export function readBaseline(file) {
+  let text;
+  try { text = readFileSync(file, 'utf8'); } catch (e) { return { base: null, error: { file, line: null, message: e.message } }; }
+  const b = parseBaseline(text);
+  if (b.why) return { base: null, error: { file, line: null, message: `not a Phase 0 baseline report: ${b.why}` } };
   return {
-    window: head ? { from: head[1], to: head[2] } : null,
-    accepted: acc ? int(acc[1]) : null, tickets_costed: per ? int(per[4]) : null, starts: starts || null,
-    cost: per ? Number(per[3]) : null, input_tokens: per ? int(per[1]) : null, output_tokens: per ? int(per[2]) : null,
-    fix_tries: fix ? Number(fix[1]) : null, denials: den ? int(den[1]) : null,
+    base: {
+      window: b.window, accepted: b.accepted, tickets_costed: b.perTicket?.over ?? null, starts: b.starts,
+      cost: b.usdPerTicket, input_tokens: b.perTicket?.input ?? null, output_tokens: b.perTicket?.output ?? null,
+      fix_tries: b.fixTries, denials: b.denials,
+    },
+    error: null,
   };
 }
 
@@ -169,8 +166,10 @@ export function parseBaseline(text) {
 function readRepo(r, root) {
   const state = join(root, r.slug);
   const name = (r.ghRepo ?? r.slug).split('/').pop();
+  // A malformed levers row is an error naming the config, never a missing row.
   let items = null;
-  try { items = repoConfigValues(r.slug, 'levers', r.root); } catch { items = null; }
+  let configError = null;
+  try { items = repoConfigValues(r.slug, 'levers', r.root); } catch (e) { configError = { file: r.config, line: rowNumber(r.config), message: e.message }; }
   const dirs = stateDirs(state);
   const newest = (file) => dirs.map((d) => mtimeIso(join(d, file))).filter(Boolean).sort().pop() ?? null;
   const healths = dirs.map((d) => join(d, 'health.json')).filter(existsSync).map((file) => {
@@ -180,7 +179,8 @@ function readRepo(r, root) {
   const evidence = listDir(join(state, 'levers-evidence')).filter((f) => f.endsWith('.jsonl')).map((f) => readJsonl(join(state, 'levers-evidence', f)));
   const baselines = listDir(state).filter((f) => /^phase0-baseline-.*\.txt$/.test(f));
   return {
-    slug: r.slug, name, config: r.config, items, enrol: enrolment(items),
+    slug: r.slug, name, config: r.config, items, configRead: { error: configError },
+    enrol: configError ? { row: 'error', auto: false, pinned: [] } : enrolment(items),
     supervisor_at: newest('supervisor.json'), healths,
     log: readJsonl(join(state, 'levers.jsonl')), evals: readJsonl(join(state, 'lever-evals.jsonl')), audit: readJsonl(join(state, 'audit.jsonl')),
     postMerge, evidence, baseline: baselines.length ? join(state, baselines.at(-1)) : null,
@@ -198,16 +198,20 @@ const addMonths = (m, n) => { const d = new Date(Date.UTC(Number(m.slice(0, 4)),
 // ---- the four trend metrics -------------------------------------------------------------------------------
 const costed = (r) => r.cost_complete === true && !r.excluded && Number.isFinite(r.cost);
 const counted = (r) => !r.excluded;
+// The per accepted ticket metrics read merged tickets only, the population their baseline counts;
+// an admitted ticket still in flight or never run would pull the mean down and read as a saving.
+const accepted = (r) => !!r.merged_at;
 const mean = (xs) => (xs.length ? xs.reduce((n, v) => n + v, 0) / xs.length : null);
+const usdMean = (rows) => mean(rows.filter(costed).map((r) => r.cost));
 export const METRICS = Object.freeze({
-  cost: { title: 'Cost per ticket', unit: 'usd', of: (rows) => mean(rows.filter(costed).map((r) => r.cost)), base: (b) => b?.cost ?? null, basis: 'per accepted ticket' },
-  tokens: { title: 'Tokens per ticket', unit: 'input tokens', of: (rows) => mean(rows.filter(costed).filter((r) => Number.isFinite(r.input)).map((r) => r.input)), base: (b) => b?.input_tokens ?? null, basis: 'per accepted ticket' },
+  cost: { title: 'Cost per ticket', unit: 'usd', of: (rows) => usdMean(rows.filter(accepted)), base: (b) => b?.cost ?? null, basis: 'per accepted ticket' },
+  tokens: { title: 'Tokens per ticket', unit: 'input tokens', of: (rows) => mean(rows.filter(accepted).filter(costed).filter((r) => Number.isFinite(r.input)).map((r) => r.input)), base: (b) => b?.input_tokens ?? null, basis: 'per accepted ticket' },
   prompts: {
     title: 'Permission prompts per start', unit: 'denials per start',
     of: (rows) => { const s = rows.filter(counted).filter((r) => r.starts > 0 && Number.isFinite(r.denials)); const n = s.reduce((a, r) => a + r.starts, 0); return n ? s.reduce((a, r) => a + r.denials, 0) / n : null; },
     base: (b) => (b?.denials != null && b?.starts ? b.denials / b.starts : null), basis: 'per start',
   },
-  fixes: { title: 'Fix tries per ticket', unit: 'fix tries', of: (rows) => mean(rows.filter(counted).filter((r) => Number.isFinite(r.fix_tries)).map((r) => r.fix_tries)), base: (b) => b?.fix_tries ?? null, basis: 'per accepted ticket' },
+  fixes: { title: 'Fix tries per ticket', unit: 'fix tries', of: (rows) => mean(rows.filter(accepted).filter(counted).filter((r) => Number.isFinite(r.fix_tries)).map((r) => r.fix_tries)), base: (b) => b?.fix_tries ?? null, basis: 'per accepted ticket' },
 });
 const pct = (a, b) => (a == null || b == null || b === 0 ? null : round(((a - b) / b) * 100, 1));
 const val = (v) => round(v, 4);
@@ -265,9 +269,9 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
 
   // Baseline: the newest Phase 0 baseline file of any repo.
   const bfile = repos.map((r) => r.baseline && { file: r.baseline, repo: r.name }).filter(Boolean).sort((a, b) => (a.file.split('/').pop() < b.file.split('/').pop() ? 1 : -1))[0] ?? null;
-  let base = null;
-  if (bfile) { try { base = parseBaseline(readFileSync(bfile.file, 'utf8')); } catch { base = null; } }
-  const baseline = bfile && base ? { ...base, file: bfile.file, repo: bfile.repo, label: 'per accepted ticket' } : null;
+  const baseRead = bfile ? readBaseline(bfile.file) : { base: null, error: null };
+  const baseline = baseRead.base ? { ...baseRead.base, file: bfile.file, repo: bfile.repo, label: 'per accepted ticket' } : null;
+  const configErrors = errs(repos.map((r) => r.configRead));
 
   // Each repo's latest evaluation row per lever.
   const latest = new Map();
@@ -282,8 +286,8 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   // The repos, each with its column's state.
   const repoView = repos.map((r) => {
     const sup = age(r.supervisor_at, now, MAX_AGE_S.supervisor);
-    const reads = { missing: 'not enrolled', none: 'off', auto: 'auto', pinned: `pinned: ${r.enrol.pinned.join(', ')}` }[r.enrol.row];
-    const bad = errs(r.evals, r.log);
+    const reads = { missing: 'not enrolled', none: 'off', auto: 'auto', pinned: `pinned: ${r.enrol.pinned.join(', ')}`, error: 'levers row unreadable' }[r.enrol.row];
+    const bad = errs(r.configRead, r.evals, r.log);
     return { slug: r.slug, name: r.name, config: r.config, row: r.enrol.row, reads, pinned: r.enrol.pinned, column: bad.length ? 'error' : sup.stale ? 'stale' : 'ok', supervisor: sup, ...(bad.length ? { errors: bad } : {}) };
   });
 
@@ -297,7 +301,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
     controller, repos: repos.length, on_auto: repos.filter((r) => r.enrol.auto).length, pinned: pinnedList,
     last_evaluation: evalAt, evaluation: evalAt ? evalAge : null, stale_repos: repoView.filter((c) => c.column === 'stale').map((c) => c.name), health,
     baseline: baseline ? { file: baseline.file, window: baseline.window, label: baseline.label } : null,
-  }, healthErrors);
+  }, [...healthErrors, ...configErrors, ...errs(baseRead)]);
 
   // P2 waiting on you: enrolment gaps, then the lever items raised since the lever last changed.
   const waitingItems = [];
@@ -324,7 +328,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
       lever, layer: reg.layer,
       cells: repos.map((r) => {
         const col = repoView.find((c) => c.slug === r.slug);
-        if (r.evals.error) return { repo: r.name, state: 'error', error: r.evals.error };
+        if (r.evals.error || r.configRead.error) return { repo: r.name, state: 'error', error: r.evals.error ?? r.configRead.error };
         const e = latest.get(`${r.slug}|${lever}`);
         if (!e) {
           if (r.enrol.pinned.includes(lever)) return { repo: r.name, state: 'pinned', note: 'pinned by hand: before/after only, not a trial', stale: col.column === 'stale' };
@@ -346,7 +350,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
       }),
     };
   });
-  const boardErrors = errs(repos.map((r) => r.evals), pooled);
+  const boardErrors = errs(repos.map((r) => r.evals), pooled, repos.map((r) => r.configRead));
   const boardAge = evalAt ? evalAge : null;
   const pooledAge = pooledAt ? age(pooledAt, now, MAX_AGE_S.pooled) : null;
   const board = panel(!evalAt ? 'empty' : evalAge.stale || pooledAge?.stale ? 'stale' : 'ok', { age: boardAge, pooled_age: pooledAge, levers: cells }, boardErrors);
@@ -376,7 +380,8 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const overhead = panel(audits.length || deferred.length || quality.length ? 'ok' : 'empty', {
     audits: audits.length, audit_usd: audits.length && audits.every((a) => Number.isFinite(a.usd)) ? round(audits.reduce((n, a) => n + a.usd, 0), 2) : null,
     deferred: deferred.length, deferred_by_reason: byReason,
-    quality_risk_share: quality.length ? Math.max(...quality.map((e) => e.arm_share_7d)) : null, quality_risk_cap: 0.3,
+    quality_risk_share: quality.length ? Math.max(...quality.map((e) => e.arm_share_7d)) : null,
+    quality_risk_cap: Object.values(REGISTRY).find((reg) => reg.layer === 'quality-risk')?.ramp?.cap ?? null,
   }, errs(repos.map((r) => r.audit), repos.map((r) => r.log), repos.map((r) => r.evals)));
 
   // P8 data quality.
@@ -394,7 +399,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
 
   // P3 cost per admitted ticket.
   const window = (from, to) => rows.filter((r) => Date.parse(r.admitted_at) >= from && Date.parse(r.admitted_at) < to);
-  const usdPer = (rs) => round(METRICS.cost.of(rs), 2);
+  const usdPer = (rs) => round(usdMean(rs), 2);
   const thisWeek = window(weekAgo, now);
   const perRepo = repos.map((r) => {
     const mine = thisWeek.filter((x) => x.slug === r.slug);
@@ -406,18 +411,18 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
     weeks_before: [1, 2, 3, 4].map((k) => { const rs = window(weekAgo - k * WEEK_DAYS * DAY_MS, weekAgo - (k - 1) * WEEK_DAYS * DAY_MS); return { admitted: rs.length, usd_per_admitted: usdPer(rs) }; }),
     baseline: baseline ? { usd: baseline.cost, input_tokens: baseline.input_tokens, output_tokens: baseline.output_tokens, tickets: baseline.tickets_costed, window: baseline.window, label: baseline.label, file: baseline.file } : null,
     per_repo: perRepo, savings,
-  }, rowErrors);
+  }, [...rowErrors, ...errs(repos.map((r) => r.evals), baseRead)]);
 
   // Trends.
   const metrics = Object.fromEntries(Object.entries(METRICS).map(([k, m]) => [k, trend(m, rows, m.base(baseline), today, first)]));
-  const trends = panel(rows.length ? 'ok' : 'empty', { first_recorded: first, metrics }, rowErrors);
+  const trends = panel(rows.length ? 'ok' : 'empty', { first_recorded: first, metrics }, [...rowErrors, ...errs(baseRead)]);
 
   // The desk-q line.
   const evalCells = cells.flatMap((l) => l.cells.filter((c) => c.sample).map((c) => ({ lever: l.lever, ...c })));
   const testing = new Set(evalCells.filter((c) => TESTING.includes(c.state)).map((c) => c.lever));
   const kept = new Set(evalCells.filter((c) => KEPT.includes(c.state)).map((c) => c.lever));
   const early = evalCells.filter((c) => TESTING.includes(c.state) && c.sample.n != null).sort((a, b) => a.sample.n / a.sample.min - b.sample.n / b.sample.min)[0] ?? null;
-  const lineErrors = errs(repos.map((r) => r.evals), repos.map((r) => r.log), rowErrors.map((error) => ({ error })));
+  const lineErrors = errs(repos.map((r) => r.evals), repos.map((r) => r.log), repos.map((r) => r.configRead), baseRead, rowErrors.map((error) => ({ error })));
   const common = { on_auto: status.on_auto, repos: repos.length, pinned: pinnedList };
   const vsBefore = metrics.cost.callouts.last_week_vs_before_pct;
   const figures = { cheaper_pct: vsBefore == null ? null : round(-vsBefore, 1), kept: kept.size, testing: testing.size, needs_you: leverItems.length };

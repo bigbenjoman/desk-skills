@@ -160,7 +160,8 @@ const autoRepos = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto`' } :
   t('AC8 the board is error', v.panels.board.state, 'error');
   t('AC8 naming the file and line', `${v.panels.board.errors[0].file}:${v.panels.board.errors[0].line}`, `${file}:2`);
   t('AC8 the guardrails panel, which reads it, is error', v.panels.guardrails.state, 'error');
-  t('AC8 panels that do not read it build', j([v.panels.cost.state, v.panels.trends.state, v.panels.data_quality.state, v.panels.status.state]), '["empty","empty","empty","ok"]');
+  t('AC8 the cost panel, whose savings come from it, is error', v.panels.cost.state, 'error');
+  t('AC8 panels that do not read it build', j([v.panels.trends.state, v.panels.data_quality.state, v.panels.status.state]), '["empty","empty","ok"]');
   const rec = JSON.parse(readFileSync(m.out + '/build.json', 'utf8'));
   t('AC8 build.json records the same file and line', `${rec.errors[0].file}:${rec.errors[0].line}`, `${file}:2`);
   t('AC8 build.json names the panels', rec.errors[0].panels.includes('board'), true);
@@ -169,7 +170,7 @@ const autoRepos = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto`' } :
 
 // Per-ticket outcome rows, as phase0-report's ticketRows writes them, in an evaluation's evidence file.
 const row = (key, daysAgo, o = {}) => ({
-  slug: o.slug ?? DS, batch: null, key, admitted_at: iso(daysAgo * DAY), merged_at: o.merged ?? iso(daysAgo * DAY - HOUR),
+  slug: o.slug ?? DS, batch: null, key, admitted_at: iso(daysAgo * DAY), merged_at: 'merged' in o ? o.merged : iso(daysAgo * DAY - HOUR),
   cost: o.cost ?? 16.8, cost_complete: o.complete ?? true, input: o.input ?? 34_000_000, output: 150_000,
   starts: o.starts ?? 4, denials: o.denials ?? 8, fix_tries: o.fix ?? 0, start_records: [{ claude_version: '2.4.1', desk_commit: 'abc123' }],
   ...(o.excluded ? { excluded: o.excluded } : {}),
@@ -268,11 +269,54 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
 
 // The baseline file's total block, as phase0-report prints it.
 {
-  const b = V.parseBaseline(BASELINE);
+  const { base: b, error } = V.readBaseline(join(machine().root, DS, 'phase0-baseline-2026-11-13.txt'));
+  t('baseline: reads without error', error, null);
   t('baseline: window', `${b.window.from} ${b.window.to}`, '2026-11-06T15:23:07.463Z 2026-11-13T15:23:07.463Z');
   t('baseline: per accepted ticket', `${b.cost} ${b.input_tokens} ${b.output_tokens} over ${b.tickets_costed} of ${b.accepted}`, '17.52 38881286 174824 over 24 of 24');
   t('baseline: fix tries, denials and starts', `${b.fix_tries} ${b.denials} ${b.starts}`, '0.13 374 138');
 }
+
+// A baseline file that is not the report errors the panels reading it, never reads as no baseline.
+{
+  const m = machine({ files: { [`${DS}/phase0-baseline-2026-11-13.txt`]: 'not a report\n', ...evidence(DS, [row('DS-1', 2)]) } });
+  const v = view(m);
+  const file = join(m.root, DS, 'phase0-baseline-2026-11-13.txt');
+  t('baseline error: trends, cost and status are error', j([v.panels.trends.state, v.panels.cost.state, v.panels.status.state]), '["error","error","error"]');
+  t('baseline error: naming the file', v.panels.trends.errors[0].file, file);
+  t('baseline error: the line is broken', v.line.state, 'broken');
+  t('baseline error: the data-quality panel, which does not read it, builds', v.panels.data_quality.state, 'ok');
+}
+
+// A malformed levers row errors its repo's column, and is not offered as an enrolment to make.
+{
+  const bad = REPOS.map((r) => (r.slug === 'acme__ai-agents' ? { ...r, levers: '`none` `preflight`' } : r));
+  const m = machine({ repos: bad });
+  const v = view(m);
+  const col = v.repos.find((r) => r.name === 'ai-agents');
+  t('config error: its column is error', `${col.column} ${col.reads}`, 'error levers row unreadable');
+  t('config error: naming the config and its row', `${col.errors[0].file}:${col.errors[0].line}`, `${join(m.configRoot, 'repos', 'acme__ai-agents', 'config.md')}:12`);
+  t('config error: not listed as waiting to enrol', v.panels.waiting.items.some((i) => i.repo === 'ai-agents'), false);
+  t('config error: the other columns build', v.repos.find((r) => r.name === 'desk-skills').column, 'ok');
+}
+
+// The per accepted ticket trends read merged tickets only; the cost panel stays per admitted.
+{
+  const rows = [row('DS-1', 10), row('DS-2', 11), row('DS-3', 12, { cost: 0, merged: null }), row('DS-4', 12, { cost: 2, merged: null, fix: 4 })];
+  const v = view(machine({ files: evidence(DS, rows) }));
+  const m = v.panels.trends.metrics;
+  t('merged only: last week\'s cost leaves out tickets not merged', m.cost.callouts.last_week, 16.8);
+  t('merged only: and its fix tries', m.fixes.callouts.last_week, 0);
+  t('merged only: the cost panel counts every admitted ticket', v.panels.cost.weeks_before[0].admitted + v.panels.cost.weeks_before[1].admitted, 4);
+}
+
+// An unrecorded sample size is never worded as 0.
+{
+  t('no n: the effect label', V.effectView({ lo90: -0.7, hi90: -0.4 }, null, 30).label, 'too early: sample not recorded, needs 30');
+  t('no n: the cost label', V.costView({ lo90: 0.9, hi90: 1.0 }, null, 30).label, 'too early: sample not recorded, needs 30');
+}
+
+// The quality-risk cap is the registry's.
+t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk_cap, 0.3);
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);
