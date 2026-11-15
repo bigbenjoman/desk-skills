@@ -890,7 +890,10 @@ export function parseLevers(items) {
   const names = [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter((x) => x && !isNone(x)))];
   return { on: names.filter((n) => LEVERS.includes(n)), unknown: names.filter((n) => !LEVERS.includes(n)) };
 }
-export function levers() {
+// A worker reads its ticket's pin (lever-pin.mjs), which spawn-worker.sh exports as DESK_LEVERS
+// (`none` for an empty set), not the row; with DESK_LEVERS unset the row stands.
+export function levers(env = process.env) {
+  if (env.DESK_LEVERS != null) return parseLevers([env.DESK_LEVERS]);
   try { return parseLevers(configValues('levers')); } catch (e) { if (e instanceof NoRepoConfigError) return parseLevers(null); throw e; }
 }
 export const leverOn = (name, l = levers()) => l.on.includes(name);

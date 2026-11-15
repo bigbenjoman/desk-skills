@@ -60,6 +60,17 @@ PREFLIGHT_RECORD="$STATE/workers/$TICKET.preflight.json"
 [ -f "$CONTRACT" ] || { echo "FAIL: worker contract missing at $CONTRACT" >&2; exit 1; }
 mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images" "$STATE/handoffs" "$STATE/resume"
 
+# The ticket's levers pin (lever-pin.mjs) is every lever read from here on: this script's, the spawn
+# line's and the worker's own, its subagents and hooks included. A ticket with no pin reads the row.
+if PIN="$(node "$BIN/lever-pin.mjs" env "$TICKET" </dev/null)"; then
+  export DESK_LEVERS="$PIN"
+elif [ $? -eq 3 ]; then
+  unset DESK_LEVERS
+else
+  echo "FAIL: $TICKET's levers pin could not be read — refusing to spawn" >&2
+  exit 1
+fi
+
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns
 # the port, because scanning races: two workers spawned in the same pass both find the same port free
