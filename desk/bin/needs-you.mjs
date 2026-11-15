@@ -60,7 +60,8 @@
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
 // `templates`, the repo's committed copies of desk's templates the supervisor found behind (done
-// checks them again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
+// checks them again). `reviewer` is the repo's too: its failing reviewer health check, naming every PR
+// the pass holds on it (done records nothing; the next pass checks again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then any put off with three or more held tickets behind it, then the longest waiting, less any
@@ -80,7 +81,8 @@ import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
-import { loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
+import { reviewerRecord } from './health.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
@@ -648,6 +650,31 @@ function followItem(r, t) {
     since: timeOf(t.merged_at) };
 }
 
+// ---- the repo's reviewer check (health.mjs): one item, naming every PR it holds ------------------
+// While a batch's last health run told its reviewer check failing (the account desk posts verdicts
+// from is not one §4 Gate reviewers counts, or cannot be read), the PRs the pass holds for it
+// (gate_hold) are named in this one item's note rather than listed one by one. It is shown and put off
+// in the standing batch, else the first by name; done records nothing: the next pass's health check
+// reads the account again and lifts every hold once it passes.
+const REVIEWER = 'reviewer';
+function reviewerItems(batches) {
+  // The newest run across the repo's batches decides: a stopped batch's older failure is not shown.
+  const h = batches.map((b) => reviewerRecord(b.stateDir, b.slug)).filter(Boolean)
+    .sort((a, c) => String(c.at).localeCompare(String(a.at)))[0]?.item;
+  if (!h) return [];
+  const held = batches.flatMap((b) => Object.values(b.q?.tickets ?? {}).filter(gateHeldAt));
+  const r = batches.find((b) => b.batch == null) ?? [...batches].sort((a, c) => String(a.batch).localeCompare(String(c.batch)))[0];
+  const prs = held.map((t) => `PR #${t.result?.pr ?? prStatusOf(t)?.pr ?? '?'} (${t.key})`);
+  const need = h.signin
+    ? `the account desk posts ${r.repo}'s review verdicts from cannot be read (${one(h.why)}). Fix: ${h.fix}`
+    : `${r.repo}'s review gate does not count desk's verdicts: ${one(h.why)}. Fix: ${h.fix}`;
+  return [{ r, dir: standingDir(r), t: { key: REVIEWER }, item: { kind: REVIEWER, repoLevel: true, held: held.map((t) => t.key),
+    need: `${need}. Until it passes, no PR red only on that gate gets a review or fix try; build workers still start`,
+    note: prs.length ? `Held on it: ${andList(prs)}.` : 'No PR is held on it yet.',
+    actions: [['done', 'once it is fixed, the next pass checks the account again and lifts the hold on every PR it names'], ['not-now']],
+    since: finite(Math.min(...held.map((t) => timeOf(t.gate_hold.at) ?? Infinity))) } }];
+}
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 // `reads` (READS) lets a draft's need quote the gaps its review lists; without it none is read.
 function itemOf(r, x, reads = null) {
@@ -860,6 +887,9 @@ export function needsCount(r) {
   for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap(followItems)) {
     if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
   }
+  for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+  }
   return { shown: rows.length + steps, putOff, rows };
 }
 
@@ -912,6 +942,9 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
     }
   }
   for (const f of inScope.flatMap(followItems)) repoItem(f.r, f.t, f.item, f.item.since);
+  for (const slug of new Set(inScope.map((x) => x.slug))) {
+    for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  }
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -994,7 +1027,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES || ticket === REVIEWER) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -1283,6 +1316,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     const m = queueCmd(i.r, ['set', i.ticket, `follow_on_done=${new Date(now).toISOString()}`]);
     return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
+  if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
   if (i.kind === TEMPLATES) {
     let rec;

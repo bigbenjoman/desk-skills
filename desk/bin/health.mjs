@@ -19,6 +19,11 @@
 //   database `docker exec <container> pg_isready`  where §4 Local database is `postgres container <name>`
 //                                                 and setup-worktree.sh makes a per-ticket database in it
 //                                                 (§3 db-per-ticket yes, §4 Database URL variable names one)
+//   reviewer `gh api user` as the account desk    where §4 Gate reviewers names logins: the login read
+//            posts verdicts from (§4 Review       must be one of them. It never holds a spawn: failing,
+//            account's gh config directory, else  it holds review and fix tries on PRs red only on a
+//            the default gh login)                §4 State check of kind verdict (pass.mjs), told as one
+//                                                 item for the repo, a mismatch or a sign-in
 //
 // A check that does not answer within 20 seconds has failed, "timed out". A remote check that times
 // out or cannot reach its host is a network failure: it is run once more, 5 seconds later, before it
@@ -46,6 +51,7 @@ import { loginState } from './find-playwright.mjs';
 import { parseDfAvailableGB } from './machine.mjs';
 import { isDir, loginEnv, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { inUse, loginKey, workLoginDirs } from './claude-logins.mjs';
+import { accountEnv } from './review-post.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
@@ -141,8 +147,9 @@ export function diskFloor(raw = E.configValue('disk-floor')) {
   return { bad: `config §3b "${FLOOR_ROW}" is "${raw}" — want a whole number of GB` };
 }
 
-// One command, failed on a non-zero exit, a missing binary or no answer within the timeout.
-function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined) {
+// One command, failed on a non-zero exit, a missing binary or no answer within the timeout. `keepOut`
+// returns a passing command's output; otherwise none is kept, as health.json holds what is returned.
+function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined, keepOut = false) {
   return new Promise((resolve) => {
     let out = '';
     let done = false;
@@ -160,7 +167,7 @@ function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined) {
     child.stderr.on('data', (d) => { out += d; });
     child.on('error', (e) => finish({ ok: false, why: e.code === 'ENOENT' ? `${cmd} not found` : e.message, kind: e.code === 'ENOENT' ? 'auth' : failureKind(e.message) }));
     child.on('close', (code, signal) => {
-      if (code === 0) finish({ ok: true });
+      if (code === 0) finish(keepOut ? { ok: true, out: out.trim() } : { ok: true });
       const last = out.trim().split('\n').map((l) => l.trim()).filter(Boolean).at(-1);
       finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}`, kind: failureKind(out) });
     });
@@ -206,6 +213,32 @@ async function runCheck(id, env, timeoutMs, retryMs) {
   if (r.ok || r.kind !== 'network') return r;
   await new Promise((res) => setTimeout(res, retryMs));
   return { ...(await runCommand(byId[id].cmd, timeoutMs)), retried: true };
+}
+
+// The reviewer check: null where §4 Gate reviewers names no logins. Otherwise { ok, kind, why, login,
+// gate, who, fix }: `kind` is `mismatch` (the login read is not on the row), `config` (a row that does
+// not read), or the sign-in's `auth` or `network` failure of `gh api user` as that account.
+const REVIEWER_CMD =['gh', 'api', 'user', '--jq', '.login'];
+async function reviewerCheck(env, timeoutMs, retryMs) {
+  let gate, acct;
+  try { gate = E.gateReviewers(); } catch (e) { return { ok: false, kind: 'config', why: e.message, fix: 'correct §4 Gate reviewers with /desk-update' }; }
+  if (!gate) return null;
+  try { acct = E.reviewAccount(); } catch (e) { return { ok: false, kind: 'config', gate, why: e.message, fix: 'correct §4 Review account with /desk-update' }; }
+  const who = acct ? `${acct.login} (GH_CONFIG_DIR=${acct.dir})` : 'your default gh login';
+  // As review-post.mjs posts: the account's config directory with no token, else gh as it stands.
+  const run = () => runCommand(REVIEWER_CMD, timeoutMs, acct ? accountEnv(acct, env) : undefined, true);
+  let r = await run();
+  if (!r.ok && r.kind === 'network') { await new Promise((res) => setTimeout(res, retryMs)); r = { ...(await run()), retried: true }; }
+  if (!r.ok) {
+    const fix = r.kind === 'network' ? "check this machine's connection to GitHub; it is not reaching it, which is not a sign-in"
+      : acct ? `sign it in, in another terminal: GH_CONFIG_DIR=${acct.dir} gh auth login` : 'gh auth login';
+    return { ok: false, kind: r.kind ?? 'auth', gate, who, why: `gh api user as ${who} failed: ${r.why}`, fix };
+  }
+  const login = String(r.out ?? '').split('\n')[0].trim();
+  if (gate.some((g) => g.toLowerCase() === login.toLowerCase())) return { ok: true, gate, login, who };
+  return { ok: false, kind: 'mismatch', gate, login, who,
+    why: `the review gate counts ${gate.join(', ')}; desk posts verdicts as ${login || '(no login read)'}`,
+    fix: `set §4 Review account to ${gate.length === 1 ? gate[0] : `one of ${gate.join(', ')}`} with its gh config directory, or add ${login || 'that login'} to the gate's reviewer list and to §4 Gate reviewers` };
 }
 
 function readRecord(state) {
@@ -257,8 +290,9 @@ function nextStreak(prev, units) {
 // and `unconfirmed` the remote failures rechecked before they are told.
 export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = Date.now(), env = process.env } = {}) {
   if (/^off$/i.test(env.AUTOPILOT_HEALTH_CHECKS ?? '')) {
-    return { off: true, failing: [], recovered: [], unconfirmed: [], stalls: [], push: [], line: 'health: checks off (AUTOPILOT_HEALTH_CHECKS=off)' };
+    return { off: true, failing: [], recovered: [], unconfirmed: [], stalls: [], push: [], reviewer: null, line: 'health: checks off (AUTOPILOT_HEALTH_CHECKS=off)' };
   }
+  const reviewerWanted = (() => { try { return E.gateReviewers() != null; } catch { return true; } })();
   const skip = Object.fromEntries(CHECKS.map((c) => [c.id, notRequired(c.id)]).filter(([, why]) => why));
   const wanted = CHECKS.map((c) => c.id).filter((id) => !skip[id]);
   const prev = readRecord(state);
@@ -272,22 +306,34 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const pinned = (() => { try { return workLoginDirs((subs) => [E.thisRepoSubscription({ repoSubscription }, subs, env)]); } catch { return new Set(); } })();
   const others = listed.filter((l) => isDir(l.dir) && pinned.has(l.dir));
   const reusedLogins = others.every((l) => prev?.logins?.[loginKey(l)]?.ok);
-  const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins;
+  const reused = age >= 0 && age < HEALTH_TTL_MS && wanted.every((id) => prev.results?.[id]?.ok) && reusedLogins
+    && (reviewerWanted ? prev.reviewer?.ok === true : !prev.reviewer);
   let results;
   let loginResults;
+  let reviewer = null;
   let at;
-  if (reused) ({ results, at, logins: loginResults = {} } = prev);
-  else {
+  if (reused) {
+    ({ results, at, logins: loginResults = {} } = prev);
+    reviewer = reviewerWanted ? prev.reviewer : null;
+  } else {
     const timeoutMs = Number(env.DESK_HEALTH_TIMEOUT_MS) > 0 ? Number(env.DESK_HEALTH_TIMEOUT_MS) : CHECK_TIMEOUT_MS;
     const retryMs = env.DESK_HEALTH_RETRY_MS != null && Number(env.DESK_HEALTH_RETRY_MS) >= 0 ? Number(env.DESK_HEALTH_RETRY_MS) : RETRY_DELAY_MS;
-    const [ran, ranLogins] = await Promise.all([
+    const [ran, ranLogins, ranReviewer] = await Promise.all([
       Promise.all(wanted.map((id) => runCheck(id, env, timeoutMs, retryMs))),
       Promise.all(others.map((l) => runCommand(byId.claude.cmd, timeoutMs, loginEnv(l, env)))),
+      reviewerWanted ? reviewerCheck(env, timeoutMs, retryMs) : null,
     ]);
     results = Object.fromEntries(wanted.map((id, i) => [id, ran[i]]));
     loginResults = Object.fromEntries(others.map((l, i) => [loginKey(l), ranLogins[i]]));
+    reviewer = ranReviewer;
     at = new Date(now).toISOString();
   }
+  // The reviewer check holds no spawn. A connection failure is told once it has lasted two runs, as a
+  // remote check's is; a mismatch, a row that does not read or a refused sign-in at once.
+  const reviewerOut = reviewer && !reviewer.ok ? reviewer : null;
+  const reviewerStreak = reused ? prev.reviewer_streak ?? {}
+    : nextStreak({ streak: prev?.reviewer_streak ?? {} }, reviewerOut ? [{ key: 'reviewer', kind: reviewerOut.kind }] : []);
+  const reviewerTold = !!reviewerOut && (reviewerOut.kind !== 'network' || reviewerStreak.reviewer?.n >= 2);
   const failing = wanted.filter((id) => !results[id].ok);
   const remote = wanted.filter(isRemote);
   const network = remote.length > 1 && remote.every((id) => !results[id].ok) && remote.some((id) => results[id].kind === 'network');
@@ -299,7 +345,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const told = (u) => !isRemote(u.ids[0]) || (streak[u.key]?.n ?? 1) >= 2;
   const unconfirmed = units.filter((u) => !told(u)).map((u) => u.key);
   // Recovery is news only from a fresh run: a reused one is the run that reported the failure.
-  const recovered = reused ? [] : (prev?.failing ?? []).filter((id) => byId[id] && !failing.includes(id));
+  const recovered = reused ? [] : [...(prev?.failing ?? []).filter((id) => byId[id] && !failing.includes(id)),
+    ...(prev?.reviewer && !prev.reviewer.ok && !reviewerOut ? ['reviewer'] : [])];
   // Another login failing holds no spawn: a pass starts no worker on it. It is told with its
   // sign-in command once signed out, and a connection failure once it has lasted two runs.
   const loginsOut = others.filter((l) => !loginResults[loginKey(l)]?.ok);
@@ -309,13 +356,16 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   if (!reused) {
     mkdirSync(state, { recursive: true });
     const kept = others.length ? { logins: loginResults, login_streak: loginStreak } : {};
-    writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing, streak, ...kept }, null, 2)}\n`);
+    const rev = reviewer ? { reviewer: { ...reviewer, told: reviewerTold }, ...(reviewerOut ? { reviewer_streak: reviewerStreak } : {}) } : {};
+    writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing, streak, ...kept, ...rev }, null, 2)}\n`);
   }
 
   const when = reused ? `checked ${Math.round(age / 60000)} min ago, reused` : 'checked now';
   const notes = [when];
   if (recovered.length) notes.push(`recovered: ${recovered.join(', ')}`);
-  if (unconfirmed.length) notes.push(`rechecking before telling you: ${unconfirmed.join(', ')}`);
+  const rechecking = [...unconfirmed, ...(reviewerOut && !reviewerTold ? ['reviewer'] : [])];
+  if (rechecking.length) notes.push(`rechecking before telling you: ${rechecking.join(', ')}`);
+  if (reviewerTold) notes.push(`reviewer failing, holding review and fix tries on PRs red only on a verdict state check, not spawns`);
   // A repo with no Postgres container has no database to check, so it is not named as skipped.
   const skipped = Object.entries(skip).filter(([id]) => id !== 'database' || perTicketDb(env).container).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
@@ -345,5 +395,29 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   for (const l of missing.filter((m) => pushesMissing(missingDir, m, state))) {
     push.push({ key: `health:claude-missing:${loginKey(l)}`, text: `desk: Claude login ${l.name} is listed at ${l.folder}, which does not exist, so no worker uses it. Fix: ${missingFix(l)}` });
   }
-  return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push };
+  let held = null;
+  if (reviewerTold) {
+    held = reviewerItem(slug, reviewerOut);
+    stalls.push(`health: reviewer: ${reviewerOut.why} — fix: ${reviewerOut.fix}; ${HELD_WORDS}`);
+    push.push({ key: held.key, text: `desk ${slug}: ${held.signin ? `the account desk posts review verdicts from cannot be read (${reviewerOut.why})` : reviewerOut.why}, so ${HELD_WORDS}. Fix: ${reviewerOut.fix}` });
+  }
+  return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push, reviewer: held };
+}
+
+const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, and build workers still start';
+// The repo item a failing reviewer check is told as, and that holds a PR's tries: a sign-in failure is
+// a sign-in item of its own, not a mismatch. { key, signin, why, fix, ... the check's result }.
+export function reviewerItem(slug, r) {
+  const signin = r.kind === 'auth' || r.kind === 'network';
+  return { ...r, signin, key: `health:${slug}:${signin ? 'reviewer-signin' : 'reviewer'}` };
+}
+// The reviewer check as the last health run at `state` recorded it: null where it recorded none, or
+// the slug's §4 Gate reviewers no longer names logins. { at, item }: `item` is the told failure's
+// repo item, else null.
+export function reviewerRecord(state, slug) {
+  const rec = readRecord(state);
+  const r = rec?.reviewer;
+  if (!r) return null;
+  try { if (E.repoGateReviewers(slug) == null) return null; } catch { /* a row that does not read is still told */ }
+  return { at: rec.at, item: !r.ok && r.told ? reviewerItem(slug, r) : null };
 }

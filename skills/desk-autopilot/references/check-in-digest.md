@@ -36,6 +36,14 @@ out, one is named under `STALLED` with its sign-in command and pushed as
 subscription this repo's work does not run on is not checked here (a repo pinned to it checks it on its
 own pass), so an unused one signed out raises nothing.
 
+**The reviewer check.** Where §4 Gate reviewers (`desk-env list gate-reviewers`) names logins, each
+pass reads `gh api user` as the account desk posts verdicts from (§4 Review account's gh config
+directory, `desk-env get review-account`, else the default login) and compares it with that row. A
+mismatch is pushed once as `health:<slug>:reviewer`, naming both logins; a sign-in it cannot read as
+`health:<slug>:reviewer-signin`. Either holds no spawn: it holds review and fix tries on every PR red
+only on a §4 State check (`desk-env list state-checks`) of kind verdict, which the pass records as
+`gate_hold`, and needs-you lists it as one `reviewer` item naming those PRs.
+
 **Weekly usage pacing.** One weekly allowance runs every repo's workers, so each pass reads the
 newest 7-day reading from the `rate_limit_event` lines in every repo's worker logs written in the
 last 6 hours (`usage-pace.mjs`). Pace is the share of the 7-day window gone since its last reset,

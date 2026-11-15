@@ -33,6 +33,9 @@ config(){
     rows="| Local database | \`$DBROW\` |
 | Database URL variable | \`DATABASE_URL\` |"
   fi
+  # $EXTRA, when set, is more §4 rows.
+  [ -n "${EXTRA:-}" ] && rows="${rows:+$rows
+}$EXTRA"
   cat > "$T/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
@@ -407,6 +410,90 @@ check "DS-589 setup not reaching Postgres once: queued"             '[ "$(field 
 pj
 check "DS-589 again while the database check answers: parks"        '[ "$(field H-11 state)" = parked ] && grep -q "H-11: worktree setup failed, not spawned — FAIL: cannot reach Postgres in container acme-pg.*the local database check passes" <<< "$out"'
 rm -f "$T/mode.setup"
+q set H-11 state=done
+
+# ---- DS-577: the reviewer check, against §4 Gate reviewers --------------------------------------
+# gh answers `api user` with the login in $T/ghuser, or signed out per $T/mode.ghuser, logging the gh
+# config directory it ran with; and `pr view <n>` with $T/fx/<n>.json.
+mkdir -p "$T/fx"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+case "\$1 \$2" in
+  "api user") echo "\${GH_CONFIG_DIR:-default}" >> "$T/calls.ghuser"; echo "\${GH_TOKEN-unset}" >> "$T/calls.ghtoken"
+    [ "\$(cat "$T/mode.ghuser" 2>/dev/null || echo ok)" = out ] && { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }
+    cat "$T/ghuser"; exit 0 ;;
+  "pr view") [ -f "$T/fx/\$3.json" ] || exit 1; cat "$T/fx/\$3.json"; exit 0 ;;
+  "pr list") echo '[]'; exit 0 ;;
+esac
+[ "\$1" = auth ] && echo "\$@" >> "$T/calls.gh"
+exit 0
+EOF
+chmod +x "$T/stub/gh"
+echo bigbenjoman > "$T/ghuser"
+GATE_ROWS='| Gate reviewers | `agent-pullbot` |
+| State checks | `Review gate: verdict` |'
+# One fresh run of the health checks alone: $json, $out and $rv (the reviewer item's key, or null).
+hl(){ rm -f "$T/state/health.json"; hlkeep; }
+# The same, over the last run's record.
+hlkeep(){ json=$(node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push, reviewer: h.reviewer?.key ?? null }))' "$B/health.mjs"); out=$(node -e 'const v = JSON.parse(process.argv[1]); console.log([v.message, ...v.push.map((p) => p.text)].join("\n"))' "$json"); rv=$(node -e 'console.log(JSON.parse(process.argv[1]).reviewer)' "$json"); }
+lastdir(){ tail -n 1 "$T/calls.ghuser"; }
+
+config yes yes; : > "$T/calls.ghuser"
+hl
+check "DS-577 AC5 Gate reviewers unset: no reviewer check, nothing said" '[ "$(calls ghuser)" = 0 ] && [ "$rv" = null ] && ! grep -qi reviewer <<< "$out" && [ -z "$(pushes)" ]'
+EXTRA='| Gate reviewers | `any` |' config yes yes
+hl
+check "DS-577 AC5 Gate reviewers any: no reviewer check, nothing said"   '[ "$(calls ghuser)" = 0 ] && [ "$rv" = null ] && ! grep -qi reviewer <<< "$out"'
+
+EXTRA="$GATE_ROWS" config yes yes
+hl
+check "DS-577 AC1 a mismatch is one repo item, health:<slug>:reviewer"  '[[ "$(pushes)" =~ ^health:.+:reviewer$ ]] && [[ "$rv" =~ :reviewer$ ]]'
+check "DS-577 AC1 it names both logins"                                  'grep -qF "the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman" <<< "$out"'
+check "DS-577 AC1 read from the default gh login with no Review account" '[ "$(lastdir)" = default ]'
+check "DS-577 AC3 it holds no spawn"                                     'grep -q "^health: all checks pass" <<< "$out" && grep -q "reviewer failing, holding review and fix tries on PRs red only on a verdict state check, not spawns" <<< "$out"'
+
+echo agent-pullbot > "$T/ghuser"
+hl
+check "DS-577 AC4 the posting login listed: passes, nothing held or said" '[ "$rv" = null ] && [ -z "$(pushes)" ] && ! grep -qi reviewer <<< "$out"'
+
+EXTRA="$GATE_ROWS
+| Review account | \`agent-pullbot: $T/gh-pullbot\` |" config yes yes
+hl
+check "DS-577 decision: read as §4 Review account where it is set"      '[ "$(lastdir)" = "$T/gh-pullbot" ] && [ "$rv" = null ]'
+GH_TOKEN=person-token hl
+check "DS-577 read as §4 Review account with no token in the way, as review-post posts" '[ "$(tail -n 1 "$T/calls.ghtoken")" = unset ] && [ "$(lastdir)" = "$T/gh-pullbot" ] && [ "$rv" = null ]'
+
+mode ghuser out
+hl
+check "DS-577 AC6 a sign-in failure is a sign-in item, not a mismatch"   '[[ "$(pushes)" =~ ^health:.+:reviewer-signin$ ]] && ! grep -q "desk posts verdicts as" <<< "$out"'
+check "DS-577 AC6 it names the sign-in error and its sign-in command"    'grep -qF "To get started with GitHub CLI" <<< "$out" && grep -qF "GH_CONFIG_DIR=$T/gh-pullbot gh auth login" <<< "$out"'
+mode ghuser ok
+EXTRA='| Gate reviewers | `agent pullbot` |' config yes yes
+hl
+check "DS-577 a row that is not one login per span is told, not guessed" '[[ "$(pushes)" =~ :reviewer$ ]] && grep -q "Refusing to guess" <<< "$out"'
+EXTRA='| Gate reviewers | `anya-bot` |' config yes yes
+hl
+check "DS-577 a login that begins with any is a login, not any"          'grep -qF "the review gate counts anya-bot; desk posts verdicts as agent-pullbot" <<< "$out"'
+EXTRA='| Gate reviewers | `any` |' config yes yes
+hlkeep
+check "DS-577 a reviewer failure no longer configured is not kept by a reused run" '[ "$rv" = null ] && [ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).reviewer ?? null)" "$T/state/health.json")" = null ]'
+
+# AC2 / AC3 through the pass: H-20's PR is out of draft and red only on its verdict state check.
+echo bigbenjoman > "$T/ghuser"
+EXTRA="$GATE_ROWS" config yes yes
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ state: "OPEN", url: "https://github.com/acme/widgets/pull/950", isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: "a950", headRefName: "fix/H-20", baseRefName: "main", reviews: [], statusCheckRollup: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "" }, { __typename: "CheckRun", name: "Review gate", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "" }], commits: [{ oid: "a950", committedDate: "2026-11-10T09:00:00Z" }] }))' "$T/fx/950.json"
+jf(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(t?.[process.argv[3]] ?? null))' "$DESK_QUEUE" "$1" "$2"; }
+q add H-20; q set H-20 state=done lane=A branch=fix/H-20 result.pr=950
+q add H-21; q set H-21 state=triaged branch=fix/H-21
+rm -f "$T/state/health.json"; pj
+# The stub answers no review-thread read, so an unheld PR's try path says so: its absence proves the
+# hold stopped the pass before any review or fix try was weighed.
+check "DS-577 AC2 no review or fix try goes to the PR"                  '[ "$(field H-20 state)" = done ] && [ "$(jf H-20 fix)" = null ] && [ "$(jf H-20 stuck)" = null ] && ! grep -qF "PR #950 (H-20): its review threads could not be read" <<< "$out"'
+check "DS-577 AC2 it is recorded held by the repo item"                  '[[ "$(jf H-20 gate_hold)" =~ \"item\":\"health:[^\"]+:reviewer\" ]] && grep -qF "H-20: GATE — PR #950 is red only on its review gate, held by health:" <<< "$out"'
+check "DS-577 AC3 build workers still spawn"                             '[ "$(field H-21 state)" = running ]'
+echo agent-pullbot > "$T/ghuser"
+rm -f "$T/state/health.json"; pj
+check "DS-577 AC4 once the check passes the hold is lifted"               '[ "$(jf H-20 gate_hold)" = null ] && ! grep -q "H-20: GATE" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -322,6 +322,7 @@ export const CONFIG_ROWS = Object.freeze({
   'local-review': { section: '4', row: 'Local review command' },
   'clean-verdict': { section: '4', row: 'Clean review verdict' },
   'review-account': { section: '4', row: 'Review account' },
+  'gate-reviewers': { section: '4', row: 'Gate reviewers' },
   'review-bar': { section: '4', row: 'Review bar' },
   'review-experts': { section: '4', row: 'Review domain experts' },
   'agents-sync': { section: '4', row: 'Project subagents sync' },
@@ -1021,12 +1022,14 @@ export function reviewAccount() {
   }
   return acct;
 }
+// A GitHub login, a bot's included: what §4 Review account and §4 Gate reviewers both name.
+const LOGIN = '[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\[bot\\])?';
 // A §4 Review account value as { login, dir }, null where it is unset, a TODO or `none`, and
 // undefined where it is malformed.
 function reviewAccountIn(value) {
   const v = String(value ?? '').trim();
   if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
-  const m = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)\s*:\s*(\S.*)$/.exec(v);
+  const m = new RegExp(`^(${LOGIN})\\s*:\\s*(\\S.*)$`).exec(v);
   return m ? { login: m[1], dir: expandHome(m[2].trim()) } : undefined;
 }
 // The logins whose review verdicts are desk's own, comma-separated as loginIn reads them: the §1
@@ -1037,6 +1040,27 @@ export function verdictLogins() {
   try { handle = githubHandle(); } catch { return null; }
   try { acct = reviewAccount(); } catch { /* malformed: the handle alone */ }
   return loginsOf(handle, acct);
+}
+// §4 Gate reviewers, the logins whose verdicts a §4 State check of kind verdict counts, one span
+// each: null where the row is unset, a TODO, `none` or `any` (the gate counts any account). A span that
+// is not a GitHub login throws rather than comparing against a guess.
+export function gateReviewers() {
+  return gateReviewersIn(configValues('gate-reviewers'));
+}
+// The same, from the row's spans. `any` and a TODO match the whole span (a TODO may carry a note after
+// a space or colon, which no login holds), so a login that begins with either is still a login.
+export function gateReviewersIn(items) {
+  if (items == null || isNone(items) || (items.length === 1 && /^(?:any$|todo(?:[\s:]|$))/i.test(items[0].trim()))) return null;
+  const bad = items.filter((x) => !new RegExp(`^${LOGIN}$`).test(x.trim()));
+  if (bad.length) {
+    const r = CONFIG_ROWS['gate-reviewers'];
+    throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not one GitHub login per span, \`any\` or \`none\` in ${configPathHint()}. Refusing to guess.`);
+  }
+  return items.map((x) => x.trim());
+}
+// Another repo's §4 Gate reviewers, by slug, as gateReviewers reads this repo's.
+export function repoGateReviewers(slug, root = deskConfigRoot()) {
+  return gateReviewersIn(configValuesIn(parseConfigFile(join(root, 'repos', slug, 'config.md')), 'gate-reviewers'));
 }
 // Another repo's, by slug, as verdictLogins reads this repo's: $DESK_GITHUB_HANDLE, else its §1 row.
 export function repoVerdictLogins(slug, root = deskConfigRoot()) {
