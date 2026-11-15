@@ -35,8 +35,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions } from './desk-env.mjs';
-import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript } from './batch-state.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep } from './batch-state.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -126,7 +126,7 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, base: 'main', required: [], advisory: [] };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [] };
 // A park the person answered through desk-needs-you whose requeue was left to the live session running
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
@@ -161,6 +161,18 @@ const outsideText = (t) => {
 const stoppedText = (t) => `worker stopped: ${failedWhy(t)} · requeue it`;
 const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
 
+// How an open blocker `b` of ticket `key` holds it when the blocker is a step only the person takes,
+// as `key`'s triage record in `stateDir` last read it and repo `slug`'s label rows judge it (personStep:
+// 'build' or 'merge'), else null. A Done blocker holds nothing as a step.
+export function personStepOf(stateDir, slug) {
+  const labels = [personStepLabels(slug), personInputLabels(slug)];
+  return (key, b) => {
+    const rec = triageOf(stateDir, key);
+    const x = (rec?.blockers ?? []).find((y) => y?.key === b);
+    return x && x.category !== 'done' ? personStep(x, rec, ...labels) : null;
+  };
+}
+
 // Who moves a batch on without the user: the merge driver, which alone releases a ticket whose blockers
 // merged, running now or started by a supervisor running its passes. The supervisor starts it only
 // where config §3, or the batch's approval, lets it merge (mergeGrant), so without that grant only a
@@ -185,12 +197,14 @@ function holdContext(r) {
   let basePush = 'no';
   try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r.stateDir, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
 // when nothing moves until they act, which `text` names; `act` is the command to run, where one is.
-// Behind several blockers, the first that needs the user speaks for the ticket.
+// Behind several blockers, the first that needs the user speaks for the ticket, and one that is their
+// own step (`step`) only when no other needs them: needs-you lists the step apart, so it must not hide
+// another ask.
 export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   const day = dateHeld(t);
   if (day?.bad) return { k: 'needs', text: `held: ${badLabelText(day.label)}`, act: releaseCmd(t.key) };
@@ -205,13 +219,16 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   seen.add(t.key);
   const each = open.map((b) => blockerHold(q, t.key, b, ctx, seen));
   seen.delete(t.key);
-  return each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
+  return each.find((e) => e.k === 'needs' && !e.step) ?? each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
 }
 
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
+// One in no batch that is the person's own step (ctx.stepOf) needs them, and is `step`: needs-you lists
+// it once, as the step, with every ticket waiting on it.
 function blockerHold(q, key, b, ctx, seen) {
   const bt = q.tickets?.[b];
   if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) {
+    if (ctx.stepOf?.(key, b)) return { k: 'needs', name: b, step: b, text: `waits to start on your step ${b}: take it and move it to Done in Jira` };
     return { k: 'waiting', name: b, text: ctx.blockerCategory?.(key, b) === 'done' ?`behind ${b}, outside this batch: Done, waiting for its code to reach ${ctx.base}`
       : `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
   }
@@ -926,7 +943,7 @@ function epicWhy(r, F, e, checkin) {
   if (r.workers === 0) return 'No date: 0 workers';
   const undated = r.rows.filter((x) => F.of[x.t.key] === e.key && !F.T[x.t.key]);
   const c = (k) => undated.filter((x) => x.k === k).length;
-  const needs = new Set(needsCount(r).rows);
+  const nc = needsCount(r), needs = new Set([...nc.rows, ...nc.stepRows]);
   const asks = undated.filter((x) => groupOf(x.k) === 'needs').length;
   const you = undated.filter((x) => needs.has(x)).length, off = asks - you;
   const why = [...(you ? [`${you} need${you === 1 ? 's' : ''} you`] : []), ...(off ? [`${off} put off`] : [])];
@@ -2709,8 +2726,9 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const list = epic ? rows0.filter((x) => F.of[x.t.key] === epic) : rows0;
   const summary = (x) => summaryOf({ r: of(x), x });
   const tt = titler(list.map(summary));
-  // needsCount's rows are those not put off: the rest of Needs you is Put off.
-  const asked = new Set(needsCount(r).rows);
+  // needsCount's rows (and stepRows, held by a person's step) are those not put off: the rest of
+  // Needs you is Put off.
+  const nc = needsCount(r), asked = new Set([...nc.rows, ...nc.stepRows]);
   const gk = (x) => (groupOf(x.k) === 'needs' && !asked.has(x) ? PUT_OFF : x.k);
   // A ticket with a PR open has started and has no ship date of its own. One in Merging or Needs you
   // says how long it has been there instead (ageOf), a Merging PR's amber or red by that age.

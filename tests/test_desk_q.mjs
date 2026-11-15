@@ -1620,6 +1620,25 @@ const r541 = () => Q.loadRepos(FIXED).find((r) => r.name === 's541');
 t('DS-541 AC5 held behind a blocker outside the batch that is Done but not on the base: it says so, never "until it is Done"; an open one still waits until it is Done',
   [railText(Q.ticketScreen(r541(), 'DS-541', { now: FIXED, width: 120 })), railText(Q.ticketScreen(r541(), 'DS-542', { now: FIXED, width: 120 }))].join(' / '),
   'Moves without you: behind OUT-2, outside this batch: Done, waiting for its code to reach main. / Moves without you: behind OUT-1, outside this batch, until it is Done and on main.');
+// DS-685 AC5: held behind a step only the person takes, in no batch (a Person-input label), it needs
+// the person and its row names the step; behind an ordinary ticket in no batch it still waits.
+dated('s685', 5685, { hours: twelveHours, tickets: { 'DS-685': { ...heldBy('OPS-7'), held_outside: 'OPS-7' }, 'DS-686': { ...heldBy('CODE-1'), held_outside: 'CODE-1' } } });
+{
+  const cfg = join(I.env.DESK_CONFIG_ROOT, 'repos', 'acme__s685', 'config.md');
+  writeFileSync(cfg, `${readFileSync(cfg, 'utf8')}\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`ben-input\` |\n`);
+  const tri = join(I.env.HOME, '.desk-autopilot', 'acme__s685', 'triage');
+  writeFileSync(join(tri, 'DS-685.json'), JSON.stringify({ ticket: 'DS-685', summary: 'held on a step', size: 'M', blockers: [{ key: 'OPS-7', category: 'new', labels: ['ben-input'] }] }));
+  writeFileSync(join(tri, 'DS-686.json'), JSON.stringify({ ticket: 'DS-686', summary: 'held on code', size: 'M', blockers: [{ key: 'CODE-1', category: 'new', type: 'Story', summary: 'Build it' }] }));
+  const r685 = Q.loadRepos(FIXED).find((r) => r.name === 's685');
+  t('DS-685 AC5 held behind the person\'s step outside the batch: needs you, and the row names the step; behind a code ticket outside it: waiting',
+    ['DS-685', 'DS-686'].map((k) => { const x = r685.rows.find((y) => y.t.key === k); return `${x?.k} ${Q.holdOf(r685.q, x?.t, r685.ctx).text}`; }).join(' / '),
+    'needs waits to start on your step OPS-7: take it and move it to Done in Jira / waiting behind CODE-1, outside this batch, until it is Done and on main');
+  // Counted once, through its step item, but drawn under Needs you, never Put off.
+  const s685 = lines(Q.repoScreen(r685, { now: FIXED }));
+  const groupOf685 = (key) => { let g = null; for (const l of s685) { const h = l.match(/^ {2}(Needs you|Put off|Waiting|Ready|Running|Merging) · \d+$/); if (h) g = h[1]; else if (new RegExp(`^ +\\S+ {2}${key} `).test(l)) return g; } return null; };
+  t('DS-685 AC5 on the repo screen the ticket held on the person\'s step is under Needs you, not Put off',
+    `${groupOf685('DS-685')} ${s685.some((l) => /^ {2}Put off · /.test(l))}`, 'Needs you false');
+}
 const starts541 = (key) => (lines(Q.repoScreen(r541(), { now: FIXED })).find((x) => new RegExp(`^ +\\d+ {2}${key} `).test(x)) ?? '').slice(83, 96).trim();
 const T541 = Q.forecastOf(r541(), { now: FIXED }).T;
 t('DS-684 held behind a blocker in no batch, open or Done but not lifted, and anything held behind it: no start date, and STARTS never reads now; behind one in the batch: dated after it',
