@@ -19,7 +19,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, parseLevers, repoConfigValues } from './desk-env.mjs';
+import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, reasonWording } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 
@@ -135,13 +135,12 @@ function rowNumber(config) {
 }
 const rowLine = (config) => { const n = rowNumber(config); return n ? `${config}:${n}` : config; };
 
-// How a repo's levers row reads: no row (not enrolled), `none` (off), `auto`, or levers pinned by hand.
+// How a repo's levers row reads, as desk-env's leverRow reads it: no row (not enrolled), `none` (off),
+// `auto`, or levers pinned by hand. `invalid` is leverRow's message for a row desk reads as all off.
 export function enrolment(items) {
-  if (items == null) return { row: 'missing', auto: false, pinned: [] };
-  const names = items.flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter(Boolean);
-  const auto = names.includes('auto');
-  const pinned = parseLevers(names.filter((n) => n !== 'auto')).on;
-  return { row: auto ? 'auto' : pinned.length ? 'pinned' : 'none', auto, pinned };
+  if (items == null) return { row: 'missing', auto: false, pinned: [], invalid: null };
+  const { on, auto, invalid } = leverRow(items);
+  return { row: auto ? 'auto' : on.length ? 'pinned' : 'none', auto, pinned: on, invalid };
 }
 
 // The Phase 0 baseline's per accepted ticket figures, its window and starts, from bench-report's
@@ -170,6 +169,8 @@ function readRepo(r, root) {
   let items = null;
   let configError = null;
   try { items = repoConfigValues(r.slug, 'levers', r.root); } catch (e) { configError = { file: r.config, line: rowNumber(r.config), message: e.message }; }
+  const invalid = configError ? null : enrolment(items).invalid;
+  if (invalid) configError = { file: r.config, line: rowNumber(r.config), message: invalid };
   const dirs = stateDirs(state);
   const newest = (file) => dirs.map((d) => mtimeIso(join(d, file))).filter(Boolean).sort().pop() ?? null;
   const healths = dirs.map((d) => join(d, 'health.json')).filter(existsSync).map((file) => {

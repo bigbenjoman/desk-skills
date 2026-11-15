@@ -302,6 +302,12 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   const ev = view(machine({ repos: badDs, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers', { guardrails: g })]) } }));
   t('config error: an evaluated lever keeps its guardrails', j(ev.panels.guardrails.rows.map((r) => `${r.lever} ${r.status}`)), '["wrappers breached"]');
   t('config error: a lever with no evaluation is error', cell(ev, 'memory').state, 'error');
+  // One span holding `auto none` passes the config reader; desk-env's leverRow reads it as all off.
+  const oneSpan = view(machine({ repos: REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto none`' } : r)) }));
+  const ds = oneSpan.repos.find((r) => r.name === 'desk-skills');
+  t('config error: one span mixing none and auto is error, not auto', `${ds.column} ${ds.reads}`, 'error levers row unreadable');
+  t('config error: and names why', /cannot sit beside/.test(ds.errors[0].message), true);
+  t('config error: and is not counted on auto', oneSpan.panels.status.on_auto, 0);
 }
 
 // The per accepted ticket trends read merged tickets only; the cost panel stays per admitted.
