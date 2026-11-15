@@ -1414,6 +1414,9 @@ q add J-12; q set J-12 state=done result.pr=612 merge_after=X-7
 printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"new","type":"Story","summary":"Ship the flag"}],"blocker_needs":{"X-7":{"needs":"merge","why":"lands the flag it ships behind"}}}' > "$T/state-j/triage/J-12.json"
 x7gate 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-687 a triage merge gate Done in Jira whose PR has not merged to the base still holds the merge" '[ "$(field J-12 merge_after)" = "\"X-7\"" ] && ! echo "$out" | grep -q "merge hold: J-12"'
+q add X-7; x7gate 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-687 one that joined the batch since still holds the merge until its PR is on the base" '[ "$(field J-12 merge_after)" = "\"X-7\"" ] && ! echo "$out" | grep -q "merge hold: J-12"'
+q drop X-7
 x7gate 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-687 once it is Done and its PR merged to the base, the pass lifts the gate" '[ "$(field J-12 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 Done; free to merge"'
 q drop J-12

@@ -325,12 +325,17 @@ writeFileSync(standingQ, JSON.stringify(withStep));
 writeQ('X-30', { epic: 'X-30', base: 'feat/x-30', promotion: lastRecorded, tickets: {
   'X-31': { key: 'X-31', state: 'done', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z' },
   'X-32': { key: 'X-32', state: 'triaged' },
+  'X-33': { key: 'X-33', state: 'triaged' },
 } });
 mkdirSync(join(namedS('X-30'), 'triage'), { recursive: true });
 writeFileSync(join(namedS('X-30'), 'triage', 'X-32.json'), JSON.stringify({ ticket: 'X-32', type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: 'fix/X-32', files_in_scope: ['f/X-32'], unknowns: [], blockers: [{ key: 'S-20', category: 'new' }] }));
+writeFileSync(join(namedS('X-30'), 'triage', 'X-33.json'), JSON.stringify({ ticket: 'X-33', type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: 'fix/X-33', files_in_scope: ['f/X-33'], unknowns: [], blockers: [{ key: 'S-20', category: 'new' }],
+  blocker_needs: { 'S-20': { needs: 'build', why: 'the build reads the images' } } }));
 a = res(archive('X-30', { 9: 'MERGED', 10: 'MERGED' }));
 const moved32 = JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-32'];
 t('DS-568 a ticket moved to a batch where its blocker is the person\'s step merges after it, held by nothing', `${a.archived} ${moved32?.state} ${moved32?.held_by} ${moved32?.merge_after}`, 'true triaged null S-20');
+const moved33 = JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-33'];
+t('DS-687 one moved there whose triage calls that step needed to build is held behind it, not merged after it', `${moved33?.state} ${moved33?.held_by} ${moved33?.merge_after}`, 'parked S-20 undefined');
 // With no record, a merged slice and a ticket still to come is not the last: nothing moves.
 writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': { key: 'X-13', state: 'queued' } } });
 mkdirSync(namedS('X-12'), { recursive: true });

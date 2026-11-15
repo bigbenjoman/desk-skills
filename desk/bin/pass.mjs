@@ -3263,7 +3263,7 @@ const epicMerged = (qO, key) => {
     const blockers = rec?.blockers;
     if (!Array.isArray(blockers)) continue;
     const doneNow = steps.filter((p) => blockers.some((b) => b?.key === p && b.category === 'done'
-      && (qM.tickets[p] || !triageGate(b, rec, stepLabels, inputLabels) || landedHere(p))));
+      && (!triageGate(b, rec, stepLabels, inputLabels) || landedHere(p))));
     const unlinked = steps.filter((p) => !blockers.some((b) => b?.key === p));
     const left = steps.filter((p) => !doneNow.includes(p) && !unlinked.includes(p));
     if (left.length === steps.length) continue;
