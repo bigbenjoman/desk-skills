@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -894,6 +894,8 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     continue;
   }
   if (!registryOk) continue; // cannot tell — leave it alone rather than guess
+  // The head its worker left: a later fix try pushes commits up to it rather than hold them (busyWorktree).
+  recordWorkerHead(t);
 
   // Exited, or finished and stopped above. Decide what it was, from the markers read above.
   // A park waiting only on a check §4 Check builds names (built, read above) is done: the undraft step builds it.
@@ -2754,7 +2756,10 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // or its branch has commits not on origin: a fresh fix worker starts from the branch's pushed head.
 // Untracked files do not count: setup-worktree.sh leaves its own (agent links, a disabled settings
 // file) in repos that do not ignore them. The ticket keeps its state, and the next pass looks again.
-function busyWorktree(t) {
+// Commits up to the head the ticket's own last worker left (worker_head) are that worker's: with `push`
+// (the spawn about to start it) they are pushed, no force, and a refused push holds with git's words.
+// The branch is fetched first, so a stale origin ref never counts pushed commits as unpushed.
+function busyWorktree(t, { push = false } = {}) {
   if (t.location === 'cloud') return null;
   const resumed = toResume(t) || toHandoff(t);
   const wt = resumed ? t.worktree : join(WORKTREES, t.key);
@@ -2762,8 +2767,30 @@ function busyWorktree(t) {
   const users = dirUsers(wt, [process.pid, process.ppid]) ?? [];
   if (users.length) return `its worktree ${wt} is the working directory of ${usersText(users)}, which the pass did not start`;
   if (!(t.fix && !t.fix.finished) || resumed) return null;
+  const git = (args) => { const o = shOut('git', ['-C', wt, ...args]); return o.ok ? o.out : null; };
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  if (branch && branch !== 'HEAD') git(['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
   // A worktree git cannot read is not held: setup-worktree.sh says so.
-  return gitHold(wt, (args) => { const o = shOut('git', ['-C', wt, ...args]); return o.ok ? o.out : null; }) ?? null;
+  const why = gitHold(wt, git) ?? null;
+  // Only an ahead hold (gitHeld names no worktree) can be the last worker's own commits.
+  if (!why || gitHeld(why)?.wt !== null || !t.worker_head?.sha || git(['rev-parse', 'HEAD']) !== t.worker_head.sha) return why;
+  if (E.permission('git-push') !== 'yes') return `${why}: they are its last worker's, but config §3 git-push is "${E.permission('git-push')}", so the pass does not push them`;
+  if (!push || DRY) return null;
+  const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
+  if (pushed.ok) {
+    report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker left, before its fix try`);
+    return null;
+  }
+  const said = pushed.out.split('\n').map((l) => l.trim()).filter((l) => /^(remote:|!|error:|fatal:)/.test(l)).slice(-3);
+  return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
+}
+// Recorded each time the pass finds a worker exited: the head its worktree was left at.
+function recordWorkerHead(t) {
+  if (DRY || t.location === 'cloud') return;
+  const wt = t.worktree || join(WORKTREES, t.key);
+  if (!existsSync(wt)) return;
+  const head = shOut('git', ['-C', wt, 'rev-parse', 'HEAD']);
+  if (head.ok && /^[0-9a-f]{40}$/.test(head.out) && head.out !== t.worker_head?.sha) q('set', t.key, `worker_head=${JSON.stringify({ sha: head.out, at: PASS_AT })}`);
 }
 
 // A worktree held is kept on the ticket (`worktree_busy`), so desk-q and desk-needs-you show it as
@@ -2789,7 +2816,7 @@ for (const t of spawnable) {
     continue;
   }
   // Held without taking a slot: another ticket may spawn in its place.
-  const busy = busyWorktree(t);
+  const busy = busyWorktree(t, { push: true });
   if (busy) {
     busyNow.add(t.key);
     if (!DRY && t.worktree_busy?.why !== busy) q('set', t.key, `worktree_busy=${JSON.stringify({ why: busy, at: PASS_AT })}`);
