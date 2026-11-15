@@ -235,28 +235,33 @@ const bare = { commitsNaming: () => [], commitsTouching: () => [], resolve: () =
 const task = (key, summary, extra = {}) => ticketOf({ key, fields: { summary, description: '', issuetype: { name: 'Task' }, ...extra } })
 const steps = [
   task('KAN-80', 'build: the checkout reads the webhook', { issuelinks: ['KAN-81', 'KAN-82', 'KAN-83', 'KAN-84', 'KAN-85'].map((k) => blocks(k)) }),
-  task('KAN-86', 'build: the refund page', { issuelinks: [blocks('KAN-81')] }),
+  task('KAN-86', 'build: the refund page', { issuelinks: [blocks('KAN-81'), blocks('KAN-90')] }),
   task('KAN-81', 'Ben: approval of the refund copy'),
   task('KAN-82', 'Ben: record a real Stripe webhook fixture'),
   task('KAN-83', 'Ben: create the Stripe API key'),
   task('KAN-84', 'Ben: walkthrough of the checkout', { labels: ['ben-step'] }),
   task('KAN-85', 'checkout: render the receipt'),
   task('KAN-87', 'Ben: go-live sign-off for checkout'),
-  task('KAN-88', 'build: the receipt email', { description: 'Ship it after KAN-87 is done.\nThis needs the fixture from KAN-82.\nIt needs the key KAN-89 makes.\nOnce KAN-84 is done, it can merge.' }),
+  task('KAN-88', 'build: the receipt email', { description: 'Ship it after KAN-87 is done.\nThis needs the fixture from KAN-82.\nIt needs the key KAN-89 makes.\nOnce KAN-84 is done, it can merge.\nIt needs the fixture from KAN-91.' }),
   task('KAN-89', 'Ben: create the signing key', { labels: ['ben-input'] }),
+  task('KAN-90', 'Ben: confirm the Stripe key'),
+  task('KAN-91', 'Ben: save the refund fixture'),
 ]
 const labelled = groom({ tickets: steps, repo: bare, stepLabels: ['Ben-Step'], inputLabels: ['ben-input'] })
 const label = (k) => labelled.filter((f) => f.check === 'label' && f.ticket === k)
 t('label: one question per unlabelled step, naming every ticket it blocks', [label('KAN-81').length, label('KAN-81')[0]?.blocked, label('KAN-81')[0]?.kind], [1, ['KAN-80', 'KAN-86'], 'question'])
-t('label: an approval step recommends the Person-step label', label('KAN-81')[0]?.recommend, 'KAN-81 gates only the merge of KAN-80, KAN-86: desk-jira labels KAN-81 add ben-step')
+t('label: an approval step recommends the Person-step label, as the row writes it', label('KAN-81')[0]?.recommend, 'KAN-81 gates only the merge of KAN-80, KAN-86: desk-jira labels KAN-81 add Ben-Step')
 t('label: a fixture step recommends the Person-input label', label('KAN-82')[0]?.recommend, 'KAN-82 makes something the build of KAN-80 reads: desk-jira labels KAN-82 add ben-input')
 t('label: a key step recommends the Person-input label', /add ben-input$/.test(label('KAN-83')[0]?.recommend ?? ''), true)
+t('label: a bare key in a confirm step recommends the Person-input label', [/add ben-input$/.test(label('KAN-90')[0]?.recommend ?? ''), label('KAN-90')[0]?.evidence?.[2]], [true, 'its title names an input the build reads: "key"'])
+t('label: a step named only in prose is not asked until it is linked', label('KAN-91').length, 0)
 t('label: both labels and neither are the options', label('KAN-81')[0]?.options?.length, 3)
 t('label: a step already labelled, or an ordinary blocker, asks nothing', [label('KAN-84').length, label('KAN-85').length], [0, 0])
 t('label: no finding where the rows are none', groom({ tickets: steps, repo: bare }).filter((f) => f.check === 'label').length, 0)
 t('step words: an input wins over a merge gate', [stepWords('approve the recorded payment response'), stepWords('open the account'), stepWords('render it')].map((w) => w.kind), ['input', 'merge', null])
 const linkHold = (k) => labelled.find((f) => f.check === 'link' && f.ticket === 'KAN-88' && f.other === k)?.evidence?.[1] ?? null
 t('link: a step with neither label holds the build, as an ordinary blocker', linkHold('KAN-82'), "KAN-82 reads as the person's step but carries no label that says so: the link holds KAN-88's build until KAN-82 is Done, as an ordinary blocker (see KAN-82's label finding)")
+t('link: a step with no label finding points at none', linkHold('KAN-91'), "KAN-91 reads as the person's step but carries no label that says so: the link holds KAN-88's build until KAN-91 is Done, as an ordinary blocker")
 t('link: a Person-input step holds the build', linkHold('KAN-89'), "KAN-89 is the person's step, labelled as an input: the link holds KAN-88's build until KAN-89 is Done")
 t('link: a Person-step step holds only the merge', linkHold('KAN-84'), "KAN-84 is the person's step: the link holds only KAN-88's merge, so KAN-88 is built and reviewed meanwhile")
 t('link: a Task that says sign off holds only the merge, labelled or not', linkHold('KAN-87'), "KAN-87 is the person's step: the link holds only KAN-88's merge, so KAN-88 is built and reviewed meanwhile")
