@@ -185,19 +185,43 @@ check "AC8 the browser profile is listed as not required"   'grep -q "browser pr
 config yes yes
 q set H-3 state=done
 q add H-4; q set H-4 state=triaged branch=fix/H-4
+mode codex ok
 pj
-check "AC8 where §3 pr-images is yes, a stale login holds"  '[ "$(field H-4 state)" = triaged ] && grep -q "the GitHub login in $T/profile.github-session.json expired" <<< "$out"'
-check "a local check is told on its first failing run"     '[[ "$(pushes)" =~ :browser$ ]] && grep -q "rechecking before telling you: codex)" <<< "$out"'
+check "DS-675 AC3 an expired login holds no spawn"            '[ "$(field H-4 state)" = running ] && grep -q "the GitHub login in $T/profile.github-session.json expired" <<< "$out" && ! grep -q "a failing health check (.*browser" <<< "$out"'
+check "DS-675 AC3 the health line says it holds no spawn"     'grep -q "health: 1 check(s) failing — browser — not holding spawns (.*browser failing, not holding spawns: every repo.s screenshot uploads with that login wait in the machine.s upload queue)" <<< "$out"'
+check "DS-675 AC1 told at once as one machine item, naming the sign-in command" '[[ "$(pushes)" =~ ^health:browser-signin:[0-9a-f]{12}$ ]] && grep -qF "health: browser profile failed: the GitHub login in $T/profile.github-session.json expired" <<< "$out" && grep -qF "fix: node ~/.claude/desk/bin/github-signin.mjs" <<< "$out"'
+# Another slot on the machine (another repo's batch) finds the same login expired.
+json=$(DESK_AUTOPILOT_STATE="$T/state2" node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs"); out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json")
+check "DS-675 AC1 a second slot raises no second item"        '[ -z "$(pushes)" ] && ! grep -q "browser profile failed" <<< "$out" && grep -q "told once for the machine by" <<< "$out"'
+rm -rf "$T/state2"
+mode codex out
+pj
+check "a local check is told on its first failing run"     '[[ "$(pushes)" =~ ^health:browser-signin:[0-9a-f]{12}$ ]] && grep -q "rechecking before telling you: codex" <<< "$out"'
 pj
 check "AC7 where §3 codex-review is yes, codex signed out holds" 'grep -q "health: Codex (codex login status) failed" <<< "$out"'
 mode codex ok
 signin "$(( $(date +%s) + 31536000 ))"
+pj
+check "DS-675 AC2 signed in again: the machine's sign-in item is gone" '[ -d "$HOME/.desk-autopilot/health-browser-signin" ] && [ -z "$(ls -A "$HOME/.desk-autopilot/health-browser-signin")" ] && [ -z "$(pushes)" ] && grep -q "recovered: .*browser" <<< "$out"'
+# A session file that does not parse is still its login's item, which signing it in clears.
+sid=$(node --input-type=module -e 'const { signinId } = await import(process.argv[1]); console.log(signinId(process.argv[2]))' "$B/health.mjs" "$T/profile.github-session.json")
+printf 'not json\n' > "$T/profile.github-session.json"
+pj
+check "DS-675 a session file that does not parse is its login's item, naming the file" '[ -f "$HOME/.desk-autopilot/health-browser-signin/$sid.json" ] && grep -qF "the GitHub login in $T/profile.github-session.json could not be read" <<< "$out"'
+signin "$(( $(date +%s) + 31536000 ))"
+pj
+check "DS-675 and signing it in clears it"                    '[ -z "$(ls -A "$HOME/.desk-autopilot/health-browser-signin")" ]'
 
 # ---- AC9: results under 15 minutes old are reused ----------------------------------------------
 pj
 n=$(calls gh)
 mode gh out
+# Another slot has found the login failing since: a reused passing result does not clear its item.
+mkdir -p "$HOME/.desk-autopilot/health-browser-signin"
+printf '{"at":"2026-11-16T08:00:00.000Z","why":"x","state":"%s","slug":"other","file":"%s"}\n' "$T" "$T/profile.github-session.json" > "$HOME/.desk-autopilot/health-browser-signin/$sid.json"
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-675 a reused passing result keeps another slot's sign-in item" '[ -f "$HOME/.desk-autopilot/health-browser-signin/$sid.json" ]'
+rm -rf "$HOME/.desk-autopilot/health-browser-signin"
 check "AC9 the checks do not run again"                     '[ "$(calls gh)" = "$n" ]'
 check "AC9 the last results are reused"                     'grep -q "health: all checks pass (checked 0 min ago, reused)" <<< "$out"'
 pj

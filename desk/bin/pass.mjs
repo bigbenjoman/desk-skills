@@ -605,7 +605,7 @@ function uploadShots(t, prNo, imgDir) {
     const round = t.upload_round ?? null;
     const queued = UQ.readUploadQueue().jobs.find((j) => j.queue === QUEUE_FILE && j.key === t.key && String(j.pr) === String(prNo) && (j.round ?? null) === round);
     const before = queued && 'cells_before' in queued ? queued.cells_before : cellsIn(prNo);
-    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before });
+    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before, profile: E.browserProfile() });
   } catch (e) {
     report.failed.push(`${t.key}: image upload to PR #${prNo} did not join the machine's upload queue: ${e.message}; a later pass tries again`);
     return;
@@ -1737,6 +1737,7 @@ let CHECKIN;
 try { CHECKIN = checkinTimes(checkinRow()); } catch (e) { CHECKIN = { ok: false, why: e.message }; }
 if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`);
 // The health watchdog (health.mjs): a required sign-in, the free disk or the local database failing holds every new spawn.
+// The browser profile's login failing holds none: the upload queue runs no upload until it passes.
 // Running workers carry on; the report names each failure and its fix, and the push names it once.
 const HEALTH = await health({ state: STATE });
 for (const s of HEALTH.stalls) personStall(s);
@@ -1858,7 +1859,7 @@ const usageHeldText = (h) => `${limitName(h.type)}${untilText(h)} holds every sp
 if (USAGE_HOLD) report.stalled.push(`${usageHeldText(USAGE_HOLD)} (probe: ${[...PROBES.values()].map((p) => p.why).filter(Boolean).join('; ') || 'not run'})`);
 const held = MAINT.hold ? 'the maintenance window holds every spawn' : USAGE_HOLD ? usageHeldText(USAGE_HOLD) : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
-  : HEALTH.failing.length ? `a failing health check (${HEALTH.failing.join(', ')}) holds every spawn`
+  : HEALTH.holding.length ? `a failing health check (${HEALTH.holding.join(', ')}) holds every spawn`
   : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"`
   : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
   : PACE.hold ? PACE_HELD : null;
