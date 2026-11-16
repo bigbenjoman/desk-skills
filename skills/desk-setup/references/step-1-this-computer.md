@@ -12,12 +12,17 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
 - **No profile yet**: show the `desk-env machine detect` table, then `desk-env machine propose`,
   whose third column is the arithmetic behind each size. Say in one line what the rules are (memory
   less 8 GB for the OS is the ceiling; autopilot workers at ~3 GB each from it; test workers capped
-  at the performance cores). **Write nothing until the user confirms**; then `desk-env machine
-  write`. Any size they want different is a hand edit to that file afterwards, said as such. A
-  re-write keeps the bench rows below.
-- **A profile exists**: `desk-env machine detect` says what changed since it was written. Nothing
+  at the performance cores plus half the efficiency cores, shared by the test lock slots). **Write
+  nothing until the user confirms**; then `desk-env machine write`. Any size they want different is
+  an override, set afterwards with `desk-env machine set <key>=<value> --reason "<why>"`, which
+  writes it with an `override: <why>` reason and reads it back. A re-write keeps every override and
+  the bench rows below, and names each override it kept.
+- **A profile exists**: `desk-env machine detect` says what changed since it was written, and lists
+  each override apart from the changes, since it is the user's choice and not drift. Nothing
   changed: say so and move on. Something changed (another computer, more memory, the disk filling
-  up): show the changes and offer to re-propose; on a yes, the same propose, confirm, write.
+  up): show the changes and offer to re-propose; on a yes, the same propose, confirm, write. Drop an
+  override only when the user says to: `desk-env machine write --drop-override <key>` (or
+  `desk-env machine set <key>=`, which puts the proposed value back).
 - **Then the bench's quota, once per computer.** One weekly allowance covers every repo on the
   computer, so the bench's limits live in the profile: `bench-cap-points`, the points of each weekly
   allowance the bench may spend, and `bench-reserve-percent`, the share it leaves for interactive
