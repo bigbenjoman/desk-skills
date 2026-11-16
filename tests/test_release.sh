@@ -52,8 +52,9 @@ upstream(){ if [ -n "${2:-}" ]; then echo x > "$T/seed/$2"; git -C "$T/seed" add
 originhead(){ git -C "$T/seed" rev-parse HEAD; }
 srchead(){ git -C "$T/desk-src" rev-parse HEAD; }
 
-# The check: prints $T/check.state and records the commit asked about.
-printf '#!/bin/sh\necho "$1" >> "%s/check.calls"\ncat "%s/check.state"\n' "$T" "$T" > "$T/check.sh"
+# The check: prints $T/check.<commit> where there is one, else $T/check.state, and records the commit
+# asked about.
+printf '#!/bin/sh\necho "$1" >> "%s/check.calls"\nif [ -f "%s/check.$1" ]; then cat "%s/check.$1"; else cat "%s/check.state"; fi\n' "$T" "$T" "$T" "$T" > "$T/check.sh"
 echo pending > "$T/check.state"
 
 export DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" \
@@ -158,12 +159,50 @@ DESK_MAINT_NOW=2026-10-27T09:41:00Z node "$B/maintenance.mjs" step > "$T/b.out" 
 wait
 check "AC6 two passes at the same moment install once"      '[ "$(calls install)" = 2 ] && [ "$(installed)" = "$new" ]'
 
+# ---- DS-754: a head that has not passed installs the newest commit before it that has ------------
+# pass <commit>: its check passed; every other commit reads $T/check.state.
+pass(){ echo success > "$T/check.$1"; }
+echo cancelled > "$T/check.state"; inst=$(calls install); was=$new
+upstream g1; g1=$(originhead); pass "$g1"; upstream mid; mid=$(originhead); upstream head1; h=$(originhead)
+: > "$T/check.calls"
+step 2026-10-27T09:46:00Z
+check "DS-754 AC1 a cancelled head installs the newest passing commit before it" '[ "$(srchead)" = "$g1" ] && [ "$(installed)" = "$g1" ] && [ "$(calls install)" = $((inst + 1)) ]'
+check "DS-754 AC1 the line names it and says why the head was not" 'grep -q "release: desk-skills ${was:0:12} -> ${g1:0:12} (1 commit(s)) installed, main'"'"'s tests check passed on it; main'"'"'s head ${h:0:12} was not installed: its tests check was cancelled, and is read again next pass (cancelled)" <<< "$out"'
+check "DS-754 AC1 checks are read newest first, and stop at the first that passed" '[ "$(tr "\n" " " < "$T/check.calls")" = "$h $mid $g1 " ]'
+check "DS-754 AC2 a cancelled head raises no failure"       '[ "$(pushes)" = 0 ] && ! grep -q "check failed" <<< "$out" && ! mlog | grep -q "check failed (cancelled)"'
+step 2026-10-27T09:47:00Z
+check "DS-754 AC6 nothing after the installed commit passed: nothing installed, the installed version stays" '[ "$(calls install)" = $((inst + 1)) ] && grep -q "waiting for main'"'"'s tests check on it (cancelled), and no commit since the installed one passed it, so the installed version stays at ${g1:0:12}" <<< "$out" && [ "$(pushes)" = 0 ]'
+pass "$h"
+step 2026-10-27T09:48:00Z
+check "DS-754 AC3 a successful re-run of the head installs it" '[ "$(installed)" = "$h" ] && grep -q "release: desk-skills ${g1:0:12} -> ${h:0:12} (2 commit(s)) installed, main'"'"'s tests check passed on it\"" <<< "$out"'
+
+upstream g2; g2=$(originhead); pass "$g2"; upstream red; f=$(originhead); echo failure > "$T/check.$f"
+step 2026-10-27T09:53:00Z
+check "DS-754 AC4 a failed head pushes once, naming it, and the newest passing commit is installed" '[ "$(pushes)" = 1 ] && grep -q "release-failed-$f" <<< "$out" && grep -q "check failed (failure) on ${f:0:12}, so it was not installed; ${g2:0:12}, the newest commit before it whose check passed, is installed instead" <<< "$out" && [ "$(installed)" = "$g2" ]'
+check "DS-754 AC4 the install line says why the head was not" 'grep -q "${h:0:12} -> ${g2:0:12} (1 commit(s)) installed, main'"'"'s tests check passed on it; main'"'"'s head ${f:0:12} was not installed: its tests check failed (failure)" <<< "$out"'
+inst=$(calls install)
+step 2026-10-27T09:54:00Z
+check "DS-754 AC4 a later pass keeps the push, logs the failure once and installs nothing more" '[ "$(pushes)" = 1 ] && [ "$(mlog | grep -c "check failed (failure) on ${f:0:12}")" = 1 ] && [ "$(calls install)" = "$inst" ]'
+
+echo pending > "$T/check.state"
+upstream g3; g3=$(originhead); pass "$g3"; upstream running; p=$(originhead)
+step 2026-10-27T09:59:00Z
+check "DS-754 AC5 a pending head installs the earlier passing commit" '[ "$(installed)" = "$g3" ] && grep -q "${g2:0:12} -> ${g3:0:12} (2 commit(s)) installed, .*main'"'"'s head ${p:0:12} was not installed: its tests check is still running (pending)" <<< "$out"'
+
+echo cancelled > "$T/check.state"; inst=$(calls install)
+upstream g4; g4=$(originhead); pass "$g4"; upstream head4; c=$(originhead)
+printf '{"version":1,"batch":"r","tickets":{"R-9":{"key":"R-9","state":"running","stage":"7/9"}}}\n' > "$T/queue.json"
+step 2026-10-27T10:05:00Z
+check "DS-754 AC7 a worker at Stage 7 holds the earlier commit's install too" '[ "$(calls install)" = "$inst" ] && [ "$(installed)" = "$g3" ] && grep -q "desk-skills main ${g4:0:12} passed its tests check; main'"'"'s head ${c:0:12} was not installed: .*; waiting to install it for .*R-9 at Stage 7" <<< "$out"'
+printf '{"version":1,"batch":"r","tickets":{}}\n' > "$T/queue.json"
+echo success > "$T/check.state"; inst=$(calls install)
+
 # ---- AC8: the maintenance window open ----------------------------------------------------------
 upstream six; new=$(originhead)
-printf '{"week":"x","phase":"draining","since":"2026-10-27T09:59:00.000Z","window":"Mon 06:30 UTC"}\n' > "$T/maint/maintenance.json"
+printf '{"week":"x","phase":"draining","since":"2026-10-27T10:29:00.000Z","window":"Mon 06:30 UTC"}\n' > "$T/maint/maintenance.json"
 printf '{"version":1,"batch":"r","tickets":{"R-2":{"key":"R-2","state":"running","stage":"3/9"}}}\n' > "$T/queue.json"
-step 2026-10-27T10:00:00Z
-check "AC8 an open window: the auto-release does nothing"   '[ "$(calls install)" = 2 ] && ! grep -q "release:" <<< "$out" && grep -q "maintenance: draining" <<< "$out"'
+step 2026-10-27T10:30:00Z
+check "AC8 an open window: the auto-release does nothing"   '[ "$(calls install)" = "$inst" ] && ! grep -q "release:" <<< "$out" && grep -q "maintenance: draining" <<< "$out"'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
