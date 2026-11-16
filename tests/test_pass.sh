@@ -3871,4 +3871,87 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-759 AC8 a running ticket whose worktree is behind main is listed as base drift" 'echo "$out" | grep "^base drift: " | grep -qE "D-2 is [1-9][0-9]* behind main"'
 check "DS-759 AC7 a done ticket whose worktree is behind main is not" '! echo "$out" | grep "^base drift: " | grep -qF "D-1"'
 
+# DS-570 AC2: once a PR merges, each criterion its last desk-review (by the §1 handle) left for after the
+# merge is a follow-on step on the ticket, which needs-you lists; the steps it had are kept, a review by
+# anyone else adds none, and a PR whose review left none gains none.
+export DESK_QUEUE="$T/queue-pm.json" DESK_AUTOPILOT_STATE="$T/state-pm" DESK_CONFIG="$T/config-pm.md"; mkdir -p "$T/state-pm/logs"
+{ cat "$T/config.md"; printf '\n## 1. Identity\n| Field | Value |\n|---|---|\n| GitHub handle | `ben` |\n'; } > "$T/config-pm.md"
+node --input-type=module -e "
+import { writeFileSync } from 'node:fs';
+import { render, postMergeSection } from '$B/../../skills/desk-review/bin/verdict.mjs';
+const sha = 'a'.repeat(40), seats = [{ role: 'correctness', vendor: 'claude', status: 'ran' }];
+const results = (o) => ({ sha, round: 1, gaps: 0, skipped_files: 0, seats, findings: [], ...o });
+const later = results({ post_merge: [{ gap: 'AC7', needs: 'production', step: 'fill in the switch date at the production relay run' }, { gap: 'AC8', needs: 'staging', step: 'place a test call on staging' }] });
+const body = (r) => [render(r), '', postMergeSection(r)].join('\n');
+const other = results({ post_merge: [{ gap: 'AC9', needs: 'device', step: 'someone else says so' }] });
+const pr = (n, reviews) => JSON.stringify({ state: 'MERGED', url: 'https://github.com/acme/widgets/pull/' + n, mergedAt: '2026-11-10T09:00:00Z', headRefOid: sha, statusCheckRollup: [], reviews });
+writeFileSync('$T/pm-702.json', pr(702, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({ gaps: 2 })) }, { author: { login: 'ben' }, state: 'COMMENTED', body: body(later) }, { author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
+writeFileSync('$T/pm-703.json', pr(703, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({})) }]));
+writeFileSync('$T/pm-704.json', pr(704, [{ author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 702 "*) cat "$T/pm-702.json" ;;
+  "pr view 703 "*) cat "$T/pm-703.json" ;;
+  "pr view 704 "*) cat "$T/pm-704.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/stub/gh"
+q init pm
+q add PM-1; q set PM-1 state=done result.pr=702 'follow_on=[{"step":"run the backfill","row":"jira-comment"}]'
+q add PM-2; q set PM-2 state=done result.pr=703
+q add PM-3; q set PM-3 state=done result.pr=704
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+pending(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { followOnPending } from '$B/harvest.mjs'; console.log(followOnPending(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
+check "DS-570 AC2 a merged PR's post-merge criteria are follow-on steps after the ones it had, naming no §3 row" \
+  '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"run the backfill\",\"jira-comment\"],[\"Check after the merge: AC7 (needs production): fill in the switch date at the production relay run\",null],[\"Check after the merge: AC8 (needs staging): place a test call on staging\",null]]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
+check "DS-570 AC2 so needs-you lists them as the ticket's follow item" '[ "$(pending PM-1)" = true ]'
+check "DS-570 a review that left none, or one by anyone but the §1 handle, adds no follow-on step" \
+  '[ "$(field PM-2 merged_at)" != null ] && [ "$(field PM-2 follow_on)" = null ] && [ "$(field PM-3 follow_on)" = null ] && [ "$(pending PM-3)" = false ]'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-570 the next pass reads no PR again and adds no step twice" '[ ! -s "$T/gh-calls" ] && [ "$(field PM-1 follow_on.length)" = 3 ]'
+# A merge recorded before the pass read it still gains its steps: the merge driver's (merged_at set, its
+# kept status still open), and needs-you's done or a hand-shipped ticket's (the kept status set merged,
+# carrying the criteria an earlier read of the open PR kept).
+node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+writeFileSync('$T/pm-705.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/705'));
+const open = JSON.parse(readFileSync('$T/pm-702.json', 'utf8'));
+writeFileSync('$T/pm-709.json', JSON.stringify({ ...open, state: 'OPEN', mergedAt: '0001-01-01T00:00:00Z', url: open.url.replace('/pull/702', '/pull/709') }));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 705 "*) cat "$T/pm-705.json" ;;
+  "pr view 709 "*) cat "$T/pm-709.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+kept='[{"step":"Check after the merge: AC7 (needs production): fill in the switch date","row":null}]'
+q add PM-4; q set PM-4 state=done result.pr=705 merged_at=2026-11-10T09:00:00Z 'pr_status={"pr":705,"state":"OPEN","checks":[]}'
+q add PM-5; q set PM-5 state=done result.pr=706 "pr_status={\"pr\":706,\"state\":\"MERGED\",\"merged_at\":\"2026-11-10T09:00:00Z\",\"checks\":[],\"post_merge\":$kept}"
+q add PM-6; q set PM-6 state=done result.pr=707 merged_at=2026-11-10T09:00:00Z "pr_status={\"pr\":707,\"state\":\"MERGED\",\"merged_at\":\"2026-11-10T09:00:00Z\",\"checks\":[],\"post_merge\":$kept}"
+q add PM-7; q set PM-7 state=done result.pr=708 merged_at=2026-11-01T09:00:00Z follow_on_done=2026-11-02T09:00:00Z \
+  'follow_on=[{"step":"run the backfill","row":"jira-comment"}]' \
+  "pr_status={\"pr\":708,\"state\":\"MERGED\",\"merged_at\":\"2026-11-10T09:00:00Z\",\"checks\":[],\"post_merge\":$kept}"
+q add PM-8; q set PM-8 state=done result.pr=709
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-570 an open PR's kept status carries its post-merge criteria, and they are no follow-on step before the merge" \
+  '[ "$(field PM-8 pr_status.post_merge.length)" = 2 ] && [ "$(field PM-8 follow_on)" = null ]'
+check "DS-570 AC2 a requeued ticket whose earlier follow-on item was run lists its new PR's post-merge steps alone" \
+  '[ "$(field PM-7 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC7 (needs production): fill in the switch date\"]" ] && [ "$(field PM-7 follow_on_done)" = null ] && [ "$(pending PM-7)" = true ]'
+check "DS-570 AC2 a PR the merge driver merged and recorded first still gains its post-merge steps" \
+  '[ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-4 merged_at)" = "\"2026-11-10T09:00:00Z\"" ] && [ "$(pending PM-4)" = true ]'
+check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its kept status names, reading no PR" \
+  '[ "$(field PM-5 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC7 (needs production): fill in the switch date\"]" ] && [ "$(field PM-5 merged_at)" != null ] && [ "$(field PM-6 follow_on.length)" = 1 ] && ! grep -qE "pr view 70[67] " "$T/gh-calls"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
+  '! grep -qE "pr view 70[4-8] " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

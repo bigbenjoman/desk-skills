@@ -198,6 +198,33 @@ install_file() {
   cp "$src" "$pristine"
 }
 
+# prune_removed <src dir> <dest dir> [" name name "] — removes each file an earlier install put under
+# <dest> (it has a pristine copy) that <src> no longer has, saving it to the backup first if you had
+# edited it. A file desk never installed has no pristine copy and is left alone; so is each name kept.
+prune_removed() {
+  local src="${1%/}" dest="${2%/}" keep="${3:-}" rel pristine p sub
+  rel="${dest#"$HOME"/}"
+  pristine="$PRISTINE/$rel"
+  [ -d "$pristine" ] || return 0
+  while IFS= read -r p; do
+    sub="${p#"$pristine"/}"
+    [ -e "$src/$sub" ] && continue
+    case "$keep" in *" $sub "*) continue ;; esac
+    if [ -f "$dest/$sub" ]; then
+      if ! cmp -s "$dest/$sub" "$p"; then
+        mkdir -p "$(dirname "$BACKUP/$rel/$sub")"
+        cp -p "$dest/$sub" "$BACKUP/$rel/$sub"
+        note "your edited ~/$rel/$sub was saved to $BACKUP/$rel/$sub"
+        wrote "backup   ~/$rel/$sub -> $BACKUP/$rel/$sub (your edit)"
+      fi
+      rm -f "$dest/$sub"
+      ok "removed ~/$rel/$sub (no longer in desk)"
+      wrote "removed  ~/$rel/$sub (no longer in desk)"
+    fi
+    rm -f "$p"
+  done < <(find "$pristine" -type f)
+}
+
 # Python bytecode is build output, never shipped: not copied, and not counted as an edit.
 DIFF_X=(-x __pycache__ -x '*.pyc')
 prune_bytecode() { find "$1" \( -name __pycache__ -o -name '*.pyc' \) -prune -exec rm -rf {} + 2>/dev/null || true; }
@@ -534,11 +561,12 @@ if [ -d "$SRC/desk/bin" ]; then
   ok "desk-codex -> ~/.local/bin (desk-codex probe|finder|refuter: codex review calls)"
   wrote "desk-codex ~/.local/bin/desk-codex"
   # retired local CI runner: its scripts, PATH shim, launchd jobs, state, Tart VM and base image go.
-  gone=""
+  gone=""; runner_kept=""
   # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.
   if [ -x "$DESKDIR/bin/desk-runner" ] && command -v tart >/dev/null 2>&1 \
     && ! "$DESKDIR/bin/desk-runner" down </dev/null >/dev/null 2>&1; then
     warn "the local CI runner did not stop: its files stay until ~/.claude/desk/bin/desk-runner down succeeds, then /desk-update"
+    runner_kept=" desk-runner runner-slot.sh runner-probe.sh mem-turns.mjs "
   else
     for f in "$DESKDIR"/bin/desk-runner "$DESKDIR"/bin/runner-slot.sh "$DESKDIR"/bin/runner-probe.sh \
       "$DESKDIR"/bin/mem-turns.mjs "$HOME/.local/bin/desk-runner"; do
@@ -563,6 +591,9 @@ if [ -d "$SRC/desk/bin" ]; then
     wrote "removed  local CI runner:$gone"
   fi
   # end retired local CI runner
+  # After the block above, which runs one of the retired scripts before it removes them.
+  prune_removed "$SRC/desk/bin" "$DESKDIR/bin" "$runner_kept"
+  prune_removed "$SRC/desk/templates" "$DESKDIR/templates"
   # desk-q on PATH: every autopilot queue on this computer, to see, reorder and set workers.
   install_file "$SRC/bin/desk-q" "$HOME/.local/bin/desk-q"
   chmod +x "$HOME/.local/bin/desk-q"

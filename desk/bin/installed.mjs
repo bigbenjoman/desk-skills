@@ -33,12 +33,13 @@ export const oldCode = (version, installed = readInstalled()) => Boolean(install
 
 // A source that is not a git checkout has no commit, so it gets one of its own for this install: the
 // version before it must not stay recorded, or what started on older code would read as current.
+// `dirty` means a tracked file differs from the commit; untracked files are not installed code.
 function record(src) {
   const git = (...a) => spawnSync('git', ['-C', src, ...a], { encoding: 'utf8' });
   const head = git('rev-parse', 'HEAD');
   const at = new Date().toISOString();
   const v = head.status === 0
-    ? { commit: head.stdout.trim(), dirty: Boolean(git('status', '--porcelain').stdout.trim()), at, from: src }
+    ? { commit: head.stdout.trim(), dirty: Boolean(git('status', '--porcelain', '--untracked-files=no').stdout.trim()), at, from: src }
     : { commit: `unversioned-${at}`, dirty: null, at, from: src };
   mkdirSync(E.deskHome(), { recursive: true });
   writeFileSync(installedFile(), `${JSON.stringify(v, null, 2)}\n`);

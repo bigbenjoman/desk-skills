@@ -41,6 +41,8 @@ of a review then means *not reviewed*, unambiguously, and the next sweep's skip 
 - **P0 and P1 on a line inside the diff: inline**, next to the code, in the same review as the body.
 - **P2, scope findings of any severity, requirement gaps**, and anything outside the diff: the body,
   under their own headings. Nine inline P2s bury the one P0.
+- **Criteria left for after the merge** (`phase-5-requirements.md`, *A criterion only a live system
+  can check*): the body, as the `--post-merge` section, never under a gaps heading.
 - **`UNVERIFIED CODE CLAIM` gaps never reach GitHub** in any form.
 
 Interactive: one call posts the body and its inline comments as a single review
