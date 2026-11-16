@@ -56,10 +56,19 @@ for arg in "$@"; do
   esac
 done
 
-# --rollback touches only ~/.claude/desk/current and installed.json, then moves what runs onto it.
+# --rollback touches only ~/.claude/desk/current, installed.json and the pristine copies, which then
+# hold the release now current, so the next install reads only your own edits as edits. Then it moves
+# what runs onto it.
 if [ "$ROLLBACK" = 1 ]; then
   if [ ! -f "$DESKDIR/bin/installed.mjs" ]; then echo "nothing rolled back: no desk is installed in $DESKDIR" >&2; exit 1; fi
   DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" rollback || exit 1
+  if [ -f "$DESKDIR/current/release-files" ]; then
+    while IFS= read -r rel; do
+      [ -f "$DESKDIR/current/$rel" ] || continue
+      mkdir -p "$(dirname "$PRISTINE/${DESKDIR#"$HOME"/}/$rel")"
+      cp "$DESKDIR/current/$rel" "$PRISTINE/${DESKDIR#"$HOME"/}/$rel"
+    done < "$DESKDIR/current/release-files"
+  fi
   DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart | sed 's/^/  /'
   exit 0
 fi
@@ -341,6 +350,12 @@ go_live() {
       mv "$DESKDIR/$d" "$old/$d"
     fi
   done
+  # The files desk installed there, as a release built here lists its own.
+  if [ -n "$old" ]; then
+    (cd "$old" && find bin templates -type f 2>/dev/null || true) | while IFS= read -r p; do
+      if [ -e "$PRISTINE/${DESKDIR#"$HOME"/}/$p" ]; then printf '%s\n' "$p"; fi
+    done > "$old/release-files"
+  fi
   ln -sfn "releases/$1" "$DESKDIR/.current.$$"
   rename_over "$DESKDIR/.current.$$" "$DESKDIR/current"
   for d in bin templates; do
@@ -375,6 +390,7 @@ install_release() {
       cp "$SRC/desk/$rel" "$STAGE/$rel"
     done < <(release_files)
     chmod +x "$STAGE"/bin/*
+    release_files > "$STAGE/release-files"
     carry_own bin "$keep"
     carry_own templates
     mv "$STAGE" "$rel_dir"

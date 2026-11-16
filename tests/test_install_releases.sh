@@ -122,27 +122,27 @@ check "AC7: the partial folder is removed, and the install says so" \
   '[ "$(ls -a "$D/releases")" = "$ls_before" ] && [[ "$out" == *"the new release was not completed and is removed; the current release is unchanged"* ]]'
 
 # ---- AC5, AC6: rollback --------------------------------------------------------------------------
-rb(){ DESK_HOME="$D" node "$D/bin/installed.mjs" rollback 2>&1; }
+rb(){ "$SH" "$R/install.sh" --rollback 2>&1; }
 out="$(rb)"; rc=$?
 check "AC5: the rollback makes the release before the current one current" \
-  '[ $rc = 0 ] && [ "$(readlink "$D/current")" = "releases/$E4" ] && [[ "$out" == "rolled back from release $E4-20261116-000006 to $E4 (commit $E4)" ]]'
+  '[ $rc = 0 ] && [ "$(readlink "$D/current")" = "releases/$E4" ] && [[ "$out" == "rolled back from release $E4-20261116-000006 to $E4 (commit $E4)"* ]]'
 check "AC5: installed.json records its commit" '[ "$(jq -r .commit "$D/installed.json")" = "$E4" ] && [ "$(jq -r .release "$D/installed.json")" = "$E4" ]'
+check "the rollback moves what runs onto it" '[[ "$out" == *"nothing to restart: no merge driver or supervisor agent is running"* ]]'
 out="$(rb)"; rc=$?
 check "AC5: a second rollback goes back one more" '[ $rc = 0 ] && [ "$(readlink "$D/current")" = "releases/$C" ] && [ "$(jq -r .commit "$D/installed.json")" = "$C" ]'
+H="$(mark H)"
+out="$(TS=20261116-000008 "$SH" "$T/install" 2>&1)"; rc=$?
+check "the install after a rollback reads none of the rolled-back release's files as your edits" \
+  '[ $rc = 0 ] && [ "$(readlink "$D/current")" = "releases/$H" ] && [[ "$out" != *"your edited"* ]]'
 check "AC8: no queue, worker or handoff file moved or changed through the installs and rollbacks" '[ "$(state)" = "$before" ]'
 
 # A desk with only one release.
 rm -rf "$D/releases" "$D/current" "$D/bin" "$D/templates"
-out="$(TS=20261116-000008 "$SH" "$T/install" 2>&1)"
+out="$(TS=20261116-000009 "$SH" "$T/install" 2>&1)"
 inst="$(cat "$D/installed.json")"
 out="$(rb)"; rc=$?
-check "AC6: with one release, the rollback says there is no earlier release" '[ $rc = 1 ] && [[ "$out" == "nothing rolled back: there is no earlier release than the current one ($F)"* ]]'
-check "AC6: and changes nothing" '[ "$(readlink "$D/current")" = "releases/$F" ] && [ "$(cat "$D/installed.json")" = "$inst" ]'
+check "AC6: with one release, the rollback says there is no earlier release" '[ $rc = 1 ] && [[ "$out" == "nothing rolled back: there is no earlier release than the current one ($H)"* ]]'
+check "AC6: and changes nothing" '[ "$(readlink "$D/current")" = "releases/$H" ] && [ "$(cat "$D/installed.json")" = "$inst" ]'
 check "AC8: still untouched" '[ "$(state)" = "$before" ]'
-
-# install.sh --rollback runs the same, and moves what runs onto it.
-out="$(grep -A6 '^if \[ "\$ROLLBACK" = 1 \]' "$R/install.sh")"
-check "install.sh --rollback runs installed.mjs rollback, then restart" \
-  '[[ "$out" == *"installed.mjs\" rollback || exit 1"*"installed.mjs\" restart"* ]]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
