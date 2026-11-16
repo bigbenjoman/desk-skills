@@ -2652,12 +2652,6 @@ function reviewRun() {
   try { return E.reviewRows().run; } catch { return null; }
 }
 
-// The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling tickets have
-// learnt, and — critically — the answers the user has already given. Compose it, never overwrite the
-// answers: answer.mjs writes into this file, and clobbering it silently sends the worker in without the
-// answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
-// sibling notes: what it needs is what the session before it did, and paying for the notes again is
-// what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
 // A ticket requeued because its own PR merged while it was parked (tailAfterMerge): its code is on the
 // base, so its worker runs the after-merge steps and nothing that writes to git or GitHub.
 const tailBrief = (t) => `## Your PR has merged: run only the steps after the merge\n\n` +
@@ -2666,6 +2660,13 @@ const tailBrief = (t) => `## Your PR has merged: run only the steps after the me
   'whatever the last round or its park left undone before the merge. ' +
   `Run only the steps left after a merge: desk-ticket Stage 8 (the Jira comment, then the move to §4 Done state where config §3 jira-close-own-merged is yes, else to §4 Review state) and Stage 9, ` +
   `then end with AUTOPILOT_DONE pr=${t.cleared.tail.pr} jira=<its status>. A step config §3 does not grant parks naming that step, as it would at Stage 8.\n`;
+
+// The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling tickets have
+// learnt, and — critically — the answers the user has already given. Compose it, never overwrite the
+// answers: answer.mjs writes into this file, and clobbering it silently sends the worker in without the
+// answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
+// sibling notes: what it needs is what the session before it did, and paying for the notes again is
+// what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
 function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null } = {}) {
   const notesFile = join(STATE, 'batch-notes.md');
   const notesHead = `${SIBLING_HEAD} in this batch have found\n\n`;
