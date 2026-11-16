@@ -79,7 +79,7 @@ printf '%s\n' "local $VM" "local my-vm" "OCI ghcr.io/cirruslabs/ubuntu:24.04" \
   "OCI ghcr.io/cirruslabs/ubuntu@sha256:94dbb9c4" "OCI ghcr.io/cirruslabs/macos-sonoma-base:latest" > "$TV"
 printf '#!/bin/sh\necho "$@" >> "%s/runner.calls"\n' "$T" > "$HOME/.claude/desk/bin/$VM"; chmod +x "$HOME/.claude/desk/bin/$VM"
 left(){ for f in "${OLD[@]}"; do [ -e "$f" ] && echo "$f"; done; }
-# DS-760: a script an earlier install put in desk/bin that the repo no longer has, beside one desk never installed.
+# A script an earlier install put in desk/bin that the repo no longer has, beside one desk never installed.
 mkdir -p "$HOME/.agents/.desk-pristine/.claude/desk/bin"
 echo old > "$HOME/.claude/desk/bin/retired-tool.mjs"; echo old > "$HOME/.agents/.desk-pristine/.claude/desk/bin/retired-tool.mjs"
 echo mine > "$HOME/.claude/desk/bin/my-own.sh"
