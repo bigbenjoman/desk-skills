@@ -13,7 +13,7 @@ import { isHeld, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, chil
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
-import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
@@ -809,6 +809,8 @@ switch (cmd) {
     refuseLeft(t, key, 'given a condition to clear on');
     const p = parseClearsWhen(rest.join(' '), { here: hereRepo() });
     if (!p.ok) throw new Error(p.why);
+    const circular = ownDraftWhy(p.cond, { ...t, key });
+    if (circular) throw new Error(`${circular}. Nothing was recorded`);
     t.park.clears_when = p.cond;
     t.updated_at = new Date().toISOString();
     save(q);
