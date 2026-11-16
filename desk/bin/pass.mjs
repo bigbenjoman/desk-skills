@@ -38,7 +38,7 @@ import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from '
 import { firstSpawnFromLogs, epicUnread, splitOwnEpic, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded, restateLapsed, RESTATE_MS, UNREADABLE } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded, restateLapsed, RESTATE_MS, UNREADABLE, ownDraftWhy } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
@@ -466,10 +466,16 @@ function againstRegister(t, question, log, cond) {
 // What clears a worker's park, from the `AUTOPILOT_PARK_CLEARS_WHEN:` after its last park (clears-when.mjs).
 // None given is none: the park waits for a person. One that does not read is kept as unreadable, for
 // the decider to restate once (decider.mjs; in a batch a session runs, that session) before the person
-// is asked. One no restate reaches in RESTATE_MS is recorded none (below).
+// is asked. One no restate reaches in RESTATE_MS is recorded none (below), and so is one only the
+// ticket's own draft leaving draft or merging makes hold (ownDraftWhy), which the park itself prevents.
 function clearsWhenOf(t, log) {
   const raw = afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN');
   const p = parseClearsWhen(raw, { here: GH_REPO });
+  const circular = p.ok ? ownDraftWhy(p.cond, t) : null;
+  if (circular) {
+    report.clears.push(`${t.key}: clears-when "${String(raw).trim()}" recorded as none, for the person: ${circular}`);
+    return { kind: 'none' };
+  }
   if (p.ok) return p.cond;
   report.clears.push(`${t.key}: unreadable clears-when (${p.why}), kept for the decider to restate: queue.mjs clears-when ${t.key} "<a form>", or none`);
   return { kind: UNREADABLE, text: String(raw).trim(), why: p.why, at: PASS_AT };
