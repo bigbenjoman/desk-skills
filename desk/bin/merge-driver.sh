@@ -195,12 +195,29 @@ if [ -n "$LOG" ]; then
   if ! LOG_STATE="$(desk_load_paths && printf '%s' "$DESK_STATE")" || [ -z "$LOG_STATE" ] || ! mkdir -p "$LOG_STATE"; then
     echo "FAIL: --log: could not resolve the batch state directory" >&2; exit 1
   fi
+fi
+# A log past LOG_ROTATE_BYTES moves to <log>.1 and the redirect re-opens a new one, with the older
+# copies shifted up and only LOG_ROTATE_KEEP kept, as the supervisor does for its own log. Checked at
+# start-up and between loops: only the main shell may re-open its redirect.
+LOG_ROTATE_BYTES="${DESK_LOG_ROTATE_BYTES:-10485760}"
+LOG_ROTATE_KEEP=3
+# rotate_log succeeds only when it moved the log aside.
+rotate_log(){
+  local f="$LOG_STATE/merge-driver.log" size i
+  size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  [ "${size:-0}" -gt "$LOG_ROTATE_BYTES" ] || return 1
+  rm -f "$f.$LOG_ROTATE_KEEP"
+  for (( i = LOG_ROTATE_KEEP - 1; i >= 1; i-- )); do if [ -f "$f.$i" ]; then mv -f "$f.$i" "$f.$((i + 1))"; fi; done
+  mv -f "$f" "$f.1"
+}
+if [ -n "$LOG" ]; then
+  rotate_log || true
   exec >>"$LOG_STATE/merge-driver.log" 2>&1
 fi
 # The last line is always the exit code, so the supervisor can tell a driver that failed from one it
 # never saw stop. The lock is removed only once this driver holds it, never another driver's.
 LOCK_HELD=""
-on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
+on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; [ -n "${SAID:-}" ] && rm -rf "$SAID"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
 trap on_exit EXIT
 
 # Who lets this driver merge: config §3 (`config`), or the batch's Stage 3 approval (`batch`). It is
@@ -275,7 +292,36 @@ trap 'STOP=143' TERM
 stop_if_asked(){ if [ -n "$STOP" ]; then exit "$STOP"; fi; }
 
 cd "$DESK_REPO_ROOT" || exit 1
-log(){ echo "$(date -u +%H:%M:%SZ) $*"; }
+# A line about one PR ("#<n> …", "epic PR #<n> …"), or the loop's draft and no-ready lines, is written
+# only when the last loop that logged about it said something else: each key keeps the lines of the
+# loop that last logged it in $SAID/<key>, under that loop's number, and the loop before's in .prev.
+# Files rather than variables, since log also runs in subshells.
+LOOP=0; SAID=""
+log(){
+  local msg="$*" key=""
+  case "$msg" in
+    *$'\n'*) ;;
+    '#'[0-9]*' '*) key="${msg%% *}"; key="${key#\#}" ;;
+    'epic PR #'[0-9]*' '*) key="${msg#epic PR \#}"; key="${key%% *}" ;;
+    'draft (still reviewing): '*|'no ready batch PRs'*) key=loop ;;
+  esac
+  case "$key" in loop) ;; *[!0-9]*) key="" ;; esac
+  if [ -n "$key" ] && [ -n "$SAID" ] && said "$key" "$msg"; then return 0; fi
+  echo "$(date -u +%H:%M:%SZ) $msg"
+}
+# said <key> <line>: records the line for this loop; succeeds when this or the key's last logged loop
+# already said it.
+said(){
+  local f="$SAID/$1" at="" hit=1
+  if [ -f "$f" ]; then IFS= read -r at < "$f" || true; fi
+  if [ "$at" != "$LOOP" ]; then
+    if [ -f "$f" ]; then mv -f "$f" "$f.prev"; fi
+    printf '%s\n' "$LOOP" > "$f"
+  fi
+  if grep -Fxqs -- "$2" "$f" || grep -Fxqs -- "$2" "$f.prev"; then hit=0; fi
+  printf '%s\n' "$2" >> "$f"
+  return "$hit"
+}
 Q="$DESK_BIN/queue.mjs"
 GATE="$DESK_BIN/gate.mjs"
 THREADS="$DESK_BIN/review-threads.mjs"
@@ -294,6 +340,9 @@ AUTHOR="$DESK_GITHUB_HANDLE"
 VERDICT_BY="$(node "$DESK_ENV_MJS" verdict-logins 2>/dev/null || printf '%s' "$AUTHOR")"
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
 SD="$DESK_STATE/merge-driver"; mkdir -p "$SD"
+# What this run has logged per PR starts empty, so each start says every PR's state once. Only the
+# lock holder gets here, so a killed run's record is no one's.
+rm -rf "$SD"/said.*; SAID="$SD/said.$$"; mkdir -p "$SAID"
 GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 
 # The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
@@ -1097,6 +1146,8 @@ pause(){
 }
 while true; do
   stop_if_asked
+  LOOP=$((LOOP + 1))
+  if [ -n "$LOG" ] && rotate_log; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
   join_queue_tickets
   release_chain
 

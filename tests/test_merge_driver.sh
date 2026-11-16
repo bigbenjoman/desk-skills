@@ -307,6 +307,45 @@ check "--log: nothing on the terminal, the loop appended to <state>/merge-driver
 out=$(bash "$B/merge-driver.sh" --tickets "T-1" --log "$T/elsewhere.log" 2>&1); rc=$?
 check "--log takes no path: one is a usage error on the terminal, and nothing is written there" '[ $rc -eq 2 ] && echo "$out" | grep -q "\[--log\]" && [ ! -e "$T/elsewhere.log" ]'
 
+# ---- DS-759: a driver running several loops logs a PR's state only when it changes, and rotates --
+# This sleep lets the driver loop on: after loop <n> it runs $T/between.<n> where there is one, and it
+# stops the driver after loop $FAKE_LOOPS.
+mkdir -p "$T/loopstub"
+cat > "$T/loopstub/sleep" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_SLEEPS"
+n=$(wc -l < "$FAKE_SLEEPS" | tr -d ' ')
+if [ -x "$FAKE_BETWEEN.$n" ]; then "$FAKE_BETWEEN.$n"; fi
+if [ "$n" -ge "$FAKE_LOOPS" ]; then kill -TERM "$PPID"; fi
+EOF
+chmod +x "$T/loopstub/sleep"
+loops(){ rm -f "$T/sleeps"; out=$(PATH="$T/loopstub:$PATH" FAKE_LOOPS="$1" FAKE_BETWEEN="$T/between" MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-2 T-4" "${@:2}" 2>&1); rc=$?; }
+prs759(){ cat > "$T/prs.json" <<EOF
+{
+  "102": { "head": "fix/T-2", "base": "main", "sha": "$SHA2", "state": "open", "draft": true,  "checks": [["test", "SUCCESS"]] },
+  "104": { "head": "fix/T-4", "base": "main", "sha": "$SHA4", "state": "open", "draft": false, "checks": [["test", "SUCCESS"], ["lint", "$1"]] }
+}
+EOF
+}
+prs759 SUCCESS; mv "$T/prs.json" "$T/prs-green.json"
+prs759 FAILURE
+printf '#!/bin/sh\ncp "%s/prs-green.json" "%s/prs.json"\n' "$T" "$T" > "$T/between.2"
+chmod +x "$T/between.2"
+loops 3
+check "DS-759 AC5: a PR whose state is unchanged is logged once over two loops" '[ $rc -eq 143 ] && [ "$(grep -c "#104 red at 444444444: \"lint\" failure" <<< "$out")" = 1 ] && [ "$(grep -c "draft (still reviewing): #102" <<< "$out")" = 1 ]'
+check "DS-759 AC6: once its state changes, the PR gets one line for the new state" '[ "$(grep -c "#104 green at 444444444" <<< "$out")" = 1 ] && [ "$(grep -n "#104 green" <<< "$out" | cut -d: -f1)" -gt "$(grep -n "#104 red" <<< "$out" | tail -1 | cut -d: -f1)" ]'
+check "DS-759: the run'\''s record of what it logged goes with it" '[ -z "$(find "$T/state/merge-driver" -name "said.*" 2>/dev/null)" ]'
+rm -f "$T/between.2"
+prs759 FAILURE
+# Limits sized so the first loop's lines take the log over and the second's do not.
+{ echo "earlier run"; printf 'old line %s\n' $(seq 1 60); } > "$T/state/merge-driver.log"; rm -f "$T/state/merge-driver.log".[1-4]
+DESK_LOG_ROTATE_BYTES=1000 loops 2 --log
+check "DS-759 AC3: a log that passes the limit mid-run is kept as merge-driver.log.1, and the next loop writes a new one" '[ $rc -eq 143 ] && [ -z "$out" ] && [ "$(head -n 1 "$T/state/merge-driver.log.1")" = "earlier run" ] && grep -q "merge driver up" "$T/state/merge-driver.log.1" && ! grep -q "merge driver up" "$T/state/merge-driver.log" && grep -q "merge driver exited 143$" "$T/state/merge-driver.log"'
+printf 'old line %s\n' $(seq 1 200) > "$T/state/merge-driver.log"; echo copy1 > "$T/state/merge-driver.log.1"; echo copy2 > "$T/state/merge-driver.log.2"; echo copy3 > "$T/state/merge-driver.log.3"
+MERGE_DRIVER_ONE_LOOP=1 DESK_LOG_ROTATE_BYTES=2000 bash "$B/merge-driver.sh" --tickets "T-2 T-4" --log >/dev/null 2>&1
+check "DS-759 AC2: a driver starting on a full log rotates it first, dropping the oldest of three copies" '[ "$(cat "$T/state/merge-driver.log.3")" = copy2 ] && [ "$(cat "$T/state/merge-driver.log.2")" = copy1 ] && grep -q "old line" "$T/state/merge-driver.log.1" && [ ! -e "$T/state/merge-driver.log.4" ] && grep -q "merge driver up" "$T/state/merge-driver.log"'
+rm -f "$T/state/merge-driver.log".[1-4] "$T/sleeps"
+
 # ---- DS-141: the written waiver for §4 Known flaky checks -----------------------------------------
 # A config that reruns, files tickets in Jira, and names `e2e` (and the required `test`) as flaky.
 sed -e 's/| `ci-rerun` | Rerun CI | `yes` | `no` |/| `ci-rerun` | Rerun CI | `yes` | `yes` |/' -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \

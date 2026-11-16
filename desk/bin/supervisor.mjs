@@ -62,7 +62,7 @@
 // batches/.done/, logged in the standing batch's log, and not run. A merge driver still running for such
 // a batch is stopped first, and the batch is not run until a later tick archives it. An explicit DESK_BATCH, DESK_QUEUE or
 // DESK_AUTOPILOT_STATE names one batch, and a tick runs only that one, with no archive check.
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, renameSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -282,7 +282,21 @@ function tick() {
 const supervisorLock = (state) => join(state, 'supervisor.lock');
 
 const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-const logTo = (state) => (lines) => appendFileSync(join(state, 'supervisor.log'), `${lines.join('\n')}\n`);
+// A log past LOG_ROTATE_BYTES moves to <log>.1 before the next write, the older copies shift up one,
+// and only LOG_ROTATE_KEEP are kept. The merge driver rotates its own log the same way.
+const LOG_ROTATE_BYTES = Number(process.env.DESK_LOG_ROTATE_BYTES) || 10 * 1024 * 1024;
+const LOG_ROTATE_KEEP = 3;
+function rotateLog(file) {
+  if (logSize(file) <= LOG_ROTATE_BYTES) return;
+  rmSync(`${file}.${LOG_ROTATE_KEEP}`, { force: true });
+  for (let i = LOG_ROTATE_KEEP - 1; i >= 1; i--) if (existsSync(`${file}.${i}`)) renameSync(`${file}.${i}`, `${file}.${i + 1}`);
+  renameSync(file, `${file}.1`);
+}
+const logTo = (state) => (lines) => {
+  const file = join(state, 'supervisor.log');
+  try { rotateLog(file); } catch { /* the line is still written, to the unrotated log */ }
+  appendFileSync(file, `${lines.join('\n')}\n`);
+};
 
 // What this tick has run once already for all its batches.
 const ranOnce = new Set();

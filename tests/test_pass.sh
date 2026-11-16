@@ -3860,4 +3860,15 @@ check "DS-689 AC6 a malformed Append-only paths row is named in the pass report,
 out=$(DESK_CONFIG="$T/config-ao.md" node "$B/pass.mjs" 2>&1)
 check "DS-689 AC6 a row of globs is not named" '! echo "$out" | grep -qF "Append-only paths"'
 
+# DS-759: base drift names the tickets still being worked whose worktree is behind main, not done ones.
+export DESK_QUEUE="$T/queue-bd.json" DESK_AUTOPILOT_STATE="$T/state-bd"; mkdir -p "$T/state-bd/logs"
+q init bd
+for k in D-1 D-2; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k" refs/remotes/origin/main; done
+git -C "$T/repo" update-ref refs/remotes/origin/main "$(git -C "$T/repo" commit-tree -p refs/remotes/origin/main -m ahead 'refs/remotes/origin/main^{tree}')"
+q add D-1; q set D-1 state=done lane=A branch=fix/D-1 "worktree=$T/wt/D-1" result.pr=901
+q add D-2; q set D-2 state=running lane=A branch=fix/D-2 "worktree=$T/wt/D-2" session_id=live-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-759 AC8 a running ticket whose worktree is behind main is listed as base drift" 'echo "$out" | grep "^base drift: " | grep -qE "D-2 is [1-9][0-9]* behind main"'
+check "DS-759 AC7 a done ticket whose worktree is behind main is not" '! echo "$out" | grep "^base drift: " | grep -qF "D-1"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
