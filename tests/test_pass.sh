@@ -3903,5 +3903,33 @@ check "DS-570 a review that left none, or one by anyone but the §1 handle, adds
   '[ "$(field PM-2 merged_at)" != null ] && [ "$(field PM-2 follow_on)" = null ] && [ "$(field PM-3 follow_on)" = null ] && [ "$(pending PM-3)" = false ]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-570 the next pass reads no PR again and adds no step twice" '[ ! -s "$T/gh-calls" ] && [ "$(field PM-1 follow_on.length)" = 3 ]'
+# A merge recorded before the pass read it still gains its steps: the merge driver's (merged_at set, its
+# kept status still open), and needs-you's done or a hand-shipped ticket's (the kept status set merged,
+# carrying the criteria an earlier read of the open PR kept).
+node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+writeFileSync('$T/pm-705.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/705'));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 705 "*) cat "$T/pm-705.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+kept='[{"step":"Check after the merge: AC7 (needs production): fill in the switch date","row":null}]'
+q add PM-4; q set PM-4 state=done result.pr=705 merged_at=2026-11-10T09:00:00Z 'pr_status={"pr":705,"state":"OPEN","checks":[]}'
+q add PM-5; q set PM-5 state=done result.pr=706 "pr_status={\"pr\":706,\"state\":\"MERGED\",\"merged_at\":\"2026-11-10T09:00:00Z\",\"checks\":[],\"post_merge\":$kept}"
+q add PM-6; q set PM-6 state=done result.pr=707 merged_at=2026-11-10T09:00:00Z "pr_status={\"pr\":707,\"state\":\"MERGED\",\"merged_at\":\"2026-11-10T09:00:00Z\",\"checks\":[],\"post_merge\":$kept}"
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-570 AC2 a PR the merge driver merged and recorded first still gains its post-merge steps" \
+  '[ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-4 merged_at)" = "\"2026-11-10T09:00:00Z\"" ] && [ "$(pending PM-4)" = true ]'
+check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its kept status names, reading no PR" \
+  '[ "$(field PM-5 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC7 (needs production): fill in the switch date\"]" ] && [ "$(field PM-5 merged_at)" != null ] && [ "$(field PM-6 follow_on.length)" = 1 ] && ! grep -qE "pr view 70[67] " "$T/gh-calls"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
+  '[ ! -s "$T/gh-calls" ] && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

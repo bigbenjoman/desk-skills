@@ -3508,6 +3508,8 @@ const prStates = {};
 // merged_at yet. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
 // counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
 const PR_FINAL = ['MERGED', 'CLOSED'];
+// A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on.
+const postMergeOwed = (t, n) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
 function readPrStatus(n) {
   const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
@@ -3519,8 +3521,9 @@ function readPrStatus(n) {
   const headCommit = (v.commits ?? []).find((c) => c?.oid && c.oid === v.headRefOid);
   // Who approved this head: `latestReviews` carries no commit, so `reviews` is read.
   const approvals = [...new Set((v.reviews ?? []).filter((r) => r?.state === 'APPROVED' && r.commit?.oid === v.headRefOid).map((r) => r.author?.login).filter(Boolean))].sort();
-  // Merged, the criteria its last desk-review left for after the merge, kept as follow-on steps below.
-  const postMerge = v.state === 'MERGED' && conflictHandle ? postMergeSteps(latestReview(v.reviews, conflictHandle)?.body) : [];
+  // The criteria its last desk-review left for after the merge, kept as follow-on steps once it merges
+  // (below). Read while it is open too, so a merge recorded from the kept status still has them.
+  const postMerge = conflictHandle ? postMergeSteps(latestReview(v.reviews, conflictHandle)?.body) : [];
   return {
     ...(postMerge.length ? { post_merge: postMerge } : {}),
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
@@ -3625,7 +3628,7 @@ for (const t of Object.values(qNow.tickets)) {
   const owed = t.reopening != null && String(t.reopening) === String(n);
   if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
     prStates[n] = t.pr_status.state;
-    if (t.pr_status.state !== 'MERGED' || t.merged_at) continue;
+    if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n))) continue;
     if (t.pr_status.merged_at) s = t.pr_status;
   } else if (n in prStates) continue;
   if (!s) {
@@ -3644,14 +3647,18 @@ for (const t of Object.values(qNow.tickets)) {
   if (s.state === 'MERGED' && !t.merged_at && !DRY) {
     const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));
     if (rec) merges.push(`${t.key} (PR #${n}): ${rec.split('\n').join('; ')}`);
-    // A criterion its review left for after the merge (DS-570) is a follow-on step from now on, which
-    // needs-you lists: the person checks it once, on the live system, rather than before the merge.
+  }
+  // A criterion its review left for after the merge is a follow-on step from now on, which needs-you
+  // lists: the person checks it once, on the live system, rather than before the merge. Kept apart from
+  // merged_at, which the merge driver, needs-you and a hand-shipped ticket may have recorded first.
+  if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
     const have = t.follow_on ?? [];
-    const later = (s.post_merge ?? []).map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null })).filter((x) => !have.some((h) => h?.step === x.step));
+    const later = s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null })).filter((x) => !have.some((h) => h?.step === x.step));
     if (later.length) {
       q('set', t.key, `follow_on=${JSON.stringify([...have, ...later])}`);
       merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
     }
+    q('set', t.key, `post_merge_read=${n}`);
   }
 }
 for (const m of merges) out.push(`merge recorded: ${m}`);

@@ -104,7 +104,7 @@ const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/
 const POST_MERGE = ['gap', 'needs', 'step']
 // What only exists once the PR has merged: the production system, a shared staging one, a deployed
 // build, a physical device, or a third party's live service. A unit, integration or local check is none.
-export const POST_MERGE_NEEDS = ['production', 'staging', 'deployed', 'device', 'third-party']
+const POST_MERGE_NEEDS =['production', 'staging', 'deployed', 'device', 'third-party']
 const POST_MERGE_STEP_MAX = 300
 const SEAT = ['role', 'agent', 'vendor', 'status', 'reason', 'note', 'fallback']
 const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
