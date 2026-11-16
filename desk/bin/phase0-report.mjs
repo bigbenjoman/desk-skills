@@ -33,6 +33,7 @@ import { triesMade } from './fix-tries.mjs';
 import { leverFingerprints } from './lever-registry.mjs';
 import { parkClass } from './failure-class.mjs';
 import { sizeOf } from './desk-q-eta.mjs';
+import { pinDisagrees } from './lever-pin.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
@@ -342,10 +343,31 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
       ci_reds: ciRuns ? reds.length : null, ci_reds_by_job: ciRuns ? ciCounts(reds) : null,
       desk_commits: [...new Set(starts.map((s) => s.desk_commit).filter(Boolean))],
       start_records: starts, login: t.login?.name ?? null, pin: pinOf(t.levers),
+      // A start that recorded levers other than the pin's set: false with no pin.
+      pin_mismatch: starts.some((s) => pinDisagrees(t.levers?.set, s.levers)),
     });
   }
   return { rows, carriedIn };
 }
+
+// Each start in the window whose recorded levers differ from its ticket's pin, oldest first:
+// [{ key, session, at, pin, levers }]. A ticket with no pin, a start that recorded no levers, and a
+// queue that cannot be read give none.
+export function pinMismatches({ queue, state, since }) {
+  let q;
+  try { q = JSON.parse(readFileSync(queue, 'utf8')); } catch { return []; }
+  return spawnRecords(state)
+    .filter((r) => Date.parse(r.at) >= since && pinDisagrees(q.tickets?.[r.ticket]?.levers?.set, r.levers))
+    .map((r) => ({ key: r.ticket, session: r.session, at: r.at, pin: q.tickets[r.ticket].levers.set, levers: r.levers }))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+const pinMismatchLines = (batches, since) => {
+  const found = batches.flatMap((b) => (existsSync(b.queue) ? pinMismatches({ queue: b.queue, state: b.state, since }) : []).map((m) => ({ b, m })));
+  if (!found.length) return ['pin mismatch: none (every start recorded its ticket\'s pinned levers)'];
+  const set = (l) => (l.length ? l.join(', ') : 'none');
+  return ['pin mismatch: starts whose levers differ from their ticket\'s pin',
+    ...found.map(({ b, m }) => `  ${m.key}${b.name ? ` (batch ${b.name})` : ''}: started ${m.at}, session ${m.session}, with ${set(m.levers)}; pinned ${set(m.pin)}`)];
+};
 
 // Every batch's rows for the window, and how red CI was read: { slug, since, until, ci, rows,
 // carried_in: { cost, tickets: [{ batch, key, cost }] }, unreadable: [{ batch, why }] }. Each input
@@ -527,6 +549,7 @@ export function report({
     : `unreadable: no 7-day usage reading in any worker log or usage probe output since ${new Date(since).toISOString()}`;
   out.push('', `total${ciRuns ? ' (red CI counts every failed run in the repo, not only batch branches)' : ''}:`);
   out.push(...figureLines(total, { ci: ciNote, quotaMissing: missing }).map((l) => `  ${l}`));
+  out.push('', ...pinMismatchLines(batches, since));
   out.push('', 'Usage readings name no login, so a 7-day window stands for the login it belongs to. Needs-you raised counts AUTOPILOT_PARK lines workers printed; answered counts answers recorded through the digest. Starts before workers recorded their desk commit and levers show as not recorded.');
   return out;
 }

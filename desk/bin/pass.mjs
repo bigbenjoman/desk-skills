@@ -51,6 +51,7 @@ import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, miss
 import { childRenames } from './migration-renames.mjs';
 import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
+import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText } from './suite-wait.mjs';
@@ -221,6 +222,18 @@ const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
 const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [], recovered: [] };
+
+// Config §3b Phase 0 levers, read per ticket: from its pin (lever-pin.mjs), and from the row only for
+// a ticket with no pin, or for no ticket at all (the epic PR). A pin that cannot be read is said once
+// and reads as every lever off.
+const ROW_LEVERS = E.levers();
+const badPins = new Set();
+const leverFor = (name, t) => {
+  try { return leverOnFor(name, t, ROW_LEVERS); } catch (e) {
+    if (!badPins.has(t.key)) { badPins.add(t.key); report.waiting.push(`${t.key}: LEVERS — ${e.message}; every lever reads off for it until the pin is fixed`); }
+    return false;
+  }
+};
 
 // The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
 // question is asked as it would be without one, and the person is told.
@@ -2754,10 +2767,12 @@ function spawnCloud(t) {
     report.parked.push(`${t.key}: ${line}`);
     return;
   }
-  // Placed before the effort lever went on, or with a malformed row: the plan keeps these local now.
-  let effort;
-  try { effort = E.workerEffort('0'); } catch (e) { park(e.message); return; }
-  if (effort !== E.NO_EFFORT) { park(CLOUD_NO_EFFORT); return; }
+  // Placed before the effort lever went on for it, or with a malformed row: the plan keeps these local
+  // now. The lever is the ticket's pin's (leverFor).
+  if (leverFor('effort', t)) {
+    try { E.parseWorkerEffort(E.configValues('worker-effort')); } catch (e) { park(e.message); return; }
+    park(CLOUD_NO_EFFORT); return;
+  }
   let text;
   try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }
@@ -3732,8 +3747,9 @@ const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // (restsOnCarries), after a rebase or any base merge; off, across clean base merges alone. On, a clean
 // verdict that does not hold is narrowed to what the base moved under it where it can be (scope:
 // reviewScope), so the head's review try reads only that.
-const reviewReuse = E.leverOn('review-reuse');
+// The lever is read per ticket (leverFor).
 const baseMoves = (t, head) => {
+  const reviewReuse = leverFor('review-reuse', t);
   // Fetched once for this head, however many of these ask.
   let got;
   const fetched = () => (got ??= !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok);
@@ -3798,7 +3814,7 @@ const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, prem
 // spent on it (fix-tries.mjs againstBase): the job's check runs at the PR's exact merge base, and,
 // for a base red hold, its newest completed run among the commits the default branch has gained since
 // that merge base, however few of them ran it. Each read once per pass; one gh cannot read is unknown.
-const FAILURE_CLASS = E.leverOn('failure-class');
+// The lever is read per ticket (leverFor).
 const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
   try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
@@ -3816,7 +3832,7 @@ const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[].sha']);
   return r.ok ? r.out.split('\n').filter(Boolean).reverse() : [];
 });
-const baseReads = (head) => (FAILURE_CLASS && head ? { baseRead: {
+const baseReads = (t, head) => (leverFor('failure-class', t) && head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
   atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
   latestOnBase: (name) => {
@@ -3919,7 +3935,7 @@ if (drafts.length) {
     markGateHold(t, s, gated);
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold || gated ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
-      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(v.headRefOid), ...(FAILURE_CLASS ? { classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid) } } : {}) })
+      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(t, v.headRefOid), ...(leverFor('failure-class', t) ? { classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid) } } : {}) })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge, targeted: c.targeted })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch), baseAt: baseAtOf(v.headRefOid) })
             // A check build that failed behind the base goes to a worker that merges it.
@@ -4309,7 +4325,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
     },
     conflictFiles: () => conflictFiles(t.branch),
     baseAt: () => baseAtOf(s.head),
-    ...baseReads(s.head),
+    ...baseReads(t, s.head),
   };
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
@@ -4429,7 +4445,7 @@ function applyFix(t, n, head, c) {
     return;
   }
   const fc = fixClass(c.fix, t);
-  if (FAILURE_CLASS && WAITING_CLASSES.includes(fc.class)) { report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${c.fix.what}, classed ${fc.class}: ${fc.waiting}`); return; }
+  if (leverFor('failure-class', t) && WAITING_CLASSES.includes(fc.class)) { report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${c.fix.what}, classed ${fc.class}: ${fc.waiting}`); return; }
   const f = { ...c.fix, class: fc.class, class_rule: fc.class_rule };
   if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? `an extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
@@ -4780,7 +4796,7 @@ async function epicStep(qx) {
     const fb = readFeedback(n);
     if (!fb) { out.push(`epic PR #${n}: its review could not be read; the next pass tries again`); return true; }
     const git = (args) => shOut('git', ['-C', MAIN, ...args]);
-    const carry = (sha, body) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && reviewCarries({ reuse: reviewReuse, from: sha, head: fb.head, base: `origin/${SOURCE}`, body, git });
+    const carry = (sha, body) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && reviewCarries({ reuse: ROW_LEVERS.on.includes('review-reuse'), from: sha, head: fb.head, base: `origin/${SOURCE}`, body, git });
     const v = readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry });
     if (v?.clean) {
       const readyPerm = E.permission('pr-ready');

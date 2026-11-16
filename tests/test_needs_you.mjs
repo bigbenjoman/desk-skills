@@ -2206,6 +2206,19 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-609 a folder in the fixtures folder is never removed for a same-named file', `${f9.ok} ${readFileSync(join(fxb('F-9'), 'kept', 'mine.txt'), 'utf8')} ${f9.line.includes(`${join(cc, 'kept')} was not copied: ${join(fxb('F-9'), 'kept')} is a folder, which is never replaced.`)}`, 'true person true');
 }
 
+// DS-639 AC6: with the row reading failure-class, the park of a ticket pinned without it is listed as
+// with the lever off: the same line, word for word, as the same park under a row of none.
+{
+  const pinOff = { ...parked('A', 45, 'Which reviewer handle goes in the PR body?'), levers: { set: [], at: minsAgo(60) } };
+  put('pinoff', { port: 3910, beat: 1, tickets: { 'P-1': pinOff } });
+  put('pinon', { port: 3911, beat: 1, tickets: { 'P-1': pinOff } });
+  const cfg = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__pinon', 'config.md');
+  writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('| Batches run by |', '| Phase 0 levers | `none` | `failure-class` |\n| Batches run by |'));
+  const lineOf = (word) => N.listText(N.collect({ word })).split('\n').find((l) => l.startsWith(`${word} P-1 `))?.split(word).join('<repo>');
+  t('DS-639 AC6 the park is listed', !!lineOf('pinon'), true);
+  t('DS-639 AC6 a row reading failure-class lists a ticket pinned without it as with the lever off', lineOf('pinon'), lineOf('pinoff'));
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 11);

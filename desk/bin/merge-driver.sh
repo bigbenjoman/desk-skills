@@ -342,10 +342,10 @@ feedback(){
     | node "$THREADS" read --handle "$VERDICT_BY" --clean "$CLEAN_ROW" 2>/dev/null
 }
 # Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
-# Nothing when GitHub could not be read.
-head_verdict(){ # head_verdict <n> [<base>]
+# Nothing when GitHub could not be read. <key> is the PR's ticket, whose pin gives the review-reuse lever.
+head_verdict(){ # head_verdict <n> [<base>] [<key>]
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" 2>/dev/null
+    | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" ${3:+--ticket "$3"} 2>/dev/null
 }
 # Prints true once GitHub has resolved the thread.
 resolve_thread(){
@@ -1003,7 +1003,7 @@ EOF_RESOLVE
   # A clean review at the head stands in for a person's approval, for every PR whatever its title. Green
   # alone does not show one: only a repo whose CI runs a §4 State check reading the verdict has it in green.
   if [ -n "$REVIEW_HOLD" ]; then
-    verdict=$(head_verdict "$n" "$want")
+    verdict=$(head_verdict "$n" "$want" "$key")
     if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
     if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then
       [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
