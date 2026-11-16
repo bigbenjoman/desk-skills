@@ -46,5 +46,12 @@
     "project/index.html"
   ],
   "home": "project",
-  "remote": []
+  "remote": [],
+  "screens": {
+    "version": "2026-11-16T18:02:15.776Z",
+    "rendered_at": "2026-11-16T18:02:59.889Z",
+    "breakpoints": [],
+    "widths": [],
+    "images": []
+  }
 }

@@ -666,7 +666,15 @@ Layout: left 2/3 stream, right 1/3 facts.
   - desk markers `desk_preflight` / `desk_spawn` as thin dividers `Spawned 09:12 · port 4831 · ben@studia.example`.
   - Controls: `Follow` toggle (on by default; scrolling up turns it off and shows `Jump to latest ↓ (12 new)`), `Show thinking` off by default, search within log (⌘F).
 - **Facts column:** Is it stuck? card: `Last tool progress 4 s ago · log grew 18 KB in the last pass · idle passes 0` → verdict `Working.` / `Slow but working.` / `May be stuck: no activity for 14 min, 2 idle passes.` Then model, effort, login, port, database, worktree, session id, tokens so far *(illustrative)* `1.9M · $5.10 notional`.
-- **Actions:** `Open conversation about this worker` (forks the session, see 8.3) · `Open log file` · `Copy session id`. No Stop button (G9). In its place a muted line: `To stop a worker, use /desk-reboot or the terminal. Desk has no safe stop button yet.`
+- **Actions (updated 16 Nov, DS-743):** `Open conversation about this worker` (forks the session, see 8.3) · `Open log file` · `Copy session id` · `Stop worker…` (outline). Each Workers tile has a ghost `Stop…` beside `Open`. Both run `queue.mjs stop <KEY>` (DS-742) through the write path (DS-703). The old line `To stop a worker, use /desk-reboot or the terminal. Desk has no safe stop button yet.` is gone.
+  - **Confirm (inline two-step, not a typed confirm: a stop can be undone, since the work is committed and the ticket held).** Opens in place, focus on `Keep running`:
+    `Stop DS-676 and hold it?`
+    `Ends its worker, commits any uncommitted work on its branch and holds DS-676. Nothing is lost: answer its held item with start and a new worker picks up on the same branch.`
+    `Keep running` (outline, focused) · `Stop and hold` (destructive) · muted `Esc keeps it running.` Caption `Runs: queue.mjs stop DS-676`.
+  - **Busy:** the button reads `Stopping DS-676…` (busy, disabled) beside `Committing its work. The stream stays open until the worker ends.`
+  - **Exit 0:** ok alert `Stopped at 10:14. DS-676 is held.`, the command's output as written in mono (`DS-676: committed 3f9a2c1 on ds-676-saved-canvas-stitch · held`), then `It's in Needs you. Answer it with start to resume.` The tile and state line read `◆ held` `held by you at 10:14 · 4/9 Verify`.
+  - **Exit 11:** warn alert `queue.mjs stop refused (exit 11)`, the refusal as written in mono (`DS-676 has no running worker`), then `It may have finished or been stopped already. The Workers list is current.` Nothing reads as stopped.
+  - Board: canvas v6, section 05, `Stop · confirm and result (DS-743)`.
 - Accessibility: stream region `aria-live="polite"` announces only stage changes and the stuck verdict.
 
 ### 7.3 States
@@ -965,7 +973,7 @@ All shortcuts are listed in tooltips (`Record answer ⏎`) and in `?`. Nothing i
 ## 14. Assumptions to confirm with the user
 1. Inbox as the landing screen (not Repos). Change to Repos if the user mostly opens the app to watch, not answer.
 2. Needs you sits at the top of a queue list (desk-q puts it last). Chosen because the app is scanned for action.
-3. No Stop button until G9 exists.
+3. ~~No Stop button until G9 exists.~~ **Resolved 16 Nov:** G9 is `queue.mjs stop` (DS-742); the Stop button and its confirm are drawn on canvas v6 (§7.2, DS-743).
 4. Repo config stays read-only; all changes through `/desk-setup`.
 5. The 1 s "seen" guard on `⏎` won't annoy. Lower to 0.5 s if testing shows friction with no wrong answers.
 6. `{jira-site}` value per repo (draw as `jira.example.net`).
