@@ -78,9 +78,10 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   blocker in no batch that the ticket was admitted behind (`held_outside`) is not STUCK: the pass
   lifts it once it is Done in Jira and its PR has merged to the batch's base. In a batch the
   supervisor runs, the pass also admits such a blocker into the batch (`intake.mjs admit`, `--into`
-  a named batch), once per held ticket and at most three a pass, unless it is the person's step, is
-  outside §4 Jira project, or the held item was put off with not-now. A blocker intake refuses stays
-  in desk-needs-you to admit by hand.
+  a named batch), once per held ticket (a triage a usage limit cut off does not count, and is tried
+  again once it lifts) and at most three a pass, unless it is the person's step, is outside §4 Jira
+  project, or the held item is put off with not-now as desk-needs-you judges it (one a moved blocker
+  brought back is not). A blocker intake refuses stays in desk-needs-you to admit by hand.
 
 **A `blocked-until-YYYY-MM-DD` label holds a ticket until that day**, read on this machine's local
 date from its triage record. The pass parks it `held by orchestrator: blocked until <date>`, shows
