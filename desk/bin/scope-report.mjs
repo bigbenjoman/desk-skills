@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { globToRegExp } from './gate.mjs';
 import { LOCKFILES } from './test-scope.mjs';
+import { isNone } from './desk-env.mjs';
 
 // Always incidental, whatever the row says.
 export const TEST_GLOBS = Object.freeze(['**/*.test.*', '**/*.spec.*', 'test/**', 'tests/**']);
@@ -27,7 +28,7 @@ export function incidentalGlobs(items) {
 // as none, with `bad` naming the row, so the collision check runs as it would with no row.
 export const APPEND_ONLY_ROW = 'config §4 "Append-only paths"';
 export function appendOnlyGlobs(items) {
-  if (items == null || (items.length === 1 && /^none$/i.test(String(items[0]).trim()))) return { globs: [], bad: null };
+  if (items == null || isNone(items)) return { globs: [], bad: null };
   const globs = items.map((s) => String(s).trim());
   const wrong = globs.filter((g) => !g || /\s/.test(g) || g.startsWith('/') || g.split('/').includes('..'));
   if (!globs.length || wrong.length) return { globs: [], bad: `${APPEND_ONLY_ROW} is not a list of path globs (${wrong.join(' | ') || 'no items'})` };
