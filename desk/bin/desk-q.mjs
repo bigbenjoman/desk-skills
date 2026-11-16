@@ -36,7 +36,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
-import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark } from './batch-state.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -120,6 +120,8 @@ function stateOf(q, t, ctx, seen) {
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
+  const ph = parkHold(q, t, ctx, seen);
+  if (ph) return ph.k;
   if (worktreeBusy(t)) return 'needs';
   if (answeredPark(t, ctx) || readPark(t, ctx) || clearsPark(t)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
@@ -221,6 +223,18 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   seen.delete(t.key);
   return each.find((e) => e.k === 'needs' && !e.step) ?? each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
 }
+
+// What a ticket parked at triage for its own reason (triagePark) waits on while its held_by still names
+// an unmerged blocker that moves without the user, or that is only the person's own step (needs-you
+// lists the step, with the park among those waiting on it), as holdOf reads it; else null. Its own
+// question is asked once nothing holds it, or at once where the hold itself needs the user.
+function parkHold(q, t, ctx = NOBODY, seen = new Set()) {
+  if (!triagePark(t) || !unmergedBlockers(q, t).length) return null;
+  const h = holdOf(q, t, ctx, seen);
+  return h.k === 'waiting' || h.step != null ? h : null;
+}
+// What a held ticket, or a triage park held behind its blockers, waits on (holdOf), else null.
+export const holdShown = (q, t, ctx = NOBODY) => (isHeld(t) ? holdOf(q, t, ctx) : parkHold(q, t, ctx));
 
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
 // One in no batch that is the person's own step (ctx.stepOf) needs them, and is `step`: needs-you lists
@@ -469,10 +483,11 @@ function draftWhy(u) {
 }
 
 // Whether following holds from `from` reaches `key`: a cycle, at any depth, that nothing releases.
+// A triage park keeps its holds in held_by (heldBehindOf), so a cycle can run through one.
 function holdsReach(q, from, key, seen = new Set()) {
   if (from === key) return true;
   const ft = q.tickets?.[from];
-  if (seen.has(from) || !ft || !isHeld(ft)) return false;
+  if (seen.has(from) || !ft || !(isHeld(ft) || triagePark(ft))) return false;
   seen.add(from);
   return unmergedBlockers(q, ft).some((p) => holdsReach(q, p, key, seen));
 }
@@ -2605,7 +2620,8 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'stuck') return [[outsideText(t), null]];
   // One with a question of its own needs the user for that, whatever it is held behind.
   if (heldAsks(t)) return [[`${t.open_questions} triage question(s) open: answer them`, null]];
-  if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
+  const h = holdShown(r.q, t, r.ctx);
+  if (h) return h.text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
   const wb = worktreeBusy(t);
   if (wb) return [[`${busyPark(t) ? `${busyPark(t).question} · ` : ''}${worktreeBusyText(wb)}`, null]];
   const f = fixOn(t);
@@ -2916,7 +2932,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const ww = width == null ? 96 : Math.max(20, Math.min(96, width - 2));
   const shows = (id) => open == null || open.has(id);
   const can = { a: false, y: false, f: false };
-  const h = isHeld(t) ? holdOf(r.q, t, r.ctx) : null;
+  const h = holdShown(r.q, t, r.ctx);
   // The key bold, the state in its colour, the facts after it grey; then the title, then on the rail
   // whether it moves without the user, any command alone on its own line.
   const head = [
