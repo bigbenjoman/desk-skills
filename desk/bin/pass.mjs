@@ -3326,8 +3326,8 @@ for (const t of onTracker) {
 // alone (plan-batch handed it there). Each such blocker is lifted from the hold, as is one the record
 // no longer lists (its link was removed, so it blocks nothing), and one that is the ticket's own epic
 // (ownEpicOf) at once; one admitted to this batch since is left in held_by as an ordinary hold,
-// released when it merges here. One Done under a resolution that ships nothing stays, raised once
-// (wont_do_link), until its link is removed. The merge driver never releases a
+// released when it merges here. One Done under a resolution that ships nothing is not Done here, even
+// with no PR left to land: it stays, raised once (wont_do_link), until its link is removed. The merge driver never releases a
 // ticket held outside its batch, so lifting the last blocker releases it here.
 // Whether epic `key`'s batch, `qO` itself or the repo's batch named for it, recorded its epic PR merged.
 // The supervisor archives a batch whose epic PR merged before its own pass runs, so a merge nothing
@@ -3357,7 +3357,7 @@ const epicMerged = (qO, key) => {
     const rec = triageRec(t.key);
     const ownEpic = outside.filter((p) => !qO.tickets[p] && ownEpicOf(rec).includes(p));
     const blockers = rec?.blockers;
-    const done = new Set((blockers ?? []).filter((b) => b?.category === 'done').map((b) => b.key));
+    const done = new Set((blockers ?? []).filter((b) => b?.category === 'done' && !closedUnlanded(b)).map((b) => b.key));
     const unlinked = Array.isArray(blockers) ? outside.filter((p) => !qO.tickets[p] && !ownEpic.includes(p) && !blockers.some((b) => b?.key === p)) : [];
     const isLanded = (p) => { if (!landed.has(p)) landed.set(p, landedOn(p, DEFAULT_BRANCH)); return landed.get(p) === true; };
     // An epic whose own batch (this one, or the batch named for it) landed its base through its epic

@@ -314,8 +314,8 @@ mkdir -p "$T/state/triage"
 rec(){ printf '%s' "$2" > "$T/state/triage/$1.json"; }
 rec KAN-50 '{"ticket":"KAN-50","lane":"A","branch":"b"}'
 out=$(node "$B/ticket-facts.mjs" KAN-50 2>&1); rc=$?
-check "facts: Blocks blockers from the inward side only, with category, summary and type" \
-  '[ $rc -eq 0 ] && [ "$(jq -c .blockers "$T/state/triage/KAN-50.json")" = "[{\"key\":\"KAN-51\",\"category\":\"done\",\"summary\":\"Apply the migration\",\"type\":\"Task\"}]" ]'
+check "facts: Blocks blockers from the inward side only, with category, status, summary and type" \
+  '[ $rc -eq 0 ] && [ "$(jq -c .blockers "$T/state/triage/KAN-50.json")" = "[{\"key\":\"KAN-51\",\"category\":\"done\",\"status\":\"Done\",\"summary\":\"Apply the migration\",\"type\":\"Task\"}]" ]'
 check "facts: other link types counted, Relates not" '[ "$(jq .other_links "$T/state/triage/KAN-50.json")" = 1 ]'
 check "facts: size from the field named Size" '[ "$(jq -r .size "$T/state/triage/KAN-50.json")" = L ]'
 check "facts: repository from the field named Repository" '[ "$(jq -r .repository "$T/state/triage/KAN-50.json")" = studia-web ]'
