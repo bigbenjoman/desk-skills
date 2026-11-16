@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -54,7 +54,7 @@ import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './revie
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
-import { groupsNow, keysOf, behindPrs } from './desk-q.mjs';
+import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, landedOn, isProgress } from './intake.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
@@ -4418,6 +4418,29 @@ for (const t of releaseDue) {
   }
 }
 for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (no PR, a closed PR, or not in the batch): decide whether it waits, is released, or is dropped`);
+// A park waiting on "pr <n> merged" whose PR's ticket is held behind it, directly or through other
+// holds, waits on itself: one line names the cycle. The PR is read for its merge state, which the done
+// tickets' reads above never cover for a held ticket's PR, so a conflict is said there, or on the park's
+// own item when there is no cycle (`parkNotes`, read into the verdict). No fix try goes to it: the hold
+// may still be the person's to settle.
+const parkNotes = new Map();
+{
+  const states = new Map();
+  const conflictOf = (n) => {
+    if (!states.has(n)) states.set(n, readPrStatus(n));
+    const s = states.get(n);
+    return s?.state === 'OPEN' && s.mergeState === 'DIRTY' ? `PR #${n} conflicts with ${s.base ?? REPO_DEFAULT}` : null;
+  };
+  for (const w of prParkWaits(qNow, (t) => !putOff(t) && !waitingOnRead(t))) {
+    const conflict = conflictOf(w.pr);
+    if (!w.path) { if (conflict) parkNotes.set(w.park, conflict); continue; }
+    const [owner, ...rest] = w.path;
+    const holds = w.path.slice(0, -1).map((k, i) => `${k} is held behind ${rest[i]}`);
+    report.waiting.push(`${w.park}: CYCLE — ${andList([w.park, ...w.path.slice(0, -1)])} wait on each other: ${w.park} is parked until PR #${w.pr} (${owner}) merges, and ${andList(holds)}` +
+      `${conflict ? `. ${conflict}` : ''}. Neither moves until you answer ${w.park}'s park or release ${owner} (${E.releaseCommand(owner)})`);
+  }
+}
+if (parkNotes.size) out.push(`PARK NOTES: ${[...parkNotes].map(([k, n]) => `${k} (${n})`).join(', ')}`);
 // A failed ticket waits on the person until it is requeued or dropped. This pass's failures are
 // printed under `failed:` with their reason, and reach the verdict's `waiting` from there.
 const failedThisPass = new Set(report.failed.map((x) => x.split(':')[0]));
@@ -4780,7 +4803,7 @@ const waiting = [
   ...report.personStalls,
   ...blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
 ];
-const parked = Object.values(qEnd.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !putOff(t) && !waitingOnRead(t)).map((t) => ({ key: t.key, question: t.park?.question ?? '' }));
+const parked = Object.values(qEnd.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !putOff(t) && !waitingOnRead(t)).map((t) => ({ key: t.key, question: t.park?.question ?? '', ...(parkNotes.has(t.key) ? { note: parkNotes.get(t.key) } : {}) }));
 const idle = batchIdle(qEnd, prState) && !gatePending && !epicPending;
 const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : report.spawned.length ? 'go_on' : 'nothing_yet';
 const lines = [];
