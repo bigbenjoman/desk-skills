@@ -591,7 +591,7 @@ if [ -d "$SRC/desk/bin" ]; then
     wrote "removed  local CI runner:$gone"
   fi
   # end retired local CI runner
-  # After the runner block, which needs the old desk-runner to stop its VM.
+  # After the block above, which runs one of the retired scripts before it removes them.
   prune_removed "$SRC/desk/bin" "$DESKDIR/bin" "$runner_kept"
   prune_removed "$SRC/desk/templates" "$DESKDIR/templates"
   # desk-q on PATH: every autopilot queue on this computer, to see, reorder and set workers.
