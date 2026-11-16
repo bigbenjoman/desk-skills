@@ -17,7 +17,7 @@ Everything here runs on one machine: no cloud, no dashboard-only resources, and 
 
 The product is a **local server, `desk-ui`**, kept alive by launchd and bound to `127.0.0.1:4823`. It imports desk-q's read model, writes only by running the existing desk commands, and brokers Claude sessions. The **window around it can be replaced.**
 
-- **Window:** Desk.app, a thin Electron shell of about 300 lines, built locally by `install.sh`, that loads the server's URL. It gives the menu-bar popover, a global hotkey, a real `desk://` scheme, the Dock badge and clickable native notifications from the first release (Ben, 2026-11-16: Electron from the start, not a PWA first).
+- **Window:** Desk.app, a thin Electron shell of about 300 lines, built locally by `install.sh`, that loads the server's URL. It ships in the first release (Phase 1, §12) with its sign-in and the Dock badge; the menu-bar popover, the global hotkey, a real `desk://` scheme and clickable native notifications follow on the same shell in the Shell features phase (Ben, 2026-11-16: Electron from the start, not a PWA first).
 - **Sessions:** structured chat over `claude -p` stream-json for park, ticket and fork conversations, and a hand-off to Ghostty or Terminal for anything that needs the full TUI. An embedded terminal (node-pty + xterm.js, run by a separate pty daemon) comes later.
 - **GitHub and Jira:** deep links always work. Embedding their pages is blocked (`x-frame-options: deny`). The app shows PR and ticket details itself, fetched server-side with `gh` and `desk-jira`.
 - **State:** the files stay the only record. The server stores no durable state, so queue data RPO and RTO are unchanged from today.
@@ -48,7 +48,7 @@ You described this as "an Electron app". I first recommended a PWA, arguing it c
 │                  + 5 s clock tick (heartbeat liveness LIVE_MS changes with no file write)                            │
 │  LogTailer ───── per-subscribed-ticket tail of <state>/logs/<KEY>.log → compact WorkerEvent stream (refcounted)      │
 │  Scheduler ───── single owner of usage probes (probesDue/probe) and cost refresh (startRefresh)                      │
-│  Commands ────── execFile allowlist: queue.mjs · answer.mjs · needs-you.mjs record · desk-env logins · supervisor.mjs │
+│  Commands ────── execFile allowlist: queue · answer · needs-you record · desk-env logins, subscription · supervisor  │
 │                  exit 0/10/11 → HTTP; stdout returned verbatim; every call appended to ui/audit.jsonl                │
 │  Links ───────── gh pr view/diff/api, desk-jira get (per-repo creds) → 30-60 s cache keyed by head SHA / updated     │
 │  SessionBroker ─ spawns claude (stream-json) with the repo's login (CLAUDE_CONFIG_DIR), not in machineBudget          │
@@ -75,7 +75,7 @@ Each decision gives the choice, the trade-off, the failure mode it guards agains
 | # | Decision | Trade-off | Failure mode it guards against | Cost to reverse |
 |---|---|---|---|---|
 | A1 | **Server is the product; the shell is a thin client.** All logic lives in `desk-ui.mjs`. The shell only renders. | One extra process and a loopback hop (under 1 ms). | Logic locked into an Electron main process, which is the Orca shape: about 900 IPC channels and a forced rewrite to change shells. | Low. Nothing depends on the shell. |
-| A2 | **Shell: Desk.app, a thin Electron shell, from the start** (Ben, 2026-11-16), loading the fixed origin `http://127.0.0.1:4823`. | About 120 MB, plus an Electron major roughly every 8 weeks (keep the shell small so a bump is a version change). | A first release with no tray glance (S1), no inbound deep links (E4) and no clickable notifications, resting on two unverified PWA spikes (`challenge.md` D-1). | Low. Nothing in the server depends on the shell. Moving the port is the one expensive change (see A4). |
+| A2 | **Shell: Desk.app, a thin Electron shell, from the start** (Ben, 2026-11-16), loading the fixed origin `http://127.0.0.1:4823`. | About 120 MB, plus an Electron major roughly every 8 weeks (keep the shell small so a bump is a version change). | Building the first release on two unverified PWA spikes (`challenge.md` D-1), then replacing the shell to get the tray glance (S1), inbound deep links (E4) and clickable notifications. | Low. Nothing in the server depends on the shell. Moving the port is the one expensive change (see A4). |
 | A3 | **The shell is built locally by `install.sh`** whenever its source changed. A locally built `.app` carries no quarantine flag, so personal use needs no notarisation; a fixed ad-hoc signing identity keeps macOS permissions across rebuilds. | An install may rebuild the app (about a minute). | An app that drifts from the installed server, or a rebuild that makes macOS ask for permissions again. | Low. Delete `Desk.app`; the server keeps running and desk is unchanged. |
 | A4 | **Fixed port 4823**, checked against `repoPortClaims()` / `portClashes()` at install and on every start. On a clash it refuses to start; it never moves. | A port can collide with a future repo's dev range. | The window's origin changing silently: the origin is what the shell allows, what the server's Origin check expects and what the service worker caches under. | Medium. The shell's allowed origin and the server's Origin rule change together. |
 | A5 | **The server keeps no durable state.** Files are the database and the server holds only caches. | Each read recomputes, but that is cheap: `queue.json` is about 266 KB at most. | The app and the TUI disagreeing, and losing data when the server crashes. | None. |
@@ -160,7 +160,7 @@ type InboxItem = {
   id: string;                     // stable: `${repo}:${ticket}:${kind}:${parkRound}`
   cause: string | null;           // G3 grouping key
   kind: "parked"|"session"|"spine"|"plan"|"triage"|"held"|"stopped"|"pr"|"worktree"
-      | "usage"|"base-push"|"config"|"templates"|"unset"|"reviewer"|"step";
+      | "usage"|"base-push"|"config"|"templates"|"unset"|"reviewer"|"step"|"lever";
   repo: string; ticket: string | null; waitedMs: number;
   question: string;               // verbatim, never summarised
   gateBlock: string | null;       // verbatim JIRA COMMENT / transition block when present
@@ -188,13 +188,13 @@ type WorkerEvent =
 | `GET /api/inbox?settle=0` | `{ items: InboxItem[], asOf, settledAt }` | `needs-you.mjs list --json --no-settle` (new, gap G2). `settle=1` runs the settling variant, at most once a minute |
 | `GET /api/decisions?since=<ISO>` | `{ items: {id, at, repo, ticket, question, options, chose, category, pr, source}[] }` | `decisions.jsonl` |
 | `GET /api/digest/:date/:slot` | `{ md, items[] }` | `digest/*.md` |
-| `GET /api/usage` | `{ logins: {name, windows: UsageWindow[], standby}[], pace: {projectedAt, hitsLimitAt} }` | usage probes (server-owned loop) |
+| `GET /api/usage` | `{ logins: {name, email, windows: UsageWindow[], state: "default"\|"unused"\|"off"}[], pins: {slug, subscription}[], pace: {projectedAt, hitsLimitAt} }` (DS-616: no standby, no rotation) | usage probes (server-owned loop) |
 | `GET /api/costs?period=` | `{ infra: {github, vercel, aws}, tokens: {byRepo, byDay, byCaller} \| null }` | `costs/cache.json`, `tokens.jsonl` (G11, v2) |
 | `GET /api/health` | `health.json` + supervisor and merge-driver liveness | files |
 | `GET /api/prs/:repo/:n` | `{ title, state, draft, mergeable, reviewDecision, checks[{name, state, url, runId, jobId}], reviews[], threads[], files[], gate: evaluateGate(), asOf }` | `gh pr view --json`, `gh api graphql` (threads), cached by head SHA, 60 s |
 | `GET /api/prs/:repo/:n/diff` | `text/x-diff`, capped at 2 MB, "open on GitHub" beyond that | `gh pr diff` |
 | `GET /api/jira/:key` | `{ summary, status, assignee, priority, descriptionHtml (sanitised), comments[], url, asOf }` | `desk-jira get --json`, cached on `updated`, 30 s |
-| `GET /api/config/:slug` | read-only `{ rows[{section, key, value, todo}] }` | `desk-env ids --json` / `get` (never a raw read of config.md) |
+| `GET /api/config/:slug` | read-only `{ rows[{section, key, value, todo}] }` | `desk-env get` per row, with the ids from `desk-env ids` (text only today; a `--json` mode is **planned**) (never a raw read of config.md) |
 
 ### 4.3 Writes
 
@@ -202,15 +202,16 @@ Every write maps one-to-one to an existing command. The response is always `{ ex
 
 | Method / path | Body | Command (execFile, fixed argv) |
 |---|---|---|
-| `POST /api/inbox/:id/record` | `{ action, text? }` | `needs-you.mjs record <ticket> <action> [text]` |
+| `POST /api/inbox/:id/record` | `{ action, text? }` | `needs-you.mjs record <repo> <ticket> <action> [text]` (the repo and ticket come from the item) |
 | `POST /api/inbox/group/:cause/record` | `{ action, text?, exclude: string[] }` | sequential `record` per member; returns per-item results |
 | `POST /api/repos/:slug/tickets/:key/answer` | `{ text, approve?: boolean }` | `answer.mjs <KEY> [--approve] "<text>"` |
 | `POST /api/repos/:slug/move` | `{ key, to: "top"\|"bottom"\|{before:key}\|{after:key} }` | `queue.mjs move …` (as desk-q `up/down`) |
 | `POST /api/repos/:slug/workers` | `{ n }` | same path as `desk-q <repo> workers <n>` |
-| `POST /api/repos/:slug/batch/approve` | `{ grant: "merge"\|"undraft"\|"base-push"\|"images", confirm: "<typed>" }` | `queue.mjs set-batch approved.<grant>` |
+| `POST /api/repos/:slug/batch/approve` | `{ grant: "merge"\|"undraft"\|"base_push"\|"workers", confirm: "<typed>" }` | `queue.mjs set-batch approved.<grant>=true` (the keys desk reads: `approved.merge`, `approved.undraft`, `approved.base_push`, `approved.workers`) |
 | `POST /api/repos/:slug/supervisor` | `{ on: boolean, confirm: "<typed repo slug>" }` | `supervisor.mjs install\|uninstall` |
-| `POST /api/decisions/:id/override` | `{ chose, text? }` | the digest override path (`answer.mjs` / `needs-you record override`) |
-| `POST /api/logins` | `{ op: "set"\|"remove", name, … }` | `desk-env logins set/remove` |
+| `POST /api/decisions/:id/override` | `{ chose, text? }` | `needs-you.mjs record <repo> <ticket> override <decision-id> "<choice>"`, which records through `digest.mjs`'s override |
+| `POST /api/logins` | `{ op: "set"\|"remove"\|"default", tool, name, … }` | `desk-env logins set/remove/default` |
+| `POST /api/repos/:slug/subscription` | `{ to: "default" \| "<email>" }` | `desk-env subscription set <slug> <default\|email>` |
 
 Things the app deliberately does not do:
 - **No stop-worker endpoint** until `queue.mjs stop <KEY>` exists (gap G9).
@@ -259,7 +260,7 @@ The stream supports `Last-Event-ID` (= `rev`). On connect, or when the server's 
 | `worker` | `{ slug, key, event: WorkerEvent }`, only for tickets the client subscribed to via `GET /api/events?watch=DS-676,DS-680` (or a re-subscribe call) |
 | `usage` | `{ login, windows: UsageWindow[] }` |
 | `health` | `{ failing: string[], results }` |
-| `notify` | `{ key, title, body, route: "/inbox/<id>" }`, in-app toast; and OS-level only when the shell is the notifier (section 8) |
+| `notify` | `{ key, title, body, route: "/inbox/<repo>/<key>/<kind>" }`, in-app toast; and OS-level only when the shell is the notifier (section 8) |
 | `server` | `{ version, restartRequired: boolean }`, sent after `install.sh` replaces files |
 | `ping` | `{ at }` every 15 s (keeps proxies and sleep or wake detection honest) |
 
@@ -279,7 +280,7 @@ The stream supports `Last-Event-ID` (= `rev`). On connect, or when the server's 
 
 ## 6. Interactive Claude sessions
 
-All spawns run in the server with the batch's login (`claudeChoice` → `CLAUDE_CONFIG_DIR`), so billing and usage pacing land on the right subscription. **None is counted in `machineBudget`**, which counts queue workers only (updated 15 Nov, Ben). The app is kept from bypassing the cap by its own limits instead: the usage guard, at most 4 concurrent UI sessions and at most 10 creations per 10 min (§9).
+All spawns run in the server with the repo's subscription (`repoSubscription` in `desk/bin/logins.mjs`, the login folder → `CLAUDE_CONFIG_DIR`), so billing and usage pacing land on the right subscription. **None is counted in `machineBudget`**, which counts queue workers only (updated 15 Nov, Ben). The app is kept from bypassing the cap by its own limits instead: the usage guard, at most 4 concurrent UI sessions and at most 10 creations per 10 min (§9).
 
 **Fixed command template** (the server builds it; the client never supplies argv):
 
@@ -307,7 +308,7 @@ cwd = the ticket's worktree when no worker holds it, else a read-only scratch cl
 **Permission prompts in chat:**
 - **MVP:** sessions run with the batch's §3 allow-list as settings. Anything outside it is denied, and the chat shows "needs a permission the app doesn't grant — continue in terminal" with a hand-off button.
 - **v1.5:** add `--permission-prompt-tool` pointing at a tiny stdio MCP server, `desk-ui-approve.mjs`, that relays each request to the WebSocket as a `permission_request` and blocks until the user answers.
-- The alternative, `@anthropic-ai/claude-agent-sdk` with `canUseTool` (what Orca uses, pointing `pathToClaudeCodeExecutable` at the user's CLI), is cleaner but adds the first npm runtime dependency to the server. Adopt it at the Electron step if the MCP relay proves clunky.
+- The alternative, `@anthropic-ai/claude-agent-sdk` with `canUseTool` (what Orca uses, pointing `pathToClaudeCodeExecutable` at the user's CLI), is cleaner but adds the first npm runtime dependency to the server. Adopt it in place of the v1.5 relay if the MCP relay proves clunky.
 
 **Token discipline** (this is where the app can save or waste the most):
 - The default is a **fresh session seeded with about 2-6 KB of briefing**, not a resume.
@@ -384,25 +385,29 @@ cwd = the ticket's worktree when no worker holds it, else a read-only scratch cl
 | Embedding github.com or Jira in an iframe | **No** | `x-frame-options: deny` and `frame-ancestors 'none'`, checked live 2026-11-15. |
 | Real GitHub or Jira page inside the app | **Electron only**, via `WebContentsView` (a top-level context, so XFO does not apply) | Needs `session.fromPartition('persist:github')` and its own login. **Not recommended**: a second cookie store and login to maintain, for little gain over native panels. |
 | Native rendering | **Yes, recommended** | `GET /api/prs/...` and `/api/jira/...` (section 4.2): checks, review threads, files and diff for PRs; status, assignee, description and comments for Jira. Each panel has "Open on GitHub" or "Open in Jira". |
-| Inbound deep link (`desk://ticket/DS-676` from Slack or Jira) | **`desk://<route>`** via `setAsDefaultProtocolClient` + single-instance forwarding | A link opens Desk.app whether it is running or not. |
+| Inbound deep link (`desk://t/desk-skills/DS-676` from Slack or Jira) | **`desk://<route>`** via `setAsDefaultProtocolClient` + single-instance forwarding | A link opens Desk.app whether it is running or not. |
 | Writing to Jira from the app | Only by approving a parked gate block verbatim | `answer.mjs --approve`. The worker does the write through `desk-jira`. The app never calls the Jira write API. |
 
 **Route table** (SPA, shared by deep links):
-- `/inbox[/:id]`
-- `/r/:slug[/queue|timeline|decisions|settings]`
-- `/t/:key[/overview|live|pr|jira|cost|history]`
-- `/workers`
+- `/inbox[/:repo/:key/:kind]`
+- `/repos`, `/repos/:repo[/queue|timeline|decisions|settings]`
+- `/t/:repo/:key[/overview|live|pr|jira|cost|history]`
+- `/workers[/:repo/:key]`
 - `/usage`
+- `/levers`
 - `/health`
+- `/decisions`
 - `/conversations[/:id]`
-- `/settings`
+- `/settings[/:section]`
+
+The screen spec's "Route" lines use these same shapes.
 
 ---
 
 ## 11. Packaging and install (`install.sh`)
 
 **Layout:**
-- `desk/bin/desk-ui.mjs`: the server (zero-dependency) plus `desk-ui-approve.mjs` (v1.5).
+- `desk/bin/desk-ui.mjs`: the server (zero-dependency) plus `desk-ui-approve.mjs` (v1.5). A `desk-ui.mjs doctor` mode that checks the launchd job, the port and the token is **planned**, for the server-down card (screen-spec 2.8).
 - `desk/ui/`: the SPA. It is the repo's first `package.json`, scoped to that folder: Vite, React 19, Tailwind v4, shadcn/ui, with a committed lockfile.
 - `desk/shell/`: the Electron shell's `package.json`, `main.mjs` and `preload.mjs`.
 - `desk/ptyd/` (later): node-pty with its own `node_modules`.
@@ -415,7 +420,7 @@ cwd = the ticket's worktree when no worker holds it, else a read-only scratch cl
 5. Writes `~/Library/LaunchAgents/com.desk-skills.ui.plist` and runs `launchctl bootstrap gui/$UID`, then `kickstart -k` on update. The plist sets the absolute node path (mise) and `PATH` so `gh`, `claude` and `desk-jira` resolve under launchd.
 6. Sends `server.restartRequired` so open windows reload.
 7. **Builds Desk.app if the shell's source hash changed:** `npm ci && electron-builder --dir` in `desk/shell`, copied to `~/Applications`; if the build fails the previous `Desk.app` stays and the installer warns but still succeeds. On first run it opens Desk.app, which signs itself in. **Nothing prints the token.**
-8. Uninstall: the existing `launchctl` unload loop (`install.sh:552-557`) gains the `com.desk-skills.ui` (and `.ptyd`) labels, and `~/Applications/Desk.app` is removed.
+8. Uninstall (**planned**): `install.sh` has no uninstall mode today, so one is added that boots out the `com.desk-skills.ui` (and `.ptyd`) launchd jobs and removes `~/Applications/Desk.app`.
 
 **Rollback:** unload `com.desk-skills.ui`, then remove `~/Applications/Desk.app`, `~/.claude/desk/ui/` and `~/.desk-autopilot/ui/`. No queue data is touched. **Fully reversible.**
 

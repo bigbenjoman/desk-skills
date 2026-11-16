@@ -245,13 +245,13 @@ The app's service worker, in Desk.app's window, keeps the shell and the last sna
 - Title: `Desk can't reach its local server`
 - Body: `The desk-ui server on 127.0.0.1:4823 isn't answering. Your queues are safe: workers and the supervisor keep running without it. You're looking at the copy from 10:06.`
 - Code block with copy button: `launchctl kickstart -k gui/$(id -u)/com.desk-skills.ui`
-- Secondary: `If it keeps stopping, run desk-ui doctor in Terminal.`
+- Secondary: `If it keeps stopping, run desk-ui doctor in Terminal.` (**planned**: `desk-ui.mjs doctor`, `desktop-architecture.md` §11)
 - Status line: `Trying again in 5 s… (attempt 3)` with `Try now` button.
 - When the server returns: banner collapses, data reloads, toast `Reconnected. Showing live data.`
 - Writes while down: every action button disabled with tooltip `Can't change anything until the server is back.`
 
 ### 2.9 First run / not set up (shown in body)
-- **Desk not installed:** `Desk isn't installed on this Mac yet.` body `Install it, then reopen this window.` code `git clone …desk-skills && ./install.sh` with copy. (Rare; install.sh installs the server and Desk.app together.)
+- **Desk not installed:** `Desk isn't installed on this Mac yet.` body `Install it, then reopen this window.` code `git clone https://github.com/bigbenjoman/desk-skills && cd desk-skills && ./install.sh` with copy. (Rare; install.sh installs the server and Desk.app together.)
 - **Installed, 0 repos:** pre-staged first action, not an illustration. Title `Set up desk in your first repo`. List of git repos found under `~/studia/`: `desk-skills`, `studia-web`, `studia-zendesk`… each with `Set up` button that opens a `/desk-setup` conversation in that folder. Footer: `Desk only acts in repos you set up.`
 - **Notifications permission:** inline card on Inbox, once: `Get told when production breaks or something needs you.` buttons `Allow notifications` / `Not now`.
 
@@ -428,7 +428,7 @@ Compact (1024): list 400, detail flex; filter dropdowns collapse into one `Filte
     - Submitting: `Approving…`, block and buttons locked.
     - Recorded: `✓ Approved at 10:14. The worker posts exactly this text at its next pass.` The block stays visible, read-only.
     - Refused (exit 11): `Alert` with verbatim stdout; the block stays; `Choose another answer`.
-14. **Batch grant, typed confirm (new 15 Nov).** A grant for a whole batch (`merge`, `undraft`, `base-push`, `images`; `queue.mjs set-batch approved.<grant>`) uses the 9.4 Dialog pattern: title `Let desk merge every green PR in studia-web's batch?` · body names the effect and the count (`9 PRs now, and any that turn green later in this batch.`) · field `Type studia-web to confirm` · `Keep asking each time` (focused) / `Grant for this batch` (disabled until typed). The server checks the typed text too.
+14. **Batch grant, typed confirm (new 15 Nov).** A grant for a whole batch (`merge`, `undraft`, `base_push`, `workers`; `queue.mjs set-batch approved.<grant>=true`) uses the 9.4 Dialog pattern: title `Let desk merge every green PR in studia-web's batch?` · body names the effect and the count (`9 PRs now, and any that turn green later in this batch.`) · field `Type studia-web to confirm` · `Keep asking each time` (focused) / `Grant for this batch` (disabled until typed). The server checks the typed text too.
 
 ### 4.5 Kind tooltips (exact copy)
 | Kind | Tooltip |
@@ -853,7 +853,7 @@ Loading skeleton per group · Subscriptions file unreadable `desk can't read ~/.
   - Question (verbatim): `The browser half of test_stitch.mjs is skipped on CI's runner with no expiry (review P1): install desk's Playwright in CI in this PR, or give the skip an expiry and a follow-up ticket?`
   - `Chose ✓ create follow-up DS-681 (CI installs desk's Playwright, skip fails in CI) and name it on the skip`
   - `Other option: change .github/workflows/tests.yml in this PR to install desk's Playwright`
-  - Action `Override…` → inline: radio of the other option(s) or `Something else` (typed), button `Override decision` → runs `digest.mjs override <slug> <decision-id> "<choice>"`; states: busy, `Override recorded. DS-679's worker reads it at its next step.`, refused (verbatim). (In-flight, recorded and refused frames are not drawn yet, section 17.)
+  - Action `Override…` → inline: radio of the other option(s) or `Something else` (typed), button `Override decision` → runs `needs-you.mjs record <repo> <ticket> override <decision-id> "<choice>"` (it records through `digest.mjs`'s override); states: busy, `Override recorded. DS-679's worker reads it at its next step.`, refused (verbatim). (In-flight, recorded and refused frames are not drawn yet, section 17.)
   - Lever decisions (updated 15 Nov) also land here as decisions.jsonl lines, written by `levers decide` (11b), not by `digest.mjs override`.
 - Empty: `No decisions taken since the 08:00 check-in.`
 
