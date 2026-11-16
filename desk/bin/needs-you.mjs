@@ -82,7 +82,7 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, triageGate, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, triageGate, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -926,16 +926,7 @@ const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
 // A put-off item is listed anyway, first, while this many tickets of its batch are held behind it.
 export const HOLDS_BACK = 3;
 // How many held tickets of r's batch wait behind `key`: held by it, or by a ticket held behind it.
-export function heldBehind(r, key) {
-  const held = Object.values(r.q?.tickets ?? {}).filter((o) => o.key !== key && isHeld(o));
-  const behind = new Set();
-  for (let edge = new Set([key]); edge.size;) {
-    const next = held.filter((o) => !behind.has(o.key) && keysOf(o.held_by).some((k) => edge.has(k))).map((o) => o.key);
-    next.forEach((k) => behind.add(k));
-    edge = new Set(next);
-  }
-  return behind.size;
-}
+export const heldBehind = (r, key) => heldBehindOf(r.q, key).size;
 const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
 // What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
 function stillListed(r, key) {
@@ -952,6 +943,12 @@ function judged(r, x, register, reads = null) {
   if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return shown === item ? { item, l } : { item: shown, l: { status: 'holding', entry: l.entry } };
   return { item: shown, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
 }
+
+// Whether ticket `t`, held by open tickets outside its batch (desk-q's stuck), is put off with not-now
+// as this list judges it: one a moved blocker or a new action has brought back is not, and one listed
+// only because enough tickets wait behind it still is. `r` needs only the batch's slug, state directory
+// and queue (`q`), as pass.mjs has them.
+export const heldPutOff = (r, t) => ['put_off', 'holding'].includes(judged(r, { t, k: 'stuck' }, readRegister(r.stateDir)).l.status);
 
 // Records on a ticket's put-off entry the actions its item offers now, so one it gains later brings it
 // back (judged). answer.mjs and not-now.mjs add call it once they have put a question off, as this

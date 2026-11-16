@@ -445,6 +445,9 @@ check "DS-505 AC4: /desk-admit refuses a ticket stopped at the usage limit with 
 out=$(admit U-2); rc=$?
 check "DS-505 AC4: a limit with no reset time names the limit alone" \
   '[ $rc -eq 11 ] && grep -qx "not admitted U-2: triage stopped at the usage limit: run /desk-admit U-2 again once the limit lifts" <<< "$out"'
+out=$(admit U-2 --json); out2=$(admit H-2 --json)
+check "DS-569: --json names a ticket the usage limit stopped as limited, and one refused for its own reason as not" \
+  '[ "$(jq -c "[.refused, .limited]" <<< "$out")" = "[[\"U-2\"],[\"U-2\"]]" ] && [ "$(jq -c "[.refused, .limited]" <<< "$out2")" = "[[\"H-2\"],[]]" ]'
 rec H-5 A '"blockers":[{"key":"H-4","category":"new"}]'; rec H-4 A
 out=$(admit H-5 H-4 --front)
 check "admit: a blocker named in the same call goes first, and the other is held behind it" '[ "$(qget tickets.H-4.state)" = triaged ] && [ "$(qget tickets.H-5.held_by)" = H-4 ]'
@@ -549,6 +552,12 @@ rec Y-1 A '"blockers":[{"key":"X-4","category":"indeterminate"}]'
 out=$(admit Y-1); rc=$?
 check "DS-391 AC3: a ticket whose blocker is in another live batch is placed in that batch, held behind it there" \
   '[ $rc -eq 0 ] && [ "$(qget tickets.Y-1)" = undefined ] && [ "$(nget tickets.Y-1.held_by)" = "X-2|X-4" ] && [ "$(nget tickets.Y-1.held_outside)" = undefined ] && grep -q "^admitted Y-1 by hand into feature batch X-1 (lane A, size S), held behind X-2, X-4$" <<< "$out"'
+# Z-9 belongs to no batch but the one named: --into places it there, as the pass admits a held ticket's blocker.
+rec Z-9 A
+out=$(admit Z-9 --by pass --into X-1); rc=$?
+check "DS-569: admit --into joins the named live batch, wherever the ticket's record would place it" \
+  '[ $rc -eq 0 ] && [ "$(qget tickets.Z-9)" = undefined ] && [ "$(nget tickets.Z-9.admitted_by)" = pass ] && grep -q "^admitted Z-9 by pass into feature batch X-1 (lane A, size S)" <<< "$out"'
+node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); delete q.tickets["Z-9"]; f.writeFileSync(p,JSON.stringify(q))' "$NQ"
 rec E-2 A '"type":"Epic"'
 config ask; out=$(admit E-2); rc=$?; config yes
 check "DS-352 AC1: with a feature batch live, another epic is planned as its own feature batch, not refused" '[ $rc -eq 0 ] && grep -q "^plan E-2 as a feature batch beside the standing batch" <<< "$out" && ! grep -q "^not admitted E-2" <<< "$out"'
