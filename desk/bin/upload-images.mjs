@@ -36,6 +36,11 @@
 //   7 throttled: a batch stalled, which is GitHub's rate limit, so the run stopped there; or an earlier
 //     stall's retry_after has not passed, so nothing was uploaded. The links uploaded so far are in the
 //     tags file and their cells are filled, and the line printed says when it may run again.
+//   8 paced: --max <n> was given and more images were left than that, so it uploaded n and stopped;
+//     their cells are filled and the rest wait for the next run.
+//
+// pass.mjs runs it through the machine's one upload queue (upload-queue.mjs), which sets --max to
+// what the pace leaves.
 import { existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { runUpload, shotIndex, UploadStop } from './upload-batches.mjs';
@@ -43,8 +48,11 @@ import { logUpload, uploadLogFile } from './upload-log.mjs';
 import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, psRows } from './desk-env.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
-const [pr, dir] = process.argv.slice(2);
-if (!pr || !dir) { console.error('usage: upload-images.mjs <pr-number> <image-dir>'); process.exit(1); }
+const args = process.argv.slice(2);
+const maxAt = args.indexOf('--max');
+const max = maxAt < 0 ? null : Number(args[maxAt + 1]);
+const [pr, dir] = maxAt < 0 ? args : args.filter((_, i) => i !== maxAt && i !== maxAt + 1);
+if (!pr || !dir || (max != null && !(Number.isInteger(max) && max > 0))) { console.error('usage: upload-images.mjs <pr-number> <image-dir> [--max <images>]'); process.exit(1); }
 if (!existsSync(dir)) { console.error(`no such directory: ${dir}`); process.exit(1); }
 
 const perm = permission('pr-images');
@@ -140,7 +148,7 @@ const writeBody = (body) => execFileSync('gh', ['pr', 'edit', pr, '--repo', REPO
 let result;
 try {
   result = await runUpload({
-    dir, readBody, writeBody, openPage, record,
+    dir, readBody, writeBody, openPage, record, max,
     log: (l) => console.log(`[upload] #${pr} ${l}`),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
   });
