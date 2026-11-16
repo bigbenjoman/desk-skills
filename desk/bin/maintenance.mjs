@@ -328,7 +328,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
       const p = newestPassed(git, src, base, head);
       if (failed) {
         const text = `desk-skills main's ${RELEASE_CHECK} check failed (${c.word}) on ${short(head)}, so it was not installed` +
-          (p.sha ? `; ${short(p.sha)}, the newest commit before it whose check passed, is installed instead` : `: the installed version stays at ${short(base)}`);
+          (p.sha ? `; ${short(p.sha)}, the newest commit before it whose check passed, is installed in its place when nothing blocks it` : `: the installed version stays at ${short(base)}`);
         lines.push(`release: ${text}`);
         if (s.notified?.sha !== head) {
           s.notified = { sha: head, by: selfSlug(), text };

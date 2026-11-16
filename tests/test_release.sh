@@ -159,15 +159,15 @@ DESK_MAINT_NOW=2026-10-27T09:41:00Z node "$B/maintenance.mjs" step > "$T/b.out" 
 wait
 check "AC6 two passes at the same moment install once"      '[ "$(calls install)" = 2 ] && [ "$(installed)" = "$new" ]'
 
-# ---- DS-754: a head that has not passed installs the newest commit before it that has ------------
+# ---- a head that has not passed installs the newest commit before it that has --------------------
 # pass <commit>: its check passed; every other commit reads $T/check.state.
 pass(){ echo success > "$T/check.$1"; }
 echo cancelled > "$T/check.state"; inst=$(calls install); was=$new
-upstream g1; g1=$(originhead); pass "$g1"; upstream mid; mid=$(originhead); upstream head1; h=$(originhead)
+upstream g0; g0=$(originhead); pass "$g0"; upstream g1; g1=$(originhead); pass "$g1"; upstream mid; mid=$(originhead); upstream head1; h=$(originhead)
 : > "$T/check.calls"
 step 2026-10-27T09:46:00Z
 check "DS-754 AC1 a cancelled head installs the newest passing commit before it" '[ "$(srchead)" = "$g1" ] && [ "$(installed)" = "$g1" ] && [ "$(calls install)" = $((inst + 1)) ]'
-check "DS-754 AC1 the line names it and says why the head was not" 'grep -q "release: desk-skills ${was:0:12} -> ${g1:0:12} (1 commit(s)) installed, main'"'"'s tests check passed on it; main'"'"'s head ${h:0:12} was not installed: its tests check was cancelled, and is read again next pass (cancelled)" <<< "$out"'
+check "DS-754 AC1 the line names it and says why the head was not" 'grep -q "release: desk-skills ${was:0:12} -> ${g1:0:12} (2 commit(s)) installed, main'"'"'s tests check passed on it; main'"'"'s head ${h:0:12} was not installed: its tests check was cancelled, and is read again next pass (cancelled)" <<< "$out"'
 check "DS-754 AC1 checks are read newest first, and stop at the first that passed" '[ "$(tr "\n" " " < "$T/check.calls")" = "$h $mid $g1 " ]'
 check "DS-754 AC2 a cancelled head raises no failure"       '[ "$(pushes)" = 0 ] && ! grep -q "check failed" <<< "$out" && ! mlog | grep -q "check failed (cancelled)"'
 step 2026-10-27T09:47:00Z
@@ -178,7 +178,7 @@ check "DS-754 AC3 a successful re-run of the head installs it" '[ "$(installed)"
 
 upstream g2; g2=$(originhead); pass "$g2"; upstream red; f=$(originhead); echo failure > "$T/check.$f"
 step 2026-10-27T09:53:00Z
-check "DS-754 AC4 a failed head pushes once, naming it, and the newest passing commit is installed" '[ "$(pushes)" = 1 ] && grep -q "release-failed-$f" <<< "$out" && grep -q "check failed (failure) on ${f:0:12}, so it was not installed; ${g2:0:12}, the newest commit before it whose check passed, is installed instead" <<< "$out" && [ "$(installed)" = "$g2" ]'
+check "DS-754 AC4 a failed head pushes once, naming it, and the newest passing commit is installed" '[ "$(pushes)" = 1 ] && grep -q "release-failed-$f" <<< "$out" && grep -q "check failed (failure) on ${f:0:12}, so it was not installed; ${g2:0:12}, the newest commit before it whose check passed, is installed in its place when nothing blocks it" <<< "$out" && [ "$(installed)" = "$g2" ]'
 check "DS-754 AC4 the install line says why the head was not" 'grep -q "${h:0:12} -> ${g2:0:12} (1 commit(s)) installed, main'"'"'s tests check passed on it; main'"'"'s head ${f:0:12} was not installed: its tests check failed (failure)" <<< "$out"'
 inst=$(calls install)
 step 2026-10-27T09:54:00Z
