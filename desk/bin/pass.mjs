@@ -1635,7 +1635,8 @@ function tailAfterMerge(t) {
 }
 for (const t of DRY ? [] : Object.values(queue().tickets)) {
   if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t) || leftPark(t) || t.park?.claim?.session || needsSession(t) || putOff(t)) continue;
-  if (tailAfterMerge(t)) continue;
+  // null is a read that failed: left parked, so dropDuplicate never records it done unread.
+  if (tailAfterMerge(t) !== false) continue;
   if (t.branch && dropDuplicate(t)) continue;
   // Waiting on a recorded condition, or tried once already: the clears-when check or the person settles it.
   if (recorded(t.park?.clears_when) || t.park?.recovery) continue;
@@ -2666,7 +2667,7 @@ const tailBrief = (t) => `## Your PR has merged: run only the steps after the me
   `A pass found ${t.cleared.what}. Its code is on the base already, so this round does not push, rebase, merge any branch, open or edit a PR, or change code, ` +
   'whatever the last round or its park left undone before the merge. ' +
   `Run only the steps left after a merge: desk-ticket Stage 8 (the Jira comment, then the move to §4 Done state where config §3 jira-close-own-merged is yes, else to §4 Review state) and Stage 9, ` +
-  `then end with AUTOPILOT_DONE pr=${t.cleared.tail.pr} jira=<its status>. A step config §3 does not grant parks naming that step, as it would at Stage 8.\n`;
+  `then end with AUTOPILOT_DONE: pr=${t.cleared.tail.pr} jira=<its status>. A step config §3 does not grant parks naming that step, as it would at Stage 8.\n`;
 
 // The briefing carries what a fresh `claude -p` cannot infer: who to ask, what sibling tickets have
 // learnt, and — critically — the answers the user has already given. Compose it, never overwrite the
