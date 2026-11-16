@@ -500,6 +500,36 @@ export function waitingOnPark(q, t, prState = () => null) {
   return parks?.length ? parks : null;
 }
 
+// The held tickets from `from` to `to` along held_by, both ends included, or null when `from` is not
+// held behind `to`, directly or through other held tickets. Depth first, the first path found.
+function holdPath(q, from, to, seen = new Set()) {
+  if (!isHeld(from) || seen.has(from.key)) return null;
+  seen.add(from.key);
+  const preds = String(from.held_by ?? '').split('|').filter(Boolean);
+  if (preds.includes(to)) return [from.key, to];
+  for (const p of preds) {
+    const up = holdPath(q, q.tickets?.[p], to, seen);
+    if (up) return [from.key, ...up];
+  }
+  return null;
+}
+
+// Each parked ticket waiting on "pr <n> merged" (this repo's PR) for its own reason, a hold being no
+// such reason: the PR, the queue ticket whose PR it is (`owner`, another ticket, or null), and `path`
+// when that owner is held behind the park, directly or through other holds: [owner, …, park]. Such a
+// pair waits on each other and neither moves. `parked` says which parks to read.
+export function prParkWaits(q, parked = () => true) {
+  const out = [];
+  for (const a of Object.values(q.tickets ?? {})) {
+    const c = a.park?.clears_when;
+    if (a.state !== 'parked' || isHeld(a) || c?.kind !== 'pr-merged' || c.repo || !Number.isInteger(Number(c.pr)) || !parked(a)) continue;
+    const pr = Number(c.pr);
+    const owner = Object.values(q.tickets).find((t) => t.key !== a.key && t.result?.pr != null && Number(t.result.pr) === pr) ?? null;
+    out.push({ park: a.key, pr, owner: owner?.key ?? null, path: owner ? holdPath(q, owner, a.key) : null });
+  }
+  return out;
+}
+
 // The batch's worker count and whose it is. `concurrency_by: 'user'` marks a count the user set,
 // and `concurrency_user` keeps their number while the ladder lowers `concurrency` on memory, so the
 // orchestrator can return to it. Never above the §3b cap.
