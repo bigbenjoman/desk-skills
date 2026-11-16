@@ -24,7 +24,7 @@ import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutO
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
-import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from './scope-report.mjs';
+import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom } from './scope-report.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed } from './base-sync.mjs';
@@ -281,6 +281,9 @@ const SUITE_WAIT_CEILING_MS = 30 * 60 * 1000;
 let incidental = incidentalGlobs(null);
 let incidentalBad = null;
 try { incidental = incidentalGlobs(E.configValues('incidental-paths')); } catch (e) { incidentalBad = e.message; }
+// A §4 Append-only paths row that is not a list of path globs: admit and plan-batch read it as none,
+// and the report names it.
+const appendOnlyBad = appendOnlyFrom(() => E.configValues('append-only-paths')).bad;
 function recordScope(t) {
   const scope = triagedScope(STATE, t.key);
   const changed = scope && t.worktree && existsSync(t.worktree) ? changedFiles(t.worktree, `origin/${DEFAULT_BRANCH}`) : null;
@@ -3368,6 +3371,7 @@ for (const [label, items] of [['spawned', report.spawned], ['advanced', report.a
 }
 if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  ${report.outOfScope.join('\n  ')}`);
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
+if (appendOnlyBad) out.push(`collisions: ${appendOnlyBad} — read as none, so a shared append-only file still collides`);
 for (const why of unreadableQueues) out.push(`ports: ${why} — its running workers' ports were not skipped`);
 out.push(...epicLines);
 if (report.paused.length) out.push(`paused on the usage limit: ${report.paused.join(' | ')}`);

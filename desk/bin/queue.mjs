@@ -16,7 +16,8 @@ import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
+import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
 import { lock as takeDirLock, unlock, alive, writeJsonAtomic } from './dir-lock.mjs';
@@ -372,14 +373,16 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
   // The collision check plan-batch makes, against every ticket still to finish: two tickets that
   // touch one file never run at once. The person's step runs on no worker, so it collides with nothing:
-  // a hold behind it would wait on a merge that never comes.
-  const mine = new Set(stepPark ? [] : r.files_in_scope ?? []);
+  // a hold behind it would wait on a merge that never comes. A file §4 Append-only paths covers is
+  // only added to, so sharing it is no collision.
+  const mine = stepPark ? [] : r.files_in_scope ?? [];
+  const { globs: appendOnly } = appendOnlyFrom(() => configValues('append-only-paths'));
   const collides = [];
   for (const [k, other] of Object.entries(q.tickets)) {
     if (['done', 'failed'].includes(other.state) || personStepPark(other)) continue;
     if (!existsSync(join(state, 'triage', `${k}.json`))) continue;
     const files = readTriage(state, k).files_in_scope ?? [];
-    if (files.some((f) => mine.has(f))) {
+    if (sharedFiles(mine, files, appendOnly).length) {
       collides.push(k);
       other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
     }

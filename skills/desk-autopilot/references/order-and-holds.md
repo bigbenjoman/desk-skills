@@ -16,6 +16,11 @@ never chained. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names 
 disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
 contradiction is worth one line to the user, since the link may be stale.
 
+**A file tickets only add to is not shared.** A path §4 Append-only paths (`desk-env list
+append-only-paths`) covers is not counted, by `plan-batch` or by `queue.mjs admit`, so tickets that
+each only add strings to one locale file run side by side. A row that is not a list of path globs
+reads as `none`, and the pass report names it.
+
 **The user's named order is spawn priority, not a merge chain**: `plan-batch` seeds the queue
 blockers first and otherwise in the order named, and `pass.mjs` spawns in queue order, so pass the
 tickets that gate the most others first. If the user asks for a literal chain that would idle a gate,
