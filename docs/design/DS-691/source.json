@@ -1,10 +1,10 @@
 {
   "url": "https://claude.ai/artifact/5EuXvEzpkQRVuQkfUickaV",
-  "version": "2026-11-16T14:41:06.784Z",
-  "fetched_at": "2026-11-16T14:41:06.827Z",
+  "version": "2026-11-16T18:02:15.776Z",
+  "fetched_at": "2026-11-16T18:02:43.886Z",
   "from": "export",
-  "file": "design-canvas.html",
-  "sha256": "48e105fb61899a1dd0174ce4aaf4b4ef0198bce6cd8e1c7ed98d20ae8e920608",
+  "file": "desk-canvas-v6.html",
+  "sha256": "d1feb71b1451380ec8b82ccb14820c1230d84fdecef747fece9bfc74b01027da",
   "kind": "page",
   "dir": "DS-691",
   "tickets": [
@@ -34,6 +34,10 @@
     },
     {
       "key": "DS-708",
+      "boards": []
+    },
+    {
+      "key": "DS-743",
       "boards": []
     }
   ],
