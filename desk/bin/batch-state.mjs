@@ -178,10 +178,11 @@ export function unreadCanvases(r) {
 
 // The park for a ticket in any lane whose design no worker can read, or null: a session that can read
 // the artifact snapshots it, since a worker has no Artifact tool and would only park asking for it.
+const DESIGN_PARK_PREFIX = 'design not snapshotted: ';
 export function designPark(r) {
   const urls = unreadCanvases(r);
   return urls.length
-    ? `design not snapshotted: ${urls.join(', ')}: snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
+    ? `${DESIGN_PARK_PREFIX}${urls.join(', ')}:snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
     : null;
 }
 
@@ -368,14 +369,22 @@ export const laneUnchecked = (r) => needsPersonLane(r) && r.lane_challenge?.verd
 
 // The park question for a lane C or D triage record that needs a person, or null for any other.
 // plan-batch and queue.mjs admit both seed a ticket's park from it.
+const laneParkHead = (lane, unchecked) => (unchecked ? `lane ${lane} UNCHECKED (` : `lane ${lane} — `);
 export function lanePark(r) {
   if (!needsPersonLane(r)) return null;
   const reason = String(r.lane_reason ?? 'needs a person');
   const why = r.lane === 'D' ? `${designGap(r)}; ${reason}` : reason;
   return laneUnchecked(r)
-    ? `lane ${r.lane} UNCHECKED (challenge could not read the code): confirm lane ${r.lane} or re-lane — ${why.slice(0, 120)}`
-    : `lane ${r.lane} — ${why.slice(0, 160)}`;
+    ? `${laneParkHead(r.lane, true)}challenge could not read the code): confirm lane ${r.lane} or re-lane — ${why.slice(0, 120)}`
+    : `${laneParkHead(r.lane, false)}${why.slice(0, 160)}`;
 }
+
+// The park for a ticket sized L or XL, which is split rather than run whole, or null for any other size.
+const OVERSIZED = ['L', 'XL'];
+export const sizePark = (size) => {
+  const s = String(size ?? '').toUpperCase();
+  return OVERSIZED.includes(s) ? `size ${s} — split it before batching` : null;
+};
 
 // The first of `labels` that a labels row names (`stepLabels`, lowercased), or null.
 export function stepLabel(labels, stepLabels = []) {
@@ -394,6 +403,14 @@ export function labelPark(r, stepLabels = [], inputLabels = []) {
   return l ? `${PERSON_STEP_PREFIX}labelled ${l} ${input ? INPUT_ROW : '(config §4 Person-step labels)'}, so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
 }
 export const personStepPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(PERSON_STEP_PREFIX);
+// A queue ticket parked at triage for its own reason (lanePark, designPark, sizePark, labelPark): a hold
+// waits beside that park rather than replacing it, so no release sends it to a worker.
+export const triagePark = (t) => {
+  const q = String(t?.park?.question ?? '');
+  return t?.state === 'parked' && (personStepPark(t) || q.startsWith(DESIGN_PARK_PREFIX)
+    || OVERSIZED.some((s) => q.startsWith(sizePark(s)))
+    || ['C', 'D'].some((l) => q.startsWith(laneParkHead(l, true)) || q.startsWith(laneParkHead(l, false))));
+};
 // A person's step parked on a Person-input label: what it makes, the build reads, so a ticket it blocks
 // is held behind it, never merged after it.
 export const personInputPark = (t) => personStepPark(t) && String(t.park.question).includes(INPUT_ROW);

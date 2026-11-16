@@ -14,7 +14,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, labelPark, stepLabel, blockerHold, startWithout, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
+import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, sizePark, labelPark, stepLabel, blockerHold, startWithout, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo,
   repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
@@ -112,7 +112,7 @@ const plannedKeys = new Set(planned.map((r) => r.ticket));
 // The park a planned ticket has of its own (lane, size or design), which any hold waits beside.
 const ownPark = (r) => (laneUnchecked(r) ? `lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane`
   : needsPersonLane(r) ? `lane ${r.lane} — ${r.lane === 'D' ? `${designGap(r)}, so ` : ''}run manually`
-  : sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
+  : sizeParked(r) ? sizePark(r.size)
   : designParked(r) ? designPark(r)
   : null);
 
@@ -649,7 +649,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
     const park = stepPark(r) ?? lanePark(r)
-      ?? (sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
+      ?? (sizeParked(r) ? sizePark(r.size)
       : designParked(r) ? designPark(r)
       : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — ${cycleFix(onCycle.get(t))}`
       : held(t) ? `held by orchestrator: blocked by ${heldBy(t)} — starts once ${heldUntil(t)}`

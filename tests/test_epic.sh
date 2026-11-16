@@ -451,7 +451,7 @@ out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-202 KAN-201 P1-5 2>&1
 check "regression: no links -> all triaged, argument order kept, no deps" \
   '[ $rc -eq 0 ] && [ "$(jq -r ".tickets|keys_unsorted|join(\" \")" "$DESK_QUEUE")" = "KAN-202 KAN-201 P1-5" ] && [ "$(jq -r "[.tickets[].state]|unique|join(\",\")" "$DESK_QUEUE")" = triaged ] && ! printf "%s" "$out" | grep -q -- "--deps"'
 
-# DS-714: a lane D or lane C park keeps its Jira blockers in held_by beside its park.
+# A lane D or lane C park keeps its Jira blockers in held_by beside its park.
 rm -f "$T/state/triage/"*.json "$T/state/expansion.json"
 r KAN-701 A '[]'
 r KAN-702 D "[$(nb KAN-701)]"

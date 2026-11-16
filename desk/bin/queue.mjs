@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -63,9 +63,6 @@ const QUEUE = queueFile();
 const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...(leverOn('failure-class') ? parkClass(question) : {}) });
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
 const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`);
-// The parks triage writes for a ticket's lane, size or design (batch-state.mjs lanePark and designPark,
-// admitInto's size park), each kept beside a hold rather than replaced by one.
-const TRIAGE_PARK = /^(lane [CD] (—|UNCHECKED)|size [A-Z]+ — split it|design not snapshotted: )/;
 const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
 
 // The starting concurrency is config §3b "Autopilot worker concurrency" (`<default> / <cap>`); the
@@ -372,7 +369,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   const size = String(r.size ?? '').toUpperCase();
   // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
   const stepPark = labelPark(r, personStepLabels(), personInputLabels());
-  const park = stepPark ?? lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
+  const park = stepPark ?? lanePark(r) ?? designPark(r) ?? sizePark(size);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
   // The collision check plan-batch makes, against every ticket still to finish: two tickets that
   // touch one file never run at once. The person's step runs on no worker, so it collides with nothing:
@@ -681,7 +678,7 @@ switch (cmd) {
     for (const p of preds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
     // A triage park (lane, size, design, the person's step) keeps its park, its holds in held_by beside
     // it, so no release can send it to a worker. Any other park of its own would lose its question.
-    const keeps = t.state === 'parked' && !isHeld(t) && (TRIAGE_PARK.test(String(t.park?.question ?? '')) || personStepPark(t));
+    const keeps = !isHeld(t) && triagePark(t);
     if (t.state === 'parked' && !isHeld(t) && !keeps) throw new Error(`${key} is parked for its own reason (${t.park?.question ?? '?'}): a hold would let a release send it to a worker`);
     if (['running', 'done', 'failed'].includes(t.state)) throw new Error(`${key} is ${t.state}: too late to hold it`);
     // A release sets state=triaged, so only a ticket that is triaged (or already held) may be held.
