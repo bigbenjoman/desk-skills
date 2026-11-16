@@ -153,12 +153,15 @@ Things that are not in that file and matter here:
     A or B, and name the packages in \`lane_reason\`.
   - **Unmerged blockers do not make a ticket L or XL.** They hold the ticket until they merge and
     never change its lane: name them in \`prior_art\`, not in \`unknowns\` or \`lane_reason\`.
-  - **Judge each open "is blocked by" link in \`blocker_needs\`**, keyed by the blocker's key:
-    \`needs\` is true when this ticket cannot be built or verified until that blocker is done (it
-    builds what this ticket uses, or changes the same files), false when it touches none of this
+  - **Judge each open "is blocked by" link in \`blocker_needs\`**, keyed by the blocker's key; every
+    open blocker needs a call, and a record missing one is refused. \`needs\` is one of three values:
+    \`"build"\` when this ticket cannot be built or verified until that blocker is done (it builds
+    what this ticket uses, or changes the same files); \`"merge"\` when this ticket can be built and
+    verified now but must not merge before it (it lands an order, a rollout or a contract this ticket
+    relies on in production, touching none of its files); \`"none"\` when it touches none of this
     ticket's files and nothing here waits on it. \`why\` says which, in one line. A blocker outside
-    the batch that is needed holds the ticket until it is done; one that is not needed lets it
-    start. Leave out a link you cannot judge from the code: it is asked about instead.
+    the batch needed to build holds the ticket until it is done; one needed only to merge holds its
+    merge; one not needed lets it start.
   - **A step from the routing file's "Steps only the user can take" list** goes in \`ben_steps\`, one
     entry per step, each with a proposed blocker ticket for the user. It does not set the lane: the
     rest of the ticket keeps the lane it would otherwise get.
@@ -239,7 +242,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "already_met": ["<an acceptance criterion the code already satisfies>: <file:line>"],
   "verify_only": <true only when every acceptance criterion is in already_met>,
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],
-  "blocker_needs": {"<KEY of an open blocker>": {"needs": <true|false>, "why": "<one line>"}},
+  "blocker_needs": {"<KEY of an open blocker>": {"needs": "build|merge|none", "why": "<one line>"}},
   "ben_steps": [{"step": "<a step only the user can take, from the routing file's list>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}],
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
   "needs_db": <true if verifying it needs a database, seed, or integration test>,
@@ -249,7 +252,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.
 unknowns and already_met are [] when there are none.
 ben_steps is [] when the ticket needs no step only the user can take.
-blocker_needs is {} when the ticket has no open blocker.
+blocker_needs has one entry per open "is blocked by" link, and is {} when the ticket has none.
 PROMPT_END
 
 # Both passes run on the repo's subscription (call-login.mjs), as a new worker would, at its limit too.
@@ -301,8 +304,20 @@ if [ ! -f "$OUT" ]; then
   echo "FAIL: $TICKET produced no triage record at $OUT (an empty run can also be the account session limit)" >&2
   exit 1
 fi
-node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps"); const n=d.blocker_needs; if(n!==undefined&&!(n&&typeof n==="object"&&!Array.isArray(n)&&Object.values(n).every((x)=>x&&typeof x==="object"&&typeof x.needs==="boolean"))) throw new Error("bad blocker_needs");' "$OUT" \
+node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps");' "$OUT" \
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
+# Each call in blocker_needs is one of batch-state.mjs's BLOCKER_CALLS. Its readers still take a record
+# written before the three calls, with a boolean, but a fresh one must give a call.
+node --input-type=module - "$OUT" "$DESK_BIN" <<'CALLS_END' \
+  || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, bin] = process.argv.slice(2);
+const { BLOCKER_CALLS } = await import(pathToFileURL(join(bin, 'batch-state.mjs')).href);
+const n = JSON.parse(readFileSync(out, 'utf8')).blocker_needs;
+if (n !== undefined && !(n && typeof n === 'object' && !Array.isArray(n) && Object.values(n).every((x) => x && typeof x === 'object' && BLOCKER_CALLS.includes(x.needs)))) throw new Error('bad blocker_needs');
+CALLS_END
 # Only the questions the user must answer stay in `unknowns`, as strings every reader of the record
 # takes them as; each call taken on its recommendation goes to `decided`, logged when the ticket is
 # admitted. `verify_only` holds only with criteria named in `already_met`.
@@ -517,6 +532,23 @@ CLAUDE_DIR_END
 # question.
 node "$DESK_BIN/ticket-facts.mjs" "$TICKET" \
   || { echo "FAIL: could not record $TICKET's Jira facts in $OUT" >&2; exit 1; }
+
+# Every open blocker those facts list needs a call in blocker_needs (the values were checked above). A
+# record missing one is refused, and goes, so the ticket is triaged again rather than admitted on a guess.
+if ! WHY=$(node --input-type=module - "$OUT" "$DESK_BIN" 2>&1 <<'NEEDS_END'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, bin] = process.argv.slice(2);
+const { uncalledBlockers } = await import(pathToFileURL(join(bin, 'batch-state.mjs')).href);
+const missing = uncalledBlockers(JSON.parse(readFileSync(out, 'utf8')));
+if (missing.length) { console.log(`blocker_needs has no call for open blocker${missing.length === 1 ? '' : 's'} ${missing.join(', ')}`); process.exit(1); }
+NEEDS_END
+); then
+  rm -f "$OUT"
+  echo "FAIL: $TICKET triage record is malformed: ${WHY}. Triage it again." >&2
+  exit 1
+fi
 
 # With every canvas snapshotted or saved on the base, an unknown or a lane (park) reason asking for
 # boards to be snapshotted or exported is false, and would only park the ticket for the user. The lane
