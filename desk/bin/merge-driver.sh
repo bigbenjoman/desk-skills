@@ -197,8 +197,9 @@ if [ -n "$LOG" ]; then
   fi
 fi
 # A log past LOG_ROTATE_BYTES moves to <log>.1 and the redirect re-opens a new one, with the older
-# copies shifted up and only LOG_ROTATE_KEEP kept, as the supervisor does for its own log. Checked at
-# start-up and between loops: only the main shell may re-open its redirect.
+# copies shifted up and only LOG_ROTATE_KEEP kept, as the supervisor does for its own log. Checked
+# once this driver holds the lock and between loops: only the main shell may re-open its redirect, and
+# a start that loses the lock must not move the running driver's log out from under it.
 LOG_ROTATE_BYTES="${DESK_LOG_ROTATE_BYTES:-10485760}"
 LOG_ROTATE_KEEP=3
 # rotate_log succeeds only when it moved the log aside.
@@ -210,10 +211,13 @@ rotate_log(){
   for (( i = LOG_ROTATE_KEEP - 1; i >= 1; i-- )); do if [ -f "$f.$i" ]; then mv -f "$f.$i" "$f.$((i + 1))"; fi; done
   mv -f "$f" "$f.1"
 }
-if [ -n "$LOG" ]; then
-  rotate_log || true
-  exec >>"$LOG_STATE/merge-driver.log" 2>&1
-fi
+# reopen_log: rotates the log if it is due, and re-opens the redirect when it rotated or when this
+# driver's output no longer goes to merge-driver.log (something else moved it).
+reopen_log(){
+  [ -n "$LOG" ] || return 0
+  if rotate_log || ! [ /dev/fd/1 -ef "$LOG_STATE/merge-driver.log" ]; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
+}
+if [ -n "$LOG" ]; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
 # The last line is always the exit code, so the supervisor can tell a driver that failed from one it
 # never saw stop. The lock is removed only once this driver holds it, never another driver's.
 LOCK_HELD=""
@@ -282,6 +286,7 @@ while ! mkdir "$LOCKD" 2>/dev/null; do
   mv "$LOCKD" "$LOCKD.stale.$$" 2>/dev/null && rm -rf "$LOCKD.stale.$$"   # atomic takeover of a dead holder's lock
 done
 echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
+reopen_log
 # The desk version this driver runs, so the supervisor can tell it started before the last install.
 node "$DESK_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
@@ -1147,7 +1152,7 @@ pause(){
 while true; do
   stop_if_asked
   LOOP=$((LOOP + 1))
-  if [ -n "$LOG" ] && rotate_log; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
+  reopen_log
   join_queue_tickets
   release_chain
 

@@ -345,6 +345,19 @@ printf 'old line %s\n' $(seq 1 200) > "$T/state/merge-driver.log"; echo copy1 > 
 MERGE_DRIVER_ONE_LOOP=1 DESK_LOG_ROTATE_BYTES=2000 bash "$B/merge-driver.sh" --tickets "T-2 T-4" --log >/dev/null 2>&1
 check "DS-759 AC2: a driver starting on a full log rotates it first, dropping the oldest of three copies" '[ "$(cat "$T/state/merge-driver.log.3")" = copy2 ] && [ "$(cat "$T/state/merge-driver.log.2")" = copy1 ] && grep -q "old line" "$T/state/merge-driver.log.1" && [ ! -e "$T/state/merge-driver.log.4" ] && grep -q "merge driver up" "$T/state/merge-driver.log"'
 rm -f "$T/state/merge-driver.log".[1-4] "$T/sleeps"
+# A second start while a driver holds the lock leaves the running driver's full log where it is.
+printf 'old line %s\n' $(seq 1 200) > "$T/state/merge-driver.log"
+/bin/sleep 60 & holder=$!
+mkdir "$T/state/merge-driver.lock.d"; echo "$holder" > "$T/state/merge-driver.lock.d/pid"
+MERGE_DRIVER_ONE_LOOP=1 DESK_LOG_ROTATE_BYTES=2000 bash "$B/merge-driver.sh" --tickets "T-2 T-4" --log >/dev/null 2>&1; rc=$?
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d"
+check "DS-759: a start that loses the lock does not rotate the running driver's log" '[ $rc -eq 1 ] && [ ! -e "$T/state/merge-driver.log.1" ] && grep -q "old line 200" "$T/state/merge-driver.log" && grep -q "another merge driver is running" "$T/state/merge-driver.log"'
+# A driver whose log something else moved writes its next loop to a new merge-driver.log.
+rm -f "$T/state/merge-driver.log"
+printf '#!/bin/sh\nmv "%s/state/merge-driver.log" "%s/state/moved.log"\n' "$T" "$T" > "$T/between.1"; chmod +x "$T/between.1"
+loops 2 --log
+check "DS-759: a driver whose log was moved re-opens merge-driver.log on its next loop" '[ $rc -eq 143 ] && grep -q "merge driver up" "$T/state/moved.log" && grep -q "merge driver exited 143$" "$T/state/merge-driver.log" && ! grep -q "merge driver exited" "$T/state/moved.log"'
+rm -f "$T/between.1" "$T/state/moved.log" "$T/state/merge-driver.log" "$T/sleeps"
 
 # ---- DS-141: the written waiver for §4 Known flaky checks -----------------------------------------
 # A config that reruns, files tickets in Jira, and names `e2e` (and the required `test`) as flaky.
