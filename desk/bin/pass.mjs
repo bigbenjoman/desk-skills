@@ -1776,8 +1776,11 @@ for (const t of Object.values(queue().tickets)) {
 // outside_blockers_read, so no read in a pass asks Jira for one again within INTAKE_EVERY_MS.
 // -> { unread: the keys with no "blocked by" line back, why }. A key counts as read only on its own
 // line: a run cut off part-way (its timeout) has written the keys before it and printed nothing for
-// the rest.
+// the rest. A key with no links_seen (the blocker links below) gets its record's links as it stands
+// first, so a link this read writes into the record is still new to that block.
 const readBlockers = (keys) => {
+  const tickets = queue().tickets;
+  for (const key of keys) if (tickets[key] && !Array.isArray(tickets[key].links_seen)) q('set', key, `links_seen=${JSON.stringify(blockerKeys(triageRec(key)))}`);
   const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--blockers', ...keys], { timeout: 120_000 });
   const lines = r.out.split('\n');
   const missed = lines.filter((l) => / blockers NOT READ: /.test(l));
@@ -1798,8 +1801,8 @@ const blockerKeys = (rec) => (Array.isArray(rec?.blockers) ? rec.blockers.map((b
 // What a read adds or removes is measured against links_seen, the links this block last acted on for
 // the ticket, never against the triage record: a read cut off part-way, or the outside blockers read
 // below, rewrites the record without acting on it, and a link already in the record would never be
-// held. With no links_seen yet, a ticket not started counts its holds as seen (and its record as it
-// stood for a link removed), and a started one its record as it stood.
+// held. readBlockers gives a ticket its first links_seen, from its record before that read, so a hold
+// lifted since (released by hand, or the outside holds) is never read as a new link.
 const linkLines = [];
 {
   const qL = queue();
@@ -1821,13 +1824,13 @@ const linkLines = [];
     // Acts on ticket `t`'s links `now`, read from its triage record `rec`.
     const act = (key, t, rec, now) => {
       const by = keysOf(t.held_by);
-      const was = seen(t) ?? (notStarted(t) ? [...by, ...keysOf(t.held_outside), ...keysOf(t.merge_after)] : record.get(key));
+      const was = seen(t) ?? record.get(key);
       const added = now.filter((k) => !was.includes(k));
       if (!notStarted(t)) {
         if (added.length) linkLines.push(`blocker link: ${key}: linked as blocked by ${added.join(', ')} after its worker started: no hold added`);
         return;
       }
-      const gone = (seen(t) ?? record.get(key)).filter((k) => !now.includes(k) && by.includes(k) && view.tickets[k]);
+      const gone = was.filter((k) => !now.includes(k) && by.includes(k) && view.tickets[k]);
       if (gone.length) linkLines.push(`blocker link: ${key}: no longer linked as blocked by ${gone.join(', ')}, and still held behind ${gone.length === 1 ? 'it' : 'them'}, as the hold does not record whether it came from that link, a shared file or the spine: release it by hand if nothing else needs ${gone.length === 1 ? 'it' : 'them'}`);
       if (!added.length) return;
       const h = holdsFor(rec, view.tickets, DEFAULT_BRANCH);

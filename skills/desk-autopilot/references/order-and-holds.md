@@ -157,7 +157,9 @@ the report says the link arrived after it started. A link removed lifts a hold i
 holds*, above) but never one in the batch, which may be a shared file or the spine: the report says the
 link went, and the release is yours. A read that fails keeps every hold and is tried again next interval.
 What a read adds is measured against the links the pass last acted on for the ticket (`links_seen`),
-not the triage record, so a read cut off part-way is acted on by the next one.
+not the triage record, so a read cut off part-way is acted on by the next one. A ticket's first
+`links_seen` is its record before its first read, so a hold you released by hand is not taken for a
+new link.
 Lane, size and design parks are not read for new links here.
 
 Answering a held ticket's question (`answer.mjs`) keeps the hold.
