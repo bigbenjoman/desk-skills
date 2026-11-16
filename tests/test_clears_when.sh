@@ -298,6 +298,25 @@ check "DS-581 AC8 a failed reviews read is an error, not holding" '[ "$(cut -d"|
 check "DS-581 a file path is read under \$DESK_STATE or the worktree" '[ "$(cut -d"|" -f10,11 <<< "$r")" = "/s/a/b|/w/a/b" ]'
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
+# DS-582: a condition only the parked ticket's own draft leaving draft or merging makes hold is refused.
+draft(){ q set "$1" "pr_status={\"pr\":$2,\"state\":\"OPEN\",\"isDraft\":$3}"; }
+parked DR-1 A "the Review gate is red on #3085"; draft DR-1 3085 true
+out=$(node "$B/queue.mjs" clears-when DR-1 "pr 3085 ready" 2>&1); rc=$?
+check "DS-582 AC1 its own draft PR leaving draft is refused, saying the park keeps it in draft, and nothing is recorded" \
+  '[ $rc -ne 0 ] && grep -q "PR #3085 is DR-1.s own draft, and the park itself keeps it in draft" <<< "$out" && grep -q "Nothing was recorded" <<< "$out" && [ "$(field DR-1 park.clears_when)" = null ]'
+out=$(node "$B/queue.mjs" clears-when DR-1 "pr 3085 merged" 2>&1); rc=$?
+check "DS-582 AC2 and so is it merging" '[ $rc -ne 0 ] && grep -q "PR #3085 is DR-1.s own draft, and the park itself keeps it in draft" <<< "$out" && [ "$(field DR-1 park.clears_when)" = null ]'
+out=$(node "$B/queue.mjs" clears-when DR-1 "pr 3090 ready" 2>&1); rc=$?
+check "DS-582 AC4 another ticket's draft PR is accepted" '[ $rc -eq 0 ] && [ "$(field DR-1 park.clears_when)" = "{\"kind\":\"pr-ready\",\"pr\":3090}" ]'
+parked DR-2 A "waiting on a merge of #3086"; draft DR-2 3086 false
+out=$(node "$B/queue.mjs" clears-when DR-2 "pr 3086 merged" 2>&1); rc=$?
+check "DS-582 AC5 its own PR out of draft merging is accepted" '[ $rc -eq 0 ] && [ "$(field DR-2 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":3086}" ]'
+parked DR-3 A "waiting on #3087"
+out=$(node "$B/queue.mjs" clears-when DR-3 "pr 3087 ready" 2>&1); rc=$?
+check "DS-582 AC6 with no recorded PR it is accepted" '[ $rc -eq 0 ] && [ "$(field DR-3 park.clears_when)" = "{\"kind\":\"pr-ready\",\"pr\":3087}" ]'
+q drop DR-1; q drop DR-2; q drop DR-3
+q add C-10 Story A; q set C-10 state=running branch=feat/C-10 session_id=gone; draft C-10 3085 true
+say "AUTOPILOT_PARK: the Review gate is red on #3085" "AUTOPILOT_PARK_CLEARS_WHEN: PR #3085 out of draft" > "$T/state/logs/C-10.log"
 
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-269 AC2 a worker's park records its condition" '[ "$(field C-1 state)" = "\"parked\"" ] && [ "$(field C-1 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":41}" ]'
@@ -307,6 +326,8 @@ check "DS-563 AC1 KAN-976's gh pr view command is recorded as PR 991 merged" '[ 
 check "DS-563 AC2 a check line is recorded as that check passing, and waits while it runs" \
   '[ "$(field C-7 park.clears_when)" = "{\"kind\":\"checks-pass\",\"pr\":874,\"checks\":[\"Flows image\"]}" ] && [ "$(field C-7 state)" = "\"parked\"" ] && grep -q "C-7: waiting on ..Flows image. passing on PR #874.s head. (.Flows image. is in_progress at ddddddddd): left parked" <<< "$out"'
 check "DS-563 AC3 prose is kept for the decider, not checked and not none" '[ "$(field C-8 park.clears_when.kind)" = "\"unreadable\"" ] && [ "$(field C-8 state)" = "\"parked\"" ]'
+check "DS-582 AC3 a worker's line on its own draft leaving draft is recorded none, and the report names why" \
+  '[ "$(field C-10 state)" = "\"parked\"" ] && [ "$(field C-10 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "C-10: clears-when \"PR #3085 out of draft\" recorded as none, for the person: PR #3085 is C-10.s own draft, and the park itself keeps it in draft" <<< "$out"'
 r=$(node --input-type=module -e "
 import { settlesByScript } from '$B/batch-state.mjs';
 const q = JSON.parse((await import('node:fs')).readFileSync('$DESK_QUEUE', 'utf8'));
