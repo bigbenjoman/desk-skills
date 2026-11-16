@@ -171,7 +171,7 @@ export function landedOn(key, base) {
 // why}, a start-without-it call logged on admit) where §3 autopilot-judgement is yes, else in `ask`, a
 // reason it stays out. One with neither a step nor a call is held in `outside`: triage.sh refuses a
 // record missing a call for an open blocker, so only a record written before calls were asked for has one.
-function holdsFor(rec, tickets, base) {
+export function holdsFor(rec, tickets, base) {
   const out = { held: [], outside: [], failed: [], merge: [], gates: [], free: [], ask: [] };
   const stepLabels = E.personStepLabels();
   const inputLabels = E.personInputLabels();

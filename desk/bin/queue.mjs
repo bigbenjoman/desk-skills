@@ -409,6 +409,32 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}`;
 }
 
+// The holds each lane, size or design park in `q` with no held_by should carry beside its park: its
+// triage record's blockers held as intake holds a ticket it admits (holdsFor, passed in), less those in
+// the batch already finished (merged, or done with no PR), which nothing would release. One that failed
+// in the batch is named and not held, for the same reason. One already waiting behind the park, counting
+// the holds this run adds to the parks before it, is left out, as a hold on it would be a cycle.
+// -> [{ key, holds, outside, cycles, failed, park }], one per park that gains a hold or skips one.
+function missingHolds(q, holdsFor) {
+  const view = structuredClone(q);
+  const found = [];
+  for (const t of Object.values(q.tickets)) {
+    if (!triagePark(t) || personStepPark(t) || t.held_by) continue;
+    if (!existsSync(join(stateDir(), 'triage', `${t.key}.json`))) continue;
+    const h = holdsFor(readTriage(stateDir(), t.key), q.tickets, baseOf(q));
+    const behind = heldBehindOf(view, t.key);
+    const holds = []; const cycles = [];
+    for (const k of new Set([...h.held, ...h.outside])) {
+      const o = q.tickets[k];
+      if (k === t.key || (o && (o.merged_at || childDone(o)))) continue;
+      (behind.has(k) ? cycles : holds).push(k);
+    }
+    if (holds.length) view.tickets[t.key].held_by = holds.join('|');
+    if (holds.length || cycles.length || h.failed.length) found.push({ key: t.key, holds, outside: holds.filter((k) => !q.tickets[k]), cycles, failed: h.failed, park: t.park.question });
+  }
+  return found;
+}
+
 const batchWord = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 const baseOf = (bq) => bq.base ?? configValue('default-branch') ?? 'main';
 const otherRunning = () => otherRunningBatches(repoSlug(), QUEUE, () => baseOf({}));
@@ -580,7 +606,7 @@ if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
   if (t?.state === 'running') exitedPark = { key: args[0], session: t.session_id ?? null, park: exitedOnPark(t) };
 }
-if (WRITES.includes(cmd)) lock();
+if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();
 const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
 
 switch (cmd) {
@@ -740,6 +766,33 @@ switch (cmd) {
     const said = admitInto(q, key, r, { state: stateDir(), by, holds, outside, mergeAfter, holdSpine: args.includes('--hold-spine'), holdCollisions: args.includes('--hold-collisions') });
     save(q);
     console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !asked ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
+    break;
+  }
+
+  // Run by hand, once, on a queue whose lane, size and design parks carry no held_by: each gains the
+  // holds its blockers give it (missingHolds), beside a park left as it is. --dry-run prints them and
+  // writes nothing. A park that already has held_by is never touched, so a rerun changes nothing.
+  case 'backfill-holds': {
+    const dry = args.includes('--dry-run');
+    if (args.some((a) => a !== '--dry-run')) throw new Error('usage: queue.mjs backfill-holds [--dry-run]');
+    // Loaded here alone: intake.mjs pulls in modules no other queue.mjs command needs.
+    const { holdsFor } = await import('./intake.mjs');
+    const found = missingHolds(q, holdsFor);
+    const lines = [];
+    for (const { key, holds, outside, cycles, failed, park } of found) {
+      const skipped = `${cycles.length ? ` (not behind ${cycles.join(', ')}, which ${cycles.length === 1 ? 'waits' : 'wait'} behind it)` : ''}${failed.length ? ` (not behind ${failed.join(', ')}, which failed in the batch, so nothing would release the hold: requeue or drop ${failed.length === 1 ? 'it' : 'them'}, then hold ${key} with queue.mjs hold if it still needs ${failed.length === 1 ? 'it' : 'them'})` : ''}`;
+      if (!holds.length) { lines.push(`${key}: no hold to add${skipped}`); continue; }
+      const out = outside.length ? ` (${outside.join(', ')} outside the batch)` : '';
+      lines.push(`${key}: ${dry ? 'would hold' : 'held'} behind ${holds.join(', ')}${out}, beside its own park (${park})${skipped}`);
+      if (dry) continue;
+      const t = q.tickets[key];
+      t.held_by = holds.join('|');
+      if (outside.length) t.held_outside = [...new Set([...String(t.held_outside ?? '').split('|').filter(Boolean), ...outside])].join('|');
+      t.updated_at = new Date().toISOString();
+    }
+    if (!dry) save(q);
+    console.log(lines.length ? lines.join('\n') : `no lane, size or design park is missing a hold${dry ? '' : ': nothing changed'}`);
+    if (dry && found.some((f) => f.holds.length)) console.log('dry run: nothing changed. Run it again without --dry-run to add these holds');
     break;
   }
 
@@ -1066,7 +1119,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
