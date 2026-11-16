@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, triagePark, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -3389,7 +3389,8 @@ for (const t of onTracker) {
 // (ownEpicOf) at once; one admitted to this batch since is left in held_by as an ordinary hold,
 // released when it merges here. One Done under a resolution that ships nothing is not Done here, even
 // with no PR left to land: it stays, raised once (wont_do_link), until its link is removed. The merge driver never releases a
-// ticket held outside its batch, so lifting the last blocker releases it here.
+// ticket held outside its batch, so lifting the last blocker releases it here. A ticket parked at
+// triage for its own reason (triagePark) loses only the hold: its park stays, and nothing spawns it.
 // Whether epic `key`'s batch, `qO` itself or the repo's batch named for it, recorded its epic PR merged.
 // The supervisor archives a batch whose epic PR merged before its own pass runs, so a merge nothing
 // recorded (a person merged it) is read from GitHub in the archived copy, under batches/.done/.
@@ -3413,7 +3414,7 @@ const epicMerged = (qO, key) => {
 {
   const qO = queue();
   const landed = new Map();
-  for (const t of Object.values(qO.tickets).filter((x) => isHeld(x) && x.held_outside)) {
+  for (const t of Object.values(qO.tickets).filter((x) => (isHeld(x) || triagePark(x)) && x.held_outside)) {
     const outside = keysOf(t.held_outside);
     const rec = triageRec(t.key);
     const ownEpic = outside.filter((p) => !qO.tickets[p] && ownEpicOf(rec).includes(p));
@@ -3442,6 +3443,9 @@ const epicMerged = (qO, key) => {
     if (by.length) {
       q('set', t.key, `held_by=${by.join('|')}`, `held_outside=${left.join('|') || 'null'}`);
       epicLines.push(`outside hold: ${t.key}: ${what}; still held behind ${by.join(', ')}`);
+    } else if (!isHeld(t)) {
+      q('set', t.key, 'held_by=null', 'held_outside=null');
+      epicLines.push(`outside hold: ${t.key}: ${what}; hold lifted, and it stays parked: ${String(t.park.question).slice(0, 80)}`);
     } else {
       q('set', t.key, 'state=triaged', 'park=null', 'held_by=null', 'held_outside=null');
       q('front', t.key);
@@ -4465,7 +4469,9 @@ const readPr = (n) => {
   if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
   return prStates[n];
 };
-for (const t of heldNow) {
+// A ticket parked at triage for its own reason that keeps holds in held_by beside its park.
+const parkHeld = Object.values(qNow.tickets).filter((t) => triagePark(t) && t.held_by);
+for (const t of [...heldNow, ...parkHeld]) {
   for (const p of String(t.held_by ?? '').split('|').filter(Boolean)) {
     const n = qNow.tickets[p]?.state === 'done' ? qNow.tickets[p]?.result?.pr : null;
     if (n != null) readPr(n);
@@ -4572,6 +4578,18 @@ for (const t of releaseDue) {
       out.push(`released: ${t.key}, every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
     } else report.waiting.push(`${t.key}: RELEASE DUE — every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running, but the release was refused (${set.out.split('\n').pop()}): release it (${E.releaseCommand(t.key)})`);
   }
+}
+// The merge driver releases only "held by orchestrator" parks, so the pass lifts each merged blocker
+// from a triage park's holds itself, leaving its park, and so its state, as they were.
+for (const t of parkHeld) {
+  const merged = predsOf(t).filter(mergedHere);
+  if (!merged.length) continue;
+  const by = predsOf(t).filter((p) => !merged.includes(p));
+  const rest = by.length ? `; still held behind ${by.join(', ')}` : '';
+  if (DRY) { out.push(`hold lift (dry run): ${t.key}: ${merged.join(', ')} merged${rest}`); continue; }
+  const outside = keysOf(t.held_outside).filter((p) => !merged.includes(p));
+  q('set', t.key, `held_by=${by.join('|') || 'null'}`, ...(t.held_outside ? [`held_outside=${outside.join('|') || 'null'}`] : []));
+  out.push(`hold lifted: ${t.key}: ${merged.join(', ')} merged${rest || `, and it stays parked: ${String(t.park.question).slice(0, 80)}`}`);
 }
 for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (no PR, a closed PR, or not in the batch): decide whether it waits, is released, or is dropped`);
 // A park waiting on "pr <n> merged" whose PR's ticket is held behind it, directly or through other

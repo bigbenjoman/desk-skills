@@ -1902,6 +1902,16 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
 }
 
+// DS-715: a lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
+{
+  put('chi715', { port: 4715, beat: 1, supervised: true, tickets: {
+    'L-1': { ...parked('C', 20, 'lane C — spans layers'), held_by: null, held_outside: null },
+    'L-0': { state: 'done', lane: 'A', result: { pr: 70 }, merged_at: minsAgo(30), pr_status: { pr: 70, state: 'MERGED' } },
+  } });
+  const it = N.collect({ word: 'chi715' }).items.find((i) => i.t.key === 'L-1');
+  t('DS-715 AC2 a lane C park whose hold lifted is a session item recommending open', `${it?.kind} ${it?.actions[0][0]}`, 'session open');
+}
+
 // ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),
 // and done on a session item reads its PR and ticket.
 {
