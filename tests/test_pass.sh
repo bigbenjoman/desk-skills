@@ -4013,7 +4013,9 @@ q add MT-2; q set MT-2 lane=A branch=fix/MT-2 draft_pr=702; q park MT-2 "MT-2: w
 q add MT-3; q set MT-3 lane=A draft_pr=703; q park MT-3 "MT-3: which fixture should win?"
 q add MT-4; q set MT-4 state=parked lane=A branch=fix/MT-4 draft_pr=704 'park={"question":"MT-4: waiting on PR #704 to merge","clears_when":{"kind":"pr-merged","pr":704}}'
 # MT-5's branch adds nothing to main (origin's main already holds x.txt) and merged PR #705 names it,
-# but its Jira read fails: it is left parked, never dropped as a duplicate with its tail unread.
+# but its Jira read fails: it is left parked, never dropped as a duplicate with its tail unread. Origin
+# goes back to DS-397's, whose main holds x.txt, so dropDuplicate would drop it were it reached.
+git -C "$T/repo" remote set-url origin "$T/rc-origin.git"
 git -C "$T/repo" worktree add -q -b fix/MT-5 "$T/wt/MT-5" main
 echo x > "$T/wt/MT-5/x.txt"; git -C "$T/wt/MT-5" add x.txt; git -C "$T/wt/MT-5" commit -q -m "fix(x): MT-5 add x"
 q add MT-5; q set MT-5 lane=A branch=fix/MT-5 "worktree=$T/wt/MT-5" draft_pr=705; q park MT-5 "MT-5: which fixture should win?"
