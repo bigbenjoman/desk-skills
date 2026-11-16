@@ -79,6 +79,10 @@ printf '%s\n' "local $VM" "local my-vm" "OCI ghcr.io/cirruslabs/ubuntu:24.04" \
   "OCI ghcr.io/cirruslabs/ubuntu@sha256:94dbb9c4" "OCI ghcr.io/cirruslabs/macos-sonoma-base:latest" > "$TV"
 printf '#!/bin/sh\necho "$@" >> "%s/runner.calls"\n' "$T" > "$HOME/.claude/desk/bin/$VM"; chmod +x "$HOME/.claude/desk/bin/$VM"
 left(){ for f in "${OLD[@]}"; do [ -e "$f" ] && echo "$f"; done; }
+# A script an earlier install put in desk/bin that the repo no longer has, beside one desk never installed.
+mkdir -p "$HOME/.agents/.desk-pristine/.claude/desk/bin"
+echo old > "$HOME/.claude/desk/bin/retired-tool.mjs"; echo old > "$HOME/.agents/.desk-pristine/.claude/desk/bin/retired-tool.mjs"
+echo mine > "$HOME/.claude/desk/bin/my-own.sh"
 
 # --any-branch: this checkout is a feature branch, or CI's detached merge commit (the guard: test_installed.sh).
 # No git protocol allowed: the guard's fetch never reaches the network or this checkout's origin refs.
@@ -136,6 +140,9 @@ check "DS-428 AC5: a delete that fails is a warning naming the command, and the 
 w="$(PATH=/usr/bin:/bin; purge_runner_tart; echo "gone=$RUNNER_TART_GONE")"
 check "DS-428 AC4: with no tart on PATH, nothing is called or named" \
   '[ "$w" = "gone=" ] && [ ! -s "$T/tart.deletes" ] && grep -qx "local $VM" "$TV"'
+check "DS-760 AC3: a script the repo no longer has is removed, and the install names it" \
+  '[ ! -e "$HOME/.claude/desk/bin/retired-tool.mjs" ] && printf "%s\n" "$out" | grep -qx "  ok    removed ~/.claude/desk/bin/retired-tool.mjs (no longer in desk)"'
+check "DS-760 AC5: a file desk never installed is left alone" '[ "$(cat "$HOME/.claude/desk/bin/my-own.sh")" = mine ]'
 check "DS-340 AC1: every file under desk/templates is installed, dotfiles included" \
   '[ -n "$(find "$S/../desk/templates" -type f)" ] && [ -z "$(cd "$S/../desk/templates" && find . -type f | while read -r f; do cmp -s "$f" "$HOME/.claude/desk/templates/$f" || echo "$f"; done)" ]'
 check "codex skip carries the real call" '[[ "$summary" == *"apply: codex exec --sandbox read-only"* ]]'

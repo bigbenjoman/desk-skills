@@ -57,6 +57,7 @@ const REWRITTEN = [
   ['DS-714', '| in the batch, admitted | holds the successor', 1], // a lane or size park holds what it blocks, and keeps its own blockers beside its park
   ['DS-714', 'is **never held and never in `--deps`**', 1],
   ['DS-719', '(recorded; released on its merge) node ~/.claude/desk/bin/queue.mjs admit ABC-125', 1], // backfill-holds is listed among the commands
+  ['DS-754', 'A pending check, or a Stage 7 worker it names, makes it wait.', 1], // a head not yet green installs the newest green commit before it
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',
