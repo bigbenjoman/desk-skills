@@ -298,7 +298,7 @@ check "DS-581 AC8 a failed reviews read is an error, not holding" '[ "$(cut -d"|
 check "DS-581 a file path is read under \$DESK_STATE or the worktree" '[ "$(cut -d"|" -f10,11 <<< "$r")" = "/s/a/b|/w/a/b" ]'
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
-# DS-582: a condition only the parked ticket's own draft leaving draft or merging makes hold is refused.
+# A condition only the parked ticket's own draft leaving draft or merging makes hold is refused.
 draft(){ q set "$1" "pr_status={\"pr\":$2,\"state\":\"OPEN\",\"isDraft\":$3}"; }
 parked DR-1 A "the Review gate is red on #3085"; draft DR-1 3085 true
 out=$(node "$B/queue.mjs" clears-when DR-1 "pr 3085 ready" 2>&1); rc=$?
