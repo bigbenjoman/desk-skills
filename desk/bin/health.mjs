@@ -34,9 +34,9 @@
 // counts. The results are kept in <state>/health.json and, while every check passes, reused for 15
 // minutes, so a pass every few minutes does not run them each time; a failing run is not reused.
 //
-// A pass holds every new spawn while a required check other than the browser fails (`holding`). A remote check is told to the person
-// (a stall line and a push) only once it has failed on two runs in a row, as a blip clears by
-// itself; the local ones (browser, disk, database) on the first. Every remote check failing together, with at
+// A pass holds every new spawn while a required check other than the browser fails (`holding`). A
+// remote check is told to the person (a stall line and a push) only once it has failed on two runs in
+// a row, as a blip clears by itself; the local ones (browser, disk, database) on the first. Every remote check failing together, with at
 // least one of them not reaching its host, is the network, one item (`health:<slug>:network`) with no
 // sign-in fix, so a CLI that words a dropped connection in a way NETWORK misses does not push its
 // sign-in; only when every one of them is a refused sign-in are they the sign-ins. A network failure
@@ -191,7 +191,7 @@ function browserCheck() {
 // when, or null while no slot has found the login failing since one last found it passing.
 export const SIGNIN_KEY = 'health:browser-signin';
 export const SIGNIN_STALL = /^health: browser profile failed: /;
-const signinFile = () =>join(E.HOME, '.desk-autopilot', 'health-browser-signin.json');
+const signinFile = () => join(E.HOME, '.desk-autopilot', 'health-browser-signin.json');
 export function browserSignin() {
   try { return JSON.parse(readFileSync(signinFile(), 'utf8')); } catch { return null; }
 }
