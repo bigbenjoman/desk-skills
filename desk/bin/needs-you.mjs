@@ -61,7 +61,9 @@
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
 // `templates`, the repo's committed copies of desk's templates the supervisor found behind (done
 // checks them again). `reviewer` is the repo's too: its failing reviewer health check, naming every PR
-// the pass holds on it (done records nothing; the next pass checks again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
+// the pass holds on it (done records nothing; the next pass checks again). `browser-signin:<id>` is the
+// machine's: a browser profile's GitHub login failing, which every repo's screenshot uploads with it wait on
+// (done records nothing; the next pass checks again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then any put off with three or more held tickets behind it, then the longest waiting, less any
@@ -76,13 +78,15 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { expandHome, repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, PERMISSION_KEYS } from './desk-env.mjs';
+import { expandHome, repoConfigValue, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, EXIT } from './batch-state.mjs';
-import { reviewerRecord } from './health.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY } from './desk-q.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, triageGate, EXIT } from './batch-state.mjs';
+import { browserSignins, reviewerRecord } from './health.mjs';
+import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
+import { sessionFile } from './find-playwright.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
@@ -523,14 +527,30 @@ function outsideHolds(r, t) {
   return outsideOf(t).map((b) => {
     let at;
     try { at = batchHolding(b.key, r.slug); } catch { at = { name: 'more than one batch' }; }
-    return { key: b.key, category: b.category ?? 'new', batch: at ? (at.name ?? 'standing') : null };
+    return { key: b.key, category: b.category ?? 'new', batch: at ? (at.name ?? 'standing') : null, ...('assignee' in b ? { assignee: b.assignee } : {}) };
   });
 }
+// Why the person would not queue blocker `o` (one outsideHolds returns), or null when it is theirs to:
+// in To Do, in this repo's §4 Jira project (`project`), and unassigned or assigned to them (`owner`, §1
+// Jira display name, as plan-batch tests it). An assignee never read is no one's to assume.
+export function notAdmittable(o, { project, owner }) {
+  const why = [];
+  if (o.assignee === undefined) why.push('its assignee could not be read');
+  else if (o.assignee !== null && o.assignee !== owner) why.push(`it is assigned to ${o.assignee}`);
+  const p = String(o.key).replace(/-\d+$/, '');
+  if (p !== project) why.push(project ? `it is in Jira project ${p}, not ${project}` : `this repo's config names no Jira project to match ${p} against`);
+  if (o.category !== 'new') why.push(`it is ${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}`);
+  return why.length ? `${o.key}: ${why.join(', and ')}` : null;
+}
+const admitRules = (r) => ({ project: repoConfigValue(r.slug, 'jira-project'), owner: repoConfigValue(r.slug, 'jira-display-name') ?? repoConfigValue(r.slug, 'name') });
 const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}, ${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
 // Every blocker a ticket names, in its batch or outside it, with its state: a put-off item's input, so a
-// blocker that moves brings it back.
+// blocker that moves brings it back. One in no batch that is the person's to queue (notAdmittable) is
+// marked `+yours`, so a blocker put off as someone else's comes back once it is unassigned or theirs.
 function blockerStates(r, t) {
-  const out = new Map(outsideHolds(r, t).map((o) => [o.key, `${o.category}@${o.batch ?? 'none'}`]));
+  const holds = outsideHolds(r, t), rules = holds.some((o) => !o.batch) ? admitRules(r) : null;
+  const yours = (o) => (!o.batch && !notAdmittable(o, rules) ? '+yours' : '');
+  const out = new Map(holds.map((o) => [o.key, `${o.category}@${o.batch ?? 'none'}${yours(o)}`]));
   return [...new Set([...keysOf(t.held_by), ...out.keys()])].map((b) => `${b}:${r.q.tickets?.[b]?.state ?? out.get(b) ?? 'none'}`).join(',');
 }
 // An item's action names, once each: what a put-off entry records, so one it gains brings it back.
@@ -587,25 +607,47 @@ const standingOf = (repos, r) => repos.find((x) => x.slug === r.slug && x.batch 
 
 // ---- the person's steps: one item for each, not one per ticket waiting on it ---------------------
 // A blocker in no batch that is a step only the person takes holds the merge of every ticket admitted
-// behind it (merge_after), not its build. The step is one item, `step:<KEY>`, for the repo however
-// many of its batches have a ticket still to merge on it, naming every PR and ticket waiting in each;
-// the pass lifts the hold once Jira has the step Done, so done records nothing. `batches` are one
-// repo's; each item is shown in `r`, the standing batch where it is one of them, else the first by
-// name with a ticket waiting, and is put off in `dir`, always the standing batch's state folder, so
-// desk-q's count over any of the repo's batches and this list read one register.
+// behind it (merge_after), or, held in full (held_outside, read as the person's step by desk-q's
+// personStepOf), its build. The step is one item, `step:<KEY>`, for the repo however many of its
+// batches have a ticket waiting on it, naming every ticket waiting to start and every PR and ticket
+// waiting to merge in each; the pass lifts the hold once Jira has the step Done, so done records
+// nothing. `batches` are one repo's; each item is shown in `r`, the standing batch where it is one of
+// them, else the first by name with a ticket waiting, and is put off in `dir`, always the standing
+// batch's state folder, so desk-q's count over any of the repo's batches and this list read one register.
 const STEP = 'step:';
 const standingDir = (b) => (b.batch == null ? b.stateDir : resolve(b.stateDir, '..', '..'));
-// Every ticket in any of the repo's batches still to merge on the step, read from the queues on disk,
-// so a step is put off under the same inputs whichever of the repo's batches a caller passed.
+// The steps in no batch of `q` that hold held ticket `t`'s build, by `stepOf` (personStepOf). Only
+// those still in its held_by: a person's release leaves held_outside behind (queue.mjs).
+const startSteps = (q, t, stepOf) => (isHeld(t) ? keysOf(t.held_outside).filter((k) => keysOf(t.held_by).includes(k) && !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
+// A needs row whose hold needs nothing but such a step: the step's item lists it, so it is not one of its own.
+const stepHeld = (b, x) => isHeld(x.t) && !heldAsks(x.t) && holdOf(b.q, x.t, b.ctx).step != null;
+// Every ticket in any of the repo's batches waiting on the step, read from the queues on disk, so a
+// step is put off under the same inputs whichever of the repo's batches a caller passed.
 const waitingOn = (slug, key) => listBatches(slug)
-  .flatMap((b) => { try { return Object.values(readQueue(b.queue).tickets ?? {}); } catch { return []; /* no queue there */ } })
-  .filter((t) => !t.merged_at && t.state !== 'failed' && keysOf(t.merge_after).includes(key)).map((t) => t.key).sort();
+  .flatMap((b) => {
+    let q;
+    try { q = readQueue(b.queue); } catch { return []; /* no queue there */ }
+    const stepOf = personStepOf(b.state, slug);
+    return Object.values(q.tickets ?? {}).filter((t) => keysOf(t.merge_after).includes(key) || startSteps(q, t, stepOf).includes(key));
+  })
+  .filter((t) => !t.merged_at && t.state !== 'failed').map((t) => t.key).sort();
+// Whether ticket `t`'s merge_after key `k` is no step of the person's but a blocker triage called needed
+// only to merge (batch-state.mjs triageGate): another ticket's code, which the pass lifts once it is Done
+// and landed, with nothing for the person to do.
+const mergeGate = (b, t, k) => {
+  const rec = triageOf(b.stateDir, t.key);
+  const bl = (Array.isArray(rec?.blockers) ? rec.blockers : []).find((x) => x?.key === k);
+  return triageGate(bl, rec, personStepLabels(b.slug), personInputLabels(b.slug));
+};
 function stepItems(batches) {
   const waits = new Map();
+  const add = (k, w) => waits.set(k, [...(waits.get(k) ?? []), w]);
   for (const b of batches) {
     for (const t of Object.values(b.q?.tickets ?? {})) {
       if (t.merged_at || t.state === 'failed') continue;
-      for (const k of keysOf(t.merge_after)) waits.set(k, [...(waits.get(k) ?? []), { b, t }]);
+      const starts = startSteps(b.q, t, b.ctx?.stepOf);
+      for (const k of starts) add(k, { b, t, start: true });
+      for (const k of keysOf(t.merge_after)) if (!starts.includes(k) && !mergeGate(b, t, k)) add(k, { b, t });
     }
   }
   const standing = batches.find((b) => b.batch == null);
@@ -617,11 +659,17 @@ function stepItems(batches) {
 function stepItem(key, ws) {
   const summary = ws.map(({ b, t }) => (triageOf(b.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
   const what = ({ t }) => (t.state === 'done' && t.result?.pr != null ? `PR #${t.result.pr} (${t.key})` : `${t.key} (${t.state === 'running' ? 'being built' : t.state === 'done' ? 'no PR' : 'not built yet'})`);
-  const n = ws.length, merges = ws.filter(({ b }) => b.ctx?.merges).length;
+  const starts = ws.filter((w) => w.start).map(({ t }) => t.key), mw = ws.filter((w) => !w.start);
+  const n = mw.length, merges = mw.filter(({ b }) => b.ctx?.merges).length;
   const merger = merges === n ? 'desk merges them in order' : merges === 0 ? 'you merge them on GitHub'
     : 'desk merges those in batches it merges, and you merge the rest on GitHub';
+  // `m` tickets wait to `verb` on it; after the first clause, one is "one", not "one ticket".
+  const waits = (m, verb, first) => `${m === 1 ? (first ? 'one ticket waits' : 'one waits') : `${m} tickets wait`} to ${verb} on it`;
+  const said = [starts.length && `${waits(starts.length, 'start', true)}: ${andList(starts)}`,
+    n && `${waits(n, 'merge', !starts.length)}: ${andList(mw.map(what))}`].filter(Boolean).join(', and ');
+  const after = [starts.length && `${andList(starts)} can start`, n && merger].filter(Boolean).join(', and ');
   return { kind: 'step', step: key,
-    need: `${key}${summary ? ` ("${one(summary)}")` : ''} is a step only you can take, and ${n === 1 ? 'one ticket waits' : `${n} tickets wait`} to merge on it: ${andList(ws.map(what))}. Do it and move ${key} to Done in Jira; the next pass that reads it lifts the hold, and ${merger}`,
+    need: `${key}${summary ? ` ("${one(summary)}")` : ''} is a step only you can take, and ${said}. Do it and move ${key} to Done in Jira; the next pass that reads it lifts the hold, and ${after}`,
     actions: [['done', `once ${key} is Done in Jira, the next pass that reads it lifts the hold`], ['not-now']],
     since: finite(Math.min(...ws.map(({ t }) => timeOf(t.added_at) ?? Infinity))) };
 }
@@ -673,6 +721,30 @@ function reviewerItems(batches) {
     note: prs.length ? `Held on it: ${andList(prs)}.` : 'No PR is held on it yet.',
     actions: [['done', 'once it is fixed, the next pass checks the account again and lifts the hold on every PR it names'], ['not-now']],
     since: finite(Math.min(...held.map((t) => timeOf(t.gate_hold.at) ?? Infinity))) } }];
+}
+
+// ---- the machine's browser sign-ins (health.mjs browserSignins): one item a login, whatever waits ---
+// While a browser profile's GitHub login fails, no repo's screenshot upload with it runs, so it is one
+// item for the machine, not one per repo or PR, naming the sign-in command and the uploads that wait.
+// It is shown in the batch whose pass tells it, else a batch of its repo, else the first; desk-q counts
+// it in its repo's row. done records nothing: the next pass that finds the login passing drops it.
+const SIGNIN = 'browser-signin';
+function signinItems(batches, only = null) {
+  const live = batches.filter((x) => !x.error && x.q);
+  let jobs = null;
+  return browserSignins().flatMap((s) => {
+    const mine = (b) => b.slug === s.slug;
+    if (only && !only.some(mine)) return [];
+    const r = live.find((b) => s.state && resolve(b.stateDir) === resolve(s.state)) ?? live.find(mine) ?? live[0];
+    if (!r) return [];
+    if (!jobs) { try { jobs = readUploadQueue().jobs; } catch { jobs = []; /* named as none waiting */ } }
+    const prs = [...new Set(jobs.filter((j) => !s.file || !j.profile || sessionFile(j.profile) === s.file).map((j) => `${j.repo} #${j.pr}`))];
+    return [{ r, dir: r.stateDir, t: { key: `${SIGNIN}:${s.id}` }, item: { kind: SIGNIN, repoLevel: true,
+      need: `the browser profile's saved GitHub login is not signed in (${one(s.why)}), so no repo's screenshot upload with it runs; workers still start. Sign it in, in a terminal on this machine's screen: ${SIGNIN_CMD}`,
+      note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
+      actions: [['done', 'once it is signed in, the next pass finds the login passing, drops this item and uploads what waits'], ['not-now']],
+      since: timeOf(s.at) } }];
+  });
 }
 
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
@@ -744,14 +816,24 @@ function itemOf(r, x, reads = null) {
     return { kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] };
   }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
-  // blocker no batch holds is worked by nobody, so admitting it comes first; answering says whether this
-  // one can start without them.
+  // blocker no batch holds is worked by nobody, so admitting it comes first when every such blocker is
+  // the person's to queue (notAdmittable); when one is not, it is its owner's or already under way, so
+  // putting the item off comes first and admit is only offered. Answering says whether this one can
+  // start without them.
   if (x.k === 'stuck') {
-    const outside = outsideHolds(r, t), free = outside.filter((o) => !o.batch).map((o) => o.key);
+    const outside = outsideHolds(r, t), freeHolds = outside.filter((o) => !o.batch), free = freeHolds.map((o) => o.key);
     const one1 = free.length === 1;
-    const admit = free.length ? [['admit', `${andList(free)} ${one1 ? 'is' : 'are'} in no batch, so nothing works ${one1 ? 'it' : 'them'}: admitting queues ${one1 ? 'it' : 'them'} for a worker`]] : [];
+    const admitWhy = `${andList(free)} ${one1 ? 'is' : 'are'} in no batch, so nothing works ${one1 ? 'it' : 'them'}: admitting queues ${one1 ? 'it' : 'them'} for a worker`;
+    const rules = free.length ? admitRules(r) : null;
+    const notYours = freeHolds.map((o) => notAdmittable(o, rules)).filter(Boolean);
     const answerWhy = 'say whether it can start without the tickets outside; the next pass can then start it';
-    return { kind: 'held', need: `held by ${andList(outside.map(holdWords))}, outside this batch`,
+    const need = `held by ${andList(outside.map(holdWords))}, outside this batch`;
+    if (notYours.length) {
+      return { kind: 'held', need, actions: [['not-now', `${notYours.join('; ')}. So ${notYours.length === 1 ? 'it is' : 'they are'} not yours to queue here; not-now puts this off until a blocker moves`],
+        ['admit', null, admitWhy], ['answer', null, answerWhy]] };
+    }
+    const admit = free.length ? [['admit', admitWhy]] : [];
+    return { kind: 'held', need,
       actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] };
   }
   // A held ticket with a question of its own is asked that question, below.
@@ -822,16 +904,7 @@ const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
 // A put-off item is listed anyway, first, while this many tickets of its batch are held behind it.
 export const HOLDS_BACK = 3;
 // How many held tickets of r's batch wait behind `key`: held by it, or by a ticket held behind it.
-export function heldBehind(r, key) {
-  const held = Object.values(r.q?.tickets ?? {}).filter((o) => o.key !== key && isHeld(o));
-  const behind = new Set();
-  for (let edge = new Set([key]); edge.size;) {
-    const next = held.filter((o) => !behind.has(o.key) && keysOf(o.held_by).some((k) => edge.has(k))).map((o) => o.key);
-    next.forEach((k) => behind.add(k));
-    edge = new Set(next);
-  }
-  return behind.size;
-}
+export const heldBehind = (r, key) => heldBehindOf(r.q, key).size;
 const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
 // What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
 function stillListed(r, key) {
@@ -848,6 +921,12 @@ function judged(r, x, register, reads = null) {
   if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return shown === item ? { item, l } : { item: shown, l: { status: 'holding', entry: l.entry } };
   return { item: shown, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
 }
+
+// Whether ticket `t`, held by open tickets outside its batch (desk-q's stuck), is put off with not-now
+// as this list judges it: one a moved blocker or a new action has brought back is not, and one listed
+// only because enough tickets wait behind it still is. `r` needs only the batch's slug, state directory
+// and queue (`q`), as pass.mjs has them.
+export const heldPutOff = (r, t) => ['put_off', 'holding'].includes(judged(r, { t, k: 'stuck' }, readRegister(r.stateDir)).l.status);
 
 // Records on a ticket's put-off entry the actions its item offers now, so one it gains later brings it
 // back (judged). answer.mjs and not-now.mjs add call it once they have put a question off, as this
@@ -871,26 +950,36 @@ function stampItem(r, x, item) {
 
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
 // `b`): the rows that need the person (`rows`), plus its person's-step items (stepItems), as
-// `shown`, less `putOff`, those put off with unchanged inputs.
+// `shown`, less `putOff`, those put off with unchanged inputs. A row held only by a person's step
+// is in `stepRows`, not `rows`, while a step holding it is not put off: it needs the person, but is
+// counted once, through its step item. A reader that draws "not in rows" as put off counts
+// `stepRows` as needing the person too, so a row whose every step is put off is drawn put off.
 export function needsCount(r) {
   const registers = new Map();
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
-  const rows = [];
+  const rows = [], held = [];
   let putOff = 0, steps = 0;
   for (const x of [...basePushRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
+    if (stepHeld(b, x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
+  const live = new Set();
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else { steps++; live.add(s.item.step); }
   }
+  const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
   for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap(followItems)) {
     if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
   }
-  return { shown: rows.length + steps, putOff, rows };
+  const own = (r.batches ?? [r]).filter((x) => x.q);
+  for (const s of signinItems(own, own)) {
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+  }
+  return { shown: rows.length + steps, putOff, rows, stepRows };
 }
 
 // The batches `word` names, else every batch desk-q's home screen shows.
@@ -919,6 +1008,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
     for (const x of [...batchRows(r), ...needsRows(r)]) {
+      if (stepHeld(r, x)) continue;
       const { item, l } = judged(r, x, register, reads);
       if (l.status === 'put_off') { putOff++; continue; }
       const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : timeOf(x.t.park?.since ?? x.t.added_at);
@@ -945,6 +1035,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
   for (const slug of new Set(inScope.map((x) => x.slug))) {
     for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   }
+  for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -1027,7 +1118,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES || ticket === REVIEWER) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -1316,6 +1407,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
+  if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
   if (i.kind === TEMPLATES) {
     let rec;

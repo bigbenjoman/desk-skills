@@ -66,10 +66,12 @@ export function usageLimit(text) {
   return { limits, unrecognised, last };
 }
 
-// The limit by name, as the report and desk-q print it: "the weekly usage limit".
+// The limit's window by name ("weekly"), null when the type names none.
 const NAMES = { five_hour: '5-hour', seven_day: 'weekly' };
+export const limitWord = (type) => NAMES[type] ?? (type && type !== 'unknown' ? type.replace(/_/g, ' ') : null);
+// The limit by name, as the report and desk-q print it: "the weekly usage limit".
 export function limitName(type) {
-  const n = NAMES[type] ?? (type && type !== 'unknown' ? type.replace(/_/g, ' ') : null);
+  const n = limitWord(type);
   return n ? `the ${n} usage limit` : 'the usage limit';
 }
 

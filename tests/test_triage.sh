@@ -64,7 +64,7 @@ if [ "${STUB_LIMIT:-}" = "$n" ]; then
 fi
 [ "${STUB_NOREC:-}" = "$n" ] && { echo "STUB-STDOUT"; exit 1; }
 if [ "$n" = 0 ]; then
-  printf '{"ticket":"fix-thing","lane":"%s","branch":"%s","change_kind":"%s"%s}' "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/fix-thing.json"
+  printf '{"ticket":"%s","lane":"%s","branch":"%s","change_kind":"%s"%s}' "${STUB_TICKET:-fix-thing}" "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/${STUB_TICKET:-fix-thing}.json"
 else
   [ -n "${STUB_CHAL:-}" ] || STUB_CHAL=$(printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE")
   printf '%s' "$STUB_CHAL" > "$DESK_STATE/triage/fix-thing.challenge.json"
@@ -249,15 +249,44 @@ for bad in '"ben_steps":"a cdk deploy"' '"ben_steps":[{"step":"a cdk deploy"}]' 
 done
 check "DS-598: the first pass asks for blocker_needs on each open blocker" \
   'P0 | grep -qF "\"blocker_needs\": {\"<KEY of an open blocker>\": {\"needs\"" && P0 | grep -qF "Judge each open \"is blocked by\" link in \`blocker_needs\`"'
-for bad in '"blocker_needs":[]' '"blocker_needs":{"X-1":true}' '"blocker_needs":{"X-1":{"needs":"yes","why":"w"}}' '"blocker_needs":{"X-1":{"why":"w"}}'; do
+check "DS-687: the first pass asks for one of three calls on every open blocker" \
+  'P0 | grep -qF "{\"needs\": \"build|merge|none\", \"why\"" && P0 | grep -qF "open blocker needs a call, and a record missing one is refused"'
+for bad in '"blocker_needs":[]' '"blocker_needs":{"X-1":true}' '"blocker_needs":{"X-1":{"needs":"yes","why":"w"}}' '"blocker_needs":{"X-1":{"why":"w"}}' \
+  '"blocker_needs":{"X-1":{"needs":true,"why":"w"}}' '"blocker_needs":{"X-1":{"needs":false,"why":"w"}}' '"blocker_needs":{"X-1":{"needs":"later","why":"w"}}'; do
   rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
   out=$(STUB_LANE=A STUB_EXTRA=",$bad" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-  check "DS-598 AC6: blocker_needs $bad is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
+  check "DS-687 AC8: blocker_needs $bad, not one of the three calls, is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
 done
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
-out=$(STUB_LANE=A STUB_EXTRA=',"blocker_needs":{"X-1":{"needs":false,"why":"touches none of its files"},"X-2":{"needs":true,"why":"builds the runner it calls"}}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-598 AC6: a blocker_needs of objects with a boolean needs is kept" \
-  '[ $rc -eq 0 ] && [ "$(lc -c "[.blocker_needs[].needs]")" = "[false,true]" ]'
+out=$(STUB_LANE=A STUB_EXTRA=',"blocker_needs":{"X-1":{"needs":"none","why":"touches none of its files"},"X-2":{"needs":"build","why":"builds the runner it calls"},"X-3":{"needs":"merge","why":"lands the flag it ships behind"}}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-687 AC8: a blocker_needs of the three calls is kept" \
+  '[ $rc -eq 0 ] && [ "$(lc -c "[.blocker_needs[].needs]")" = "[\"none\",\"build\",\"merge\"]" ]'
+
+# AC1: on a tracker key, once ticket-facts.mjs has listed the open blockers, each needs a call. FIX-1 is
+# blocked by X-1 and X-2, both open, and by X-3, Done.
+sed -e 's/| Tracker | `none` |/| Tracker | `jira` |/' -e 's/| Ticket key pattern | `none` |/| Ticket key pattern | `FIX-[0-9]+` |/' "$T/config.md" > "$T/config-jira.md"
+mkdir -p "$T/jirastub"
+link(){ printf '{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"%s","fields":{"summary":"s","issuetype":{"name":"Story"},"status":{"statusCategory":{"key":"%s"}}}}}' "$1" "$2"; }
+printf '{"key":"FIX-1","fields":{"summary":"Fix it","labels":[],"issuelinks":[%s,%s,%s]}}\n' "$(link X-1 new)" "$(link X-2 indeterminate)" "$(link X-3 'done')" > "$T/fix-1.json"
+cat > "$T/jirastub/desk-jira" <<EOF
+#!/bin/sh
+case "\$1" in
+  get) [ "\$2" = FIX-1 ] && cat "$T/fix-1.json" || printf '{"key":"%s","fields":{"labels":[]}}\n' "\$2" ;;
+  lint) echo '[]' ;;
+  *) echo '[]' ;;
+esac
+EOF
+chmod +x "$T/jirastub/desk-jira"
+jtriage(){ rm -f "$STUB_LOG".* "$T/state/triage/FIX-1.json"; out=$(DESK_CONFIG="$T/config-jira.md" PATH="$T/jirastub:$PATH" STUB_TICKET=FIX-1 STUB_LANE=A STUB_BRANCH=fix/FIX-1-it STUB_EXTRA="$1" bash "$B/triage.sh" FIX-1 2>&1); rc=$?; }
+jtriage ',"blocker_needs":{"X-1":{"needs":"build","why":"builds what it calls"}}'
+check "DS-687 AC1: a record with a call for only one of two open blockers is refused, naming the one with none" \
+  '[ $rc -ne 0 ] && [[ "$out" == *"FIX-1 triage record is malformed: blocker_needs has no call for open blocker X-2."* ]] && [ ! -f "$T/state/triage/FIX-1.json" ]'
+jtriage ''
+check "DS-687 AC1: a record with no blocker_needs at all names every open blocker, never a Done one" \
+  '[ $rc -ne 0 ] && [[ "$out" == *"no call for open blockers X-1, X-2."* ]]'
+jtriage ',"blocker_needs":{"X-1":{"needs":"build","why":"builds what it calls"},"X-2":{"needs":"merge","why":"lands first"}}'
+check "DS-687 AC1: a call for every open blocker is kept, with its blockers listed" \
+  '[ $rc -eq 0 ] && [ "$(jq -c "[.blockers[].key]" "$T/state/triage/FIX-1.json")" = "[\"X-1\",\"X-2\",\"X-3\"]" ]'
 
 # The challenge (AC5) on a lane C fixture: its prompt carries AC1 to AC3, a DOWNGRADE moves the ticket
 # to A or B and keeps its ben_steps, and a CONFIRM on an L-sized ticket keeps C (AC3).
@@ -407,24 +436,23 @@ check "DS-394 AC5: a call the person overrode binds as overridden, and the overr
   '[ $rc -eq 0 ] && P0 | grep -qxF -- "- which retry backoff?: took \"fixed\", overriding \"exponential\" (ben) (engineering)" && ! P0 | grep -qF "took \"exponential\""'
 rm -rf "$T/state/briefings" "$T/state/decisions.jsonl"
 
-# DS-468: both passes run on a login that is not benched; with every login benched, or one login, as the
-# shell does. Login a is the default (~/.claude), benched in the queue; b has room.
+# DS-621: both passes run on the repo's subscription, at its limit too; with no subscriptions file, as the
+# shell does. Login a is the default (~/.claude); b, signed in to b@example.com, has room.
 mkdir -p "$T/home/.claude" "$T/home/.claude-logins/b"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `in rotation` |\n' > "$T/subs.md"
-bench(){ printf '{"version":1,"tickets":{},"benched":{%s}}\n' "$1" > "$T/queue.json"; }
-A_BENCH='"default":{"login":"a","config_dir":null,"type":"five_hour","resets_at":null}'
-B_BENCH="\"b\":{\"login\":\"b\",\"config_dir\":\"$T/home/.claude-logins/b\",\"type\":\"five_hour\",\"resets_at\":null}"
+printf '{"oauthAccount":{"emailAddress":"b@example.com"}}\n' > "$T/home/.claude-logins/b/.claude.json"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$T/subs.md"
+hold(){ printf '{"version":1,"tickets":{},"usage_hold":{"type":"five_hour","resets_at":null,"preflight":"X-1","paused":[]}}\n' > "$T/queue.json"; }
 logins(){ tr '\n' ' ' < "$T/logins" | sed 's/ $//'; }
-bench "$A_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
-out=$(DESK_SUBSCRIPTIONS="$T/subs.md" STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC2 AC3: with login a benched, triage and its challenge both run on login b" \
+hold; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+out=$(DESK_SUBSCRIPTIONS="$T/subs.md" DESK_SUBSCRIPTION=b@example.com STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-621 AC1 AC6: with the repo's subscription b, triage and its challenge both run on login b" \
   '[ $rc -eq 0 ] && [ "$(logins)" = "$T/home/.claude-logins/b $T/home/.claude-logins/b" ]'
-bench "$A_BENCH,$B_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+hold; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
 out=$(DESK_SUBSCRIPTIONS="$T/subs.md" STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC6 AC7: with every login benched, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
-bench "$A_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+check "DS-621 AC5: following the default a at its limit, both run on a, the shell's own, not on b" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins" "$T/queue.json"
 out=$(STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC8: with no subscriptions file, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
+check "DS-621 AC7: with no subscriptions file, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
 rm -f "$T/queue.json" "$T/logins" "$T/subs.md"; rm -rf "$T/home/.claude-logins"
 
 # DS-649 AC1: both passes ask for the 5-minute prompt cache.

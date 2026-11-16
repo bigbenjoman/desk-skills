@@ -45,10 +45,16 @@ for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln 
 cat > "$T/desk/bin/upload-images.mjs" <<EOF
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
+appendFileSync('$T/upload-args', \`\${process.argv.slice(2).join(' ')}\\n\`);
 // \$T/upload-left, when it exists, is an upload that left cells: what upload-images says, and its exit 4.
 if (existsSync('$T/upload-left')) { process.stdout.write(readFileSync('$T/upload-left', 'utf8')); process.exit(4); }
 // \$T/upload-busy-<pr>, when it exists, is the shared profile in use: the uploader's exit 2.
 if (existsSync('$T/upload-busy-' + process.argv[2])) { console.error('[upload] the shared profile is in use — refusing:'); process.exit(2); }
+// \$T/upload-throttle-<pr>, when it exists, is GitHub's rate limit: its contents are the retry_after, then exit 7.
+if (existsSync('$T/upload-throttle-' + process.argv[2])) { console.error('[upload] throttled: an earlier stall has not passed, so nothing is uploaded before ' + readFileSync('$T/upload-throttle-' + process.argv[2], 'utf8').trim()); process.exit(7); }
+// \$T/upload-fillcrash-<pr>, when it exists, fills the first cell of the fake gh's PR body, then crashes.
+const frc = '$T/fr/' + process.argv[2] + '.json';
+if (existsSync('$T/upload-fillcrash-' + process.argv[2])) { const j = JSON.parse(readFileSync(frc, 'utf8')); j.body = j.body.replace(/_drag (\S+?)\.png_/, '<img alt="\$1" src="https://github.com/user-attachments/assets/1">'); writeFileSync(frc, JSON.stringify(j)); console.error('Error: page closed'); process.exit(1); }
 // \$T/upload-crash, when it exists, is an uncaught exception: a stack, then node's version banner last.
 if (existsSync('$T/upload-crash')) { console.error('file:///up.mjs:9\nError: profile locked\n    at main (file:///up.mjs:9:9)\n\nNode.js v22.23.1'); process.exit(1); }
 // \$T/upload-fills, when it exists, swaps the cells of the fake gh's PR \$T/fr/<pr>.json as the real one does.
@@ -70,8 +76,11 @@ chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
 all_done(){ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) { t.state = "done"; if (t.result?.pr != null) { t.merged_at ??= "2026-10-23T10:00:00Z"; t.pr_status = { pr: t.result.pr, state: "MERGED", merged_at: t.merged_at, checks: [] }; } } require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"; }
 
+# A signed-in browser profile, as the upload queue runs no upload without one.
+printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":%s}],"origins":[]}\n' "$(( $(date +%s) + 31536000 ))" > "$T/profile.github-session.json"
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
-  DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
+  DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test \
+  DESK_BROWSER_PROFILE="$T/profile"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
@@ -101,6 +110,17 @@ check "the finished round records the log's PR"         '[ "$(field T-1 result.p
 check "DS-193 AC1 a missing image directory runs no upload and reports nothing" '! grep -q "^11 " "$T/uploads" && ! echo "$out" | grep -q "I-1: image" && [ "$(field I-1 images_uploaded)" = "\"none\"" ] && [ "$(field I-1 state)" = "\"done\"" ]'
 check "DS-193 AC2 a directory with no image runs no upload and reports nothing" '! grep -q "^12 " "$T/uploads" && ! echo "$out" | grep -q "I-2: image" && [ "$(field I-2 images_uploaded)" = "\"none\"" ] && [ "$(field I-2 state)" = "\"done\"" ]'
 check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'
+check "DS-673 AC5 the pass uploads through the machine's upload queue, capped at the minute's pace" 'grep -qx "2 $T/state/images/T-1/ --max 6" "$T/upload-args"'
+check "DS-673 AC5 each upload done, the queue holds no job and no result" 'node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); process.exit(q.jobs.length + q.results.length)" "$T/desk/upload-queue.json"'
+
+# R-1 and R-2: finished tickets whose uploads ended in another repo's pump. R-1's was its last round's,
+# ending after its next round started; R-2's is its own round's.
+q add R-1; q set R-1 state=done branch=fix/R-1 upload_round=new result.pr=21
+q add R-2; q set R-2 state=done branch=fix/R-2 upload_round=same result.pr=22
+node -e 'const [f, queue] = process.argv.slice(1); const r = (key, round, pr) => ({ queue, repo: "acme/widgets", key, round, pr, dir: "/d/", code: 0, out: "[upload] done: 1 image(s) in the body, 0 placeholder(s) left", done_at: new Date().toISOString() }); require("fs").writeFileSync(f, JSON.stringify({ jobs: [], results: [r("R-1", "old", 21), r("R-2", "same", 22)], served: {}, backoff: null }))' "$T/desk/upload-queue.json" "$DESK_QUEUE"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-673 a result of a ticket's earlier round is not recorded on its next round" '[ "$(field R-1 images_uploaded)" = null ] && echo "$out" | grep -q "R-1: an upload to PR #21 from an earlier round"'
+check "DS-673 a result of the ticket's own round is recorded"                       '[ "$(field R-2 images_uploaded)" = true ]'
 
 # T-3: round one finished with PR 1 and uploaded; it is requeued for a deliberate re-run.
 q add T-3; q set T-3 state=triaged branch=fix/T-3 result.pr=1 result.summary=old images_uploaded=true images_reported=true draft_pr=1
@@ -1253,11 +1273,12 @@ q add J-4; q set J-4 state=done result.pr=600
 printf '%s\n' '{"epic":null,"blockers":[{"key":"X-9","category":"new"},{"key":"J-2","category":"new"}]}' > "$T/state-j/triage/J-1.json"
 printf '%s\n' '{"epic":null,"blockers":[]}' > "$T/state-j/triage/J-2.json"
 blocked indeterminate
+printf '%s\n' '{"fields":{"assignee":null}}' > "$T/jira/X-9.json"
 : > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC1 a draft PR records isDraft, reviewDecision and mergeable as GitHub reports them" \
   '[ "$(field J-4 pr_status | jq -c "[.isDraft, .reviewDecision, .mergeable]")" = "[true,\"REVIEW_REQUIRED\",\"MERGEABLE\"]" ]'
-check "DS-221 AC2 an open blocker outside the batch is recorded with its status category, read again from Jira; one inside the batch is not" \
-  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\"}]" ] && [ "$(cat "$T/jira-calls")" = "get J-1 --json" ]'
+check "DS-221 AC2 (DS-599) an open blocker outside the batch is recorded with its status category and assignee, read again from Jira; one inside the batch is not" \
+  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\",\"assignee\":null}]" ] && [ "$(cat "$T/jira-calls")" = "$(printf "get J-1 --json\nget X-9 --json\nget J-2 --json")" ]'
 check "DS-221 a ticket with no outside blockers records none and is not read from Jira" '[ "$(field J-2 outside_blockers)" = "[]" ]'
 check "DS-221 AC4 a pass a session ran names session" '[ "$(pass_rec by)" = "\"session\"" ] && [ "$(pass_rec errors)" = 0 ]'
 STATUS_AT=$(field J-4 pr_status.at); SESSION_AT=$(pass_rec at)
@@ -1339,6 +1360,12 @@ check "DS-598 AC5: while the blocker is in progress the ticket stays held, and n
 x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-598 AC5: once the blocker is Done and on the base, the pass releases it and it can start" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
+# A person's step in no batch has no PR: the first pass that reads it Done in Jira releases the ticket held behind it.
+q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once X-7 is Done in Jira"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"done","labels":["ben-input"]}]}' > "$T/state-j/triage/J-7.json"
+printf '[]\n' > "$T/prs-x7.json"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-685 AC4: a person's step in no batch read Done releases the ticket waiting to start on it" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 held_outside)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED"'
 # A blocker whose Jira Repository is another configured repo lands there, never on this base: the first
 # pass that reads it Done in Jira releases the ticket, with no PR of its on main here.
 mkdir -p "$HOME/.config/desk/repos/acme__web"; git init -q -b main "$T/web"; git -C "$T/web" commit -q --allow-empty -m init
@@ -1400,6 +1427,77 @@ check "DS-407 a step that joined the batch still holds the merge while it is ope
 ops1 'done'; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-407 a step that joined the batch is lifted once Jira has it Done" '[ "$(field J-8 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-8: OPS-1 Done; free to merge"'
 q drop OPS-1; q drop J-8
+# A blocker triage called needed only to merge is another ticket's code, not a step: Done in Jira lifts
+# its merge gate only once its PR is on the base, as an outside hold is lifted.
+x7gate(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"X-7","fields":{"summary":"Ship the flag","issuetype":{"name":"Story"},"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-12.json"
+  printf '[{"number":70,"state":"%s","title":"fix(x): X-7 a thing","headRefName":"fix/X-7-thing","baseRefName":"main","mergeCommit":null}]\n' "$2" > "$T/prs-x7.json"
+  q set J-12 outside_blockers_read=null; }
+q add J-12; q set J-12 state=done result.pr=612 merge_after=X-7
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"new","type":"Story","summary":"Ship the flag"}],"blocker_needs":{"X-7":{"needs":"merge","why":"lands the flag it ships behind"}}}' > "$T/state-j/triage/J-12.json"
+x7gate 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-687 a triage merge gate Done in Jira whose PR has not merged to the base still holds the merge" '[ "$(field J-12 merge_after)" = "\"X-7\"" ] && ! echo "$out" | grep -q "merge hold: J-12"'
+q add X-7; x7gate 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-687 one that joined the batch since still holds the merge until its PR is on the base" '[ "$(field J-12 merge_after)" = "\"X-7\"" ] && ! echo "$out" | grep -q "merge hold: J-12"'
+q drop X-7
+x7gate 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-687 once it is Done and its PR merged to the base, the pass lifts the gate" '[ "$(field J-12 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 Done; free to merge"'
+q drop J-12
+# DS-683: every pass reads a full hold on a blocker in no batch again. J-13 is the KAN-529 shape:
+# admitted fully held on OPS-3 on triage's 'build' call, a step no row named yet, then the label row set.
+# The step decides, so the call does not keep it held.
+cat "$T/config-j.md" > "$T/config-jl.md"
+printf '| Person-step labels | `ben-step` |\n| Person-input labels | `ben-input` |\n' >> "$T/config-jl.md"
+# step <TICKET> <BLOCKER> <label>: the ticket's Jira links, its triage record, and the blocker's labels.
+step(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"%s","fields":{"summary":"Set up the account","issuetype":{"name":"Task"},"status":{"statusCategory":{"key":"new"}}}}}]}}\n' "$2" > "$T/jira/$1.json"
+  printf '{"fields":{"labels":["%s"]}}\n' "$3" > "$T/jira/$2.json"
+  printf '{"epic":null,"blockers":[{"key":"%s","category":"new","type":"Task","summary":"Set up the account","labels":["%s"]}],"blocker_needs":{"%s":{"needs":"build","why":"the account it reads"}}}\n' "$2" "$3" "$2" > "$T/state-j/triage/$1.json"; }
+held_on(){ q add "$1"; q set "$1" state=parked held_by="$2" held_outside="$2" "park={\"question\":\"held by orchestrator: blocked by $2 — starts once $2 is Done in Jira\"}"; }
+held_on J-13 OPS-3; step J-13 OPS-3 ben-step
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-683 AC4 a full hold on a blocker that is no person's step stays as it is" \
+  '[ "$(field J-13 state)" = "\"parked\"" ] && [ "$(field J-13 held_outside)" = "\"OPS-3\"" ] && [ "$(field J-13 merge_after)" = null ] && ! echo "$out" | grep -q "RECLASSIFIED J-13"'
+# With no label row, that pass's blocker re-read kept no labels: a re-read with the row set reads them.
+step J-13 OPS-3 ben-step; out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC1 once its label row is set, the full hold becomes a merge-only gate, logged" \
+  '[ "$(field J-13 held_outside)" = null ] && [ "$(field J-13 held_by)" = null ] && [ "$(field J-13 merge_after)" = "\"OPS-3\"" ] && [ "$(echo "$out" | grep -c "RECLASSIFIED J-13: OPS-3 is a person step: build now, merge after")" = 1 ]'
+check "DS-683 AC2 its last full hold gone, it is released and spawned in the same pass" \
+  '[ "$(field J-13 state)" = "\"running\"" ] && [ "$(field J-13 park)" = null ] && echo "$out" | grep -q "person-step hold: J-13: RELEASED"'
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC5 the next pass changes nothing and logs nothing again" \
+  '[ "$(field J-13 merge_after)" = "\"OPS-3\"" ] && ! echo "$out" | grep -q "J-13: OPS-3\|person-step hold: J-13"'
+step J-13 OPS-3 ben-input; out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 a ticket already started keeps its merge-only gate when the step gains an input label" \
+  '[ "$(field J-13 merge_after)" = "\"OPS-3\"" ] && [ "$(field J-13 held_outside)" = null ] && ! echo "$out" | grep -q "person-step hold: J-13"'
+q drop J-13
+held_on J-14 OPS-4; step J-14 OPS-4 ben-input
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC3 a full hold on a Person-input blocker stays as it is, with nothing logged" \
+  '[ "$(field J-14 state)" = "\"parked\"" ] && [ "$(field J-14 held_outside)" = "\"OPS-4\"" ] && [ "$(field J-14 merge_after)" = null ] && ! echo "$out" | grep -q "RECLASSIFIED J-14\|person-step hold: J-14"'
+q drop J-14
+q add J-15; q set J-15 state=triaged merge_after=OPS-5; step J-15 OPS-5 ben-input
+q add J-16; q set J-16 state=triaged merge_after=OPS-6; step J-16 OPS-6 ben-step
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC6 a not-yet-started gate whose blocker gained an input label is a full hold again, logged once" \
+  '[ "$(field J-15 state)" = "\"parked\"" ] && [ "$(field J-15 held_outside)" = "\"OPS-5\"" ] && [ "$(field J-15 held_by)" = "\"OPS-5\"" ] && [ "$(field J-15 merge_after)" = null ] && [ "$(echo "$out" | grep -c "person-step hold: J-15: OPS-5 now labelled as your input")" = 1 ] && field J-15 park.question | grep -q "^\"held by orchestrator: blocked by OPS-5"'
+check "DS-683 AC7 a merge-only gate on a blocker with no input label is never moved back" \
+  '[ "$(field J-16 merge_after)" = "\"OPS-6\"" ] && [ "$(field J-16 held_outside)" = null ] && ! echo "$out" | grep -q "person-step hold: J-16"'
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC6 the next pass leaves it held and says nothing more" '[ "$(field J-15 state)" = "\"parked\"" ] && [ "$(field J-15 held_outside)" = "\"OPS-5\"" ] && ! echo "$out" | grep -q "RECLASSIFIED J-15\|person-step hold: J-15"'
+q drop J-15; q drop J-16
+held_on J-17 OPS-7; step J-17 OPS-7 ben-step
+out=$(AUTOPILOT_DRY_RUN=1 DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC9 a dry run reports the change and writes nothing" \
+  '[ "$(field J-17 state)" = "\"parked\"" ] && [ "$(field J-17 held_outside)" = "\"OPS-7\"" ] && [ "$(field J-17 merge_after)" = null ] && echo "$out" | grep -q "RECLASSIFIED J-17: OPS-7 is a person step: build now, merge after (dry run)"'
+q drop J-17
+# A person's release (held_by=null) leaves held_outside behind. Date-held since, the stale key is no hold
+# to lift, so the date hold stands.
+q add J-18; q set J-18 state=parked held_outside=OPS-8 held_label=blocked-until-2099-01-01 'park={"question":"held by orchestrator: blocked until 2099-01-01 (label blocked-until-2099-01-01) — starts on that date by itself"}'
+step J-18 OPS-8 ben-step
+printf '{"epic":null,"labels":["blocked-until-2099-01-01"],"blockers":[{"key":"OPS-8","category":"new","type":"Task","summary":"Set up the account","labels":["ben-step"]}]}\n' > "$T/state-j/triage/J-18.json"
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 a held_outside key a release left behind does not lift a date hold" \
+  '[ "$(field J-18 state)" = "\"parked\"" ] && [ "$(field J-18 held_label)" = "\"blocked-until-2099-01-01\"" ] && [ "$(field J-18 merge_after)" = null ] && ! echo "$out" | grep -q "RECLASSIFIED J-18\|person-step hold: J-18"'
+q drop J-18
 # AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
 out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'
@@ -1558,6 +1656,70 @@ check "DS-578 a red check §4 State checks does not name keeps the draft" '[ "$(
 printf '| State checks | `Review gate: approval` |\n' >> "$T/config-u.md"
 q set U-12 undraft=null; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-578 AC1 a clean draft red only on a §4 State check is undrafted" '[ "$(readied 712)" = 1 ] && [ "$(field U-12 undraft.call)" = "\"ready\"" ]'
+
+# ---- DS-569: a supervised batch's pass admits a held ticket's open blocker in no batch into the batch
+# intake.mjs is a fake that records each admit and adds the ticket to this queue, or refuses one
+# $T/refuse-<key> names, or one $T/limit-<key> names as real intake does when that ticket's own triage
+# stops at a usage limit. It answers --json as intake does. Each held ticket's blockers were read just
+# now, so Jira is not read again.
+{ cat "$T/config-j.md"; printf '| Jira project | `J` |\n| Person-input labels | `ben-input` |\n'; } > "$T/config-a.md"
+CONFIG_WAS=$DESK_CONFIG; export DESK_CONFIG="$T/config-a.md" DESK_QUEUE="$T/queue-a.json" DESK_AUTOPILOT_STATE="$T/state-a"
+mkdir -p "$T/state-a/logs" "$T/state-a/triage"; : > "$T/admits-a"
+cat > "$T/desk/bin/intake.mjs" <<EOF
+import { appendFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+const key = process.argv[3];
+const args = process.argv.slice(2).filter((a) => a !== '--json');
+appendFileSync('$T/admits-a', args.join(' ') + '\n');
+const say = (lines, r) => { console.log(process.argv.includes('--json') ? JSON.stringify({ ran: true, lines, admitted: [], refused: [], limited: [], ...r }) : lines.join('\n')); };
+if (existsSync('$T/limit-' + key)) { say(['triage: done ' + key + ' no record (1s)', 'not admitted ' + key + ': triage stopped at the usage limit, which resets at 3pm: run /desk-admit ' + key + ' again once the limit lifts', 'summary: 0 of 1 admitted, 1 not admitted (1s)'], { refused: [key], limited: [key] }); process.exit(11); }
+if (existsSync('$T/refuse-' + key)) { say(['triage: done ' + key + ' lane C (1s)', 'not admitted ' + key + ': lane C: needs a plan', 'summary: 0 of 1 admitted, 1 not admitted (1s)'], { refused: [key] }); process.exit(11); }
+execFileSync('node', ['$B/queue.mjs', 'add', key], { stdio: 'ignore' });
+say(['admitted ' + key + ' by pass into batch a (lane A, S)'], { admitted: [key] });
+EOF
+printf '#!/bin/sh\ncase "$*" in\n  "pr list "*) echo "[]" ;;\n  *) exit 1 ;;\nesac\n' > "$T/stub/gh"; chmod +x "$T/stub/gh"
+q init a; q set-batch supervised=true
+held_on(){ q add "$1"; q set "$1" state=parked held_by="$2" held_outside="$2" outside_blockers_read=2099-01-01T00:00:00.000Z "park={\"question\":\"held by orchestrator: blocked by $2 — starts once their PRs merge\"}"
+  printf '{"epic":null,"blockers":[{"key":"%s","category":"%s"%s}]}\n' "$2" "$3" "${4:-}" > "$T/state-a/triage/$1.json"; }
+held_on J-60 J-61 new
+held_on J-64 J-65 new ',"labels":["ben-input"]'
+held_on J-66 J-67 'done'
+held_on J-68 X-69 indeterminate
+held_on J-70 J-71 new
+held_on J-72 J-73 new; touch "$T/refuse-J-73"
+# J-70's held item is put off on the inputs needs-you keys it to now; J-80's was put off while its
+# blocker was in progress, so the blocker moving to To Do has brought it back.
+held_on J-80 J-81 new
+node -e 'import(process.argv[1]).then((m) => { const off = (t, b, cat) => console.log(JSON.stringify(m.putOffEntry({ question: `${t} held`, ticket: t,
+  inputs: { ticket: t, need: `held by ${b} (${cat}, in no batch), outside this batch`, blockers: `${b}:${cat === "to do" ? "new" : "indeterminate"}@none` } })));
+  off("J-70", "J-71", "to do"); off("J-80", "J-81", "in progress"); })' "$B/not-now.mjs" > "$T/state-a/not-now.jsonl"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 AC1 the held ticket's open blocker in no batch is admitted to its batch, and its hold is an ordinary one" \
+  'grep -qx "admit J-61 --by pass" "$T/admits-a" && [ "$(field J-61 state)" != null ] && [ "$(field J-60 held_by)" = "\"J-61\"" ] && [ "$(field J-60 held_outside)" = null ] && [ "$(field J-60 outside_blockers)" = "[]" ] && echo "$out" | grep -q "outside blockers: J-61, holding J-60, admitted to this batch"'
+check "DS-569 AC2 a blocker that is the person's step is not admitted, and its ticket stays held outside" \
+  '! grep -q "J-65" "$T/admits-a" && [ "$(field J-65 state)" = null ] && [ "$(field J-64 held_outside)" = "\"J-65\"" ]'
+check "DS-569 AC3 a Done blocker admits nothing, and the held ticket is released to start" \
+  '! grep -q "J-67" "$T/admits-a" && [ "$(field J-66 state)" = "\"triaged\"" ] && [ "$(field J-66 held_by)" = null ]'
+check "DS-569 a blocker in another Jira project, and one whose held item was put off, are not admitted" \
+  '! grep -q "X-69" "$T/admits-a" && ! grep -q "J-71" "$T/admits-a" && [ "$(field J-70 held_outside)" = "\"J-71\"" ]'
+check "DS-569 a held item put off before its blocker moved is back, so its blocker is admitted" \
+  'grep -qx "admit J-81 --by pass" "$T/admits-a" && [ "$(field J-80 held_outside)" = null ]'
+check "DS-569 a blocker intake refuses is said with its reason, and the ticket stays held outside" \
+  'grep -qx "admit J-73 --by pass" "$T/admits-a" && [ "$(field J-72 held_outside)" = "\"J-73\"" ] && [ "$(field J-72 outside_admit_tried)" = "\"J-73\"" ] && echo "$out" | grep -qF "outside blockers: J-73, holding J-72, not admitted to this batch (not admitted J-73: lane C: needs a plan): admit it with /desk-admit J-73"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 a refused blocker is not tried again on the next pass" '[ "$(grep -c "J-73" "$T/admits-a")" = 1 ] && [ "$(wc -l < "$T/admits-a" | tr -d " ")" = 3 ]'
+held_on J-74 J-75 new
+out=$(DESK_BATCH=a node "$B/pass.mjs" 2>&1)
+check "DS-569 in a named batch the blocker is admitted into that batch" 'grep -qx "admit J-75 --by pass --into a" "$T/admits-a" && [ "$(field J-74 held_outside)" = null ]'
+held_on J-78 J-79 new; touch "$T/limit-J-79"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 a blocker whose triage a usage limit cut off is not counted as tried" '[ "$(field J-78 outside_admit_tried)" = null ] && [ "$(field J-79 state)" = null ]'
+rm -f "$T/limit-J-79"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 once the limit lifts, the next pass admits it" '[ "$(grep -c "^admit J-79 " "$T/admits-a")" = 2 ] && [ "$(field J-79 state)" != null ]'
+q set-batch supervised=false; held_on J-76 J-77 new
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 a batch the supervisor does not run admits nothing" '! grep -q "J-77" "$T/admits-a" && [ "$(field J-76 held_outside)" = "\"J-77\"" ]'
+export DESK_CONFIG="$CONFIG_WAS"
 
 # ---- DS-415: evidence runs that failed the same way on three drafts start one fix, not three items
 # The fake gh: #801-#803 are clean, green drafts with two screenshot cells and an evidence block. Each
@@ -2217,6 +2379,49 @@ check "DS-429 AC3 a spent upload is not tried again" '! grep -q "^772 " "$T/uplo
 check "DS-429 a round that names its screenshots is uploaded though earlier tries were spent" \
   'grep -qx "774 $T/state-s/images/P-4/" "$T/uploads" && [ "$(field P-4 upload_crash)" = null ] && grep -q "^pr ready 774" "$T/gh-calls"'
 rm -f "$T/upload-fills" "$T/upload-busy-775"
+
+# ---- DS-675: the saved GitHub login expired: no upload is attempted and none goes to the person PR by
+# PR; once it is signed in, the next pass uploads what waited.
+signed="$(cat "$T/profile.github-session.json")"
+printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":1}],"origins":[]}\n' > "$T/profile.github-session.json"
+q add P-6; q set P-6 state=running session_id=gone lane=A branch=fix/P-6 result.pr=776; frx 776 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 776 '_drag p-6.png_'
+mkdir -p "$T/state-s/images/P-6"; : > "$T/state-s/images/P-6/p-6.png"
+say "AUTOPILOT_IMAGES: $T/state-s/images/P-6/" "AUTOPILOT_DONE: pr=776 jira=Done" > "$T/state-s/logs/P-6.log"
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-675 AC1 an expired login: the pass attempts no upload and spends no try" '! grep -q "^776 " "$T/uploads" && [ "$(field P-6 upload_crash)" = null ]'
+check "DS-675 AC1 it waits in the queue naming the sign-in, and is not put to the person" \
+  'echo "$out" | grep -qF "P-6 images → #776 wait in the machine'"'"'s upload queue: the GitHub login in $T/profile.github-session.json expired" && echo "$out" | grep -qF "until it is signed in: node ~/.claude/desk/bin/github-signin.mjs" && ! echo "$out" | grep -q "P-6: DRAFT"'
+printf '%s\n' "$signed" > "$T/profile.github-session.json"
+: > "$T/uploads"; : > "$T/upload-fills"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-675 AC2 signed in again, the next pass uploads what waited" 'grep -qx "776 $T/state-s/images/P-6/" "$T/uploads" && [ "$(field P-6 images_uploaded)" = true ]'
+rm -f "$T/upload-fills"
+
+# ---- DS-674: a crash that filled cells spends no try, and a throttled stop spends none and waits for
+# its retry_after. UC-1: one filled crash already recorded, three cells left, and each retry fills one
+# then crashes. UC-2: one try spent, and its retry is throttled.
+q add UC-1; q set UC-1 state=done lane=A branch=fix/UC-1 result.pr=791 'upload_crash={"pr":791,"dir":"'"$T/state-s/images/UC-1/"'","tries":1,"log":"x","filled":1}'
+frx 791 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 791 '_drag uc-1a.png_ _drag uc-1b.png_ _drag uc-1c.png_'; mkdir -p "$T/state-s/images/UC-1"; for f in a b c; do : > "$T/state-s/images/UC-1/uc-1$f.png"; done
+q add UC-2; q set UC-2 state=done lane=A branch=fix/UC-2 result.pr=792 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x"}'
+frx 792 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 792 '_drag uc-2.png_'; mkdir -p "$T/state-s/images/UC-2"; : > "$T/state-s/images/UC-2/uc-2.png"
+: > "$T/upload-fillcrash-791"; echo 2099-01-01T00:00:00.000Z > "$T/upload-throttle-792"
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-674 AC1 a crash that filled a cell spends no try, and its cells wait rather than go to the person" \
+  'grep -qx "791 $T/state-s/images/UC-1/" "$T/uploads" && [ "$(field UC-1 upload_crash.tries)" = 1 ] && [ "$(field UC-1 upload_crash.filled)" = 1 ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -qF "UC-1: image upload to PR #791 crashed after filling 1 cell(s), so it spends no try (1 of 2 spent), and the next pass tries it again"'
+check "DS-674 AC3 a throttled upload spends no try and its cells wait for the back-off" \
+  'grep -qx "792 $T/state-s/images/UC-2/" "$T/uploads" && [ "$(field UC-2 upload_crash.tries)" = 1 ] && [ "$(field UC-2 upload_crash.throttled)" = "\"2099-01-01T00:00:00.000Z\"" ] && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -qF "UC-2 images → #792 wait: GitHub'"'"'s rate limit throttled the upload, so it is tried again after 2099-01-01T00:00:00.000Z without counting a try"'
+# UC-2's throttle set the machine's upload back-off (DS-673), so inside it no upload is tried, UC-1's included.
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-674 AC3 a throttled upload is not tried again before its retry_after, nor is any other inside the back-off" \
+  '! grep -q "^792 " "$T/uploads" && ! grep -q "^791 " "$T/uploads" && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-[12]: DRAFT"'
+# The back-off ends: the queue's and UC-2's retry_after both lie in the past.
+rm -f "$T/upload-throttle-792"; : > "$T/upload-fills"
+node -e 'const f = process.argv[1]; const q = JSON.parse(require("fs").readFileSync(f, "utf8")); q.backoff.until = "2020-01-01T00:00:00.000Z"; require("fs").writeFileSync(f, JSON.stringify(q))' "$T/desk/upload-queue.json"
+q set UC-2 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x","throttled":"2020-01-01T00:00:00.000Z"}'
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-fills" "$T/upload-fillcrash-791"
+check "DS-674 AC1 after a second crash that filled a cell, the next pass tries the upload again" \
+  'grep -qx "791 $T/state-s/images/UC-1/" "$T/uploads" && [ "$(field UC-1 upload_crash.tries)" = 1 ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-1: DRAFT"'
+check "DS-674 AC3 once its retry_after has passed, the throttled upload is tried again" \
+  'grep -qx "792 $T/state-s/images/UC-2/" "$T/uploads" && [ "$(field UC-2 upload_crash)" = null ] && [ "$(field UC-2 images_uploaded)" = true ]'
 
 # ---- KAN-629: screenshots saved in the ticket's briefed directory by a worker that never printed
 # AUTOPILOT_IMAGES are uploaded from that directory, not left to the person as files desk holds.
@@ -3648,5 +3853,17 @@ there(){ node --input-type=module -e "import { linkThere } from '$B/link-request
 check "DS-557 a links-made park reads direction as desk-jira link does: duplicates is not met by is duplicated by" '[ "$(there)" = "false,true,true,true,false" ]'
 check "DS-557 a later round's follow-ons keep the link step an earlier round left" \
   '[ "$(field L-9 follow_on)" = "[{\"step\":\"Issue link not made: earlier\",\"row\":\"jira-edit\"},{\"step\":\"post the note\",\"row\":\"jira-comment\"}]" ]'
+
+# DS-689 AC6: a §4 Append-only paths row that is not a list of path globs is named in the pass report;
+# a row of globs is not.
+export DESK_QUEUE="$T/queue-ao.json" DESK_AUTOPILOT_STATE="$T/state-ao"; mkdir -p "$T/state-ao/logs"
+q init ao
+{ cat "$T/config.md"; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Append-only paths | messages and the locales |\n'; } > "$T/config-ao-bad.md"
+{ cat "$T/config.md"; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Append-only paths | `messages/*.json` |\n'; } > "$T/config-ao.md"
+out=$(DESK_CONFIG="$T/config-ao-bad.md" node "$B/pass.mjs" 2>&1)
+check "DS-689 AC6 a malformed Append-only paths row is named in the pass report, read as none" \
+  'echo "$out" | grep -qF "collisions: config §4 \"Append-only paths\" is not a list of path globs (messages and the locales) — read as none"'
+out=$(DESK_CONFIG="$T/config-ao.md" node "$B/pass.mjs" 2>&1)
+check "DS-689 AC6 a row of globs is not named" '! echo "$out" | grep -qF "Append-only paths"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

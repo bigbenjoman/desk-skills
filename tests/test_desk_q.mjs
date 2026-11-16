@@ -657,7 +657,7 @@ const shows = (s) => {
   return f.some((l) => /^ +# {2}TICKET/.test(l) || /^ {2}REPO {2,}LAST PASS/.test(l)) ? 'queue' : f.some((l) => l.startsWith('Scale: ')) ? 'timeline'
     : f.some((l) => /^ {4}( {12})?TICKET +STATE +STARTS +SHIPS +TITLE$/.test(l)) ? 'days' : f.some((l) => /^ {2}(REPO {8})?EPIC +TITLE +CHILDREN +SHIPS$/.test(l) || l === 'No queued ticket here belongs to an epic.') ? 'epics'
       : f.some((l) => l.startsWith('No cost sources for ') || /^ {2}SUPPLIER +FOR +CHARGED$/.test(l)) ? 'costs'
-        : f.some((l) => /^ {2}CLAUDE +PLAN +RULE +5H +7D +WORKERS$/.test(l)) ? 'usage' : 'none';
+        : f.some((l) => /^ {2}SUBSCRIPTION +PLAN +USE +5H +7D +WORKERS$/.test(l)) ? 'usage' : 'none';
 };
 // Wide enough that every keys line is one line.
 const keysLine = (s) => s.frame().at(-1);
@@ -810,8 +810,8 @@ const want10 = {
   'repo timeline': { yes: ['←→ or 1–6 view', 'z scale', 'esc back'], no: ['shift+↑↓', 't top', '+ −', 'a all repos'] },
   'repo days': { yes: ['←→ or 1–6 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
   'repo epics': { yes: ['←→ or 1–6 view', 'esc back'], no: ['shift+↑↓', 'z scale', '+ −', 'a all repos'] },
-  'every usage': { yes: ['←→ or 1–6 view', '↑↓ select', 'space change rule', 'x remove'], no: ['esc back', 'enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
-  'repo usage': { yes: ['←→ or 1–6 view', 'space change rule', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
+  'every usage': { yes: ['←→ or 1–6 view', '↑↓ select', 'd make default', 'x remove'], no: ['esc back', 'enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates', 'space change rule'] },
+  'repo usage': { yes: ['←→ or 1–6 view', 'd make default', 'esc back'], no: ['enter open', 'shift+↑↓', 'z scale', 'a all repos', 'c parked dates'] },
   ticket: { yes: ['shift+↑↓ move', 'l log', 'esc back'], no: ['←→ or 1–6 view', 'z scale', 'a all repos'] },
 };
 t('DS-164 AC10 each view lists only the keys it accepts', Object.entries(want10).flatMap(([v, { yes, no }]) => [
@@ -1620,6 +1620,25 @@ const r541 = () => Q.loadRepos(FIXED).find((r) => r.name === 's541');
 t('DS-541 AC5 held behind a blocker outside the batch that is Done but not on the base: it says so, never "until it is Done"; an open one still waits until it is Done',
   [railText(Q.ticketScreen(r541(), 'DS-541', { now: FIXED, width: 120 })), railText(Q.ticketScreen(r541(), 'DS-542', { now: FIXED, width: 120 }))].join(' / '),
   'Moves without you: behind OUT-2, outside this batch: Done, waiting for its code to reach main. / Moves without you: behind OUT-1, outside this batch, until it is Done and on main.');
+// DS-685 AC5: held behind a step only the person takes, in no batch (a Person-input label), it needs
+// the person and its row names the step; behind an ordinary ticket in no batch it still waits.
+dated('s685', 5685, { hours: twelveHours, tickets: { 'DS-685': { ...heldBy('OPS-7'), held_outside: 'OPS-7' }, 'DS-686': { ...heldBy('CODE-1'), held_outside: 'CODE-1' } } });
+{
+  const cfg = join(I.env.DESK_CONFIG_ROOT, 'repos', 'acme__s685', 'config.md');
+  writeFileSync(cfg, `${readFileSync(cfg, 'utf8')}\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`ben-input\` |\n`);
+  const tri = join(I.env.HOME, '.desk-autopilot', 'acme__s685', 'triage');
+  writeFileSync(join(tri, 'DS-685.json'), JSON.stringify({ ticket: 'DS-685', summary: 'held on a step', size: 'M', blockers: [{ key: 'OPS-7', category: 'new', labels: ['ben-input'] }] }));
+  writeFileSync(join(tri, 'DS-686.json'), JSON.stringify({ ticket: 'DS-686', summary: 'held on code', size: 'M', blockers: [{ key: 'CODE-1', category: 'new', type: 'Story', summary: 'Build it' }] }));
+  const r685 = Q.loadRepos(FIXED).find((r) => r.name === 's685');
+  t('DS-685 AC5 held behind the person\'s step outside the batch: needs you, and the row names the step; behind a code ticket outside it: waiting',
+    ['DS-685', 'DS-686'].map((k) => { const x = r685.rows.find((y) => y.t.key === k); return `${x?.k} ${Q.holdOf(r685.q, x?.t, r685.ctx).text}`; }).join(' / '),
+    'needs waits to start on your step OPS-7: take it and move it to Done in Jira / waiting behind CODE-1, outside this batch, until it is Done and on main');
+  // Counted once, through its step item, but drawn under Needs you, never Put off.
+  const s685 = lines(Q.repoScreen(r685, { now: FIXED }));
+  const groupOf685 = (key) => { let g = null; for (const l of s685) { const h = l.match(/^ {2}(Needs you|Put off|Waiting|Ready|Running|Merging) · \d+$/); if (h) g = h[1]; else if (new RegExp(`^ +\\S+ {2}${key} `).test(l)) return g; } return null; };
+  t('DS-685 AC5 on the repo screen the ticket held on the person\'s step is under Needs you, not Put off',
+    `${groupOf685('DS-685')} ${s685.some((l) => /^ {2}Put off · /.test(l))}`, 'Needs you false');
+}
 const starts541 = (key) => (lines(Q.repoScreen(r541(), { now: FIXED })).find((x) => new RegExp(`^ +\\d+ {2}${key} `).test(x)) ?? '').slice(83, 96).trim();
 const T541 = Q.forecastOf(r541(), { now: FIXED }).T;
 t('DS-684 held behind a blocker in no batch, open or Done but not lifted, and anything held behind it: no start date, and STARTS never reads now; behind one in the batch: dated after it',
@@ -1933,6 +1952,16 @@ t('DS-279 a required check that never reported or ended neutral needs you, namin
 t('DS-279 and its row names the check and what to do',
   ['R-1', 'R-2'].map((k) => Q.needText({ q: reqQ, ctx: advCtx([], ['e2e']), live: true }, { t: reqQ.tickets[k], k: 'needs', pr: true })).join(' | '),
   '#811 · required check "e2e" has not reported · fix the check or §4 Required checks | #812 · required check "e2e" is neutral · fix the check or §4 Required checks');
+// A skipped check did not pass: the row counts it apart from the passes and from an advisory failure.
+const skip = (name) => ({ ...okCheck(name), conclusion: 'skipped' });
+const skipQ = { tickets: {
+  'S-1': { key: 'S-1', ...prOn(820, [...okChecks(3), skip('docs'), skip('e2e')]) },
+  'S-2': { key: 'S-2', ...prOn(821, okChecks(3)) },
+  'S-3': { key: 'S-3', ...prOn(822, [okCheck('build'), { ...red, name: 'lint' }, skip('docs')]) },
+} };
+t('desk-q a PR with skipped checks counts the passed and skipped apart; all passed reads as before; an advisory failure and a skip are each named once',
+  ['S-1', 'S-2', 'S-3'].map((k) => Q.needText({ q: skipQ, ctx: advCtx(['lint']), live: true }, { t: skipQ.tickets[k], k: 'merging', pr: true })).join(' | '),
+  '#820 · 3 checks passed, 2 skipped · merges at the next pass | #821 · all 3 checks passed · merges at the next pass | #822 · 1 check failed, advisory only, 1 skipped · merges at the next pass');
 // DS-410: the pass records on pr_status the required checks no workflow runs on the PR's base, so a
 // ready PR's row names the trigger, as the undraft path does for a draft.
 const never410 = { e2e: 'never runs on PRs into feat/E-1 (workflow trigger: .github/workflows/e2e.yml runs on pull requests into main)' };
@@ -2092,6 +2121,29 @@ const raw421 = async (key) => {
   return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
 };
 t('DS-421 AC4 2 hours stuck is amber and 10 days red, so the two never render alike', `${await raw421('R-4')} | ${await raw421('R-1')}`, '38;5;180:for 2h 5m | 38;5;210:for 10d');
+
+// ---- DS-655: a worker still reviewing its draft PR is running, whatever pr_status its last done stint
+// left, and its Merging clock starts once it finishes, not at a head it pushed while reviewing.
+const ds655 = {
+  // AC1: requeued after done, its worker reviewing the open draft.
+  'P-1': { ...prOn(951, okChecks(2), { isDraft: true }), state: 'running', stage: '7/9' },
+  // AC2: finished 3 minutes ago, its head pushed 25 minutes ago while it ran from 40 minutes ago.
+  'P-2': { ...prOn(952, okChecks(2), { head_at: ago194(25), changed_at: ago194(20) }), group: { g: 'merging', at: ago194(3), from: 'running', from_at: ago194(40) } },
+  // AC3: a done ticket requeued for a fix try on its open PR.
+  'P-3': { ...prOn(953, okChecks(2)), state: 'running', stage: '3/9', fix: { try: 1, of: 2, pr: 953, kind: 'checks', what: 'red: Lint', checks: eleven, not_mine: [] } },
+  // A head pushed before it entered Running (a PR moved to a new slot) was not pushed under review.
+  'P-4': { ...prOn(954, okChecks(2), { head_at: ago194(10 * 24 * 60), changed_at: ago194(20) }), group: { g: 'merging', at: ago194(3), from: 'running', from_at: ago194(5) } },
+};
+put(I.T, I.env, 'ds655', { port: 5675, conc: '3 / 5', beat: 1, perms: grant, queue: { batch: 'ds655', concurrency: 3, supervised: true, tickets: ds655 } });
+const r655 = Q.loadRepos(NOW).find((r) => r.name === 'ds655');
+const q655 = lines(Q.repoScreen(r655, { now: NOW, width: 200 }));
+t('DS-655 AC1 a running worker with its draft PR open is in Running, once, not Merging',
+  `${/P-1 +● running/.test(fxRow(q655, 'P-1'))} ${q655.filter((l) => / P-1 /.test(l)).length} ${r655.prs.some((x) => x.t.key === 'P-1')}`, 'true 1 false');
+t('DS-655 AC2 once it finishes, its Merging age counts from entering Merging, not from the head pushed under review',
+  `${fxRow(q655, 'P-2').slice(83, 96).trim()} | ${fxRow(q655, 'P-4').slice(83, 96).trim()}`, 'for 3m | for 10d');
+t('DS-655 AC3 a fix try running on an open PR shows as it did: Running, a worker repairing it', /P-3 +● running +#953 · /.test(fxRow(q655, 'P-3')), true);
+t('DS-655 the pass stamps the same groups desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds655', stateDir: r655.stateDir, queuePath: r655.queuePath, q: r655.q, now: NOW })),
+  JSON.stringify({ 'P-1': 'running', 'P-2': 'merging', 'P-3': 'running', 'P-4': 'merging' }));
 t('DS-421 under 2 hours the age is uncoloured', await raw421('R-3'), '');
 
 // ---- DS-357: a repo with its standing batch and a batch in a slot named after a long branch is one

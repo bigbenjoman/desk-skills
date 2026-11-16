@@ -88,12 +88,16 @@
 //                                             value; prints ADDED, and a §3 row's perm read back
 //   node desk-env.mjs machine detect         print this computer's hardware, and what changed since the profile
 //   node desk-env.mjs machine propose         print the sizes the rules propose, with the arithmetic
-//   node desk-env.mjs machine write           write ~/.config/desk/machine.md (only after the user confirms)
-//   node desk-env.mjs machine set <key>=<value>...
+//   node desk-env.mjs machine write [--drop-override <key>]...
+//                                             write ~/.config/desk/machine.md (only after the user confirms),
+//                                             keeping each override unless dropped, and naming the ones kept
+//   node desk-env.mjs machine set <key>=<value>... [--reason "<text>"]
 //                                             set the bench's bench-cap-points, bench-reserve-percent and
 //                                             bench-run-limit-<provider> in the profile (only after the
-//                                             user answers); a bad value exits 1
-//                                             naming it, and nothing is written
+//                                             user answers), or a proposed size as an override (its Why
+//                                             "override: <reason>"); <size>= clears an override back to
+//                                             the proposal. A bad value exits 1 naming it, and nothing
+//                                             is written
 //   node desk-env.mjs machine get|why <key>   print a profile value or its reason, exit 3 if there is none
 //   node desk-env.mjs costs detect            print the GitHub repos, Vercel teams and projects and AWS
 //                                             profiles this computer can see
@@ -104,15 +108,32 @@
 //                                             --actions-budget <usd>, --credit <profile>=<usd>@<YYYY-MM-DD>
 //   node desk-env.mjs costs show [--json]     print the saved cost sources; a missing file is "no cost sources"
 //   node desk-env.mjs logins list [--json]    print the Claude and Codex logins in ~/.config/desk/subscriptions.md,
-//                                             each with its folder and rule; a missing file is ~/.claude and ~/.codex
+//                                             each with its folder and default or unused; a missing file is
+//                                             ~/.claude and ~/.codex. A file in the older rules (in rotation,
+//                                             standby, off) is rewritten once as each tool's default and unused
+//   node desk-env.mjs logins default <claude|codex> <name|account>
+//                                             make one login its tool's default and its old default unused,
+//                                             keeping the previous file as .bak
 //   node desk-env.mjs logins check [--json]   as list, with each login's sign-in, account and plan, the signed-in
 //                                             folders under ~/.claude-logins and ~/.codex-logins it does not list,
 //                                             and the usable ones (logins.mjs)
-//   node desk-env.mjs logins set <claude|codex> <name> <in rotation|standby|off>
-//                                             change one login's rule, keeping the previous file as .bak
+//   node desk-env.mjs logins set <claude|codex> <name> <unused|off>
+//                                             set one login unused or off, keeping the previous file as .bak;
+//                                             the older rules (in rotation, standby) are refused
 //   node desk-env.mjs logins remove <claude|codex> <name>
 //                                             remove one login from the rules, leaving its folder and sign-in;
-//                                             a folder under the logins folder is not found again
+//                                             a folder under the logins folder is not found again; refused
+//                                             while a repo's Subscription row runs on it
+//   node desk-env.mjs subscription [--json]   print the Claude subscription this repo's work runs on as
+//                                             SUBSCRIPTION=, LOGIN=, FOLDER=, CONFIG_DIR= and SOURCE=:
+//                                             DESK_SUBSCRIPTION, then config §3b Subscription (`row`), then
+//                                             this computer's default; exit 4 naming an email no login here
+//                                             is signed in to
+//   node desk-env.mjs subscription list [--json]
+//                                             every repo's resolved subscription (row, default or unknown
+//                                             email), ignoring DESK_SUBSCRIPTION
+//   node desk-env.mjs subscription set <slug> <default|email>
+//                                             write that repo's Subscription row, naming the previous value
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
@@ -304,10 +325,12 @@ export const CONFIG_ROWS = Object.freeze({
   'jira-cloudid': { section: '4', row: 'Jira cloudId' },
   labels: { section: '4', row: 'Labels' },
   'person-step-labels': { section: '4', row: 'Person-step labels' },
+  'person-input-labels': { section: '4', row: 'Person-input labels' },
   'required-checks': { section: '4', row: 'Required checks' },
   'work-id-patterns': { section: '4', row: 'Other work id patterns' },
   'merge-holds': { section: '4', row: 'Merge holds' },
   'incidental-paths': { section: '4', row: 'Incidental paths' },
+  'append-only-paths': { section: '4', row: 'Append-only paths' },
   'merge-method': { section: '4', row: 'Merge method' },
   'local-review': { section: '4', row: 'Local review command' },
   'clean-verdict': { section: '4', row: 'Clean review verdict' },
@@ -367,6 +390,7 @@ export const CONFIG_ROWS = Object.freeze({
   'promotion-slice': { section: '3b', row: 'Promotion slice size (children)' },
   'claim-release': { section: '3b', row: 'Release idle claims after (hours)' },
   'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
+  subscription: { section: '3b', row: 'Subscription' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
   'intake-query': { section: '3b', row: 'Intake query' },
   'triage-concurrency': { section: '3b', row: 'Triage concurrency' },
@@ -382,6 +406,7 @@ export const CONFIG_ROWS = Object.freeze({
   'branch-names': { section: '5', row: 'Branch names' },
   'pr-title': { section: '5', row: 'PR title' },
   breakpoints: { section: '5', row: 'Breakpoints' },
+  themes: { section: '5', row: 'Themes' },
   'design-system': { section: '5', row: 'Design system' },
   'dev-port': { section: '3b', row: 'Preferred dev-server port' },
   concurrency: { section: '3b', row: 'Autopilot worker concurrency' },
@@ -541,7 +566,8 @@ export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
 // copy this file on its own need nothing new.
 export const costsPath = () => expandHome(process.env.DESK_COSTS ?? join(deskConfigRoot(), 'costs.md'));
 // The Claude and Codex logins desk may use, one file per computer beside costs.md: read and change
-// it with logins.mjs, which only the `logins` command imports. A missing file is the default logins.
+// it with logins.mjs, which only the `logins` and `subscription` commands import. A missing file is the
+// default logins.
 export const subscriptionsPath = () => expandHome(process.env.DESK_SUBSCRIPTIONS ?? join(deskConfigRoot(), 'subscriptions.md'));
 // Every configured repo: its config file and §0 GitHub repo (the slug's, where the row is unset).
 export function configuredRepos(root = deskConfigRoot()) {
@@ -573,6 +599,76 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
   if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
   const dir = String(repoConfigValue(hits[0].slug, 'repo-root', root) ?? '').trim();
   return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null };
+}
+
+// Where a triage record puts a ticket's code when that is wholly another repo, or null to build it
+// here: repoPlacement's answer for that repo, with `why`. Every files_in_scope entry prefixed
+// `<repo>: ` with the same name that is not this repo's sends it there, and so does a scope call
+// whose choice says to run it in exactly one other configured repo and names this one only as where
+// it is taken from. Entries in this repo and another build here. Prefixes naming no configured repo
+// give {unknown: true, names, why}.
+export function triagePlacement(rec, root = deskConfigRoot()) {
+  if (!rec || typeof rec !== 'object') return null;
+  // Each entry's repo: null for this one (no prefix, this repo's name, or a prefix that is a path's,
+  // with a slash or a file extension, and no configured repo's).
+  const repoOf = (f) => {
+    const name = String(f).match(/^\s*([A-Za-z0-9][\w.-]*(?:\/[\w.-]+)?):\s+\S/)?.[1];
+    const p = name ? repoPlacement(name, root) : null;
+    return p && !(p.unknown && /\/|\.\w{1,5}$/.test(name)) ? { name, p } : null;
+  };
+  const files = (Array.isArray(rec.files_in_scope) ? rec.files_in_scope : []).map(String).filter((f) => f.trim());
+  const away = files.map(repoOf).filter(Boolean);
+  if (away.length && away.length < files.length) return null;
+  if (away.length) {
+    const names = [...new Set(away.map((a) => a.name))];
+    const unknown = [...new Map(away.filter((a) => a.p.unknown).map((a) => [a.name, a.p.slugs])).entries()];
+    const slugs = new Set(away.filter((a) => !a.p.unknown).map((a) => a.p.slug));
+    if (!unknown.length && slugs.size === 1) return { ...away[0].p, why: `its files in scope are all in ${away[0].p.ghRepo}` };
+    const isWhat = ([n, s]) => `${n} is ${s.length ? `the name of ${s.length} repos configured on this computer (${s.join(', ')})` : 'no repo configured on this computer'}`;
+    return { unknown: true, names, why: unknown.length
+      ? `its files in scope are all in ${names.join(', ')}, and ${unknown.map(isWhat).join('; ')}`
+      : `its files in scope are all in other repos, split across ${names.join(', ')}` };
+  }
+  const calls = (Array.isArray(rec.decided) ? rec.decided : []).filter((d) => d?.category === 'scope' && typeof d.chose === 'string' && /\b(run|runs|running|batch)\b/i.test(d.chose));
+  if (!calls.length) return null;
+  const self = currentRepo();
+  let own = null;
+  try { own = configValue('gh-repo'); } catch { /* no config here: the remote decides */ }
+  const repos = configuredRepos(root);
+  const namesOf = (slug, gh) => [slug?.split('__').slice(1).join('__'), gh, String(gh ?? '').split('/').pop()].filter(Boolean);
+  const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : [])];
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${esc(n)}(?![\\w-])`, 'i').test(text));
+  for (const d of calls) {
+    const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(esc).join('|')})(?![\\w-])`, 'gi');
+    if (selfNames.length && named(d.chose.replace(fromSelf, ''), selfNames)) continue;
+    const hits = repos.filter((r) => r.slug !== self.slug && !selfNames.some((n) => n.toLowerCase() === r.ghRepo.toLowerCase()) && named(d.chose, namesOf(r.slug, r.ghRepo)));
+    if (hits.length !== 1) continue;
+    const p = repoPlacement(hits[0].ghRepo, root);
+    if (p && !p.unknown) return { ...p, why: `triage decided to run it in ${p.ghRepo} ("${d.chose.trim()}")` };
+  }
+  return null;
+}
+
+// Admits `key` into the other configured repo `p` (repoPlacement's answer) by intake.mjs admit, run in
+// that repo's checkout with nothing of this repo's in its environment: {ok, line} or {ok: false, why, cmd}.
+export function admitInRepo(p, key, { by }) {
+  const intake = join(binDir(), 'intake.mjs');
+  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && node ${intake} admit ${key} --by ${by}`;
+  if (!p.root || !existsSync(p.root)) return { ok: false, why: `${p.ghRepo}'s checkout (its config §2 Primary repo root) is ${p.root ? `not at ${p.root}` : 'unset'}`, cmd };
+  const env = otherRepoEnv();
+  for (const k of [...PER_REPO_ENV, 'DESK_AUTOPILOT_STATE', 'AUTOPILOT_WRITE_QUEUE']) delete env[k];
+  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root });
+  const x = spawnSync(process.execPath, [intake, 'admit', key, '--by', by, '--json'], { cwd: p.root, env, encoding: 'utf8', maxBuffer: 64 << 20 });
+  let out = null;
+  try { out = JSON.parse(String(x.stdout ?? '').trim().split('\n').pop()); } catch { /* no report: the exit and stderr say why */ }
+  const mine = (out?.lines ?? []).filter((l) => l.includes(key));
+  if (x.status === 0 && out?.admitted?.includes(key)) return { ok: true, line: mine.find((l) => /^admitted /.test(l)) ?? `admitted ${key}` };
+  // Already in one of that repo's batches (its own intake, or a person, admitted it there first).
+  const there = mine.find((l) => l.startsWith(`${key} is already in batch `));
+  if (x.status === 0 && there) return { ok: true, line: there };
+  const why = out?.error ?? mine.at(-1) ?? (x.error?.message || String(x.stderr ?? '').trim().split('\n').pop() || `intake.mjs exited ${x.status}`);
+  return { ok: false, why, cmd };
 }
 
 // The per-computer files' write: the previous copy kept beside it as <path>.bak.
@@ -634,12 +730,18 @@ export function configValues(id) {
   return configValuesIn(parseConfig(), id);
 }
 
-// §4 Person-step labels, lowercased: the labels marking a ticket as a step only the person takes. []
-// when the row is unset or `none`, and with no config (batch-state.mjs labelPark, personStep).
-export function personStepLabels() {
-  try { return [].concat(configValues('person-step-labels') ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
+// A labels row's items, lowercased: [] when the row is unset or `none`, and with no config. Read from
+// this repo's config, or from repo `slug`'s where one is given.
+function labelsRow(id, slug = null) {
+  try { return [].concat((slug == null ? configValues(id) : repoConfigValues(slug, id)) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
   catch { return []; }
 }
+// §4 Person-step labels: the labels marking a ticket as a step only the person takes, which holds the
+// merge of a ticket it blocks (batch-state.mjs labelPark, personStep).
+export function personStepLabels(slug = null) { return labelsRow('person-step-labels', slug); }
+// §4 Person-input labels: a step only the person takes that produces something the build reads (a
+// fixture, a recorded response, a key), which holds the build of a ticket it blocks.
+export function personInputLabels(slug = null) { return labelsRow('person-input-labels', slug); }
 
 // §4 Required fields for an issue type, or for every type with none named: {need: [field id, in rule order],
 // malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}. No config reads as no rules. The
@@ -1775,6 +1877,59 @@ export function addTemplateRow({ config, section, row, value, note = '', templat
   return { section: sec, label: t.label, line };
 }
 
+// Sets a declared row's value in place, keeping its note. false when the config has no such row.
+function setRowValue(config, section, row, value) {
+  const text = readFileSync(config, 'utf8');
+  const r = tableRows(text).find((x) => x.section === section && x.id === norm(row));
+  if (!r) return false;
+  const cells = r.cells.slice();
+  const col = settingCol(r.header);
+  const cell = cells[col] ?? '';
+  cells[col] = /`[^`]*`/.test(cell) ? cell.replace(/`[^`]*`/, () => `\`${value}\``) : `\`${value}\``;
+  const lines = text.split('\n');
+  lines[r.i] = joinRow(cells);
+  const tmp = `${config}.tmp-${process.pid}`;
+  writeFileSync(tmp, lines.join('\n'));
+  renameSync(tmp, config);
+  cache = null;
+  return true;
+}
+
+// ---- the repo's subscription ---------------------------------------------------------------
+// Config §3b Subscription: `default` or the email of one of this computer's Claude subscriptions.
+// logins.mjs resolves it (repoSubscription); `L` is that module, imported only when a caller needs it.
+// Every configured repo's subscription from its own row and this computer's default. DESK_SUBSCRIPTION
+// is one caller's override, so it is not read here.   -> [{ slug, email, login, source }]
+export function repoSubscriptions(L, subs, root = deskConfigRoot()) {
+  return configuredRepos(root).map(({ slug }) => ({ slug, ...L.repoSubscription(subs, { value: repoConfigValue(slug, 'subscription', root), source: 'row' }) }));
+}
+// This repo's subscription: DESK_SUBSCRIPTION, one caller's override, else its own row. `from` names
+// where an email no login here is signed in to came from, and `fix` what to change.
+//   -> { email, login, source, from, fix }
+export function thisRepoSubscription(L, subs, env = process.env) {
+  const value = env.DESK_SUBSCRIPTION?.trim();
+  const r = L.repoSubscription(subs, value ? { value, source: 'DESK_SUBSCRIPTION' } : { value: configValue('subscription'), source: 'row' });
+  return { ...r, from: value ? 'DESK_SUBSCRIPTION' : `this repo's config §3b "${CONFIG_ROWS.subscription.row}" row`, fix: value ? 'DESK_SUBSCRIPTION' : 'the row' };
+}
+
+// Writes another repo's Subscription row: `default`, or an email one of this computer's Claude logins is
+// signed in to (stored lowercase). An unknown email or repo is refused with the config unchanged.
+//   -> { slug, was, now }
+export async function setRepoSubscription(slug, value, root = deskConfigRoot()) {
+  const L = await import('./logins.mjs');
+  const config = join(root, 'repos', String(slug), 'config.md');
+  const row = CONFIG_ROWS.subscription.row;
+  if (!/^[\w.-]+$/.test(String(slug)) || !existsSync(config)) throw new DeskConfigError(`desk-env subscription set: no repo config for "${slug}" under ${join(root, 'repos')}`);
+  const now = String(value ?? '').trim().toLowerCase();
+  if (!now || now.includes('`') || /\s/.test(now)) throw new DeskConfigError('desk-env subscription set: the value is `default` or an account email');
+  if (now !== 'default' && !L.subscriptionLogin(L.readSubscriptions(subscriptionsPath()), now)) {
+    throw new DeskConfigError(`desk-env subscription set: ${now} is not one of this computer's subscriptions: sign it in and add it in desk-q view 6 (Usage) first; ${slug}'s config is unchanged`);
+  }
+  const was = repoConfigValue(slug, 'subscription', root)?.toLowerCase() ?? 'default';
+  if (!setRowValue(config, '3b', row, now)) addTemplateRow({ config, section: '3b', row, value: now });
+  return { slug, was, now };
+}
+
 // What `paths` and `identity` print, in that order. Most of it belongs to one repo; a child started
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
@@ -1785,11 +1940,11 @@ const PATHS = {
 };
 const IDENTITY = { DESK_GITHUB_HANDLE: githubHandle, DESK_JIRA_NAME: jiraName };
 const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
-// The subcommands that write the machine profile, the cost sources, the login rules or the lever
-// freeze: the user's to
+// The subcommands that write the machine profile, the cost sources, the login rules, the subscription
+// or the lever freeze: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
 // command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
-export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins remove', 'levers freeze', 'levers thaw'];
+export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins default', 'logins remove', 'subscription set', 'levers freeze', 'levers thaw'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
@@ -2249,14 +2404,34 @@ if (isMain) {
         }
         const profile = machineProfile();
         if (sub === 'set') {
-          // Every pair is checked before anything is written, so one bad value stores nothing.
+          // Every pair is checked before anything is written, so one bad value stores nothing. A
+          // proposed size is stored as an override; `<size>=` clears one back to the proposal.
           const rows = [];
-          for (const pair of rest) {
+          const ri = rest.indexOf('--reason');
+          const reason = ri >= 0 ? rest[ri + 1] : '';
+          if (ri >= 0 && !String(reason ?? '').trim()) { console.error('nothing written: --reason needs the reason as its next argument'); process.exit(1); }
+          const pairs = ri >= 0 ? rest.filter((_, j) => j !== ri && j !== ri + 1) : rest;
+          for (const pair of pairs) {
             const i = pair.indexOf('=');
             const k = (i > 0 ? pair.slice(0, i) : pair).trim().toLowerCase();
             const v = i > 0 ? pair.slice(i + 1).trim() : '';
+            if (i > 0 && M.isSizingKey(k)) {
+              if (v === '') {
+                if (!M.isOverride(profile?.sizing?.[k])) { console.error(`nothing written: \`${k}\` holds no override to clear`); process.exit(1); }
+                // Back to what the rules propose for the hardware the profile records; with none
+                // recorded there is no proposal, so the row goes.
+                const recorded = M.sizesProposed(profile) ? Object.fromEntries(Object.entries(profile.hardware).map(([hk, h]) => [hk, h.value])) : null;
+                const back = recorded ? M.propose(recorded).find((s) => s.key === k) : null;
+                rows.push(back ?? { key: k, value: null });
+                continue;
+              }
+              const bad = M.sizingSettingError(k, v);
+              if (bad) { console.error(`nothing written: ${bad}`); process.exit(1); }
+              rows.push({ key: k, value: v, why: M.overrideWhy(reason) });
+              continue;
+            }
             const bad = i > 0 ? M.benchSettingError(k, v) : `"${pair}" is not <key>=<value>`;
-            if (bad) { console.error(`nothing written: ${bad}`); process.exit(1); }
+            if (bad) { console.error(`nothing written: ${bad}${i > 0 && !M.benchWhy(k) ? `, or a size: ${M.SIZING_KEYS.join(', ')}` : ''}`); process.exit(1); }
             rows.push({ key: k, value: v, why: M.benchWhy(k) });
           }
           if (!rows.length) { console.error('usage: desk-env.mjs machine set <key>=<value>...'); process.exit(2); }
@@ -2264,6 +2439,9 @@ if (isMain) {
           // still offers the whole proposal.
           const text = existsSync(path) ? readFileSync(path, 'utf8') : M.BENCH_ONLY_PROFILE;
           console.log(writeWithBackup(path, M.setSizingRows(text, rows)));
+          // Read back from the written file, so what prints is what the readers will get.
+          const stored = M.readProfile(path)?.sizing ?? {};
+          for (const r of rows) console.log(stored[r.key] ? `  ${r.key}: ${stored[r.key].value} (${stored[r.key].why})` : `  ${r.key}: removed`);
           break;
         }
         const hw = M.gather();
@@ -2271,6 +2449,10 @@ if (isMain) {
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }
+          // Listed before the no-sizes stop: `machine set` can start a profile holding only an override.
+          const ovr = M.sizingOverrides(profile, proposal);
+          if (ovr.length) console.log('\noverrides kept (a re-write keeps them; desk-env machine write --drop-override <key> drops one):');
+          for (const o of ovr) console.log(`  ${o.key}: ${o.value} (the rules propose ${o.proposed}) ${o.why}`);
           if (!M.sizesProposed(profile)) { console.log(`\nno sizes proposed in ${path} yet: desk-env machine propose shows the sizes it would write`); break; }
           const hwc = M.hardwareChanges(profile, hw);
           const szc = M.sizingChanges(profile, proposal);
@@ -2285,13 +2467,26 @@ if (isMain) {
         if (sub === 'propose') {
           for (const s of proposal) {
             const was = profile?.sizing[s.key]?.value;
-            console.log(`${s.key.padEnd(27)} ${s.value.padEnd(8)} ${s.why}${was != null && was !== s.value ? `  (profile: ${was})` : ''}`);
+            const ovr = M.isOverride(profile?.sizing[s.key]) ? ', an override that write keeps' : '';
+            console.log(`${s.key.padEnd(27)} ${s.value.padEnd(8)} ${s.why}${was != null && (was !== s.value || ovr) ? `  (profile: ${was}${ovr})` : ''}`);
           }
           break;
         }
-        // write: overwrites; /desk-setup runs it only after the user confirms the proposal. Rows the
-        // proposal does not make (the bench settings) are kept.
-        console.log(writeWithBackup(path, M.renderProfile(hw, M.rewrittenSizing(profile, proposal), new Date().toISOString().slice(0, 10))));
+        // write: overwrites; /desk-setup runs it only after the user confirms the proposal. Overrides
+        // and the rows the proposal does not make (the bench settings) are kept; --drop-override <key>
+        // replaces one override with the proposal.
+        const drop = [];
+        for (let j = 0; j < rest.length; j++) {
+          if (rest[j] !== '--drop-override') { console.error(`usage: desk-env.mjs machine write [--drop-override <key>]...: "${rest[j]}" is not one`); process.exit(2); }
+          const k = String(rest[++j] ?? '').trim().toLowerCase();
+          if (!M.isOverride(profile?.sizing?.[k]) || !M.isSizingKey(k)) { console.error(`nothing written: \`${k}\` is not an override in ${path}`); process.exit(1); }
+          drop.push(k);
+        }
+        console.log(writeWithBackup(path, M.renderProfile(hw, M.rewrittenSizing(profile, proposal, drop), new Date().toISOString().slice(0, 10))));
+        for (const k of drop) console.log(`dropped override ${k}: now ${proposal.find((s) => s.key === k).value}, as proposed`);
+        for (const o of M.sizingOverrides(profile, proposal).filter((x) => !drop.includes(x.key))) {
+          console.log(`kept override ${o.key}: ${o.value} (the rules propose ${o.proposed}); desk-env machine write --drop-override ${o.key} drops it`);
+        }
         break;
       }
       case 'costs': {
@@ -2335,9 +2530,16 @@ if (isMain) {
         const [sub, ...rest] = args;
         const L = await import('./logins.mjs');
         const path = subscriptionsPath();
-        const subs = L.readSubscriptions(path);
+        let subs = L.readSubscriptions(path);
         const json = rest.includes('--json');
         if (sub === 'list') {
+          // A file still in the older rules is written once as one default per tool and the rest unused.
+          const was = subs;
+          subs = L.migrateSubscriptions(was);
+          if (L.needsMigration(was) && !was.errors.length && process.env.DESK_AUTOPILOT_WORKER !== '1') {
+            writeWithBackup(path, L.renderSubscriptions(subs.logins.filter((l) => l.source === 'file'), subs.removed));
+            console.error(`${path}: now records one default per tool and every other login as unused; the previous copy is ${path}.bak`);
+          }
           if (json) console.log(JSON.stringify({ file: path, exists: subs.exists, errors: subs.errors, logins: subs.logins.map(L.loginJson) }, null, 2));
           else for (const l of L.listLines(subs, path)) console.log(l);
           break;
@@ -2348,26 +2550,67 @@ if (isMain) {
           else for (const l of L.checkLines(r, path)) console.log(l);
           break;
         }
+        // The repos whose Subscription row runs on login `l`: it is neither removed nor turned off.
+        const repos = (l) => (l.tool === 'claude'
+          ? repoSubscriptions(L, subs).filter((s) => s.source === 'row' && s.login?.dir === l.dir).map((s) => s.slug) : []);
         if (sub === 'set' && rest.length >= 3) {
           const [tool, name, ...rule] = rest;
-          const r = L.setRule(subs, { tool, name, rule: rule.join(' '), check: () => L.checkLogins(subs) });
+          const r = L.setRule(subs, { tool, name, rule: rule.join(' '), check: () => L.checkLogins(subs), repos });
           console.log(writeWithBackup(path, r.text));
-          console.log(`${tool} ${name}: ${r.login.rule}`);
+          console.log(`${tool} ${name}: ${r.login.rule === 'off' ? 'off' : 'unused'}`);
+          break;
+        }
+        if (sub === 'default' && rest.length === 2) {
+          const [tool, who] = rest;
+          const r = L.setDefault(subs, { tool, who });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`${tool} ${r.login.name}: default${r.was ? `; ${r.was.name}: unused` : ''}`);
           break;
         }
         if (sub === 'remove' && rest.length === 2) {
           const [tool, name] = rest;
-          const r = L.removeLogin(subs, { tool, name, check: () => L.checkLogins(subs) });
+          const r = L.removeLogin(subs, { tool, name, check: () => L.checkLogins(subs), repos });
           console.log(writeWithBackup(path, r.text));
           console.log(`${tool} ${name}: removed; ${r.login.folder} and its sign-in are left as they are`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | set <claude|codex> <name> <${L.RULES.join('|')}> | remove <claude|codex> <name>`);
+        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name>`);
+        process.exit(2);
+        break;
+      }
+      case 'subscription': {
+        const [sub, ...rest] = args;
+        const L = await import('./logins.mjs');
+        const subs = L.readSubscriptions(subscriptionsPath());
+        const json = args.includes('--json');
+        const shown = (r) => ({ email: r.email, source: r.source, login: r.login?.name ?? null, folder: r.login?.folder ?? null, configDir: r.login?.configDir ?? null });
+        if (sub === 'list' && rest.every((a) => a === '--json')) {
+          const all = repoSubscriptions(L, subs);
+          if (json) console.log(JSON.stringify(all.map((r) => ({ slug: r.slug, ...shown(r) })), null, 2));
+          else for (const r of all) console.log([r.slug, r.email ?? '-', r.source, r.login?.folder ?? '-'].join('\t'));
+          break;
+        }
+        if (sub === 'set' && rest.length === 2) {
+          const r = await setRepoSubscription(rest[0], rest[1]);
+          console.log(`${r.slug}: Subscription ${r.now} (was ${r.was})`);
+          break;
+        }
+        if (sub === undefined || (sub === '--json' && !rest.length)) {
+          const r = thisRepoSubscription(L, subs);
+          if (!r.login) {
+            throw new DeskConfigError(`desk-env subscription: ${r.from} names ${r.email}, which is not one of this computer's subscriptions, so this repo has none (it never falls back to the default): sign that account in and add it in desk-q view 6 (Usage), or change ${r.fix}`);
+          }
+          const s = shown(r);
+          if (json) console.log(JSON.stringify(s, null, 2));
+          else for (const [k, v] of [['SUBSCRIPTION', s.email], ['LOGIN', s.login], ['FOLDER', s.folder], ['CONFIG_DIR', s.configDir], ['SOURCE', s.source]]) console.log(`${k}=${shellQuote(v ?? '')}`);
+          break;
+        }
+        console.error('usage: desk-env.mjs subscription [--json] | list [--json] | set <slug> <default|email>');
         process.exit(2);
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins');
+        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins|subscription');
         process.exit(2);
     }
   } catch (e) {

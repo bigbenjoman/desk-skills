@@ -22,17 +22,24 @@ its ticket queued, not parked, and fails the database check, holding spawns from
 times out or cannot reach its host is run once more before it counts. Results are reused for 15
 minutes while every check passes, and a failing run is checked again on the next pass. The report
 always carries one `health:` line. A failing required check holds every new spawn (running workers
-carry on). A remote check is named under `STALLED` with the command that fixes it, and goes into
-`push` as `health:<slug>:<check>`, only once it has failed two runs in a row (the browser profile,
-the disk and the database on the first); it is pushed once while it stays failing. Every remote check failing
+carry on), except the browser profile's: only screenshot uploads need it, and the machine's upload
+queue runs none with a login that is missing, expired or turned away by GitHub, so every repo's
+uploads with it wait there without spending a try, and uploads with another login (a repo's own §2
+profile) still run. It is one item for the machine per login, `health:browser-signin:<id>`, told by
+the first slot to find it, listed once by needs-you, and gone from needs-you and the digest once a
+slot checking that login finds it passing on a fresh check (a reused passing result clears nothing). A remote check is named under `STALLED` with the command that fixes it, and goes into
+`push` as `health:<slug>:<check>`, only once it has failed two runs in a row (the disk and the
+database on the first); it is pushed once while it stays failing. Every remote check failing
 together, one of them unable to reach its host, is the network, one `health:<slug>:network` with no
 sign-in fix (only all of them refusing a sign-in is the sign-ins), and a single check that
 cannot reach its host names the connection, not the sign-in. Signing back in is always the
-person's; the line says `recovered` on the first pass that sees it pass. Each other Claude login the
-subscriptions file puts in rotation or on standby (`desk-env logins`) gets its own `claude auth
-status` in its folder: signed
-out, it is named under `STALLED` with its sign-in command and pushed as
-`health:<slug>:claude:<login>`, but it holds no spawn, and the default login's result is its own.
+person's; the line says `recovered` on the first pass that sees it pass. The Claude default and the
+subscription this repo is pinned to (§3b Subscription, `desk-env subscription`), where each is a
+login in its own folder (`desk-env logins`), get their own `claude auth status` in that folder: signed
+out, one is named under `STALLED` with its sign-in command and pushed as
+`health:<slug>:claude:<login>`, but it holds no spawn, and the default login's result is its own. A
+subscription this repo's work does not run on is not checked here (a repo pinned to it checks it on its
+own pass), so an unused one signed out raises nothing.
 
 **The reviewer check.** Where §4 Gate reviewers (`desk-env list gate-reviewers`) names logins, each
 pass reads `gh api user` as the account desk posts verdicts from (§4 Review account's gh config

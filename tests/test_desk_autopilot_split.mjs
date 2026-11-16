@@ -53,6 +53,7 @@ const REWRITTEN = [
   ['DS-598', 'outside the batch and not done; in the batch but parked', 1], // a blocker triage judged is held or started on
   ['DS-589', 'and the disk on the first', 1], // the local database is a health check
   ['DS-669', 'and each triaged ticket\'s unknowns)', 1], // a held ticket's triage unknowns are asked too
+  ['DS-673', '`pass.mjs` serialises it *within* your batch;', 1], // every repo uploads through the machine's one queue
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',

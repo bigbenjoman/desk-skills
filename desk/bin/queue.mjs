@@ -6,25 +6,26 @@
 // workers never touch it — their state is derived from their own logs plus `claude agents --json`.
 // Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
-import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels } from './desk-env.mjs';
+import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
+import { lock as takeDirLock, unlock, alive, writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
-import { takeDirLock, releaseDirLock, alive } from './dir-lock.mjs';
 import { pinAtAdmission } from './lever-pin.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
@@ -86,30 +87,14 @@ const LOCK = `${QUEUE}.lock`;
 // The wait is 10 seconds; DESK_QUEUE_LOCK_WAIT_MS shortens it for tests, and anything but a positive
 // number of milliseconds there is ignored rather than turning the wait into forever or nothing.
 const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
-const held = [];
-
-// The lock itself, its stale clearing and its wait, are dir-lock.mjs's.
+// The lock itself, its stale clearing and its release on exit are dir-lock.mjs's.
 function lock(dir = LOCK) {
-  takeDirLock(dir, {
-    waitMs: LOCK_WAIT_MS,
-    timeoutError: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${dir})`),
-  });
-  held.push(dir);
+  takeDirLock(dir, { waitMs: LOCK_WAIT_MS, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${dir})`) });
 }
-
-function unlock() {
-  while (held.length) releaseDirLock(held.pop());
-}
-process.on('exit', unlock);
 
 // Every command saves at most once, so the lock goes with the save: approve's gh call after it, or
 // reject's briefing write, never keeps another writer waiting.
-function writeQueue(file, q) {
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp.${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(q, null, 2)}\n`);
-  renameSync(tmp, file); // atomic within the same filesystem
-}
+const writeQueue = writeJsonAtomic;
 function save(q) {
   writeQueue(QUEUE, q);
   unlock();
@@ -385,24 +370,28 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
-  const stepPark = labelPark(r, personStepLabels());
+  const stepPark = labelPark(r, personStepLabels(), personInputLabels());
   const park = stepPark ?? lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
   // The collision check plan-batch makes, against every ticket still to finish: two tickets that
   // touch one file never run at once. The person's step runs on no worker, so it collides with nothing:
-  // a hold behind it would wait on a merge that never comes.
-  const mine = new Set(stepPark ? [] : r.files_in_scope ?? []);
+  // a hold behind it would wait on a merge that never comes. A file §4 Append-only paths covers is
+  // only added to, so sharing it is no collision.
+  const mine = stepPark ? [] : r.files_in_scope ?? [];
+  const { globs: appendOnly } = appendOnlyFrom(() => configValues('append-only-paths'));
   const collides = [];
   for (const [k, other] of Object.entries(q.tickets)) {
     if (['done', 'failed'].includes(other.state) || personStepPark(other)) continue;
     if (!existsSync(join(state, 'triage', `${k}.json`))) continue;
     const files = readTriage(state, k).files_in_scope ?? [];
-    if (files.some((f) => mine.has(f))) {
+    if (sharedFiles(mine, files, appendOnly).length) {
       collides.push(k);
       other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
     }
   }
-  if (holdCollisions) for (const k of collides) if (!holds.includes(k)) holds.push(k);
+  // A ticket already waiting behind this one is not held against: each would wait on the other.
+  const behind = heldBehindOf(q, key);
+  if (holdCollisions) for (const k of collides) if (!holds.includes(k) && !behind.has(k)) holds.push(k);
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
   // A hold would let a release send a ticket parked for its own reason to a worker (hold, above). A
   // design park keeps its holds in held_by instead, unreleased, and requeue holds it behind the open
@@ -533,10 +522,17 @@ function transfer(q, key, to) {
   // Admitted in memory first, so a refusal from either step leaves the worktree and both queues as they were.
   // Its merge holds on the person's steps go with it; a blocker in that batch is held behind there instead,
   // unless it is parked there as the person's step (labelPark), which nothing builds: it merges after that.
-  const stepThere = (k) => personStepPark(tq.tickets[k]);
+  // A step parked on a Person-input label makes what its build reads, so it stays a hold, as does one
+  // triage called needed to build (blockerHold), as intake and plan-batch hold it.
+  // A merge gate triage set on another ticket's code (triageGate) is lifted by that batch's pass only once
+  // Done and landed, so it stays a gate there too while it is not held behind: Done in Jira, not yet merged.
+  const own = (k) => (Array.isArray(r.blockers) ? r.blockers : []).find((x) => x?.key === k);
+  const builds = (k) => !!own(k) && blockerHold(own(k), r, personStepLabels(), personInputLabels())?.needs === 'build';
+  const gate = (k) => !!own(k) && triageGate(own(k), r, personStepLabels(), personInputLabels());
+  const stepThere = (k) => personStepPark(tq.tickets[k]) && !personInputPark(tq.tickets[k]) && !builds(k);
   const there = (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done' && tq.tickets[b.key]).map((b) => b.key);
   const holds = there.filter((k) => !stepThere(k));
-  const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p))), ...there.filter(stepThere)])];
+  const mergeAfter = [...new Set([...String(t.merge_after ?? '').split('|').filter((p) => p && (!tq.tickets[p] || stepThere(p) || (gate(p) && !holds.includes(p)))), ...there.filter(stepThere)])];
   // Its holds go with it. One on a ticket in that batch is held behind there until it merges. A blocker
   // parked there as the person's step is a merge_after step already (above), or holds nothing once Done;
   // a hold on such a step that is no blocker stays a hold, since pass.mjs lifts an unlinked merge_after
@@ -733,7 +729,8 @@ switch (cmd) {
     for (const p of mergeAfter) {
       if (!SAFE_ID.test(p) || p === key || outside.includes(p) || holds.includes(p)) throw new Error(`admit --hold-merge: ${p} is not a step ${key} merges after`);
       // One in this batch is a step only once it is parked as the person's (labelPark): nothing builds it.
-      if (q.tickets[p] && !personStepPark(q.tickets[p])) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
+      // One parked on a Person-input label makes what the build reads: it holds the build instead.
+      if (q.tickets[p] && (!personStepPark(q.tickets[p]) || personInputPark(q.tickets[p]))) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
     }
     if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);
@@ -815,6 +812,8 @@ switch (cmd) {
     refuseLeft(t, key, 'given a condition to clear on');
     const p = parseClearsWhen(rest.join(' '), { here: hereRepo() });
     if (!p.ok) throw new Error(p.why);
+    const circular = ownDraftWhy(p.cond, { ...t, key });
+    if (circular) throw new Error(`${circular}. Nothing was recorded`);
     t.park.clears_when = p.cond;
     t.updated_at = new Date().toISOString();
     save(q);
@@ -995,8 +994,17 @@ switch (cmd) {
     const running = t.state === 'running';
     const removed = running ? null : dropWorktree(key, t);
     delete q.tickets[key];
+    // The person's step never merges, so a hold behind it here would never release. Dropped, it is held
+    // outside instead, which pass.mjs lifts once Jira has it Done (a step has no code to land).
+    const outside = [];
+    if (personStepPark(t)) for (const o of Object.values(q.tickets)) {
+      if (!String(o.held_by ?? '').split('|').includes(key)) continue;
+      const was = String(o.held_outside ?? '').split('|').filter(Boolean);
+      if (!was.includes(key)) o.held_outside = [...was, key].join('|');
+      outside.push(o.key);
+    }
     save(q);
-    console.log(`dropped ${key} from the batch${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : running && t.worktree ? `; its worker was running, so its worktree ${t.worktree} was left` : ''}`);
+    console.log(`dropped ${key} from the batch${outside.length ? `; ${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} held behind it outside the batch until it is Done in Jira` : ''}${removed ? `; its worktree ${removed}, holding nothing origin lacks, was removed` : running && t.worktree ? `; its worker was running, so its worktree ${t.worktree} was left` : ''}`);
     break;
   }
 

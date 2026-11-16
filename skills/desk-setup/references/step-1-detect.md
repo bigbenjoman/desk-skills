@@ -203,6 +203,17 @@ How to turn what you find into rows:
   Person-step labels; with none named, or with Tracker `none`, write `none`. Say that autopilot admits a ticket
   carrying one parked as the user's step, so no worker spawns on it, and builds a ticket it blocks
   now, merging it only once the step is Done.
+- **Person-input labels.** Ask which labels the team puts on a ticket that is the user's own step
+  whose output a build reads (a fixture, a recorded response, a key), suggesting `ben-input`, and
+  record each as one span in §4 Person-input labels; with none named, or with Tracker `none`, write
+  `none`. Say that autopilot parks a ticket carrying one as the user's step, as a Person-step label
+  does, but holds the build of a ticket it blocks until the step is Done; a ticket labelled both is
+  an input.
+- **Append-only paths.** Ask which files tickets only add to, such as a locale file each ticket adds
+  its strings to, suggesting `none`, and record each glob as one span in §4 Append-only paths (e.g.
+  `` `messages/*.json` ``); with none named, write `none`. Say that autopilot does not count two
+  tickets sharing only such files as a collision, so they run side by side, and that any other
+  shared file still collides.
 - **Evidence workflow.** Look in the workflows for one that takes a PR's screenshots and writes them
   into its body (a `workflow_dispatch` with a `pr` input that replaces `_drag <file>_` cells, e.g.
   `pr-evidence.yml`). Where there is one, propose it for §4 Evidence workflow as `` `<file>.yml` ``;
@@ -452,6 +463,10 @@ How to turn what you find into rows:
   Tailwind `screens` or `--breakpoint-*`, a width that recurs in `@media` queries), deduplicated and
   ascending, one span each. Name the `file:line` each width not in the default came from. `none` for
   a repo with no UI.
+- **Themes.** Propose each theme the design scan found the UI switching between (a `dark:` variant
+  in use, a `prefers-color-scheme` query, a `data-theme` or `.dark` class the code toggles), one
+  span each, e.g. `light` `dark`, and name the `file:line` it came from. `none` for a repo with one
+  look or no UI.
 - **Design system.** Propose each file the design scan found that defines tokens (a `tokens.css`,
   theme files, the Tailwind config, a CSS file with an `@theme` block, a `DESIGN.md`), one span each,
   repo-relative. `none` for a repo with no UI. **A repo with UI but nothing to put in this row

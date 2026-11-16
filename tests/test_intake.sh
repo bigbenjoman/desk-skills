@@ -39,6 +39,7 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | \`git-push\` | Push a branch | \`ask\` | \`yes\` |
 | \`jira-create\` | Create a ticket | \`ask\` | \`yes\` |
 | \`jira-edit\` | Edit a ticket | \`ask\` | \`${JIRA_EDIT:-yes}\` |
+${JUDGEMENT:+| \`autopilot-judgement\` | Take calls outside the ask categories | \`yes\` | \`$JUDGEMENT\` |}
 
 ## 3b. Cost and autonomy
 | Field | Recommended | Your setting |
@@ -220,13 +221,59 @@ rm -f "$T/prs.json"
 # A blocker in no batch that is the person's step holds the merge, not the build. OPS-1 is a Task that
 # says apply; OPS-2 is a Story naming the ticket's ben_steps; OUT-7 is an ordinary dev Task.
 rec P-1 A '"blockers":[{"key":"OPS-1","category":"new","type":"Task","summary":"Apply the billing migration to staging and production"}]'
-rec P-2 A '"blockers":[{"key":"OPS-2","category":"indeterminate","type":"Story","summary":"Run the cdk deploy for the queue stack"}],"ben_steps":[{"step":"cdk deploy","blocker":"deploy the queue stack, unblocking P-2"}]'
+rec P-2 A '"blockers":[{"key":"OPS-2","category":"indeterminate","type":"Story","summary":"Run the cdk deploy for the queue stack"}],"ben_steps":[{"step":"cdk deploy","blocker":"Run the cdk deploy for the queue stack, unblocking P-2"}]'
 rec P-3 A '"blockers":[{"key":"OUT-7","category":"new","type":"Task","summary":"Add the export endpoint"}]'
+# P-4's ben_steps names its blocker's key; P-5's step is one word inside a code blocker's summary.
+rec P-4 A '"blockers":[{"key":"OPS-4","category":"new","type":"Story","summary":"Queue stack"}],"ben_steps":[{"step":"a cdk deploy","blocker":"OPS-4, unblocking P-4"}]'
+rec P-5 A '"blockers":[{"key":"OUT-8","category":"new","type":"Story","summary":"Deploy the search page"}],"ben_steps":[{"step":"deploy","blocker":"deploy"}]'
+search P-4 P-5; intake >/dev/null
 search P-1 P-2 P-3; out=$(intake)
 check "DS-407 AC1: a ticket blocked only by the person's step in no batch is admitted runnable, its merge held" '[ "$(qget tickets.P-1.state)" = triaged ] && [ "$(qget tickets.P-1.held_by)" = null ] && [ "$(qget tickets.P-1.held_outside)" = undefined ] && [ "$(qget tickets.P-1.merge_after)" = OPS-1 ]'
 check "DS-407 AC1: the report says it is built now and merged once the step is Done" 'grep -q "admitted P-1 by intake into batch b1 (lane A, size S), built now and merged only once OPS-1 (the person.s step) is Done" <<< "$out"'
 check "DS-407 AC1: a blocker naming one of the ticket'\''s ben_steps is a person'\''s step too" '[ "$(qget tickets.P-2.state)" = triaged ] && [ "$(qget tickets.P-2.merge_after)" = OPS-2 ]'
 check "DS-407 AC4: an ordinary dev ticket in no batch still holds the build, as DS-391 has it" '[ "$(qget tickets.P-3.state)" = parked ] && [ "$(qget tickets.P-3.held_outside)" = OUT-7 ] && [ "$(qget tickets.P-3.merge_after)" = undefined ]'
+check "DS-682 AC4: a blocker whose key the ticket'\''s ben_steps names is a merge-only gate" '[ "$(qget tickets.P-4.state)" = triaged ] && [ "$(qget tickets.P-4.merge_after)" = OPS-4 ]'
+check "DS-682 AC5: a step word inside a blocker'\''s summary no longer makes it a step: it is a full hold" '[ "$(qget tickets.P-5.state)" = parked ] && [ "$(qget tickets.P-5.held_outside)" = OUT-8 ] && [ "$(qget tickets.P-5.merge_after)" = undefined ]'
+
+# DS-687: triage's call on an open blocker in no batch (blocker_needs) decides how it holds the ticket,
+# as plan-batch decides it. OUT-21..OUT-26 are ordinary dev tickets in no batch.
+needs(){ printf '"blockers":[{"key":"%s","category":"new","type":"Story","summary":"Add the export endpoint"}],"blocker_needs":{"%s":{"needs":%s,"why":"%s"}}' "$1" "$1" "$2" "$3"; }
+JUDGEMENT=yes config yes
+rec N-1 A "$(needs OUT-21 '"build"' 'builds the endpoint it calls')"
+rec N-2 A "$(needs OUT-22 '"merge"' 'lands the flag it ships behind')"
+rec N-3 A "$(needs OUT-23 '"none"' 'touches none of its files')"
+rec N-4 A "$(needs OUT-24 true 'builds the endpoint it calls')"
+rec N-5 A "$(needs OUT-25 false 'touches none of its files')"
+search N-4 N-5; intake >/dev/null
+search N-1 N-2 N-3; out=$(intake)
+check "DS-687 AC2: a blocker in no batch triage calls needed to build holds the ticket fully" \
+  '[ "$(qget tickets.N-1.state)" = parked ] && [ "$(qget tickets.N-1.held_outside)" = OUT-21 ] && [ "$(qget tickets.N-1.merge_after)" = undefined ]'
+check "DS-687 AC3: one triage calls needed only to merge admits it unheld, as a merge-only gate" \
+  '[ "$(qget tickets.N-2.state)" = triaged ] && [ "$(qget tickets.N-2.held_by)" = null ] && [ "$(qget tickets.N-2.held_outside)" = undefined ] && [ "$(qget tickets.N-2.merge_after)" = OUT-22 ]'
+check "DS-687 AC3: the report says it is merged only once the blocker is Done, as triage called it" \
+  'grep -q "admitted N-2 by intake into batch b1 (lane A, size S), built now and merged only once OUT-22 is Done, which triage found it needs only to merge" <<< "$out"'
+check "DS-687 AC4: one triage calls not needed, under autopilot-judgement yes, holds nothing" \
+  '[ "$(qget tickets.N-3.state)" = triaged ] && [ "$(qget tickets.N-3.held_by)" = null ] && [ "$(qget tickets.N-3.held_outside)" = undefined ] && [ "$(qget tickets.N-3.merge_after)" = undefined ]'
+check "DS-687 AC4: and a start-without-it engineering call is logged" \
+  'jq -e -s "map(select(.ticket == \"N-3\" and .category == \"engineering\" and .chose == \"start without OUT-23\")) | length == 1" "$T/state/decisions.jsonl" >/dev/null && grep -q "admitted N-3 .*started without OUT-23, outside the batch, which triage found it does not need, took 1 call(s)" <<< "$out"'
+check "DS-687 AC7: a record from before the calls reads needs true as needed to build" \
+  '[ "$(qget tickets.N-4.state)" = parked ] && [ "$(qget tickets.N-4.held_outside)" = OUT-24 ]'
+check "DS-687 AC7: and needs false as not needed" \
+  '[ "$(qget tickets.N-5.state)" = triaged ] && [ "$(qget tickets.N-5.held_outside)" = undefined ] && [ "$(qget tickets.N-5.merge_after)" = undefined ]'
+config yes
+rec N-6 A "$(needs OUT-26 '"none"' 'touches none of its files')"
+search N-6; out=$(intake)
+check "DS-687 AC4/AC5: without autopilot-judgement yes, a blocker called not needed is asked, as plan-batch asks it" \
+  '[ "$(qget tickets.N-6)" = undefined ] && [[ "$(handed N-6)" == "handed: N-6 is blocked by OUT-26 (not started), which is not in this batch: add OUT-26 to the batch, or run /desk-admit N-6 again once OUT-26 is Done: triage found it is not needed (touches none of its files), but intake starts a ticket without its blocker only where §3 autopilot-judgement is yes" ]]'
+# AC6: a person's step and triage's call pointing different ways hold as the one that holds more. OPS-21
+# is a Task saying apply (a step: merge) that triage calls build; OPS-22 the same, called none.
+rec N-7 A '"blockers":[{"key":"OPS-21","category":"new","type":"Task","summary":"Apply the billing migration"}],"blocker_needs":{"OPS-21":{"needs":"build","why":"the build reads the new table"}}'
+rec N-8 A '"blockers":[{"key":"OPS-22","category":"new","type":"Task","summary":"Apply the billing migration"}],"blocker_needs":{"OPS-22":{"needs":"none","why":"touches none of its files"}}'
+search N-7 N-8; out=$(intake)
+check "DS-687 AC6: a step that holds the merge, called needed to build, is a full hold" \
+  '[ "$(qget tickets.N-7.state)" = parked ] && [ "$(qget tickets.N-7.held_outside)" = OPS-21 ] && [ "$(qget tickets.N-7.merge_after)" = undefined ]'
+check "DS-687 AC6: a step that holds the merge, called not needed, is still a merge-only gate" \
+  '[ "$(qget tickets.N-8.state)" = triaged ] && [ "$(qget tickets.N-8.merge_after)" = OPS-22 ] && grep -q "admitted N-8 .*merged only once OPS-22 (the person.s step) is Done" <<< "$out"'
 
 # DS-568: a ticket carrying one of §4 Person-step labels is admitted parked as the person's step, so no
 # worker spawns, and a ticket it blocks, in the batch or out of it, is built now and merged after it.
@@ -251,6 +298,10 @@ rec S-7 A '"blockers":[{"key":"S-1","category":"done","type":"Story","summary":"
 search S-7; out=$(intake)
 check "DS-568 AC2: once the step is Done, though still in the batch, a ticket it blocks is held by nothing" \
   '[ "$(qget tickets.S-7.state)" = triaged ] && [ "$(qget tickets.S-7.held_by)" = null ] && [ "$(qget tickets.S-7.merge_after)" = undefined ]'
+rec S-8 A '"blockers":[{"key":"S-1","category":"new","type":"Story","summary":"Rebuild the images"}],"blocker_needs":{"S-1":{"needs":"build","why":"the build reads the images"}}'
+search S-8; out=$(intake)
+check "DS-687 AC6: a step in the batch that triage calls needed to build holds the build, not only the merge" \
+  '[ "$(qget tickets.S-8.state)" = parked ] && [ "$(qget tickets.S-8.held_by)" = S-1 ] && [ "$(qget tickets.S-8.merge_after)" = undefined ]'
 rec S-6 C '"labels":["ben-step"],"unknowns":["which region?"]'
 search S-6; out=$(intake)
 check "DS-568 AC1: whatever its lane or open questions, it is admitted parked as the person'\''s step, not handed on" \
@@ -261,6 +312,28 @@ rec S-5 A '"blockers":[{"key":"OPS-8","category":"new","type":"Story","summary":
 search S-4 S-5; out=$(intake)
 check "DS-568 AC3: with Person-step labels none, a labelled ticket and one it blocks are triaged as today" \
   '[ "$(qget tickets.S-4.state)" = triaged ] && [ "$(qget tickets.S-5.held_outside)" = OPS-8 ] && [ "$(qget tickets.S-5.merge_after)" = undefined ]'
+
+# A blocker carrying one of §4 Person-input labels makes something the build reads, so it holds
+# the build; labelled both, the input wins; a ticket carrying one is parked as the person's step.
+config yes; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Person-step labels | `ben-step` |\n| Person-input labels | `ben-input` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+rec I-1 A '"blockers":[{"key":"OPS-11","category":"new","type":"Story","summary":"Walk through the checkout","labels":["ben-step"]}]'
+rec I-2 A '"blockers":[{"key":"OPS-12","category":"new","type":"Story","summary":"Record the gateway response","labels":["ben-input"]}]'
+rec I-3 A '"blockers":[{"key":"OPS-13","category":"new","type":"Task","summary":"Sign off the gateway key","labels":["ben-step","Ben-Input"]}]'
+rec I-4 A '"labels":["ben-input"],"unknowns":["which account?"]'
+rec I-5 A '"blockers":[{"key":"I-4","category":"new","type":"Story","summary":"Make the API key","labels":["ben-input"]}]'
+search I-4 I-5; intake >/dev/null
+search I-1 I-2 I-3; out=$(intake)
+check "DS-682 AC1: a blocker in no batch labelled as the person's step is a merge-only gate" '[ "$(qget tickets.I-1.state)" = triaged ] && [ "$(qget tickets.I-1.merge_after)" = OPS-11 ] && [ "$(qget tickets.I-1.held_outside)" = undefined ]'
+check "DS-682 AC2: a blocker in no batch labelled as an input holds the build" '[ "$(qget tickets.I-2.state)" = parked ] && [ "$(qget tickets.I-2.held_outside)" = OPS-12 ] && [ "$(qget tickets.I-2.merge_after)" = undefined ]'
+check "DS-682 AC3: labelled both, the input label wins and it holds the build" '[ "$(qget tickets.I-3.state)" = parked ] && [ "$(qget tickets.I-3.held_outside)" = OPS-13 ] && [ "$(qget tickets.I-3.merge_after)" = undefined ]'
+check "DS-682 AC9: a ticket carrying an input label is parked as the person's step, whatever its questions" \
+  '[ "$(qget tickets.I-4.state)" = parked ] && [[ "$(qget tickets.I-4.park.question)" == "the person'\''s step: labelled ben-input (config §4 Person-input labels)"* ]] && [ "$(qget tickets.I-4.held_by)" = null ]'
+check "DS-682 AC2: an input step in the batch holds the build of a ticket it blocks" '[ "$(qget tickets.I-5.state)" = parked ] && [ "$(qget tickets.I-5.held_by)" = I-4 ] && [ "$(qget tickets.I-5.merge_after)" = undefined ]'
+out=$(cd "$T/repo" && node "$T/bin/queue.mjs" admit I-2 --hold-merge I-4 2>&1); rc=$?
+check "DS-682 AC2: an input step in the batch cannot be made a merge gate by hand" '[ $rc -ne 0 ] && grep -q "I-4 is in this batch: hold I-2 behind it with --hold" <<< "$out"'
+out=$(cd "$T/repo" && node "$T/bin/queue.mjs" drop I-4 2>&1)
+check "DS-682 AC2: dropping the input step leaves the ticket it held behind it outside the batch, for the pass to lift on Done" \
+  '[ "$(qget tickets.I-5.state)" = parked ] && [ "$(qget tickets.I-5.held_by)" = I-4 ] && [ "$(qget tickets.I-5.held_outside)" = I-4 ] && grep -q "I-5 is held behind it outside the batch until it is Done in Jira" <<< "$out"'
 config yes
 
 # ---- the triage cap, and a triage that fails ------------------------------------------------------
@@ -372,6 +445,9 @@ check "DS-505 AC4: /desk-admit refuses a ticket stopped at the usage limit with 
 out=$(admit U-2); rc=$?
 check "DS-505 AC4: a limit with no reset time names the limit alone" \
   '[ $rc -eq 11 ] && grep -qx "not admitted U-2: triage stopped at the usage limit: run /desk-admit U-2 again once the limit lifts" <<< "$out"'
+out=$(admit U-2 --json); out2=$(admit H-2 --json)
+check "DS-569: --json names a ticket the usage limit stopped as limited, and one refused for its own reason as not" \
+  '[ "$(jq -c "[.refused, .limited]" <<< "$out")" = "[[\"U-2\"],[\"U-2\"]]" ] && [ "$(jq -c "[.refused, .limited]" <<< "$out2")" = "[[\"H-2\"],[]]" ]'
 rec H-5 A '"blockers":[{"key":"H-4","category":"new"}]'; rec H-4 A
 out=$(admit H-5 H-4 --front)
 check "admit: a blocker named in the same call goes first, and the other is held behind it" '[ "$(qget tickets.H-4.state)" = triaged ] && [ "$(qget tickets.H-5.held_by)" = H-4 ]'
@@ -476,6 +552,12 @@ rec Y-1 A '"blockers":[{"key":"X-4","category":"indeterminate"}]'
 out=$(admit Y-1); rc=$?
 check "DS-391 AC3: a ticket whose blocker is in another live batch is placed in that batch, held behind it there" \
   '[ $rc -eq 0 ] && [ "$(qget tickets.Y-1)" = undefined ] && [ "$(nget tickets.Y-1.held_by)" = "X-2|X-4" ] && [ "$(nget tickets.Y-1.held_outside)" = undefined ] && grep -q "^admitted Y-1 by hand into feature batch X-1 (lane A, size S), held behind X-2, X-4$" <<< "$out"'
+# Z-9 belongs to no batch but the one named: --into places it there, as the pass admits a held ticket's blocker.
+rec Z-9 A
+out=$(admit Z-9 --by pass --into X-1); rc=$?
+check "DS-569: admit --into joins the named live batch, wherever the ticket's record would place it" \
+  '[ $rc -eq 0 ] && [ "$(qget tickets.Z-9)" = undefined ] && [ "$(nget tickets.Z-9.admitted_by)" = pass ] && grep -q "^admitted Z-9 by pass into feature batch X-1 (lane A, size S)" <<< "$out"'
+node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); delete q.tickets["Z-9"]; f.writeFileSync(p,JSON.stringify(q))' "$NQ"
 rec E-2 A '"type":"Epic"'
 config ask; out=$(admit E-2); rc=$?; config yes
 check "DS-352 AC1: with a feature batch live, another epic is planned as its own feature batch, not refused" '[ $rc -eq 0 ] && grep -q "^plan E-2 as a feature batch beside the standing batch" <<< "$out" && ! grep -q "^not admitted E-2" <<< "$out"'

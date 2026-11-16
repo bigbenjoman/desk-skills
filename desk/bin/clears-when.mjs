@@ -179,6 +179,16 @@ export function queuedIn(ticket, repo, queues, live) {
 // Whether only a step of the person's makes condition `c` hold, so a park waiting on it still asks them.
 export const personClears = (c) => c?.kind === 'links-made';
 
+// Why condition `c` can never hold while parked ticket `t` stays parked, or null. That is the ticket's
+// own PR leaving draft or merging while the last recorded pr_status says it is a draft: no pass undrafts
+// a parked ticket's PR, so the condition waits on the person the park would no longer ask.
+export function ownDraftWhy(c, t) {
+  if ((c?.kind !== 'pr-ready' && c?.kind !== 'pr-merged') || c.repo) return null;
+  const s = t?.pr_status;
+  if (s?.pr == null || Number(s.pr) !== Number(c.pr) || s.isDraft !== true || s.state !== 'OPEN') return null;
+  return `PR #${c.pr} is ${t.key ?? 'this ticket'}'s own draft, and the park itself keeps it in draft: no pass undrafts a parked ticket's PR, so "${describeCond(c)}" holds only once a person acts, and the park waiting on it would ask nobody`;
+}
+
 // The condition as it is written, for the report.
 export function describeCond(c) {
   switch (c?.kind) {
