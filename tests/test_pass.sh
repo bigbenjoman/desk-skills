@@ -1436,7 +1436,18 @@ printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"indeterminate"}
 resolved X-7 Done; x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-717 AC4 a blocker in no batch Done as Done and on the base lifts the hold as before, and raises no item" \
   '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 wont_do_link)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED" && ! echo "$out" | grep -q "triage: J-7"'
-q drop J-7; rm -f "$T/jira/X-7.json"
+q drop J-7
+# A lane C park held behind a blocker in no batch loses only the hold once it is Done and on the base.
+q add J-715; q set J-715 state=parked lane=C held_by=X-7 held_outside=X-7 'park={"question":"lane C — the plan needs agreeing"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"done","resolution":"Done"}]}' > "$T/state-j/triage/J-715.json"
+links J-715 X-7 'done' Done; x7 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-715 AC4 a lane C park behind a blocker in no batch Done whose PR has not merged keeps the hold" \
+  '[ "$(field J-715 held_by)" = "\"X-7\"" ] && [ "$(field J-715 held_outside)" = "\"X-7\"" ] && [ "$(field J-715 state)" = "\"parked\"" ] && ! echo "$out" | grep -q "outside hold: J-715"'
+links J-715 X-7 'done' Done; x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-715 AC6 once that blocker is Done and on the base, the hold leaves held_by and held_outside and the lane C park stays" \
+  '[ "$(field J-715 held_by)" = null ] && [ "$(field J-715 held_outside)" = null ] && [ "$(field J-715 state)" = "\"parked\"" ] && [ "$(field J-715 park.question)" = "\"lane C — the plan needs agreeing\"" ] && echo "$out" | grep -q "outside hold: J-715: X-7 Done and on main; hold lifted, and it stays parked: lane C — the plan needs agreeing" || { echo "     J-715: $(field J-715 held_by) $(field J-715 held_outside) $(field J-715 state); $(echo "$out" | grep "J-715")"; false; }'
+check "DS-715 AC6 and the ticket is not sent to a worker" '! echo "$out" | grep -q "J-715 port=" && ! echo "$out" | grep -q "J-715.*RELEASED"'
+q drop J-715; rm -f "$T/jira/X-7.json"
 q add J-15; q set J-15 state=parked lane=C 'park={"question":"lane C: the plan needs agreeing"}' 'outside_blockers=[{"key":"X-15","category":"indeterminate"}]'
 printf '%s\n' '{"epic":null,"blockers":[{"key":"X-15","category":"indeterminate"}]}' > "$T/state-j/triage/J-15.json"
 resolved X-15 Duplicate; links J-15 X-15 'done' Closed; out=$(node "$B/pass.mjs" 2>&1)
