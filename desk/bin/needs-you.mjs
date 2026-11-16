@@ -82,11 +82,11 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, triageGate, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
@@ -616,11 +616,11 @@ const standingOf = (repos, r) => repos.find((x) => x.slug === r.slug && x.batch 
 // batch's state folder, so desk-q's count over any of the repo's batches and this list read one register.
 const STEP = 'step:';
 const standingDir = (b) => (b.batch == null ? b.stateDir : resolve(b.stateDir, '..', '..'));
-// The steps in no batch of `q` that hold held ticket `t`'s build, by `stepOf` (personStepOf). Only
-// those still in its held_by: a person's release leaves held_outside behind (queue.mjs).
-const startSteps = (q, t, stepOf) => (isHeld(t) ? keysOf(t.held_outside).filter((k) => keysOf(t.held_by).includes(k) && !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
+// The steps in no batch of `q` that hold held ticket `t`'s build, or a triage park's, by `stepOf`
+// (personStepOf). Only those still in its held_by: a person's release leaves held_outside behind (queue.mjs).
+const startSteps = (q, t, stepOf) => (isHeld(t) || parkedAtTriage(t) ? keysOf(t.held_outside).filter((k) => keysOf(t.held_by).includes(k) && !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
 // A needs row whose hold needs nothing but such a step: the step's item lists it, so it is not one of its own.
-const stepHeld = (b, x) => isHeld(x.t) && !heldAsks(x.t) && holdOf(b.q, x.t, b.ctx).step != null;
+const stepHeld = (b, x) => !heldAsks(x.t) && holdShown(b.q, x.t, b.ctx)?.step != null;
 // Every ticket in any of the repo's batches waiting on the step, read from the queues on disk, so a
 // step is put off under the same inputs whichever of the repo's batches a caller passed.
 const waitingOn = (slug, key) => listBatches(slug)
@@ -1065,7 +1065,10 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
     const item = r && !r.error ? templatesItem(r, templatesRecord(slug)) : null;
     if (item) repoItem(r, { key: TEMPLATES }, item, item.since);
   }
-  items.sort((a, b) => (b.broken - a.broken) || ((b.behind ?? 0) - (a.behind ?? 0)) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
+  // Heads of one batch with tickets waiting behind them go in build order (its queue's), as a fork's do.
+  const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
+  const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
+  items.sort((a, b) => (b.broken - a.broken) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   return { repos, scope, items, named, putOff };
 }
 

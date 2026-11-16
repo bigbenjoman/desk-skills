@@ -120,7 +120,8 @@ function stateOf(q, t, ctx, seen) {
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
-  if (parkHold(q, t, ctx, seen)) return 'waiting';
+  const ph = parkHold(q, t, ctx, seen);
+  if (ph) return ph.k;
   if (worktreeBusy(t)) return 'needs';
   if (answeredPark(t, ctx) || readPark(t, ctx) || clearsPark(t)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
@@ -224,15 +225,16 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
 }
 
 // What a ticket parked at triage for its own reason (triagePark) waits on while its held_by still names
-// an unmerged blocker and that moves without the user, as holdOf reads it; else null. Its own question
-// is asked once nothing holds it, or at once where the hold itself needs the user.
+// an unmerged blocker that moves without the user, or that is only the person's own step (needs-you
+// lists the step, with the park among those waiting on it), as holdOf reads it; else null. Its own
+// question is asked once nothing holds it, or at once where the hold itself needs the user.
 function parkHold(q, t, ctx = NOBODY, seen = new Set()) {
   if (!triagePark(t) || !unmergedBlockers(q, t).length) return null;
   const h = holdOf(q, t, ctx, seen);
-  return h.k === 'waiting' ? h : null;
+  return h.k === 'waiting' || h.step != null ? h : null;
 }
 // What a held ticket, or a triage park held behind its blockers, waits on (holdOf), else null.
-const holdShown =(q, t, ctx = NOBODY) => (isHeld(t) ? holdOf(q, t, ctx) : parkHold(q, t, ctx));
+export const holdShown = (q, t, ctx = NOBODY) => (isHeld(t) ? holdOf(q, t, ctx) : parkHold(q, t, ctx));
 
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
 // One in no batch that is the person's own step (ctx.stepOf) needs them, and is `step`: needs-you lists
@@ -481,10 +483,11 @@ function draftWhy(u) {
 }
 
 // Whether following holds from `from` reaches `key`: a cycle, at any depth, that nothing releases.
+// A triage park keeps its holds in held_by (heldBehindOf), so a cycle can run through one.
 function holdsReach(q, from, key, seen = new Set()) {
   if (from === key) return true;
   const ft = q.tickets?.[from];
-  if (seen.has(from) || !ft || !isHeld(ft)) return false;
+  if (seen.has(from) || !ft || !(isHeld(ft) || triagePark(ft))) return false;
   seen.add(from);
   return unmergedBlockers(q, ft).some((p) => holdsReach(q, p, key, seen));
 }
