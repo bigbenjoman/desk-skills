@@ -54,6 +54,7 @@ const REWRITTEN = [
   ['DS-589', 'and the disk on the first', 1], // the local database is a health check
   ['DS-669', 'and each triaged ticket\'s unknowns)', 1], // a held ticket's triage unknowns are asked too
   ['DS-673', '`pass.mjs` serialises it *within* your batch;', 1], // every repo uploads through the machine's one queue
+  ['DS-754', 'A pending check, or a Stage 7 worker it names, makes it wait.', 1], // a head not yet green installs the newest green commit before it
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',
