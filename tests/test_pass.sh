@@ -1668,6 +1668,7 @@ import { appendFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 const key = process.argv[3];
 appendFileSync('$T/admits-a', process.argv.slice(2).join(' ') + '\n');
+if (existsSync('$T/limit-' + key)) { console.log('summary: 0 of 1 admitted, 1 not triaged (1s)\nnot triaged (usage limit, resets 3pm): ' + key + ': run /desk-admit ' + key + ' again once the limit lifts'); process.exit(11); }
 if (existsSync('$T/refuse-' + key)) { console.log('triage: done ' + key + ' lane C (1s)\nnot admitted ' + key + ': lane C: needs a plan\nsummary: 0 of 1 admitted, 1 not admitted (1s)'); process.exit(11); }
 execFileSync('node', ['$B/queue.mjs', 'add', key], { stdio: 'ignore' });
 console.log('admitted ' + key + ' by pass into batch a (lane A, S)');
@@ -1699,6 +1700,11 @@ check "DS-569 a refused blocker is not tried again on the next pass" '[ "$(grep 
 held_on J-74 J-75 new
 out=$(DESK_BATCH=a node "$B/pass.mjs" 2>&1)
 check "DS-569 in a named batch the blocker is admitted into that batch" 'grep -qx "admit J-75 --by pass --into a" "$T/admits-a" && [ "$(field J-74 held_outside)" = null ]'
+held_on J-78 J-79 new; touch "$T/limit-J-79"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 a blocker whose triage a usage limit cut off is not counted as tried" '[ "$(field J-78 outside_admit_tried)" = null ] && [ "$(field J-79 state)" = null ]'
+rm -f "$T/limit-J-79"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 once the limit lifts, the next pass admits it" '[ "$(grep -c "^admit J-79 " "$T/admits-a")" = 2 ] && [ "$(field J-79 state)" != null ]'
 q set-batch supervised=false; held_on J-76 J-77 new
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-569 a batch the supervisor does not run admits nothing" '! grep -q "J-77" "$T/admits-a" && [ "$(field J-76 held_outside)" = "\"J-77\"" ]'

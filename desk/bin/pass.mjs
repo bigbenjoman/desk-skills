@@ -3336,15 +3336,18 @@ for (const t of onTracker) {
     budget -= now.length;
     now.forEach((k) => tried.add(k));
     if (DRY) { epicLines.push(`outside blockers (dry run): would admit ${now.join(', ')}, holding ${t.key}, to this batch`); continue; }
+    // A triage cut off by a usage limit is not a try: the next pass after it lifts tries again.
+    const spent = [];
     for (const k of now) {
       const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', k, '--by', 'pass', ...(into ? ['--into', into] : [])]);
       const said = r.out.split('\n').filter((line) => line && !isProgress(line));
+      if (!said.some((line) => line.startsWith('not triaged (usage limit'))) spent.push(k);
       epicLines.push(queue().tickets[k]
         ? `outside blockers: ${k}, holding ${t.key}, admitted to this batch`
         : `outside blockers: ${k}, holding ${t.key}, not admitted to this batch (${said.filter((line) => line.includes(k)).pop() ?? said.pop() ?? `exit ${r.code}`}): admit it with /desk-admit ${k}`);
     }
     const inQueue = queue().tickets;
-    q('set', t.key, `outside_admit_tried=${[...before, ...now].join('|')}`);
+    if (spent.length) q('set', t.key, `outside_admit_tried=${[...before, ...spent].join('|')}`);
     if (now.some((k) => inQueue[k])) q('set', t.key, `outside_blockers=${JSON.stringify((t.outside_blockers ?? []).filter((b) => !inQueue[b?.key]))}`);
   }
 }
