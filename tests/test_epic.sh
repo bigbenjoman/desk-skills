@@ -775,6 +775,35 @@ check "admit: an INCONCLUSIVE challenge parks the lane as unchecked, as plan-bat
 out=$(node "$B/queue.mjs" admit KAN-813 2>&1); rc=$?
 check "admit refuses a ticket with no triage record" '[ $rc -ne 0 ]'
 
+# queue.mjs backfill-holds, on a queue planned before lane, size and design parks kept their blockers:
+# the parks sit with held_by null and their blockers only in the triage records.
+node "$B/queue.mjs" init t7 >/dev/null
+for k in KAN-851 KAN-852 KAN-853 KAN-854 KAN-855 KAN-856; do node "$B/queue.mjs" add $k Task A >/dev/null; node "$B/queue.mjs" set $k state=triaged >/dev/null; done
+node "$B/queue.mjs" set KAN-852 state=done merged_at=2026-11-10T00:00:00.000Z >/dev/null
+node "$B/queue.mjs" park KAN-853 "lane C — run manually" >/dev/null
+node "$B/queue.mjs" park KAN-854 "size L — split it before batching" >/dev/null; node "$B/queue.mjs" set KAN-854 held_by=KAN-852 >/dev/null
+node "$B/queue.mjs" park KAN-855 "lane D — no canvas, so run manually" >/dev/null
+node "$B/queue.mjs" park KAN-856 "which copy?" >/dev/null
+r KAN-853 C "[$(nb KAN-851),$(nb KAN-852),$(nb KAN-990),$(nb KAN-991),$(nb KAN-992 done)]" '"blocker_needs":{"KAN-990":{"needs":"build","why":"it adds the table"},"KAN-991":{"needs":"none","why":"unrelated"}}'
+r KAN-854 A "[$(nb KAN-851)]" '"size":"L"'
+r KAN-855 D "[$(nb KAN-852)]"
+r KAN-856 A "[$(nb KAN-851)]"
+before=$(jq -cS . "$DESK_QUEUE")
+out=$(node "$B/queue.mjs" backfill-holds --dry-run 2>&1); rc=$?
+check "DS-719 AC1: --dry-run prints the hold a lane C park would gain, and changes nothing" \
+  '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^KAN-853: would hold behind KAN-851, KAN-990 (KAN-990 outside the batch), beside its own park (lane C — run manually)" && [ "$(jq -cS . "$DESK_QUEUE")" = "$before" ]'
+out=$(node "$B/queue.mjs" backfill-holds 2>&1); rc=$?
+check "DS-719 AC2: the lane C park's held_by lists its blocker, and its park is unchanged" \
+  '[ $rc -eq 0 ] && [ "$(qg KAN-853 .held_by)" = "KAN-851|KAN-990" ] && [ "$(qg KAN-853 .held_outside)" = KAN-990 ] && [ "$(qg KAN-853 .state)" = parked ] && [ "$(qg KAN-853 .park.question)" = "lane C — run manually" ]'
+check "DS-719 AC3: a merged blocker, a Done one and one triage found not needed add no hold" \
+  '[ "$(qg KAN-855 .held_by)" = null ] && ! printf "%s" "$out" | grep -q "KAN-855" && [[ "$(qg KAN-853 .held_by)" != *KAN-852* ]] && [[ "$(qg KAN-853 .held_by)" != *KAN-991* ]] && [[ "$(qg KAN-853 .held_by)" != *KAN-992* ]]'
+check "DS-719 AC4: a park that already has a held_by is left as it is, as is a park on a question of its own" \
+  '[ "$(qg KAN-854 .held_by)" = KAN-852 ] && [ "$(qg KAN-856 .held_by)" = null ] && [ "$(qg KAN-856 .park.question)" = "which copy?" ]'
+after=$(jq -cS . "$DESK_QUEUE")
+out=$(node "$B/queue.mjs" backfill-holds 2>&1); rc=$?
+check "DS-719 AC5: a second run changes nothing" \
+  '[ $rc -eq 0 ] && [ "$(jq -cS . "$DESK_QUEUE")" = "$after" ] && printf "%s" "$out" | grep -q "no lane, size or design park is missing a hold"'
+
 # ---------------------------------------------------------------------------------------------------
 # worker-settings: link is never a worker's or triage's; children is a read
 ws(){ node "$B/worker-settings.mjs" "$@" >/dev/null 2>&1; }
