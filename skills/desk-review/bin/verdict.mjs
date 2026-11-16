@@ -12,6 +12,7 @@
 //   node verdict.mjs --carried <results.json>  prints the PR body's carried-findings section, if any
 //   node verdict.mjs --method <results.json>   prints the PR body's line on how the review ran
 //   node verdict.mjs --accepted <results.json> prints the review body's accepted-gaps section, if any
+//   node verdict.mjs --post-merge <results.json> prints the review body's after-the-merge section, if any
 //   node verdict.mjs --check <body.md> <head>  exit 0 when the repo's review gate (its own
 //                                              scripts/desk/review-gate.mjs, else desk's) reads the
 //                                              body's verdict at that full head SHA; 1 naming why not
@@ -42,6 +43,17 @@
 // Only a requirement gap can be accepted; a P0 or P1 is never. The count goes on a line of its own
 // after the heading, as the carried count does, so every gate reads gaps=0 and nothing new.
 //
+// A criterion only a live system can check (a production run, a staging call, playback on a device)
+// is not open either: it leaves "gaps" and is listed in "post_merge", each naming what it needs and
+// the step that checks it once the PR has merged:
+//
+//   "post_merge": [ { "gap": "AC7", "needs": "production", "step": "fill in the switch date at the production relay run" } ]
+//
+// `needs` is one of POST_MERGE_NEEDS: anything a test, a local run or a preview can check before the
+// merge is a gap, and refused here. The items go on a marker line of their own after the accepted line,
+// as JSON, for the autopilot pass to keep as follow-on steps once the PR merges (pass.mjs). Like the
+// accepted line it never decides clean.
+//
 // "rests_on", when given, lists the repo-relative paths the seats read and the changed files, and from
 // round 2 the previous round's list too, since a fix-range round reads only part of what its verdict
 // attests. A list that cannot be whole is left out. It goes on a line of its own after the method
@@ -66,7 +78,9 @@
 //   - a carried finding is an outstanding P2 on round 2 or later, never deferred, with a file:line;
 //     it counts in `carried`, not in p2, and an unrefuted one still counts in unrefuted;
 //   - an accepted gap names its criterion, who accepted it, when, and the PR comment or review that
-//     records it, once each: one without all four is refused, never counted out of gaps.
+//     records it, once each: one without all four is refused, never counted out of gaps;
+//   - a post-merge criterion names its criterion, a live-only need and its step, once, and is not also
+//     accepted: one a test could check before the merge is refused, never counted out of gaps.
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -74,7 +88,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'
 // The round from which the finders read only the fix range and a P2 may be carried.
 const FIX_RANGE_ROUND = 2
-const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'skipped_files', 'seats', 'findings', 'rests_on', 'targeted', 'codex']
+const TOP = ['sha', 'round', 'since', 'gaps', 'accepted', 'post_merge', 'skipped_files', 'seats', 'findings', 'rests_on', 'targeted', 'codex']
 const TARGETED = ['from', 'range', 'files', 'users']
 const REPO_PATH = (p) => typeof p === 'string' && !!p && !/[\r\n]/.test(p) && !p.startsWith('/')
 // With the codex lever on, the model and effort each codex role ran at, as `desk-codex settings` prints them.
@@ -87,6 +101,11 @@ const ACCEPTED = ['gap', 'by', 'at', 'url']
 // The record of an acceptance: a comment or a review on a pull request, linked by its anchor.
 const ACCEPT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+#(?:issuecomment-\d+|pullrequestreview-\d+|discussion_r\d+)$/
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/
+const POST_MERGE = ['gap', 'needs', 'step']
+// What only exists once the PR has merged: the production system, a shared staging one, a deployed
+// build, a physical device, or a third party's live service. A unit, integration or local check is none.
+export const POST_MERGE_NEEDS = ['production', 'staging', 'deployed', 'device', 'third-party']
+const POST_MERGE_STEP_MAX = 300
 const SEAT = ['role', 'agent', 'vendor', 'status', 'reason', 'note', 'fallback']
 const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
@@ -135,6 +154,19 @@ export function tally(r) {
     if (!LOGIN.test(String(a.by ?? ''))) no(`${name}: by is the GitHub login of the person who accepted it`)
     if (!/^\d{4}-\d{2}-\d{2}(?:$|T)/.test(String(a.at ?? ''))) no(`${name}: at is the date it was recorded, as YYYY-MM-DD`)
     if (!ACCEPT_URL.test(String(a.url ?? ''))) no(`${name}: url links the PR comment or review that records it`)
+  })
+  const postMerge = r.post_merge ?? []
+  if (!Array.isArray(postMerge)) no('post_merge must list each criterion left for after the merge ([] or left out when there are none)')
+  const later = new Set()
+  postMerge.forEach((p, i) => {
+    keysOf(p, POST_MERGE, `post_merge[${i}]`)
+    if (typeof p.gap !== 'string' || !p.gap.trim() || /[\r\n]/.test(p.gap)) no(`post_merge[${i}].gap names the criterion, as AC7`)
+    const name = `post-merge criterion ${p.gap}`
+    if (later.has(p.gap)) no(`${name} is listed twice`)
+    later.add(p.gap)
+    if (named.has(p.gap)) no(`${name} is also accepted: a criterion is accepted or left for after the merge, not both`)
+    if (!POST_MERGE_NEEDS.includes(p.needs)) no(`${name}: needs must be one of ${POST_MERGE_NEEDS.join(', ')}; a criterion a test, a local run or a preview can check before the merge is a gap`)
+    if (typeof p.step !== 'string' || !p.step.trim() || /[\r\n]/.test(p.step) || p.step.length > POST_MERGE_STEP_MAX) no(`${name}: step says on one line, within ${POST_MERGE_STEP_MAX} characters, what checks it after the merge`)
   })
 
   if (!Array.isArray(r.seats) || !r.seats.length) no('seats must list every seat dispatched')
@@ -239,7 +271,8 @@ export function tally(r) {
   const fallback = [...seats.values()]
     .filter((s) => s.fallback === true || (NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose'))
     .map((s) => s.role)
-  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted, restsOn, targeted,
+  return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted,
+    postMerge: postMerge.map((p) => ({ gap: p.gap.trim(), needs: p.needs, step: p.step.trim() })), restsOn, targeted,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback, codex: r.codex ?? null,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
@@ -264,7 +297,8 @@ export function render(r) {
   // Worded so no count sits before "P2": a gate reads "<n> P2" in a heading as an open finding.
   const carried = t.carried.length ? `P2 findings carried: ${t.carried.length}` : ''
   const accepted = t.accepted.length ? `requirement gaps accepted: ${t.accepted.length}` : ''
-  const kept = [carried, accepted].filter(Boolean)
+  const later = t.postMerge.length ? `criteria left for after the merge: ${t.postMerge.length}` : ''
+  const kept = [carried, accepted, later].filter(Boolean)
   const verdict = isClean(n)
     ? `${carried ? 'No P0 or P1 findings' : 'No P0, P1 or P2 findings'}${kept.map((k) => `; ${k}`).join('')}`
     : `not clean: ${[...parts, ...kept].join(', ')}`
@@ -274,12 +308,17 @@ export function render(r) {
   const lines = ['<!-- desk-review:local -->', marker, heading]
   if (t.since) lines.push(`<!-- desk-review:carried v=1 p2=${t.carried.length} since=${t.since} -->`)
   if (t.accepted.length) lines.push(`<!-- desk-review:accepted v=1 gaps=${t.accepted.length} -->`)
+  if (t.postMerge.length) lines.push(postMergeMarker(t.postMerge))
   lines.push(`<!-- desk-review:method v=1 fallback=${t.fallback.length} -->`)
   // JSON with every ">" escaped, so no path can close the comment.
   if (t.restsOn) lines.push(`<!-- desk-review:rests-on v=1 files=${JSON.stringify(t.restsOn).replace(/>/g, '\\u003e')} -->`)
   if (t.targeted) lines.push(...targetedLines(t))
   return lines.join('\n')
 }
+
+// The post-merge line: the count, then the items as JSON with every ">" escaped, so no step can close
+// the comment. desk/bin/undraft.mjs postMergeIn reads it back.
+const postMergeMarker = (items) => `<!-- desk-review:post-merge v=1 gaps=${items.length} items=${JSON.stringify(items).replace(/>/g, '\\u003e')} -->`
 
 // What a targeted round re-read at this head and what it carried from the clean review it follows.
 const code = (p) => `\`${p.replace(/`/g, "'")}\``
@@ -335,6 +374,19 @@ export function acceptedSection(r) {
   ].join('\n')
 }
 
+// The review body's section for the criteria left for after the merge: each with what it needs and the
+// step that checks it; '' when there are none. Its heading never names requirement gaps, which a reader
+// of the body (fix-tries.mjs reviewGaps) takes for the open ones.
+export function postMergeSection(r) {
+  const t = tally(r)
+  if (!t.postMerge.length) return ''
+  return [
+    '### After the merge',
+    'Only a live system can check these criteria, so the verdict does not count them in `gaps`. Each becomes a follow-on step for after the merge:',
+    ...t.postMerge.map((p) => `- ${p.gap} (needs ${p.needs}): ${p.step}`),
+  ].join('\n')
+}
+
 // Why the review gate would reject a review body posted at `head`, or null: no verdict marker it reads,
 // a marker for another commit, a vendor other than the one the gate requires, or a heading that
 // contradicts a clean marker. gate: the review-gate.mjs module (parseVerdict, headingMismatch, COUNTS).
@@ -381,10 +433,10 @@ if (isMain && process.argv[2] === '--check') {
 } else if (isMain) {
   try {
     const args = process.argv.slice(2)
-    const modes = { '--carried': carriedSection, '--method': methodLine, '--accepted': acceptedSection }
+    const modes = { '--carried': carriedSection, '--method': methodLine, '--accepted': acceptedSection, '--post-merge': postMergeSection }
     const mode = Object.hasOwn(modes, args[0] ?? '') ? args[0] : null
     const [file, ...rest] = mode ? args.slice(1) : args
-    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method | --accepted] <results.json>')
+    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method | --accepted | --post-merge] <results.json>')
     let r
     try { r = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { no(`cannot read ${file}: ${e.message}`) }
     const out = mode ? modes[mode](r) : render(r)

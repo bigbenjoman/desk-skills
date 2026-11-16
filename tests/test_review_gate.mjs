@@ -136,6 +136,15 @@ t('DS-317 AC3 gate copy before accepting: reads gaps=0', oldGate.parseVerdict(ac
 t('DS-317 AC3 gate copy before accepting: no heading mismatch', oldGate.headingMismatch(oldGate.parseVerdict(acceptedAt.body)), null);
 t('DS-317 AC3 one gap accepted beside one open is not clean to either', `${checkVerdict([review(round1({ gaps: 1, accepted: [ACC] }))], HEAD, WRITERS).ok} ${oldGate.checkVerdict([review(round1({ gaps: 1, accepted: [ACC] }))], HEAD, WRITERS).ok}`, 'false false');
 
+// DS-570: a verdict whose only open criteria are left for after the merge reads clean to the new gate
+// and to a repo's committed copy from before the post-merge line, its heading still the heading.
+const PM = { gap: 'AC7', needs: 'production', step: 'fill in the switch date at the production relay run' };
+const postMergeAt = review(`${round1({ gaps: 0, post_merge: [PM] })}\n\n### After the merge\n- AC7 (needs production): ${PM.step}`);
+t('DS-570 AC1 new gate: only post-merge criteria open, clean', checkVerdict([postMergeAt], HEAD, WRITERS).ok, true);
+t('DS-570 AC1 gate copy before the post-merge line: clean', oldGate.checkVerdict([postMergeAt], HEAD, WRITERS).ok, true);
+t('DS-570 AC1 gate copy before the post-merge line: no heading mismatch', oldGate.headingMismatch(oldGate.parseVerdict(postMergeAt.body)), null);
+t('DS-570 a post-merge criterion beside an open gap is not clean to either', `${checkVerdict([review(round1({ gaps: 1, post_merge: [PM] }))], HEAD, WRITERS).ok} ${oldGate.checkVerdict([review(round1({ gaps: 1, post_merge: [PM] }))], HEAD, WRITERS).ok}`, 'false false');
+
 // The pass's undraft step reads the same bodies the same way: the same sha and counts where this
 // gate reads a verdict, and nothing it can call clean where this gate reads none.
 const marker = (rest) => `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} ${rest} -->\nclean`;

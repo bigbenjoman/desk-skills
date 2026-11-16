@@ -43,7 +43,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
-import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf } from './undraft.mjs';
+import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -3519,7 +3519,10 @@ function readPrStatus(n) {
   const headCommit = (v.commits ?? []).find((c) => c?.oid && c.oid === v.headRefOid);
   // Who approved this head: `latestReviews` carries no commit, so `reviews` is read.
   const approvals = [...new Set((v.reviews ?? []).filter((r) => r?.state === 'APPROVED' && r.commit?.oid === v.headRefOid).map((r) => r.author?.login).filter(Boolean))].sort();
+  // Merged, the criteria its last desk-review left for after the merge, kept as follow-on steps below.
+  const postMerge = v.state === 'MERGED' && conflictHandle ? postMergeSteps(latestReview(v.reviews, conflictHandle)?.body) : [];
   return {
+    ...(postMerge.length ? { post_merge: postMerge } : {}),
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, approvals, mergeable: v.mergeable ?? null,
     mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null, head_at: time(headCommit?.committedDate),
@@ -3641,6 +3644,14 @@ for (const t of Object.values(qNow.tickets)) {
   if (s.state === 'MERGED' && !t.merged_at && !DRY) {
     const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));
     if (rec) merges.push(`${t.key} (PR #${n}): ${rec.split('\n').join('; ')}`);
+    // A criterion its review left for after the merge (DS-570) is a follow-on step from now on, which
+    // needs-you lists: the person checks it once, on the live system, rather than before the merge.
+    const have = t.follow_on ?? [];
+    const later = (s.post_merge ?? []).map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null })).filter((x) => !have.some((h) => h?.step === x.step));
+    if (later.length) {
+      q('set', t.key, `follow_on=${JSON.stringify([...have, ...later])}`);
+      merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
+    }
   }
 }
 for (const m of merges) out.push(`merge recorded: ${m}`);

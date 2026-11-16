@@ -3860,4 +3860,48 @@ check "DS-689 AC6 a malformed Append-only paths row is named in the pass report,
 out=$(DESK_CONFIG="$T/config-ao.md" node "$B/pass.mjs" 2>&1)
 check "DS-689 AC6 a row of globs is not named" '! echo "$out" | grep -qF "Append-only paths"'
 
+# DS-570 AC2: once a PR merges, each criterion its last desk-review (by the §1 handle) left for after the
+# merge is a follow-on step on the ticket, which needs-you lists; the steps it had are kept, a review by
+# anyone else adds none, and a PR whose review left none gains none.
+export DESK_QUEUE="$T/queue-pm.json" DESK_AUTOPILOT_STATE="$T/state-pm" DESK_CONFIG="$T/config-pm.md"; mkdir -p "$T/state-pm/logs"
+{ cat "$T/config.md"; printf '\n## 1. Identity\n| Field | Value |\n|---|---|\n| GitHub handle | `ben` |\n'; } > "$T/config-pm.md"
+node --input-type=module -e "
+import { writeFileSync } from 'node:fs';
+import { render, postMergeSection } from '$B/../../skills/desk-review/bin/verdict.mjs';
+const sha = 'a'.repeat(40), seats = [{ role: 'correctness', vendor: 'claude', status: 'ran' }];
+const results = (o) => ({ sha, round: 1, gaps: 0, skipped_files: 0, seats, findings: [], ...o });
+const later = results({ post_merge: [{ gap: 'AC7', needs: 'production', step: 'fill in the switch date at the production relay run' }, { gap: 'AC8', needs: 'staging', step: 'place a test call on staging' }] });
+const body = (r) => [render(r), '', postMergeSection(r)].join('\n');
+const other = results({ post_merge: [{ gap: 'AC9', needs: 'device', step: 'someone else says so' }] });
+const pr = (n, reviews) => JSON.stringify({ state: 'MERGED', url: 'https://github.com/acme/widgets/pull/' + n, mergedAt: '2026-11-10T09:00:00Z', headRefOid: sha, statusCheckRollup: [], reviews });
+writeFileSync('$T/pm-702.json', pr(702, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({ gaps: 2 })) }, { author: { login: 'ben' }, state: 'COMMENTED', body: body(later) }, { author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
+writeFileSync('$T/pm-703.json', pr(703, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({})) }]));
+writeFileSync('$T/pm-704.json', pr(704, [{ author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 702 "*) cat "$T/pm-702.json" ;;
+  "pr view 703 "*) cat "$T/pm-703.json" ;;
+  "pr view 704 "*) cat "$T/pm-704.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/stub/gh"
+q init pm
+q add PM-1; q set PM-1 state=done result.pr=702 'follow_on=[{"step":"run the backfill","row":"jira-comment"}]'
+q add PM-2; q set PM-2 state=done result.pr=703
+q add PM-3; q set PM-3 state=done result.pr=704
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+pending(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { followOnPending } from '$B/harvest.mjs'; console.log(followOnPending(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
+check "DS-570 AC2 a merged PR's post-merge criteria are follow-on steps after the ones it had, naming no §3 row" \
+  '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"run the backfill\",\"jira-comment\"],[\"Check after the merge: AC7 (needs production): fill in the switch date at the production relay run\",null],[\"Check after the merge: AC8 (needs staging): place a test call on staging\",null]]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
+check "DS-570 AC2 so needs-you lists them as the ticket's follow item" '[ "$(pending PM-1)" = true ]'
+check "DS-570 a review that left none, or one by anyone but the §1 handle, adds no follow-on step" \
+  '[ "$(field PM-2 merged_at)" != null ] && [ "$(field PM-2 follow_on)" = null ] && [ "$(field PM-3 follow_on)" = null ] && [ "$(pending PM-3)" = false ]'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-570 the next pass reads no PR again and adds no step twice" '[ ! -s "$T/gh-calls" ] && [ "$(field PM-1 follow_on.length)" = 3 ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
