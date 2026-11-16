@@ -455,7 +455,7 @@ check "regression: no links -> all triaged, argument order kept, no deps" \
 rm -f "$T/state/triage/"*.json "$T/state/expansion.json"
 r KAN-701 A '[]'
 r KAN-702 D "[$(nb KAN-701)]"
-r KAN-703 C "[$(nb KAN-901 done)]"
+r KAN-703 C "[$(nb KAN-901 'done')]"
 r KAN-704 C '[{"key":"KAN-990","category":"new"}]' '"blocker_needs":{"KAN-990":{"needs":"build","why":"it adds the table"}}'
 node "$B/queue.mjs" init s714 >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-701 KAN-702 KAN-703 KAN-704 2>&1); rc=$?
