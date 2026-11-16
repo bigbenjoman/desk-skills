@@ -1657,6 +1657,53 @@ printf '| State checks | `Review gate: approval` |\n' >> "$T/config-u.md"
 q set U-12 undraft=null; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-578 AC1 a clean draft red only on a §4 State check is undrafted" '[ "$(readied 712)" = 1 ] && [ "$(field U-12 undraft.call)" = "\"ready\"" ]'
 
+# ---- DS-569: a supervised batch's pass admits a held ticket's open blocker in no batch into the batch
+# intake.mjs is a fake that records each admit and adds the ticket to this queue, or refuses one
+# $T/refuse-<key> names. Each held ticket's blockers were read just now, so Jira is not read again.
+{ cat "$T/config-j.md"; printf '| Jira project | `J` |\n| Person-input labels | `ben-input` |\n'; } > "$T/config-a.md"
+CONFIG_WAS=$DESK_CONFIG; export DESK_CONFIG="$T/config-a.md" DESK_QUEUE="$T/queue-a.json" DESK_AUTOPILOT_STATE="$T/state-a"
+mkdir -p "$T/state-a/logs" "$T/state-a/triage"; : > "$T/admits-a"
+cat > "$T/desk/bin/intake.mjs" <<EOF
+import { appendFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+const key = process.argv[3];
+appendFileSync('$T/admits-a', process.argv.slice(2).join(' ') + '\n');
+if (existsSync('$T/refuse-' + key)) { console.log('triage: done ' + key + ' lane C (1s)\nnot admitted ' + key + ': lane C: needs a plan\nsummary: 0 of 1 admitted, 1 not admitted (1s)'); process.exit(11); }
+execFileSync('node', ['$B/queue.mjs', 'add', key], { stdio: 'ignore' });
+console.log('admitted ' + key + ' by pass into batch a (lane A, S)');
+EOF
+printf '#!/bin/sh\ncase "$*" in\n  "pr list "*) echo "[]" ;;\n  *) exit 1 ;;\nesac\n' > "$T/stub/gh"; chmod +x "$T/stub/gh"
+q init a; q set-batch supervised=true
+held_on(){ q add "$1"; q set "$1" state=parked held_by="$2" held_outside="$2" outside_blockers_read=2099-01-01T00:00:00.000Z "park={\"question\":\"held by orchestrator: blocked by $2 — starts once their PRs merge\"}"
+  printf '{"epic":null,"blockers":[{"key":"%s","category":"%s"%s}]}\n' "$2" "$3" "${4:-}" > "$T/state-a/triage/$1.json"; }
+held_on J-60 J-61 new
+held_on J-64 J-65 new ',"labels":["ben-input"]'
+held_on J-66 J-67 done
+held_on J-68 X-69 indeterminate
+held_on J-70 J-71 new
+held_on J-72 J-73 new; touch "$T/refuse-J-73"
+node -e 'import(process.argv[1]).then((m) => console.log(JSON.stringify(m.putOffEntry({ question: "J-70 held", ticket: "J-70", inputs: { ticket: "J-70" } }))))' "$B/not-now.mjs" > "$T/state-a/not-now.jsonl"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 AC1 the held ticket's open blocker in no batch is admitted to its batch, and its hold is an ordinary one" \
+  'grep -qx "admit J-61 --by pass" "$T/admits-a" && [ "$(field J-61 state)" != null ] && [ "$(field J-60 held_by)" = "\"J-61\"" ] && [ "$(field J-60 held_outside)" = null ] && [ "$(field J-60 outside_blockers)" = "[]" ] && echo "$out" | grep -q "outside blockers: J-61, holding J-60, admitted to this batch"'
+check "DS-569 AC2 a blocker that is the person's step is not admitted, and its ticket stays held outside" \
+  '! grep -q "J-65" "$T/admits-a" && [ "$(field J-65 state)" = null ] && [ "$(field J-64 held_outside)" = "\"J-65\"" ]'
+check "DS-569 AC3 a Done blocker admits nothing, and the held ticket is released to start" \
+  '! grep -q "J-67" "$T/admits-a" && [ "$(field J-66 state)" = "\"triaged\"" ] && [ "$(field J-66 held_by)" = null ]'
+check "DS-569 a blocker in another Jira project, and one whose held item was put off, are not admitted" \
+  '! grep -q "X-69" "$T/admits-a" && ! grep -q "J-71" "$T/admits-a" && [ "$(field J-70 held_outside)" = "\"J-71\"" ]'
+check "DS-569 a blocker intake refuses is said with its reason, and the ticket stays held outside" \
+  'grep -qx "admit J-73 --by pass" "$T/admits-a" && [ "$(field J-72 held_outside)" = "\"J-73\"" ] && [ "$(field J-72 outside_admit_tried)" = "\"J-73\"" ] && echo "$out" | grep -qF "outside blockers: J-73, holding J-72, not admitted to this batch (not admitted J-73: lane C: needs a plan): admit it with /desk-admit J-73"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 a refused blocker is not tried again on the next pass" '[ "$(grep -c "J-73" "$T/admits-a")" = 1 ] && [ "$(wc -l < "$T/admits-a" | tr -d " ")" = 2 ]'
+held_on J-74 J-75 new
+out=$(DESK_BATCH=a node "$B/pass.mjs" 2>&1)
+check "DS-569 in a named batch the blocker is admitted into that batch" 'grep -qx "admit J-75 --by pass --into a" "$T/admits-a" && [ "$(field J-74 held_outside)" = null ]'
+q set-batch supervised=false; held_on J-76 J-77 new
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-569 a batch the supervisor does not run admits nothing" '! grep -q "J-77" "$T/admits-a" && [ "$(field J-76 held_outside)" = "\"J-77\"" ]'
+export DESK_CONFIG="$CONFIG_WAS"
+
 # ---- DS-415: evidence runs that failed the same way on three drafts start one fix, not three items
 # The fake gh: #801-#803 are clean, green drafts with two screenshot cells and an evidence block. Each
 # one's recorded run (9<n>) failed, and its log has the same error with its own run id, time and SHA.
