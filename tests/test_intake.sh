@@ -549,6 +549,12 @@ rec Y-1 A '"blockers":[{"key":"X-4","category":"indeterminate"}]'
 out=$(admit Y-1); rc=$?
 check "DS-391 AC3: a ticket whose blocker is in another live batch is placed in that batch, held behind it there" \
   '[ $rc -eq 0 ] && [ "$(qget tickets.Y-1)" = undefined ] && [ "$(nget tickets.Y-1.held_by)" = "X-2|X-4" ] && [ "$(nget tickets.Y-1.held_outside)" = undefined ] && grep -q "^admitted Y-1 by hand into feature batch X-1 (lane A, size S), held behind X-2, X-4$" <<< "$out"'
+# Z-9 belongs to no batch but the one named: --into places it there, as the pass admits a held ticket's blocker.
+rec Z-9 A
+out=$(admit Z-9 --by pass --into X-1); rc=$?
+check "DS-569: admit --into joins the named live batch, wherever the ticket's record would place it" \
+  '[ $rc -eq 0 ] && [ "$(qget tickets.Z-9)" = undefined ] && [ "$(nget tickets.Z-9.admitted_by)" = pass ] && grep -q "^admitted Z-9 by pass into feature batch X-1 (lane A, size S)" <<< "$out"'
+node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); delete q.tickets["Z-9"]; f.writeFileSync(p,JSON.stringify(q))' "$NQ"
 rec E-2 A '"type":"Epic"'
 config ask; out=$(admit E-2); rc=$?; config yes
 check "DS-352 AC1: with a feature batch live, another epic is planned as its own feature batch, not refused" '[ $rc -eq 0 ] && grep -q "^plan E-2 as a feature batch beside the standing batch" <<< "$out" && ! grep -q "^not admitted E-2" <<< "$out"'
