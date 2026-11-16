@@ -45,6 +45,7 @@ for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln 
 cat > "$T/desk/bin/upload-images.mjs" <<EOF
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
+appendFileSync('$T/upload-args', \`\${process.argv.slice(2).join(' ')}\\n\`);
 // \$T/upload-left, when it exists, is an upload that left cells: what upload-images says, and its exit 4.
 if (existsSync('$T/upload-left')) { process.stdout.write(readFileSync('$T/upload-left', 'utf8')); process.exit(4); }
 // \$T/upload-busy-<pr>, when it exists, is the shared profile in use: the uploader's exit 2.
@@ -106,6 +107,17 @@ check "the finished round records the log's PR"         '[ "$(field T-1 result.p
 check "DS-193 AC1 a missing image directory runs no upload and reports nothing" '! grep -q "^11 " "$T/uploads" && ! echo "$out" | grep -q "I-1: image" && [ "$(field I-1 images_uploaded)" = "\"none\"" ] && [ "$(field I-1 state)" = "\"done\"" ]'
 check "DS-193 AC2 a directory with no image runs no upload and reports nothing" '! grep -q "^12 " "$T/uploads" && ! echo "$out" | grep -q "I-2: image" && [ "$(field I-2 images_uploaded)" = "\"none\"" ] && [ "$(field I-2 state)" = "\"done\"" ]'
 check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'
+check "DS-673 AC5 the pass uploads through the machine's upload queue, capped at the minute's pace" 'grep -qx "2 $T/state/images/T-1/ --max 6" "$T/upload-args"'
+check "DS-673 AC5 each upload done, the queue holds no job and no result" 'node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); process.exit(q.jobs.length + q.results.length)" "$T/desk/upload-queue.json"'
+
+# R-1 and R-2: finished tickets whose uploads ended in another repo's pump. R-1's was its last round's,
+# ending after its next round started; R-2's is its own round's.
+q add R-1; q set R-1 state=done branch=fix/R-1 upload_round=new result.pr=21
+q add R-2; q set R-2 state=done branch=fix/R-2 upload_round=same result.pr=22
+node -e 'const [f, queue] = process.argv.slice(1); const r = (key, round, pr) => ({ queue, repo: "acme/widgets", key, round, pr, dir: "/d/", code: 0, out: "[upload] done: 1 image(s) in the body, 0 placeholder(s) left", done_at: new Date().toISOString() }); require("fs").writeFileSync(f, JSON.stringify({ jobs: [], results: [r("R-1", "old", 21), r("R-2", "same", 22)], served: {}, backoff: null }))' "$T/desk/upload-queue.json" "$DESK_QUEUE"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-673 a result of a ticket's earlier round is not recorded on its next round" '[ "$(field R-1 images_uploaded)" = null ] && echo "$out" | grep -q "R-1: an upload to PR #21 from an earlier round"'
+check "DS-673 a result of the ticket's own round is recorded"                       '[ "$(field R-2 images_uploaded)" = true ]'
 
 # T-3: round one finished with PR 1 and uploaded; it is requeued for a deliberate re-run.
 q add T-3; q set T-3 state=triaged branch=fix/T-3 result.pr=1 result.summary=old images_uploaded=true images_reported=true draft_pr=1
@@ -2251,14 +2263,17 @@ check "DS-674 AC1 a crash that filled a cell spends no try, and its cells wait r
   'grep -qx "791 $T/state-s/images/UC-1/" "$T/uploads" && [ "$(field UC-1 upload_crash.tries)" = 1 ] && [ "$(field UC-1 upload_crash.filled)" = 1 ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -qF "UC-1: image upload to PR #791 crashed after filling 1 cell(s), so it spends no try (1 of 2 spent), and the next pass tries it again"'
 check "DS-674 AC3 a throttled upload spends no try and its cells wait for the back-off" \
   'grep -qx "792 $T/state-s/images/UC-2/" "$T/uploads" && [ "$(field UC-2 upload_crash.tries)" = 1 ] && [ "$(field UC-2 upload_crash.throttled)" = "\"2099-01-01T00:00:00.000Z\"" ] && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && echo "$out" | grep -qF "UC-2 images → #792 wait: GitHub'"'"'s rate limit throttled the upload, so it is tried again after 2099-01-01T00:00:00.000Z without counting a try"'
+# UC-2's throttle set the machine's upload back-off (DS-673), so inside it no upload is tried, UC-1's included.
 : > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-674 AC3 a throttled upload is not tried again before its retry_after, nor is any other inside the back-off" \
+  '! grep -q "^792 " "$T/uploads" && ! grep -q "^791 " "$T/uploads" && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-[12]: DRAFT"'
+# The back-off ends: the queue's and UC-2's retry_after both lie in the past.
+rm -f "$T/upload-throttle-792"; : > "$T/upload-fills"
+node -e 'const f = process.argv[1]; const q = JSON.parse(require("fs").readFileSync(f, "utf8")); q.backoff.until = "2020-01-01T00:00:00.000Z"; require("fs").writeFileSync(f, JSON.stringify(q))' "$T/desk/upload-queue.json"
+q set UC-2 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x","throttled":"2020-01-01T00:00:00.000Z"}'
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-fills" "$T/upload-fillcrash-791"
 check "DS-674 AC1 after a second crash that filled a cell, the next pass tries the upload again" \
   'grep -qx "791 $T/state-s/images/UC-1/" "$T/uploads" && [ "$(field UC-1 upload_crash.tries)" = 1 ] && [ "$(field UC-1 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-1: DRAFT"'
-check "DS-674 AC3 a throttled upload is not tried again before its retry_after" \
-  '! grep -q "^792 " "$T/uploads" && [ "$(field UC-2 undraft.call)" = "\"wait\"" ] && ! echo "$out" | grep -q "UC-2: DRAFT"'
-rm -f "$T/upload-fillcrash-791" "$T/upload-throttle-792"; : > "$T/upload-fills"
-q set UC-2 'upload_crash={"pr":792,"dir":"'"$T/state-s/images/UC-2/"'","tries":1,"log":"x","throttled":"2020-01-01T00:00:00.000Z"}'
-: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-fills"
 check "DS-674 AC3 once its retry_after has passed, the throttled upload is tried again" \
   'grep -qx "792 $T/state-s/images/UC-2/" "$T/uploads" && [ "$(field UC-2 upload_crash)" = null ] && [ "$(field UC-2 images_uploaded)" = true ]'
 

@@ -2,7 +2,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
-import { runUpload, tagsPath, fileSha, altOf, batchesOf, linkIn, BATCH_SIZE, EXIT_THROTTLED, THROTTLE_MS } from '../desk/bin/upload-batches.mjs';
+import { runUpload, tagsPath, fileSha, altOf, batchesOf, linkIn, BATCH_SIZE, EXIT_THROTTLED, EXIT_PACED, THROTTLE_MS } from '../desk/bin/upload-batches.mjs';
 import { swapCells, dragFiles } from '../desk/bin/evidence.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -220,6 +220,24 @@ const uploaded = (page) => page.batches.flat().map((p) => basename(p));
   try { await run(bad, { body: body(['a.png']), edits: 0 }, fakePage()); } catch (e) { msg = `${e.code} ${e.message}`; }
   t('an unreadable tags file stops the run rather than uploading again', msg.startsWith(`1 ${tagsPath(bad)} is not JSON`), true);
   t('nothing is left behind but the tags files', existsSync(`${tagsPath(bad)}.tmp`), false);
+}
+
+// ---- --max: a run uploads at most that many, and the next run carries on ------------------------
+{
+  const named = Array.from({ length: 10 }, (_, i) => `m-${i}.png`);
+  const dir = folder(named);
+  const pr = { body: body(named), edits: 0 };
+  const capped = (page, max) => runUpload({ dir, readBody: () => pr.body, writeBody: (b) => { pr.body = b; }, openPage: page.open, now, sleep, pollMs: 1000, stallMs: 180000, max });
+  const p1 = fakePage();
+  const r1 = await capped(p1, 6);
+  t('max: a run uploads only that many', uploaded(p1).length, 6);
+  t('max: images left over end it paced (exit 8)', r1.code, EXIT_PACED);
+  t('max: the paced line says how many wait', r1.lines[0], 'paced: 6 image(s) uploaded, the most this run may upload; 4 more wait for the next run, and their cells are left');
+  t('max: the cells of what it uploaded are filled', dragFiles(pr.body).length, 4);
+  const p2 = fakePage();
+  const r2 = await capped(p2, 6);
+  t('max: the next run uploads only the rest', uploaded(p2).sort().join(','), named.slice(6).join(','));
+  t('max: with nothing left over it ends as before', `${r2.code} ${r2.lines[0]}`, '0 done: 10 image(s) in the body, 0 placeholder(s) left');
 }
 
 rmSync(ROOT, { recursive: true, force: true });
