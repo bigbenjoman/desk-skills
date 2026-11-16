@@ -91,6 +91,16 @@ out=$(node "$T/bin/installed.mjs" record "$T/repo" 2>&1); rc=$?
 check "AC4: a directory that is not a checkout replaces the commit with a version of its own, and says so" '[ $rc -eq 0 ] && grep -q "^unversioned-.* (not a git checkout)$" <<< "$out" && ! grep -q "$head_sha" "$T/desk/installed.json" && grep -q "\"commit\": \"unversioned-" "$T/desk/installed.json"'
 check "AC4: so what started at the commit before it reads as old code" 'node --input-type=module -e "import { oldCode } from \"$T/bin/installed.mjs\"; process.exit(oldCode(\"$head_sha\") ? 0 : 1)"'
 node "$T/bin/installed.mjs" record "$G" >/dev/null
+check "DS-760: a clean checkout records dirty false" 'grep -q "\"dirty\": false" "$T/desk/installed.json"'
+mkdir -p "$G/.playwright-mcp"; echo x > "$G/.playwright-mcp/log"; echo x > "$G/scratch.txt"
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1)
+check "DS-760 AC1: a checkout whose only changes are untracked files records dirty false" '[ "$out" = "$head_sha" ] && grep -q "\"dirty\": false" "$T/desk/installed.json"'
+echo one > "$G/tracked.txt"; gc0(){ git -C "$G" -c user.name=t -c user.email=t@t "$@"; }
+gc0 add tracked.txt; gc0 commit -q -m two; head_sha="$(git -C "$G" rev-parse HEAD)"; echo two > "$G/tracked.txt"
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1)
+check "DS-760 AC2: a checkout with a modified tracked file records dirty true" '[ "$out" = "$head_sha (with uncommitted changes)" ] && grep -q "\"dirty\": true" "$T/desk/installed.json"'
+git -C "$G" checkout -q -- tracked.txt
+node "$T/bin/installed.mjs" record "$G" >/dev/null
 
 # ---- AC6: nothing running ------------------------------------------------------------------------
 out=$(restart); rc=$?
