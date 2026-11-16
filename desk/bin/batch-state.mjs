@@ -182,7 +182,7 @@ const DESIGN_PARK_PREFIX = 'design not snapshotted: ';
 export function designPark(r) {
   const urls = unreadCanvases(r);
   return urls.length
-    ? `${DESIGN_PARK_PREFIX}${urls.join(', ')}:snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
+    ? `${DESIGN_PARK_PREFIX}${urls.join(', ')}: snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
     : null;
 }
 
