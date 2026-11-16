@@ -1015,6 +1015,8 @@ chmod +x "$T/stub/desk-jira"
 export JIRA_CALLS="$T/jira-calls"; : > "$JIRA_CALLS"
 for k in T-50 T-51 T-52 T-53 T-54; do q add $k; done
 q set T-52 state=done; q set T-50 state=triaged; q set T-51 state=triaged; q set T-53 state=triaged; q set T-54 state=triaged
+# Their blocker links count as read, so only the epic lookup reaches Jira here.
+for k in T-50 T-51 T-53 T-54; do q set $k outside_blockers_read=2099-01-01T00:00:00.000Z; done
 TR="$DESK_AUTOPILOT_STATE/triage"; mkdir -p "$TR"
 printf '{"ticket":"T-50","lane":"A","size":"S"}' > "$TR/T-50.json"
 printf '{"ticket":"T-51","lane":"A"}' > "$TR/T-51.json"
@@ -1274,12 +1276,13 @@ printf '%s\n' '{"epic":null,"blockers":[{"key":"X-9","category":"new"},{"key":"J
 printf '%s\n' '{"epic":null,"blockers":[]}' > "$T/state-j/triage/J-2.json"
 blocked indeterminate
 printf '%s\n' '{"fields":{"assignee":null}}' > "$T/jira/X-9.json"
+printf '%s\n' '{"fields":{"issuelinks":[]}}' > "$T/jira/J-2.json"
 : > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC1 a draft PR records isDraft, reviewDecision and mergeable as GitHub reports them" \
   '[ "$(field J-4 pr_status | jq -c "[.isDraft, .reviewDecision, .mergeable]")" = "[true,\"REVIEW_REQUIRED\",\"MERGEABLE\"]" ]'
 check "DS-221 AC2 (DS-599) an open blocker outside the batch is recorded with its status category and assignee, read again from Jira; one inside the batch is not" \
-  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\",\"assignee\":null}]" ] && [ "$(cat "$T/jira-calls")" = "$(printf "get J-1 --json\nget X-9 --json\nget J-2 --json")" ]'
-check "DS-221 a ticket with no outside blockers records none and is not read from Jira" '[ "$(field J-2 outside_blockers)" = "[]" ]'
+  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\",\"assignee\":null}]" ] && [ "$(cat "$T/jira-calls")" = "$(printf "get J-1 --json\nget X-9 --json\nget J-2 --json\nget J-2 --json")" ] || { echo "     calls: $(tr "\n" "," < "$T/jira-calls")"; false; }'
+check "DS-221 a ticket with no outside blockers records none" '[ "$(field J-2 outside_blockers)" = "[]" ]'
 check "DS-221 AC4 a pass a session ran names session" '[ "$(pass_rec by)" = "\"session\"" ] && [ "$(pass_rec errors)" = 0 ]'
 STATUS_AT=$(field J-4 pr_status.at); SESSION_AT=$(pass_rec at)
 check "DS-219 a pass a session ran records its time as the last session pass" '[ "$(pass_rec session_at)" = "$SESSION_AT" ]'
@@ -1292,12 +1295,12 @@ rm -f "$T/gh-down"
 blocked "done"; touch "$T/jira-down"; q set J-1 outside_blockers_read=null
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC8 a Jira read that fails keeps the outside blockers as they were, and says so" \
-  '[ "$(field J-1 outside_blockers | jq -c "[.[].key]")" = "[\"X-9\"]" ] && echo "$out" | grep -q "outside blockers: not read, kept as they were"'
+  '[ "$(field J-1 outside_blockers | jq -c "[.[].key]")" = "[\"X-9\"]" ] && echo "$out" | grep -q "blocker links: J-1 not read, holds kept as they were"'
 rm -f "$T/jira-down"; q set J-1 outside_blockers_read=null
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC3 a blocker now Done is no longer among the outside blockers" '[ "$(field J-1 outside_blockers)" = "[]" ]'
 : > "$T/jira-calls"; q set J-1 outside_blockers_read=null; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-221 a ticket left with no outside blockers is not read from Jira again" '[ ! -s "$T/jira-calls" ]'
+check "DS-656 a queued ticket left with no outside blockers is still read from Jira, for links added since" 'grep -qx "get J-1 --json" "$T/jira-calls"'
 # AC5 and AC6: a ticket that could spawn, held by memory, then spawned.
 q add J-5; q set J-5 state=triaged
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
