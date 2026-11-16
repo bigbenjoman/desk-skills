@@ -47,6 +47,19 @@ export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key,
   `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
   ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
 
+// A parked ticket's own PR, when one merging leaves only its after-merge steps: the PR it opened, else
+// its draft, never one that merged before a requeue for more work (merged_at), and none once a worker
+// was sent back on it already (merged_tail), so a park of that worker's stays the person's.
+export function mergedTailPr(t) {
+  const earlier = t.merged_at ? Number(t.result?.pr) : NaN;
+  const pr = [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier);
+  return pr == null || Number(t.merged_tail) === Number(pr) ? null : Number(pr);
+}
+// The `queue.mjs set` arguments, written after the requeue, that send it back for those steps alone:
+// the briefing says so (pass.mjs writeBrief).
+export const mergedTailSet = (t, pr, mergedAt = null) => ['set', t.key, `merged_tail=${pr}`,
+  `cleared=${JSON.stringify({ what: `PR #${pr} merged${mergedAt ? ` at ${String(mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}, and ${t.key} is not done in Jira yet`, tail: { pr, merged_at: mergedAt } })}`];
+
 // Why a worktree holds work origin lacks, read with `git` (its arguments -> stdout, or null when the read
 // fails): uncommitted tracked changes, or commits its branch has not pushed. -> the reason; null when it
 // has neither; undefined when git cannot say. pass.mjs holds a worktree on it, and needs-you.mjs list

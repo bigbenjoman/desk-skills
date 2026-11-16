@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1289,7 +1289,7 @@ const readOrThrow = (what, cmd, args) => {
   return r.out;
 };
 const clearsRead = {
-  pr: (n, repo = GH_REPO) => cached(`pr:${repo}#${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state,isDraft']))),
+  pr: (n, repo = GH_REPO) => cached(`pr:${repo}#${n}`, () => JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', repo, '--json', 'state,isDraft,mergedAt']))),
   // The latest run of each check, as the gate reads them (gate.mjs latestPerCheck).
   checks: (n) => cached(`checks:${n}`, () => {
     const v = JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefOid,statusCheckRollup']));
@@ -1601,8 +1601,34 @@ function takeRecommended(t) {
   report.recovered.push(`${t.key}: took the recommended option on its ${d.decision.category} call ("${d.decision.chose}"), answered it and requeued; logged as a decision`);
   return true;
 }
+// A tracker ticket parked with its own PR merged and the ticket not done in Jira: only the steps after
+// a merge are left, so it goes back to a worker briefed to run those alone, before any check below can
+// drop its branch. A park waiting on issue links has its tail done already. A read that fails leaves it.
+function tailAfterMerge(t) {
+  const pr = mergedTailPr(t);
+  const k = E.ticketKind(t.key);
+  if (pr == null || !k.ok || k.kind !== 'tracker' || t.park?.clears_when?.kind === LINKS_MADE) return false;
+  let v, status;
+  try { v = clearsRead.pr(pr); if (v?.state === 'MERGED') status = clearsRead.ticket(t.key); } catch (e) {
+    report.recovered.push(`${t.key}: whether its PR #${pr} merged, or its ticket is done, could not be read (${e.message}): left parked`);
+    return false;
+  }
+  if (v?.state !== 'MERGED' || status === 'done') return false;
+  // A handoff stage would start it at that stage's work rather than the tail.
+  if (t.handoff_stage != null) q('set', t.key, 'handoff_stage=null');
+  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  if (!rq.ok) {
+    q('set', t.key, `merged_tail=${pr}`, ...(t.handoff_stage != null ? [`handoff_stage=${t.handoff_stage}`] : []));
+    report.recovered.push(`${t.key}: its PR #${pr} merged and it is not done in Jira, but the requeue for its after-merge steps was refused (${lastLine(rq.out)}): left parked`);
+    return true;
+  }
+  q(...mergedTailSet(t, pr, v.mergedAt ?? null));
+  report.recovered.push(`${t.key}: its PR #${pr} merged while it was parked, and it is not done in Jira: requeued for its after-merge steps only, with no push`);
+  return true;
+}
 for (const t of DRY ? [] : Object.values(queue().tickets)) {
   if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t) || leftPark(t) || t.park?.claim?.session || needsSession(t) || putOff(t)) continue;
+  if (tailAfterMerge(t)) continue;
   if (t.branch && dropDuplicate(t)) continue;
   // Waiting on a recorded condition, or tried once already: the clears-when check or the person settles it.
   if (recorded(t.park?.clears_when) || t.park?.recovery) continue;
@@ -2632,6 +2658,14 @@ function reviewRun() {
 // answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
 // sibling notes: what it needs is what the session before it did, and paying for the notes again is
 // what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
+// A ticket requeued because its own PR merged while it was parked (tailAfterMerge): its code is on the
+// base, so its worker runs the after-merge steps and nothing that writes to git or GitHub.
+const tailBrief = (t) => `## Your PR has merged: run only the steps after the merge\n\n` +
+  `${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
+  `A pass found ${t.cleared.what}. Its code is on the base already, so this round does not push, rebase, merge any branch, open or edit a PR, or change code, ` +
+  'whatever the last round or its park left undone before the merge. ' +
+  `Run only the steps left after a merge: desk-ticket Stage 8 (the Jira comment, then the move to §4 Done state where config §3 jira-close-own-merged is yes, else to §4 Review state) and Stage 9, ` +
+  `then end with AUTOPILOT_DONE pr=${t.cleared.tail.pr} jira=<its status>. A step config §3 does not grant parks naming that step, as it would at Stage 8.\n`;
 function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null } = {}) {
   const notesFile = join(STATE, 'batch-notes.md');
   const notesHead = `${SIBLING_HEAD} in this batch have found\n\n`;
@@ -2664,7 +2698,8 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
     migrateFailed && `## Your database did not migrate\n\nSetup could not apply migrations to ${migrateFailed}, so it is empty or partial. The output is in ${join(wt, '.desk-migrate.log')}. ` +
       'Read it and run §4 Database migrate yourself before trusting anything that needs data; if it still fails, say so rather than reporting a data-dependent check as passed.\n',
     fixturesBrief(t.key, wt),
-    t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
+    t.cleared?.tail ? tailBrief(t)
+      : t.cleared?.what && `## What cleared your last park\n\n${t.prev_park?.question ? `The last round parked on: ${t.prev_park.question}\n` : ''}` +
       `A pass found it settled: ${t.cleared.what}. Carry on from that result, and do not ask for it again.\n`,
     leaseRefusedBrief(t),
     priorAnswers && `These questions were put to the user before you started. Their answers are binding — do not re-ask them.\n\n${priorAnswers}`,
