@@ -1637,7 +1637,9 @@ for (const t of DRY ? [] : Object.values(queue().tickets)) {
   if (t.state !== 'parked' || isHeld(t) || spinePark(t) || planPark(t) || leftPark(t) || t.park?.claim?.session || needsSession(t) || putOff(t)) continue;
   // null is a read that failed: left parked, so dropDuplicate never records it done unread.
   if (tailAfterMerge(t) !== false) continue;
-  if (t.branch && dropDuplicate(t)) continue;
+  // A ticket sent back for its tail already has its branch merged: its worker's park is the person's,
+  // never recorded done as a duplicate of its own PR.
+  if (t.branch && t.merged_tail == null && dropDuplicate(t)) continue;
   // Waiting on a recorded condition, or tried once already: the clears-when check or the person settles it.
   if (recorded(t.park?.clears_when) || t.park?.recovery) continue;
   if (finishPush(t)) continue;

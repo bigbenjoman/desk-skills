@@ -228,7 +228,7 @@ function shippedOf(r, t, reads) {
 // after-merge steps alone (batch-state mergedTailSteps). -> { pr, v }, or null.
 function tailOf(r, t, reads) {
   const pr = mergedTailPr(t);
-  if (pr == null || t.park?.clears_when?.kind === 'links-made' || linksPending(t) || !trackerTicket(r, t.key)) return null;
+  if (pr == null || linksPending(t) || !trackerTicket(r, t.key)) return null;
   const { v } = reads.pr(r, pr);
   if (v?.state !== 'MERGED') return null;
   const status = reads.ticket(r, t.key);

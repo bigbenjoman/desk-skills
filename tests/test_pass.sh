@@ -3991,6 +3991,7 @@ cat > "$T/stub/gh" <<'EOF'
 case "$*" in
   "pr view 701 "*|"pr view 703 "*|"pr view 704 "*|"pr view 705 "*) echo '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-12T09:01:00Z"}' ;;
   "pr view 702 "*) echo '{"state":"OPEN","isDraft":true,"mergedAt":null}' ;;
+  *"--state merged --search MT-1 in:title"*) echo '[{"number":701,"title":"fix(x): MT-1 add x","headRefName":"fix/MT-1"}]' ;;
   *"--state merged --search MT-5 in:title"*) echo '[{"number":705,"title":"fix(x): MT-5 add x","headRefName":"fix/MT-5"}]' ;;
   "pr list --repo "*" --state merged --search "*) echo '[{"number":701,"headRefName":"fix/MT-1","mergedAt":"2099-01-01T09:01:00Z"},{"number":704,"headRefName":"fix/MT-4","mergedAt":"2099-01-01T09:01:00Z"}]' ;;
   "pr list"*) echo '[]' ;;
@@ -4036,9 +4037,13 @@ check "DS-573 AC1 a park whose recorded condition holds, its PR merged and not d
 check "DS-573 a merged PR whose Jira read fails is left parked, its branch and worktree kept, not recorded done as a duplicate" \
   '[ "$(field MT-5 state)" = "\"parked\"" ] && [ "$(field MT-5 park.question)" = "\"MT-5: which fixture should win?\"" ] && [ "$(field MT-5 merged_tail)" = null ] && [ -e "$T/wt/MT-5" ] && git -C "$T/repo" rev-parse --verify -q refs/heads/fix/MT-5 >/dev/null && echo "$out" | grep -qF "MT-5: whether its PR #705 merged, or its ticket is done, could not be read" && ! echo "$out" | grep -qF "MT-5: its branch fix/MT-5 adds nothing"'
 # The tail worker parks in its turn: that park is the person's, never requeued again on the same PR.
+# Its branch adds nothing to main once squash-merged, and merged PR #701 names it: still never dropped.
+git -C "$T/repo" worktree add -q -B fix/MT-1 "$T/wt/MT-1-tail" main
+echo x > "$T/wt/MT-1-tail/x.txt"; git -C "$T/wt/MT-1-tail" add x.txt; git -C "$T/wt/MT-1-tail" commit -q -m "fix(x): MT-1 add x"
+q set MT-1 "worktree=$T/wt/MT-1-tail"
 q park MT-1 "MT-1: jira-close-own-merged is ask: may I move it to Done?"
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-573 a park of the tail worker's own stays parked for the person" \
-  '[ "$(field MT-1 state)" = "\"parked\"" ] && ! echo "$out" | grep -qF "MT-1: its PR #701 merged"'
+check "DS-573 a park of the tail worker's own stays parked for the person, its branch kept, not recorded done as a duplicate" \
+  '[ "$(field MT-1 state)" = "\"parked\"" ] && [ "$(field MT-1 park.question)" = "\"MT-1: jira-close-own-merged is ask: may I move it to Done?\"" ] && [ -e "$T/wt/MT-1-tail" ] && git -C "$T/repo" rev-parse --verify -q refs/heads/fix/MT-1 >/dev/null && ! echo "$out" | grep -qF "MT-1: its PR #701 merged" && ! echo "$out" | grep -qF "MT-1: its branch fix/MT-1 adds nothing"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
