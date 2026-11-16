@@ -76,8 +76,11 @@ chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
 all_done(){ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) { t.state = "done"; if (t.result?.pr != null) { t.merged_at ??= "2026-10-23T10:00:00Z"; t.pr_status = { pr: t.result.pr, state: "MERGED", merged_at: t.merged_at, checks: [] }; } } require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"; }
 
+# A signed-in browser profile, as the upload queue runs no upload without one.
+printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":%s}],"origins":[]}\n' "$(( $(date +%s) + 31536000 ))" > "$T/profile.github-session.json"
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
-  DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
+  DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test \
+  DESK_BROWSER_PROFILE="$T/profile"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
@@ -2249,6 +2252,22 @@ check "DS-429 AC3 a spent upload is not tried again" '! grep -q "^772 " "$T/uplo
 check "DS-429 a round that names its screenshots is uploaded though earlier tries were spent" \
   'grep -qx "774 $T/state-s/images/P-4/" "$T/uploads" && [ "$(field P-4 upload_crash)" = null ] && grep -q "^pr ready 774" "$T/gh-calls"'
 rm -f "$T/upload-fills" "$T/upload-busy-775"
+
+# ---- DS-675: the saved GitHub login expired: no upload is attempted and none goes to the person PR by
+# PR; once it is signed in, the next pass uploads what waited.
+signed="$(cat "$T/profile.github-session.json")"
+printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":1}],"origins":[]}\n' > "$T/profile.github-session.json"
+q add P-6; q set P-6 state=running session_id=gone lane=A branch=fix/P-6 result.pr=776; frx 776 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 776 '_drag p-6.png_'
+mkdir -p "$T/state-s/images/P-6"; : > "$T/state-s/images/P-6/p-6.png"
+say "AUTOPILOT_IMAGES: $T/state-s/images/P-6/" "AUTOPILOT_DONE: pr=776 jira=Done" > "$T/state-s/logs/P-6.log"
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-675 AC1 an expired login: the pass attempts no upload and spends no try" '! grep -q "^776 " "$T/uploads" && [ "$(field P-6 upload_crash)" = null ]'
+check "DS-675 AC1 it waits in the queue naming the sign-in, and is not put to the person" \
+  'echo "$out" | grep -qF "P-6 images → #776 wait in the machine'"'"'s upload queue: the GitHub login in $T/profile.github-session.json expired" && echo "$out" | grep -qF "until it is signed in: node ~/.claude/desk/bin/github-signin.mjs" && ! echo "$out" | grep -q "P-6: DRAFT"'
+printf '%s\n' "$signed" > "$T/profile.github-session.json"
+: > "$T/uploads"; : > "$T/upload-fills"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-675 AC2 signed in again, the next pass uploads what waited" 'grep -qx "776 $T/state-s/images/P-6/" "$T/uploads" && [ "$(field P-6 images_uploaded)" = true ]'
+rm -f "$T/upload-fills"
 
 # ---- DS-674: a crash that filled cells spends no try, and a throttled stop spends none and waits for
 # its retry_after. UC-1: one filled crash already recorded, three cells left, and each retry fills one
