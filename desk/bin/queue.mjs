@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -387,7 +387,9 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
       other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
     }
   }
-  if (holdCollisions) for (const k of collides) if (!holds.includes(k)) holds.push(k);
+  // A ticket already waiting behind this one is not held against: each would wait on the other.
+  const behind = heldBehindOf(q, key);
+  if (holdCollisions) for (const k of collides) if (!holds.includes(k) && !behind.has(k)) holds.push(k);
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
   // A hold would let a release send a ticket parked for its own reason to a worker (hold, above). A
   // design park keeps its holds in held_by instead, unreleased, and requeue holds it behind the open
