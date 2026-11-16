@@ -3210,7 +3210,8 @@ for (const t of Object.values(queue().tickets)) {
 
 // ---- outside blockers ----------------------------------------------------
 // A ticket's open "is blocked by" links to tickets outside this queue, from its triage record's
-// `blockers`, kept on the ticket as outside_blockers [{key, category}] for desk-q. Only a ticket that
+// `blockers`, kept on the ticket as outside_blockers [{key, category, assignee?}] for desk-q and
+// needs-you, `assignee` as ticket-facts.mjs read it (absent when it could not be). Only a ticket that
 // has some is read from Jira again (ticket-facts.mjs --blockers), at most once every INTAKE_EVERY_MS,
 // so this reads Jira no more often than intake does. A read that fails leaves the record, and so the
 // recorded blockers, as they were. A ticket waiting to merge on the person's steps (merge_after) is
@@ -3221,7 +3222,8 @@ const qB = queue();
 const ownEpicSplit = (rec) => splitOwnEpic(rec?.blockers, rec?.epic?.key, qB.epic);
 const ownEpicOf = (rec) => [...new Set([...(Array.isArray(rec?.own_epic_blockers) ? rec.own_epic_blockers : []), ...ownEpicSplit(rec).own])];
 const outsideOf = (rec) => (Array.isArray(rec?.blockers)
-  ? ownEpicSplit(rec).blockers.filter((b) => !(b.key in qB.tickets) && b.category !== 'done').map((b) => ({ key: b.key, category: b.category }))
+  ? ownEpicSplit(rec).blockers.filter((b) => !(b.key in qB.tickets) && b.category !== 'done')
+    .map((b) => ({ key: b.key, category: b.category, ...('assignee' in b ? { assignee: b.assignee } : {}) }))
   : null);
 const waitsOnStep = (t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
 const onTracker = Object.values(qB.tickets).filter((t) => {
