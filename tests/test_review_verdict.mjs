@@ -7,8 +7,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, tally, isClean, carriedSection, acceptedSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
+import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
 import { reviewGaps, reviewFix, personGapsCall } from '../desk/bin/fix-tries.mjs'
+import { parseVerdict as undraftVerdict, verdictAt, postMergeIn, postMergeSteps } from '../desk/bin/undraft.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -319,6 +320,53 @@ const accOut = spawnSync('node', [SCRIPT, '--accepted', join(T, 'acc.json')], { 
 t('DS-317 CLI --accepted prints the section', `${accOut.status} ${accOut.stdout.startsWith('### Accepted gaps\n')}`, '0 true')
 const noAcc = spawnSync('node', [SCRIPT, '--accepted', join(T, 'ok.json')], { encoding: 'utf8' })
 t('DS-317 CLI --accepted with nothing accepted prints nothing', `${noAcc.status} ${JSON.stringify(noAcc.stdout)}`, '0 ""')
+
+// ---- DS-570: a criterion only a live system can check is left for after the merge, out of gaps, and
+// the posted body carries it for the pass to keep as a follow-on step once the PR merges.
+const pm = (o = {}) => ({ gap: 'AC7', needs: 'production', step: 'fill in the switch date at the production relay run', ...o })
+const later = base({ gaps: 0, post_merge: [pm(), pm({ gap: 'AC8', needs: 'staging', step: 'place a test call on staging -> it rings' })] })
+const laterLines = render(later).split('\n')
+t('DS-570 AC1 only post-merge criteria open: the verdict reads clean', reads(later), true)
+t('DS-570 AC1 the verdict line is the one every gate reads, gaps=0', marker(later), marker(base()))
+t('DS-570 AC1 the heading names them', heading(later).startsWith('**desk-review, round 1: No P0, P1 or P2 findings; criteria left for after the merge: 2 at `0123456`**'), true)
+t('DS-570 AC1 the post-merge line follows the heading, before the method line', laterLines.slice(3, 5).map((l) => l.split(' ')[1]).join(' '), 'desk-review:post-merge desk-review:method')
+t('DS-570 the post-merge line escapes ">" so no step closes the comment', laterLines[3].endsWith(' -->') && !laterLines[3].slice(0, -3).includes('>'), true)
+const laterBody = [render(later), '', '### Requirement gaps', 'None', '', postMergeSection(later)].join('\n')
+const laterReview = { pr: 7, head: SHA, verdict: undraftVerdict(laterBody), body: laterBody, comments: [] }
+t('DS-570 AC1 the undraft step reads it clean at the head', verdictAt(laterReview.verdict, SHA, CLEAN).clean, true)
+t('DS-570 AC1 no fix try for it', reviewFix({ key: 'X-1' }, laterReview, { judgement: 'yes' }), null)
+t('DS-570 AC1 and no park for the person', personGapsCall(laterReview, { judgement: 'yes' }), null)
+t('DS-570 AC1 the body\'s after-the-merge section is not read as open gaps', JSON.stringify(reviewGaps(laterBody)), '[]')
+const pmSec = postMergeSection(later).split('\n')
+t('DS-570 the body section: its heading names no gaps', pmSec[0], '### After the merge')
+t('DS-570 the body section names each criterion, its need and its step', pmSec[2], '- AC7 (needs production): fill in the switch date at the production relay run')
+t('DS-570 the section is empty when none is left for after the merge', postMergeSection(base()), '')
+t('DS-570 no post-merge line when none is left for after the merge', render(base({ post_merge: [] })).includes('desk-review:post-merge'), false)
+t('DS-570 AC2 the pass reads back each criterion from the posted body', JSON.stringify(postMergeIn(laterBody)), JSON.stringify(later.post_merge))
+t('DS-570 AC2 each one is a follow-on step naming no §3 row', JSON.stringify(postMergeSteps(laterBody)[1]), JSON.stringify({ step: 'Check after the merge: AC8 (needs staging): place a test call on staging -> it rings', row: null }))
+t('DS-570 AC2 a body with no post-merge line keeps none', JSON.stringify(postMergeSteps(render(base()))), '[]')
+t('DS-570 AC2 a post-merge line whose count disagrees with its items keeps none', postMergeIn(laterBody.replace('post-merge v=1 gaps=2', 'post-merge v=1 gaps=3')).length, 0)
+const pmAndGap = base({ gaps: 1, post_merge: [pm()] })
+t('DS-570 a post-merge criterion beside an open gap: not clean', reads(pmAndGap), false)
+t('DS-570 a post-merge criterion never hides a P1', reads(base({ post_merge: [pm()], findings: [f()] })), false)
+// AC3: a criterion a test, a local run or a preview can check is no post-merge criterion.
+for (const needs of ['unit', 'integration', 'local', 'preview', undefined]) {
+  t(`DS-570 AC3 refuses a post-merge criterion that needs ${needs ?? 'nothing'}`, refused(base({ post_merge: [pm({ needs })] })).includes('needs must be one of production, staging, deployed, device, third-party; a criterion a test, a local run or a preview can check before the merge is a gap'), true)
+}
+t('DS-570 refuses post_merge that is not a list', refused(base({ post_merge: pm() })).startsWith('post_merge must list each criterion'), true)
+t('DS-570 refuses a post-merge criterion naming no criterion', refused(base({ post_merge: [pm({ gap: ' ' })] })).startsWith('post_merge[0].gap names the criterion'), true)
+t('DS-570 refuses a post-merge criterion listed twice', refused(base({ post_merge: [pm(), pm()] })), 'post-merge criterion AC7 is listed twice')
+t('DS-570 refuses a criterion both accepted and left for after the merge', refused(base({ accepted: [acc({ gap: 'AC7' })], post_merge: [pm()] })).includes('is also accepted'), true)
+t('DS-570 refuses a post-merge criterion with no step', refused(base({ post_merge: [pm({ step: '' })] })).includes('step says on one line'), true)
+t('DS-570 refuses a step over two lines', refused(base({ post_merge: [pm({ step: 'a\nb' })] })).includes('step says on one line'), true)
+t('DS-570 refuses an unknown post-merge field', refused(base({ post_merge: [pm({ high_risk: false })] })), 'unknown field post_merge[0].high_risk')
+writeFileSync(join(T, 'pm.json'), JSON.stringify(later))
+const pmCli = spawnSync('node', [SCRIPT, join(T, 'pm.json')], { encoding: 'utf8' })
+t('DS-570 CLI with post-merge criteria prints five lines', `${pmCli.status} ${pmCli.stdout.trim().split('\n').length}`, '0 5')
+const pmOut = spawnSync('node', [SCRIPT, '--post-merge', join(T, 'pm.json')], { encoding: 'utf8' })
+t('DS-570 CLI --post-merge prints the section', `${pmOut.status} ${pmOut.stdout.startsWith('### After the merge\n')}`, '0 true')
+const noPm = spawnSync('node', [SCRIPT, '--post-merge', join(T, 'ok.json')], { encoding: 'utf8' })
+t('DS-570 CLI --post-merge with none prints nothing', `${noPm.status} ${JSON.stringify(noPm.stdout)}`, '0 ""')
 
 // ---- DS-596: a requirement gap's results file through the CLI, then as the pass reads the posted
 // body. A gap a worker's own logged decision caused is code: untagged, it earns a fix try. One only

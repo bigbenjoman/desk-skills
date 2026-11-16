@@ -223,6 +223,25 @@ export function restsOn(body) {
   } catch { return null; }
 }
 
+// The criteria a desk-review leaves for after the merge, as verdict.mjs records them on a
+// line of their own after the accepted line: { gap, needs, step } each, which verdict.mjs checked
+// before posting. [] when the body records none, or not in that form.
+const POST_MERGE = /^<!-- desk-review:post-merge v=1 gaps=(\d+) items=(\[.*\]) -->$/m;
+const oneLine = (s) => typeof s === 'string' && !!s.trim() && !/[\r\n]/.test(s);
+export function postMergeIn(body) {
+  const m = POST_MERGE.exec(String(body ?? ''));
+  if (!m) return [];
+  try {
+    const items = JSON.parse(m[2]);
+    const ok = Array.isArray(items) && items.length === Number(m[1]) && items.every((p) => oneLine(p?.gap) && oneLine(p.needs) && oneLine(p.step));
+    return ok ? items.map((p) => ({ gap: p.gap.trim(), needs: p.needs.trim(), step: p.step.trim() })) : [];
+  } catch { return []; }
+}
+// Those criteria as the follow-on steps a merged ticket keeps for the person (pass.mjs follow_on,
+// needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system.
+const POST_MERGE_STEP ='Check after the merge: ';
+export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: `${POST_MERGE_STEP}${p.gap} (needs ${p.needs}): ${p.step}`, row: null }));
+
 // Whether a path is a dependency manifest, a lockfile or repo configuration, which every review rests
 // on whatever its seats read: a change to one can change what the code does without touching it.
 // test-scope.mjs owns lockfiles and test or build config, any root file but documentation included;
