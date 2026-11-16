@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, triagePark,HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1774,14 +1774,17 @@ for (const t of Object.values(queue().tickets)) {
 // ---- blocker links -------------------------------------------------------
 // Reads `keys`' blockers into their triage records again (ticket-facts.mjs --blockers) and stamps each
 // outside_blockers_read, so no read in a pass asks Jira for one again within INTAKE_EVERY_MS.
-// -> { unread: the keys whose record was left as it was, why }.
+// -> { unread: the keys with no "blocked by" line back, why }. A key counts as read only on its own
+// line: a run cut off part-way (its timeout) has written the keys before it and printed nothing for
+// the rest.
 const readBlockers = (keys) => {
   const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--blockers', ...keys], { timeout: 120_000 });
-  const missed = r.out.split('\n').filter((l) => / blockers NOT READ: /.test(l));
+  const lines = r.out.split('\n');
+  const missed = lines.filter((l) => / blockers NOT READ: /.test(l));
   const readAt = new Date().toISOString();
   for (const key of keys) q('set', key, `outside_blockers_read=${readAt}`);
-  const unread = missed.length ? keys.filter((k) => missed.some((l) => l.startsWith(`[facts] ${k} `))) : r.ok ? [] : keys;
-  return { unread, why: missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ') || r.out.split('\n').pop() };
+  const unread = keys.filter((k) => !lines.some((l) => l.startsWith(`[facts] ${k}  blocked by `)));
+  return { unread, why: missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ') || lines.pop() };
 };
 const blockerKeys = (rec) => (Array.isArray(rec?.blockers) ? rec.blockers.map((b) => b?.key).filter(Boolean) : []);
 // Holds are set at admit, but a Blocks link can be added in Jira after it, so every ticket triaged and
@@ -1792,6 +1795,11 @@ const blockerKeys = (rec) => (Array.isArray(rec?.blockers) ? rec.blockers.map((b
 // said, never held. Never held: a blocker already waiting behind the ticket (a cycle), or one failed
 // here, which nothing would release. A link removed leaves an in-batch hold, said, as held_by does not
 // record whether it came from a link, a shared file or the spine. Triage parks are read elsewhere.
+// What a read adds or removes is measured against links_seen, the links this block last acted on for
+// the ticket, never against the triage record: a read cut off part-way, or the outside blockers read
+// below, rewrites the record without acting on it, and a link already in the record would never be
+// held. With no links_seen yet, a ticket not started counts its holds as seen (and its record as it
+// stood for a link removed), and a started one its record as it stood.
 const linkLines = [];
 {
   const qL = queue();
@@ -1805,33 +1813,25 @@ const linkLines = [];
   });
   if (due.length && DRY) linkLines.push(`blocker links (dry run): would read ${due.map((t) => t.key).join(', ')} from Jira`);
   else if (due.length) {
-    const before = new Map(due.map((t) => [t.key, blockerKeys(triageRec(t.key))]));
+    const record = new Map(due.map((t) => [t.key, blockerKeys(triageRec(t.key))]));
+    const seen = (t) => (Array.isArray(t.links_seen) ? t.links_seen : null);
     const { unread, why } = readBlockers(due.map((t) => t.key));
     if (unread.length) linkLines.push(`blocker links: ${unread.join(', ')} not read, holds kept as they were and tried again in ${INTAKE_EVERY_MS / 60_000} minutes: ${why}`);
     const view = queue();
-    for (const { key } of due) {
-      if (unread.includes(key)) continue;
-      const rec = triageRec(key);
-      const now = blockerKeys(rec);
-      const added = now.filter((k) => !before.get(key).includes(k));
-      const t = view.tickets[key];
-      if (!t) continue;
+    // Acts on ticket `t`'s links `now`, read from its triage record `rec`.
+    const act = (key, t, rec, now) => {
       const by = keysOf(t.held_by);
+      const was = seen(t) ?? (notStarted(t) ? [...by, ...keysOf(t.held_outside), ...keysOf(t.merge_after)] : record.get(key));
+      const added = now.filter((k) => !was.includes(k));
       if (!notStarted(t)) {
         if (added.length) linkLines.push(`blocker link: ${key}: linked as blocked by ${added.join(', ')} after its worker started: no hold added`);
-        continue;
+        return;
       }
-      const gone = before.get(key).filter((k) => !now.includes(k) && by.includes(k) && view.tickets[k]);
+      const gone = (seen(t) ?? record.get(key)).filter((k) => !now.includes(k) && by.includes(k) && view.tickets[k]);
       if (gone.length) linkLines.push(`blocker link: ${key}: no longer linked as blocked by ${gone.join(', ')}, and still held behind ${gone.length === 1 ? 'it' : 'them'}, as the hold does not record whether it came from that link, a shared file or the spine: release it by hand if nothing else needs ${gone.length === 1 ? 'it' : 'them'}`);
-      if (!added.length) continue;
+      if (!added.length) return;
       const h = holdsFor(rec, view.tickets, DEFAULT_BRANCH);
-      const behind = heldBehindOf(view, key);
-      const holds = []; const cycles = [];
-      for (const k of new Set([...h.held, ...h.outside])) {
-        const o = view.tickets[k];
-        if (!added.includes(k) || k === key || by.includes(k) || (o && (o.merged_at || childDone(o)))) continue;
-        (behind.has(k) ? cycles : holds).push(k);
-      }
+      const { holds, cycles, outside } = holdsAmong(key, [...h.held, ...h.outside].filter((k) => added.includes(k) && !by.includes(k)), view.tickets, heldBehindOf(view, key));
       const failed = h.failed.filter((k) => added.includes(k));
       const steps = h.merge.filter((k) => added.includes(k) && !keysOf(t.merge_after).includes(k));
       if (cycles.length) linkLines.push(`blocker link: ${key}: linked as blocked by ${cycles.join(', ')}, which ${cycles.length === 1 ? 'waits' : 'wait'} behind it: not held, as that is a cycle: remove one of the links`);
@@ -1840,14 +1840,22 @@ const linkLines = [];
         q('set', key, `merge_after=${[...keysOf(t.merge_after), ...steps].join('|')}`);
         linkLines.push(`blocker link: ${key}: newly linked as blocked by ${steps.join(', ')}, your step: built as before, merges only once ${steps.length === 1 ? 'it is' : 'they are'} Done`);
       }
-      if (!holds.length) continue;
+      if (!holds.length) return;
       const all = [...by, ...holds];
-      const outside = holds.filter((k) => !view.tickets[k]);
       const question = `${HELD_PREFIX}: blocked by ${all.join(', ')} — starts once their PRs merge`;
       q('park', key, question);
       q('set', key, `held_by=${all.join('|')}`, ...(outside.length ? [`held_outside=${[...new Set([...keysOf(t.held_outside), ...outside])].join('|')}`] : []), ...(dateHeld(t) ? ['held_label=null'] : []));
       Object.assign(t, { state: 'parked', park: { question }, held_by: all.join('|') });
       linkLines.push(`blocker link: ${key}: newly linked as blocked by ${holds.join(', ')}${outside.length ? ` (${outside.join(', ')} in no batch, lifted once Done and on ${DEFAULT_BRANCH})` : ''}: HELD behind ${all.join(', ')}`);
+    };
+    for (const { key } of due) {
+      const t = view.tickets[key];
+      if (unread.includes(key) || !t) continue;
+      const rec = triageRec(key);
+      const now = blockerKeys(rec);
+      act(key, t, rec, now);
+      // Written once acted on, so a pass that stops short of this reads the same links as new again.
+      if (JSON.stringify(seen(t)) !== JSON.stringify(now)) q('set', key, `links_seen=${JSON.stringify(now)}`);
     }
   }
 }

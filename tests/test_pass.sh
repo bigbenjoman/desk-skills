@@ -1507,6 +1507,12 @@ out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-656 AC6 a link removed from an in-batch hold keeps the hold and says the link went" \
   '[ "$(field J-67 held_by)" = "\"J-61\"" ] && [ "$(field J-67 state)" = "\"parked\"" ] && echo "$out" | grep -q "blocker link: J-67: no longer linked as blocked by J-61, and still held behind it"'
 q drop J-67
+q add J-69; q set J-69 state=triaged; links J-69 J-61 new Open
+printf '%s\n' '{"epic":null,"blockers":[{"key":"J-61","category":"new"}]}' > "$T/state-j/triage/J-69.json"
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 a link a cut-off read already wrote into the triage record still holds the queued ticket, and is recorded as seen" \
+  '[ "$(field J-69 held_by)" = "\"J-61\"" ] && [ "$(field J-69 links_seen | jq -c .)" = "[\"J-61\"]" ] && echo "$out" | grep -q "blocker link: J-69: newly linked as blocked by J-61: HELD behind J-61"'
+q drop J-69
 q add J-68; q set J-68 state=triaged; no_links J-68; links J-68 J-61 new Open; touch "$T/jira-down"
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-656 AC7 a blockers read that fails leaves held_by as it was and says when it is tried again" \
