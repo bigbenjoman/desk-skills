@@ -3650,15 +3650,16 @@ for (const t of Object.values(qNow.tickets)) {
   }
   // A criterion its review left for after the merge is a follow-on step from now on, which needs-you
   // lists: the person checks it once, on the live system, rather than before the merge. Kept apart from
-  // merged_at, which the merge driver, needs-you and a hand-shipped ticket may have recorded first.
+  // merged_at, which the merge driver, needs-you and a hand-shipped ticket may have recorded first. An
+  // item the person already marked run (an earlier PR's, on a requeued ticket) is reopened with only
+  // these steps. One write, so a refused one leaves the criteria owed to the next pass.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
-    const have = t.follow_on ?? [];
+    const have = t.follow_on_done ? [] : t.follow_on ?? [];
     const later = s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null })).filter((x) => !have.some((h) => h?.step === x.step));
-    if (later.length) {
-      q('set', t.key, `follow_on=${JSON.stringify([...have, ...later])}`);
+    const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
+    if (q('set', t.key, ...steps, `post_merge_read=${n}`) && later.length) {
       merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
     }
-    q('set', t.key, `post_merge_read=${n}`);
   }
 }
 for (const m of merges) out.push(`merge recorded: ${m}`);
