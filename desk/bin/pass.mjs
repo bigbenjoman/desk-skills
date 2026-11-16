@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, blockerHold, personStep } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1680,12 +1680,14 @@ const dateLines = [];
 // ---- person-step holds ---------------------------------------------------
 // Holds are set at admit, but what counts as the person's step can change after it (a Person-step or
 // Person-input labels row set, a label added in Jira, a step named in ben_steps), so every pass reads
-// each open blocker in no batch again, as admit would judge it now (blockerHold), before spawning. A
-// full hold (held_outside) on one that now holds only the merge, a step of the person's, becomes a
-// merge-only gate (merge_after), and a ticket with no hold left is released to spawn in this pass. The
-// one way back: a not-yet-started ticket's merge-only gate on a blocker that has since gained a
-// Person-input label (personStep 'build') becomes a full hold again. Triage's own call on a blocker
-// (blocker_needs) still wins over the step, as at admit.
+// each open blocker in no batch again (personStep) before spawning. A full hold (held_outside) on one
+// that is now a step of the person's holding only the merge becomes a merge-only gate (merge_after), and
+// a ticket with no hold left is released to spawn in this pass. The step decides here, not triage's
+// blocker_needs call: a ticket is held outside on a blocker that is no input step only because triage
+// called it 'build' (or `true`, written before the calls), so a call that outranked the step would keep
+// every such ticket held. A step the build reads carries a Person-input label (personStep 'build'),
+// which keeps the hold. The one way back: a not-yet-started ticket's merge-only gate on a blocker that
+// has since gained a Person-input label becomes a full hold again.
 {
   const qS = queue();
   const stepLabels = E.personStepLabels();
@@ -1693,11 +1695,7 @@ const dateLines = [];
   const openOutside = (rec, p) => (qS.tickets[p] ? null : (Array.isArray(rec?.blockers) ? rec.blockers : []).find((b) => b?.key === p && b.category !== 'done') ?? null);
   for (const t of Object.values(qS.tickets).filter((x) => isHeld(x) && x.held_outside)) {
     const rec = triageRec(t.key);
-    const steps = keysOf(t.held_outside).filter((p) => {
-      const b = openOutside(rec, p);
-      const hold = b ? blockerHold(b, rec, stepLabels, inputLabels) : null;
-      return hold?.needs === 'merge' && hold.by === 'step';
-    });
+    const steps = keysOf(t.held_outside).filter((p) => { const b = openOutside(rec, p); return !!b && personStep(b, rec, stepLabels, inputLabels) === 'merge'; });
     if (!steps.length) continue;
     const what = steps.map((p) => `RECLASSIFIED ${t.key}: ${p} is a person step: build now, merge after`);
     if (DRY) { dateLines.push(...what.map((l) => `${l} (dry run)`)); continue; }

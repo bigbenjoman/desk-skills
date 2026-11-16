@@ -1441,14 +1441,15 @@ q drop X-7
 x7gate 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-687 once it is Done and its PR merged to the base, the pass lifts the gate" '[ "$(field J-12 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 Done; free to merge"'
 q drop J-12
-# DS-683: every pass reads a full hold on a blocker in no batch again, as admit would judge it now. J-13
-# is the KAN-529 shape: admitted fully held on OPS-3, a step no row named yet, then the label row set.
+# DS-683: every pass reads a full hold on a blocker in no batch again. J-13 is the KAN-529 shape:
+# admitted fully held on OPS-3 on triage's 'build' call, a step no row named yet, then the label row set.
+# The step decides, so the call does not keep it held.
 cat "$T/config-j.md" > "$T/config-jl.md"
 printf '| Person-step labels | `ben-step` |\n| Person-input labels | `ben-input` |\n' >> "$T/config-jl.md"
 # step <TICKET> <BLOCKER> <label>: the ticket's Jira links, its triage record, and the blocker's labels.
 step(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"%s","fields":{"summary":"Set up the account","issuetype":{"name":"Task"},"status":{"statusCategory":{"key":"new"}}}}}]}}\n' "$2" > "$T/jira/$1.json"
   printf '{"fields":{"labels":["%s"]}}\n' "$3" > "$T/jira/$2.json"
-  printf '{"epic":null,"blockers":[{"key":"%s","category":"new","type":"Task","summary":"Set up the account","labels":["%s"]}]}\n' "$2" "$3" > "$T/state-j/triage/$1.json"; }
+  printf '{"epic":null,"blockers":[{"key":"%s","category":"new","type":"Task","summary":"Set up the account","labels":["%s"]}],"blocker_needs":{"%s":{"needs":"build","why":"the account it reads"}}}\n' "$2" "$3" "$2" > "$T/state-j/triage/$1.json"; }
 held_on(){ q add "$1"; q set "$1" state=parked held_by="$2" held_outside="$2" "park={\"question\":\"held by orchestrator: blocked by $2 — starts once $2 is Done in Jira\"}"; }
 held_on J-13 OPS-3; step J-13 OPS-3 ben-step
 out=$(node "$B/pass.mjs" 2>&1)
