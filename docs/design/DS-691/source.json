@@ -1,0 +1,46 @@
+{
+  "url": "https://claude.ai/artifact/5EuXvEzpkQRVuQkfUickaV",
+  "version": "2026-11-15T17:19:26.950Z",
+  "fetched_at": "2026-11-15T17:19:51.404Z",
+  "from": "export",
+  "file": "design-canvas.selfcontained.html",
+  "sha256": "b004be54489b0152257b700a13ed6e0d58b0d285705711012afd4bc98c4d4743",
+  "kind": "page",
+  "dir": "DS-691",
+  "tickets": [
+    {
+      "key": "DS-691",
+      "boards": []
+    },
+    {
+      "key": "DS-702",
+      "boards": []
+    },
+    {
+      "key": "DS-703",
+      "boards": []
+    },
+    {
+      "key": "DS-704",
+      "boards": []
+    },
+    {
+      "key": "DS-706",
+      "boards": []
+    },
+    {
+      "key": "DS-707",
+      "boards": []
+    },
+    {
+      "key": "DS-708",
+      "boards": []
+    }
+  ],
+  "boards": [],
+  "files": [
+    "project/index.html"
+  ],
+  "home": "project",
+  "remote": []
+}
