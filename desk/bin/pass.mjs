@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, triagePark, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, triagePark,HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -55,7 +55,7 @@ import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, 
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
-import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress } from './intake.mjs';
+import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff } from './needs-you.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
@@ -1771,6 +1771,87 @@ for (const t of Object.values(queue().tickets)) {
   if (held) dateLines.push(`date hold: ${t.key}: now held on its label ${want.label}`);
 }
 
+// ---- blocker links -------------------------------------------------------
+// Reads `keys`' blockers into their triage records again (ticket-facts.mjs --blockers) and stamps each
+// outside_blockers_read, so no read in a pass asks Jira for one again within INTAKE_EVERY_MS.
+// -> { unread: the keys whose record was left as it was, why }.
+const readBlockers = (keys) => {
+  const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--blockers', ...keys], { timeout: 120_000 });
+  const missed = r.out.split('\n').filter((l) => / blockers NOT READ: /.test(l));
+  const readAt = new Date().toISOString();
+  for (const key of keys) q('set', key, `outside_blockers_read=${readAt}`);
+  const unread = missed.length ? keys.filter((k) => missed.some((l) => l.startsWith(`[facts] ${k} `))) : r.ok ? [] : keys;
+  return { unread, why: missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ') || r.out.split('\n').pop() };
+};
+const blockerKeys = (rec) => (Array.isArray(rec?.blockers) ? rec.blockers.map((b) => b?.key).filter(Boolean) : []);
+// Holds are set at admit, but a Blocks link can be added in Jira after it, so every ticket triaged and
+// not done is read again here, before spawning, on the same throttle. Each blocker the read adds is held
+// as intake holds one (holdsFor): in this batch until its PR merges, in no batch in held_outside too
+// (lifted by the outside holds below), and the person's step as a merge gate. Only a ticket not yet
+// started (no worktree, triaged or held) gains a hold; for one whose worker started the late link is
+// said, never held. Never held: a blocker already waiting behind the ticket (a cycle), or one failed
+// here, which nothing would release. A link removed leaves an in-batch hold, said, as held_by does not
+// record whether it came from a link, a shared file or the spine. Triage parks are read elsewhere.
+const linkLines = [];
+{
+  const qL = queue();
+  const notStarted = (t) => !t.worktree && (t.state === 'triaged' || isHeld(t));
+  const started = (t) => !!t.worktree && !['done', 'failed'].includes(t.state);
+  const due = Object.values(qL.tickets).filter((t) => {
+    if (!onJira || !(notStarted(t) || started(t))) return false;
+    if (t.outside_blockers_read && Date.now() - Date.parse(t.outside_blockers_read) < INTAKE_EVERY_MS) return false;
+    const k = E.ticketKind(t.key);
+    return k.ok && k.kind === 'tracker' && !!triageRec(t.key);
+  });
+  if (due.length && DRY) linkLines.push(`blocker links (dry run): would read ${due.map((t) => t.key).join(', ')} from Jira`);
+  else if (due.length) {
+    const before = new Map(due.map((t) => [t.key, blockerKeys(triageRec(t.key))]));
+    const { unread, why } = readBlockers(due.map((t) => t.key));
+    if (unread.length) linkLines.push(`blocker links: ${unread.join(', ')} not read, holds kept as they were and tried again in ${INTAKE_EVERY_MS / 60_000} minutes: ${why}`);
+    const view = queue();
+    for (const { key } of due) {
+      if (unread.includes(key)) continue;
+      const rec = triageRec(key);
+      const now = blockerKeys(rec);
+      const added = now.filter((k) => !before.get(key).includes(k));
+      const t = view.tickets[key];
+      if (!t) continue;
+      const by = keysOf(t.held_by);
+      if (!notStarted(t)) {
+        if (added.length) linkLines.push(`blocker link: ${key}: linked as blocked by ${added.join(', ')} after its worker started: no hold added`);
+        continue;
+      }
+      const gone = before.get(key).filter((k) => !now.includes(k) && by.includes(k) && view.tickets[k]);
+      if (gone.length) linkLines.push(`blocker link: ${key}: no longer linked as blocked by ${gone.join(', ')}, and still held behind ${gone.length === 1 ? 'it' : 'them'}, as the hold does not record whether it came from that link, a shared file or the spine: release it by hand if nothing else needs ${gone.length === 1 ? 'it' : 'them'}`);
+      if (!added.length) continue;
+      const h = holdsFor(rec, view.tickets, DEFAULT_BRANCH);
+      const behind = heldBehindOf(view, key);
+      const holds = []; const cycles = [];
+      for (const k of new Set([...h.held, ...h.outside])) {
+        const o = view.tickets[k];
+        if (!added.includes(k) || k === key || by.includes(k) || (o && (o.merged_at || childDone(o)))) continue;
+        (behind.has(k) ? cycles : holds).push(k);
+      }
+      const failed = h.failed.filter((k) => added.includes(k));
+      const steps = h.merge.filter((k) => added.includes(k) && !keysOf(t.merge_after).includes(k));
+      if (cycles.length) linkLines.push(`blocker link: ${key}: linked as blocked by ${cycles.join(', ')}, which ${cycles.length === 1 ? 'waits' : 'wait'} behind it: not held, as that is a cycle: remove one of the links`);
+      if (failed.length) linkLines.push(`blocker link: ${key}: linked as blocked by ${failed.join(', ')}, which failed in this batch: not held, as nothing would release it: requeue or drop ${failed.length === 1 ? 'it' : 'them'}, then hold ${key} with queue.mjs hold if it still needs ${failed.length === 1 ? 'it' : 'them'}`);
+      if (steps.length) {
+        q('set', key, `merge_after=${[...keysOf(t.merge_after), ...steps].join('|')}`);
+        linkLines.push(`blocker link: ${key}: newly linked as blocked by ${steps.join(', ')}, your step: built as before, merges only once ${steps.length === 1 ? 'it is' : 'they are'} Done`);
+      }
+      if (!holds.length) continue;
+      const all = [...by, ...holds];
+      const outside = holds.filter((k) => !view.tickets[k]);
+      const question = `${HELD_PREFIX}: blocked by ${all.join(', ')} — starts once their PRs merge`;
+      q('park', key, question);
+      q('set', key, `held_by=${all.join('|')}`, ...(outside.length ? [`held_outside=${[...new Set([...keysOf(t.held_outside), ...outside])].join('|')}`] : []), ...(dateHeld(t) ? ['held_label=null'] : []));
+      Object.assign(t, { state: 'parked', park: { question }, held_by: all.join('|') });
+      linkLines.push(`blocker link: ${key}: newly linked as blocked by ${holds.join(', ')}${outside.length ? ` (${outside.join(', ')} in no batch, lifted once Done and on ${DEFAULT_BRANCH})` : ''}: HELD behind ${all.join(', ')}`);
+    }
+  }
+}
+
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
 const all = Object.values(fresh.tickets);
@@ -3273,9 +3354,9 @@ for (const t of Object.values(queue().tickets)) {
 // ---- outside blockers ----------------------------------------------------
 // A ticket's open "is blocked by" links to tickets outside this queue, from its triage record's
 // `blockers`, kept on the ticket as outside_blockers [{key, category, assignee?}] for desk-q and
-// needs-you, `assignee` as ticket-facts.mjs read it (absent when it could not be). Only a ticket that
-// has some is read from Jira again (ticket-facts.mjs --blockers), at most once every INTAKE_EVERY_MS,
-// so this reads Jira no more often than intake does. A read that fails leaves the record, and so the
+// needs-you, `assignee` as ticket-facts.mjs read it (absent when it could not be). Of the tickets the
+// blocker links read above leaves out, only one that has some is read from Jira again here
+// (readBlockers), at most once every INTAKE_EVERY_MS, so this reads Jira no more often than intake does. A read that fails leaves the record, and so the
 // recorded blockers, as they were. A ticket waiting to merge on the person's steps (merge_after) is
 // read while it waits, done or not and whether or not a step has since joined this queue.
 const qB = queue();
@@ -3306,11 +3387,8 @@ const onTracker = Object.values(qB.tickets).filter((t) => {
 const blockersDue = onTracker.filter((t) => (waitsOnStep(t) || keysOf(t.wont_do_link).length > 0 || resolutionUnread(triageRec(t.key)) || (t.outside_blockers ?? outsideOf(triageRec(t.key)) ?? []).length > 0)
   && !(t.outside_blockers_read && Date.now() - Date.parse(t.outside_blockers_read) < INTAKE_EVERY_MS)).map((t) => t.key);
 if (blockersDue.length) {
-  const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--blockers', ...blockersDue], { timeout: 120_000 });
-  const missed = r.out.split('\n').filter((l) => / blockers NOT READ: /.test(l));
-  if (missed.length || !r.ok) epicLines.push(`outside blockers: not read, kept as they were and tried again in ${INTAKE_EVERY_MS / 60_000} minutes: ${missed.map((l) => l.replace(/^\[facts\]\s*/, '')).join(' | ') || r.out.split('\n').pop()}`);
-  const readAt = new Date().toISOString();
-  for (const key of blockersDue) q('set', key, `outside_blockers_read=${readAt}`);
+  const { unread, why } = readBlockers(blockersDue);
+  if (unread.length) epicLines.push(`outside blockers: not read, kept as they were and tried again in ${INTAKE_EVERY_MS / 60_000} minutes: ${why}`);
 }
 for (const t of onTracker) {
   const rec = triageRec(t.key);
@@ -3502,6 +3580,7 @@ if (!registryOk) out.push(`! could not read the session registry — no ticket w
 out.push(...baseLines);
 out.push(...MAINT.lines);
 out.push(...dateLines);
+out.push(...linkLines);
 for (const [label, items] of [['spawned', report.spawned], ['advanced', report.advanced], ['done', report.done], ['failed', report.failed]]) {
   if (items.length) out.push(`${label}: ${items.join(' | ')}`);
 }
