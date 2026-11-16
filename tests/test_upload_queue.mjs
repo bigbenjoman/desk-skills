@@ -166,9 +166,9 @@ function machine({ step = 5000 } = {}) {
   const r = m.pump({ login });
   t('DS-675 AC1 an expired login: no upload is attempted, from any repo', `${m.calls.length} ${r.ran.length}`, '0 0');
   t('DS-675 AC1 every job keeps its place and spends no try', `${readUploadQueue(m.file).jobs.length} ${readUploadQueue(m.file).results.length}`, '3 0');
-  t('DS-675 AC1 the pass says why, naming the sign-in command', r.stop, `the GitHub login in ${session} expired at ${new Date(START - 60_000).toISOString()}, so no repo's screenshot upload runs until it is signed in: ${SIGNIN}`);
+  t('DS-675 AC1 the pass says why, naming the sign-in command', r.stop, `the GitHub login in ${session} expired at ${new Date(START - 60_000).toISOString()}, so no repo's screenshot upload with that login runs until it is signed in: ${SIGNIN}`);
   writeFileSync(session, '{}');
-  t('DS-675 no saved login at all pauses them too', m.pump({ login }).stop, `no GitHub login in ${session}, so no repo's screenshot upload runs until it is signed in: ${SIGNIN}`);
+  t('DS-675 no saved login at all pauses them too', m.pump({ login }).stop, `no GitHub login in ${session}, so no repo's screenshot upload with that login runs until it is signed in: ${SIGNIN}`);
   save(START / 1000 + 86_400);
   m.pump({ login });
   t('DS-675 AC2 signed in again, the next pass resumes the queue', m.calls.map((c) => c.key), ['a-1', 'b-1', 'a-2']);
@@ -180,7 +180,7 @@ function machine({ step = 5000 } = {}) {
   m.clock += 120_000;
   const refused = m.pump({ login });
   t('DS-675 a login GitHub turns away stops the pass, keeps the job and tries no other repo', `${m.calls.slice(3).map((c) => c.key)} ${isQueued(readUploadQueue(m.file), '/q/acme/b.json', 'b-2')} ${readUploadQueue(m.file).results.length - results}`, 'b-2 true 0');
-  t('DS-675 and says so, naming the sign-in command', /^GitHub turned away the saved login in .* so no repo's screenshot upload runs until it is signed in: node ~\/\.claude\/desk\/bin\/github-signin\.mjs$/.test(refused.stop), true);
+  t('DS-675 and says so, naming the sign-in command', /^GitHub turned away the saved login in .* so no repo's screenshot upload with that login runs until it is signed in: node ~\/\.claude\/desk\/bin\/github-signin\.mjs$/.test(refused.stop), true);
   delete m.code['b-2'];
   m.clock += 120_000;
   t('DS-675 the next pass tries nothing while the session file is unwritten', `${m.pump({ login }).ran.length} ${login().ok}`, '0 false');
@@ -188,7 +188,15 @@ function machine({ step = 5000 } = {}) {
   utimesSync(session, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
   m.clock += 120_000;
   m.pump({ login });
-  t('DS-675 signed in again (the file written since), the queue resumes and the refusal is cleared', `${m.calls.slice(4).map((c) => c.key).join(',')} ${readUploadQueue(m.file).signin}`, 'a-3,b-2 null');
+  t('DS-675 signed in again (the file written since), the queue resumes and the refusal is cleared', `${m.calls.slice(4).map((c) => c.key).join(',')} ${JSON.stringify(readUploadQueue(m.file).signin)}`, 'a-3,b-2 {}');
+  // A repo with its own §2 profile: its login expired holds only the jobs that upload with it.
+  const own = join(ROOT, 'own');
+  writeFileSync(`${own}.github-session.json`, JSON.stringify({ user: 'o', cookies: [{ name: 'user_session', domain: 'github.com', expires: START / 1000 - 60 }] }));
+  m.add('acme/b', 'b-3', 1, { profile: own }); m.add('acme/a', 'a-4', 1);
+  m.clock += 120_000;
+  const mixed = m.pump({ login: (job) => signedIn({ profile: job.profile ?? profile, file: m.file, now: m.clock }) });
+  t('DS-675 another login expired holds only its own jobs', `${m.calls.slice(6).map((c) => c.key).join(',')} ${isQueued(readUploadQueue(m.file), '/q/acme/b.json', 'b-3')}`, 'a-4 true');
+  t('DS-675 and the pass names that login', mixed.stop.startsWith(`the GitHub login in ${own}.github-session.json expired`), true);
 }
 
 // ---- the lock: a dead holder's lock is cleared, a live one's is not --------------------------------

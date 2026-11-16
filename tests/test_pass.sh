@@ -76,7 +76,7 @@ chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
 all_done(){ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) { t.state = "done"; if (t.result?.pr != null) { t.merged_at ??= "2026-10-23T10:00:00Z"; t.pr_status = { pr: t.result.pr, state: "MERGED", merged_at: t.merged_at, checks: [] }; } } require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"; }
 
-# A signed-in browser profile, as the upload queue runs no upload without one (DS-675).
+# A signed-in browser profile, as the upload queue runs no upload without one.
 printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":%s}],"origins":[]}\n' "$(( $(date +%s) + 31536000 ))" > "$T/profile.github-session.json"
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test \

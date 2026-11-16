@@ -23,10 +23,11 @@ times out or cannot reach its host is run once more before it counts. Results ar
 minutes while every check passes, and a failing run is checked again on the next pass. The report
 always carries one `health:` line. A failing required check holds every new spawn (running workers
 carry on), except the browser profile's: only screenshot uploads need it, and the machine's upload
-queue runs none while the login is missing, expired or turned away by GitHub, so every repo's
-uploads wait there without spending a try. It is one item for the machine, `health:browser-signin`,
-told by the first slot to find it, listed once by needs-you, and gone from needs-you and the digest
-once any slot finds it passing. A remote check is named under `STALLED` with the command that fixes it, and goes into
+queue runs none with a login that is missing, expired or turned away by GitHub, so every repo's
+uploads with it wait there without spending a try, and uploads with another login (a repo's own §2
+profile) still run. It is one item for the machine per login, `health:browser-signin:<id>`, told by
+the first slot to find it, listed once by needs-you, and gone from needs-you and the digest once a
+slot checking that login finds it passing on a fresh check (a reused passing result clears nothing). A remote check is named under `STALLED` with the command that fixes it, and goes into
 `push` as `health:<slug>:<check>`, only once it has failed two runs in a row (the disk and the
 database on the first); it is pushed once while it stays failing. Every remote check failing
 together, one of them unable to reach its host, is the network, one `health:<slug>:network` with no

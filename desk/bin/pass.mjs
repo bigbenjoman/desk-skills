@@ -605,7 +605,7 @@ function uploadShots(t, prNo, imgDir) {
     const round = t.upload_round ?? null;
     const queued = UQ.readUploadQueue().jobs.find((j) => j.queue === QUEUE_FILE && j.key === t.key && String(j.pr) === String(prNo) && (j.round ?? null) === round);
     const before = queued && 'cells_before' in queued ? queued.cells_before : cellsIn(prNo);
-    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before });
+    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before, profile: E.browserProfile() });
   } catch (e) {
     report.failed.push(`${t.key}: image upload to PR #${prNo} did not join the machine's upload queue: ${e.message}; a later pass tries again`);
     return;

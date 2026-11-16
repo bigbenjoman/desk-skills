@@ -16,9 +16,10 @@
 //                                                 sign-out, not a seat out of usage: only a real call does)
 //   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no.
 //            It holds no spawn: only screenshot uploads need it, and the machine's upload queue runs
-//            none while it fails (upload-queue.mjs signedIn). It is one item for the machine, however
-//            many repos and batches find it (browserSignin): told by the first slot to find it, or one
-//            taking over from a slot whose state folder is gone, and gone once any slot finds it passing
+//            none with that login while it fails (upload-queue.mjs signedIn). It is one item for the
+//            machine per login, however many repos and batches find it (browserSignins): told by the
+//            first slot to find it, or one taking over from a slot whose state folder is gone, and gone
+//            once a slot checking that login, not reusing an earlier pass's results, finds it passing
 //   disk     free space on the worktrees disk, against config §3b "Free disk floor (GB)" (default 20)
 //   database `docker exec <container> pg_isready`  where §4 Local database is `postgres container <name>`
 //                                                 and setup-worktree.sh makes a per-ticket database in it
@@ -48,6 +49,7 @@
 // free-disk figure, DESK_HEALTH_TIMEOUT_MS for the 20 seconds and DESK_HEALTH_RETRY_MS for the 5,
 // in tests.
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
@@ -88,24 +90,27 @@ export const healthFile = (state) => join(state, 'health.json');
 // exists.
 const missingLoginsDir = () => join(E.HOME, '.desk-autopilot', 'health-missing-logins');
 
-// Whether the slot at `state` is the one on the machine that pushes `l`: the first to find it missing,
-// or the one taking over from a slot whose state folder is gone. The owner lists the push on every
-// pass, so the supervisor's own once-per-key record sends it once and retries a failed send; no other
-// slot lists it. A marker it cannot read or write is told anyway, as a push repeated beats one never sent.
-function pushesMissing(dir, l, state) {
-  const file = join(dir, loginKey(l));
+// Whether the slot at `state` is the one on the machine that tells what the marker `file` stands for:
+// the first to find it, or the one taking over from a slot whose state folder is gone. body(prev) is
+// what the marker holds, from the text it held (null when new), and owner(text) reads back the state
+// folder it names. The owner lists the push on every pass, so the supervisor's own once-per-key record
+// sends it once and retries a failed send; no other slot lists it. A marker it cannot read or write is
+// told anyway, as a push repeated beats one never sent.
+function claimsMarker(file, state, { body, owner }) {
   try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(file, `${state}\n`, { flag: 'wx' });
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, body(null), { flag: 'wx' });
     return true;
   } catch (e) { if (e.code !== 'EEXIST') return true; }
-  let owner;
-  try { owner = readFileSync(file, 'utf8').trim(); } catch { return true; }
-  if (owner === state) return true;
-  if (owner && existsSync(owner)) return false;
-  try { writeFileSync(file, `${state}\n`); } catch { /* told anyway */ }
+  let prev;
+  try { prev = readFileSync(file, 'utf8'); } catch { return true; }
+  const by = owner(prev);
+  if (by && by !== state && existsSync(by)) return false;
+  const next = body(prev);
+  if (next !== prev) { try { writeFileSync(file, next); } catch { /* told anyway */ } }
   return true;
 }
+const pushesMissing = (dir, l, state) => claimsMarker(join(dir, loginKey(l)), state, { body: () => `${state}\n`, owner: (t) => t.trim() });
 
 // Drops the marker of every login no longer missing, so a folder that goes missing again is pushed again.
 function clearFound(dir, missing) {
@@ -183,34 +188,34 @@ function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined, keepOut = fal
 function browserCheck() {
   try {
     const s = signedIn();
-    return s.ok ? { ok: true } : { ok: false, why: s.why };
-  } catch (e) { return { ok: false, why: e.message }; }
+    return s.ok ? { ok: true, file: s.file } : { ok: false, why: s.why, file: s.file };
+  } catch (e) { return { ok: false, why: e.message, file: null }; }
 }
 
-// The machine's one browser sign-in item: { at, why, state, slug }, the slot that tells it and since
-// when, or null while no slot has found the login failing since one last found it passing.
+// The machine's browser sign-in items, one per saved GitHub login (its session file, `file`) found
+// failing: { id, at, why, state, slug, file }, the slot that tells it and since when. One goes once a
+// slot checking that login finds it passing; a repo with its own §2 profile has its own login.
 export const SIGNIN_KEY = 'health:browser-signin';
 export const SIGNIN_STALL = /^health: browser profile failed: /;
-const signinFile = () => join(E.HOME, '.desk-autopilot', 'health-browser-signin.json');
-export function browserSignin() {
-  try { return JSON.parse(readFileSync(signinFile(), 'utf8')); } catch { return null; }
+const signinDir = () => join(E.HOME, '.desk-autopilot', 'health-browser-signin');
+export const signinId = (file) => createHash('sha1').update(String(file ?? '')).digest('hex').slice(0, 12);
+const signinFile = (file) => join(signinDir(), `${signinId(file)}.json`);
+const parse = (text) => { try { return JSON.parse(text); } catch { return null; } };
+export function browserSignins() {
+  let names = [];
+  try { names = readdirSync(signinDir()).filter((n) => n.endsWith('.json')).sort(); } catch { return []; }
+  return names.flatMap((n) => {
+    let rec = null;
+    try { rec = parse(readFileSync(join(signinDir(), n), 'utf8')); } catch { /* another slot took it */ }
+    return rec ? [{ ...rec, id: n.slice(0, -'.json'.length) }] : [];
+  });
 }
-// Whether the slot at `state` tells the sign-in item: the first to find the login failing, or one taking
-// over from a slot whose state folder is gone. A record it cannot read or write is told anyway.
-function tellsSignin(state, slug, why, now) {
-  const file = signinFile();
-  const rec = (at) => `${JSON.stringify({ at, why, state, slug })}\n`;
-  try {
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, rec(new Date(now).toISOString()), { flag: 'wx' });
-    return true;
-  } catch (e) { if (e.code !== 'EEXIST') return true; }
-  const prev = browserSignin();
-  if (prev?.state && prev.state !== state && existsSync(prev.state)) return false;
-  try { if (prev?.state !== state || prev.why !== why) writeFileSync(file, rec(prev?.at ?? new Date(now).toISOString())); } catch { /* told anyway */ }
-  return true;
-}
-const clearSignin = () => { try { unlinkSync(signinFile()); } catch { /* none, or another slot took it */ } };
+// Whether the slot at `state` tells the sign-in item of the login in `file` (claimsMarker).
+const tellsSignin = (state, slug, why, now, file) => claimsMarker(signinFile(file), state, {
+  owner: (t) => parse(t)?.state,
+  body: (t) => `${JSON.stringify({ at: (t && parse(t)?.at) || new Date(now).toISOString(), why, state, slug, file })}\n`,
+});
+const clearSignin = (file) => { try { unlinkSync(signinFile(file)); } catch { /* none, or another slot took it */ } };
 
 function diskCheck(env) {
   const floor = diskFloor();
@@ -368,15 +373,17 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const holding = failing.filter((id) => !HOLDS_NO_SPAWN.has(id));
   const remote = wanted.filter(isRemote);
   const network = remote.length > 1 && remote.every((id) => !results[id].ok) && remote.some((id) => results[id].kind === 'network');
-  // The browser is told as the machine's one sign-in item, below, not as this slot's.
+  // The browser is told as the machine's one sign-in item for its login, below, not as this slot's.
   const units = [
     ...(network ? [{ key: 'network', kind: 'network', ids: remote }] : []),
     ...holding.filter((id) => !(network && isRemote(id))).map((id) => ({ key: id, kind: results[id].kind ?? 'auth', ids: [id] })),
   ];
   const browserOut = wanted.includes('browser') && !results.browser.ok ? results.browser : null;
   let tellsBrowser = false;
-  if (browserOut) tellsBrowser = tellsSignin(state, slug, browserOut.why, now);
-  else if (wanted.includes('browser')) clearSignin();
+  if (browserOut) tellsBrowser = tellsSignin(state, slug, browserOut.why, now, browserOut.file);
+  // Only a check run now clears the item, and only its own login's: a reused pass predates any failure
+  // another slot has found since.
+  else if (wanted.includes('browser') && !reused && results.browser.file) clearSignin(results.browser.file);
   const streak = reused ? prev.streak ?? {} : nextStreak(prev, units);
   const told = (u) => !isRemote(u.ids[0]) || (streak[u.key]?.n ?? 1) >= 2;
   const unconfirmed = units.filter((u) => !told(u)).map((u) => u.key);
@@ -402,7 +409,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const rechecking = [...unconfirmed, ...(reviewerOut && !reviewerTold ? ['reviewer'] : [])];
   if (rechecking.length) notes.push(`rechecking before telling you: ${rechecking.join(', ')}`);
   if (reviewerTold) notes.push(`reviewer failing, holding review and fix tries on PRs red only on a verdict state check, not spawns`);
-  if (browserOut) notes.push(`browser failing, not holding spawns: every repo's screenshot uploads wait in the machine's upload queue${tellsBrowser ? '' : `, told once for the machine by ${browserSignin()?.slug ?? 'another slot'}'s pass`}`);
+  if (browserOut) notes.push(`browser failing, not holding spawns: every repo's screenshot uploads with that login wait in the machine's upload queue${tellsBrowser ? '' : `, told once for the machine by ${browserSignins().find((s) => s.id === signinId(browserOut.file))?.slug ?? 'another slot'}'s pass`}`);
   // A repo with no Postgres container has no database to check, so it is not named as skipped.
   const skipped = Object.entries(skip).filter(([id]) => id !== 'database' || perTicketDb(env).container).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
@@ -427,8 +434,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     push.push({ key: `health:${slug}:claude:${loginKey(l)}`, text: `desk ${slug}: Claude login ${l.name} ${out}. Fix: ${fix}` });
   }
   if (tellsBrowser) {
-    stalls.push(`health: ${label('browser')} failed: ${browserOut.why} — fix: ${byId.browser.fix}; every repo's screenshot uploads wait in the machine's upload queue until it passes, and new workers still start`);
-    push.push({ key: SIGNIN_KEY, text: `desk: the browser profile's GitHub login is not signed in (${browserOut.why}), so every repo's screenshot uploads wait in the machine's upload queue; workers still start. Fix: ${byId.browser.fix}` });
+    stalls.push(`health: ${label('browser')} failed: ${browserOut.why} — fix: ${byId.browser.fix}; every repo's screenshot uploads with that login wait in the machine's upload queue until it passes, and new workers still start`);
+    push.push({ key: `${SIGNIN_KEY}:${signinId(browserOut.file)}`, text: `desk: the browser profile's GitHub login is not signed in (${browserOut.why}), so every repo's screenshot uploads with that login wait in the machine's upload queue; workers still start. Fix: ${byId.browser.fix}` });
   }
   const missingDir = missingLoginsDir();
   clearFound(missingDir, missing);

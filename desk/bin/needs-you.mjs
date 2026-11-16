@@ -61,8 +61,8 @@
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
 // `templates`, the repo's committed copies of desk's templates the supervisor found behind (done
 // checks them again). `reviewer` is the repo's too: its failing reviewer health check, naming every PR
-// the pass holds on it (done records nothing; the next pass checks again). `browser-signin` is the
-// machine's: its browser profile's GitHub login failing, which every repo's screenshot uploads wait on
+// the pass holds on it (done records nothing; the next pass checks again). `browser-signin:<id>` is the
+// machine's: a browser profile's GitHub login failing, which every repo's screenshot uploads with it wait on
 // (done records nothing; the next pass checks again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
@@ -83,8 +83,9 @@ import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, gitHold, gitHeld, triageGate, EXIT } from './batch-state.mjs';
-import { browserSignin, reviewerRecord } from './health.mjs';
+import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
+import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
@@ -706,28 +707,28 @@ function reviewerItems(batches) {
     since: finite(Math.min(...held.map((t) => timeOf(t.gate_hold.at) ?? Infinity))) } }];
 }
 
-// ---- the machine's browser sign-in (health.mjs browserSignin): one item, whatever waits on it ------
-// While the browser profile's GitHub login fails, no repo's screenshot upload runs, so it is one item
-// for the machine, not one per repo or PR, naming the sign-in command and the uploads that wait. It is
-// shown in the batch whose pass tells it, else a batch of its repo, else the first; desk-q counts it in
-// its repo's row. done records nothing: the next pass that finds the login passing drops it.
+// ---- the machine's browser sign-ins (health.mjs browserSignins): one item a login, whatever waits ---
+// While a browser profile's GitHub login fails, no repo's screenshot upload with it runs, so it is one
+// item for the machine, not one per repo or PR, naming the sign-in command and the uploads that wait.
+// It is shown in the batch whose pass tells it, else a batch of its repo, else the first; desk-q counts
+// it in its repo's row. done records nothing: the next pass that finds the login passing drops it.
 const SIGNIN = 'browser-signin';
 function signinItems(batches, only = null) {
-  const s = browserSignin();
-  if (!s) return [];
   const live = batches.filter((x) => !x.error && x.q);
-  const mine = (b) => b.slug === s.slug;
-  if (only && !only.some(mine)) return [];
-  const r = live.find((b) => s.state && resolve(b.stateDir) === resolve(s.state)) ?? live.find(mine) ?? live[0];
-  if (!r) return [];
-  let jobs = [];
-  try { jobs = readUploadQueue().jobs; } catch { /* named as none waiting */ }
-  const prs = [...new Set(jobs.map((j) => `${j.repo} #${j.pr}`))];
-  return [{ r, dir: r.stateDir, t: { key: SIGNIN }, item: { kind: SIGNIN, repoLevel: true,
-    need: `the browser profile's saved GitHub login is not signed in (${one(s.why)}), so no repo's screenshot upload runs; workers still start. Sign it in, in a terminal on this machine's screen: ${SIGNIN_CMD}`,
-    note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
-    actions: [['done', 'once it is signed in, the next pass finds the login passing, drops this item and uploads what waits'], ['not-now']],
-    since: timeOf(s.at) } }];
+  let jobs = null;
+  return browserSignins().flatMap((s) => {
+    const mine = (b) => b.slug === s.slug;
+    if (only && !only.some(mine)) return [];
+    const r = live.find((b) => s.state && resolve(b.stateDir) === resolve(s.state)) ?? live.find(mine) ?? live[0];
+    if (!r) return [];
+    if (!jobs) { try { jobs = readUploadQueue().jobs; } catch { jobs = []; /* named as none waiting */ } }
+    const prs = [...new Set(jobs.filter((j) => !s.file || !j.profile || sessionFile(j.profile) === s.file).map((j) => `${j.repo} #${j.pr}`))];
+    return [{ r, dir: r.stateDir, t: { key: `${SIGNIN}:${s.id}` }, item: { kind: SIGNIN, repoLevel: true,
+      need: `the browser profile's saved GitHub login is not signed in (${one(s.why)}), so no repo's screenshot upload with it runs; workers still start. Sign it in, in a terminal on this machine's screen: ${SIGNIN_CMD}`,
+      note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
+      actions: [['done', 'once it is signed in, the next pass finds the login passing, drops this item and uploads what waits'], ['not-now']],
+      since: timeOf(s.at) } }];
+  });
 }
 
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
@@ -1094,7 +1095,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES || ticket === REVIEWER || ticket === SIGNIN) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;

@@ -1540,16 +1540,19 @@ t('DS-577 AC4 a passing reviewer check lists no item', rv().some((i) => i.kind =
 // ---- DS-675: the browser profile's login failing is one item for the machine, whatever waits on it
 {
   const rvState = join(env.HOME, '.desk-autopilot', 'acme__rv');
-  const signinFile = join(env.HOME, '.desk-autopilot', 'health-browser-signin.json');
+  const { signinId } = await import('../desk/bin/health.mjs');
+  const signinDir = join(env.HOME, '.desk-autopilot', 'health-browser-signin');
+  const signinFile = join(signinDir, `${signinId('/p.github-session.json')}.json`);
+  mkdirSync(signinDir, { recursive: true });
   const uq = join(env.DESK_HOME, 'upload-queue.json');
   const why = 'the GitHub login in /p.github-session.json expired at 2026-11-16T08:00:00.000Z';
-  const stall = `health: browser profile failed: ${why} — fix: node ~/.claude/desk/bin/github-signin.mjs, in a terminal on this machine's screen; every repo's screenshot uploads wait in the machine's upload queue until it passes, and new workers still start`;
+  const stall = `health: browser profile failed: ${why} — fix: node ~/.claude/desk/bin/github-signin.mjs, in a terminal on this machine's screen; every repo's screenshot uploads with that login wait in the machine's upload queue until it passes, and new workers still start`;
   const { openQuestions } = await import('../desk/bin/digest.mjs');
   const rvBatch = () => N.collect({ word: 'rv' }).scope[0];
   const alphaBatch = () => N.collect({ word: 'alpha' }).scope[0];
   const [rvBefore, alphaBefore] = [N.needsCount(rvBatch()).shown, N.needsCount(alphaBatch()).shown];
-  writeFileSync(signinFile, JSON.stringify({ at: minsAgo(20), why, state: rvState, slug: 'acme__rv' }));
-  writeFileSync(uq, JSON.stringify({ jobs: [{ repo: 'acme/rv', pr: 301, key: 'RV-1' }, { repo: 'acme/rv', pr: 302, key: 'RV-2' }, { repo: 'acme/alpha', pr: 9, key: 'A-9' }] }));
+  writeFileSync(signinFile, JSON.stringify({ at: minsAgo(20), why, state: rvState, slug: 'acme__rv', file: '/p.github-session.json' }));
+  writeFileSync(uq, JSON.stringify({ jobs: [{ repo: 'acme/rv', pr: 301, key: 'RV-1', profile: '/p' }, { repo: 'acme/rv', pr: 302, key: 'RV-2' }, { repo: 'acme/alpha', pr: 9, key: 'A-9', profile: '/p' }, { repo: 'acme/beta', pr: 4, key: 'B-4', profile: '/own' }] }));
   writeFileSync(join(rvState, 'handed.json'), JSON.stringify({ 'wait-x': { id: 'wait-x', ticket: 'health', kind: 'batch', text: stall, why: 'a sign-in', at: minsAgo(20) } }));
   const items = N.collect().items.filter((i) => i.kind === 'browser-signin');
   t('DS-675 AC1 one sign-in item for every repo that waits on it', `${items.length} ${items[0]?.r.slug}`, '1 acme__rv');
@@ -1557,12 +1560,14 @@ t('DS-577 AC4 a passing reviewer check lists no item', rv().some((i) => i.kind =
   t('DS-675 AC1 desk-q counts it once, in the repo whose pass tells it', `${N.needsCount(rvBatch()).shown - rvBefore} ${N.needsCount(alphaBatch()).shown - alphaBefore}`, '1 0');
   t('DS-675 AC1 a repo named that does not tell it lists no sign-in item', N.collect({ word: 'alpha' }).items.some((i) => i.kind === 'browser-signin'), false);
   t('DS-675 AC1 the digest lists the handed sign-in item while it fails', openQuestions({ slug: 'acme__rv', state: rvState, queue: join(env.DESK_HOME, 'repos', 'acme__rv', 'queue.json') }).some((q) => q.text.startsWith(stall)), true);
-  const done = N.record({ word: 'rv', ticket: 'browser-signin', action: 'done' });
+  t('DS-675 an upload with another login is not named as waiting on it', items[0]?.note.includes('acme/beta'), false);
+  t('DS-675 the item is keyed by its login', items[0]?.t.key, `browser-signin:${signinId('/p.github-session.json')}`);
+  const done = N.record({ word: 'rv', ticket: items[0]?.t.key, action: 'done' });
   t('DS-675 done records nothing and says the next pass checks again', `${done.ok} ${/next pass checks the login again/.test(done.line)}`, 'true true');
   rmSync(signinFile);
   t('DS-675 AC2 signed in again, the item is gone from needs-you', `${N.collect().items.some((i) => i.kind === 'browser-signin')} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'false 0');
   t('DS-675 AC2 and from the digest, though the slot that handed it has run no pass since', openQuestions({ slug: 'acme__rv', state: rvState, queue: join(env.DESK_HOME, 'repos', 'acme__rv', 'queue.json') }).some((q) => q.text.startsWith(stall)), false);
-  rmSync(uq); rmSync(join(rvState, 'handed.json'));
+  rmSync(uq); rmSync(join(rvState, 'handed.json')); rmSync(signinDir, { recursive: true });
 }
 
 // ---- DS-396: an idle batch the loaded supervisor runs is not stopped; one with no agent is

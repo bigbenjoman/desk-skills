@@ -26,7 +26,7 @@ import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
 import { readHanded } from './decider.mjs';
-import { browserSignin, SIGNIN_STALL } from './health.mjs';
+import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
 
@@ -208,11 +208,12 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   const q = readJson(r.queue, null);
   const out = [];
   // What the decider handed on: a park says why beside its question, anything else is its own line.
-  // The browser sign-in is the machine's: once any slot finds the login passing it is gone, even from a
-  // slot that has run no pass since.
-  const signinOpen = browserSignin() != null;
+  // A browser sign-in is the machine's: once a slot finds its login passing it is gone, even from a
+  // slot that has run no pass since. A stall names its login's session file.
+  const signins = browserSignins();
+  const signinOpen = (text) => !SIGNIN_STALL.test(text) || signins.some((s) => !s.file || text.includes(s.file));
   const handed = Object.values(readHanded(r.state));
-  for (const h of handed.filter((x) => x.kind !== 'parked' && (signinOpen || !SIGNIN_STALL.test(String(x.text))))) {
+  for (const h of handed.filter((x) => x.kind !== 'parked' && signinOpen(String(x.text)))) {
     const key = questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`);
     if (!answered[key]) out.push({ ticket: h.ticket, kind: ['batch', 'archive'].includes(h.kind) ? h.kind : 'handed on', text: `${h.text} (${h.why})`, key });
   }
