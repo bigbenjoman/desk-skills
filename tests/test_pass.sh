@@ -1683,7 +1683,7 @@ held_on(){ q add "$1"; q set "$1" state=parked held_by="$2" held_outside="$2" ou
   printf '{"epic":null,"blockers":[{"key":"%s","category":"%s"%s}]}\n' "$2" "$3" "${4:-}" > "$T/state-a/triage/$1.json"; }
 held_on J-60 J-61 new
 held_on J-64 J-65 new ',"labels":["ben-input"]'
-held_on J-66 J-67 done
+held_on J-66 J-67 'done'
 held_on J-68 X-69 indeterminate
 held_on J-70 J-71 new
 held_on J-72 J-73 new; touch "$T/refuse-J-73"
