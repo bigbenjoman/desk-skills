@@ -81,11 +81,14 @@ supervisor tick moves it on too (`maintenance.mjs step`).
 pass checks origin `main` (at most once every 5 minutes, under a machine-wide lock, so one repo's
 pass installs and any other running at once skips). It installs once origin/main has moved past the
 installed commit, main's `tests` check has passed on that commit, and no worker in any repo is at
-Stage 7. A pending check, or a Stage 7 worker it names, makes it wait. It fast-forwards the checkout
-to exactly that commit and runs `install.sh`. Local commits on `main`, changed tracked files, or
-untracked files where the incoming commits write block it, and the reason is reported once per
-commit. A failed `tests` check installs nothing and pushes `release-failed-<sha>` once, from the repo
-whose pass saw it first, until main moves. Each move goes in `maintenance.log` as a `release:` line.
+Stage 7. A Stage 7 worker it names makes it wait. While the head's check is pending, cancelled (read
+again on later passes, never re-run) or failed, it installs instead the newest commit on main's
+first-parent line between the installed one and the head whose check passed, and says why the head
+was not; with none, the installed version stays. It fast-forwards the checkout to exactly that commit
+and runs `install.sh`. Local commits on `main`, changed tracked files, or untracked files where the
+incoming commits write block it, and the reason is reported once per commit. A failed `tests` check
+on the head pushes `release-failed-<sha>` once, from the repo whose pass saw it first, until main
+moves; a cancelled one pushes nothing. Each move goes in `maintenance.log` as a `release:` line.
 
 - **Who sends it.** Each pass past a slot calls the digest. A machine-wide lock and the last slot
   sent make the first pass on the machine, in any repo, the only one to build it, and only that
