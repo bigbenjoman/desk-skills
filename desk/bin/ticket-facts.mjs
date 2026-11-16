@@ -13,8 +13,9 @@
 // stderr with exit 1; pass.mjs runs this for every unfinished ticket whose record has no `epic` key.
 //
 // Adds, for a tracker key:
-//   blockers     [{key, category, summary, type, assignee?, labels?}] — "is blocked by" (Blocks) links, with the
-//                blocker's status category, summary and issue type, an open one's assignee (display name,
+//   blockers     [{key, category, summary, type, resolution?, assignee?, labels?}] — "is blocked by" (Blocks)
+//                links, with the blocker's status category, summary and issue type, a Done one's
+//                resolution (name, null when none is set, absent when it could not be read), an open one's assignee (display name,
 //                null when unassigned, absent when it could not be read), and its labels where §4
 //                Person-step labels or Person-input labels names any, less any to its own epic (its parent epic or the
 //                batch's), which can never be Done before it
@@ -49,9 +50,20 @@ const jira = (args) => JSON.parse(execFileSync('desk-jira', [...args, '--json'],
 // unassigned, so needs-you can tell whose it is to queue; and, where §4 Person-step labels or
 // Person-input labels names any, its labels, so personStep can tell a blocker labelled as the person's
 // step. One that cannot be read gets neither: no `assignee` key, and it holds as an ordinary blocker.
+// A Done blocker is read once for its resolution (name, or null when none is set), which the link
+// does not carry, so a pass can tell one closed without landing (closedUnlanded); the record's last
+// read is kept while it stays Done, and one that cannot be read has no `resolution` key.
 function setBlockers(rec, issue) {
   const { blockers, own } = splitOwnEpic(blockersFact(issue), epicFact(issue, null)?.key, queueEpic(queueFile()));
   const labelled = personStepLabels().length > 0 || personInputLabels().length > 0;
+  const was = new Map((Array.isArray(rec.blockers) ? rec.blockers : []).map((b) => [b?.key, b]));
+  for (const b of blockers.filter((x) => x.category === 'done')) {
+    const p = was.get(b.key);
+    if (p?.category === 'done' && 'resolution' in p) { b.resolution = p.resolution; continue; }
+    let f;
+    try { f = jira(['get', b.key]).fields; } catch { continue; /* its resolution unknown: an ordinary Done blocker */ }
+    if (f && typeof f === 'object') b.resolution = f.resolution?.name ?? null;
+  }
   for (const b of blockers.filter((x) => x.category !== 'done')) {
     let f;
     try { f = jira(['get', b.key]).fields; } catch { continue; /* its assignee unknown, and unlabelled */ }

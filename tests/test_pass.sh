@@ -1410,6 +1410,49 @@ check "DS-541 AC2 in the standing batch, a ticket linked as blocked by its Jira 
 check "DS-541 AC3 a ticket blocked by an open ticket outside the batch that is not its epic is still held behind it" \
   '[ "$(field J-11 state)" = "\"parked\"" ] && [ "$(field J-11 held_outside)" = "\"X-11\"" ] && [ "$(field J-11 outside_blockers | jq -c "[.[].key]")" = "[\"X-11\"]" ] && ! echo "$out" | grep -q "J-11 is linked as blocked by its own epic"'
 q drop J-10; q drop J-11
+# DS-717: a blocker in no batch closed as Won't Do never lands, so its link is raised once as a triage
+# item (wont_do_link) rather than held in silence; removing the link lifts the hold and clears it.
+# links <KEY> <BLOCKER> <category> <status> [<BLOCKER2> ...] writes the ticket's links; none with no blocker.
+links(){ k=$1; shift; s=''; while [ $# -ge 3 ]; do s="$s${s:+,}{\"type\":{\"inward\":\"is blocked by\"},\"inwardIssue\":{\"key\":\"$1\",\"fields\":{\"status\":{\"name\":\"$3\",\"statusCategory\":{\"key\":\"$2\"}}}}}"; shift 3; done
+  printf '{"fields":{"issuelinks":[%s]}}\n' "$s" > "$T/jira/$k.json"; q set "$k" outside_blockers_read=null; }
+resolved(){ printf '{"fields":{"assignee":null,"resolution":{"name":"%s"}}}\n' "$2" > "$T/jira/$1.json"; }
+q add J-13; q set J-13 state=parked held_by=X-13 held_outside=X-13 'park={"question":"held by orchestrator: blocked by X-13 — starts once X-13 is Done and on the base"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-13","category":"indeterminate"}]}' > "$T/state-j/triage/J-13.json"
+resolved X-13 "Won't Do"; links J-13 X-13 'done' "Won't Do"
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC1 a blocker in no batch closed as Won't Do is raised once as a triage item naming both tickets, and the hold stays" \
+  '[ "$(echo "$out" | grep -c "triage: J-13 is blocked by X-13, closed without landing (Won'"'"'t Do): is the link still right?")" = 1 ] && [ "$(field J-13 wont_do_link)" = "\"X-13\"" ] && [ "$(field J-13 held_outside)" = "\"X-13\"" ] && [ "$(field J-13 state)" = "\"parked\"" ]'
+check "DS-717 AC1 the blocker record keeps the resolution read from it" \
+  '[ "$(jq -c ".blockers[0].resolution" "$T/state-j/triage/J-13.json")" = "\"Won'"'"'t Do\"" ] && grep -qx "get X-13 --json" "$T/jira-calls"'
+links J-13 X-13 'done' "Won't Do"; : > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC2 the next pass raises no second item for that link, and does not read the resolution again" \
+  '! echo "$out" | grep -q "triage: J-13" && [ "$(field J-13 wont_do_link)" = "\"X-13\"" ] && grep -qx "get J-13 --json" "$T/jira-calls" && ! grep -q "get X-13" "$T/jira-calls"'
+links J-13; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC3 once the blockers no longer list it, the hold lifts and the item clears" \
+  '[ "$(field J-13 state)" = "\"triaged\"" ] && [ "$(field J-13 held_outside)" = null ] && [ "$(field J-13 wont_do_link)" = null ] && echo "$out" | grep -q "outside hold: J-13: X-13 no longer linked as a blocker; RELEASED"'
+q drop J-13
+q add J-7; q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once X-7 is Done and on the base"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"indeterminate"}]}' > "$T/state-j/triage/J-7.json"
+resolved X-7 Done; x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC4 a blocker in no batch Done as Done and on the base lifts the hold as before, and raises no item" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 wont_do_link)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED" && ! echo "$out" | grep -q "triage: J-7"'
+q drop J-7; rm -f "$T/jira/X-7.json"
+q add J-15; q set J-15 state=parked lane=C 'park={"question":"lane C: the plan needs agreeing"}' 'outside_blockers=[{"key":"X-15","category":"indeterminate"}]'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-15","category":"indeterminate"}]}' > "$T/state-j/triage/J-15.json"
+resolved X-15 Duplicate; links J-15 X-15 'done' Closed; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC5 a lane C park blocked by a ticket in no batch closed as Duplicate raises one item, and the park stays" \
+  '[ "$(echo "$out" | grep -c "triage: J-15 is blocked by X-15, closed without landing (Duplicate)")" = 1 ] && [ "$(field J-15 wont_do_link)" = "\"X-15\"" ] && [ "$(field J-15 state)" = "\"parked\"" ] && [ "$(field J-15 park.question)" = "\"lane C: the plan needs agreeing\"" ]'
+links J-15 X-15 'done' Closed; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC5 with no outside blocker left open, it is still read while the link stands, and not raised again" \
+  '[ "$(field J-15 outside_blockers)" = "[]" ] && [ "$(field J-15 outside_blockers_read)" != null ] && ! echo "$out" | grep -q "triage: J-15"'
+q drop J-15
+# A record that read its blocker Done before resolutions were read has none: it is read again once.
+q add J-16; q set J-16 state=parked held_by=X-16 held_outside=X-16 'outside_blockers=[]' 'park={"question":"held by orchestrator: blocked by X-16 — starts once X-16 is Done and on the base"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-16","category":"done"}]}' > "$T/state-j/triage/J-16.json"
+resolved X-16 "Won't Do"; links J-16 X-16 'done' "Won't Do"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 a blocker read Done before its resolution was is read again, raised once, and the hold stays" \
+  '[ "$(echo "$out" | grep -c "triage: J-16 is blocked by X-16, closed without landing")" = 1 ] && [ "$(field J-16 held_outside)" = "\"X-16\"" ] && [ "$(jq -c ".blockers[0].resolution" "$T/state-j/triage/J-16.json")" = "\"Won'"'"'t Do\"" ]'
+q drop J-16
 # A done ticket whose PR waits on the person's step (merge_after) is read from Jira again, and the step
 # is lifted once Jira has it Done.
 ops1(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"OPS-1","fields":{"summary":"Apply the migration","issuetype":{"name":"Task"},"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-8.json"
@@ -1441,7 +1484,14 @@ check "DS-687 one that joined the batch since still holds the merge until its PR
 q drop X-7
 x7gate 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-687 once it is Done and its PR merged to the base, the pass lifts the gate" '[ "$(field J-12 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 Done; free to merge"'
-q drop J-12
+# A merge gate closed as Won't Do with no PR never lands: it holds, raised once, until its link goes.
+q set J-12 merge_after=X-7; resolved X-7 "Won't Do"; x7gate 'done' OPEN; printf '[]\n' > "$T/prs-x7.json"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 a triage merge gate closed as Won't Do with no PR still holds the merge, and is raised once" \
+  '[ "$(field J-12 merge_after)" = "\"X-7\"" ] && ! echo "$out" | grep -q "merge hold: J-12" && [ "$(echo "$out" | grep -c "triage: J-12 is blocked by X-7, closed without landing")" = 1 ]'
+links J-12; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 once its link is removed, the gate lifts and the item clears" \
+  '[ "$(field J-12 merge_after)" = null ] && [ "$(field J-12 wont_do_link)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 no longer linked as a blocker; free to merge"'
+q drop J-12; rm -f "$T/jira/X-7.json"
 # DS-683: every pass reads a full hold on a blocker in no batch again. J-13 is the KAN-529 shape:
 # admitted fully held on OPS-3 on triage's 'build' call, a step no row named yet, then the label row set.
 # The step decides, so the call does not keep it held.

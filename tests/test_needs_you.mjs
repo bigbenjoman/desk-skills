@@ -1872,6 +1872,36 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// DS-717: a link to a blocker in no batch closed as Won't Do (pass.mjs wont_do_link) is one triage
+// item naming both tickets, beside the ticket's own hold or park, until the pass clears the marker.
+{
+  const held = { state: 'parked', lane: 'A', held_by: 'X-1', held_outside: 'X-1', wont_do_link: 'X-1', park: { question: 'held by orchestrator: blocked by X-1 — starts once X-1 is Done and on the base', since: minsAgo(30) } };
+  put('phi717', { port: 4717, beat: 1, supervised: true, pattern: 'W-[0-9]+', tickets: {
+    'W-1': held,
+    'W-2': { ...parked('C', 20, 'lane C: the plan needs agreeing'), wont_do_link: 'X-2' },
+  }, triage: {
+    'W-1': { blockers: [{ key: 'X-1', category: 'done', status: "Won't Do", resolution: "Won't Do", summary: 'Ship the old flag' }] },
+    'W-2': { blockers: [{ key: 'X-2', category: 'done', status: 'Closed', resolution: 'Duplicate' }] },
+  } });
+  const li = () => N.collect({ word: 'phi717' }).items.filter((i) => i.blocker);
+  const l1 = li();
+  t('DS-717 AC1/AC5 each link is one triage item, the held ticket and the lane C park alike', l1.map((i) => `${i.t.key} ${i.kind}`).join(), 'link:W-1:X-1 triage,link:W-2:X-2 triage');
+  t('DS-717 AC1 the item names both tickets, the resolution, and asks whether the link is still right',
+    /^W-1 is blocked by X-1 \("Ship the old flag"\), which is in no batch and was closed as Won't Do without landing, so W-1 is held behind it.*Is the link still right\?/.test(l1[0]?.need ?? ''), true);
+  t('DS-717 AC5 the lane C park is still listed as its own item', N.collect({ word: 'phi717' }).items.some((i) => i.t.key === 'W-2' && i.kind === 'session'), true);
+  const rec717 = N.record({ word: 'phi717', ticket: 'link:W-1:X-1', action: 'done' });
+  t('DS-717 done records nothing: the pass clears it once the link goes', `${rec717.ok} ${li().length}`, 'true 2');
+  const q717 = queueOf('phi717'); delete q717.tickets['W-1'].wont_do_link;
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q717));
+  t('DS-717 AC3 once the pass clears the marker the item leaves the list', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+  // The pass reads a done ticket waiting on no step no more, so it would never clear the marker.
+  const q2 = queueOf('phi717'); q2.tickets['W-2'] = { ...q2.tickets['W-2'], state: 'done', park: null, result: {} };
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
+  t('DS-717 a ticket finished with no PR lists no link item, since nothing waits on the link', li().length, 0);
+  q2.tickets['W-2'].merge_after = 'X-2'; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
+  t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+}
+
 // ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),
 // and done on a session item reads its PR and ticket.
 {
