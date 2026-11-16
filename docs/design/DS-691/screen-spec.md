@@ -853,7 +853,7 @@ Loading skeleton per group · Subscriptions file unreadable `desk can't read ~/.
   - Question (verbatim): `The browser half of test_stitch.mjs is skipped on CI's runner with no expiry (review P1): install desk's Playwright in CI in this PR, or give the skip an expiry and a follow-up ticket?`
   - `Chose ✓ create follow-up DS-681 (CI installs desk's Playwright, skip fails in CI) and name it on the skip`
   - `Other option: change .github/workflows/tests.yml in this PR to install desk's Playwright`
-  - Action `Override…` → inline: radio of the other option(s) or `Something else` (typed), button `Override decision` → runs `needs-you.mjs record <repo> <ticket> override <decision-id> "<choice>"` (it records through `digest.mjs`'s override); states: busy, `Override recorded. DS-679's worker reads it at its next step.`, refused (verbatim). (In-flight, recorded and refused frames are not drawn yet, section 17.)
+  - Action `Override…` → inline: radio of the other option(s) or `Something else` (typed), button `Override decision` → runs `digest.mjs override <slug> <decision-id> "<choice>"`; states: busy, `Override recorded. DS-679's worker reads it at its next step.`, refused (verbatim). (In-flight, recorded and refused frames are not drawn yet, section 17.)
   - Lever decisions (updated 15 Nov) also land here as decisions.jsonl lines, written by `levers decide` (11b), not by `digest.mjs override`.
 - Empty: `No decisions taken since the 08:00 check-in.`
 

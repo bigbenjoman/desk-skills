@@ -48,7 +48,7 @@ You described this as "an Electron app". I first recommended a PWA, arguing it c
 │                  + 5 s clock tick (heartbeat liveness LIVE_MS changes with no file write)                            │
 │  LogTailer ───── per-subscribed-ticket tail of <state>/logs/<KEY>.log → compact WorkerEvent stream (refcounted)      │
 │  Scheduler ───── single owner of usage probes (probesDue/probe) and cost refresh (startRefresh)                      │
-│  Commands ────── execFile allowlist: queue · answer · needs-you record · desk-env logins, subscription · supervisor  │
+│  Commands ────── execFile allowlist: queue · answer · needs-you record · digest override · desk-env · supervisor     │
 │                  exit 0/10/11 → HTTP; stdout returned verbatim; every call appended to ui/audit.jsonl                │
 │  Links ───────── gh pr view/diff/api, desk-jira get (per-repo creds) → 30-60 s cache keyed by head SHA / updated     │
 │  SessionBroker ─ spawns claude (stream-json) with the repo's login (CLAUDE_CONFIG_DIR), not in machineBudget          │
@@ -209,7 +209,7 @@ Every write maps one-to-one to an existing command. The response is always `{ ex
 | `POST /api/repos/:slug/workers` | `{ n }` | same path as `desk-q <repo> workers <n>` |
 | `POST /api/repos/:slug/batch/approve` | `{ grant: "merge"\|"undraft"\|"base_push"\|"workers", confirm: "<typed>" }` | `queue.mjs set-batch approved.<grant>=true` (the keys desk reads: `approved.merge`, `approved.undraft`, `approved.base_push`, `approved.workers`) |
 | `POST /api/repos/:slug/supervisor` | `{ on: boolean, confirm: "<typed repo slug>" }` | `supervisor.mjs install\|uninstall` |
-| `POST /api/decisions/:id/override` | `{ chose, text? }` | `needs-you.mjs record <repo> <ticket> override <decision-id> "<choice>"`, which records through `digest.mjs`'s override |
+| `POST /api/decisions/:id/override` | `{ chose, text? }` | `digest.mjs override <slug> <decision-id> "<choice>"` (any decision in the repo's log; `needs-you record … override <id>` only covers a parked item's offered decisions) |
 | `POST /api/logins` | `{ op: "set"\|"remove"\|"default", tool, name, … }` | `desk-env logins set/remove/default` |
 | `POST /api/repos/:slug/subscription` | `{ to: "default" \| "<email>" }` | `desk-env subscription set <slug> <default\|email>` |
 
